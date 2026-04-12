@@ -1,23 +1,23 @@
 ﻿# ThinkStock
 
-ThinkStock is a mobile-friendly Streamlit dashboard for comparing Korean market prices with macro overlays such as leading indicators and credit balances.
+ThinkStock now ships in two modes from the same repository.
 
-## Main entrypoint
-- `streamlit_app.py`
+## 1. Public iPhone Safari link
+- GitHub Pages app: https://eg-tools.github.io/ThinkStock/
+- This mode is mobile-first and can be added to the iPhone home screen.
+- It uses repo-built market cache data plus macro CSV input.
 
-## Local run
-- Double-click `run_streamlit_mobile.bat`
-- Or run `streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port 8501`
+## 2. Full Streamlit app
+- Entrypoint: `app.py` or `streamlit_app.py`
+- Local run: `run_app.bat`
+- Streamlit Community Cloud entrypoint: `app.py` or `streamlit_app.py`
 
-## iPhone test
-1. Open the deployed or local URL in Safari.
-2. Use `Share > Add to Home Screen`.
-3. For Streamlit Community Cloud, choose `streamlit_app.py` as the entrypoint.
-
-## Data sources
-- Price: Yahoo Finance
-- Macro: sample CSV, uploaded CSV, pasted CSV, or remote CSV URL
+## Included repo surfaces
+- `docs/`: GitHub Pages mobile app
+- `app.py`: Streamlit app
+- `streamlit_app.py`: same Streamlit app source for alternate entrypoint use
+- `AGENTS.md`: repo instructions for coding agents
 
 ## Docs
-- `IPHONE_TESTING.md`: mobile testing and deployment flow
-- `.streamlit/config.toml`: theme and toolbar settings
+- `IPHONE_TESTING.md`: iPhone testing notes
+- `.github/workflows/deploy-pages.yml`: GitHub Pages deployment workflow

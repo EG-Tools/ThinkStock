@@ -1,0 +1,14 @@
+{
+  "generated_at": "",
+  "tickers": ["^KS11", "^KQ11", "005930.KS", "218410.KQ"],
+  "display_names": {
+    "leading_cycle": "선행지수 순환변동치",
+    "kospi_credit": "코스피 신용잔고",
+    "kosdaq_credit": "코스닥 신용잔고",
+    "^KS11": "코스피",
+    "^KQ11": "코스닥",
+    "005930.KS": "삼성전자",
+    "218410.KQ": "RFHIC"
+  },
+  "records": []
+}
