@@ -2,8 +2,8 @@
 
 ## Public Safari link
 - GitHub Pages target: https://eg-tools.github.io/ThinkStock/
-- The mobile app is served directly from `main/docs`.
-- In GitHub `Settings > Pages`, set the source to `Deploy from a branch`, branch `main`, folder `/docs`.
+- The mobile app source is stored in `docs/` on `main`.
+- In GitHub `Settings > Pages`, set the source to `GitHub Actions`.
 
 ## Add to Home Screen
 1. Open the GitHub Pages link in Safari.
@@ -19,5 +19,5 @@
 - Or deploy `app.py` / `streamlit_app.py` to Streamlit Community Cloud
 
 ## Notes
-- The Pages app reads `docs/data/prices.json` from the `docs/` folder on `main`.
+- GitHub Actions refreshes `docs/data/prices.json` before deploying the Pages artifact.
 - Macro data can still come from sample CSV, upload, paste, or remote CSV URL.

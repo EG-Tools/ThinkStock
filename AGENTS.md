@@ -8,12 +8,12 @@
 ## Entry points
 - Treat `streamlit_app.py` as the primary Streamlit source.
 - Keep `app.py` identical to `streamlit_app.py` unless there is a deployment-specific reason not to.
-- The public GitHub Pages URL is expected to be `https://eg-tools.github.io/ThinkStock/` after the Pages configuration is enabled.
+- The public GitHub Pages URL is expected to be `https://eg-tools.github.io/ThinkStock/` after the GitHub Actions Pages workflow finishes.
 
 ## Data flow
 - Streamlit mode fetches live prices with `yfinance` at runtime.
 - GitHub Pages mode uses prebuilt price data from `docs/data/prices.json`.
-- `scripts/build_pages_data.py` can be used to refresh that JSON before pushing to `main`.
+- `scripts/build_pages_data.py` refreshes that JSON during the GitHub Pages workflow.
 - Macro data for both surfaces uses the same column convention: `date` plus one or more numeric series columns.
 
 ## Editing rules
@@ -23,6 +23,7 @@
 - Preserve the current Korean UX copy unless there is a clear improvement.
 
 ## Deployment notes
-- GitHub Pages should be served directly from `main` using the `/docs` folder.
+- GitHub Pages is deployed by `.github/workflows/deploy-pages.yml` using GitHub Actions.
+- This deployment model keeps `main` as the only long-lived branch.
 - Streamlit Community Cloud should use `app.py` or `streamlit_app.py` as the entrypoint.
-- If the Pages app changes, keep `docs/` ready to publish directly from the default branch.
+- If the Pages app changes, make sure the workflow still uploads the `docs/` directory as the artifact.

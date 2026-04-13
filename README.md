@@ -4,8 +4,8 @@ ThinkStock now ships in two modes from the same repository.
 
 ## 1. Public iPhone Safari link
 - GitHub Pages app target: https://eg-tools.github.io/ThinkStock/
-- The mobile web app lives in `docs/` on the default branch.
-- In GitHub `Settings > Pages`, set the source to `Deploy from a branch` and choose `main` / `/docs`.
+- The mobile web app source lives in `docs/` on the default branch.
+- GitHub Pages should be configured to use `GitHub Actions`, like ReStartHuman.
 
 ## 2. Full Streamlit app
 - Entrypoint: `app.py` or `streamlit_app.py`
@@ -20,4 +20,4 @@ ThinkStock now ships in two modes from the same repository.
 
 ## Docs
 - `IPHONE_TESTING.md`: iPhone testing notes
-- `docs/`: single-branch GitHub Pages site content
+- `.github/workflows/deploy-pages.yml`: official GitHub Actions Pages workflow
