@@ -207,7 +207,7 @@ function normalizeSeries(values) {
   return values.map((value) => (Number.isFinite(value) ? (value / base) * 100 : null));
 }
 
-function autoFitScales(rows, selected, normalized) {
+function autoFitScales(rows, selected, normalized, normBases = {}) {
   const info = [];
   selected.forEach((series) => {
     let values = rows.map((row) => Number(row[series])).filter((value) => Number.isFinite(value));
@@ -215,7 +215,12 @@ function autoFitScales(rows, selected, normalized) {
       return;
     }
     if (normalized) {
-      values = normalizeSeries(values).filter((value) => Number.isFinite(value));
+      const base = normBases[series];
+      if (base && base !== 0) {
+        values = values.map((v) => (v / base) * 100);
+      } else {
+        values = normalizeSeries(values).filter((value) => Number.isFinite(value));
+      }
     }
     const range = Math.max(Math.max(...values) - Math.min(...values), 1);
     info.push([series, range]);
@@ -372,7 +377,29 @@ function renderChart() {
   setStatusPills(liveCols, manualCols, rows);
   renderPreviewTable(rows, state.selectedSeries);
   const normalized = el.normalizeToggle.checked;
-  const autoScales = autoFitScales(rows, state.selectedSeries, normalized);
+
+  // Compute a common normalization base so all selected series start at 100
+  // on the same date — the latest "first data date" among all selected series.
+  // Without this, KOSPI (base 2016) and leading_cycle (base 2023) land at
+  // different y-positions and the chart looks split.
+  const commonNormBases = {};
+  if (normalized && state.selectedSeries.length > 0) {
+    const firstDates = state.selectedSeries.map((series) => {
+      const firstRow = rows.find((row) => Number.isFinite(Number(row[series])));
+      return firstRow ? firstRow.date : null;
+    }).filter(Boolean);
+    const commonBaseDate = firstDates.length
+      ? firstDates.reduce((max, d) => (d > max ? d : max))
+      : null;
+    if (commonBaseDate) {
+      state.selectedSeries.forEach((series) => {
+        const baseRow = rows.find((row) => row.date >= commonBaseDate && Number.isFinite(Number(row[series])));
+        commonNormBases[series] = baseRow ? Number(baseRow[series]) : null;
+      });
+    }
+  }
+
+  const autoScales = autoFitScales(rows, state.selectedSeries, normalized, commonNormBases);
   renderScalePanel(state.selectedSeries, autoScales);
   const traces = state.selectedSeries.map((series, index) => {
     let values;
@@ -393,7 +420,10 @@ function renderChart() {
       values = rows.map((row) => Number(row[series])).map((value) => Number.isFinite(value) ? value : null);
     }
     if (normalized) {
-      values = normalizeSeries(values);
+      const base = commonNormBases[series];
+      values = (base && base !== 0)
+        ? values.map((v) => (Number.isFinite(v) ? (v / base) * 100 : null))
+        : normalizeSeries(values);
     }
     let scaleValue = 100;
     if (el.scaleMode.value === "auto") {

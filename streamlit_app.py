@@ -391,13 +391,24 @@ def auto_fit_scales(
 
 
 def normalize_df(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    """Normalize all cols to 100 at the same date — the latest first-data date
+    among all cols. This keeps KOSPI and macro series visually aligned even when
+    their data histories start at different times."""
     out = df.copy()
+    first_dates = []
+    for col in cols:
+        valid = pd.to_numeric(out[col], errors="coerce").dropna()
+        if not valid.empty:
+            first_dates.append(valid.index[0])
+    if not first_dates:
+        return out
+    common_base_date = max(first_dates)
     for col in cols:
         series = pd.to_numeric(out[col], errors="coerce")
-        valid = series.dropna()
-        if valid.empty:
+        after = series[series.index >= common_base_date].dropna()
+        if after.empty:
             continue
-        base = valid.iloc[0] if valid.iloc[0] != 0 else 1.0
+        base = after.iloc[0] if after.iloc[0] != 0 else 1.0
         out[col] = (series / base) * 100.0
     return out
 
