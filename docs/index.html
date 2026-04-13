@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="ko">
   <head>
     <meta charset="utf-8">
@@ -30,6 +30,11 @@
         <div class="control-grid two-up">
           <label class="field"><span>시작일</span><input id="startDate" type="date"></label>
           <label class="field"><span>종료일</span><input id="endDate" type="date"></label>
+        </div>
+        <div id="rangePresetRow" class="tab-row">
+          <button class="tab-button period-button" data-range-years="10">최근 10년</button>
+          <button class="tab-button period-button" data-range-years="20">최근 20년</button>
+          <button class="tab-button period-button" data-range-years="30">최근 30년</button>
         </div>
         <div class="control-grid three-up">
           <label class="field switch-field"><span>첫 시점을 100으로 정규화</span><input id="normalizeToggle" type="checkbox" checked></label>

@@ -20,6 +20,7 @@ DATA_DIR = ROOT / "docs" / "data"
 SAMPLE_MACRO = ROOT / "sample_macro_data.csv"
 OUTPUT_JSON = DATA_DIR / "prices.json"
 OUTPUT_MACRO = DATA_DIR / "sample_macro_data.csv"
+LOOKBACK_YEARS = 30
 
 
 def extract_close_series(data: pd.DataFrame, ticker: str) -> pd.Series | None:
@@ -39,12 +40,20 @@ def extract_close_series(data: pd.DataFrame, ticker: str) -> pd.Series | None:
     return None
 
 
+def years_before(reference: date, years: int) -> date:
+    try:
+        return reference.replace(year=reference.year - years)
+    except ValueError:
+        return reference.replace(year=reference.year - years, month=2, day=28)
+
+
 def fetch_prices() -> pd.DataFrame:
     frames = []
+    start_date = years_before(date.today(), LOOKBACK_YEARS)
     for ticker in DEFAULT_TICKERS:
         data = yf.download(
             ticker,
-            start="2019-01-01",
+            start=start_date,
             end=pd.Timestamp(date.today()) + pd.Timedelta(days=1),
             auto_adjust=False,
             progress=False,

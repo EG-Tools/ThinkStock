@@ -16,6 +16,9 @@ st.set_page_config(
 
 APP_TITLE = "ThinkStock"
 DEFAULT_TICKERS = "^KS11,^KQ11,005930.KS,218410.KQ"
+DEFAULT_SELECTED_SERIES = ["^KS11", "leading_cycle"]
+DATE_PRESET_YEARS = [10, 20, 30]
+SERIES_PRIORITY = ["^KS11", "leading_cycle", "^KQ11", "kospi_credit", "kosdaq_credit", "005930.KS", "218410.KQ"]
 DEFAULT_CSV = """date,leading_cycle,kospi_credit,kosdaq_credit
 2023-01-01,98.9,17.1,9.5
 2024-01-01,99.8,19.6,10.8
@@ -34,6 +37,7 @@ DISPLAY_NAMES = {
     "218410.KQ": "RFHIC",
 }
 PRESET_OPTIONS = {
+    "기본 보기": ["^KS11", "leading_cycle"],
     "시장 + 거시 밸런스": [
         "leading_cycle",
         "kospi_credit",
@@ -461,6 +465,32 @@ def chunk_list(items: list[str], size: int) -> list[list[str]]:
     return [items[index : index + size] for index in range(0, len(items), size)]
 
 
+def years_before(reference: date, years: int) -> date:
+    try:
+        return reference.replace(year=reference.year - years)
+    except ValueError:
+        return reference.replace(year=reference.year - years, month=2, day=28)
+
+
+def sort_series_names(series_names: list[str]) -> list[str]:
+    priority = {name: index for index, name in enumerate(SERIES_PRIORITY)}
+    return sorted(
+        series_names,
+        key=lambda name: (priority.get(name, len(SERIES_PRIORITY) + 1), label_name(name)),
+    )
+
+
+def default_selected_series(all_series: list[str]) -> list[str]:
+    selected = [series for series in DEFAULT_SELECTED_SERIES if series in all_series]
+    return selected or all_series[: min(2, len(all_series))]
+
+
+def sync_series_checkboxes(all_series: list[str], selected: list[str]) -> None:
+    selected_set = set(selected)
+    for series in all_series:
+        st.session_state[f"series_toggle_{series}"] = series in selected_set
+
+
 def resolve_manual_text(
     source_mode: str,
     pasted_text: str,
@@ -511,10 +541,23 @@ with action_col:
         st.rerun()
     st.caption("가격 데이터와 원격 CSV 캐시를 비웁니다.")
 
+if "range_end" not in st.session_state:
+    st.session_state.range_end = date.today()
+if "range_start" not in st.session_state:
+    st.session_state.range_start = years_before(st.session_state.range_end, DATE_PRESET_YEARS[0])
+
 with st.expander("빠른 설정", expanded=True):
+    preset_cols = st.columns(len(DATE_PRESET_YEARS))
+    for years, column in zip(DATE_PRESET_YEARS, preset_cols):
+        if column.button(f"최근 {years}년", key=f"date_preset_{years}", use_container_width=True):
+            st.session_state.range_end = date.today()
+            st.session_state.range_start = years_before(st.session_state.range_end, years)
+
     date_cols = st.columns(2)
-    start = date_cols[0].date_input("시작일", value=date(2019, 1, 1))
-    end = date_cols[1].date_input("종료일", value=date.today())
+    date_cols[0].date_input("시작일", key="range_start")
+    date_cols[1].date_input("종료일", key="range_end")
+    start = st.session_state.range_start
+    end = st.session_state.range_end
 
     if end < start:
         st.error("종료일이 시작일보다 빠를 수는 없습니다.")
@@ -575,11 +618,11 @@ except (HTTPError, URLError, ValueError, OSError) as exc:
     manual_error = str(exc)
 
 merged, manual_cols, price_cols = merge_sources(price_df, manual_df, start, end)
-all_series = [
+all_series = sort_series_names([
     col
     for col in merged.columns
     if pd.to_numeric(merged[col], errors="coerce").notna().any()
-]
+])
 
 if merged.empty or not all_series:
     st.warning("표시할 데이터가 없습니다. 티커 또는 매크로 데이터 소스를 확인해 주세요.")
@@ -587,21 +630,28 @@ if merged.empty or not all_series:
         st.error(f"매크로 데이터 오류: {manual_error}")
     st.stop()
 
-default_selected = [col for col in PRESET_OPTIONS[preset_name] if col in all_series]
-if not default_selected:
-    default_selected = all_series[: min(4, len(all_series))]
+default_selected = default_selected_series(all_series)
+preset_selected = [col for col in PRESET_OPTIONS[preset_name] if col in all_series]
+if not preset_selected:
+    preset_selected = default_selected
 
 if "selected_series" not in st.session_state:
     st.session_state.selected_series = default_selected
+    sync_series_checkboxes(all_series, default_selected)
 else:
     st.session_state.selected_series = [
         col for col in st.session_state.selected_series if col in all_series
     ]
     if not st.session_state.selected_series:
         st.session_state.selected_series = default_selected
+    for col in all_series:
+        checkbox_key = f"series_toggle_{col}"
+        if checkbox_key not in st.session_state:
+            st.session_state[checkbox_key] = col in st.session_state.selected_series
 
 if apply_preset:
-    st.session_state.selected_series = default_selected
+    st.session_state.selected_series = preset_selected
+    sync_series_checkboxes(all_series, preset_selected)
 
 tab_dashboard, tab_data, tab_guide = st.tabs(["대시보드", "데이터", "가이드"])
 
@@ -635,12 +685,15 @@ with tab_dashboard:
         )
         st.warning(f"일부 티커를 불러오지 못했습니다: {failed_labels}")
 
-    selected = st.multiselect(
-        "표시할 항목",
-        all_series,
-        key="selected_series",
-        format_func=label_name,
-    )
+    st.markdown("##### 표시할 항목")
+    selector_cols = st.columns(2)
+    selected = []
+    for index, series_name in enumerate(all_series):
+        checkbox_key = f"series_toggle_{series_name}"
+        with selector_cols[index % 2]:
+            if st.checkbox(label_name(series_name), key=checkbox_key):
+                selected.append(series_name)
+    st.session_state.selected_series = selected
     if not selected:
         st.info("표시할 항목을 하나 이상 선택해 주세요.")
         st.stop()
