@@ -406,8 +406,8 @@ function renderChart() {
     margin: { l: 18, r: 18, t: 18, b: 20 },
     hovermode: "x unified",
     legend: { orientation: "h", x: 0, y: 1.08 },
-    xaxis: { showgrid: true, gridcolor: "rgba(23,48,34,0.13)", zeroline: false },
-    yaxis: { title: normalized ? "비교 지수" : "값", gridcolor: "rgba(23,48,34,0.13)", zeroline: false },
+    xaxis: { showgrid: true, gridcolor: "rgba(23,48,34,0.22)", gridwidth: 1, zeroline: false },
+    yaxis: { title: normalized ? "비교 지수" : "값", showgrid: true, gridcolor: "rgba(23,48,34,0.22)", gridwidth: 1, zeroline: false },
     font: { color: "#173022", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
   }, { responsive: true, displaylogo: false });
   el.downloadButton.onclick = () => {
