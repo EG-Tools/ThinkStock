@@ -31,7 +31,9 @@ let hiddenSeries = new Set();
 let seriesOffsets = {};   // key -> y offset in data units
 let seriesScales = {};    // key -> user scale multiplier (default 1)
 let currentSelected = [];
+let baseTraceValues = {};  // key -> y values after normalization+autofit, before user offset/scale
 let legendHandlerSet = false;
+let dragRafId = null;
 
 function shiftYears(dateStr, years) {
   const d = new Date(`${dateStr}T00:00:00`);
@@ -193,30 +195,44 @@ function updateHandles() {
   });
 }
 
+function computeFinalValues(seriesKey) {
+  const base = baseTraceValues[seriesKey];
+  if (!base) return null;
+  const s = seriesScales[seriesKey] != null ? seriesScales[seriesKey] : 1;
+  const o = seriesOffsets[seriesKey] || 0;
+  return base.map((v) => (v !== null ? 100 + (v - 100) * s + o : null));
+}
+
+function restyleLive(traceIndex, seriesKey) {
+  if (dragRafId) return;
+  dragRafId = requestAnimationFrame(() => {
+    dragRafId = null;
+    const el = document.getElementById("chart");
+    const newY = computeFinalValues(seriesKey);
+    if (newY) Plotly.restyle(el, { y: [newY] }, [traceIndex]);
+  });
+}
+
 function setupOffsetDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
   function onStart(startClientY) {
-    const el = document.getElementById("chart");
     const startOffset = seriesOffsets[seriesKey] || 0;
     handle.classList.add("dragging");
-    const traceEl = el.querySelectorAll(".scatterlayer .trace")[traceIndex];
 
     function onMove(clientY) {
       const dy = clientY - startClientY;
-      if (traceEl) traceEl.style.transform = "translateY(" + dy + "px)";
+      const dataDelta = -dy * (ya.range[1] - ya.range[0]) / ya._length;
+      seriesOffsets[seriesKey] = startOffset + dataDelta;
       handle.style.top = basePixelY + dy - 7 + "px";
+      restyleLive(traceIndex, seriesKey);
     }
 
     function onEnd(clientY) {
       handle.classList.remove("dragging");
-      const traceEl2 = document.getElementById("chart").querySelectorAll(".scatterlayer .trace")[traceIndex];
-      if (traceEl2) traceEl2.style.transform = "";
       const dy = clientY - startClientY;
       if (Math.abs(dy) < 3) {
+        seriesOffsets[seriesKey] = startOffset;
         if (hiddenSeries.has(seriesKey)) hiddenSeries.delete(seriesKey);
         else hiddenSeries.add(seriesKey);
-      } else {
-        const dataDelta = -dy * (ya.range[1] - ya.range[0]) / ya._length;
-        seriesOffsets[seriesKey] = (seriesOffsets[seriesKey] || 0) + dataDelta;
       }
       renderChart();
     }
@@ -230,32 +246,19 @@ function setupOffsetDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
 
 function setupScaleDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
   function onStart(startClientY) {
-    const el = document.getElementById("chart");
     const startScale = seriesScales[seriesKey] != null ? seriesScales[seriesKey] : 1;
     handle.classList.add("dragging");
-    const traceEl = el.querySelectorAll(".scatterlayer .trace")[traceIndex];
 
     function onMove(clientY) {
       const dy = clientY - startClientY;
-      // 100px drag = 2x scale change; allow negative scales
-      const factor = 1 - dy / 150;
-      const newScale = startScale * factor;
-      // Apply CSS scaleY on trace group for live preview
-      if (traceEl) {
-        const plotCenterY = ya._offset + ya._length / 2;
-        traceEl.style.transformOrigin = "0 " + plotCenterY + "px";
-        traceEl.style.transform = "scaleY(" + (newScale / startScale) + ")";
-      }
-      handle.style.top = basePixelY + dy - 7 + "px";
-    }
-
-    function onEnd(clientY) {
-      handle.classList.remove("dragging");
-      const traceEl2 = document.getElementById("chart").querySelectorAll(".scatterlayer .trace")[traceIndex];
-      if (traceEl2) { traceEl2.style.transform = ""; traceEl2.style.transformOrigin = ""; }
-      const dy = clientY - startClientY;
       const factor = 1 - dy / 150;
       seriesScales[seriesKey] = startScale * factor;
+      handle.style.top = basePixelY + dy - 7 + "px";
+      restyleLive(traceIndex, seriesKey);
+    }
+
+    function onEnd() {
+      handle.classList.remove("dragging");
       renderChart();
     }
 
@@ -344,6 +347,9 @@ function renderChart() {
       ? values.map((v) => (Number.isFinite(v) ? (v / base) * 100 : null))
       : normalizeSeries(values);
     values = centeredScale(values, autoScales[series] || 100, true);
+
+    // Store base values before user adjustments
+    baseTraceValues[series] = values;
 
     // Apply user scale (allows negative = inverted)
     const userScale = seriesScales[series] != null ? seriesScales[series] : 1;
