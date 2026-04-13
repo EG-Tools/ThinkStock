@@ -155,33 +155,40 @@ function updateHandles() {
     const key = currentSelected[i];
     if (!key) return;
 
+    // First non-null y for left handle, last non-null y for right handle
+    let firstY = null;
+    for (let j = 0; j < trace.y.length; j++) {
+      if (trace.y[j] !== null) { firstY = trace.y[j]; break; }
+    }
     let lastY = null;
     for (let j = trace.y.length - 1; j >= 0; j--) {
       if (trace.y[j] !== null) { lastY = trace.y[j]; break; }
     }
-    if (lastY === null) return;
+    if (firstY === null) return;
 
-    const yFrac = (lastY - ya.range[0]) / (ya.range[1] - ya.range[0]);
-    const pixelY = ya._offset + ya._length * (1 - yFrac);
+    const firstFrac = (firstY - ya.range[0]) / (ya.range[1] - ya.range[0]);
+    const leftPixelY = ya._offset + ya._length * (1 - firstFrac);
+    const lastFrac = lastY !== null ? (lastY - ya.range[0]) / (ya.range[1] - ya.range[0]) : firstFrac;
+    const rightPixelY = ya._offset + ya._length * (1 - lastFrac);
     const color = trace.line.color;
 
-    // Left handle: position (offset)
+    // Left handle: position (offset) — at first value
     const leftHandle = document.createElement("div");
     leftHandle.className = "y-handle y-handle-left";
-    leftHandle.style.top = pixelY - 7 + "px";
+    leftHandle.style.top = leftPixelY - 7 + "px";
     leftHandle.style.backgroundColor = color;
     leftHandle.title = labelName(key) + " (위치)";
-    setupOffsetDrag(leftHandle, i, key, pixelY, ya);
+    setupOffsetDrag(leftHandle, i, key, leftPixelY, ya);
     container.appendChild(leftHandle);
 
-    // Right handle: scale
+    // Right handle: scale — at last value
     const rightHandle = document.createElement("div");
     rightHandle.className = "y-handle y-handle-right";
-    rightHandle.style.top = pixelY - 7 + "px";
+    rightHandle.style.top = rightPixelY - 7 + "px";
     rightHandle.style.left = rightX + "px";
     rightHandle.style.backgroundColor = color;
     rightHandle.title = labelName(key) + " (스케일)";
-    setupScaleDrag(rightHandle, i, key, pixelY, ya);
+    setupScaleDrag(rightHandle, i, key, rightPixelY, ya);
     container.appendChild(rightHandle);
   });
 }
