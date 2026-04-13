@@ -416,18 +416,9 @@ function renderChart() {
   const traces = state.selectedSeries.map((series, index) => {
     let values;
     if (manualCols.includes(series)) {
-      // Emit a value only when the carry-forward changes (i.e. a new monthly point).
-      // CSV dates (e.g. Jan 1) are holidays and never appear in trading-day rows,
-      // so exact-date lookup always misses — use value-change detection instead.
-      let lastValue = null;
-      values = rows.map((row) => {
-        const carried = toNum(row[series]);
-        if (carried !== null && carried !== lastValue) {
-          lastValue = carried;
-          return carried;
-        }
-        return null;
-      });
+      // Use carry-forward values directly for a smooth step chart.
+      // The hv line shape below handles the flat-until-next-announcement look.
+      values = rows.map((row) => toNum(row[series]));
     } else {
       values = rows.map((row) => toNum(row[series]));
     }
@@ -454,7 +445,7 @@ function renderChart() {
       line: {
         color: COLORS[index % COLORS.length],
         width: manualCols.includes(series) ? 3.2 : 2.4,
-        shape: "linear",
+        shape: manualCols.includes(series) ? "hv" : "linear",
       },
       hovertemplate: "%{x}<br>%{y:,.2f}<extra>%{fullData.name}</extra>",
     };
