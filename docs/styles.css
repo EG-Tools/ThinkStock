@@ -1,298 +1,104 @@
 :root {
-  --bg: #05070b;
-  --bg-soft: #090e15;
-  --panel: rgba(11, 16, 24, 0.94);
-  --panel-strong: rgba(7, 10, 15, 0.98);
-  --ink: #edf2ff;
-  --muted: #92a1b7;
+  --bg: #0a0a0a;
+  --card: rgba(17, 17, 17, 0.95);
+  --ink: #e0e0e0;
+  --muted: #888;
+  --accent: #4ade80;
+  --accent-soft: rgba(74, 222, 128, 0.12);
   --border: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(255, 255, 255, 0.14);
-  --accent: #88a6ff;
-  --accent-soft: rgba(136, 166, 255, 0.16);
-  --shadow: 0 28px 70px rgba(0, 0, 0, 0.45);
+  --shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
 }
-
-* {
-  box-sizing: border-box;
-}
-
+* { box-sizing: border-box; }
 body {
   margin: 0;
-  min-height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, "Pretendard", "Segoe UI", sans-serif;
   color: var(--ink);
-  font-family: "Apple SD Gothic Neo", "Pretendard", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background:
-    radial-gradient(circle at top left, rgba(67, 198, 255, 0.12), transparent 28%),
-    radial-gradient(circle at top right, rgba(255, 93, 115, 0.12), transparent 24%),
-    linear-gradient(180deg, #06080d 0%, #020409 100%);
+  background: var(--bg);
 }
-
-body.is-dragging {
-  cursor: grabbing;
+.app-shell { width: min(1120px, calc(100vw - 24px)); margin: 0 auto; padding: 20px 0 72px; }
+.hero { padding: 18px 20px 6px; }
+.hero h1 { margin: 0; font-size: clamp(34px, 7vw, 58px); line-height: 0.95; letter-spacing: -0.04em; color: #fff; }
+.range-row { display: flex; gap: 8px; padding: 8px 20px; }
+.range-btn {
+  padding: 8px 18px; border: 1px solid var(--border); border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06); color: var(--ink); font-size: 14px;
+  font-weight: 600; cursor: pointer; transition: all 0.15s;
 }
-
-.app-shell {
-  width: min(1200px, calc(100vw - 24px));
-  margin: 0 auto;
-  padding: 22px 0 56px;
-}
-
-.hero {
-  padding: 8px 6px 18px;
-}
-
-.eyebrow {
-  margin: 0 0 8px;
-  color: #7f8ea5;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
-.hero h1 {
-  margin: 0;
-  font-size: clamp(36px, 7vw, 64px);
-  line-height: 0.92;
-  letter-spacing: -0.05em;
-}
-
-.hero-copy {
-  max-width: 760px;
-  margin: 12px 0 0;
-  color: var(--muted);
-  font-size: 15px;
-  line-height: 1.55;
-}
-
-.control-card,
-.chart-shell {
+.range-btn:hover { background: rgba(255, 255, 255, 0.1); }
+.range-btn.is-active { background: var(--accent-soft); color: var(--accent); border-color: rgba(74, 222, 128, 0.25); }
+.chart-frame {
+  position: relative;
+  margin-top: 8px;
+  min-height: 600px;
+  background: var(--card);
   border: 1px solid var(--border);
   border-radius: 28px;
-  background: var(--panel);
   box-shadow: var(--shadow);
-  backdrop-filter: blur(22px);
+  padding: 0;
+  overflow: hidden;
 }
-
-.control-card {
-  padding: 16px;
+/* Y-axis drag handles */
+#y-handles {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 100;
 }
-
-.control-row {
+.y-handle {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  cursor: ns-resize;
+  pointer-events: all;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  transition: transform 0.1s, box-shadow 0.1s;
+  z-index: 101;
+}
+.y-handle-left { left: 14px; }
+.y-handle-right { /* left set dynamically */ }
+.y-handle:hover {
+  transform: scale(1.4);
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.3);
+  border-color: rgba(255, 255, 255, 0.6);
+}
+.y-handle.dragging {
+  transform: scale(1.5);
+  box-shadow: 0 0 12px rgba(255, 255, 255, 0.4);
+  border-color: rgba(255, 255, 255, 0.8);
+}
+/* Help row */
+.help-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  margin-bottom: 14px;
+  padding: 6px 20px;
+  gap: 12px;
 }
-
-.range-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
+.help-text {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
 }
-
-.range-btn {
-  padding: 10px 18px;
+.reset-btn {
+  flex-shrink: 0;
+  padding: 6px 14px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.03);
-  color: var(--ink);
-  font-size: 14px;
-  font-weight: 700;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  font-size: 12px;
   cursor: pointer;
-  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+  transition: all 0.15s;
 }
-
-.range-btn.is-active {
-  border-color: rgba(136, 166, 255, 0.42);
-  background: var(--accent-soft);
-  color: #dbe5ff;
-}
-
-.range-btn:active {
-  transform: translateY(1px);
-}
-
-.range-status {
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.series-toggles {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.toggle-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.03);
-  color: #7e8ea7;
-  font-size: 14px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: border-color 160ms ease, background 160ms ease, color 160ms ease, transform 160ms ease;
-}
-
-.toggle-chip .toggle-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 999px;
-  background: var(--series-color);
-  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.04);
-}
-
-.toggle-chip.is-active {
-  color: var(--ink);
-  border-color: var(--series-color);
-  background: rgba(255, 255, 255, 0.07);
-}
-
-.toggle-chip.is-focused {
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18), 0 0 0 6px rgba(255, 255, 255, 0.05);
-}
-
-.toggle-chip:active {
-  transform: translateY(1px);
-}
-
-.chart-shell {
-  margin-top: 16px;
-  padding: 14px;
-}
-
-.chart-hint {
-  padding: 4px 8px 14px;
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.plot-shell {
-  position: relative;
-}
-
-.chart-frame {
-  min-height: 720px;
-  border: 1px solid var(--border-strong);
-  border-radius: 24px;
-  background: var(--panel-strong);
-  overflow: hidden;
-}
-
-.axis-rail {
-  position: absolute;
-  top: 16px;
-  bottom: 16px;
-  width: 42px;
-  pointer-events: none;
-  z-index: 4;
-}
-
-.axis-rail-left {
-  left: 8px;
-}
-
-.axis-rail-right {
-  right: 8px;
-}
-
-.axis-handle {
-  position: absolute;
-  left: 50%;
-  width: 38px;
-  height: 38px;
-  display: grid;
-  place-items: center;
-  border: 2px solid rgba(255, 255, 255, 0.14);
-  border-radius: 999px;
-  background: var(--handle-color);
-  color: #020409;
-  font-size: 11px;
-  font-weight: 800;
-  line-height: 1;
-  transform: translate(-50%, -50%);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.36);
-  cursor: grab;
-  pointer-events: auto;
-  touch-action: none;
-  user-select: none;
-}
-
-.axis-handle-scale {
-  color: #061018;
-}
-
-.axis-handle.is-series-active {
-  z-index: 6;
-  transform: translate(-50%, -50%) scale(1.06);
-}
-
-.axis-handle.is-active {
-  border-color: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.12), 0 12px 28px rgba(0, 0, 0, 0.42);
-}
-
-.axis-handle:active {
-  cursor: grabbing;
-}
-
-.message-area {
-  margin-top: 14px;
-}
-
-.message {
-  padding: 13px 15px;
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.03);
-  color: var(--muted);
-}
-
-.message.error {
-  border-color: rgba(255, 93, 115, 0.18);
-  background: rgba(255, 93, 115, 0.08);
-  color: #ffd5db;
-}
-
+.reset-btn:hover { background: rgba(255, 255, 255, 0.1); color: var(--ink); }
+.message-area { margin-top: 12px; }
+.message { padding: 12px 14px; border-radius: 18px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border); color: var(--muted); }
+.message.error { background: rgba(187, 67, 40, 0.2); color: #f87171; }
 @media (max-width: 820px) {
-  .app-shell {
-    width: min(100vw - 18px, 760px);
-    padding-top: 14px;
-  }
-
-  .control-row {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .range-status {
-    white-space: normal;
-  }
-
-  .chart-frame {
-    min-height: 620px;
-  }
-}
-
-@media (max-width: 520px) {
-  .hero-copy {
-    font-size: 14px;
-  }
-
-  .toggle-chip {
-    width: calc(50% - 5px);
-    justify-content: center;
-  }
-
-  .chart-frame {
-    min-height: 540px;
-  }
+  .app-shell { width: min(100vw - 18px, 720px); padding-top: 12px; }
+  .chart-frame { border-radius: 22px; min-height: 480px; }
 }
