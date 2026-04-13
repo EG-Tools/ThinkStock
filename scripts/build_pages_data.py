@@ -91,7 +91,8 @@ def build_payload(df: pd.DataFrame) -> dict:
             if column == "date":
                 continue
             clean[column] = pd.to_numeric(clean[column], errors="coerce").round(4)
-        records = clean.where(pd.notna(clean), None).to_dict(orient="records")
+        clean = clean.astype(object).where(pd.notna(clean), None)
+        records = clean.to_dict(orient="records")
     return {
         "generated_at": pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
         "tickers": DEFAULT_TICKERS,
@@ -104,7 +105,7 @@ def main() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     prices = fetch_prices()
     payload = build_payload(prices)
-    OUTPUT_JSON.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    OUTPUT_JSON.write_text(json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
     OUTPUT_MACRO.write_text(SAMPLE_MACRO.read_text(encoding="utf-8"), encoding="utf-8")
     print(f"Wrote {OUTPUT_JSON}")
     print(f"Wrote {OUTPUT_MACRO}")

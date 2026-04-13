@@ -460,7 +460,8 @@ async function resolveMacroText() {
 
 async function boot() {
   const [priceResponse, macroResponse] = await Promise.all([fetch("./data/prices.json"), fetch("./data/sample_macro_data.csv")]);
-  state.pricePayload = await priceResponse.json();
+  const priceText = await priceResponse.text();
+  state.pricePayload = JSON.parse(priceText.replace(/\bNaN\b/g, "null"));
   state.sampleMacroText = await macroResponse.text();
   state.macroText = state.sampleMacroText;
   el.macroTextarea.value = state.sampleMacroText;
