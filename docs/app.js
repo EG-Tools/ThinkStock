@@ -18,10 +18,12 @@ const HANDLE_LABELS = {
   "218410.KQ": "R",
 };
 
-const STORAGE_KEY = "thinkstock-mobile-state-v3";
+const STORAGE_KEY = "thinkstock-mobile-state-v4";
 const RANGE_OPTIONS = [10, 20, 30];
-const DEFAULT_SELECTED = ["^KS11", "leading_cycle"];
-const SERIES_PRIORITY = ["^KS11", "leading_cycle", "^KQ11", "kospi_credit", "kosdaq_credit", "005930.KS", "218410.KQ"];
+const SCALE_MIN = 25;
+const SCALE_MAX = 400;
+const DEFAULT_SELECTED = ["leading_cycle", "^KS11"];
+const SERIES_PRIORITY = ["leading_cycle", "^KS11", "^KQ11", "kospi_credit", "kosdaq_credit", "005930.KS", "218410.KQ"];
 const SERIES_COLORS = {
   leading_cycle: "#f7c948",
   "^KS11": "#43c6ff",
@@ -34,7 +36,8 @@ const SERIES_COLORS = {
 
 const el = {
   chart: document.getElementById("chart"),
-  axisRail: document.getElementById("axisRail"),
+  leftRail: document.getElementById("leftRail"),
+  rightRail: document.getElementById("rightRail"),
   rangeStatus: document.getElementById("rangeStatus"),
   messageArea: document.getElementById("messageArea"),
   seriesToggles: document.getElementById("seriesToggles"),
@@ -49,6 +52,7 @@ const state = {
   activeYears: RANGE_OPTIONS[0],
   selectedSeries: [],
   seriesOffsets: {},
+  seriesScales: {},
   lastYRange: [70, 130],
   drag: null,
   renderQueued: false,
@@ -107,6 +111,14 @@ function loadStoredState() {
         }
       });
     }
+    if (parsed.seriesScales && typeof parsed.seriesScales === "object") {
+      Object.entries(parsed.seriesScales).forEach(([series, scale]) => {
+        const numeric = Number(scale);
+        if (Number.isFinite(numeric)) {
+          state.seriesScales[series] = clamp(numeric, SCALE_MIN, SCALE_MAX);
+        }
+      });
+    }
   } catch (_error) {
   }
 }
@@ -119,6 +131,7 @@ function persistState() {
         activeYears: state.activeYears,
         selectedSeries: state.selectedSeries,
         seriesOffsets: state.seriesOffsets,
+        seriesScales: state.seriesScales,
       })
     );
   } catch (_error) {
@@ -254,7 +267,7 @@ function autoFitScales(rows, selectedSeries, baseMap) {
   const sortedRanges = info.map(([, range]) => range).sort((left, right) => left - right);
   const target = sortedRanges[Math.floor(sortedRanges.length / 2)];
   return Object.fromEntries(
-    info.map(([series, range]) => [series, clamp(Math.round((target / range) * 100), 25, 400)])
+    info.map(([series, range]) => [series, clamp(Math.round((target / range) * 100), SCALE_MIN, SCALE_MAX)])
   );
 }
 
@@ -292,6 +305,24 @@ function buildCommonBaseMap(rows, selectedSeries) {
     baseMap[series] = row ? toNum(row[series]) : null;
   });
   return baseMap;
+}
+
+function getScaleValue(series, autoScales) {
+  const manual = Number(state.seriesScales[series]);
+  if (Number.isFinite(manual)) {
+    return clamp(manual, SCALE_MIN, SCALE_MAX);
+  }
+  return clamp(autoScales[series] || 100, SCALE_MIN, SCALE_MAX);
+}
+
+function scaleToTopPct(scaleValue) {
+  const ratio = (clamp(scaleValue, SCALE_MIN, SCALE_MAX) - SCALE_MIN) / (SCALE_MAX - SCALE_MIN || 1);
+  return clamp(95 - ratio * 90, 5, 95);
+}
+
+function topPctToScale(topPct) {
+  const ratio = clamp((95 - topPct) / 90, 0, 1);
+  return clamp(Math.round((SCALE_MIN + ratio * (SCALE_MAX - SCALE_MIN)) * 10) / 10, SCALE_MIN, SCALE_MAX);
 }
 
 function setMessage(text = "", type = "") {
@@ -370,22 +401,35 @@ function onHandleDrag(event) {
   if (!state.drag) {
     return;
   }
-  const railHeight = el.axisRail.clientHeight || 1;
-  const span = Math.max(state.drag.yMax - state.drag.yMin, 1);
-  const deltaValue = -((event.clientY - state.drag.startY) / railHeight) * span;
-  state.seriesOffsets[state.drag.series] = Math.round((state.drag.startOffset + deltaValue) * 10) / 10;
+  if (state.drag.kind === "offset") {
+    const span = Math.max(state.drag.yMax - state.drag.yMin, 1);
+    const deltaValue = -((event.clientY - state.drag.startY) / state.drag.railHeight) * span;
+    state.seriesOffsets[state.drag.series] = Math.round((state.drag.startValue + deltaValue) * 10) / 10;
+  } else {
+    const deltaPct = ((event.clientY - state.drag.startY) / state.drag.railHeight) * 90;
+    const nextTopPct = clamp(state.drag.startTopPct + deltaPct, 5, 95);
+    state.seriesScales[state.drag.series] = topPctToScale(nextTopPct);
+  }
   persistState();
   queueRender();
 }
 
 function startHandleDrag(event) {
   event.preventDefault();
-  const series = event.currentTarget.dataset.series;
+  const handle = event.currentTarget;
+  const series = handle.dataset.series;
+  const kind = handle.dataset.kind;
+  const railHeight = handle.parentElement?.clientHeight || 1;
   const [yMin, yMax] = state.lastYRange;
   state.drag = {
+    kind,
     series,
     startY: event.clientY,
-    startOffset: Number(state.seriesOffsets[series]) || 0,
+    railHeight,
+    startTopPct: Number(handle.dataset.topPct) || 50,
+    startValue: kind === "offset"
+      ? Number(state.seriesOffsets[series]) || 0
+      : clamp(Number(state.seriesScales[series]) || Number(handle.dataset.scale) || 100, SCALE_MIN, SCALE_MAX),
     yMin,
     yMax,
   };
@@ -395,23 +439,26 @@ function startHandleDrag(event) {
   window.addEventListener("pointercancel", stopDragging);
 }
 
-function renderAxisHandles(items) {
-  el.axisRail.innerHTML = items
+function renderRail(target, items, kind) {
+  target.innerHTML = items
     .map(
       (item) => `
         <button
-          class="axis-handle"
+          class="axis-handle ${kind === "scale" ? "axis-handle-scale" : ""}"
           type="button"
+          data-kind="${kind}"
           data-series="${item.series}"
-          title="${labelName(item.series)}"
-          aria-label="${labelName(item.series)} 위치 조절"
+          data-top-pct="${item.topPct}"
+          data-scale="${item.scaleValue ?? ""}"
+          title="${item.title}"
+          aria-label="${item.title}"
           style="top: ${item.topPct}%; --handle-color: ${item.color};"
         >${item.label}</button>
       `
     )
     .join("");
 
-  el.axisRail.querySelectorAll(".axis-handle").forEach((button) => {
+  target.querySelectorAll(".axis-handle").forEach((button) => {
     button.addEventListener("pointerdown", startHandleDrag);
   });
 }
@@ -439,7 +486,8 @@ function buildChartModel() {
     const normalizedValues = base && base !== 0
       ? rawValues.map((value) => (Number.isFinite(value) ? (value / base) * 100 : null))
       : normalizeSeries(rawValues);
-    const scaledValues = centeredScale(normalizedValues, autoScales[series] || 100);
+    const scale = getScaleValue(series, autoScales);
+    const scaledValues = centeredScale(normalizedValues, scale);
     const offset = Number.isFinite(state.seriesOffsets[series]) ? state.seriesOffsets[series] : 0;
     const shiftedValues = scaledValues.map((value) => (Number.isFinite(value) ? value + offset : null));
     return {
@@ -447,6 +495,7 @@ function buildChartModel() {
       color: SERIES_COLORS[series] || "#94a3b8",
       values: shiftedValues,
       offset,
+      scale,
     };
   });
 
@@ -479,22 +528,31 @@ function buildChartModel() {
       connectgaps: true,
       line: {
         color: meta.color,
-        width: meta.series === "leading_cycle" ? 3.4 : 2.6,
+        width: meta.series === "leading_cycle" ? 3.5 : 2.6,
         shape: "linear",
       },
       hovertemplate: "%{x}<br>%{y:,.2f}<extra>%{fullData.name}</extra>",
     })),
     yRange: [yMin, yMax],
-    railItems: seriesMeta.map((meta) => {
+    leftItems: seriesMeta.map((meta) => {
       const anchor = 100 + meta.offset;
       const topPct = clamp(((yMax - anchor) / (yMax - yMin)) * 100, 5, 95);
       return {
         series: meta.series,
         color: meta.color,
         label: handleLabel(meta.series),
+        title: `${labelName(meta.series)} 위치 조절`,
         topPct,
       };
     }),
+    rightItems: seriesMeta.map((meta) => ({
+      series: meta.series,
+      color: meta.color,
+      label: handleLabel(meta.series),
+      title: `${labelName(meta.series)} 스케일 조절`,
+      topPct: scaleToTopPct(meta.scale),
+      scaleValue: meta.scale,
+    })),
   };
 }
 
@@ -505,7 +563,7 @@ function renderPlot(model) {
     {
       paper_bgcolor: "#05070b",
       plot_bgcolor: "#05070b",
-      margin: { l: 62, r: 18, t: 20, b: 40 },
+      margin: { l: 62, r: 62, t: 20, b: 40 },
       hovermode: "x unified",
       showlegend: false,
       xaxis: {
@@ -544,11 +602,13 @@ function renderApp() {
     el.rangeStatus.textContent = `${model.start} - ${model.end}`;
     renderSeriesToggles(model.allSeries);
     renderPlot(model);
-    renderAxisHandles(model.railItems);
+    renderRail(el.leftRail, model.leftItems, "offset");
+    renderRail(el.rightRail, model.rightItems, "scale");
     setMessage();
   } catch (error) {
     Plotly.purge(el.chart);
-    el.axisRail.innerHTML = "";
+    el.leftRail.innerHTML = "";
+    el.rightRail.innerHTML = "";
     setMessage(error.message || "앱을 렌더링하지 못했습니다.", "error");
   }
 }

@@ -187,10 +187,17 @@ body.is-dragging {
   position: absolute;
   top: 16px;
   bottom: 16px;
-  left: 8px;
   width: 42px;
   pointer-events: none;
   z-index: 4;
+}
+
+.axis-rail-left {
+  left: 8px;
+}
+
+.axis-rail-right {
+  right: 8px;
 }
 
 .axis-handle {
@@ -213,6 +220,10 @@ body.is-dragging {
   pointer-events: auto;
   touch-action: none;
   user-select: none;
+}
+
+.axis-handle-scale {
+  color: #061018;
 }
 
 .axis-handle:active {
