@@ -11,7 +11,7 @@ const DISPLAY_NAMES = {
 const DEFAULT_SELECTED = ["leading_cycle", "^KS11", "kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ"];
 const SERIES_PRIORITY = ["leading_cycle", "^KS11", "kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ"];
 const SERIES_COLORS = {
-  leading_cycle: "#fbbf24",
+  leading_cycle: "#999999",
   "^KS11": "#4ade80",
   kospi_credit: "#60a5fa",
   "^KQ11": "#f87171",
@@ -391,18 +391,15 @@ function renderChart() {
   }, { responsive: true, displaylogo: false });
 
   if (!legendHandlerSet) {
-    el.on("plotly_legendclick", (evtData) => {
-      const key = currentSelected[evtData.curveNumber];
-      if (key) {
-        if (hiddenSeries.has(key)) hiddenSeries.delete(key);
-        else hiddenSeries.add(key);
-      }
-      setTimeout(updateHandles, 100);
-    });
-    el.on("plotly_legenddoubleclick", () => {
+    function syncVisibilityFromPlotly() {
       hiddenSeries.clear();
-      setTimeout(updateHandles, 100);
-    });
+      el.data.forEach((trace, i) => {
+        if (trace.visible === "legendonly") hiddenSeries.add(currentSelected[i]);
+      });
+      updateHandles();
+    }
+    el.on("plotly_legendclick", () => setTimeout(syncVisibilityFromPlotly, 50));
+    el.on("plotly_legenddoubleclick", () => setTimeout(syncVisibilityFromPlotly, 50));
     el.on("plotly_relayout", () => setTimeout(updateHandles, 50));
     legendHandlerSet = true;
   }
