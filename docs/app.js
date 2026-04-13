@@ -20,6 +20,10 @@ const PRESETS = {
 };
 const COLORS = ["#1d5f4a", "#c17335", "#26547c", "#d14d41", "#6c5ce7", "#0f8b8d", "#8a6f4d"];
 
+// Null-safe numeric coercion. Number(null)===0 and Number(undefined)===NaN both
+// pass or fail isFinite in unexpected ways — always use this instead.
+const toNum = (v) => (v != null && Number.isFinite(Number(v))) ? Number(v) : null;
+
 const state = {
   pricePayload: null,
   sampleMacroText: "",
@@ -210,7 +214,7 @@ function normalizeSeries(values) {
 function autoFitScales(rows, selected, normalized, normBases = {}) {
   const info = [];
   selected.forEach((series) => {
-    let values = rows.map((row) => Number(row[series])).filter((value) => Number.isFinite(value));
+    let values = rows.map((row) => toNum(row[series])).filter((v) => v !== null);
     if (!values.length) {
       return;
     }
@@ -235,29 +239,37 @@ function autoFitScales(rows, selected, normalized, normBases = {}) {
 
 function mergeSources(priceRows, manualRows, start, end) {
   const priceMap = toMap(priceRows);
-  const manualMap = toMap(manualRows);
   const manualCols = getSeriesColumns(manualRows);
   const liveCols = getSeriesColumns(priceRows);
   const baseDates = priceRows.length ? priceRows.map((row) => row.date) : daterange(start, end);
+
+  // Sort manual rows and use a sliding pointer so that CSV dates that fall on
+  // weekends/holidays (e.g. "2023-01-01") still carry forward into trading days.
+  const sortedManual = [...manualRows].sort((a, b) => a.date.localeCompare(b.date));
+  let manualIdx = 0;
+
   const rows = [];
   const carry = {};
   baseDates.forEach((date) => {
     if (date < start || date > end) {
       return;
     }
+    // Absorb all manual rows whose date <= current trading day into carry.
+    while (manualIdx < sortedManual.length && sortedManual[manualIdx].date <= date) {
+      const mrow = sortedManual[manualIdx];
+      manualCols.forEach((key) => {
+        const raw = toNum(mrow[key]);
+        if (raw !== null) carry[key] = raw;
+      });
+      manualIdx++;
+    }
     const row = { date };
     const live = priceMap.get(date) || {};
-    const manual = manualMap.get(date) || {};
     liveCols.forEach((key) => {
-      const value = Number(live[key]);
-      row[key] = Number.isFinite(value) ? value : null;
+      row[key] = toNum(live[key]);
     });
     manualCols.forEach((key) => {
-      const raw = Number(manual[key]);
-      if (Number.isFinite(raw)) {
-        carry[key] = raw;
-      }
-      row[key] = Number.isFinite(carry[key]) ? carry[key] : null;
+      row[key] = carry[key] != null ? carry[key] : null;
     });
     rows.push(row);
   });
@@ -265,7 +277,7 @@ function mergeSources(priceRows, manualRows, start, end) {
 }
 
 function latestSnapshot(rows, series) {
-  const valid = rows.filter((row) => Number.isFinite(Number(row[series])));
+  const valid = rows.filter((row) => toNum(row[series]) !== null);
   if (!valid.length) {
     return null;
   }
@@ -273,8 +285,8 @@ function latestSnapshot(rows, series) {
   const previous = valid.length > 1 ? valid[valid.length - 2] : null;
   return {
     date: latest.date,
-    value: Number(latest[series]),
-    delta: previous ? Number(latest[series]) - Number(previous[series]) : null,
+    value: toNum(latest[series]),
+    delta: previous ? toNum(latest[series]) - toNum(previous[series]) : null,
   };
 }
 
@@ -385,7 +397,7 @@ function renderChart() {
   const commonNormBases = {};
   if (normalized && state.selectedSeries.length > 0) {
     const firstDates = state.selectedSeries.map((series) => {
-      const firstRow = rows.find((row) => Number.isFinite(Number(row[series])));
+      const firstRow = rows.find((row) => toNum(row[series]) !== null);
       return firstRow ? firstRow.date : null;
     }).filter(Boolean);
     const commonBaseDate = firstDates.length
@@ -393,8 +405,8 @@ function renderChart() {
       : null;
     if (commonBaseDate) {
       state.selectedSeries.forEach((series) => {
-        const baseRow = rows.find((row) => row.date >= commonBaseDate && Number.isFinite(Number(row[series])));
-        commonNormBases[series] = baseRow ? Number(baseRow[series]) : null;
+        const baseRow = rows.find((row) => row.date >= commonBaseDate && toNum(row[series]) !== null);
+        commonNormBases[series] = baseRow ? toNum(baseRow[series]) : null;
       });
     }
   }
@@ -409,7 +421,7 @@ function renderChart() {
       // so exact-date lookup always misses — use value-change detection instead.
       let lastValue = null;
       values = rows.map((row) => {
-        const carried = Number.isFinite(Number(row[series])) ? Number(row[series]) : null;
+        const carried = toNum(row[series]);
         if (carried !== null && carried !== lastValue) {
           lastValue = carried;
           return carried;
@@ -417,7 +429,7 @@ function renderChart() {
         return null;
       });
     } else {
-      values = rows.map((row) => Number(row[series])).map((value) => Number.isFinite(value) ? value : null);
+      values = rows.map((row) => toNum(row[series]));
     }
     if (normalized) {
       const base = commonNormBases[series];
