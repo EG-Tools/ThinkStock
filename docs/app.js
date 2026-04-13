@@ -11,10 +11,13 @@ const DISPLAY_NAMES = {
 const DEFAULT_SELECTED = ["^KS11", "leading_cycle"];
 const SERIES_PRIORITY = ["^KS11", "leading_cycle", "^KQ11", "kospi_credit", "kosdaq_credit", "005930.KS", "218410.KQ"];
 const COLORS = ["#1d5f4a", "#c17335", "#26547c", "#d14d41", "#6c5ce7", "#0f8b8d", "#8a6f4d"];
-const DEFAULT_RANGE_YEARS = 10;
 
 const toNum = (v) => (v != null && Number.isFinite(Number(v))) ? Number(v) : null;
 const labelName = (key) => DISPLAY_NAMES[key] || key;
+
+let pricePayload = null;
+let macroText = "";
+let activeYears = 10;
 
 function shiftYears(dateStr, years) {
   const d = new Date(`${dateStr}T00:00:00`);
@@ -113,7 +116,7 @@ function autoFitScales(rows, selected, normBases) {
   return Object.fromEntries(info.map(([s, r]) => [s, Math.max(5, Math.min(5000, Math.round((target / r) * 100)))]));
 }
 
-function renderChart(pricePayload, macroText) {
+function renderChart() {
   const el = document.getElementById("chart");
   const msgEl = document.getElementById("messageArea");
 
@@ -123,7 +126,8 @@ function renderChart(pricePayload, macroText) {
   const maxDate = dates[dates.length - 1] || new Date().toISOString().slice(0, 10);
   const minDate = dates[0] || maxDate;
   const end = maxDate;
-  const start = shiftYears(end, DEFAULT_RANGE_YEARS) < minDate ? minDate : shiftYears(end, DEFAULT_RANGE_YEARS);
+  let start = shiftYears(end, activeYears);
+  if (start < minDate) start = minDate;
 
   const { rows, manualCols, liveCols } = mergeSources(priceRows, manualRows, start, end);
   const allSeries = sortSeries(
@@ -136,8 +140,9 @@ function renderChart(pricePayload, macroText) {
     msgEl.innerHTML = '<div class="message error">표시할 데이터가 없습니다.</div>';
     return;
   }
+  msgEl.innerHTML = "";
 
-  // Common normalization base: latest first-data date among selected series
+  // Common normalization base
   const commonNormBases = {};
   const firstDates = selected.map((s) => {
     const r = rows.find((row) => toNum(row[s]) !== null);
@@ -188,6 +193,12 @@ function renderChart(pricePayload, macroText) {
   }, { responsive: true, displaylogo: false });
 }
 
+function syncButtons() {
+  document.querySelectorAll(".range-btn").forEach((btn) => {
+    btn.classList.toggle("is-active", Number(btn.dataset.years) === activeYears);
+  });
+}
+
 async function boot() {
   const msgEl = document.getElementById("messageArea");
   try {
@@ -196,9 +207,18 @@ async function boot() {
       fetch("./data/sample_macro_data.csv"),
     ]);
     const priceText = await priceRes.text();
-    const pricePayload = JSON.parse(priceText.replace(/\bNaN\b/g, "null"));
-    const macroText = await macroRes.text();
-    renderChart(pricePayload, macroText);
+    pricePayload = JSON.parse(priceText.replace(/\bNaN\b/g, "null"));
+    macroText = await macroRes.text();
+
+    document.querySelectorAll(".range-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        activeYears = Number(btn.dataset.years);
+        syncButtons();
+        renderChart();
+      });
+    });
+
+    renderChart();
   } catch (err) {
     msgEl.innerHTML = `<div class="message error">${err.message || "앱을 시작하지 못했습니다."}</div>`;
   }
