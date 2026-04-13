@@ -363,7 +363,7 @@ function renderChart() {
   }
   renderSeriesChooser(allSeries);
   renderMetrics(rows, state.selectedSeries, manualCols);
-  setMessages(manualCols.length ? [{ type: "warn", text: "매크로 시리즈는 계단형으로 표시됩니다. 발표 시점 사이 값 유지 구간이 더 자연스럽게 보이도록 설계했습니다." }] : []);
+  setMessages([]);
   if (!rows.length || !state.selectedSeries.length) {
     setMessages([{ type: "error", text: "표시할 데이터가 없습니다. 날짜 범위와 매크로 소스를 확인해 주세요." }]);
     Plotly.purge(el.chart);
@@ -395,7 +395,7 @@ function renderChart() {
       line: {
         color: COLORS[index % COLORS.length],
         width: manualCols.includes(series) ? 3.2 : 2.4,
-        shape: manualCols.includes(series) ? "hv" : "linear",
+        shape: "linear",
       },
       hovertemplate: "%{x}<br>%{y:,.2f}<extra>%{fullData.name}</extra>",
     };
@@ -406,8 +406,8 @@ function renderChart() {
     margin: { l: 18, r: 18, t: 18, b: 20 },
     hovermode: "x unified",
     legend: { orientation: "h", x: 0, y: 1.08 },
-    xaxis: { showgrid: false },
-    yaxis: { title: normalized ? "비교 지수" : "값", gridcolor: "rgba(23,48,34,0.08)", zeroline: false },
+    xaxis: { showgrid: true, gridcolor: "rgba(23,48,34,0.13)", zeroline: false },
+    yaxis: { title: normalized ? "비교 지수" : "값", gridcolor: "rgba(23,48,34,0.13)", zeroline: false },
     font: { color: "#173022", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
   }, { responsive: true, displaylogo: false });
   el.downloadButton.onclick = () => {
