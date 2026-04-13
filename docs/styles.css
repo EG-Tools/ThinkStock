@@ -5,6 +5,7 @@
   --ink: #173022;
   --muted: #5f6f68;
   --accent: #1d5f4a;
+  --accent-soft: rgba(29, 95, 74, 0.12);
   --border: rgba(23, 48, 34, 0.12);
   --shadow: 0 18px 40px rgba(23, 48, 34, 0.08);
 }
@@ -16,10 +17,17 @@ body {
   background: radial-gradient(circle at top left, rgba(193,115,53,0.12), transparent 28%), radial-gradient(circle at top right, rgba(29,95,74,0.12), transparent 25%), linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
 }
 .app-shell { width: min(1120px, calc(100vw - 24px)); margin: 0 auto; padding: 20px 0 72px; }
-.hero { padding: 18px 20px 10px; }
+.hero { padding: 18px 20px 6px; }
 .hero h1 { margin: 0; font-size: clamp(34px, 7vw, 58px); line-height: 0.95; letter-spacing: -0.04em; }
+.range-row { display: flex; gap: 8px; padding: 8px 20px; }
+.range-btn {
+  padding: 8px 18px; border: 1px solid var(--border); border-radius: 999px;
+  background: rgba(255,255,255,0.75); color: var(--ink); font-size: 14px;
+  font-weight: 600; cursor: pointer;
+}
+.range-btn.is-active { background: var(--accent-soft); color: var(--accent); border-color: rgba(29,95,74,0.2); }
 .chart-frame {
-  margin-top: 14px;
+  margin-top: 8px;
   min-height: 600px;
   background: var(--card);
   border: 1px solid var(--border);
