@@ -315,14 +315,9 @@ function getScaleValue(series, autoScales) {
   return clamp(autoScales[series] || 100, SCALE_MIN, SCALE_MAX);
 }
 
-function scaleToTopPct(scaleValue) {
-  const ratio = (clamp(scaleValue, SCALE_MIN, SCALE_MAX) - SCALE_MIN) / (SCALE_MAX - SCALE_MIN || 1);
-  return clamp(95 - ratio * 90, 5, 95);
-}
-
-function topPctToScale(topPct) {
-  const ratio = clamp((95 - topPct) / 90, 0, 1);
-  return clamp(Math.round((SCALE_MIN + ratio * (SCALE_MAX - SCALE_MIN)) * 10) / 10, SCALE_MIN, SCALE_MAX);
+function getTopPctForValue(value, yMin, yMax) {
+  const safeValue = Number.isFinite(value) ? value : 100;
+  return clamp(((yMax - safeValue) / (yMax - yMin || 1)) * 100, 5, 95);
 }
 
 function setMessage(text = "", type = "") {
@@ -406,9 +401,8 @@ function onHandleDrag(event) {
     const deltaValue = -((event.clientY - state.drag.startY) / state.drag.railHeight) * span;
     state.seriesOffsets[state.drag.series] = Math.round((state.drag.startValue + deltaValue) * 10) / 10;
   } else {
-    const deltaPct = ((event.clientY - state.drag.startY) / state.drag.railHeight) * 90;
-    const nextTopPct = clamp(state.drag.startTopPct + deltaPct, 5, 95);
-    state.seriesScales[state.drag.series] = topPctToScale(nextTopPct);
+    const deltaScale = -((event.clientY - state.drag.startY) / state.drag.railHeight) * (SCALE_MAX - SCALE_MIN);
+    state.seriesScales[state.drag.series] = clamp(Math.round((state.drag.startValue + deltaScale) * 10) / 10, SCALE_MIN, SCALE_MAX);
   }
   persistState();
   queueRender();
@@ -545,14 +539,17 @@ function buildChartModel() {
         topPct,
       };
     }),
-    rightItems: seriesMeta.map((meta) => ({
-      series: meta.series,
-      color: meta.color,
-      label: handleLabel(meta.series),
-      title: `${labelName(meta.series)} 스케일 조절`,
-      topPct: scaleToTopPct(meta.scale),
-      scaleValue: meta.scale,
-    })),
+    rightItems: seriesMeta.map((meta) => {
+      const latestValue = [...meta.values].reverse().find((value) => Number.isFinite(value));
+      return {
+        series: meta.series,
+        color: meta.color,
+        label: handleLabel(meta.series),
+        title: `${labelName(meta.series)} 스케일 조절`,
+        topPct: getTopPctForValue(latestValue, yMin, yMax),
+        scaleValue: meta.scale,
+      };
+    }),
   };
 }
 
