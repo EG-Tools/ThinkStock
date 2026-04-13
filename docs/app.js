@@ -10,14 +10,28 @@ const DISPLAY_NAMES = {
 
 const DEFAULT_SELECTED = ["leading_cycle", "^KS11", "kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ"];
 const SERIES_PRIORITY = ["leading_cycle", "^KS11", "kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ"];
-const COLORS = ["#1d5f4a", "#c17335", "#26547c", "#d14d41", "#6c5ce7", "#0f8b8d", "#8a6f4d"];
+const SERIES_COLORS = {
+  leading_cycle: "#fbbf24",
+  "^KS11": "#4ade80",
+  kospi_credit: "#60a5fa",
+  "^KQ11": "#f87171",
+  kosdaq_credit: "#a78bfa",
+  "005930.KS": "#2dd4bf",
+  "218410.KQ": "#fb923c",
+};
 
 const toNum = (v) => (v != null && Number.isFinite(Number(v))) ? Number(v) : null;
 const labelName = (key) => DISPLAY_NAMES[key] || key;
+const seriesColor = (key) => SERIES_COLORS[key] || "#888";
 
 let pricePayload = null;
 let macroText = "";
 let activeYears = 10;
+let hiddenSeries = new Set();
+let seriesOffsets = {};   // key -> y offset in data units
+let seriesScales = {};    // key -> user scale multiplier (default 1)
+let currentSelected = [];
+let legendHandlerSet = false;
 
 function shiftYears(dateStr, years) {
   const d = new Date(`${dateStr}T00:00:00`);
@@ -116,6 +130,163 @@ function autoFitScales(rows, selected, normBases) {
   return Object.fromEntries(info.map(([s, r]) => [s, Math.max(5, Math.min(5000, Math.round((target / r) * 100)))]));
 }
 
+/* ── Drag handles ── */
+
+function updateHandles() {
+  const el = document.getElementById("chart");
+  if (!el || !el._fullLayout) return;
+
+  let container = document.getElementById("y-handles");
+  if (!container) {
+    container = document.createElement("div");
+    container.id = "y-handles";
+    el.appendChild(container);
+  }
+  container.innerHTML = "";
+
+  const ya = el._fullLayout.yaxis;
+  const xa = el._fullLayout.xaxis;
+  if (!ya || !ya._length) return;
+
+  const rightX = xa._offset + xa._length + 6;
+
+  el.data.forEach((trace, i) => {
+    if (trace.visible === "legendonly") return;
+    const key = currentSelected[i];
+    if (!key) return;
+
+    let lastY = null;
+    for (let j = trace.y.length - 1; j >= 0; j--) {
+      if (trace.y[j] !== null) { lastY = trace.y[j]; break; }
+    }
+    if (lastY === null) return;
+
+    const yFrac = (lastY - ya.range[0]) / (ya.range[1] - ya.range[0]);
+    const pixelY = ya._offset + ya._length * (1 - yFrac);
+    const color = trace.line.color;
+
+    // Left handle: position (offset)
+    const leftHandle = document.createElement("div");
+    leftHandle.className = "y-handle y-handle-left";
+    leftHandle.style.top = pixelY - 7 + "px";
+    leftHandle.style.backgroundColor = color;
+    leftHandle.title = labelName(key) + " (위치)";
+    setupOffsetDrag(leftHandle, i, key, pixelY, ya);
+    container.appendChild(leftHandle);
+
+    // Right handle: scale
+    const rightHandle = document.createElement("div");
+    rightHandle.className = "y-handle y-handle-right";
+    rightHandle.style.top = pixelY - 7 + "px";
+    rightHandle.style.left = rightX + "px";
+    rightHandle.style.backgroundColor = color;
+    rightHandle.title = labelName(key) + " (스케일)";
+    setupScaleDrag(rightHandle, i, key, pixelY, ya);
+    container.appendChild(rightHandle);
+  });
+}
+
+function setupOffsetDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
+  function onStart(startClientY) {
+    const el = document.getElementById("chart");
+    const startOffset = seriesOffsets[seriesKey] || 0;
+    handle.classList.add("dragging");
+    const traceEl = el.querySelectorAll(".scatterlayer .trace")[traceIndex];
+
+    function onMove(clientY) {
+      const dy = clientY - startClientY;
+      if (traceEl) traceEl.style.transform = "translateY(" + dy + "px)";
+      handle.style.top = basePixelY + dy - 7 + "px";
+    }
+
+    function onEnd(clientY) {
+      handle.classList.remove("dragging");
+      const traceEl2 = document.getElementById("chart").querySelectorAll(".scatterlayer .trace")[traceIndex];
+      if (traceEl2) traceEl2.style.transform = "";
+      const dy = clientY - startClientY;
+      if (Math.abs(dy) < 3) {
+        if (hiddenSeries.has(seriesKey)) hiddenSeries.delete(seriesKey);
+        else hiddenSeries.add(seriesKey);
+      } else {
+        const dataDelta = -dy * (ya.range[1] - ya.range[0]) / ya._length;
+        seriesOffsets[seriesKey] = (seriesOffsets[seriesKey] || 0) + dataDelta;
+      }
+      renderChart();
+    }
+
+    addDragListeners(startClientY, onMove, onEnd);
+  }
+
+  handle.addEventListener("mousedown", (e) => { e.preventDefault(); onStart(e.clientY); });
+  handle.addEventListener("touchstart", (e) => { e.preventDefault(); onStart(e.touches[0].clientY); }, { passive: false });
+}
+
+function setupScaleDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
+  function onStart(startClientY) {
+    const el = document.getElementById("chart");
+    const startScale = seriesScales[seriesKey] != null ? seriesScales[seriesKey] : 1;
+    handle.classList.add("dragging");
+    const traceEl = el.querySelectorAll(".scatterlayer .trace")[traceIndex];
+
+    function onMove(clientY) {
+      const dy = clientY - startClientY;
+      // 100px drag = 2x scale change; allow negative scales
+      const factor = 1 - dy / 150;
+      const newScale = startScale * factor;
+      // Apply CSS scaleY on trace group for live preview
+      if (traceEl) {
+        const plotCenterY = ya._offset + ya._length / 2;
+        traceEl.style.transformOrigin = "0 " + plotCenterY + "px";
+        traceEl.style.transform = "scaleY(" + (newScale / startScale) + ")";
+      }
+      handle.style.top = basePixelY + dy - 7 + "px";
+    }
+
+    function onEnd(clientY) {
+      handle.classList.remove("dragging");
+      const traceEl2 = document.getElementById("chart").querySelectorAll(".scatterlayer .trace")[traceIndex];
+      if (traceEl2) { traceEl2.style.transform = ""; traceEl2.style.transformOrigin = ""; }
+      const dy = clientY - startClientY;
+      const factor = 1 - dy / 150;
+      seriesScales[seriesKey] = startScale * factor;
+      renderChart();
+    }
+
+    addDragListeners(startClientY, onMove, onEnd);
+  }
+
+  handle.addEventListener("mousedown", (e) => { e.preventDefault(); onStart(e.clientY); });
+  handle.addEventListener("touchstart", (e) => { e.preventDefault(); onStart(e.touches[0].clientY); }, { passive: false });
+}
+
+function addDragListeners(startClientY, onMove, onEnd) {
+  const mouseMove = (e) => onMove(e.clientY);
+  const mouseUp = (e) => {
+    document.removeEventListener("mousemove", mouseMove);
+    document.removeEventListener("mouseup", mouseUp);
+    onEnd(e.clientY);
+  };
+  document.addEventListener("mousemove", mouseMove);
+  document.addEventListener("mouseup", mouseUp);
+
+  const touchMove = (e) => { e.preventDefault(); onMove(e.touches[0].clientY); };
+  const touchEnd = (e) => {
+    document.removeEventListener("touchmove", touchMove);
+    document.removeEventListener("touchend", touchEnd);
+    onEnd(e.changedTouches[0].clientY);
+  };
+  document.addEventListener("touchmove", touchMove, { passive: false });
+  document.addEventListener("touchend", touchEnd);
+}
+
+function resetHandles() {
+  seriesOffsets = {};
+  seriesScales = {};
+  renderChart();
+}
+
+/* ── Chart ── */
+
 function renderChart() {
   const el = document.getElementById("chart");
   const msgEl = document.getElementById("messageArea");
@@ -135,6 +306,7 @@ function renderChart() {
   );
   const selected = DEFAULT_SELECTED.filter((s) => allSeries.includes(s));
   if (!selected.length) selected.push(...allSeries.slice(0, 2));
+  currentSelected = [...selected];
 
   if (!rows.length || !selected.length) {
     msgEl.innerHTML = '<div class="message error">표시할 데이터가 없습니다.</div>';
@@ -165,16 +337,28 @@ function renderChart() {
       ? values.map((v) => (Number.isFinite(v) ? (v / base) * 100 : null))
       : normalizeSeries(values);
     values = centeredScale(values, autoScales[series] || 100, true);
+
+    // Apply user scale (allows negative = inverted)
+    const userScale = seriesScales[series] != null ? seriesScales[series] : 1;
+    if (userScale !== 1) {
+      values = values.map((v) => (v !== null ? 100 + (v - 100) * userScale : null));
+    }
+
+    // Apply user offset
+    const offset = seriesOffsets[series] || 0;
+    if (offset) values = values.map((v) => (v !== null ? v + offset : null));
+
     return {
       x: rows.map((r) => r.date),
       y: values,
       type: "scatter",
       mode: "lines",
       name: labelName(series),
+      visible: hiddenSeries.has(series) ? "legendonly" : true,
       connectgaps: true,
       line: {
-        color: COLORS[i % COLORS.length],
-        width: manualCols.includes(series) ? 3.2 : 2.4,
+        color: seriesColor(series),
+        width: manualCols.includes(series) ? 3 : 2,
         shape: manualCols.includes(series) ? "hv" : "linear",
       },
       hovertemplate: "%{x}<br>%{y:,.2f}<extra>%{fullData.name}</extra>",
@@ -182,15 +366,35 @@ function renderChart() {
   });
 
   Plotly.react(el, traces, {
-    paper_bgcolor: "rgba(0,0,0,0)",
-    plot_bgcolor: "rgba(255,255,255,0.78)",
-    margin: { l: 18, r: 18, t: 18, b: 20 },
+    paper_bgcolor: "transparent",
+    plot_bgcolor: "#111111",
+    margin: { l: 42, r: 42, t: 28, b: 32 },
     hovermode: "x unified",
-    legend: { orientation: "h", x: 0, y: 1.08 },
-    xaxis: { showgrid: true, gridcolor: "rgba(23,48,34,0.22)", gridwidth: 1, zeroline: false },
-    yaxis: { title: "비교 지수", showgrid: true, gridcolor: "rgba(23,48,34,0.22)", gridwidth: 1, zeroline: false },
-    font: { color: "#173022", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
+    legend: { orientation: "h", x: 0, y: 1.08, font: { color: "rgba(255,255,255,0.7)", size: 11 } },
+    xaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, color: "#666", tickfont: { size: 10 } },
+    yaxis: { showticklabels: false, title: "", showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false },
+    font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
+    hoverlabel: { bgcolor: "#222", bordercolor: "#444", font: { color: "#eee" } },
   }, { responsive: true, displaylogo: false });
+
+  if (!legendHandlerSet) {
+    el.on("plotly_legendclick", (evtData) => {
+      const key = currentSelected[evtData.curveNumber];
+      if (key) {
+        if (hiddenSeries.has(key)) hiddenSeries.delete(key);
+        else hiddenSeries.add(key);
+      }
+      setTimeout(updateHandles, 100);
+    });
+    el.on("plotly_legenddoubleclick", () => {
+      hiddenSeries.clear();
+      setTimeout(updateHandles, 100);
+    });
+    el.on("plotly_relayout", () => setTimeout(updateHandles, 50));
+    legendHandlerSet = true;
+  }
+
+  updateHandles();
 }
 
 function syncButtons() {
@@ -217,6 +421,8 @@ async function boot() {
         renderChart();
       });
     });
+
+    document.getElementById("resetHandles").addEventListener("click", resetHandles);
 
     renderChart();
   } catch (err) {
