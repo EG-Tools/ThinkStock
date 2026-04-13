@@ -24,5 +24,7 @@
 
 ## Deployment notes
 - GitHub Pages is deployed by `.github/workflows/deploy-pages.yml`.
+- The Pages workflow publishes the built `docs/` site to the `gh-pages` branch.
+- Repository Pages settings should point to `gh-pages` with the `/` folder.
 - Streamlit Community Cloud should use `app.py` or `streamlit_app.py` as the entrypoint.
 - If the Pages app changes, make sure the workflow still uploads the `docs/` directory as the artifact.
