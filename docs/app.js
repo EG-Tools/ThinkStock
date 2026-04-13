@@ -374,16 +374,20 @@ function renderChart() {
   const normalized = el.normalizeToggle.checked;
   const autoScales = autoFitScales(rows, state.selectedSeries, normalized);
   renderScalePanel(state.selectedSeries, autoScales);
-  const manualByDate = new Map(manualRows.map((row) => [row.date, row]));
   const traces = state.selectedSeries.map((series, index) => {
     let values;
     if (manualCols.includes(series)) {
-      // Use only actual data points (monthly), not carry-forward duplicates.
-      // Null gaps let Plotly draw clean linear interpolation between real values.
+      // Emit a value only when the carry-forward changes (i.e. a new monthly point).
+      // CSV dates (e.g. Jan 1) are holidays and never appear in trading-day rows,
+      // so exact-date lookup always misses — use value-change detection instead.
+      let lastValue = null;
       values = rows.map((row) => {
-        const actual = manualByDate.get(row.date);
-        const v = actual ? Number(actual[series]) : NaN;
-        return Number.isFinite(v) ? v : null;
+        const carried = Number.isFinite(Number(row[series])) ? Number(row[series]) : null;
+        if (carried !== null && carried !== lastValue) {
+          lastValue = carried;
+          return carried;
+        }
+        return null;
       });
     } else {
       values = rows.map((row) => Number(row[series])).map((value) => Number.isFinite(value) ? value : null);
