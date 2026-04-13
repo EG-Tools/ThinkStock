@@ -8,8 +8,8 @@ const DISPLAY_NAMES = {
   "218410.KQ": "RFHIC",
 };
 
-const DEFAULT_SELECTED = ["^KS11", "leading_cycle"];
-const SERIES_PRIORITY = ["^KS11", "leading_cycle", "^KQ11", "kospi_credit", "kosdaq_credit", "005930.KS", "218410.KQ"];
+const DEFAULT_SELECTED = ["leading_cycle", "^KS11", "kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ"];
+const SERIES_PRIORITY = ["leading_cycle", "^KS11", "kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ"];
 const COLORS = ["#1d5f4a", "#c17335", "#26547c", "#d14d41", "#6c5ce7", "#0f8b8d", "#8a6f4d"];
 
 const toNum = (v) => (v != null && Number.isFinite(Number(v))) ? Number(v) : null;
