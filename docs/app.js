@@ -391,15 +391,23 @@ function renderChart() {
   }, { responsive: true, displaylogo: false });
 
   if (!legendHandlerSet) {
-    function syncVisibilityFromPlotly() {
-      hiddenSeries.clear();
-      el.data.forEach((trace, i) => {
-        if (trace.visible === "legendonly") hiddenSeries.add(currentSelected[i]);
-      });
+    el.on("plotly_legendclick", (evtData) => {
+      const idx = evtData.curveNumber;
+      const key = currentSelected[idx];
+      if (key) {
+        if (hiddenSeries.has(key)) hiddenSeries.delete(key);
+        else hiddenSeries.add(key);
+      }
+      Plotly.restyle(el, { visible: hiddenSeries.has(key) ? "legendonly" : true }, [idx]);
       updateHandles();
-    }
-    el.on("plotly_legendclick", () => setTimeout(syncVisibilityFromPlotly, 50));
-    el.on("plotly_legenddoubleclick", () => setTimeout(syncVisibilityFromPlotly, 50));
+      return false;
+    });
+    el.on("plotly_legenddoubleclick", () => {
+      hiddenSeries.clear();
+      Plotly.restyle(el, { visible: currentSelected.map(() => true) });
+      updateHandles();
+      return false;
+    });
     el.on("plotly_relayout", () => setTimeout(updateHandles, 50));
     legendHandlerSet = true;
   }
