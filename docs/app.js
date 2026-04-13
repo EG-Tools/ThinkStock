@@ -8,220 +8,585 @@ const DISPLAY_NAMES = {
   "218410.KQ": "RFHIC",
 };
 
-const DEFAULT_SELECTED = ["leading_cycle", "^KS11", "kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ"];
-const SERIES_PRIORITY = ["leading_cycle", "^KS11", "kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ"];
-const COLORS = ["#1d5f4a", "#c17335", "#26547c", "#d14d41", "#6c5ce7", "#0f8b8d", "#8a6f4d"];
+const HANDLE_LABELS = {
+  leading_cycle: "선",
+  kospi_credit: "KP",
+  kosdaq_credit: "KD",
+  "^KS11": "K",
+  "^KQ11": "Q",
+  "005930.KS": "삼",
+  "218410.KQ": "R",
+};
 
-const toNum = (v) => (v != null && Number.isFinite(Number(v))) ? Number(v) : null;
+const STORAGE_KEY = "thinkstock-mobile-state-v3";
+const RANGE_OPTIONS = [10, 20, 30];
+const DEFAULT_SELECTED = ["^KS11", "leading_cycle"];
+const SERIES_PRIORITY = ["^KS11", "leading_cycle", "^KQ11", "kospi_credit", "kosdaq_credit", "005930.KS", "218410.KQ"];
+const SERIES_COLORS = {
+  leading_cycle: "#f7c948",
+  "^KS11": "#43c6ff",
+  "^KQ11": "#ff5d73",
+  kospi_credit: "#9b8cff",
+  kosdaq_credit: "#ff9f43",
+  "005930.KS": "#5fa8ff",
+  "218410.KQ": "#4ade80",
+};
+
+const el = {
+  chart: document.getElementById("chart"),
+  axisRail: document.getElementById("axisRail"),
+  rangeStatus: document.getElementById("rangeStatus"),
+  messageArea: document.getElementById("messageArea"),
+  seriesToggles: document.getElementById("seriesToggles"),
+  rangeButtons: [...document.querySelectorAll(".range-btn")],
+};
+
+const state = {
+  pricePayload: null,
+  macroText: "",
+  minDate: "",
+  maxDate: "",
+  activeYears: RANGE_OPTIONS[0],
+  selectedSeries: [],
+  seriesOffsets: {},
+  lastYRange: [70, 130],
+  drag: null,
+  renderQueued: false,
+};
+
+const toNum = (value) => (value != null && Number.isFinite(Number(value)) ? Number(value) : null);
 const labelName = (key) => DISPLAY_NAMES[key] || key;
+const handleLabel = (key) => HANDLE_LABELS[key] || labelName(key).slice(0, 1);
 
-let pricePayload = null;
-let macroText = "";
-let activeYears = 10;
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
 
-function shiftYears(dateStr, years) {
-  const d = new Date(`${dateStr}T00:00:00`);
-  if (Number.isNaN(d.getTime())) return dateStr;
-  const m = d.getMonth();
-  d.setFullYear(d.getFullYear() - years);
-  if (d.getMonth() !== m) d.setDate(0);
-  return d.toISOString().slice(0, 10);
+function clampDate(value, minDate, maxDate) {
+  let next = value;
+  if (minDate && next < minDate) {
+    next = minDate;
+  }
+  if (maxDate && next > maxDate) {
+    next = maxDate;
+  }
+  return next;
+}
+
+function shiftYears(dateString, years) {
+  const base = new Date(`${dateString}T00:00:00`);
+  if (Number.isNaN(base.getTime())) {
+    return dateString;
+  }
+  const month = base.getMonth();
+  base.setFullYear(base.getFullYear() - years);
+  if (base.getMonth() !== month) {
+    base.setDate(0);
+  }
+  return base.toISOString().slice(0, 10);
+}
+
+function loadStoredState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      return;
+    }
+    const parsed = JSON.parse(raw);
+    if (RANGE_OPTIONS.includes(parsed.activeYears)) {
+      state.activeYears = parsed.activeYears;
+    }
+    if (Array.isArray(parsed.selectedSeries)) {
+      state.selectedSeries = parsed.selectedSeries.filter((series) => typeof series === "string");
+    }
+    if (parsed.seriesOffsets && typeof parsed.seriesOffsets === "object") {
+      Object.entries(parsed.seriesOffsets).forEach(([series, offset]) => {
+        const numeric = Number(offset);
+        if (Number.isFinite(numeric)) {
+          state.seriesOffsets[series] = numeric;
+        }
+      });
+    }
+  } catch (_error) {
+  }
+}
+
+function persistState() {
+  try {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        activeYears: state.activeYears,
+        selectedSeries: state.selectedSeries,
+        seriesOffsets: state.seriesOffsets,
+      })
+    );
+  } catch (_error) {
+  }
 }
 
 function parseCsv(text) {
   const result = Papa.parse(text.trim(), {
-    header: true, dynamicTyping: true, skipEmptyLines: true,
-    transformHeader: (h) => h.trim(),
+    header: true,
+    dynamicTyping: true,
+    skipEmptyLines: true,
+    transformHeader: (header) => header.trim(),
   });
-  if (result.errors.length) throw new Error(result.errors[0].message);
-  if (!result.meta.fields.includes("date")) throw new Error("CSV에 date 컬럼이 필요합니다.");
-  return result.data.map((row) => {
-    const out = { date: String(row.date).slice(0, 10) };
-    Object.entries(row).forEach(([k, v]) => {
-      if (k === "date" || v === "") return;
-      const n = Number(v);
-      out[k] = Number.isFinite(n) ? n : v;
-    });
-    return out;
-  }).sort((a, b) => a.date.localeCompare(b.date));
+  if (result.errors.length) {
+    throw new Error(result.errors[0].message || "CSV 파싱 오류가 발생했습니다.");
+  }
+  if (!result.meta.fields.includes("date")) {
+    throw new Error("CSV에 date 컬럼이 필요합니다.");
+  }
+  return result.data
+    .map((row) => {
+      const out = { date: String(row.date).slice(0, 10) };
+      Object.entries(row).forEach(([key, value]) => {
+        if (key === "date" || value === "") {
+          return;
+        }
+        const numeric = Number(value);
+        out[key] = Number.isFinite(numeric) ? numeric : value;
+      });
+      return out;
+    })
+    .sort((left, right) => left.date.localeCompare(right.date));
 }
 
 function getSeriesColumns(rows) {
-  const cols = new Set();
-  rows.forEach((r) => Object.keys(r).forEach((k) => { if (k !== "date") cols.add(k); }));
-  return [...cols];
+  const columns = new Set();
+  rows.forEach((row) => {
+    Object.keys(row).forEach((key) => {
+      if (key !== "date") {
+        columns.add(key);
+      }
+    });
+  });
+  return [...columns];
 }
 
-function sortSeries(list) {
-  const pri = new Map(SERIES_PRIORITY.map((n, i) => [n, i]));
-  return [...list].sort((a, b) => {
-    const ar = pri.has(a) ? pri.get(a) : SERIES_PRIORITY.length + 1;
-    const br = pri.has(b) ? pri.get(b) : SERIES_PRIORITY.length + 1;
-    return ar !== br ? ar - br : labelName(a).localeCompare(labelName(b), "ko");
+function sortSeries(seriesList) {
+  const priority = new Map(SERIES_PRIORITY.map((series, index) => [series, index]));
+  return [...seriesList].sort((left, right) => {
+    const leftRank = priority.has(left) ? priority.get(left) : SERIES_PRIORITY.length + 1;
+    const rightRank = priority.has(right) ? priority.get(right) : SERIES_PRIORITY.length + 1;
+    if (leftRank !== rightRank) {
+      return leftRank - rightRank;
+    }
+    return labelName(left).localeCompare(labelName(right), "ko");
   });
+}
+
+function getAllSeries(priceRows, manualRows) {
+  return sortSeries([...new Set([...getSeriesColumns(priceRows), ...getSeriesColumns(manualRows)])]);
 }
 
 function mergeSources(priceRows, manualRows, start, end) {
-  const priceMap = new Map(priceRows.map((r) => [r.date, r]));
-  const manualCols = getSeriesColumns(manualRows);
   const liveCols = getSeriesColumns(priceRows);
-  const baseDates = priceRows.length ? priceRows.map((r) => r.date) : [];
-  const sortedManual = [...manualRows].sort((a, b) => a.date.localeCompare(b.date));
-  let mi = 0;
+  const manualCols = getSeriesColumns(manualRows);
+  const sortedManual = [...manualRows].sort((left, right) => left.date.localeCompare(right.date));
   const carry = {};
+  let manualIndex = 0;
   const rows = [];
-  baseDates.forEach((date) => {
-    if (date < start || date > end) return;
-    while (mi < sortedManual.length && sortedManual[mi].date <= date) {
-      const mr = sortedManual[mi];
-      manualCols.forEach((k) => { const v = toNum(mr[k]); if (v !== null) carry[k] = v; });
-      mi++;
+
+  priceRows.forEach((priceRow) => {
+    const date = priceRow.date;
+    if (date < start || date > end) {
+      return;
     }
+    while (manualIndex < sortedManual.length && sortedManual[manualIndex].date <= date) {
+      const manualRow = sortedManual[manualIndex];
+      manualCols.forEach((series) => {
+        const numeric = toNum(manualRow[series]);
+        if (numeric !== null) {
+          carry[series] = numeric;
+        }
+      });
+      manualIndex += 1;
+    }
+
     const row = { date };
-    const live = priceMap.get(date) || {};
-    liveCols.forEach((k) => { row[k] = toNum(live[k]); });
-    manualCols.forEach((k) => { row[k] = carry[k] != null ? carry[k] : null; });
+    liveCols.forEach((series) => {
+      row[series] = toNum(priceRow[series]);
+    });
+    manualCols.forEach((series) => {
+      row[series] = carry[series] != null ? carry[series] : null;
+    });
     rows.push(row);
   });
-  return { rows, manualCols, liveCols };
+
+  return { rows };
 }
 
 function normalizeSeries(values) {
-  const first = values.find((v) => Number.isFinite(v));
+  const first = values.find((value) => Number.isFinite(value));
   const base = Number.isFinite(first) && first !== 0 ? first : 1;
-  return values.map((v) => (Number.isFinite(v) ? (v / base) * 100 : null));
+  return values.map((value) => (Number.isFinite(value) ? (value / base) * 100 : null));
 }
 
-function centeredScale(values, pct, normalized) {
-  const nums = values.filter((v) => Number.isFinite(v));
-  if (!nums.length) return values;
-  const pivot = normalized ? 100 : (Math.min(...nums) + Math.max(...nums)) / 2;
-  const r = pct / 100;
-  return values.map((v) => (Number.isFinite(v) ? pivot + (v - pivot) * r : null));
+function centeredScale(values, scalePct) {
+  const numeric = values.filter((value) => Number.isFinite(value));
+  if (!numeric.length) {
+    return values;
+  }
+  const pivot = 100;
+  const ratio = scalePct / 100;
+  return values.map((value) => (Number.isFinite(value) ? pivot + (value - pivot) * ratio : null));
 }
 
-function autoFitScales(rows, selected, normBases) {
+function autoFitScales(rows, selectedSeries, baseMap) {
   const info = [];
-  selected.forEach((s) => {
-    let vals = rows.map((r) => toNum(r[s])).filter((v) => v !== null);
-    if (!vals.length) return;
-    const base = normBases[s];
-    vals = (base && base !== 0) ? vals.map((v) => (v / base) * 100) : normalizeSeries(vals).filter((v) => Number.isFinite(v));
-    const range = Math.max(Math.max(...vals) - Math.min(...vals), 1);
-    info.push([s, range]);
+  selectedSeries.forEach((series) => {
+    const base = baseMap[series];
+    let values = rows.map((row) => toNum(row[series])).filter((value) => value !== null);
+    if (!values.length) {
+      return;
+    }
+    values = base && base !== 0
+      ? values.map((value) => (value / base) * 100)
+      : normalizeSeries(values).filter((value) => Number.isFinite(value));
+    const range = Math.max(Math.max(...values) - Math.min(...values), 1);
+    info.push([series, range]);
   });
-  if (!info.length) return {};
-  const sorted = info.map(([, r]) => r).sort((a, b) => a - b);
-  const target = sorted[Math.floor(sorted.length / 2)];
-  return Object.fromEntries(info.map(([s, r]) => [s, Math.max(5, Math.min(5000, Math.round((target / r) * 100)))]));
+  if (!info.length) {
+    return {};
+  }
+  const sortedRanges = info.map(([, range]) => range).sort((left, right) => left - right);
+  const target = sortedRanges[Math.floor(sortedRanges.length / 2)];
+  return Object.fromEntries(
+    info.map(([series, range]) => [series, clamp(Math.round((target / range) * 100), 25, 400)])
+  );
 }
 
-function renderChart() {
-  const el = document.getElementById("chart");
-  const msgEl = document.getElementById("messageArea");
-
-  const priceRows = pricePayload.records || [];
-  const manualRows = parseCsv(macroText);
-  const dates = priceRows.map((r) => r.date);
-  const maxDate = dates[dates.length - 1] || new Date().toISOString().slice(0, 10);
-  const minDate = dates[0] || maxDate;
-  const end = maxDate;
-  let start = shiftYears(end, activeYears);
-  if (start < minDate) start = minDate;
-
-  const { rows, manualCols, liveCols } = mergeSources(priceRows, manualRows, start, end);
-  const allSeries = sortSeries(
-    [...new Set([...liveCols, ...manualCols])].filter((s) => rows.some((r) => toNum(r[s]) !== null))
-  );
-  const selected = DEFAULT_SELECTED.filter((s) => allSeries.includes(s));
-  if (!selected.length) selected.push(...allSeries.slice(0, 2));
-
-  if (!rows.length || !selected.length) {
-    msgEl.innerHTML = '<div class="message error">표시할 데이터가 없습니다.</div>';
+function ensureSelectedSeries(allSeries) {
+  const filtered = sortSeries(state.selectedSeries.filter((series) => allSeries.includes(series)));
+  if (filtered.length) {
+    state.selectedSeries = filtered;
     return;
   }
-  msgEl.innerHTML = "";
+  const defaults = DEFAULT_SELECTED.filter((series) => allSeries.includes(series));
+  state.selectedSeries = defaults.length ? sortSeries(defaults) : allSeries.slice(0, Math.min(2, allSeries.length));
+}
 
-  // Common normalization base
-  const commonNormBases = {};
-  const firstDates = selected.map((s) => {
-    const r = rows.find((row) => toNum(row[s]) !== null);
-    return r ? r.date : null;
-  }).filter(Boolean);
-  const commonBaseDate = firstDates.length ? firstDates.reduce((mx, d) => (d > mx ? d : mx)) : null;
-  if (commonBaseDate) {
-    selected.forEach((s) => {
-      const r = rows.find((row) => row.date >= commonBaseDate && toNum(row[s]) !== null);
-      commonNormBases[s] = r ? toNum(r[s]) : null;
+function getDateRange() {
+  const end = state.maxDate || new Date().toISOString().slice(0, 10);
+  const start = clampDate(shiftYears(end, state.activeYears), state.minDate, end);
+  return { start, end };
+}
+
+function buildCommonBaseMap(rows, selectedSeries) {
+  const firstDates = selectedSeries
+    .map((series) => {
+      const row = rows.find((item) => toNum(item[series]) !== null);
+      return row ? row.date : null;
+    })
+    .filter(Boolean);
+  const commonBaseDate = firstDates.length
+    ? firstDates.reduce((latest, current) => (current > latest ? current : latest))
+    : null;
+  const baseMap = {};
+  selectedSeries.forEach((series) => {
+    const row = rows.find(
+      (item) => (!commonBaseDate || item.date >= commonBaseDate) && toNum(item[series]) !== null
+    );
+    baseMap[series] = row ? toNum(row[series]) : null;
+  });
+  return baseMap;
+}
+
+function setMessage(text = "", type = "") {
+  if (!text) {
+    el.messageArea.innerHTML = "";
+    return;
+  }
+  el.messageArea.innerHTML = `<div class="message ${type}">${text}</div>`;
+}
+
+function syncRangeButtons() {
+  el.rangeButtons.forEach((button) => {
+    button.classList.toggle("is-active", Number(button.dataset.years) === state.activeYears);
+  });
+}
+
+function renderSeriesToggles(allSeries) {
+  el.seriesToggles.innerHTML = allSeries
+    .map((series) => {
+      const active = state.selectedSeries.includes(series);
+      const color = SERIES_COLORS[series] || "#94a3b8";
+      return `
+        <button
+          class="toggle-chip ${active ? "is-active" : ""}"
+          type="button"
+          data-series="${series}"
+          aria-pressed="${active}"
+          style="--series-color: ${color};"
+        >
+          <span class="toggle-dot"></span>
+          <span>${labelName(series)}</span>
+        </button>
+      `;
+    })
+    .join("");
+
+  el.seriesToggles.querySelectorAll(".toggle-chip").forEach((button) => {
+    button.addEventListener("click", () => {
+      const series = button.dataset.series;
+      const selected = new Set(state.selectedSeries);
+      if (selected.has(series)) {
+        if (selected.size === 1) {
+          return;
+        }
+        selected.delete(series);
+      } else {
+        selected.add(series);
+      }
+      state.selectedSeries = sortSeries([...selected]);
+      persistState();
+      renderApp();
     });
+  });
+}
+
+function queueRender() {
+  if (state.renderQueued) {
+    return;
+  }
+  state.renderQueued = true;
+  requestAnimationFrame(() => {
+    state.renderQueued = false;
+    renderApp();
+  });
+}
+
+function stopDragging() {
+  state.drag = null;
+  document.body.classList.remove("is-dragging");
+  window.removeEventListener("pointermove", onHandleDrag);
+  window.removeEventListener("pointerup", stopDragging);
+  window.removeEventListener("pointercancel", stopDragging);
+}
+
+function onHandleDrag(event) {
+  if (!state.drag) {
+    return;
+  }
+  const railHeight = el.axisRail.clientHeight || 1;
+  const span = Math.max(state.drag.yMax - state.drag.yMin, 1);
+  const deltaValue = -((event.clientY - state.drag.startY) / railHeight) * span;
+  state.seriesOffsets[state.drag.series] = Math.round((state.drag.startOffset + deltaValue) * 10) / 10;
+  persistState();
+  queueRender();
+}
+
+function startHandleDrag(event) {
+  event.preventDefault();
+  const series = event.currentTarget.dataset.series;
+  const [yMin, yMax] = state.lastYRange;
+  state.drag = {
+    series,
+    startY: event.clientY,
+    startOffset: Number(state.seriesOffsets[series]) || 0,
+    yMin,
+    yMax,
+  };
+  document.body.classList.add("is-dragging");
+  window.addEventListener("pointermove", onHandleDrag);
+  window.addEventListener("pointerup", stopDragging);
+  window.addEventListener("pointercancel", stopDragging);
+}
+
+function renderAxisHandles(items) {
+  el.axisRail.innerHTML = items
+    .map(
+      (item) => `
+        <button
+          class="axis-handle"
+          type="button"
+          data-series="${item.series}"
+          title="${labelName(item.series)}"
+          aria-label="${labelName(item.series)} 위치 조절"
+          style="top: ${item.topPct}%; --handle-color: ${item.color};"
+        >${item.label}</button>
+      `
+    )
+    .join("");
+
+  el.axisRail.querySelectorAll(".axis-handle").forEach((button) => {
+    button.addEventListener("pointerdown", startHandleDrag);
+  });
+}
+
+function buildChartModel() {
+  const priceRows = state.pricePayload.records || [];
+  const manualRows = parseCsv(state.macroText);
+  const allSeries = getAllSeries(priceRows, manualRows);
+  ensureSelectedSeries(allSeries);
+
+  const { start, end } = getDateRange();
+  const { rows } = mergeSources(priceRows, manualRows, start, end);
+  const visibleSelected = state.selectedSeries.filter((series) => rows.some((row) => toNum(row[series]) !== null));
+
+  if (!rows.length || !visibleSelected.length) {
+    throw new Error("표시할 데이터가 없습니다.");
   }
 
-  const autoScales = autoFitScales(rows, selected, commonNormBases);
+  const baseMap = buildCommonBaseMap(rows, visibleSelected);
+  const autoScales = autoFitScales(rows, visibleSelected, baseMap);
 
-  const traces = selected.map((series, i) => {
-    let values = rows.map((r) => toNum(r[series]));
-    const base = commonNormBases[series];
-    values = (base && base !== 0)
-      ? values.map((v) => (Number.isFinite(v) ? (v / base) * 100 : null))
-      : normalizeSeries(values);
-    values = centeredScale(values, autoScales[series] || 100, true);
+  const seriesMeta = visibleSelected.map((series) => {
+    const base = baseMap[series];
+    const rawValues = rows.map((row) => toNum(row[series]));
+    const normalizedValues = base && base !== 0
+      ? rawValues.map((value) => (Number.isFinite(value) ? (value / base) * 100 : null))
+      : normalizeSeries(rawValues);
+    const scaledValues = centeredScale(normalizedValues, autoScales[series] || 100);
+    const offset = Number.isFinite(state.seriesOffsets[series]) ? state.seriesOffsets[series] : 0;
+    const shiftedValues = scaledValues.map((value) => (Number.isFinite(value) ? value + offset : null));
     return {
-      x: rows.map((r) => r.date),
-      y: values,
-      type: "scatter",
-      mode: "lines",
-      name: labelName(series),
-      connectgaps: true,
-      line: {
-        color: COLORS[i % COLORS.length],
-        width: manualCols.includes(series) ? 3.2 : 2.4,
-        shape: manualCols.includes(series) ? "hv" : "linear",
-      },
-      hovertemplate: "%{x}<br>%{y:,.2f}<extra>%{fullData.name}</extra>",
+      series,
+      color: SERIES_COLORS[series] || "#94a3b8",
+      values: shiftedValues,
+      offset,
     };
   });
 
-  Plotly.react(el, traces, {
-    paper_bgcolor: "rgba(0,0,0,0)",
-    plot_bgcolor: "rgba(255,255,255,0.78)",
-    margin: { l: 18, r: 18, t: 18, b: 20 },
-    hovermode: "x unified",
-    legend: { orientation: "h", x: 0, y: 1.08 },
-    xaxis: { showgrid: true, gridcolor: "rgba(23,48,34,0.22)", gridwidth: 1, zeroline: false },
-    yaxis: { title: "비교 지수", showgrid: true, gridcolor: "rgba(23,48,34,0.22)", gridwidth: 1, zeroline: false },
-    font: { color: "#173022", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
-  }, { responsive: true, displaylogo: false });
+  const allValues = seriesMeta.flatMap((meta) => meta.values.filter((value) => Number.isFinite(value)));
+  if (!allValues.length) {
+    throw new Error("표시할 데이터가 없습니다.");
+  }
+
+  let yMin = Math.min(...allValues);
+  let yMax = Math.max(...allValues);
+  if (yMin === yMax) {
+    yMin -= 12;
+    yMax += 12;
+  }
+  const padding = Math.max((yMax - yMin) * 0.14, 8);
+  yMin -= padding;
+  yMax += padding;
+  state.lastYRange = [yMin, yMax];
+
+  return {
+    start,
+    end,
+    allSeries,
+    traces: seriesMeta.map((meta) => ({
+      x: rows.map((row) => row.date),
+      y: meta.values,
+      type: "scatter",
+      mode: "lines",
+      name: labelName(meta.series),
+      connectgaps: true,
+      line: {
+        color: meta.color,
+        width: meta.series === "leading_cycle" ? 3.4 : 2.6,
+        shape: "linear",
+      },
+      hovertemplate: "%{x}<br>%{y:,.2f}<extra>%{fullData.name}</extra>",
+    })),
+    yRange: [yMin, yMax],
+    railItems: seriesMeta.map((meta) => {
+      const anchor = 100 + meta.offset;
+      const topPct = clamp(((yMax - anchor) / (yMax - yMin)) * 100, 5, 95);
+      return {
+        series: meta.series,
+        color: meta.color,
+        label: handleLabel(meta.series),
+        topPct,
+      };
+    }),
+  };
 }
 
-function syncButtons() {
-  document.querySelectorAll(".range-btn").forEach((btn) => {
-    btn.classList.toggle("is-active", Number(btn.dataset.years) === activeYears);
-  });
+function renderPlot(model) {
+  Plotly.react(
+    el.chart,
+    model.traces,
+    {
+      paper_bgcolor: "#05070b",
+      plot_bgcolor: "#05070b",
+      margin: { l: 62, r: 18, t: 20, b: 40 },
+      hovermode: "x unified",
+      showlegend: false,
+      xaxis: {
+        showgrid: true,
+        gridcolor: "rgba(157, 173, 198, 0.12)",
+        tickfont: { color: "#9fb0c7", size: 11 },
+        linecolor: "rgba(157, 173, 198, 0.2)",
+        zeroline: false,
+      },
+      yaxis: {
+        range: model.yRange,
+        showgrid: true,
+        gridcolor: "rgba(157, 173, 198, 0.08)",
+        showticklabels: false,
+        ticks: "",
+        title: "",
+        zeroline: false,
+        showline: false,
+      },
+      font: { color: "#edf2ff", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
+      hoverlabel: {
+        bgcolor: "#121923",
+        bordercolor: "rgba(255,255,255,0.08)",
+        font: { color: "#f8fbff" },
+      },
+      uirevision: `${state.activeYears}:${state.selectedSeries.join(",")}`,
+    },
+    { responsive: true, displaylogo: false, displayModeBar: false }
+  );
+}
+
+function renderApp() {
+  try {
+    const model = buildChartModel();
+    syncRangeButtons();
+    el.rangeStatus.textContent = `${model.start} - ${model.end}`;
+    renderSeriesToggles(model.allSeries);
+    renderPlot(model);
+    renderAxisHandles(model.railItems);
+    setMessage();
+  } catch (error) {
+    Plotly.purge(el.chart);
+    el.axisRail.innerHTML = "";
+    setMessage(error.message || "앱을 렌더링하지 못했습니다.", "error");
+  }
 }
 
 async function boot() {
-  const msgEl = document.getElementById("messageArea");
+  loadStoredState();
   try {
-    const [priceRes, macroRes] = await Promise.all([
+    const [priceResponse, macroResponse] = await Promise.all([
       fetch("./data/prices.json"),
       fetch("./data/sample_macro_data.csv"),
     ]);
-    const priceText = await priceRes.text();
-    pricePayload = JSON.parse(priceText.replace(/\bNaN\b/g, "null"));
-    macroText = await macroRes.text();
+    const priceText = await priceResponse.text();
+    state.pricePayload = JSON.parse(priceText.replace(/\bNaN\b/g, "null"));
+    state.macroText = await macroResponse.text();
 
-    document.querySelectorAll(".range-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        activeYears = Number(btn.dataset.years);
-        syncButtons();
-        renderChart();
+    const priceRows = state.pricePayload.records || [];
+    const dates = priceRows.map((row) => row.date);
+    const fallbackToday = new Date().toISOString().slice(0, 10);
+    state.minDate = dates[0] || fallbackToday;
+    state.maxDate = dates[dates.length - 1] || fallbackToday;
+
+    el.rangeButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const years = Number(button.dataset.years);
+        if (!RANGE_OPTIONS.includes(years)) {
+          return;
+        }
+        state.activeYears = years;
+        persistState();
+        renderApp();
       });
     });
 
-    renderChart();
-  } catch (err) {
-    msgEl.innerHTML = `<div class="message error">${err.message || "앱을 시작하지 못했습니다."}</div>`;
+    renderApp();
+  } catch (error) {
+    setMessage(error.message || "앱을 시작하지 못했습니다.", "error");
   }
+
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(() => null));
   }

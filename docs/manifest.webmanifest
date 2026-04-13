@@ -3,8 +3,8 @@
   "short_name": "ThinkStock",
   "start_url": ".",
   "display": "standalone",
-  "background_color": "#f6f1e8",
-  "theme_color": "#173022",
+  "background_color": "#05070b",
+  "theme_color": "#05070b",
   "description": "Korean market and macro overlay dashboard for iPhone Safari.",
   "icons": [
     {
