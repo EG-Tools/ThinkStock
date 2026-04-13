@@ -374,8 +374,20 @@ function renderChart() {
   const normalized = el.normalizeToggle.checked;
   const autoScales = autoFitScales(rows, state.selectedSeries, normalized);
   renderScalePanel(state.selectedSeries, autoScales);
+  const manualByDate = new Map(manualRows.map((row) => [row.date, row]));
   const traces = state.selectedSeries.map((series, index) => {
-    let values = rows.map((row) => Number(row[series])).map((value) => Number.isFinite(value) ? value : null);
+    let values;
+    if (manualCols.includes(series)) {
+      // Use only actual data points (monthly), not carry-forward duplicates.
+      // Null gaps let Plotly draw clean linear interpolation between real values.
+      values = rows.map((row) => {
+        const actual = manualByDate.get(row.date);
+        const v = actual ? Number(actual[series]) : NaN;
+        return Number.isFinite(v) ? v : null;
+      });
+    } else {
+      values = rows.map((row) => Number(row[series])).map((value) => Number.isFinite(value) ? value : null);
+    }
     if (normalized) {
       values = normalizeSeries(values);
     }
@@ -392,6 +404,7 @@ function renderChart() {
       type: "scatter",
       mode: "lines",
       name: labelName(series),
+      connectgaps: true,
       line: {
         color: COLORS[index % COLORS.length],
         width: manualCols.includes(series) ? 3.2 : 2.4,
