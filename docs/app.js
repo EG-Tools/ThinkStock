@@ -21,7 +21,7 @@ const HANDLE_LABELS = {
 const STORAGE_KEY = "thinkstock-mobile-state-v4";
 const RANGE_OPTIONS = [10, 20, 30];
 const SCALE_MIN = 25;
-const SCALE_MAX = 400;
+const SCALE_MAX = 1500;
 const DEFAULT_SELECTED = ["leading_cycle", "^KS11"];
 const SERIES_PRIORITY = ["leading_cycle", "^KS11", "^KQ11", "kospi_credit", "kosdaq_credit", "005930.KS", "218410.KQ"];
 const SERIES_COLORS = {
@@ -56,6 +56,8 @@ const state = {
   lastYRange: [70, 130],
   drag: null,
   renderQueued: false,
+  activeSeries: null,
+  activeKind: null,
 };
 
 const toNum = (value) => (value != null && Number.isFinite(Number(value)) ? Number(value) : null);
@@ -338,10 +340,11 @@ function renderSeriesToggles(allSeries) {
   el.seriesToggles.innerHTML = allSeries
     .map((series) => {
       const active = state.selectedSeries.includes(series);
+      const focused = state.activeSeries === series;
       const color = SERIES_COLORS[series] || "#94a3b8";
       return `
         <button
-          class="toggle-chip ${active ? "is-active" : ""}"
+          class="toggle-chip ${active ? "is-active" : ""} ${focused ? "is-focused" : ""}"
           type="button"
           data-series="${series}"
           aria-pressed="${active}"
@@ -367,6 +370,8 @@ function renderSeriesToggles(allSeries) {
         selected.add(series);
       }
       state.selectedSeries = sortSeries([...selected]);
+      state.activeSeries = series;
+      state.activeKind = null;
       persistState();
       renderApp();
     });
@@ -427,6 +432,9 @@ function startHandleDrag(event) {
     yMin,
     yMax,
   };
+  state.activeSeries = series;
+  state.activeKind = kind;
+  queueRender();
   document.body.classList.add("is-dragging");
   window.addEventListener("pointermove", onHandleDrag);
   window.addEventListener("pointerup", stopDragging);
@@ -438,7 +446,7 @@ function renderRail(target, items, kind) {
     .map(
       (item) => `
         <button
-          class="axis-handle ${kind === "scale" ? "axis-handle-scale" : ""}"
+          class="axis-handle ${kind === "scale" ? "axis-handle-scale" : ""} ${state.activeSeries === item.series ? "is-series-active" : ""} ${state.activeSeries === item.series && state.activeKind === kind ? "is-active" : ""}"
           type="button"
           data-kind="${kind}"
           data-series="${item.series}"
@@ -522,9 +530,10 @@ function buildChartModel() {
       connectgaps: true,
       line: {
         color: meta.color,
-        width: meta.series === "leading_cycle" ? 3.5 : 2.6,
+        width: meta.series === state.activeSeries ? 5.2 : meta.series === "leading_cycle" ? 3.5 : 2.6,
         shape: "linear",
       },
+      opacity: state.activeSeries && meta.series !== state.activeSeries ? 0.72 : 1,
       hovertemplate: "%{x}<br>%{y:,.2f}<extra>%{fullData.name}</extra>",
     })),
     yRange: [yMin, yMax],
