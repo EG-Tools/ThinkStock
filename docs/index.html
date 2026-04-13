@@ -1,11 +1,10 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="ko">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
     <meta name="theme-color" content="#173022">
-    <title>ThinkStock Mobile</title>
-    <meta name="description" content="Korean market and macro overlay dashboard for iPhone Safari testing.">
+    <title>ThinkStock</title>
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" href="./icon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./styles.css">
@@ -16,85 +15,10 @@
   <body>
     <div class="app-shell">
       <header class="hero">
-        <div class="hero-eyebrow">GitHub Pages Mobile App</div>
         <h1>ThinkStock</h1>
-        <p>코스피, 코스닥, 대표 종목과 매크로 시리즈를 한 화면에서 비교하는 아이폰 Safari용 경량 대시보드입니다.</p>
-        <div id="statusPills" class="pill-row"></div>
       </header>
-
-      <section class="panel controls-panel">
-        <div class="section-title-row">
-          <h2>빠른 설정</h2>
-          <button id="reloadButton" class="ghost-button">가격 캐시 새로고침</button>
-        </div>
-        <div class="control-grid two-up">
-          <label class="field"><span>시작일</span><input id="startDate" type="date"></label>
-          <label class="field"><span>종료일</span><input id="endDate" type="date"></label>
-        </div>
-        <div id="rangePresetRow" class="tab-row">
-          <button class="tab-button period-button" data-range-years="10">최근 10년</button>
-          <button class="tab-button period-button" data-range-years="20">최근 20년</button>
-          <button class="tab-button period-button" data-range-years="30">최근 30년</button>
-        </div>
-        <div class="control-grid three-up">
-          <label class="field switch-field"><span>첫 시점을 100으로 정규화</span><input id="normalizeToggle" type="checkbox" checked></label>
-          <label class="field"><span>비교 스케일</span><select id="scaleMode"><option value="auto">자동 균형</option><option value="base">원본 100%</option><option value="manual">직접 조정</option></select></label>
-          <label class="field"><span>빠른 프리셋</span><select id="presetSelect"></select></label>
-        </div>
-        <div class="action-row"><button id="applyPresetButton" class="primary-button">프리셋 적용</button></div>
-        <div class="source-box">
-          <h3>매크로 데이터</h3>
-          <div class="control-grid three-up">
-            <label class="field"><span>소스</span><select id="macroSource"><option value="sample">샘플 CSV</option><option value="upload">CSV 업로드</option><option value="paste">직접 붙여넣기</option><option value="remote">원격 CSV URL</option></select></label>
-            <label class="field"><span>원격 CSV URL</span><input id="remoteUrl" type="url" placeholder="https://raw.githubusercontent.com/.../macro.csv"></label>
-            <label class="field"><span>CSV 파일</span><input id="fileInput" type="file" accept=".csv,text/csv"></label>
-          </div>
-          <label class="field textarea-field"><span>CSV 붙여넣기</span><textarea id="macroTextarea" rows="7"></textarea></label>
-          <div class="action-row"><button id="applyMacroButton" class="primary-button">매크로 반영</button><button id="resetMacroButton" class="ghost-button">샘플로 되돌리기</button></div>
-        </div>
-      </section>
-
-      <nav class="tab-row">
-        <button class="tab-button is-active" data-tab="dashboard">대시보드</button>
-        <button class="tab-button" data-tab="data">데이터</button>
-        <button class="tab-button" data-tab="guide">가이드</button>
-      </nav>
-
-      <section id="dashboardTab" class="tab-panel is-active">
-        <div id="messageArea" class="message-area"></div>
-        <div id="metricGrid" class="metric-grid"></div>
-        <div class="panel chart-panel">
-          <div class="section-title-row"><h2>오버레이 차트</h2><span class="subtle-note">매크로 시리즈는 계단형으로 표시됩니다.</span></div>
-          <div id="chart" class="chart-frame"></div>
-        </div>
-        <div id="scalePanel" class="panel scale-panel"></div>
-      </section>
-
-      <section id="dataTab" class="tab-panel">
-        <div class="panel">
-          <div class="section-title-row"><h2>표시할 항목</h2><button id="downloadButton" class="ghost-button">현재 데이터 CSV 다운로드</button></div>
-          <div id="seriesChooser" class="series-grid"></div>
-        </div>
-        <div class="panel">
-          <h2>현재 선택 데이터</h2>
-          <div id="previewTable" class="table-wrap"></div>
-        </div>
-      </section>
-
-      <section id="guideTab" class="tab-panel">
-        <div class="panel prose-panel">
-          <h2>아이폰에서 앱처럼 쓰기</h2>
-          <ol>
-            <li>Safari로 이 페이지를 엽니다.</li>
-            <li>공유 버튼을 누릅니다.</li>
-            <li><strong>홈 화면에 추가</strong>를 누르면 앱처럼 실행할 수 있습니다.</li>
-          </ol>
-          <h2>이 링크의 성격</h2>
-          <p>이 GitHub Pages 버전은 저장소에서 캐시한 시장 데이터를 사용합니다. 풀 기능 버전은 동일 저장소의 Streamlit 앱입니다.</p>
-          <h2>공개 링크</h2>
-          <p><a href="https://eg-tools.github.io/ThinkStock/">https://eg-tools.github.io/ThinkStock/</a></p>
-        </div>
-      </section>
+      <div id="chart" class="chart-frame"></div>
+      <div id="messageArea" class="message-area"></div>
     </div>
   </body>
 </html>
