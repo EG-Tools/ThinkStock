@@ -372,7 +372,7 @@ function renderChart() {
       line: {
         color: seriesColor(series),
         width: manualCols.includes(series) ? 3 : 2,
-        shape: manualCols.includes(series) ? "hv" : "linear",
+        shape: "linear",
       },
       hovertemplate: "%{x}<br>%{y:,.2f}<extra>%{fullData.name}</extra>",
     };
