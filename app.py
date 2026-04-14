@@ -16,9 +16,9 @@ st.set_page_config(
 
 APP_TITLE = "ThinkStock"
 DEFAULT_TICKERS = "^KS11,^KQ11,005930.KS,218410.KQ"
-DEFAULT_SELECTED_SERIES = ["^KS11", "leading_cycle"]
-DATE_PRESET_YEARS = [10, 20, 30]
-SERIES_PRIORITY = ["^KS11", "leading_cycle", "^KQ11", "kospi_credit", "kosdaq_credit", "005930.KS", "218410.KQ"]
+DEFAULT_SELECTED_SERIES = ["leading_cycle", "^KS11"]
+DATE_PRESET_YEARS = [1, 5, 10, 20, 30]
+SERIES_PRIORITY = ["leading_cycle", "^KS11", "kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ"]
 DEFAULT_CSV = """date,leading_cycle,kospi_credit,kosdaq_credit
 2000-01-01,100.5,5.5,3.2
 2000-07-01,99.5,5.7,3.3
@@ -110,7 +110,7 @@ COLORWAY = [
 HELP_TEXT = """
 - 가격 데이터는 Yahoo Finance에서 자동 조회합니다.
 - 선행지수, 신용잔고 같은 매크로 데이터는 샘플 CSV, 업로드, 붙여넣기, 원격 CSV URL 중 하나로 넣을 수 있습니다.
-- 월별 매크로 데이터는 계단형(step)으로 보여서, 발표 시점 사이 구간이 더 자연스럽게 보이도록 했습니다.
+- 월별 매크로 데이터는 가격 날짜 축에 맞춰 시간 보간해서, 더 촘촘한 흐름으로 비교할 수 있습니다.
 - 아이폰에서 볼 때는 설정을 접고 차트 중심으로 보는 흐름을 기본으로 잡았습니다.
 """
 GUIDE_MARKDOWN = """
@@ -462,6 +462,32 @@ def normalize_df(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     return out
 
 
+def interpolate_manual_to_price_index(
+    manual: pd.DataFrame,
+    price_index: pd.DatetimeIndex,
+) -> pd.DataFrame:
+    if manual.empty:
+        return manual
+
+    target_index = pd.DatetimeIndex(price_index).sort_values().unique()
+    if target_index.empty:
+        target_index = pd.date_range(
+            start=manual.index.min(),
+            end=manual.index.max(),
+            freq="B",
+        )
+
+    target_index = target_index[(target_index >= manual.index.min()) & (target_index <= manual.index.max())]
+    if target_index.empty:
+        return manual.iloc[0:0].copy()
+
+    expanded = manual.reindex(manual.index.union(target_index)).sort_index()
+    expanded = expanded.interpolate(method="time", limit_area="inside")
+    dense = expanded.reindex(target_index)
+    dense.index.name = "date"
+    return dense
+
+
 def merge_sources(
     price_df: pd.DataFrame,
     manual_df: pd.DataFrame,
@@ -480,14 +506,17 @@ def merge_sources(
     price_cols = list(price.columns)
     manual_cols = list(manual.columns)
 
-    merged = pd.concat([price, manual], axis=1).sort_index()
-    base_freq = "B" if price_cols else "D"
-    base_index = pd.date_range(start=start_ts, end=end_ts, freq=base_freq)
-    merged = merged.reindex(merged.index.union(base_index)).sort_index()
-
     if manual_cols:
-        merged[manual_cols] = merged[manual_cols].ffill()
+        manual = manual.apply(pd.to_numeric, errors="coerce")
+        manual = interpolate_manual_to_price_index(manual, price.index)
 
+    merged = pd.concat([price, manual], axis=1).sort_index()
+    if price_cols:
+        base_index = pd.DatetimeIndex(price.index).sort_values().unique()
+    else:
+        base_index = pd.DatetimeIndex(merged.index).sort_values().unique()
+
+    merged = merged.reindex(base_index).sort_index()
     merged = merged.loc[(merged.index >= start_ts) & (merged.index <= end_ts)].copy()
     merged.index = pd.to_datetime(merged.index)
     merged.index.name = "date"
@@ -587,7 +616,7 @@ with hero_col:
             <div class="pill-row">
                 <span class="status-pill ok">Yahoo Finance 가격 데이터</span>
                 <span class="status-pill note">CSV / 원격 CSV 매크로 입력</span>
-                <span class="status-pill note">매크로 시리즈 계단형 표시</span>
+                <span class="status-pill note">매크로 시리즈 보간 표시</span>
             </div>
         </div>
         """,
@@ -737,7 +766,7 @@ with tab_dashboard:
 
     if manual_cols:
         st.info(
-            "선행지수·신용잔고 같은 매크로 시리즈는 계단형으로 표시해서 발표 시점 사이의 유지 구간이 더 자연스럽게 보이도록 했습니다."
+            "선행지수·신용잔고 같은 매크로 시리즈는 가격 날짜 축에 맞춰 시간 보간해서, 월별 발표 데이터도 더 촘촘하게 비교할 수 있도록 했습니다."
         )
     if failed_tickers:
         failed_labels = ", ".join(
@@ -830,7 +859,7 @@ with tab_dashboard:
                 line=dict(
                     color=COLORWAY[index % len(COLORWAY)],
                     width=3.2 if is_manual else 2.4,
-                    shape="hv" if is_manual else "linear",
+                    shape="linear",
                 ),
                 hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.2f}<extra>%{fullData.name}</extra>",
             )
