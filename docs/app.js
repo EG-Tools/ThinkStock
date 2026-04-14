@@ -27,7 +27,7 @@ const seriesColor = (key) => SERIES_COLORS[key] || "#888";
 let pricePayload = null;
 let macroText = "";
 let activeYears = 10;
-let hiddenSeries = new Set();
+let hiddenSeries = new Set(["kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ"]);
 let seriesOffsets = {};   // key -> y offset in data units
 let seriesScales = {};    // key -> user scale multiplier (default 1)
 let currentSelected = [];
