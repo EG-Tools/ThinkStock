@@ -424,13 +424,16 @@ function renderChart() {
     };
   });
 
+  // Preserve current zoom range so handle adjustments don't reset the view
+  const savedXRange = el._fullLayout?.xaxis?.range?.slice() || null;
+
   Plotly.react(el, traces, {
     paper_bgcolor: "transparent",
     plot_bgcolor: "#111111",
     margin: { l: 42, r: 42, t: 28, b: 32 },
     hovermode: "x unified",
     legend: { orientation: "h", x: 0, y: 1.08, font: { color: "rgba(255,255,255,0.7)", size: 11 } },
-    xaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, color: "#666", tickfont: { size: 10 }, fixedrange: false },
+    xaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, color: "#666", tickfont: { size: 10 }, fixedrange: false, ...(savedXRange ? { range: savedXRange } : {}) },
     yaxis: { showticklabels: false, title: "", showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, fixedrange: true },
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
     hoverlabel: { bgcolor: "#222", bordercolor: "#444", font: { color: "#eee" } },
