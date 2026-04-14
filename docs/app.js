@@ -10,62 +10,46 @@ const DISPLAY_NAMES = {
   adr_kosdaq: "ADR KQ",
 };
 
+const DEFAULT_SELECTED = ["leading_cycle", "^KS11", "kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ", "adr_kospi", "adr_kosdaq"];
 const SERIES_PRIORITY = ["leading_cycle", "^KS11", "kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ", "adr_kospi", "adr_kosdaq"];
 const SERIES_COLORS = {
-  leading_cycle: "#9ca3af",
+  leading_cycle: "#999999",
   "^KS11": "#4ade80",
   kospi_credit: "#60a5fa",
   "^KQ11": "#f87171",
-  kosdaq_credit: "#c084fc",
+  kosdaq_credit: "#a78bfa",
   "005930.KS": "#2dd4bf",
   "218410.KQ": "#fb923c",
   adr_kospi: "#facc15",
   adr_kosdaq: "#f472b6",
 };
-const DEFAULT_VISIBLE = ["leading_cycle", "^KS11"];
-const DEFAULT_ACTIVE_SERIES = "leading_cycle";
-const DATE_PRESETS = [
-  { key: "1y", label: "1Y", months: 12 },
-  { key: "3y", label: "3Y", months: 36 },
-  { key: "5y", label: "5Y", months: 60 },
-  { key: "10y", label: "10Y", months: 120 },
-  { key: "20y", label: "20Y", months: 240 },
-  { key: "30y", label: "30Y", months: 360 },
-];
-const DEFAULT_DATE_PRESET = "10y";
-const STATE_KEY = "thinkstock-pages-v4";
-const SCALE_MIN = -12;
-const SCALE_MAX = 12;
-const SCALE_DEADZONE = 0.05;
 
-const toNum = (v) => (v != null && Number.isFinite(Number(v)) ? Number(v) : null);
-const labelName = (k) => DISPLAY_NAMES[k] || k;
-const seriesColor = (k) => SERIES_COLORS[k] || "#888888";
-const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const STATE_KEY = "thinkstock-v4";
+
+const toNum = (v) => (v != null && Number.isFinite(Number(v))) ? Number(v) : null;
+const labelName = (key) => DISPLAY_NAMES[key] || key;
+const seriesColor = (key) => SERIES_COLORS[key] || "#888";
 const toUtcMs = (d) => Date.parse(`${d}T00:00:00Z`);
 
-/* ── State ── */
-const state = {
-  pricePayload: null,
-  macroRows: [],
-  activePresetKey: DEFAULT_DATE_PRESET,
-  hiddenSeries: new Set(SERIES_PRIORITY.filter((s) => !DEFAULT_VISIBLE.includes(s))),
-  seriesOffsets: {},
-  seriesScales: {},
-  activeSeries: DEFAULT_ACTIVE_SERIES,
-  activeHandleKind: null,
-  legendHandlerSet: false,
-  dragRafId: null,
-};
+let pricePayload = null;
+let macroRows = [];
+let activeYears = 10;
+let hiddenSeries = new Set(["kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ", "adr_kospi", "adr_kosdaq"]);
+let seriesOffsets = {};
+let seriesScales = {};
+let currentSelected = [];
+let baseTraceValues = {};
+let legendHandlerSet = false;
+let dragRafId = null;
 
+/* ── localStorage persistence ── */
 function saveState() {
   try {
     localStorage.setItem(STATE_KEY, JSON.stringify({
-      activePresetKey: state.activePresetKey,
-      hiddenSeries: [...state.hiddenSeries],
-      seriesOffsets: state.seriesOffsets,
-      seriesScales: state.seriesScales,
-      activeSeries: state.activeSeries,
+      activeYears,
+      hiddenSeries: [...hiddenSeries],
+      seriesOffsets,
+      seriesScales,
     }));
   } catch (_) {}
 }
@@ -75,39 +59,38 @@ function loadState() {
     const raw = localStorage.getItem(STATE_KEY);
     if (!raw) return;
     const p = JSON.parse(raw);
-    if (p.activePresetKey) state.activePresetKey = p.activePresetKey;
-    if (Array.isArray(p.hiddenSeries)) state.hiddenSeries = new Set(p.hiddenSeries);
-    if (p.seriesOffsets && typeof p.seriesOffsets === "object") state.seriesOffsets = p.seriesOffsets;
-    if (p.seriesScales && typeof p.seriesScales === "object") state.seriesScales = p.seriesScales;
-    if (p.activeSeries) state.activeSeries = p.activeSeries;
+    if (typeof p.activeYears === "number") activeYears = p.activeYears;
+    if (Array.isArray(p.hiddenSeries)) hiddenSeries = new Set(p.hiddenSeries);
+    if (p.seriesOffsets && typeof p.seriesOffsets === "object") seriesOffsets = p.seriesOffsets;
+    if (p.seriesScales && typeof p.seriesScales === "object") seriesScales = p.seriesScales;
   } catch (_) {}
 }
 
-/* ── Helpers ── */
-function shiftMonths(dateStr, m) {
-  const d = new Date(`${dateStr}T00:00:00Z`);
+function shiftYears(dateStr, years) {
+  const d = new Date(`${dateStr}T00:00:00`);
   if (Number.isNaN(d.getTime())) return dateStr;
-  const day = d.getUTCDate();
-  d.setUTCMonth(d.getUTCMonth() - m);
-  if (d.getUTCDate() !== day) d.setUTCDate(0);
+  const m = d.getMonth();
+  d.setFullYear(d.getFullYear() - years);
+  if (d.getMonth() !== m) d.setDate(0);
   return d.toISOString().slice(0, 10);
 }
 
 function parseCsv(text) {
-  if (!text || !text.trim()) return [];
-  const result = Papa.parse(text.trim(), { header: true, dynamicTyping: true, skipEmptyLines: true, transformHeader: (h) => h.trim() });
+  const result = Papa.parse(text.trim(), {
+    header: true, dynamicTyping: true, skipEmptyLines: true,
+    transformHeader: (h) => h.trim(),
+  });
   if (result.errors.length) throw new Error(result.errors[0].message);
   if (!result.meta.fields.includes("date")) throw new Error("CSV에 date 컬럼이 필요합니다.");
   return result.data.map((row) => {
     const out = { date: String(row.date).slice(0, 10) };
-    Object.entries(row).forEach(([k, v]) => { if (k !== "date" && v !== "") { const n = Number(v); out[k] = Number.isFinite(n) ? n : v; } });
+    Object.entries(row).forEach(([k, v]) => {
+      if (k === "date" || v === "") return;
+      const n = Number(v);
+      out[k] = Number.isFinite(n) ? n : v;
+    });
     return out;
   }).sort((a, b) => a.date.localeCompare(b.date));
-}
-
-function parsePayloadRows(text) {
-  const p = JSON.parse(text.replace(/\bNaN\b/g, "null"));
-  return Array.isArray(p) ? p : (Array.isArray(p.records) ? p.records : []);
 }
 
 function getSeriesColumns(rows) {
@@ -125,7 +108,7 @@ function sortSeries(list) {
   });
 }
 
-/* ── Dense macro interpolation ── */
+/* ── Dense macro interpolation (for daily data) ── */
 function buildDenseMacroRows(sourceRows, targetDates) {
   const sorted = [...sourceRows].sort((a, b) => a.date.localeCompare(b.date));
   const cols = getSeriesColumns(sorted);
@@ -150,44 +133,42 @@ function buildDenseMacroRows(sourceRows, targetDates) {
   return dense.filter((r) => cols.some((c) => toNum(r[c]) !== null));
 }
 
-/* ── Merge price + macro ── */
-function mergeSources(priceRows, macroInput, start, end) {
+function mergeSources(priceRows, denseRows, start, end) {
   const priceMap = new Map(priceRows.map((r) => [r.date, r]));
-  const macroMap = new Map(macroInput.map((r) => [r.date, r]));
+  const macroMap = new Map(denseRows.map((r) => [r.date, r]));
   const liveCols = getSeriesColumns(priceRows);
-  const macroCols = getSeriesColumns(macroInput);
-  const baseDates = priceRows.length ? priceRows.map((r) => r.date) : macroInput.map((r) => r.date);
+  const macroCols = getSeriesColumns(denseRows);
+  const baseDates = priceRows.length ? priceRows.map((r) => r.date) : [];
   const rows = [];
   baseDates.forEach((date) => {
     if (date < start || date > end) return;
     const row = { date };
     const pr = priceMap.get(date) || {};
     const mr = macroMap.get(date) || {};
-    liveCols.forEach((c) => { row[c] = toNum(pr[c]); });
-    macroCols.forEach((c) => { row[c] = toNum(mr[c]); });
+    liveCols.forEach((k) => { row[k] = toNum(pr[k]); });
+    macroCols.forEach((k) => { row[k] = toNum(mr[k]); });
     rows.push(row);
   });
-  return { rows, liveCols, macroCols };
+  return { rows, macroCols, liveCols };
 }
 
-/* ── Normalization ── */
-function normalizeSeries(vals) {
-  const first = vals.find((v) => Number.isFinite(v));
+function normalizeSeries(values) {
+  const first = values.find((v) => Number.isFinite(v));
   const base = Number.isFinite(first) && first !== 0 ? first : 1;
-  return vals.map((v) => (Number.isFinite(v) ? (v / base) * 100 : null));
+  return values.map((v) => (Number.isFinite(v) ? (v / base) * 100 : null));
 }
 
-function centeredScale(vals, pct, normalized) {
-  const nums = vals.filter((v) => Number.isFinite(v));
-  if (!nums.length) return vals;
+function centeredScale(values, pct, normalized) {
+  const nums = values.filter((v) => Number.isFinite(v));
+  if (!nums.length) return values;
   const pivot = normalized ? 100 : (Math.min(...nums) + Math.max(...nums)) / 2;
   const r = pct / 100;
-  return vals.map((v) => (Number.isFinite(v) ? pivot + (v - pivot) * r : null));
+  return values.map((v) => (Number.isFinite(v) ? pivot + (v - pivot) * r : null));
 }
 
-function autoFitScales(rows, series, normBases) {
+function autoFitScales(rows, selected, normBases) {
   const info = [];
-  series.forEach((s) => {
+  selected.forEach((s) => {
     let vals = rows.map((r) => toNum(r[s])).filter((v) => v !== null);
     if (!vals.length) return;
     const base = normBases[s];
@@ -201,312 +182,330 @@ function autoFitScales(rows, series, normBases) {
   return Object.fromEntries(info.map(([s, r]) => [s, Math.max(5, Math.min(5000, Math.round((target / r) * 100)))]));
 }
 
-function getVisibleSeries(allSeries) {
-  return allSeries.filter((s) => !state.hiddenSeries.has(s));
-}
-
-/* ── Drag + Handles ── */
-function computeFinalValues(baseValues, key) {
-  const scale = state.seriesScales[key] != null ? state.seriesScales[key] : 1;
-  const offset = state.seriesOffsets[key] || 0;
-  return baseValues.map((v) => (v !== null ? 100 + (v - 100) * scale + offset : null));
-}
-
-function restyleActiveTrace(key) {
-  if (state.dragRafId) return;
-  state.dragRafId = requestAnimationFrame(() => {
-    state.dragRafId = null;
-    const chart = document.getElementById("chart");
-    if (!chart || !Array.isArray(chart.data)) return;
-    const idx = chart.data.findIndex((t) => t.meta?.series === key && !t.meta?.aux);
-    if (idx < 0) return;
-    Plotly.restyle(chart, { y: [computeFinalValues(chart.data[idx].meta.baseValues, key)] }, [idx]);
-    requestAnimationFrame(updateHandles);
-  });
-}
-
-function addDragListeners(onMove, onEnd) {
-  const mm = (e) => onMove(e.clientY);
-  const mu = (e) => { cleanup(); onEnd(e.clientY); };
-  const tm = (e) => { e.preventDefault(); onMove(e.touches[0].clientY); };
-  const te = (e) => { cleanup(); onEnd(e.changedTouches[0].clientY); };
-  function cleanup() {
-    document.removeEventListener("mousemove", mm);
-    document.removeEventListener("mouseup", mu);
-    document.removeEventListener("touchmove", tm);
-    document.removeEventListener("touchend", te);
-    document.body.classList.remove("is-dragging");
-  }
-  document.addEventListener("mousemove", mm);
-  document.addEventListener("mouseup", mu);
-  document.addEventListener("touchmove", tm, { passive: false });
-  document.addEventListener("touchend", te);
-}
-
-function refreshHandleStates() {
-  document.querySelectorAll(".y-handle").forEach((h) => h.classList.toggle("is-active", h.dataset.kind === state.activeHandleKind));
-}
-
-function setupOffsetDrag(handle, key, basePixelY, yAxis) {
-  function onStart(startY) {
-    const startOffset = state.seriesOffsets[key] || 0;
-    state.activeHandleKind = "offset";
-    handle.classList.add("dragging");
-    document.body.classList.add("is-dragging");
-    refreshHandleStates();
-    addDragListeners((clientY) => {
-      const dy = clientY - startY;
-      state.seriesOffsets[key] = startOffset + (-dy * (yAxis.range[1] - yAxis.range[0]) / yAxis._length);
-      handle.style.top = `${basePixelY + dy - 10}px`;
-      restyleActiveTrace(key);
-    }, () => {
-      handle.classList.remove("dragging");
-      state.activeHandleKind = null;
-      saveAndRender();
-    });
-  }
-  handle.addEventListener("mousedown", (e) => { e.preventDefault(); onStart(e.clientY); });
-  handle.addEventListener("touchstart", (e) => { e.preventDefault(); onStart(e.touches[0].clientY); }, { passive: false });
-}
-
-function setupScaleDrag(handle, key, basePixelY) {
-  function onStart(startY) {
-    const startScale = state.seriesScales[key] != null ? state.seriesScales[key] : 1;
-    state.activeHandleKind = "scale";
-    handle.classList.add("dragging");
-    document.body.classList.add("is-dragging");
-    refreshHandleStates();
-    addDragListeners((clientY) => {
-      const dy = clientY - startY;
-      let next = clamp(startScale - dy / 120, SCALE_MIN, SCALE_MAX);
-      if (Math.abs(next) < SCALE_DEADZONE) next = next < 0 ? -SCALE_DEADZONE : SCALE_DEADZONE;
-      state.seriesScales[key] = next;
-      handle.style.top = `${basePixelY + dy - 10}px`;
-      restyleActiveTrace(key);
-    }, () => {
-      handle.classList.remove("dragging");
-      state.activeHandleKind = null;
-      saveAndRender();
-    });
-  }
-  handle.addEventListener("mousedown", (e) => { e.preventDefault(); onStart(e.clientY); });
-  handle.addEventListener("touchstart", (e) => { e.preventDefault(); onStart(e.touches[0].clientY); }, { passive: false });
-}
+/* ── Drag handles ── */
 
 function updateHandles() {
-  const chart = document.getElementById("chart");
-  if (!chart || !chart._fullLayout || !state.activeSeries) return;
+  const el = document.getElementById("chart");
+  if (!el || !el._fullLayout) return;
+
   let container = document.getElementById("y-handles");
   if (!container) {
     container = document.createElement("div");
     container.id = "y-handles";
-    chart.appendChild(container);
+    el.appendChild(container);
   }
   container.innerHTML = "";
-  const trace = chart.data.find((t) => t.meta?.series === state.activeSeries && !t.meta?.aux);
-  if (!trace || trace.visible === "legendonly") return;
-  const yAxis = chart._fullLayout.yaxis;
-  const xAxis = chart._fullLayout.xaxis;
-  if (!yAxis || !xAxis || !yAxis._length || !xAxis._length) return;
-  const values = Array.isArray(trace.y) ? trace.y : [];
-  const firstY = values.find((v) => v !== null && v !== undefined);
-  let lastY = null;
-  for (let i = values.length - 1; i >= 0; i--) { if (values[i] !== null && values[i] !== undefined) { lastY = values[i]; break; } }
-  if (firstY == null || lastY == null) return;
-  const span = yAxis.range[1] - yAxis.range[0] || 1;
-  const toPixelY = (v) => yAxis._offset + yAxis._length * (1 - ((v - yAxis.range[0]) / span));
-  const leftPx = toPixelY(firstY);
-  const rightPx = toPixelY(lastY);
-  const color = trace.line.color;
 
-  const left = document.createElement("button");
-  left.type = "button";
-  left.className = "y-handle y-handle-left";
-  left.dataset.kind = "offset";
-  left.style.top = `${leftPx - 10}px`;
-  left.style.backgroundColor = color;
-  left.title = `${labelName(state.activeSeries)} 위치`;
-  setupOffsetDrag(left, state.activeSeries, leftPx, yAxis);
-  container.appendChild(left);
+  const ya = el._fullLayout.yaxis;
+  const xa = el._fullLayout.xaxis;
+  if (!ya || !ya._length) return;
 
-  const right = document.createElement("button");
-  right.type = "button";
-  right.className = "y-handle y-handle-right";
-  right.dataset.kind = "scale";
-  right.style.top = `${rightPx - 10}px`;
-  right.style.backgroundColor = color;
-  right.title = `${labelName(state.activeSeries)} 스케일`;
-  setupScaleDrag(right, state.activeSeries, rightPx);
-  container.appendChild(right);
-  refreshHandleStates();
+  const rightX = xa._offset + xa._length + 6;
+
+  el.data.forEach((trace, i) => {
+    if (trace.visible === "legendonly") return;
+    const key = currentSelected[i];
+    if (!key) return;
+
+    let firstY = null;
+    for (let j = 0; j < trace.y.length; j++) {
+      if (trace.y[j] !== null) { firstY = trace.y[j]; break; }
+    }
+    let lastY = null;
+    for (let j = trace.y.length - 1; j >= 0; j--) {
+      if (trace.y[j] !== null) { lastY = trace.y[j]; break; }
+    }
+    if (firstY === null) return;
+
+    const firstFrac = (firstY - ya.range[0]) / (ya.range[1] - ya.range[0]);
+    const leftPixelY = ya._offset + ya._length * (1 - firstFrac);
+    const lastFrac = lastY !== null ? (lastY - ya.range[0]) / (ya.range[1] - ya.range[0]) : firstFrac;
+    const rightPixelY = ya._offset + ya._length * (1 - lastFrac);
+    const color = trace.line.color;
+
+    const leftHandle = document.createElement("div");
+    leftHandle.className = "y-handle y-handle-left";
+    leftHandle.style.top = leftPixelY - 7 + "px";
+    leftHandle.style.backgroundColor = color;
+    leftHandle.title = labelName(key) + " (위치)";
+    setupOffsetDrag(leftHandle, i, key, leftPixelY, ya);
+    container.appendChild(leftHandle);
+
+    const rightHandle = document.createElement("div");
+    rightHandle.className = "y-handle y-handle-right";
+    rightHandle.style.top = rightPixelY - 7 + "px";
+    rightHandle.style.left = rightX + "px";
+    rightHandle.style.backgroundColor = color;
+    rightHandle.title = labelName(key) + " (스케일)";
+    setupScaleDrag(rightHandle, i, key, rightPixelY, ya);
+    container.appendChild(rightHandle);
+  });
 }
 
-/* ── Layout ── */
-function buildLayout() {
-  return {
-    paper_bgcolor: "transparent",
-    plot_bgcolor: "#05070b",
-    margin: { l: 44, r: 44, t: 18, b: 36 },
-    hovermode: "x unified",
-    dragmode: "pan",
-    showlegend: true,
-    legend: { orientation: "h", x: 0, y: 1.02, xanchor: "left", yanchor: "bottom", font: { size: 11, color: "#c4d0e4" }, bgcolor: "transparent" },
-    shapes: [
-      { type: "rect", xref: "paper", yref: "y", x0: 0, x1: 1, y0: 90, y1: 110, line: { width: 0 }, fillcolor: "rgba(141, 182, 255, 0.05)", layer: "below" },
-      { type: "line", xref: "paper", yref: "y", x0: 0, x1: 1, y0: 100, y1: 100, line: { color: "rgba(255,255,255,0.12)", width: 1, dash: "dot" }, layer: "below" },
-    ],
-    xaxis: {
-      showgrid: true, gridcolor: "rgba(255,255,255,0.08)", gridwidth: 1, zeroline: false,
-      color: "#93a4bb", tickfont: { size: 10 }, fixedrange: false,
-      showspikes: true, spikethickness: 1, spikecolor: "rgba(255,255,255,0.22)", spikedash: "dot",
-    },
-    yaxis: { showticklabels: false, showgrid: true, gridcolor: "rgba(255,255,255,0.08)", gridwidth: 1, zeroline: false, fixedrange: true },
-    font: { color: "#dbe5f5", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
-    hoverlabel: { bgcolor: "#0e1522", bordercolor: "#1f2a3d", font: { color: "#f4f8ff" } },
+function computeFinalValues(seriesKey) {
+  const base = baseTraceValues[seriesKey];
+  if (!base) return null;
+  const s = seriesScales[seriesKey] != null ? seriesScales[seriesKey] : 1;
+  const o = seriesOffsets[seriesKey] || 0;
+  return base.map((v) => (v !== null ? 100 + (v - 100) * s + o : null));
+}
+
+function restyleLive(traceIndex, seriesKey) {
+  if (dragRafId) return;
+  dragRafId = requestAnimationFrame(() => {
+    dragRafId = null;
+    const el = document.getElementById("chart");
+    const newY = computeFinalValues(seriesKey);
+    if (newY) Plotly.restyle(el, { y: [newY] }, [traceIndex]);
+  });
+}
+
+function setupOffsetDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
+  function onStart(startClientY) {
+    const startOffset = seriesOffsets[seriesKey] || 0;
+    handle.classList.add("dragging");
+
+    function onMove(clientY) {
+      const dy = clientY - startClientY;
+      const dataDelta = -dy * (ya.range[1] - ya.range[0]) / ya._length;
+      seriesOffsets[seriesKey] = startOffset + dataDelta;
+      handle.style.top = basePixelY + dy - 7 + "px";
+      restyleLive(traceIndex, seriesKey);
+    }
+
+    function onEnd(clientY) {
+      handle.classList.remove("dragging");
+      const dy = clientY - startClientY;
+      if (Math.abs(dy) < 3) {
+        seriesOffsets[seriesKey] = startOffset;
+        if (hiddenSeries.has(seriesKey)) hiddenSeries.delete(seriesKey);
+        else hiddenSeries.add(seriesKey);
+      }
+      saveState();
+      renderChart();
+    }
+
+    addDragListeners(startClientY, onMove, onEnd);
+  }
+
+  handle.addEventListener("mousedown", (e) => { e.preventDefault(); onStart(e.clientY); });
+  handle.addEventListener("touchstart", (e) => { e.preventDefault(); onStart(e.touches[0].clientY); }, { passive: false });
+}
+
+function setupScaleDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
+  function onStart(startClientY) {
+    const startScale = seriesScales[seriesKey] != null ? seriesScales[seriesKey] : 1;
+    handle.classList.add("dragging");
+
+    function onMove(clientY) {
+      const dy = clientY - startClientY;
+      const factor = 1 - dy / 150;
+      seriesScales[seriesKey] = startScale * factor;
+      handle.style.top = basePixelY + dy - 7 + "px";
+      restyleLive(traceIndex, seriesKey);
+    }
+
+    function onEnd() {
+      handle.classList.remove("dragging");
+      saveState();
+      renderChart();
+    }
+
+    addDragListeners(startClientY, onMove, onEnd);
+  }
+
+  handle.addEventListener("mousedown", (e) => { e.preventDefault(); onStart(e.clientY); });
+  handle.addEventListener("touchstart", (e) => { e.preventDefault(); onStart(e.touches[0].clientY); }, { passive: false });
+}
+
+function addDragListeners(startClientY, onMove, onEnd) {
+  const mouseMove = (e) => onMove(e.clientY);
+  const mouseUp = (e) => {
+    document.removeEventListener("mousemove", mouseMove);
+    document.removeEventListener("mouseup", mouseUp);
+    onEnd(e.clientY);
   };
+  document.addEventListener("mousemove", mouseMove);
+  document.addEventListener("mouseup", mouseUp);
+
+  const touchMove = (e) => { e.preventDefault(); onMove(e.touches[0].clientY); };
+  const touchEnd = (e) => {
+    document.removeEventListener("touchmove", touchMove);
+    document.removeEventListener("touchend", touchEnd);
+    onEnd(e.changedTouches[0].clientY);
+  };
+  document.addEventListener("touchmove", touchMove, { passive: false });
+  document.addEventListener("touchend", touchEnd);
 }
 
-/* ── Chart render ── */
-function renderChart(rows, visibleSeries) {
-  const chart = document.getElementById("chart");
-  const msg = document.getElementById("messageArea");
-  if (!rows.length || !visibleSeries.length) {
-    msg.innerHTML = '<div class="message error">표시할 데이터가 없습니다.</div>';
+function resetHandles() {
+  seriesOffsets = {};
+  seriesScales = {};
+  saveState();
+  renderChart();
+}
+
+/* ── Chart ── */
+
+function renderChart() {
+  const el = document.getElementById("chart");
+  const msgEl = document.getElementById("messageArea");
+
+  const priceRows = pricePayload.records || [];
+  const dates = priceRows.map((r) => r.date);
+  const maxDate = dates[dates.length - 1] || new Date().toISOString().slice(0, 10);
+  const minDate = dates[0] || maxDate;
+  const end = maxDate;
+  let start = shiftYears(end, activeYears);
+  if (start < minDate) start = minDate;
+
+  const { rows, macroCols, liveCols } = mergeSources(priceRows, macroRows, start, end);
+  const allSeries = sortSeries(
+    [...new Set([...liveCols, ...macroCols])].filter((s) => rows.some((r) => toNum(r[s]) !== null))
+  );
+  const selected = DEFAULT_SELECTED.filter((s) => allSeries.includes(s));
+  if (!selected.length) selected.push(...allSeries.slice(0, 2));
+  currentSelected = [...selected];
+
+  if (!rows.length || !selected.length) {
+    msgEl.innerHTML = '<div class="message error">표시할 데이터가 없습니다.</div>';
     return;
   }
-  msg.innerHTML = "";
-  const normBases = {};
-  const firstDates = visibleSeries.map((s) => rows.find((r) => toNum(r[s]) !== null)?.date || null).filter(Boolean);
-  const commonBase = firstDates.length ? firstDates.reduce((a, b) => (b > a ? b : a)) : null;
-  if (commonBase) {
-    visibleSeries.forEach((s) => {
-      const r = rows.find((row) => row.date >= commonBase && toNum(row[s]) !== null);
-      normBases[s] = r ? toNum(r[s]) : null;
+  msgEl.innerHTML = "";
+
+  // Common normalization base
+  const commonNormBases = {};
+  const firstDates = selected.map((s) => {
+    const r = rows.find((row) => toNum(row[s]) !== null);
+    return r ? r.date : null;
+  }).filter(Boolean);
+  const commonBaseDate = firstDates.length ? firstDates.reduce((mx, d) => (d > mx ? d : mx)) : null;
+  if (commonBaseDate) {
+    selected.forEach((s) => {
+      const r = rows.find((row) => row.date >= commonBaseDate && toNum(row[s]) !== null);
+      commonNormBases[s] = r ? toNum(r[s]) : null;
     });
   }
-  const autoScales = autoFitScales(rows, visibleSeries, normBases);
-  const traces = [];
-  visibleSeries.forEach((s) => {
-    let vals = rows.map((r) => toNum(r[s]));
-    const base = normBases[s];
-    vals = (base && base !== 0) ? vals.map((v) => (Number.isFinite(v) ? (v / base) * 100 : null)) : normalizeSeries(vals);
-    vals = centeredScale(vals, autoScales[s] || 100, true);
-    const final = computeFinalValues(vals, s);
-    const isActive = s === state.activeSeries;
-    const latestPt = final.map((v, i) => ({ v, i })).filter((p) => p.v != null).at(-1);
-    traces.push({
-      x: rows.map((r) => r.date), y: final,
-      type: "scatter", mode: "lines",
-      name: labelName(s),
-      meta: { series: s, baseValues: vals },
-      connectgaps: false,
-      opacity: state.activeSeries && !isActive ? 0.54 : 1,
-      line: { color: seriesColor(s), width: isActive ? 4.6 : 2.3, shape: "linear" },
-      hovertemplate: "%{x}<br>%{y:,.2f}<extra>%{fullData.name}</extra>",
-    });
-    if (latestPt) {
-      traces.push({
-        x: [rows[latestPt.i].date], y: [final[latestPt.i]],
-        type: "scatter", mode: "markers", showlegend: false, hoverinfo: "skip",
-        meta: { series: s, aux: true },
-        marker: { size: isActive ? 10 : 7, color: seriesColor(s), line: { color: "rgba(255,255,255,0.85)", width: isActive ? 1.6 : 1.1 } },
-      });
+
+  const autoScales = autoFitScales(rows, selected, commonNormBases);
+
+  const traces = selected.map((series, i) => {
+    let values = rows.map((r) => toNum(r[series]));
+    const base = commonNormBases[series];
+    values = (base && base !== 0)
+      ? values.map((v) => (Number.isFinite(v) ? (v / base) * 100 : null))
+      : normalizeSeries(values);
+    values = centeredScale(values, autoScales[series] || 100, true);
+
+    baseTraceValues[series] = values;
+
+    const userScale = seriesScales[series] != null ? seriesScales[series] : 1;
+    if (userScale !== 1) {
+      values = values.map((v) => (v !== null ? 100 + (v - 100) * userScale : null));
     }
+
+    const offset = seriesOffsets[series] || 0;
+    if (offset) values = values.map((v) => (v !== null ? v + offset : null));
+
+    return {
+      x: rows.map((r) => r.date),
+      y: values,
+      type: "scatter",
+      mode: "lines",
+      name: labelName(series),
+      visible: hiddenSeries.has(series) ? "legendonly" : true,
+      connectgaps: true,
+      line: {
+        color: seriesColor(series),
+        width: macroCols.includes(series) ? 3 : 2,
+        shape: "linear",
+      },
+      hovertemplate: "%{x}<br>%{y:,.2f}<extra>%{fullData.name}</extra>",
+    };
   });
-  Plotly.react(chart, traces, buildLayout(), { responsive: true, displaylogo: false, displayModeBar: false, scrollZoom: false, doubleClick: "reset" });
-  if (!state.legendHandlerSet) {
-    chart.on("plotly_legendclick", (e) => {
-      const clicked = e.data[e.curveNumber]?.meta?.series;
-      if (!clicked) return false;
-      if (state.hiddenSeries.has(clicked)) {
-        state.hiddenSeries.delete(clicked);
-        state.activeSeries = clicked;
-      } else {
-        const vis = getVisibleSeries(state.currentAllSeries);
-        if (vis.length > 1) {
-          state.hiddenSeries.add(clicked);
-          if (state.activeSeries === clicked) state.activeSeries = getVisibleSeries(state.currentAllSeries)[0] || null;
-        } else {
-          state.activeSeries = clicked;
-        }
+
+  Plotly.react(el, traces, {
+    paper_bgcolor: "transparent",
+    plot_bgcolor: "#111111",
+    margin: { l: 42, r: 42, t: 28, b: 32 },
+    hovermode: "x unified",
+    legend: { orientation: "h", x: 0, y: 1.08, font: { color: "rgba(255,255,255,0.7)", size: 11 } },
+    xaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, color: "#666", tickfont: { size: 10 }, fixedrange: false },
+    yaxis: { showticklabels: false, title: "", showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, fixedrange: true },
+    font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
+    hoverlabel: { bgcolor: "#222", bordercolor: "#444", font: { color: "#eee" } },
+    dragmode: false,
+  }, { responsive: true, displaylogo: false, scrollZoom: true });
+
+  if (!legendHandlerSet) {
+    el.on("plotly_legendclick", (evtData) => {
+      const idx = evtData.curveNumber;
+      const key = currentSelected[idx];
+      if (key) {
+        if (hiddenSeries.has(key)) hiddenSeries.delete(key);
+        else hiddenSeries.add(key);
       }
-      saveAndRender();
+      Plotly.restyle(el, { visible: hiddenSeries.has(key) ? "legendonly" : true }, [idx]);
+      saveState();
+      updateHandles();
       return false;
     });
-    chart.on("plotly_relayout", () => requestAnimationFrame(updateHandles));
-    state.legendHandlerSet = true;
+    el.on("plotly_legenddoubleclick", () => {
+      hiddenSeries.clear();
+      Plotly.restyle(el, { visible: currentSelected.map(() => true) });
+      saveState();
+      updateHandles();
+      return false;
+    });
+    el.on("plotly_relayout", () => setTimeout(updateHandles, 50));
+    el.on("plotly_click", () => {
+      Plotly.relayout(el, { "xaxis.autorange": true, "yaxis.autorange": true });
+    });
+    legendHandlerSet = true;
   }
-  requestAnimationFrame(updateHandles);
+
+  updateHandles();
 }
 
-/* ── Range buttons ── */
-function renderRangeButtons() {
-  const c = document.getElementById("rangeButtons");
-  c.innerHTML = DATE_PRESETS.map((p) =>
-    `<button class="range-btn ${p.key === state.activePresetKey ? "is-active" : ""}" data-key="${p.key}" type="button">${p.label}</button>`
-  ).join("");
-  c.querySelectorAll("[data-key]").forEach((btn) => {
-    btn.addEventListener("click", () => { state.activePresetKey = btn.dataset.key; saveAndRender(); });
+function syncButtons() {
+  document.querySelectorAll(".range-btn").forEach((btn) => {
+    btn.classList.toggle("is-active", Number(btn.dataset.years) === activeYears);
   });
 }
 
-/* ── Main render ── */
-function saveAndRender() { saveState(); render(); }
-
-function render() {
-  const priceRows = state.pricePayload?.records || [];
-  if (!priceRows.length) return;
-  const preset = DATE_PRESETS.find((p) => p.key === state.activePresetKey) || DATE_PRESETS.find((p) => p.key === DEFAULT_DATE_PRESET);
-  const maxDate = priceRows[priceRows.length - 1].date;
-  const minDate = priceRows[0].date;
-  const start = [shiftMonths(maxDate, preset.months), minDate].sort()[1];
-  const { rows, liveCols, macroCols } = mergeSources(priceRows, state.macroRows, start, maxDate);
-  const allSeries = sortSeries([...new Set([...liveCols, ...macroCols])].filter((s) => rows.some((r) => toNum(r[s]) !== null)));
-
-  // ensure state consistency
-  const allSet = new Set(allSeries);
-  state.hiddenSeries = new Set([...state.hiddenSeries].filter((s) => allSet.has(s)));
-  const visible = getVisibleSeries(allSeries);
-  if (!visible.length) {
-    DEFAULT_VISIBLE.forEach((s) => { if (allSet.has(s)) state.hiddenSeries.delete(s); });
-  }
-  const vis = getVisibleSeries(allSeries);
-  if (!vis.includes(state.activeSeries)) state.activeSeries = vis[0] || null;
-  state.currentAllSeries = allSeries;
-
-  renderRangeButtons();
-  renderChart(rows, vis);
-}
-
-/* ── Data loading ── */
-async function loadMacroRows(priceRows) {
-  const dates = priceRows.map((r) => r.date);
-  try {
-    const res = await fetch("./data/macro_data.json", { cache: "no-store" });
-    if (res.ok) return buildDenseMacroRows(parsePayloadRows(await res.text()), dates);
-  } catch (_) {}
-  const fb = await fetch("./data/sample_macro_data.csv", { cache: "no-store" });
-  return buildDenseMacroRows(parseCsv(await fb.text()), dates);
-}
-
-/* ── Boot ── */
 async function boot() {
-  const msg = document.getElementById("messageArea");
+  const msgEl = document.getElementById("messageArea");
   loadState();
+  syncButtons();
   try {
-    const res = await fetch("./data/prices.json", { cache: "no-store" });
-    state.pricePayload = JSON.parse((await res.text()).replace(/\bNaN\b/g, "null"));
-    state.macroRows = await loadMacroRows(state.pricePayload.records || []);
-    document.getElementById("resetHandles").addEventListener("click", () => {
-      state.seriesOffsets = {};
-      state.seriesScales = {};
-      saveAndRender();
+    const [priceRes, macroRes] = await Promise.all([
+      fetch("./data/prices.json"),
+      fetch("./data/sample_macro_data.csv"),
+    ]);
+    const priceText = await priceRes.text();
+    pricePayload = JSON.parse(priceText.replace(/\bNaN\b/g, "null"));
+    const csvRows = parseCsv(await macroRes.text());
+    const priceDates = (pricePayload.records || []).map((r) => r.date);
+    macroRows = buildDenseMacroRows(csvRows, priceDates);
+
+    document.querySelectorAll(".range-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        activeYears = Number(btn.dataset.years);
+        syncButtons();
+        saveState();
+        renderChart();
+      });
     });
-    render();
+
+    document.getElementById("resetHandles").addEventListener("click", resetHandles);
+
+    renderChart();
   } catch (err) {
-    msg.innerHTML = `<div class="message error">${err.message || "앱을 시작하지 못했습니다."}</div>`;
+    msgEl.innerHTML = `<div class="message error">${err.message || "앱을 시작하지 못했습니다."}</div>`;
   }
-  if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(() => null));
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(() => null));
+  }
 }
 
 boot();

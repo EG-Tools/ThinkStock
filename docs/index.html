@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-    <meta name="theme-color" content="#05070b">
+    <meta name="theme-color" content="#0a0a0a">
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <title>ThinkStock</title>
@@ -19,16 +19,20 @@
       <header class="hero">
         <h1>ThinkStock</h1>
       </header>
-
       <div id="chart" class="chart-frame"></div>
-
       <div class="help-row">
-        <span class="help-text">왼쪽 원은 위치, 오른쪽 원은 스케일입니다. 가로 드래그로 기간 이동, 더블탭으로 보기 초기화.</span>
-        <button id="resetHandles" class="reset-btn" type="button">리셋</button>
+        <span class="help-text">왼쪽 원은 위치, 오른쪽 원은 스케일입니다. 두 핸들을 함께 움직이면 원하는 모양으로 정렬할 수 있습니다.</span>
+        <button id="resetHandles" class="reset-btn">리셋</button>
       </div>
-
-      <div id="rangeButtons" class="range-row"></div>
-
+      <div class="range-row">
+        <button class="range-btn" data-years="1">1Y</button>
+        <button class="range-btn" data-years="3">3Y</button>
+        <button class="range-btn" data-years="5">5Y</button>
+        <button class="range-btn is-active" data-years="10">10Y</button>
+        <button class="range-btn" data-years="15">15Y</button>
+        <button class="range-btn" data-years="20">20Y</button>
+        <button class="range-btn" data-years="30">30Y</button>
+      </div>
       <div id="messageArea" class="message-area"></div>
     </div>
   </body>
