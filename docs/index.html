@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-    <meta name="theme-color" content="#0a0a0a">
+    <meta name="theme-color" content="#05070b">
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <title>ThinkStock</title>
@@ -17,22 +17,66 @@
   <body>
     <div class="app-shell">
       <header class="hero">
-        <h1>ThinkStock</h1>
+        <div>
+          <p class="eyebrow">Overlay Workspace</p>
+          <h1>ThinkStock</h1>
+          <p class="hero-copy">ADR Info 스타일의 빠른 범위 선택과 가이드 토글 감각을 가져오되, ThinkStock의 오버레이 비교 흐름에 맞게 보기 쉽고 조작하기 쉬운 차트로 정리했습니다.</p>
+        </div>
+        <div class="hero-actions">
+          <button id="resetViewBtn" class="ghost-btn" type="button">보기 초기화</button>
+          <button id="resetHandles" class="ghost-btn" type="button">핸들 리셋</button>
+        </div>
       </header>
-      <div id="chart" class="chart-frame"></div>
-      <div class="help-row">
-        <span class="help-text">왼쪽 원은 위치, 오른쪽 원은 스케일입니다. 두 핸들을 함께 움직이면 원하는 모양으로 정렬할 수 있습니다.</span>
-        <button id="resetHandles" class="reset-btn">리셋</button>
-      </div>
-      <div class="range-row">
-        <button class="range-btn" data-years="1">1Y</button>
-        <button class="range-btn" data-years="3">3Y</button>
-        <button class="range-btn" data-years="5">5Y</button>
-        <button class="range-btn is-active" data-years="10">10Y</button>
-        <button class="range-btn" data-years="15">15Y</button>
-        <button class="range-btn" data-years="20">20Y</button>
-        <button class="range-btn" data-years="30">30Y</button>
-      </div>
+
+      <section class="toolbar-card">
+        <div class="toolbar-row">
+          <div id="rangeButtons" class="range-row"></div>
+          <div class="switch-row">
+            <button id="guideToggle" class="icon-toggle is-active" type="button">가이드</button>
+            <button id="bandToggle" class="icon-toggle is-active" type="button">기준선</button>
+          </div>
+        </div>
+        <div class="toolbar-row toolbar-row-secondary">
+          <div id="presetButtons" class="preset-row"></div>
+          <div id="rangeStatus" class="range-status"></div>
+        </div>
+      </section>
+
+      <section class="chart-card">
+        <div class="chart-card-head">
+          <div>
+            <h2>Overlay Chart</h2>
+            <p id="chartContext" class="chart-context"></p>
+          </div>
+          <div id="activeBadge" class="active-badge"></div>
+        </div>
+        <div id="chart" class="chart-frame"></div>
+        <div class="chart-foot">
+          <span class="help-text">가로 드래그로 기간 이동, 더블탭으로 보기 초기화, 선택된 시리즈만 좌우 핸들이 표시됩니다.</span>
+        </div>
+      </section>
+
+      <section class="summary-card">
+        <div class="section-head">
+          <h3>현재 값</h3>
+          <span>보이는 시리즈를 눌러 편집 대상으로 선택할 수 있습니다.</span>
+        </div>
+        <div id="seriesSummary" class="summary-grid"></div>
+      </section>
+
+      <section class="control-card">
+        <div class="section-head">
+          <h3>시리즈 토글</h3>
+          <span>차트에 표시할 라인을 켜고 끄는 영역입니다.</span>
+        </div>
+        <div id="seriesToggles" class="toggle-grid"></div>
+        <div class="section-head section-head-secondary">
+          <h3>편집 대상</h3>
+          <span>활성 시리즈만 핸들이 붙고 선이 더 두껍게 강조됩니다.</span>
+        </div>
+        <div id="focusButtons" class="focus-row"></div>
+      </section>
+
       <div id="messageArea" class="message-area"></div>
     </div>
   </body>
