@@ -1,4 +1,4 @@
-const CACHE_NAME = "thinkstock-v9";
+const CACHE_NAME = "thinkstock-v10";
 const ASSETS = [
   "./",
   "./index.html",
