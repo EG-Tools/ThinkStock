@@ -1,4 +1,4 @@
-const CACHE_NAME = "thinkstock-v6";
+const CACHE_NAME = "thinkstock-v7";
 const ASSETS = ["./", "./index.html", "./styles.css", "./app.js", "./manifest.webmanifest", "./icon.svg", "./data/prices.json", "./data/sample_macro_data.csv"];
 self.addEventListener("install", (event) => {
   self.skipWaiting();
