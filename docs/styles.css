@@ -37,6 +37,11 @@ body {
   padding: 0;
   overflow: hidden;
 }
+
+.chart-frame-adr {
+  min-height: 160px;
+  max-height: 200px;
+}
 /* Y-axis drag handles */
 #y-handles {
   position: absolute;

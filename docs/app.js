@@ -10,7 +10,8 @@ const DISPLAY_NAMES = {
   adr_kosdaq: "ADR KQ",
 };
 
-const DEFAULT_SELECTED = ["leading_cycle", "^KS11", "kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ", "adr_kospi", "adr_kosdaq"];
+const ADR_SERIES = ["adr_kospi", "adr_kosdaq"];
+const DEFAULT_SELECTED = ["leading_cycle", "^KS11", "kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ"];
 const SERIES_PRIORITY = ["leading_cycle", "^KS11", "kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ", "adr_kospi", "adr_kosdaq"];
 const SERIES_COLORS = {
   leading_cycle: "#999999",
@@ -34,13 +35,16 @@ const toUtcMs = (d) => Date.parse(`${d}T00:00:00Z`);
 let pricePayload = null;
 let macroRows = [];
 let activeYears = 10;
-let hiddenSeries = new Set(["kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ", "adr_kospi", "adr_kosdaq"]);
+let hiddenSeries = new Set(["kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ"]);
 let seriesOffsets = {};
 let seriesScales = {};
 let currentSelected = [];
 let baseTraceValues = {};
 let legendHandlerSet = false;
+let adrHandlerSet = false;
 let dragRafId = null;
+let currentRows = [];
+let currentStart = "";
 
 /* ── localStorage persistence ── */
 function saveState() {
@@ -360,10 +364,13 @@ function renderChart(preserveZoom = true) {
   if (start < minDate) start = minDate;
 
   const { rows, macroCols, liveCols } = mergeSources(priceRows, macroRows, start, end);
+  currentRows = rows;
+  currentStart = start;
   const allSeries = sortSeries(
     [...new Set([...liveCols, ...macroCols])].filter((s) => rows.some((r) => toNum(r[s]) !== null))
   );
-  const selected = DEFAULT_SELECTED.filter((s) => allSeries.includes(s));
+  // ADR 시리즈는 메인 차트에서 제외 — 별도 미니차트에 표시
+  const selected = DEFAULT_SELECTED.filter((s) => allSeries.includes(s) && !ADR_SERIES.includes(s));
   if (!selected.length) selected.push(...allSeries.slice(0, 2));
   currentSelected = [...selected];
 
@@ -460,7 +467,17 @@ function renderChart(preserveZoom = true) {
       updateHandles();
       return false;
     });
-    el.on("plotly_relayout", () => setTimeout(updateHandles, 50));
+    el.on("plotly_relayout", (eventData) => {
+      setTimeout(updateHandles, 50);
+      // 메인 차트 pan/zoom → ADR 차트 x축 동기화
+      const adrEl = document.getElementById("chart-adr");
+      if (adrEl && adrEl.data) {
+        const r0 = eventData["xaxis.range[0]"];
+        const r1 = eventData["xaxis.range[1]"];
+        if (r0 && r1) Plotly.relayout(adrEl, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 });
+        else if (eventData["xaxis.autorange"]) Plotly.relayout(adrEl, { "xaxis.autorange": true });
+      }
+    });
     el.on("plotly_click", () => {
       Plotly.relayout(el, { "xaxis.autorange": true, "yaxis.autorange": true });
     });
@@ -468,6 +485,67 @@ function renderChart(preserveZoom = true) {
   }
 
   updateHandles();
+  renderAdrChart(rows, preserveZoom ? (el._fullLayout?.xaxis?.range?.slice() || null) : null);
+}
+
+/* ── ADR 미니 차트 ── */
+function renderAdrChart(rows, xRange) {
+  const el = document.getElementById("chart-adr");
+  if (!el || !rows.length) return;
+
+  const adrAvailable = ADR_SERIES.filter((s) => rows.some((r) => toNum(r[s]) !== null));
+  if (!adrAvailable.length) return;
+
+  const traces = adrAvailable.map((s) => ({
+    x: rows.map((r) => r.date),
+    y: rows.map((r) => toNum(r[s])),
+    type: "scatter",
+    mode: "lines",
+    name: labelName(s),
+    connectgaps: true,
+    line: { color: seriesColor(s), width: 2, shape: "linear" },
+    hovertemplate: "%{x}<br>%{y:.2f}<extra>%{fullData.name}</extra>",
+  }));
+
+  const layout = {
+    paper_bgcolor: "transparent",
+    plot_bgcolor: "#111111",
+    margin: { l: 42, r: 42, t: 14, b: 32 },
+    hovermode: "x unified",
+    showlegend: true,
+    legend: { orientation: "h", x: 0, y: 1.08, font: { color: "rgba(255,255,255,0.7)", size: 11 } },
+    shapes: [
+      { type: "line", xref: "paper", yref: "y", x0: 0, x1: 1, y0: 1, y1: 1,
+        line: { color: "rgba(255,255,255,0.18)", width: 1, dash: "dot" } },
+    ],
+    xaxis: {
+      showgrid: true, gridcolor: "rgba(255,255,255,0.06)", zeroline: false,
+      color: "#666", tickfont: { size: 10 }, fixedrange: false,
+      ...(xRange ? { range: xRange } : {}),
+    },
+    yaxis: {
+      showgrid: true, gridcolor: "rgba(255,255,255,0.06)", zeroline: false,
+      color: "#666", tickfont: { size: 10 }, fixedrange: true,
+    },
+    font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
+    hoverlabel: { bgcolor: "#222", bordercolor: "#444", font: { color: "#eee" } },
+    dragmode: false,
+  };
+
+  Plotly.react(el, traces, layout, { responsive: true, displaylogo: false, scrollZoom: true });
+
+  if (!adrHandlerSet) {
+    el.on("plotly_relayout", (eventData) => {
+      const mainEl = document.getElementById("chart");
+      if (mainEl && mainEl.data) {
+        const r0 = eventData["xaxis.range[0]"];
+        const r1 = eventData["xaxis.range[1]"];
+        if (r0 && r1) Plotly.relayout(mainEl, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 });
+        else if (eventData["xaxis.autorange"]) Plotly.relayout(mainEl, { "xaxis.autorange": true });
+      }
+    });
+    adrHandlerSet = true;
+  }
 }
 
 function syncButtons() {
