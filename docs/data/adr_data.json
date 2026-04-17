@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-04-17T09:28:20Z",
-  "description": "ADR (Advance-Decline Ratio) - KOSPI and KOSDAQ",
+  "generated_at": "2026-04-17T11:23:46Z",
+  "description": "ADR (Advance-Decline Ratio) — KOSPI / KOSDAQ",
   "source": "adrinfo.kr",
   "note": "Values are percentages. 100=balanced, >120=overbought, <80=oversold",
   "series": [

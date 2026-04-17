@@ -269,6 +269,87 @@ def build_payload(df: pd.DataFrame, series: list[str]) -> dict:
     }
 
 
+# ── adrinfo.kr ADR 데이터 ──────────────────────────────────────────────────
+
+def fetch_adr_data() -> list[dict]:
+    """
+    adrinfo.kr/chart 에서 코스피·코스닥 ADR 데이터를 스크래핑한다.
+    반환: [{'date': 'YYYY-MM-DD', 'adr_kospi': float|None, 'adr_kosdaq': float|None}, ...]
+    단위: % (100=균형, <80=과매도, >120=과매수)
+    """
+    import re as _re
+    try:
+        import requests as _req
+    except ImportError:
+        print("  requests 미설치: pip install requests")
+        return []
+
+    print("  adrinfo.kr ADR 스크래핑 ...", end=" ", flush=True)
+    try:
+        r = _req.get(
+            "http://www.adrinfo.kr/chart",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=20,
+        )
+        r.raise_for_status()
+        html = r.text
+    except Exception as e:
+        print(f"오류: {e}")
+        return []
+
+    def extract_array(html: str, var_name: str):
+        pos = html.find(f"const {var_name}=")
+        if pos < 0:
+            return []
+        end = html.find("];", pos) + 1
+        raw = _re.sub(r",\s*\]", "]", html[pos + len(var_name) + 7: end])
+        return json.loads(raw)
+
+    import json as _json
+    from datetime import datetime as _dt, timezone as _tz
+
+    def ts_to_date(ts_ms):
+        return _dt.fromtimestamp(ts_ms / 1000, tz=_tz.utc).strftime("%Y-%m-%d")
+
+    try:
+        kospi_raw  = extract_array(html, "kospi_adr")
+        kosdaq_raw = extract_array(html, "kosdaq_adr")
+    except Exception as e:
+        print(f"파싱 오류: {e}")
+        return []
+
+    kospi_map  = {ts_to_date(it[0]): it[1] for it in kospi_raw}
+    kosdaq_map = {ts_to_date(it[0]): it[1] for it in kosdaq_raw}
+    all_dates  = sorted(set(kospi_map) | set(kosdaq_map))
+
+    records = [
+        {"date": d, "adr_kospi": kospi_map.get(d), "adr_kosdaq": kosdaq_map.get(d)}
+        for d in all_dates
+        if kospi_map.get(d) is not None or kosdaq_map.get(d) is not None
+    ]
+    # 마지막 유효 날짜
+    last = next((r for r in reversed(records) if r["adr_kospi"] is not None), None)
+    print(f"{len(records)}행  최신: {last['date']} KOSPI={last['adr_kospi']} KOSDAQ={records[-1].get('adr_kosdaq')}")
+    return records
+
+
+def save_adr_data(records: list[dict]) -> None:
+    if not records:
+        print("  ADR 데이터 없음 — 저장 건너뜀")
+        return
+    payload = {
+        "generated_at": pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "description": "ADR (Advance-Decline Ratio) — KOSPI / KOSDAQ",
+        "source": "adrinfo.kr",
+        "note": "Values are percentages. 100=balanced, >120=overbought, <80=oversold",
+        "series": ["adr_kospi", "adr_kosdaq"],
+        "records": records,
+    }
+    out = DATA_DIR / "adr_data.json"
+    out.write_text(json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
+    print(f"  adr_data.json 저장: {len(records)}행  {records[0]['date']} ~ {records[-1]['date']}")
+
+
 # ── KOFIA 신용융자 잔고 ────────────────────────────────────────────────────
 
 def fetch_kofia_credit(key: str) -> list[dict]:
@@ -376,8 +457,13 @@ def main():
     macro = load_macro(prices.index)
     print(f"  {len(macro)}행  컬럼: {list(macro.columns)}")
 
-    # ── Step 4: KOFIA 신용융자 잔고 ───────────────────────────────────────
-    print("\n[4/4] KOFIA 신용융자 잔고")
+    # ── Step 4: adrinfo.kr ADR ────────────────────────────────────────────
+    print("\n[4/5] adrinfo.kr ADR 스크래핑")
+    adr_records = fetch_adr_data()
+    save_adr_data(adr_records)
+
+    # ── Step 5: KOFIA 신용융자 잔고 ───────────────────────────────────────
+    print("\n[5/5] KOFIA 신용융자 잔고")
     if kofia_key:
         credit_records = fetch_kofia_credit(kofia_key)
         save_credit_data(credit_records)
