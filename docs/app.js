@@ -139,41 +139,61 @@ function buildDenseMacroRows(sourceRows, targetDates) {
   return dense.filter((r) => cols.some((c) => toNum(r[c]) !== null));
 }
 
-const CREDIT_OFFSET_DAYS = -2;  // 신용잔고 발표 시차 보정 (2영업일 후행)
+const CREDIT_OFFSET_DAYS = 2;  // 신용잔고 발표 시차 (2영업일 후행) — 탐색 윈도우 방향
+const CREDIT_COLS = ["kospi_credit", "kosdaq_credit"];
+
+/**
+ * creditRowsSrc 를 정렬된 배열로 인덱싱하고,
+ * 주어진 price 날짜에 대해 (date + CREDIT_OFFSET_DAYS) 에서
+ * ±4 캘린더일 범위 안의 가장 가까운 실제 거래일 레코드를 반환한다.
+ *
+ * 캘린더 오프셋으로 주말·공휴일에 걸릴 때 데이터가 누락되던 문제를 해결.
+ */
+function buildCreditFinder(creditRowsSrc) {
+  if (!creditRowsSrc.length) return () => null;
+  const sorted = [...creditRowsSrc].sort((a, b) => a.date.localeCompare(b.date));
+  const byDate = new Map(sorted.map((r) => [r.date, r]));
+
+  return function findNearest(priceDate) {
+    // priceDate 기준으로 CREDIT_OFFSET_DAYS 앞의 날짜를 중심으로 탐색
+    const base = new Date(`${priceDate}T00:00:00Z`);
+    base.setUTCDate(base.getUTCDate() + CREDIT_OFFSET_DAYS);
+    // 중심에서 바깥으로 ±4일 탐색
+    for (let delta = 0; delta <= 4; delta++) {
+      for (const sign of (delta === 0 ? [0] : [1, -1])) {
+        const d = new Date(base);
+        d.setUTCDate(d.getUTCDate() + delta * sign);
+        const key = d.toISOString().slice(0, 10);
+        if (byDate.has(key)) return byDate.get(key);
+      }
+    }
+    return null;
+  };
+}
 
 function mergeSources(priceRows, denseRows, creditRowsSrc, start, end) {
   const priceMap  = new Map(priceRows.map((r) => [r.date, r]));
   const macroMap  = new Map(denseRows.map((r) => [r.date, r]));
-  // 신용 데이터 날짜를 CREDIT_OFFSET_DAYS 만큼 이동해서 map 구성
-  const creditMap = new Map(
-    creditRowsSrc.map((r) => {
-      const d = new Date(`${r.date}T00:00:00Z`);
-      d.setUTCDate(d.getUTCDate() + CREDIT_OFFSET_DAYS);
-      return [d.toISOString().slice(0, 10), r];
-    })
-  );
-  const liveCols  = getSeriesColumns(priceRows);
-  // 매크로 컬럼에서 kospi_credit/kosdaq_credit 제거 (신용 데이터는 creditMap 우선)
-  const CREDIT_COLS = ["kospi_credit", "kosdaq_credit"];
-  const rawMacroCols = getSeriesColumns(denseRows);
-  const macroCols = rawMacroCols.filter((c) => !CREDIT_COLS.includes(c));
-  const baseDates = priceRows.length ? priceRows.map((r) => r.date) : [];
+  const findCredit = buildCreditFinder(creditRowsSrc);
+
+  const liveCols   = getSeriesColumns(priceRows);
+  // 매크로 컬럼에서 credit 제거 — API 데이터 전용, CSV 폴백 없음
+  const macroCols  = getSeriesColumns(denseRows).filter((c) => !CREDIT_COLS.includes(c));
+
   const rows = [];
-  baseDates.forEach((date) => {
+  priceRows.forEach(({ date }) => {
     if (date < start || date > end) return;
     const row = { date };
     const pr = priceMap.get(date) || {};
     const mr = macroMap.get(date) || {};
-    const cr = creditMap.get(date) || {};
     liveCols.forEach((k) => { row[k] = toNum(pr[k]); });
     macroCols.forEach((k) => { row[k] = toNum(mr[k]); });
-    // 신용 데이터: API 데이터 우선, 없으면 CSV fallback
-    CREDIT_COLS.forEach((k) => {
-      const v = toNum(cr[k]) ?? toNum(mr[k]);
-      if (v !== null) row[k] = v;
-    });
+    // 신용: 가장 가까운 거래일 레코드 (없으면 null → 차트에서 갭 처리)
+    const cr = findCredit(date);
+    CREDIT_COLS.forEach((k) => { row[k] = cr ? toNum(cr[k]) : null; });
     rows.push(row);
   });
+
   const allMacroCols = [...new Set([...macroCols, ...CREDIT_COLS])];
   return { rows, macroCols: allMacroCols, liveCols };
 }
