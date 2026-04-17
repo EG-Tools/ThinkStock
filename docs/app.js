@@ -596,7 +596,10 @@ function buildAdrZoneTraces(dates, values, mainColor, legendName) {
   ];
 }
 
-let adrRows = [];   // ADR 전용 데이터 (adr_data.json 에서 로드)
+let adrRows = [];   // ADR 전용 데이터 (adr_data.json 에서 로드 + 웹 갱신으로 확장)
+
+const ADR_SOURCE_URL = "http://www.adrinfo.kr/chart";
+const CORS_PROXY     = "https://corsproxy.io/?url=";
 
 function renderAdrChart(xRange) {
   const el = document.getElementById("chart-adr");
@@ -711,6 +714,50 @@ function syncButtons() {
   });
 }
 
+/**
+ * adrinfo.kr/chart 를 CORS 프록시로 가져와 adrRows 에 없는 날짜만 추가한다.
+ * 반환: { added: number, latestDate: string }
+ */
+async function refreshAdrFromWeb() {
+  const proxyUrl = CORS_PROXY + encodeURIComponent(ADR_SOURCE_URL);
+  const res = await fetch(proxyUrl, { cache: "no-store" });
+  if (!res.ok) throw new Error(`adrinfo.kr 응답 오류: ${res.status}`);
+  const html = await res.text();
+
+  function extractJsArray(src, varName) {
+    const marker = `const ${varName}=`;
+    const s = src.indexOf(marker);
+    if (s < 0) return [];
+    const e = src.indexOf("];", s) + 1;
+    return JSON.parse(src.slice(s + marker.length, e).replace(/,\s*\]/g, "]"));
+  }
+
+  const kospiRaw  = extractJsArray(html, "kospi_adr");
+  const kosdaqRaw = extractJsArray(html, "kosdaq_adr");
+  if (!kospiRaw.length && !kosdaqRaw.length) throw new Error("ADR 데이터 파싱 실패 — 사이트 구조 변경 가능성");
+
+  const tsToDate = (ms) => new Date(ms).toISOString().slice(0, 10);
+  const kospiMap  = new Map(kospiRaw.map(([ts, v])  => [tsToDate(ts), v]));
+  const kosdaqMap = new Map(kosdaqRaw.map(([ts, v]) => [tsToDate(ts), v]));
+
+  // 현재 adrRows 의 마지막 날짜 이후만 추가
+  const lastKnown = adrRows.length ? adrRows[adrRows.length - 1].date : "";
+  const allDates  = [...new Set([...kospiMap.keys(), ...kosdaqMap.keys()])].sort();
+  const newRows   = allDates
+    .filter((d) => d > lastKnown)
+    .map((d) => ({ date: d, adr_kospi: kospiMap.get(d) ?? null, adr_kosdaq: kosdaqMap.get(d) ?? null }))
+    .filter((r) => r.adr_kospi !== null || r.adr_kosdaq !== null);
+
+  if (newRows.length > 0) {
+    adrRows = [...adrRows, ...newRows];
+  }
+
+  return {
+    added: newRows.length,
+    latestDate: adrRows.length ? adrRows[adrRows.length - 1].date : lastKnown,
+  };
+}
+
 async function loadData(forceNetwork = false) {
   const opt = forceNetwork ? { cache: "reload" } : {};
   const [priceRes, macroRes, adrRes, creditRes] = await Promise.all([
@@ -758,12 +805,26 @@ async function boot() {
       refreshBtn.addEventListener("click", async () => {
         if (refreshBtn.classList.contains("spinning")) return;
         refreshBtn.classList.add("spinning");
+        msgEl.innerHTML = "";
         try {
-          // SW에 데이터 캐시 삭제 요청
+          // 1) SW 캐시 삭제 후 서버 파일 재요청
           if (navigator.serviceWorker.controller) {
             navigator.serviceWorker.controller.postMessage("REFRESH_DATA");
           }
           await loadData(true);
+
+          // 2) adrinfo.kr 에서 adrRows 에 없는 날짜만 증분 취득
+          const prevLast = adrRows.length ? adrRows[adrRows.length - 1].date : "(없음)";
+          try {
+            const { added, latestDate } = await refreshAdrFromWeb();
+            if (added > 0) {
+              msgEl.innerHTML = `<div class="message">ADR ${added}일치 추가됨 (~ ${latestDate})</div>`;
+            }
+          } catch (adrErr) {
+            // ADR 갱신 실패는 경고만 — 가격/신용 데이터는 이미 갱신됨
+            msgEl.innerHTML = `<div class="message">ADR 갱신 실패 (${adrErr.message}) — 가격·신용 데이터는 갱신됨</div>`;
+          }
+
           renderChart(false);
         } catch (err) {
           msgEl.innerHTML = `<div class="message error">새로고침 실패: ${err.message}</div>`;
