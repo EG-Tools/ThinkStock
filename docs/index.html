@@ -20,6 +20,10 @@
         <div class="hero-row">
           <h1>ThinkStock</h1>
           <button id="refreshData" class="refresh-btn" title="데이터 새로고침">&#x21BB;</button>
+          <label class="credit-offset-wrap" title="신용잔고 발표 시차 보정 (일)">
+            <span class="credit-offset-label">신용 오프셋</span>
+            <input id="creditOffset" class="credit-offset-input" type="number" value="-2" step="1" min="-10" max="0">
+          </label>
         </div>
       </header>
       <div id="chart" class="chart-frame"></div>

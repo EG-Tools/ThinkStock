@@ -35,6 +35,23 @@ body {
 .refresh-btn:hover { background: rgba(255,255,255,0.12); color: var(--ink); }
 .refresh-btn.spinning { animation: spin 0.7s linear infinite; color: var(--accent); border-color: rgba(74,222,128,0.3); }
 @keyframes spin { to { transform: rotate(360deg); } }
+.credit-offset-wrap {
+  display: flex; align-items: center; gap: 6px;
+  cursor: default;
+}
+.credit-offset-label {
+  font-size: 11px; color: var(--muted); white-space: nowrap;
+}
+.credit-offset-input {
+  width: 52px; padding: 4px 6px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: rgba(255,255,255,0.06); color: var(--ink);
+  font-size: 12px; font-weight: 600; text-align: center;
+  -moz-appearance: textfield;
+}
+.credit-offset-input::-webkit-outer-spin-button,
+.credit-offset-input::-webkit-inner-spin-button { -webkit-appearance: none; }
+.credit-offset-input:focus { outline: none; border-color: rgba(255,255,255,0.2); }
 .range-row { display: flex; gap: 6px; padding: 8px 20px; flex-wrap: nowrap; }
 .range-btn {
   padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px;

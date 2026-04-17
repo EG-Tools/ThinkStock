@@ -139,7 +139,7 @@ function buildDenseMacroRows(sourceRows, targetDates) {
   return dense.filter((r) => cols.some((c) => toNum(r[c]) !== null));
 }
 
-const CREDIT_OFFSET_DAYS = 2;  // 신용잔고 발표 시차 (2영업일 후행) — 탐색 윈도우 방향
+let CREDIT_OFFSET_DAYS = 2;  // 신용잔고 발표 시차 (양수 = 앞당겨 표시). UI 입력값의 절댓값.
 const CREDIT_COLS = ["kospi_credit", "kosdaq_credit"];
 
 /**
@@ -818,6 +818,18 @@ async function boot() {
     });
 
     document.getElementById("resetHandles").addEventListener("click", resetHandles);
+
+    // 신용 오프셋 입력박스
+    const creditOffsetEl = document.getElementById("creditOffset");
+    if (creditOffsetEl) {
+      creditOffsetEl.addEventListener("change", () => {
+        const v = parseInt(creditOffsetEl.value, 10);
+        if (Number.isFinite(v)) {
+          CREDIT_OFFSET_DAYS = Math.abs(v);   // 내부는 양수 (탐색 방향)
+          renderChart();
+        }
+      });
+    }
 
     // 새로고침 버튼: 캐시 무시하고 최신 데이터 재요청
     const refreshBtn = document.getElementById("refreshData");
