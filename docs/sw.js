@@ -1,4 +1,4 @@
-const CACHE_NAME = "thinkstock-v12";
+const CACHE_NAME = "thinkstock-v13";
 const ASSETS = [
   "./",
   "./index.html",
@@ -25,14 +25,39 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+// 데이터 파일: cache-first (빠른 시작, 새로고침 버튼으로만 갱신)
+// 앱 셸: network-first (코드 변경 즉시 반영)
 self.addEventListener("fetch", (event) => {
-  event.respondWith(
-    fetch(event.request)
-      .then((response) => {
-        const clone = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-        return response;
+  const url = new URL(event.request.url);
+  const isData = url.pathname.includes("/data/");
+
+  if (isData) {
+    event.respondWith(
+      caches.match(event.request).then((cached) => {
+        if (cached) return cached;
+        return fetch(event.request).then((res) => {
+          caches.open(CACHE_NAME).then((c) => c.put(event.request, res.clone()));
+          return res;
+        });
       })
-      .catch(() => caches.match(event.request).then((cached) => cached || caches.match("./index.html")))
-  );
+    );
+  } else {
+    event.respondWith(
+      fetch(event.request)
+        .then((res) => {
+          caches.open(CACHE_NAME).then((c) => c.put(event.request, res.clone()));
+          return res;
+        })
+        .catch(() => caches.match(event.request).then((cached) => cached || caches.match("./index.html")))
+    );
+  }
+});
+
+// 앱에서 REFRESH_DATA 메시지를 받으면 데이터 캐시만 삭제
+self.addEventListener("message", (event) => {
+  if (event.data === "REFRESH_DATA") {
+    caches.open(CACHE_NAME).then((cache) => {
+      ASSETS.filter((a) => a.includes("/data/")).forEach((url) => cache.delete(url));
+    });
+  }
 });

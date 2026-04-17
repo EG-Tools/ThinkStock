@@ -45,6 +45,7 @@ let adrHandlerSet = false;
 let dragRafId = null;
 let currentRows = [];
 let currentStart = "";
+let chartSyncing = false;   // relayout 무한루프 방지 플래그
 
 /* ── localStorage persistence ── */
 function saveState() {
@@ -469,13 +470,19 @@ function renderChart(preserveZoom = true) {
     });
     el.on("plotly_relayout", (eventData) => {
       setTimeout(updateHandles, 50);
+      if (chartSyncing) return;
       // 메인 차트 pan/zoom → ADR 차트 x축 동기화
       const adrEl = document.getElementById("chart-adr");
       if (adrEl && adrEl.data) {
         const r0 = eventData["xaxis.range[0]"];
         const r1 = eventData["xaxis.range[1]"];
-        if (r0 && r1) Plotly.relayout(adrEl, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 });
-        else if (eventData["xaxis.autorange"]) Plotly.relayout(adrEl, { "xaxis.autorange": true });
+        if (r0 && r1) {
+          chartSyncing = true;
+          Plotly.relayout(adrEl, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 }).finally(() => { chartSyncing = false; });
+        } else if (eventData["xaxis.autorange"]) {
+          chartSyncing = true;
+          Plotly.relayout(adrEl, { "xaxis.autorange": true }).finally(() => { chartSyncing = false; });
+        }
       }
     });
     el.on("plotly_click", () => {
@@ -659,12 +666,18 @@ function renderAdrChart(xRange) {
 
   if (!adrHandlerSet) {
     el.on("plotly_relayout", (eventData) => {
+      if (chartSyncing) return;
       const mainEl = document.getElementById("chart");
       if (mainEl && mainEl.data) {
         const r0 = eventData["xaxis.range[0]"];
         const r1 = eventData["xaxis.range[1]"];
-        if (r0 && r1) Plotly.relayout(mainEl, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 });
-        else if (eventData["xaxis.autorange"]) Plotly.relayout(mainEl, { "xaxis.autorange": true });
+        if (r0 && r1) {
+          chartSyncing = true;
+          Plotly.relayout(mainEl, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 }).finally(() => { chartSyncing = false; });
+        } else if (eventData["xaxis.autorange"]) {
+          chartSyncing = true;
+          Plotly.relayout(mainEl, { "xaxis.autorange": true }).finally(() => { chartSyncing = false; });
+        }
       }
     });
     adrHandlerSet = true;
@@ -677,25 +690,30 @@ function syncButtons() {
   });
 }
 
+async function loadData(forceNetwork = false) {
+  const opt = forceNetwork ? { cache: "reload" } : {};
+  const [priceRes, macroRes, adrRes] = await Promise.all([
+    fetch("./data/prices.json", opt),
+    fetch("./data/sample_macro_data.csv", opt),
+    fetch("./data/adr_data.json", opt),
+  ]);
+  const priceText = await priceRes.text();
+  pricePayload = JSON.parse(priceText.replace(/\bNaN\b/g, "null"));
+  const csvRows = parseCsv(await macroRes.text());
+  const priceDates = (pricePayload.records || []).map((r) => r.date);
+  macroRows = buildDenseMacroRows(csvRows, priceDates);
+  if (adrRes.ok) {
+    const adrPayload = JSON.parse(await adrRes.text());
+    adrRows = adrPayload.records || [];
+  }
+}
+
 async function boot() {
   const msgEl = document.getElementById("messageArea");
   loadState();
   syncButtons();
   try {
-    const [priceRes, macroRes, adrRes] = await Promise.all([
-      fetch("./data/prices.json"),
-      fetch("./data/sample_macro_data.csv"),
-      fetch("./data/adr_data.json"),
-    ]);
-    const priceText = await priceRes.text();
-    pricePayload = JSON.parse(priceText.replace(/\bNaN\b/g, "null"));
-    const csvRows = parseCsv(await macroRes.text());
-    const priceDates = (pricePayload.records || []).map((r) => r.date);
-    macroRows = buildDenseMacroRows(csvRows, priceDates);
-    if (adrRes.ok) {
-      const adrPayload = JSON.parse(await adrRes.text());
-      adrRows = adrPayload.records || [];
-    }
+    await loadData();
 
     document.querySelectorAll(".range-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -707,6 +725,27 @@ async function boot() {
     });
 
     document.getElementById("resetHandles").addEventListener("click", resetHandles);
+
+    // 새로고침 버튼: 캐시 무시하고 최신 데이터 재요청
+    const refreshBtn = document.getElementById("refreshData");
+    if (refreshBtn) {
+      refreshBtn.addEventListener("click", async () => {
+        if (refreshBtn.classList.contains("spinning")) return;
+        refreshBtn.classList.add("spinning");
+        try {
+          // SW에 데이터 캐시 삭제 요청
+          if (navigator.serviceWorker.controller) {
+            navigator.serviceWorker.controller.postMessage("REFRESH_DATA");
+          }
+          await loadData(true);
+          renderChart(false);
+        } catch (err) {
+          msgEl.innerHTML = `<div class="message error">새로고침 실패: ${err.message}</div>`;
+        } finally {
+          refreshBtn.classList.remove("spinning");
+        }
+      });
+    }
 
     renderChart(false);
   } catch (err) {

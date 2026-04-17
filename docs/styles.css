@@ -17,7 +17,24 @@ body {
 }
 .app-shell { width: min(1120px, calc(100vw - 24px)); margin: 0 auto; padding: 20px 0 72px; }
 .hero { padding: 18px 20px 6px; }
+.hero-row { display: flex; align-items: center; gap: 14px; }
 .hero h1 { margin: 0; font-size: clamp(34px, 7vw, 58px); line-height: 0.95; letter-spacing: -0.04em; color: #fff; }
+.refresh-btn {
+  flex-shrink: 0;
+  width: 36px; height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: rgba(255,255,255,0.06);
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: flex; align-items: center; justify-content: center;
+}
+.refresh-btn:hover { background: rgba(255,255,255,0.12); color: var(--ink); }
+.refresh-btn.spinning { animation: spin 0.7s linear infinite; color: var(--accent); border-color: rgba(74,222,128,0.3); }
+@keyframes spin { to { transform: rotate(360deg); } }
 .range-row { display: flex; gap: 6px; padding: 8px 20px; flex-wrap: nowrap; }
 .range-btn {
   padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px;
