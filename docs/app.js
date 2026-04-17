@@ -25,7 +25,7 @@ const SERIES_COLORS = {
   adr_kosdaq: "#f472b6",
 };
 
-const STATE_KEY = "thinkstock-v4";
+const STATE_KEY = "thinkstock-v5";
 
 const toNum = (v) => (v != null && Number.isFinite(Number(v))) ? Number(v) : null;
 const labelName = (key) => DISPLAY_NAMES[key] || key;
@@ -34,7 +34,7 @@ const toUtcMs = (d) => Date.parse(`${d}T00:00:00Z`);
 
 let pricePayload = null;
 let macroRows = [];
-let activeYears = 10;
+let activeMonths = 120;
 let hiddenSeries = new Set(["kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ"]);
 let seriesOffsets = {};
 let seriesScales = {};
@@ -50,7 +50,7 @@ let currentStart = "";
 function saveState() {
   try {
     localStorage.setItem(STATE_KEY, JSON.stringify({
-      activeYears,
+      activeMonths,
       hiddenSeries: [...hiddenSeries],
       seriesOffsets,
       seriesScales,
@@ -63,19 +63,19 @@ function loadState() {
     const raw = localStorage.getItem(STATE_KEY);
     if (!raw) return;
     const p = JSON.parse(raw);
-    if (typeof p.activeYears === "number") activeYears = p.activeYears;
+    if (typeof p.activeMonths === "number") activeMonths = p.activeMonths;
     if (Array.isArray(p.hiddenSeries)) hiddenSeries = new Set(p.hiddenSeries);
     if (p.seriesOffsets && typeof p.seriesOffsets === "object") seriesOffsets = p.seriesOffsets;
     if (p.seriesScales && typeof p.seriesScales === "object") seriesScales = p.seriesScales;
   } catch (_) {}
 }
 
-function shiftYears(dateStr, years) {
+function shiftMonths(dateStr, months) {
   const d = new Date(`${dateStr}T00:00:00`);
   if (Number.isNaN(d.getTime())) return dateStr;
-  const m = d.getMonth();
-  d.setFullYear(d.getFullYear() - years);
-  if (d.getMonth() !== m) d.setDate(0);
+  const day = d.getUTCDate();
+  d.setUTCMonth(d.getUTCMonth() - months);
+  if (d.getUTCDate() !== day) d.setUTCDate(0);
   return d.toISOString().slice(0, 10);
 }
 
@@ -360,7 +360,7 @@ function renderChart(preserveZoom = true) {
   const maxDate = dates[dates.length - 1] || new Date().toISOString().slice(0, 10);
   const minDate = dates[0] || maxDate;
   const end = maxDate;
-  let start = shiftYears(end, activeYears);
+  let start = shiftMonths(end, activeMonths);
   if (start < minDate) start = minDate;
 
   const { rows, macroCols, liveCols } = mergeSources(priceRows, macroRows, start, end);
@@ -550,7 +550,7 @@ function renderAdrChart(rows, xRange) {
 
 function syncButtons() {
   document.querySelectorAll(".range-btn").forEach((btn) => {
-    btn.classList.toggle("is-active", Number(btn.dataset.years) === activeYears);
+    btn.classList.toggle("is-active", Number(btn.dataset.months) === activeMonths);
   });
 }
 
@@ -571,7 +571,7 @@ async function boot() {
 
     document.querySelectorAll(".range-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
-        activeYears = Number(btn.dataset.years);
+        activeMonths = Number(btn.dataset.months);
         syncButtons();
         saveState();
         renderChart(false);
