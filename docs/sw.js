@@ -1,4 +1,4 @@
-const CACHE_NAME = "thinkstock-v13";
+const CACHE_NAME = "thinkstock-v14";
 const ASSETS = [
   "./",
   "./index.html",
@@ -10,6 +10,7 @@ const ASSETS = [
   "./data/macro_data.json",
   "./data/sample_macro_data.csv",
   "./data/adr_data.json",
+  "./data/credit_data.json",
 ];
 
 self.addEventListener("install", (event) => {

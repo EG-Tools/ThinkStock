@@ -34,6 +34,7 @@ const toUtcMs = (d) => Date.parse(`${d}T00:00:00Z`);
 
 let pricePayload = null;
 let macroRows = [];
+let creditRows = [];   // KOFIA 신용융자 잔고 (credit_data.json)
 let activeMonths = 120;
 let hiddenSeries = new Set(["kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ"]);
 let seriesOffsets = {};
@@ -138,11 +139,15 @@ function buildDenseMacroRows(sourceRows, targetDates) {
   return dense.filter((r) => cols.some((c) => toNum(r[c]) !== null));
 }
 
-function mergeSources(priceRows, denseRows, start, end) {
-  const priceMap = new Map(priceRows.map((r) => [r.date, r]));
-  const macroMap = new Map(denseRows.map((r) => [r.date, r]));
-  const liveCols = getSeriesColumns(priceRows);
-  const macroCols = getSeriesColumns(denseRows);
+function mergeSources(priceRows, denseRows, creditRowsSrc, start, end) {
+  const priceMap  = new Map(priceRows.map((r) => [r.date, r]));
+  const macroMap  = new Map(denseRows.map((r) => [r.date, r]));
+  const creditMap = new Map(creditRowsSrc.map((r) => [r.date, r]));
+  const liveCols  = getSeriesColumns(priceRows);
+  // 매크로 컬럼에서 kospi_credit/kosdaq_credit 제거 (신용 데이터는 creditMap 우선)
+  const CREDIT_COLS = ["kospi_credit", "kosdaq_credit"];
+  const rawMacroCols = getSeriesColumns(denseRows);
+  const macroCols = rawMacroCols.filter((c) => !CREDIT_COLS.includes(c));
   const baseDates = priceRows.length ? priceRows.map((r) => r.date) : [];
   const rows = [];
   baseDates.forEach((date) => {
@@ -150,11 +155,18 @@ function mergeSources(priceRows, denseRows, start, end) {
     const row = { date };
     const pr = priceMap.get(date) || {};
     const mr = macroMap.get(date) || {};
+    const cr = creditMap.get(date) || {};
     liveCols.forEach((k) => { row[k] = toNum(pr[k]); });
     macroCols.forEach((k) => { row[k] = toNum(mr[k]); });
+    // 신용 데이터: API 데이터 우선, 없으면 CSV fallback
+    CREDIT_COLS.forEach((k) => {
+      const v = toNum(cr[k]) ?? toNum(mr[k]);
+      if (v !== null) row[k] = v;
+    });
     rows.push(row);
   });
-  return { rows, macroCols, liveCols };
+  const allMacroCols = [...new Set([...macroCols, ...CREDIT_COLS])];
+  return { rows, macroCols: allMacroCols, liveCols };
 }
 
 function normalizeSeries(values) {
@@ -364,7 +376,7 @@ function renderChart(preserveZoom = true) {
   let start = shiftMonths(end, activeMonths);
   if (start < minDate) start = minDate;
 
-  const { rows, macroCols, liveCols } = mergeSources(priceRows, macroRows, start, end);
+  const { rows, macroCols, liveCols } = mergeSources(priceRows, macroRows, creditRows, start, end);
   currentRows = rows;
   currentStart = start;
   const allSeries = sortSeries(
@@ -692,10 +704,11 @@ function syncButtons() {
 
 async function loadData(forceNetwork = false) {
   const opt = forceNetwork ? { cache: "reload" } : {};
-  const [priceRes, macroRes, adrRes] = await Promise.all([
+  const [priceRes, macroRes, adrRes, creditRes] = await Promise.all([
     fetch("./data/prices.json", opt),
     fetch("./data/sample_macro_data.csv", opt),
     fetch("./data/adr_data.json", opt),
+    fetch("./data/credit_data.json", opt),
   ]);
   const priceText = await priceRes.text();
   pricePayload = JSON.parse(priceText.replace(/\bNaN\b/g, "null"));
@@ -705,6 +718,10 @@ async function loadData(forceNetwork = false) {
   if (adrRes.ok) {
     const adrPayload = JSON.parse(await adrRes.text());
     adrRows = adrPayload.records || [];
+  }
+  if (creditRes.ok) {
+    const creditPayload = JSON.parse(await creditRes.text());
+    creditRows = creditPayload.records || [];
   }
 }
 

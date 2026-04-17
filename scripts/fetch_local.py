@@ -5,19 +5,26 @@ ThinkStock 로컬 데이터 갱신 스크립트
   - 전체 히스토리: yfinance (KRX는 하루 단위 호출만 지원)
   - 최근 N일 갱신: KRX Open API (공식 데이터로 덮어쓰기)
   - RFHIC(코스닥 개별): yfinance (코스닥 일별매매 미승인)
+  - 신용융자 잔고: 금융투자협회 종합통계정보 API (data.go.kr)
 
 사용법:
     python scripts/fetch_local.py           # 전체 재빌드 (yfinance + KRX 최근 30일)
     python scripts/fetch_local.py --days 5  # 최근 5일만 KRX 갱신
 
 API 키:
-    scripts/krx_key.txt  (한 줄에 키만, git 에 올라가지 않음)
+    scripts/krx_key.txt    (KRX API 키, 한 줄, git 비포함)
+    scripts/kofia_key.txt  (금융투자협회 API 키, 한 줄, git 비포함)
 
 KRX 승인된 서비스:
     idx/kospi_dd_trd   - KOSPI 시리즈 일별시세
     idx/kosdaq_dd_trd  - KOSDAQ 시리즈 일별시세
     sto/stk_bydd_trd   - 유가증권 일별매매 (삼성전자 포함)
     sto/stk_isu_base_info, sto/ksq_isu_base_info  - 종목기본정보
+
+금융투자협회 API:
+    GetKofiaStatisticsInfoService/getGrantingOfCreditBalanceInfo
+      - crdTrFingScrs   : 코스피 신용융자 잔고 (원)
+      - crdTrFingKosdaq : 코스닥 신용융자 잔고 (원)
 """
 
 import argparse
@@ -28,9 +35,10 @@ from pathlib import Path
 
 import pandas as pd
 
-ROOT     = Path(__file__).resolve().parents[1]
-DATA_DIR = ROOT / "docs" / "data"
-KEY_FILE = Path(__file__).parent / "krx_key.txt"
+ROOT      = Path(__file__).resolve().parents[1]
+DATA_DIR  = ROOT / "docs" / "data"
+KEY_FILE  = Path(__file__).parent / "krx_key.txt"
+KOFIA_KEY_FILE = Path(__file__).parent / "kofia_key.txt"
 SAMPLE_MACRO = ROOT / "sample_macro_data.csv"
 
 KRX_BASE     = "http://data-dbg.krx.co.kr/svc/apis"
@@ -60,11 +68,22 @@ KRX_CONFIG = {
 }
 
 
+KOFIA_CREDIT_URL = (
+    "https://apis.data.go.kr/1160100/service"
+    "/GetKofiaStatisticsInfoService/getGrantingOfCreditBalanceInfo"
+)
+
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 def load_key() -> str | None:
     if KEY_FILE.exists():
         k = KEY_FILE.read_text().strip()
+        return k if k else None
+    return None
+
+def load_kofia_key() -> str | None:
+    if KOFIA_KEY_FILE.exists():
+        k = KOFIA_KEY_FILE.read_text().strip()
         return k if k else None
     return None
 
@@ -250,6 +269,67 @@ def build_payload(df: pd.DataFrame, series: list[str]) -> dict:
     }
 
 
+# ── KOFIA 신용융자 잔고 ────────────────────────────────────────────────────
+
+def fetch_kofia_credit(key: str) -> list[dict]:
+    """
+    금융투자협회 API 에서 코스피·코스닥 신용융자 잔고 전체 히스토리를 가져온다.
+    반환: [{'date': 'YYYY-MM-DD', 'kospi_credit': float, 'kosdaq_credit': float}, ...]
+    단위: 조원 (10^12 KRW)
+    """
+    try:
+        import requests
+    except ImportError:
+        print("  requests 미설치: pip install requests")
+        return []
+
+    print(f"  KOFIA 신용융자 잔고 조회 ...", end=" ", flush=True)
+    try:
+        r = requests.get(
+            KOFIA_CREDIT_URL,
+            params={"serviceKey": key, "numOfRows": 5000, "pageNo": 1, "resultType": "json"},
+            timeout=30,
+            verify=False,
+        )
+        r.raise_for_status()
+        body = r.json()["response"]["body"]
+        items = body["items"]["item"]
+        total = body["totalCount"]
+        print(f"{len(items)}행 / 전체 {total}행")
+    except Exception as e:
+        print(f"오류: {e}")
+        return []
+
+    records = []
+    for it in reversed(items):   # 오래된 날짜부터
+        d = str(it["basDt"])
+        date_str = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+        try:
+            kospi_c  = round(int(it["crdTrFingScrs"])   / 1e12, 4)
+            kosdaq_c = round(int(it["crdTrFingKosdaq"]) / 1e12, 4)
+        except (KeyError, ValueError):
+            continue
+        records.append({"date": date_str, "kospi_credit": kospi_c, "kosdaq_credit": kosdaq_c})
+    return records
+
+
+def save_credit_data(records: list[dict]) -> None:
+    if not records:
+        print("  신용 데이터 없음 — 저장 건너뜀")
+        return
+    payload = {
+        "generated_at": pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "description": "코스피·코스닥 신용융자 잔고",
+        "source": "금융투자협회 종합통계정보 API (data.go.kr)",
+        "unit": "조원 (10^12 KRW)",
+        "series": ["kospi_credit", "kosdaq_credit"],
+        "records": records,
+    }
+    out = DATA_DIR / "credit_data.json"
+    out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"  credit_data.json 저장: {len(records)}행  {records[0]['date']} ~ {records[-1]['date']}")
+
+
 # ── Main ───────────────────────────────────────────────────────────────────
 
 def main():
@@ -265,6 +345,12 @@ def main():
         print(f"KRX API 키: {key[:8]}...")
     else:
         print("KRX API 키 없음 — yfinance 만 사용합니다.")
+
+    kofia_key = load_kofia_key()
+    if kofia_key:
+        print(f"KOFIA API 키: {kofia_key[:8]}...")
+    else:
+        print("KOFIA API 키 없음 — scripts/kofia_key.txt 에 키를 저장하세요.")
 
     today = date.today()
     hist_start = years_before(today, LOOKBACK_YRS)
@@ -289,6 +375,14 @@ def main():
     print("\n[3/3] 매크로 데이터 로드")
     macro = load_macro(prices.index)
     print(f"  {len(macro)}행  컬럼: {list(macro.columns)}")
+
+    # ── Step 4: KOFIA 신용융자 잔고 ───────────────────────────────────────
+    print("\n[4/4] KOFIA 신용융자 잔고")
+    if kofia_key:
+        credit_records = fetch_kofia_credit(kofia_key)
+        save_credit_data(credit_records)
+    else:
+        print("  건너뜀 (KOFIA API 키 없음)")
 
     # ── 저장 ──────────────────────────────────────────────────────────────
     price_payload = build_payload(prices, list(prices.columns))
