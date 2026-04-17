@@ -518,23 +518,33 @@ function buildAdrZoneTraces(dates, values, mainColor, legendName) {
     const isLow  = v !== null && v < ADR_LOW_THRESH;
     const isHigh = v !== null && v > ADR_HIGH_THRESH;
     const isMid  = v !== null && !isLow && !isHigh;
-    yLow.push(isLow  ? v : null);
-    yMid.push(isMid  ? v : null);
+    yLow.push(isLow   ? v : null);
+    yMid.push(isMid   ? v : null);
     yHigh.push(isHigh ? v : null);
-    yBaseLow.push(isLow  ? ADR_LOW_THRESH  : null);   // 80 평선
-    yBaseHigh.push(isHigh ? ADR_HIGH_THRESH : null);  // 120 평선
+    yBaseLow.push(isLow   ? ADR_LOW_THRESH  : null);
+    yBaseHigh.push(isHigh ? ADR_HIGH_THRESH : null);
   });
 
-  // 구간 경계에서 선이 끊기지 않도록 인접 교차점 공유
-  for (let i = 0; i < dates.length; i++) {
-    const v = values[i];
+  // ── 구간 전환 시 브릿지 포인트 공유 ────────────────────────
+  // 전환에는 4가지 방향이 있다:
+  //   (A) mid → low 진입: 첫 low 값을 mid 에도 추가
+  //   (B) low → mid 이탈: 첫 mid 값을 low 에도 추가
+  //   (C) mid → high 진입: 첫 high 값을 mid 에도 추가
+  //   (D) high → mid 이탈: 첫 mid 값을 high 에도 추가
+  // 방향이 빠지면 트레이스 사이 틈이 생겨 선이 끊겨 보인다.
+  for (let i = 0; i < values.length; i++) {
+    const v    = values[i];
     if (v === null) continue;
     const prev = i > 0 ? values[i - 1] : null;
-    const next  = i < values.length - 1 ? values[i + 1] : null;
-    if (v < ADR_LOW_THRESH  && next  !== null && next  >= ADR_LOW_THRESH)  yMid[i]  = v;
-    if (v >= ADR_LOW_THRESH && prev  !== null && prev  <  ADR_LOW_THRESH)  yLow[i]  = v;
-    if (v > ADR_HIGH_THRESH && next  !== null && next  <= ADR_HIGH_THRESH) yMid[i]  = v;
-    if (v <= ADR_HIGH_THRESH && prev !== null && prev  >  ADR_HIGH_THRESH) yHigh[i] = v;
+    if (prev === null) continue;
+    // (A) mid → low
+    if (v < ADR_LOW_THRESH  && prev >= ADR_LOW_THRESH)  { yMid[i]  = v; yBaseLow[i]  = ADR_LOW_THRESH; }
+    // (B) low → mid
+    if (v >= ADR_LOW_THRESH && prev <  ADR_LOW_THRESH)  { yLow[i]  = v; yBaseLow[i]  = ADR_LOW_THRESH; }
+    // (C) mid → high
+    if (v > ADR_HIGH_THRESH && prev <= ADR_HIGH_THRESH) { yMid[i]  = v; yBaseHigh[i] = ADR_HIGH_THRESH; }
+    // (D) high → mid
+    if (v <= ADR_HIGH_THRESH && prev > ADR_HIGH_THRESH) { yHigh[i] = v; yBaseHigh[i] = ADR_HIGH_THRESH; }
   }
 
   return [
