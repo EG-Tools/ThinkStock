@@ -342,12 +342,12 @@ function resetHandles() {
   seriesOffsets = {};
   seriesScales = {};
   saveState();
-  renderChart();
+  renderChart(false);
 }
 
 /* ── Chart ── */
 
-function renderChart() {
+function renderChart(preserveZoom = true) {
   const el = document.getElementById("chart");
   const msgEl = document.getElementById("messageArea");
 
@@ -424,8 +424,8 @@ function renderChart() {
     };
   });
 
-  // Preserve current zoom range so handle adjustments don't reset the view
-  const savedXRange = el._fullLayout?.xaxis?.range?.slice() || null;
+  // 핸들 드래그 후에만 줌 보존 — 범위 버튼 전환 시엔 초기화
+  const savedXRange = preserveZoom ? (el._fullLayout?.xaxis?.range?.slice() || null) : null;
 
   Plotly.react(el, traces, {
     paper_bgcolor: "transparent",
@@ -496,13 +496,13 @@ async function boot() {
         activeYears = Number(btn.dataset.years);
         syncButtons();
         saveState();
-        renderChart();
+        renderChart(false);
       });
     });
 
     document.getElementById("resetHandles").addEventListener("click", resetHandles);
 
-    renderChart();
+    renderChart(false);
   } catch (err) {
     msgEl.innerHTML = `<div class="message error">${err.message || "앱을 시작하지 못했습니다."}</div>`;
   }
