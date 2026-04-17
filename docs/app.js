@@ -139,10 +139,19 @@ function buildDenseMacroRows(sourceRows, targetDates) {
   return dense.filter((r) => cols.some((c) => toNum(r[c]) !== null));
 }
 
+const CREDIT_OFFSET_DAYS = -2;  // 신용잔고 발표 시차 보정 (2영업일 후행)
+
 function mergeSources(priceRows, denseRows, creditRowsSrc, start, end) {
   const priceMap  = new Map(priceRows.map((r) => [r.date, r]));
   const macroMap  = new Map(denseRows.map((r) => [r.date, r]));
-  const creditMap = new Map(creditRowsSrc.map((r) => [r.date, r]));
+  // 신용 데이터 날짜를 CREDIT_OFFSET_DAYS 만큼 이동해서 map 구성
+  const creditMap = new Map(
+    creditRowsSrc.map((r) => {
+      const d = new Date(`${r.date}T00:00:00Z`);
+      d.setUTCDate(d.getUTCDate() + CREDIT_OFFSET_DAYS);
+      return [d.toISOString().slice(0, 10), r];
+    })
+  );
   const liveCols  = getSeriesColumns(priceRows);
   // 매크로 컬럼에서 kospi_credit/kosdaq_credit 제거 (신용 데이터는 creditMap 우선)
   const CREDIT_COLS = ["kospi_credit", "kosdaq_credit"];
