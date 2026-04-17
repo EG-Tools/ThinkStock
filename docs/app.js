@@ -498,72 +498,63 @@ const ADR_LOW_THRESH  = 80;
 const ADR_HIGH_THRESH = 120;
 
 /**
- * 하나의 ADR 시리즈를 3개의 Plotly 트레이스로 분할한다.
- *   - below 80  → 파란색 선 + 파란 반투명 채우기
+ * 하나의 ADR 시리즈를 Plotly 트레이스 배열로 변환한다.
+ *   - below 80  → 파란색 선 + 80 기준선 사이만 채우기
  *   - 80 ~ 120  → 기본 컬러 선
- *   - above 120 → 붉은색 선 + 붉은 반투명 채우기
+ *   - above 120 → 붉은색 선 + 120 기준선 사이만 채우기
+ *
+ * fill:"tonexty" 를 사용해 threshold ↔ 실제값 사이만 칠한다 (tozeroy 하면 y=0 까지 채워져 여백 과잉).
  */
 function buildAdrZoneTraces(dates, values, mainColor, legendName) {
   const base = { x: dates, type: "scatter", mode: "lines", connectgaps: false };
+  const noHover = { hoverinfo: "skip", hovertemplate: undefined };
+  const ht = "%{x}<br><b>" + legendName + ": %{y:.2f}%</b><extra></extra>";
 
   // ── 3구간 분리 ──────────────────────────────────────────────
   const yLow = [], yMid = [], yHigh = [];
+  const yBaseLow = [], yBaseHigh = [];   // threshold 기준선 (채우기 하한/상한)
+
   values.forEach((v) => {
-    if (v === null) { yLow.push(null); yMid.push(null); yHigh.push(null); return; }
-    yLow.push(v < ADR_LOW_THRESH ? v : null);
-    yMid.push(v >= ADR_LOW_THRESH && v <= ADR_HIGH_THRESH ? v : null);
-    yHigh.push(v > ADR_HIGH_THRESH ? v : null);
+    const isLow  = v !== null && v < ADR_LOW_THRESH;
+    const isHigh = v !== null && v > ADR_HIGH_THRESH;
+    const isMid  = v !== null && !isLow && !isHigh;
+    yLow.push(isLow  ? v : null);
+    yMid.push(isMid  ? v : null);
+    yHigh.push(isHigh ? v : null);
+    yBaseLow.push(isLow  ? ADR_LOW_THRESH  : null);   // 80 평선
+    yBaseHigh.push(isHigh ? ADR_HIGH_THRESH : null);  // 120 평선
   });
 
-  // 구간 트레이스가 끊기지 않도록 인접 경계 값을 공유
+  // 구간 경계에서 선이 끊기지 않도록 인접 교차점 공유
   for (let i = 0; i < dates.length; i++) {
     const v = values[i];
     if (v === null) continue;
     const prev = i > 0 ? values[i - 1] : null;
-    const next = i < values.length - 1 ? values[i + 1] : null;
-    // 80 경계 연결
-    if (v < ADR_LOW_THRESH && next !== null && next >= ADR_LOW_THRESH) yMid[i] = v;
-    if (v >= ADR_LOW_THRESH && prev !== null && prev < ADR_LOW_THRESH) yLow[i] = v;
-    // 120 경계 연결
-    if (v > ADR_HIGH_THRESH && next !== null && next <= ADR_HIGH_THRESH) yMid[i] = v;
-    if (v <= ADR_HIGH_THRESH && prev !== null && prev > ADR_HIGH_THRESH) yHigh[i] = v;
+    const next  = i < values.length - 1 ? values[i + 1] : null;
+    if (v < ADR_LOW_THRESH  && next  !== null && next  >= ADR_LOW_THRESH)  yMid[i]  = v;
+    if (v >= ADR_LOW_THRESH && prev  !== null && prev  <  ADR_LOW_THRESH)  yLow[i]  = v;
+    if (v > ADR_HIGH_THRESH && next  !== null && next  <= ADR_HIGH_THRESH) yMid[i]  = v;
+    if (v <= ADR_HIGH_THRESH && prev !== null && prev  >  ADR_HIGH_THRESH) yHigh[i] = v;
   }
 
   return [
-    // 과매도 구간 (< 80)
-    {
-      ...base,
-      y: yLow,
-      name: legendName,
-      showlegend: true,
-      legendgroup: legendName,
+    // ── 과매도 (< 80): 기준선(80) 먼저, 실제값을 tonexty 로 채우기 ──
+    { ...base, y: yBaseLow,  showlegend: false, legendgroup: legendName,
+      line: { color: "transparent", width: 0 }, ...noHover },
+    { ...base, y: yLow, name: legendName, showlegend: true, legendgroup: legendName,
       line: { color: ADR_ZONE_LOW_COLOR, width: 1.5 },
-      fill: "tozeroy",
-      fillcolor: "rgba(176,198,237,0.18)",
-      hovertemplate: "%{x}<br><b>" + legendName + ": %{y:.2f}%</b><extra></extra>",
-    },
-    // 정상 구간 (80 ~ 120)
-    {
-      ...base,
-      y: yMid,
-      name: legendName,
-      showlegend: false,
-      legendgroup: legendName,
-      line: { color: mainColor, width: 2 },
-      hovertemplate: "%{x}<br><b>" + legendName + ": %{y:.2f}%</b><extra></extra>",
-    },
-    // 과매수 구간 (> 120)
-    {
-      ...base,
-      y: yHigh,
-      name: legendName,
-      showlegend: false,
-      legendgroup: legendName,
+      fill: "tonexty", fillcolor: "rgba(176,198,237,0.15)", hovertemplate: ht },
+
+    // ── 정상 구간 (80~120) ──────────────────────────────────────
+    { ...base, y: yMid, name: legendName, showlegend: false, legendgroup: legendName,
+      line: { color: mainColor, width: 2 }, hovertemplate: ht },
+
+    // ── 과매수 (> 120): 기준선(120) 먼저, 실제값을 tonexty 로 채우기 ──
+    { ...base, y: yBaseHigh, showlegend: false, legendgroup: legendName,
+      line: { color: "transparent", width: 0 }, ...noHover },
+    { ...base, y: yHigh, name: legendName, showlegend: false, legendgroup: legendName,
       line: { color: ADR_ZONE_HIGH_COLOR, width: 1.5 },
-      fill: "tozeroy",
-      fillcolor: "rgba(230,173,173,0.18)",
-      hovertemplate: "%{x}<br><b>" + legendName + ": %{y:.2f}%</b><extra></extra>",
-    },
+      fill: "tonexty", fillcolor: "rgba(230,173,173,0.15)", hovertemplate: ht },
   ];
 }
 
