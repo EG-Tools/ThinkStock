@@ -5,3 +5,5 @@ __pycache__/
 env/
 .streamlit/secrets.toml
 *.log
+scripts/krx_key.txt
+scripts/.env.local

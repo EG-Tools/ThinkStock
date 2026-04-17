@@ -22,16 +22,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install build dependencies
-        run: pip install pandas yfinance
-
-      - name: Build market cache
-        run: python scripts/build_pages_data.py
+      # 데이터는 로컬에서 fetch_local.py 로 생성 후 커밋합니다.
+      # GitHub Actions 는 배포만 담당합니다.
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
