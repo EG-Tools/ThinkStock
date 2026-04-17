@@ -485,50 +485,172 @@ function renderChart(preserveZoom = true) {
   }
 
   updateHandles();
-  renderAdrChart(rows, preserveZoom ? (el._fullLayout?.xaxis?.range?.slice() || null) : null);
+  renderAdrChart(preserveZoom ? (el._fullLayout?.xaxis?.range?.slice() || null) : null);
 }
 
-/* ── ADR 미니 차트 ── */
-function renderAdrChart(rows, xRange) {
+/* ── ADR 미니 차트 (adrinfo.kr 스타일) ── */
+
+// adrinfo.kr 와 동일한 색상 상수
+const ADR_ZONE_LOW_COLOR   = "#b0c6ed";   // < 80  (과매도 구간 — 파란색)
+const ADR_ZONE_HIGH_COLOR  = "#e6adad";   // > 120 (과매수 구간 — 붉은색)
+const ADR_BAND_COLOR       = "rgba(100,100,100,0.06)";
+const ADR_LOW_THRESH  = 80;
+const ADR_HIGH_THRESH = 120;
+
+/**
+ * 하나의 ADR 시리즈를 3개의 Plotly 트레이스로 분할한다.
+ *   - below 80  → 파란색 선 + 파란 반투명 채우기
+ *   - 80 ~ 120  → 기본 컬러 선
+ *   - above 120 → 붉은색 선 + 붉은 반투명 채우기
+ */
+function buildAdrZoneTraces(dates, values, mainColor, legendName) {
+  const base = { x: dates, type: "scatter", mode: "lines", connectgaps: false };
+
+  // ── 3구간 분리 ──────────────────────────────────────────────
+  const yLow = [], yMid = [], yHigh = [];
+  values.forEach((v) => {
+    if (v === null) { yLow.push(null); yMid.push(null); yHigh.push(null); return; }
+    yLow.push(v < ADR_LOW_THRESH ? v : null);
+    yMid.push(v >= ADR_LOW_THRESH && v <= ADR_HIGH_THRESH ? v : null);
+    yHigh.push(v > ADR_HIGH_THRESH ? v : null);
+  });
+
+  // 구간 트레이스가 끊기지 않도록 인접 경계 값을 공유
+  for (let i = 0; i < dates.length; i++) {
+    const v = values[i];
+    if (v === null) continue;
+    const prev = i > 0 ? values[i - 1] : null;
+    const next = i < values.length - 1 ? values[i + 1] : null;
+    // 80 경계 연결
+    if (v < ADR_LOW_THRESH && next !== null && next >= ADR_LOW_THRESH) yMid[i] = v;
+    if (v >= ADR_LOW_THRESH && prev !== null && prev < ADR_LOW_THRESH) yLow[i] = v;
+    // 120 경계 연결
+    if (v > ADR_HIGH_THRESH && next !== null && next <= ADR_HIGH_THRESH) yMid[i] = v;
+    if (v <= ADR_HIGH_THRESH && prev !== null && prev > ADR_HIGH_THRESH) yHigh[i] = v;
+  }
+
+  return [
+    // 과매도 구간 (< 80)
+    {
+      ...base,
+      y: yLow,
+      name: legendName,
+      showlegend: true,
+      legendgroup: legendName,
+      line: { color: ADR_ZONE_LOW_COLOR, width: 1.5 },
+      fill: "tozeroy",
+      fillcolor: "rgba(176,198,237,0.18)",
+      hovertemplate: "%{x}<br><b>" + legendName + ": %{y:.2f}%</b><extra></extra>",
+    },
+    // 정상 구간 (80 ~ 120)
+    {
+      ...base,
+      y: yMid,
+      name: legendName,
+      showlegend: false,
+      legendgroup: legendName,
+      line: { color: mainColor, width: 2 },
+      hovertemplate: "%{x}<br><b>" + legendName + ": %{y:.2f}%</b><extra></extra>",
+    },
+    // 과매수 구간 (> 120)
+    {
+      ...base,
+      y: yHigh,
+      name: legendName,
+      showlegend: false,
+      legendgroup: legendName,
+      line: { color: ADR_ZONE_HIGH_COLOR, width: 1.5 },
+      fill: "tozeroy",
+      fillcolor: "rgba(230,173,173,0.18)",
+      hovertemplate: "%{x}<br><b>" + legendName + ": %{y:.2f}%</b><extra></extra>",
+    },
+  ];
+}
+
+let adrRows = [];   // ADR 전용 데이터 (adr_data.json 에서 로드)
+
+function renderAdrChart(xRange) {
   const el = document.getElementById("chart-adr");
-  if (!el || !rows.length) return;
+  if (!el || !adrRows.length) return;
 
-  const adrAvailable = ADR_SERIES.filter((s) => rows.some((r) => toNum(r[s]) !== null));
-  if (!adrAvailable.length) return;
+  // 현재 activeMonths 에 맞춰 날짜 범위 필터
+  const allDates = adrRows.map((r) => r.date);
+  const maxDate = allDates[allDates.length - 1];
+  const startDate = shiftMonths(maxDate, activeMonths);
+  const filtered = adrRows.filter((r) => r.date >= startDate);
+  if (!filtered.length) return;
 
-  const traces = adrAvailable.map((s) => ({
-    x: rows.map((r) => r.date),
-    y: rows.map((r) => toNum(r[s])),
-    type: "scatter",
-    mode: "lines",
-    name: labelName(s),
-    connectgaps: true,
-    line: { color: seriesColor(s), width: 2, shape: "linear" },
-    hovertemplate: "%{x}<br>%{y:.2f}<extra>%{fullData.name}</extra>",
-  }));
+  const dates = filtered.map((r) => r.date);
+  const kospiVals  = filtered.map((r) => toNum(r.adr_kospi));
+  const kosdaqVals = filtered.map((r) => toNum(r.adr_kosdaq));
+
+  const traces = [
+    ...buildAdrZoneTraces(dates, kospiVals,  "#facc15", "ADR KOSPI"),
+    ...buildAdrZoneTraces(dates, kosdaqVals, "#f472b6", "ADR KOSDAQ"),
+  ];
 
   const layout = {
     paper_bgcolor: "transparent",
     plot_bgcolor: "#111111",
-    margin: { l: 42, r: 42, t: 14, b: 32 },
+    margin: { l: 46, r: 46, t: 14, b: 36 },
     hovermode: "x unified",
     showlegend: true,
-    legend: { orientation: "h", x: 0, y: 1.08, font: { color: "rgba(255,255,255,0.7)", size: 11 } },
+    legend: {
+      orientation: "h", x: 0.5, y: 1.12, xanchor: "center",
+      font: { color: "rgba(255,255,255,0.7)", size: 10 },
+    },
     shapes: [
-      { type: "line", xref: "paper", yref: "y", x0: 0, x1: 1, y0: 1, y1: 1,
-        line: { color: "rgba(255,255,255,0.18)", width: 1, dash: "dot" } },
+      // 80~120 배경 밴드
+      {
+        type: "rect", xref: "paper", yref: "y",
+        x0: 0, x1: 1, y0: ADR_LOW_THRESH, y1: ADR_HIGH_THRESH,
+        fillcolor: ADR_BAND_COLOR, line: { width: 0 }, layer: "below",
+      },
+      // 80% 선
+      {
+        type: "line", xref: "paper", yref: "y",
+        x0: 0, x1: 1, y0: ADR_LOW_THRESH, y1: ADR_LOW_THRESH,
+        line: { color: ADR_ZONE_LOW_COLOR, width: 0.9, dash: "dash" },
+      },
+      // 120% 선
+      {
+        type: "line", xref: "paper", yref: "y",
+        x0: 0, x1: 1, y0: ADR_HIGH_THRESH, y1: ADR_HIGH_THRESH,
+        line: { color: ADR_ZONE_HIGH_COLOR, width: 0.9, dash: "dash" },
+      },
+      // 100% 중심선
+      {
+        type: "line", xref: "paper", yref: "y",
+        x0: 0, x1: 1, y0: 100, y1: 100,
+        line: { color: "rgba(255,255,255,0.15)", width: 0.8, dash: "dot" },
+      },
+    ],
+    annotations: [
+      {
+        xref: "paper", yref: "y", x: 1.01, y: ADR_LOW_THRESH,
+        text: "80%", showarrow: false, xanchor: "left",
+        font: { color: ADR_ZONE_LOW_COLOR, size: 9 },
+      },
+      {
+        xref: "paper", yref: "y", x: 1.01, y: ADR_HIGH_THRESH,
+        text: "120%", showarrow: false, xanchor: "left",
+        font: { color: ADR_ZONE_HIGH_COLOR, size: 9 },
+      },
     ],
     xaxis: {
-      showgrid: true, gridcolor: "rgba(255,255,255,0.06)", zeroline: false,
-      color: "#666", tickfont: { size: 10 }, fixedrange: false,
+      showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1,
+      zeroline: false, color: "#666", tickfont: { size: 9 },
+      fixedrange: false,
       ...(xRange ? { range: xRange } : {}),
     },
     yaxis: {
-      showgrid: true, gridcolor: "rgba(255,255,255,0.06)", zeroline: false,
-      color: "#666", tickfont: { size: 10 }, fixedrange: true,
+      showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1,
+      zeroline: false, color: "#666", tickfont: { size: 9 },
+      fixedrange: true, ticksuffix: "%",
+      tickformat: ".0f",
     },
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
-    hoverlabel: { bgcolor: "#222", bordercolor: "#444", font: { color: "#eee" } },
+    hoverlabel: { bgcolor: "#222", bordercolor: "#444", font: { color: "#eee", size: 11 } },
     dragmode: false,
   };
 
@@ -559,15 +681,20 @@ async function boot() {
   loadState();
   syncButtons();
   try {
-    const [priceRes, macroRes] = await Promise.all([
+    const [priceRes, macroRes, adrRes] = await Promise.all([
       fetch("./data/prices.json"),
       fetch("./data/sample_macro_data.csv"),
+      fetch("./data/adr_data.json"),
     ]);
     const priceText = await priceRes.text();
     pricePayload = JSON.parse(priceText.replace(/\bNaN\b/g, "null"));
     const csvRows = parseCsv(await macroRes.text());
     const priceDates = (pricePayload.records || []).map((r) => r.date);
     macroRows = buildDenseMacroRows(csvRows, priceDates);
+    if (adrRes.ok) {
+      const adrPayload = JSON.parse(await adrRes.text());
+      adrRows = adrPayload.records || [];
+    }
 
     document.querySelectorAll(".range-btn").forEach((btn) => {
       btn.addEventListener("click", () => {

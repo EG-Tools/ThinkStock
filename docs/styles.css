@@ -39,8 +39,8 @@ body {
 }
 
 .chart-frame-adr {
-  min-height: 160px;
-  max-height: 200px;
+  min-height: 200px;
+  max-height: 240px;
 }
 /* Y-axis drag handles */
 #y-handles {
