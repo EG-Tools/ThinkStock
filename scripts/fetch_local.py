@@ -53,9 +53,10 @@ YFINANCE_TICKERS = ["^KS11", "^KQ11", "005930.KS", "218410.KQ"]
 
 # KRX 설정: (endpoint, IDX_NM or ISU_CD filter, value column)
 KRX_CONFIG = {
-    "^KS11":     ("idx/kospi_dd_trd", "IDX_NM", "코스피",  "CLSPRC_IDX",  "BAS_DD"),
-    "^KQ11":     ("idx/kosdaq_dd_trd","IDX_NM", "코스닥",  "CLSPRC_IDX",  "BAS_DD"),
-    "005930.KS": ("sto/stk_bydd_trd", "ISU_CD", "005930", "TDD_CLSPRC",  "BAS_DD"),
+    "^KS11":     ("idx/kospi_dd_trd", "IDX_NM", "코스피",  "CLSPRC_IDX", "BAS_DD"),
+    "^KQ11":     ("idx/kosdaq_dd_trd","IDX_NM", "코스닥",  "CLSPRC_IDX", "BAS_DD"),
+    "005930.KS": ("sto/stk_bydd_trd", "ISU_CD", "005930", "TDD_CLSPRC", "BAS_DD"),
+    "218410.KQ": ("sto/ksq_bydd_trd", "ISU_CD", "218410", "TDD_CLSPRC", "BAS_DD"),
 }
 
 
