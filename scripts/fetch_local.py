@@ -306,10 +306,12 @@ def fetch_adr_data() -> list[dict]:
         return json.loads(raw)
 
     import json as _json
-    from datetime import datetime as _dt, timezone as _tz
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+
+    _KST = _tz(_td(hours=9))
 
     def ts_to_date(ts_ms):
-        return _dt.fromtimestamp(ts_ms / 1000, tz=_tz.utc).strftime("%Y-%m-%d")
+        return _dt.fromtimestamp(ts_ms / 1000, tz=_KST).strftime("%Y-%m-%d")
 
     try:
         kospi_raw  = extract_array(html, "kospi_adr")

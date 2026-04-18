@@ -756,7 +756,7 @@ async function refreshAdrFromWeb() {
   const kosdaqRaw = extractJsArray(html, "kosdaq_adr");
   if (!kospiRaw.length && !kosdaqRaw.length) throw new Error("ADR 데이터 파싱 실패 — 사이트 구조 변경 가능성");
 
-  const tsToDate = (ms) => new Date(ms).toISOString().slice(0, 10);
+  const tsToDate = (ms) => new Date(ms + 9 * 3600000).toISOString().slice(0, 10);
   const kospiMap  = new Map(kospiRaw.map(([ts, v])  => [tsToDate(ts), v]));
   const kosdaqMap = new Map(kosdaqRaw.map(([ts, v]) => [tsToDate(ts), v]));
 
