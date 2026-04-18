@@ -67,7 +67,7 @@ body {
 .credit-offset-input::-webkit-outer-spin-button,
 .credit-offset-input::-webkit-inner-spin-button { -webkit-appearance: none; }
 .credit-offset-input:focus { outline: none; border-color: rgba(255,255,255,0.2); }
-.range-row { display: flex; gap: 6px; padding: 8px 20px; flex-wrap: nowrap; }
+.range-row { display: flex; align-items: center; gap: 6px; padding: 8px 20px; flex-wrap: nowrap; }
 .range-btn {
   padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px;
   background: rgba(255, 255, 255, 0.06); color: var(--ink); font-size: 12px;
@@ -124,23 +124,13 @@ body {
   box-shadow: 0 0 12px rgba(255, 255, 255, 0.4);
   border-color: rgba(255, 255, 255, 0.8);
 }
-/* Help row */
-.help-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 20px;
-  gap: 12px;
-}
-.help-text {
-  font-size: 12px;
-  color: var(--muted);
-  line-height: 1.4;
-}
 .adr-source-link {
+  margin-left: auto;
+  flex-shrink: 0;
   font-size: 12px;
   color: var(--muted);
   text-decoration: none;
+  white-space: nowrap;
 }
 .adr-source-link:hover { color: var(--ink); text-decoration: underline; }
 .reset-btn {
@@ -155,8 +145,6 @@ body {
   transition: all 0.15s;
 }
 .reset-btn:hover { background: rgba(255, 255, 255, 0.1); color: var(--ink); }
-/* 지수팝업 OFF 상태 — spike 라인은 유지, hover 텍스트 박스만 숨김 */
-.no-hover-popup .hoverlayer .hovertext { display: none !important; }
 .message-area { margin-top: 12px; }
 .message { padding: 12px 14px; border-radius: 18px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border); color: var(--muted); }
 .message.error { background: rgba(187, 67, 40, 0.2); color: #f87171; }
