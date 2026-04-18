@@ -35,6 +35,21 @@ body {
 .refresh-btn:hover { background: rgba(255,255,255,0.12); color: var(--ink); }
 .refresh-btn.spinning { animation: spin 0.7s linear infinite; color: var(--accent); border-color: rgba(74,222,128,0.3); }
 @keyframes spin { to { transform: rotate(360deg); } }
+.hover-toggle-btn {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.06);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.hover-toggle-btn:hover { background: rgba(255,255,255,0.12); color: var(--ink); }
+.hover-toggle-btn.is-active { background: var(--accent-soft); color: var(--accent); border-color: rgba(74,222,128,0.25); }
 .credit-offset-wrap {
   display: flex; align-items: center; gap: 6px;
   cursor: default;
@@ -122,6 +137,12 @@ body {
   color: var(--muted);
   line-height: 1.4;
 }
+.adr-source-link {
+  font-size: 12px;
+  color: var(--muted);
+  text-decoration: none;
+}
+.adr-source-link:hover { color: var(--ink); text-decoration: underline; }
 .reset-btn {
   flex-shrink: 0;
   padding: 6px 14px;

@@ -47,6 +47,7 @@ let dragRafId = null;
 let currentRows = [];
 let currentStart = "";
 let chartSyncing = false;   // relayout 무한루프 방지 플래그
+let hoverShowPopup = false;
 
 /* ── localStorage persistence ── */
 function saveState() {
@@ -56,6 +57,8 @@ function saveState() {
       hiddenSeries: [...hiddenSeries],
       seriesOffsets,
       seriesScales,
+      creditOffset: -CREDIT_OFFSET_DAYS,
+      hoverShowPopup,
     }));
   } catch (_) {}
 }
@@ -69,6 +72,8 @@ function loadState() {
     if (Array.isArray(p.hiddenSeries)) hiddenSeries = new Set(p.hiddenSeries);
     if (p.seriesOffsets && typeof p.seriesOffsets === "object") seriesOffsets = p.seriesOffsets;
     if (p.seriesScales && typeof p.seriesScales === "object") seriesScales = p.seriesScales;
+    if (typeof p.creditOffset === "number") CREDIT_OFFSET_DAYS = Math.abs(p.creditOffset);
+    if (typeof p.hoverShowPopup === "boolean") hoverShowPopup = p.hoverShowPopup;
   } catch (_) {}
 }
 
@@ -480,7 +485,7 @@ function renderChart(preserveZoom = true) {
     paper_bgcolor: "transparent",
     plot_bgcolor: "#111111",
     margin: { l: 42, r: 42, t: 28, b: 32 },
-    hovermode: "x unified",
+    hovermode: hoverShowPopup ? "x unified" : false,
     legend: { orientation: "h", x: 0, y: 1.08, font: { color: "rgba(255,255,255,0.7)", size: 11 } },
     xaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, color: "#666", tickfont: { size: 10 }, fixedrange: false, ...(savedXRange ? { range: savedXRange } : {}) },
     yaxis: { showticklabels: false, title: "", showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, fixedrange: true },
@@ -645,7 +650,7 @@ function renderAdrChart(xRange) {
     paper_bgcolor: "transparent",
     plot_bgcolor: "#111111",
     margin: { l: 46, r: 46, t: 14, b: 36 },
-    hovermode: "x unified",
+    hovermode: hoverShowPopup ? "x unified" : false,
     showlegend: true,
     legend: {
       orientation: "h", x: 0.5, y: 1.12, xanchor: "center",
@@ -819,13 +824,28 @@ async function boot() {
 
     document.getElementById("resetHandles").addEventListener("click", resetHandles);
 
+    // 지수팝업 토글 버튼
+    const hoverToggleBtn = document.getElementById("hoverToggle");
+    if (hoverToggleBtn) {
+      hoverToggleBtn.classList.toggle("is-active", hoverShowPopup);
+      hoverToggleBtn.addEventListener("click", () => {
+        hoverShowPopup = !hoverShowPopup;
+        hoverToggleBtn.classList.toggle("is-active", hoverShowPopup);
+        saveState();
+        renderChart(true);
+        renderAdrChart();
+      });
+    }
+
     // 신용 오프셋 입력박스
     const creditOffsetEl = document.getElementById("creditOffset");
     if (creditOffsetEl) {
+      creditOffsetEl.value = -CREDIT_OFFSET_DAYS;
       creditOffsetEl.addEventListener("change", () => {
         const v = parseInt(creditOffsetEl.value, 10);
         if (Number.isFinite(v)) {
-          CREDIT_OFFSET_DAYS = Math.abs(v);   // 내부는 양수 (탐색 방향)
+          CREDIT_OFFSET_DAYS = Math.abs(v);
+          saveState();
           renderChart();
         }
       });
