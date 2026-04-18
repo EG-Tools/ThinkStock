@@ -465,7 +465,7 @@ function renderChart(preserveZoom = true) {
       x: rows.map((r) => r.date),
       y: values,
       type: "scatter",
-      mode: "lines",
+      mode: "lines+markers",
       name: labelName(series),
       visible: hiddenSeries.has(series) ? "legendonly" : true,
       connectgaps: true,
@@ -474,6 +474,7 @@ function renderChart(preserveZoom = true) {
         width: macroCols.includes(series) ? 3 : 2,
         shape: "linear",
       },
+      marker: { symbol: "circle", size: 7, color: seriesColor(series) },
       hovertemplate: "%{x}<br>%{y:,.2f}<extra>%{fullData.name}</extra>",
     };
   });
@@ -828,19 +829,18 @@ async function boot() {
 
     // 지수팝업 토글 버튼
     const hoverToggleBtn = document.getElementById("hoverToggle");
+    const applyHoverState = () => {
+      document.getElementById("chart")?.classList.toggle("no-hover-popup", !hoverShowPopup);
+      document.getElementById("chart-adr")?.classList.toggle("no-hover-popup", !hoverShowPopup);
+    };
     if (hoverToggleBtn) {
       hoverToggleBtn.classList.toggle("is-active", hoverShowPopup);
+      applyHoverState();
       hoverToggleBtn.addEventListener("click", () => {
         hoverShowPopup = !hoverShowPopup;
         hoverToggleBtn.classList.toggle("is-active", hoverShowPopup);
+        applyHoverState();
         saveState();
-        const label = hoverShowPopup
-          ? { bgcolor: "#222", bordercolor: "#444", font: { color: "#eee" } }
-          : { bgcolor: "rgba(0,0,0,0)", bordercolor: "rgba(0,0,0,0)", font: { color: "rgba(0,0,0,0)", size: 1 } };
-        const el = document.getElementById("chart");
-        const adrEl = document.getElementById("chart-adr");
-        if (el?.data) Plotly.relayout(el, { hoverlabel: label });
-        if (adrEl?.data) Plotly.relayout(adrEl, { hoverlabel: label });
       });
     }
 
