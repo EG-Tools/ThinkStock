@@ -147,6 +147,8 @@ body {
 .reset-btn:hover { background: rgba(255, 255, 255, 0.1); color: var(--ink); }
 /* 차트 데이터 점 숨김 — 범례에서는 원 아이콘으로 표시됨 */
 .cartesianlayer .point { display: none !important; }
+/* 범례 선(—) 아이콘 숨김 — 원만 표시 */
+.legend .legendlines { display: none !important; }
 /* 지수팝업 OFF: 팝업·hover 마커 숨김, spike 라인(path/line 직계자식)은 유지 */
 .no-hover-popup .hoverlayer > g { display: none !important; }
 .message-area { margin-top: 12px; }

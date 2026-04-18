@@ -605,8 +605,9 @@ function buildAdrZoneTraces(dates, values, mainColor, legendName) {
     // ── 과매도 (< 80): 기준선(80) 먼저, 실제값을 tonexty 로 채우기 ──
     { ...base, y: yBaseLow,  showlegend: false, legendgroup: legendName,
       line: { color: "transparent", width: 0 }, ...noHover },
-    { ...base, y: yLow, name: legendName, showlegend: true, legendgroup: legendName,
+    { ...base, mode: "lines+markers", y: yLow, name: legendName, showlegend: true, legendgroup: legendName,
       line: { color: ADR_ZONE_LOW_COLOR, width: 1.5 },
+      marker: { symbol: "circle", size: 7, color: mainColor },
       fill: "tonexty", fillcolor: "rgba(176,198,237,0.15)", hovertemplate: ht },
 
     // ── 정상 구간 (80~120) ──────────────────────────────────────
