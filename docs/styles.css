@@ -155,6 +155,8 @@ body {
   transition: all 0.15s;
 }
 .reset-btn:hover { background: rgba(255, 255, 255, 0.1); color: var(--ink); }
+/* 지수팝업 OFF 상태 — spike 라인은 유지, hover 텍스트 박스만 숨김 */
+.no-hover-popup .hoverlayer .hovertext { display: none !important; }
 .message-area { margin-top: 12px; }
 .message { padding: 12px 14px; border-radius: 18px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border); color: var(--muted); }
 .message.error { background: rgba(187, 67, 40, 0.2); color: #f87171; }

@@ -485,9 +485,9 @@ function renderChart(preserveZoom = true) {
     paper_bgcolor: "transparent",
     plot_bgcolor: "#111111",
     margin: { l: 42, r: 42, t: 28, b: 32 },
-    hovermode: hoverShowPopup ? "x unified" : false,
+    hovermode: "x unified",
     legend: { orientation: "h", x: 0, y: 1.08, font: { color: "rgba(255,255,255,0.7)", size: 11 } },
-    xaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, color: "#666", tickfont: { size: 10 }, fixedrange: false, ...(savedXRange ? { range: savedXRange } : {}) },
+    xaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, color: "#666", tickfont: { size: 10 }, fixedrange: false, showspikes: true, spikemode: "across", spikesnap: "cursor", spikecolor: "rgba(255,255,255,0.25)", spikethickness: 1, spikedash: "solid", ...(savedXRange ? { range: savedXRange } : {}) },
     yaxis: { showticklabels: false, title: "", showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, fixedrange: true },
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
     hoverlabel: { bgcolor: "#222", bordercolor: "#444", font: { color: "#eee" } },
@@ -650,7 +650,7 @@ function renderAdrChart(xRange) {
     paper_bgcolor: "transparent",
     plot_bgcolor: "#111111",
     margin: { l: 46, r: 46, t: 14, b: 36 },
-    hovermode: hoverShowPopup ? "x unified" : false,
+    hovermode: "x unified",
     showlegend: true,
     legend: {
       orientation: "h", x: 0.5, y: 1.12, xanchor: "center",
@@ -698,6 +698,8 @@ function renderAdrChart(xRange) {
       showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1,
       zeroline: false, color: "#666", tickfont: { size: 9 },
       fixedrange: false,
+      showspikes: true, spikemode: "across", spikesnap: "cursor",
+      spikecolor: "rgba(255,255,255,0.25)", spikethickness: 1, spikedash: "solid",
       ...(xRange ? { range: xRange } : {}),
     },
     yaxis: {
@@ -826,14 +828,18 @@ async function boot() {
 
     // 지수팝업 토글 버튼
     const hoverToggleBtn = document.getElementById("hoverToggle");
+    const applyHoverClass = () => {
+      document.getElementById("chart")?.classList.toggle("no-hover-popup", !hoverShowPopup);
+      document.getElementById("chart-adr")?.classList.toggle("no-hover-popup", !hoverShowPopup);
+    };
     if (hoverToggleBtn) {
       hoverToggleBtn.classList.toggle("is-active", hoverShowPopup);
+      applyHoverClass();
       hoverToggleBtn.addEventListener("click", () => {
         hoverShowPopup = !hoverShowPopup;
         hoverToggleBtn.classList.toggle("is-active", hoverShowPopup);
+        applyHoverClass();
         saveState();
-        renderChart(true);
-        renderAdrChart();
       });
     }
 
