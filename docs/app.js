@@ -26,9 +26,22 @@ const SERIES_COLORS = {
 };
 
 const STATE_KEY = "thinkstock-v5";
+const API_SETTINGS_KEY = "thinkstock-api-v1";
+const API_SETTINGS_DEFAULT = Object.freeze({
+  ecosApiKey: "",
+  kofiaApiKey: "",
+  kosisApiKey: "",
+  krxApiKey: "",
+});
+const ECOS_STAT_CODE = "901Y067";
+const ECOS_ITEM_CODE = "I16E";
+const ECOS_START = "199601";
+const KOSIS_START = "199601";
+const KOFIA_CREDIT_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getGrantingOfCreditBalanceInfo";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const toNum = (v) => (v != null && Number.isFinite(Number(v))) ? Number(v) : null;
+const escapeHtml = (v) => String(v ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 const labelName = (key) => DISPLAY_NAMES[key] || key;
 const seriesColor = (key) => SERIES_COLORS[key] || "#888";
 const toUtcMs = (d) => Date.parse(`${d}T00:00:00Z`);
@@ -55,6 +68,7 @@ let hoverSyncing = false;
 let cursorSyncing = false;
 let cursorMoveBound = false;
 const CURSOR_LINE_CLASS = "synced-cursor-line";
+let apiSettings = { ...API_SETTINGS_DEFAULT };
 
 /* ── localStorage persistence ── */
 function saveState() {
@@ -84,6 +98,123 @@ function loadState() {
   } catch (_) {}
 }
 
+
+function sanitizeApiSettings(raw) {
+  const src = raw && typeof raw === "object" ? raw : {};
+  const out = {};
+  Object.keys(API_SETTINGS_DEFAULT).forEach((key) => {
+    const value = src[key];
+    out[key] = typeof value === "string" ? value.trim() : "";
+  });
+  return out;
+}
+
+function saveApiSettings() {
+  try {
+    localStorage.setItem(API_SETTINGS_KEY, JSON.stringify(sanitizeApiSettings(apiSettings)));
+  } catch (_) {}
+}
+
+function loadApiSettings() {
+  try {
+    const raw = localStorage.getItem(API_SETTINGS_KEY);
+    if (!raw) return;
+    apiSettings = sanitizeApiSettings(JSON.parse(raw));
+  } catch (_) {
+    apiSettings = { ...API_SETTINGS_DEFAULT };
+  }
+}
+
+function hasAnyApiKey() {
+  return Object.values(apiSettings || {}).some((v) => String(v || "").trim().length > 0);
+}
+
+function syncApiOptionsButton() {
+  const btn = document.getElementById("apiOptionsBtn");
+  if (!btn) return;
+  btn.classList.toggle("is-configured", hasAnyApiKey());
+}
+
+function setMessage(msgEl, lines, isError = false) {
+  if (!msgEl) return;
+  const list = (Array.isArray(lines) ? lines : [lines])
+    .map((line) => String(line || "").trim())
+    .filter(Boolean);
+  if (!list.length) {
+    msgEl.innerHTML = "";
+    return;
+  }
+  const body = list.map((line) => escapeHtml(line)).join("<br>");
+  msgEl.innerHTML = `<div class="message${isError ? " error" : ""}">${body}</div>`;
+}
+
+function setupApiSettingsPanel(msgEl) {
+  const modal = document.getElementById("apiSettingsModal");
+  const openBtn = document.getElementById("apiOptionsBtn");
+  if (!modal || !openBtn) return;
+
+  const closeBtn = document.getElementById("apiSettingsCloseBtn");
+  const saveBtn = document.getElementById("apiSettingsSaveBtn");
+  const clearBtn = document.getElementById("apiSettingsClearBtn");
+  const inputs = {
+    ecosApiKey: document.getElementById("ecosApiInput"),
+    kofiaApiKey: document.getElementById("kofiaApiInput"),
+    kosisApiKey: document.getElementById("kosisApiInput"),
+    krxApiKey: document.getElementById("krxApiInput"),
+  };
+
+  const fillInputs = () => {
+    Object.entries(inputs).forEach(([key, el]) => {
+      if (el) el.value = apiSettings[key] || "";
+    });
+  };
+
+  const readInputs = () => sanitizeApiSettings({
+    ecosApiKey: inputs.ecosApiKey?.value || "",
+    kofiaApiKey: inputs.kofiaApiKey?.value || "",
+    kosisApiKey: inputs.kosisApiKey?.value || "",
+    krxApiKey: inputs.krxApiKey?.value || "",
+  });
+
+  const close = () => { modal.hidden = true; };
+  const open = () => {
+    fillInputs();
+    modal.hidden = false;
+  };
+
+  if (openBtn.dataset.bound === "1") {
+    syncApiOptionsButton();
+    return;
+  }
+  openBtn.dataset.bound = "1";
+
+  openBtn.addEventListener("click", open);
+  closeBtn?.addEventListener("click", close);
+  modal.querySelectorAll("[data-api-close='1']").forEach((node) => {
+    node.addEventListener("click", close);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !modal.hidden) close();
+  });
+
+  saveBtn?.addEventListener("click", () => {
+    apiSettings = readInputs();
+    saveApiSettings();
+    syncApiOptionsButton();
+    close();
+    setMessage(msgEl, ["API 키를 이 기기에 저장했습니다."]);
+  });
+
+  clearBtn?.addEventListener("click", () => {
+    apiSettings = { ...API_SETTINGS_DEFAULT };
+    saveApiSettings();
+    fillInputs();
+    syncApiOptionsButton();
+    setMessage(msgEl, ["저장된 API 키를 삭제했습니다."]);
+  });
+
+  syncApiOptionsButton();
+}
 function shiftMonths(dateStr, months) {
   const d = new Date(`${dateStr}T00:00:00`);
   if (Number.isNaN(d.getTime())) return dateStr;
@@ -1279,6 +1410,310 @@ function syncButtons() {
   });
 }
 
+function toYyyymm(dateObj) {
+  const year = dateObj.getUTCFullYear();
+  const month = `${dateObj.getUTCMonth() + 1}`.padStart(2, "0");
+  return `${year}${month}`;
+}
+
+function monthCodeToDate(code) {
+  const raw = String(code || "").trim();
+  if (!/^\d{6}$/.test(raw)) return "";
+  return `${raw.slice(0, 4)}-${raw.slice(4, 6)}-01`;
+}
+
+function normalizeLeadingRows(rows) {
+  const map = new Map();
+  (rows || []).forEach((row) => {
+    const date = String(row?.date || "").slice(0, 10);
+    const value = toNum(row?.leading_cycle);
+    if (!date || !Number.isFinite(value)) return;
+    map.set(date, { date, leading_cycle: value });
+  });
+  return [...map.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function normalizeCreditRows(rows) {
+  const map = new Map();
+  (rows || []).forEach((row) => {
+    const date = String(row?.date || "").slice(0, 10);
+    if (!date) return;
+    const next = {
+      date,
+      kospi_credit: toNum(row?.kospi_credit),
+      kosdaq_credit: toNum(row?.kosdaq_credit),
+    };
+    if (!Number.isFinite(next.kospi_credit) && !Number.isFinite(next.kosdaq_credit)) return;
+    const prev = map.get(date) || { date, kospi_credit: null, kosdaq_credit: null };
+    map.set(date, {
+      date,
+      kospi_credit: Number.isFinite(next.kospi_credit) ? next.kospi_credit : prev.kospi_credit,
+      kosdaq_credit: Number.isFinite(next.kosdaq_credit) ? next.kosdaq_credit : prev.kosdaq_credit,
+    });
+  });
+  return [...map.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function mergeLeadingSources(ecosRows, kosisRows) {
+  const out = new Map();
+  normalizeLeadingRows(kosisRows).forEach((row) => out.set(row.date, row));
+  normalizeLeadingRows(ecosRows).forEach((row) => out.set(row.date, row));
+  return [...out.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function sameNullableNumber(a, b) {
+  const na = toNum(a);
+  const nb = toNum(b);
+  if (na === null && nb === null) return true;
+  if (na === null || nb === null) return false;
+  return Math.abs(na - nb) <= 1e-9;
+}
+
+async function fetchJsonWithProxyFallback(url) {
+  const candidates = [url, CORS_PROXY + encodeURIComponent(url)];
+  let lastError = "요청 실패";
+  for (const target of candidates) {
+    try {
+      const res = await fetch(target, { cache: "no-store" });
+      if (!res.ok) {
+        lastError = `HTTP ${res.status}`;
+        continue;
+      }
+      const text = await res.text();
+      if (!text) {
+        lastError = "빈 응답";
+        continue;
+      }
+      return JSON.parse(text);
+    } catch (err) {
+      lastError = err?.message || String(err);
+    }
+  }
+  throw new Error(lastError);
+}
+
+async function fetchEcosLeadingCycleLive(apiKey) {
+  const clean = String(apiKey || "").trim();
+  if (!clean) return [];
+  const endYm = toYyyymm(new Date());
+  const url = `https://ecos.bok.or.kr/api/StatisticSearch/${encodeURIComponent(clean)}/json/kr/1/5000/${ECOS_STAT_CODE}/M/${ECOS_START}/${endYm}/${ECOS_ITEM_CODE}`;
+  const payload = await fetchJsonWithProxyFallback(url);
+  const rows = Array.isArray(payload?.StatisticSearch?.row) ? payload.StatisticSearch.row : [];
+  return normalizeLeadingRows(rows.map((row) => ({
+    date: monthCodeToDate(row?.TIME),
+    leading_cycle: toNum(row?.DATA_VALUE),
+  })));
+}
+
+async function fetchKosisLeadingCycleLive(apiKey) {
+  const clean = String(apiKey || "").trim();
+  if (!clean) return [];
+  const query = new URLSearchParams({
+    method: "getList",
+    apiKey: clean,
+    format: "json",
+    jsonVD: "Y",
+    orgId: "101",
+    tblId: "DT_1C8015",
+    itmId: "T1",
+    objL1: "A03",
+    prdSe: "M",
+    startPrdDe: KOSIS_START,
+    endPrdDe: "209912",
+  });
+  const url = `https://kosis.kr/openapi/Param/statisticsParameterData.do?${query.toString()}`;
+  const payload = await fetchJsonWithProxyFallback(url);
+  const rows = Array.isArray(payload) ? payload : [];
+  return normalizeLeadingRows(rows.map((row) => ({
+    date: monthCodeToDate(row?.PRD_DE),
+    leading_cycle: toNum(row?.DT),
+  })));
+}
+
+function parseKofiaAmountToTrillion(rawValue) {
+  const n = Number(String(rawValue ?? "").replace(/,/g, ""));
+  if (!Number.isFinite(n)) return null;
+  return Math.round((n / 1e12) * 10000) / 10000;
+}
+
+async function fetchKofiaCreditLive(apiKey) {
+  const clean = String(apiKey || "").trim();
+  if (!clean) return [];
+
+  const keyCandidates = [clean];
+  try {
+    const decoded = decodeURIComponent(clean);
+    if (decoded && decoded !== clean) keyCandidates.push(decoded);
+  } catch (_) {
+    // ignore
+  }
+
+  let lastError = null;
+
+  for (const serviceKey of [...new Set(keyCandidates)]) {
+    try {
+      const rows = [];
+      const numOfRows = 1000;
+
+      for (let pageNo = 1; pageNo <= 30; pageNo += 1) {
+        const query = new URLSearchParams({
+          serviceKey,
+          numOfRows: String(numOfRows),
+          pageNo: String(pageNo),
+          resultType: "json",
+        });
+        const url = `${KOFIA_CREDIT_URL}?${query.toString()}`;
+        const payload = await fetchJsonWithProxyFallback(url);
+
+        const header = payload?.response?.header || {};
+        if (header.resultCode && header.resultCode !== "00") {
+          throw new Error(header.resultMsg || "KOFIA 인증 오류");
+        }
+
+        const body = payload?.response?.body || {};
+        const rawItems = body?.items?.item;
+        const items = Array.isArray(rawItems) ? rawItems : (rawItems ? [rawItems] : []);
+        if (!items.length) break;
+
+        items.forEach((item) => {
+          const basDt = String(item?.basDt || "");
+          if (!/^\d{8}$/.test(basDt)) return;
+          const date = `${basDt.slice(0, 4)}-${basDt.slice(4, 6)}-${basDt.slice(6, 8)}`;
+          const kospi = parseKofiaAmountToTrillion(item?.crdTrFingScrs);
+          const kosdaq = parseKofiaAmountToTrillion(item?.crdTrFingKosdaq);
+          if (!Number.isFinite(kospi) && !Number.isFinite(kosdaq)) return;
+          rows.push({ date, kospi_credit: kospi, kosdaq_credit: kosdaq });
+        });
+
+        const totalCount = Number(body?.totalCount);
+        const rowsPerPage = Number(body?.numOfRows) || numOfRows;
+        const currentPage = Number(body?.pageNo) || pageNo;
+        if (Number.isFinite(totalCount) && totalCount > 0 && currentPage * rowsPerPage >= totalCount) break;
+        if (items.length < rowsPerPage) break;
+      }
+
+      const normalized = normalizeCreditRows(rows);
+      if (normalized.length) return normalized;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  if (lastError) throw lastError;
+  return [];
+}
+
+function applyLeadingCycleLiveRows(monthlyRows) {
+  const normalized = normalizeLeadingRows(monthlyRows);
+  if (!normalized.length || !pricePayload?.records?.length) return { updated: 0, latestDate: "" };
+
+  const priceDates = (pricePayload.records || []).map((r) => r.date).filter(Boolean);
+  if (!priceDates.length) return { updated: 0, latestDate: normalized[normalized.length - 1].date };
+
+  const dense = buildDenseMacroRows(normalized, priceDates);
+  if (!dense.length) return { updated: 0, latestDate: normalized[normalized.length - 1].date };
+
+  const byDate = new Map((macroRows || []).map((row) => [row.date, { ...row }]));
+  priceDates.forEach((date) => {
+    if (!byDate.has(date)) byDate.set(date, { date });
+  });
+
+  let updated = 0;
+  dense.forEach((row) => {
+    const date = String(row.date || "").slice(0, 10);
+    const value = toNum(row.leading_cycle);
+    if (!date || !Number.isFinite(value)) return;
+    const prev = byDate.get(date) || { date };
+    if (!sameNullableNumber(prev.leading_cycle, value)) updated += 1;
+    prev.leading_cycle = value;
+    byDate.set(date, prev);
+  });
+
+  macroRows = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+  return { updated, latestDate: normalized[normalized.length - 1].date };
+}
+
+function applyCreditLiveRows(liveRows) {
+  const normalized = normalizeCreditRows(liveRows);
+  if (!normalized.length) return { updated: 0, latestDate: "" };
+
+  const byDate = new Map();
+  (creditRows || []).forEach((row) => {
+    const date = String(row?.date || "").slice(0, 10);
+    if (!date) return;
+    byDate.set(date, {
+      date,
+      kospi_credit: toNum(row?.kospi_credit),
+      kosdaq_credit: toNum(row?.kosdaq_credit),
+    });
+  });
+
+  let updated = 0;
+  normalized.forEach((row) => {
+    const prev = byDate.get(row.date) || { date: row.date, kospi_credit: null, kosdaq_credit: null };
+    const next = {
+      date: row.date,
+      kospi_credit: Number.isFinite(toNum(row.kospi_credit)) ? toNum(row.kospi_credit) : prev.kospi_credit,
+      kosdaq_credit: Number.isFinite(toNum(row.kosdaq_credit)) ? toNum(row.kosdaq_credit) : prev.kosdaq_credit,
+    };
+    if (!sameNullableNumber(prev.kospi_credit, next.kospi_credit) || !sameNullableNumber(prev.kosdaq_credit, next.kosdaq_credit)) {
+      updated += 1;
+    }
+    byDate.set(row.date, next);
+  });
+
+  creditRows = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+  return { updated, latestDate: normalized[normalized.length - 1].date };
+}
+
+async function refreshLiveApiData() {
+  const applied = [];
+  const warnings = [];
+
+  if (!hasAnyApiKey()) return { applied, warnings };
+
+  let ecosRows = [];
+  let kosisRows = [];
+
+  if (apiSettings.ecosApiKey) {
+    try {
+      ecosRows = await fetchEcosLeadingCycleLive(apiSettings.ecosApiKey);
+    } catch (err) {
+      warnings.push(`ECOS 실패: ${err.message}`);
+    }
+  }
+
+  if (apiSettings.kosisApiKey) {
+    try {
+      kosisRows = await fetchKosisLeadingCycleLive(apiSettings.kosisApiKey);
+    } catch (err) {
+      warnings.push(`KOSIS 실패: ${err.message}`);
+    }
+  }
+
+  const leadingRows = mergeLeadingSources(ecosRows, kosisRows);
+  if (leadingRows.length) {
+    const info = applyLeadingCycleLiveRows(leadingRows);
+    applied.push(`선행지수 갱신 (${info.updated}개 반영, 최신 ${info.latestDate})`);
+  }
+
+  if (apiSettings.kofiaApiKey) {
+    try {
+      const kofiaRows = await fetchKofiaCreditLive(apiSettings.kofiaApiKey);
+      if (kofiaRows.length) {
+        const info = applyCreditLiveRows(kofiaRows);
+        applied.push(`신용잔고 갱신 (${info.updated}개 반영, 최신 ${info.latestDate})`);
+      } else {
+        warnings.push("KOFIA 응답에 데이터가 없습니다.");
+      }
+    } catch (err) {
+      warnings.push(`KOFIA 실패: ${err.message}`);
+    }
+  }
+
+  return { applied, warnings };
+}
+
 /**
  * adrinfo.kr/chart 를 CORS 프록시로 가져와 adrRows 에 없는 날짜만 추가한다.
  * 반환: { added: number, latestDate: string }
@@ -1362,10 +1797,18 @@ async function loadData(forceNetwork = false) {
 async function boot() {
   const msgEl = document.getElementById("messageArea");
   loadState();
+  loadApiSettings();
   bindSeriesToggleBoard();
   syncButtons();
+  setupApiSettingsPanel(msgEl);
+  syncApiOptionsButton();
   try {
     await loadData(true);
+
+    const startupLive = await refreshLiveApiData();
+    if (startupLive.applied.length || startupLive.warnings.length) {
+      setMessage(msgEl, [...startupLive.applied, ...startupLive.warnings], startupLive.applied.length === 0);
+    }
 
     document.querySelectorAll(".range-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -1412,35 +1855,43 @@ async function boot() {
     }
 
     // 새로고침 버튼: 캐시 무시하고 최신 데이터 재요청
-    
     const refreshBtn = document.getElementById("refreshData");
     if (refreshBtn) {
       refreshBtn.addEventListener("click", async () => {
         if (refreshBtn.classList.contains("spinning")) return;
         refreshBtn.classList.add("spinning");
-        msgEl.innerHTML = "";
+        setMessage(msgEl, []);
         try {
-          // 1) SW 캐시 삭제 후 서버 파일 재요청
           if (navigator.serviceWorker.controller) {
             navigator.serviceWorker.controller.postMessage("REFRESH_DATA");
           }
           await loadData(true);
 
-          // 2) adrinfo.kr 에서 adrRows 에 없는 날짜만 증분 취득
-          const prevLast = adrRows.length ? adrRows[adrRows.length - 1].date : "(없음)";
+          const infoLines = [];
+          const warnLines = [];
+
           try {
             const { added, latestDate } = await refreshAdrFromWeb();
             if (added > 0) {
-              msgEl.innerHTML = `<div class="message">ADR ${added}일치 추가됨 (~ ${latestDate})</div>`;
+              infoLines.push(`ADR ${added}일치 추가됨 (~ ${latestDate})`);
             }
           } catch (adrErr) {
-            // ADR 갱신 실패는 경고만 — 가격/신용 데이터는 이미 갱신됨
-            msgEl.innerHTML = `<div class="message">ADR 갱신 실패 (${adrErr.message}) — 가격·신용 데이터는 갱신됨</div>`;
+            warnLines.push(`ADR 갱신 실패: ${adrErr.message}`);
           }
 
+          const liveResult = await refreshLiveApiData();
+          infoLines.push(...liveResult.applied);
+          warnLines.push(...liveResult.warnings);
+
           renderChart(false);
+
+          if (infoLines.length || warnLines.length) {
+            setMessage(msgEl, [...infoLines, ...warnLines], infoLines.length === 0);
+          } else {
+            setMessage(msgEl, []);
+          }
         } catch (err) {
-          msgEl.innerHTML = `<div class="message error">새로고침 실패: ${err.message}</div>`;
+          setMessage(msgEl, `새로고침 실패: ${err.message}`, true);
         } finally {
           refreshBtn.classList.remove("spinning");
         }
@@ -1449,7 +1900,7 @@ async function boot() {
 
     renderChart(false);
   } catch (err) {
-    msgEl.innerHTML = `<div class="message error">${err.message || "앱을 시작하지 못했습니다."}</div>`;
+    setMessage(msgEl, err.message || "앱을 시작하지 못했습니다.", true);
   }
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(() => null));
