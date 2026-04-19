@@ -11,7 +11,6 @@ workflows:
         BUNDLE_ID: "com.egtools.thinkstock"
         XCODE_WORKSPACE: "ios/App/App.xcworkspace"
         XCODE_SCHEME: "App"
-        APP_STORE_APPLE_ID: ""
       groups:
         - appstore_credentials
 
