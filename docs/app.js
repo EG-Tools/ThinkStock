@@ -371,10 +371,23 @@ function restyleLive(traceIndex, seriesKey) {
   });
 }
 
+
+function lockCurrentYAxisRange() {
+  const el = document.getElementById("chart");
+  const range = el?._fullLayout?.yaxis?.range;
+  if (!el || !Array.isArray(range) || range.length < 2) return;
+  Plotly.relayout(el, {
+    "yaxis.range[0]": range[0],
+    "yaxis.range[1]": range[1],
+    "yaxis.autorange": false,
+  });
+}
+
 function setupOffsetDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
   function onStart(startClientY) {
     const startOffset = seriesOffsets[seriesKey] || 0;
     handle.classList.add("dragging");
+    lockCurrentYAxisRange();
 
     function onMove(clientY) {
       const dy = clientY - startClientY;
@@ -407,6 +420,7 @@ function setupScaleDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
   function onStart(startClientY) {
     const startScale = seriesScales[seriesKey] != null ? seriesScales[seriesKey] : 1;
     handle.classList.add("dragging");
+    lockCurrentYAxisRange();
 
     function onMove(clientY) {
       const dy = clientY - startClientY;
@@ -904,6 +918,7 @@ async function boot() {
         hoverToggleBtn.classList.toggle("is-active", hoverShowPopup);
         applyHoverState();
         saveState();
+        renderChart();
       });
     }
 
