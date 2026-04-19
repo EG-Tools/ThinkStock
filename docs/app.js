@@ -243,7 +243,9 @@ function scheduleSyncedCursor(xValue) {
 function axisPixelToXValue(el, clientX) {
   const xa = el?._fullLayout?.xaxis;
   if (!xa || !Number.isFinite(clientX)) return null;
-  const px = clientX - xa._offset;
+  const rect = el.getBoundingClientRect();
+  const localX = clientX - rect.left;
+  const px = localX - xa._offset;
   if (!Number.isFinite(px) || px < 0 || px > xa._length) return null;
 
   try {
@@ -263,7 +265,7 @@ function axisPixelToXValue(el, clientX) {
     linear = null;
   }
   if (!Number.isFinite(linear)) return null;
-  if (xa.type === "date") return new Date(linear).toISOString().slice(0, 10);
+  if (xa.type === "date") return linear;
   return linear;
 }
 
@@ -908,7 +910,7 @@ function renderChart(preserveZoom = true) {
     hovermode: "x unified",
     showlegend: false,
     legend: { orientation: "h", x: 0, y: 1.08, font: { color: "rgba(255,255,255,0.7)", size: 11 } },
-    xaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, color: "#666", tickfont: { size: 10 }, fixedrange: false, showspikes: true, spikemode: "across", spikesnap: "cursor", spikecolor: "rgba(255,255,255,0.25)", spikethickness: 1, spikedash: "solid", ...(savedXRange ? { range: savedXRange } : {}) },
+    xaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, color: "#666", tickfont: { size: 10 }, fixedrange: false, showspikes: false, ...(savedXRange ? { range: savedXRange } : {}) },
     yaxis: { showticklabels: false, title: "", showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, fixedrange: true, ...(savedYRange ? { range: savedYRange, autorange: false } : {}) },
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
     hoverlabel: hoverShowPopup ? { bgcolor: "rgba(34,34,34,0.45)", bordercolor: "rgba(140,140,140,0.35)", font: { color: "#eee" } } : { bgcolor: "rgba(0,0,0,0)", bordercolor: "rgba(0,0,0,0)", font: { color: "rgba(0,0,0,0)", size: 1 } },
@@ -958,7 +960,6 @@ function renderChart(preserveZoom = true) {
       if (hoverSyncing) return;
       const xValue = eventData?.points?.[0]?.x;
       if (!xValue) return;
-      scheduleSyncedCursor(xValue);
       const adrEl = document.getElementById("chart-adr");
       syncHoverToChart(adrEl, xValue);
     });
@@ -1169,8 +1170,7 @@ function renderAdrChart(xRange) {
       showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1,
       zeroline: false, color: "#666", tickfont: { size: 9 },
       fixedrange: false,
-      showspikes: true, spikemode: "across", spikesnap: "cursor",
-      spikecolor: "rgba(255,255,255,0.25)", spikethickness: 1, spikedash: "solid",
+      showspikes: false,
       ...(xRange ? { range: xRange } : {}),
     },
     yaxis: {
@@ -1210,7 +1210,6 @@ function renderAdrChart(xRange) {
       if (hoverSyncing) return;
       const xValue = eventData?.points?.[0]?.x;
       if (!xValue) return;
-      scheduleSyncedCursor(xValue);
       const mainEl = document.getElementById("chart");
       syncHoverToChart(mainEl, xValue);
     });
