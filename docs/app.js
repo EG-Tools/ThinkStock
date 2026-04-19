@@ -52,6 +52,10 @@ let hoverShowPopup = false;
 let isHandleDragging = false;
 let pinnedXRange = null;
 let hoverSyncing = false;
+let cursorSyncing = false;
+let cursorRafId = 0;
+let pendingCursorX = null;
+const CURSOR_SHAPE_NAME = "__sync_cursor__";
 
 /* ── localStorage persistence ── */
 function saveState() {
@@ -185,6 +189,50 @@ function clearHoverOnChart(targetEl) {
     // no-op
   }
   requestAnimationFrame(() => { hoverSyncing = false; });
+}
+
+function buildCursorShape(xValue) {
+  return {
+    name: CURSOR_SHAPE_NAME,
+    type: "line",
+    xref: "x",
+    yref: "paper",
+    x0: xValue,
+    x1: xValue,
+    y0: 0,
+    y1: 1,
+    line: { color: "rgba(255,255,255,0.35)", width: 1 },
+    layer: "above",
+  };
+}
+
+function nextShapesWithCursor(el, xValue) {
+  const shapes = Array.isArray(el?._fullLayout?.shapes) ? el._fullLayout.shapes : [];
+  const base = shapes.filter((shape) => shape?.name !== CURSOR_SHAPE_NAME);
+  if (xValue == null) return base;
+  return [...base, buildCursorShape(xValue)];
+}
+
+function applySyncedCursor(xValue) {
+  const mainEl = document.getElementById("chart");
+  const adrEl = document.getElementById("chart-adr");
+  const targets = [mainEl, adrEl].filter((el) => el && el._fullLayout);
+  if (!targets.length || !window.Plotly?.relayout) return;
+  cursorSyncing = true;
+  Promise.allSettled(
+    targets.map((el) => Plotly.relayout(el, { shapes: nextShapesWithCursor(el, xValue) }))
+  ).finally(() => {
+    cursorSyncing = false;
+  });
+}
+
+function scheduleSyncedCursor(xValue) {
+  pendingCursorX = xValue ?? null;
+  if (cursorRafId) return;
+  cursorRafId = requestAnimationFrame(() => {
+    cursorRafId = 0;
+    applySyncedCursor(pendingCursorX);
+  });
 }
 
 function parseCsv(text) {
@@ -831,8 +879,8 @@ function renderChart(preserveZoom = true) {
       return false;
     });
     el.on("plotly_relayout", (eventData) => {
+      if (chartSyncing || isHandleDragging || cursorSyncing) return;
       setTimeout(updateHandles, 50);
-      if (chartSyncing || isHandleDragging) return;
       // 메인 차트 pan/zoom → ADR 차트 x축 동기화
       const adrEl = document.getElementById("chart-adr");
       if (adrEl && adrEl.data) {
@@ -853,11 +901,13 @@ function renderChart(preserveZoom = true) {
       if (hoverSyncing) return;
       const xValue = eventData?.points?.[0]?.x;
       if (!xValue) return;
+      scheduleSyncedCursor(xValue);
       const adrEl = document.getElementById("chart-adr");
       syncHoverToChart(adrEl, xValue);
     });
     el.on("plotly_unhover", () => {
       if (hoverSyncing) return;
+      scheduleSyncedCursor(null);
       const adrEl = document.getElementById("chart-adr");
       clearHoverOnChart(adrEl);
     });
@@ -1083,7 +1133,7 @@ function renderAdrChart(xRange) {
 
   if (!adrHandlerSet) {
     el.on("plotly_relayout", (eventData) => {
-      if (chartSyncing) return;
+      if (chartSyncing || cursorSyncing) return;
       const mainEl = document.getElementById("chart");
       if (mainEl && mainEl.data) {
         const r0 = eventData["xaxis.range[0]"];
@@ -1103,11 +1153,13 @@ function renderAdrChart(xRange) {
       if (hoverSyncing) return;
       const xValue = eventData?.points?.[0]?.x;
       if (!xValue) return;
+      scheduleSyncedCursor(xValue);
       const mainEl = document.getElementById("chart");
       syncHoverToChart(mainEl, xValue);
     });
     el.on("plotly_unhover", () => {
       if (hoverSyncing) return;
+      scheduleSyncedCursor(null);
       const mainEl = document.getElementById("chart");
       clearHoverOnChart(mainEl);
     });
