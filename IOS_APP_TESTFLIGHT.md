@@ -2,36 +2,43 @@
 
 ThinkStock web app (`docs/`) can be wrapped as a native iOS app using Capacitor.
 
-## 1. Install dependencies
+## A) macOS + Xcode path
+
+### 1. Install dependencies
 
 ```bash
 npm install
 ```
 
-## 2. Create iOS project (first time only)
+### 2. Create iOS project (first time only)
 
 ```bash
 npm run cap:add:ios
 ```
 
-## 3. Sync latest web assets
+### 3. Sync latest web assets
 
 ```bash
 npm run cap:sync:ios
 ```
 
-## 4. Open Xcode project (macOS)
+### 4. Open Xcode project (macOS)
 
 ```bash
 npm run cap:open:ios
 ```
 
-## 5. Build and distribute
+### 5. Build and distribute
 
 - In Xcode, set your Apple Team and Bundle Identifier.
 - Use `Product > Archive`.
 - Upload archive to App Store Connect.
 - Distribute to TestFlight.
+
+## B) No Mac: Codemagic path
+
+- Use `codemagic.yaml` to build and sign in the cloud.
+- Follow `CODEMAGIC_IOS.md` for full setup steps.
 
 ## Notes
 

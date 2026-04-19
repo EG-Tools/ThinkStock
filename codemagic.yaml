@@ -1,0 +1,83 @@
+workflows:
+  thinkstock-ios-testflight:
+    name: ThinkStock iOS TestFlight
+    max_build_duration: 120
+    instance_type: mac_mini_m2
+
+    environment:
+      node: latest
+      xcode: latest
+      vars:
+        BUNDLE_ID: "com.egtools.thinkstock"
+        XCODE_WORKSPACE: "ios/App/App.xcworkspace"
+        XCODE_SCHEME: "App"
+        APP_STORE_APPLE_ID: ""
+      groups:
+        - appstore_credentials
+
+    scripts:
+      - name: Install dependencies
+        script: |
+          npm ci
+
+      - name: Sync Capacitor iOS
+        script: |
+          npm run cap:sync:ios
+
+      - name: Install CocoaPods
+        script: |
+          cd ios/App
+          pod install
+
+      - name: Prepare keychain
+        script: |
+          keychain initialize
+
+      - name: Fetch signing files
+        script: |
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --create
+
+      - name: Add certificates
+        script: |
+          keychain add-certificates
+
+      - name: Apply provisioning profiles
+        script: |
+          xcode-project use-profiles
+
+      - name: Increment build number
+        script: |
+          cd ios/App
+          LATEST_BUILD_NUMBER=0
+          if [ -n "$APP_STORE_APPLE_ID" ]; then
+            LATEST_BUILD_NUMBER=$(app-store-connect get-latest-app-store-build-number "$APP_STORE_APPLE_ID" || echo 0)
+          fi
+          if [ -z "$LATEST_BUILD_NUMBER" ]; then
+            LATEST_BUILD_NUMBER=0
+          fi
+          NEW_BUILD_NUMBER=$(($LATEST_BUILD_NUMBER + 1))
+          if [ -n "$BUILD_NUMBER" ] && [ "$NEW_BUILD_NUMBER" -lt "$BUILD_NUMBER" ]; then
+            NEW_BUILD_NUMBER="$BUILD_NUMBER"
+          fi
+          agvtool new-version -all "$NEW_BUILD_NUMBER"
+
+      - name: Build IPA
+        script: |
+          cd ios/App
+          xcode-project build-ipa \
+            --workspace "$XCODE_WORKSPACE" \
+            --scheme "$XCODE_SCHEME"
+
+    artifacts:
+      - ios/App/build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.dSYM
+
+    publishing:
+      app_store_connect:
+        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
+        key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
+        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
+        submit_to_testflight: true

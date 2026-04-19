@@ -21,6 +21,11 @@ ThinkStock ships in two modes from the same repository.
   - `npm run cap:sync:ios`
   - `npm run cap:open:ios` (macOS)
 
+## 4. iOS build without Mac (Codemagic)
+- CI config: `codemagic.yaml`
+- Setup guide: `CODEMAGIC_IOS.md`
+- Workflow id: `thinkstock-ios-testflight`
+
 ## Included repo surfaces
 - `docs/`: GitHub Pages mobile app
 - `app.py`: Streamlit app
@@ -30,6 +35,7 @@ ThinkStock ships in two modes from the same repository.
 ## Docs
 - `IPHONE_TESTING.md`: iPhone testing notes
 - `IOS_APP_TESTFLIGHT.md`: Capacitor iOS/TestFlight build guide
+- `CODEMAGIC_IOS.md`: Codemagic iOS/TestFlight build guide (no Mac)
 - `.github/workflows/deploy-pages.yml`: GitHub Actions Pages workflow
 
 ## API Keys (Local Only)
