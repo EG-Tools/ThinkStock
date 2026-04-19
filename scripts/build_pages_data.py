@@ -1,8 +1,10 @@
 ﻿import json
+import os
 from datetime import date
 from pathlib import Path
 
 import pandas as pd
+import requests
 import yfinance as yf
 
 DEFAULT_TICKERS = ["^KS11", "^KQ11", "005930.KS", "218410.KQ"]
@@ -22,6 +24,9 @@ OUTPUT_JSON = DATA_DIR / "prices.json"
 OUTPUT_MACRO_JSON = DATA_DIR / "macro_data.json"
 OUTPUT_MACRO_CSV = DATA_DIR / "sample_macro_data.csv"
 LOOKBACK_YEARS = 30
+ECOS_STAT_CODE = "901Y067"  # 경기종합지수
+ECOS_ITEM_CODE = "I16E"     # 선행지수순환변동치
+ECOS_START = "199601"
 
 
 def extract_close_series(data: pd.DataFrame, ticker: str) -> pd.Series | None:
@@ -99,6 +104,65 @@ def load_macro_source() -> pd.DataFrame:
     return macro
 
 
+def fetch_ecos_leading_cycle(api_key: str) -> pd.DataFrame:
+    if not api_key:
+        return pd.DataFrame(columns=["leading_cycle"])
+    end_ym = pd.Timestamp.today().strftime("%Y%m")
+    url = (
+        f"https://ecos.bok.or.kr/api/StatisticSearch/{api_key}/json/kr/1/5000/"
+        f"{ECOS_STAT_CODE}/M/{ECOS_START}/{end_ym}/{ECOS_ITEM_CODE}"
+    )
+    try:
+        response = requests.get(url, timeout=20)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        print(f"ECOS fetch failed: {exc}")
+        return pd.DataFrame(columns=["leading_cycle"])
+
+    rows = payload.get("StatisticSearch", {}).get("row", [])
+    if not rows:
+        result = payload.get("RESULT", {})
+        code = result.get("CODE")
+        msg = result.get("MESSAGE")
+        if code:
+            print(f"ECOS returned {code}: {msg}")
+        return pd.DataFrame(columns=["leading_cycle"])
+
+    records: list[dict] = []
+    for row in rows:
+        ym = str(row.get("TIME", ""))
+        val = row.get("DATA_VALUE")
+        if len(ym) != 6:
+            continue
+        try:
+            dt = pd.to_datetime(f"{ym[:4]}-{ym[4:6]}-01")
+            records.append({"date": dt, "leading_cycle": float(val)})
+        except Exception:
+            continue
+
+    if not records:
+        return pd.DataFrame(columns=["leading_cycle"])
+    out = pd.DataFrame.from_records(records).drop_duplicates(subset=["date"]).sort_values("date")
+    out = out.set_index("date")
+    out.index.name = "date"
+    return out
+
+
+def merge_macro_with_leading_cycle(macro: pd.DataFrame, leading_cycle: pd.DataFrame) -> pd.DataFrame:
+    if leading_cycle.empty:
+        return macro
+    if macro.empty:
+        return leading_cycle
+    merged = macro.copy()
+    merged["leading_cycle"] = pd.NA
+    for idx, row in leading_cycle.iterrows():
+        merged.loc[idx, "leading_cycle"] = row["leading_cycle"]
+    merged = merged.sort_index()
+    merged.index.name = "date"
+    return merged
+
+
 def densify_macro(macro: pd.DataFrame, price_index: pd.DatetimeIndex) -> pd.DataFrame:
     if macro.empty:
         return macro
@@ -136,7 +200,17 @@ def build_payload(df: pd.DataFrame, labels: dict[str, str], series_names: list[s
 def main() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     prices = fetch_prices()
-    macro = densify_macro(load_macro_source(), prices.index if not prices.empty else pd.DatetimeIndex([]))
+
+    macro_source = load_macro_source()
+    ecos_key = os.environ.get("ECOS_API_KEY", "").strip()
+    if ecos_key:
+        leading_cycle = fetch_ecos_leading_cycle(ecos_key)
+        if not leading_cycle.empty:
+            macro_source = merge_macro_with_leading_cycle(macro_source, leading_cycle)
+            latest = leading_cycle.index.max().strftime("%Y-%m")
+            print(f"Applied ECOS leading_cycle rows: {len(leading_cycle)} (latest={latest})")
+
+    macro = densify_macro(macro_source, prices.index if not prices.empty else pd.DatetimeIndex([]))
 
     price_payload = build_payload(prices, DISPLAY_NAMES, DEFAULT_TICKERS)
     macro_payload = build_payload(macro, DISPLAY_NAMES, list(macro.columns))
@@ -149,7 +223,14 @@ def main() -> None:
         json.dumps(macro_payload, ensure_ascii=False, indent=2, allow_nan=False),
         encoding="utf-8",
     )
-    OUTPUT_MACRO_CSV.write_text(SAMPLE_MACRO.read_text(encoding="utf-8"), encoding="utf-8")
+
+    if macro_source.empty:
+        OUTPUT_MACRO_CSV.write_text("date\n", encoding="utf-8")
+    else:
+        macro_source_out = macro_source.reset_index().copy()
+        macro_source_out["date"] = pd.to_datetime(macro_source_out["date"]).dt.strftime("%Y-%m-%d")
+        macro_source_out.to_csv(OUTPUT_MACRO_CSV, index=False, float_format="%.4f")
+
     print(f"Wrote {OUTPUT_JSON}")
     print(f"Wrote {OUTPUT_MACRO_JSON}")
     print(f"Wrote {OUTPUT_MACRO_CSV}")

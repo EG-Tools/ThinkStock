@@ -5,6 +5,8 @@ on:
     branches:
       - main
   workflow_dispatch:
+  schedule:
+    - cron: "20 */6 * * *"
 
 permissions:
   contents: read
@@ -22,8 +24,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 데이터는 로컬에서 fetch_local.py 로 생성 후 커밋합니다.
-      # GitHub Actions 는 배포만 담당합니다.
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Data Build Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas yfinance requests
+
+      - name: Build Pages Data
+        env:
+          ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}
+        run: python scripts/build_pages_data.py
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

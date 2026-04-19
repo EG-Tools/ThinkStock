@@ -1031,7 +1031,7 @@ async function boot() {
   bindSeriesToggleBoard();
   syncButtons();
   try {
-    await loadData();
+    await loadData(true);
 
     document.querySelectorAll(".range-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
