@@ -8,3 +8,4 @@ env/
 scripts/krx_key.txt
 scripts/.env.local
 scripts/kofia_key.txt
+scripts/kosis_key.txt

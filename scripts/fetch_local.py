@@ -39,6 +39,7 @@ ROOT      = Path(__file__).resolve().parents[1]
 DATA_DIR  = ROOT / "docs" / "data"
 KEY_FILE  = Path(__file__).parent / "krx_key.txt"
 KOFIA_KEY_FILE = Path(__file__).parent / "kofia_key.txt"
+KOSIS_KEY_FILE = Path(__file__).parent / "kosis_key.txt"
 SAMPLE_MACRO = ROOT / "sample_macro_data.csv"
 
 KRX_BASE     = "http://data-dbg.krx.co.kr/svc/apis"
@@ -223,6 +224,105 @@ def update_with_krx(key: str, existing: pd.DataFrame, update_days: int) -> pd.Da
             merged.loc[idx_val, col] = val
 
     return merged.sort_index()
+
+
+# ── KOSIS 선행지수 순환변동치 ──────────────────────────────────────────────
+
+def fetch_kosis_leading_cycle() -> list[dict]:
+    """
+    KOSIS Open API 에서 선행종합지수 순환변동치(월별)를 가져온다.
+    반환: [{'date': 'YYYY-MM-01', 'leading_cycle': float}, ...]
+    """
+    if not KOSIS_KEY_FILE.exists():
+        print("  kosis_key.txt 없음 — 건너뜀")
+        return []
+    api_key = KOSIS_KEY_FILE.read_text().strip()
+
+    try:
+        import requests as _req
+    except ImportError:
+        print("  requests 미설치")
+        return []
+
+    print("  KOSIS 선행지수 순환변동치 조회 ...", end=" ", flush=True)
+    try:
+        r = _req.get(
+            "https://kosis.kr/openapi/Param/statisticsParameterData.do",
+            params={
+                "method": "getList",
+                "apiKey": api_key,
+                "format": "json",
+                "jsonVD": "Y",
+                "orgId": "101",
+                "tblId": "DT_1C8015",
+                "itmId": "T1",
+                "objL1": "A03",
+                "prdSe": "M",
+                "startPrdDe": "199601",
+                "endPrdDe": "203012",
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        raw = r.json()
+    except Exception as e:
+        print(f"오류: {e}")
+        return []
+
+    if not isinstance(raw, list):
+        print(f"오류 응답: {raw}")
+        return []
+
+    records = []
+    for row in raw:
+        prd = str(row.get("PRD_DE", ""))   # e.g. "202602"
+        val = row.get("DT")
+        if len(prd) == 6 and val not in (None, "", "-"):
+            try:
+                date_str = f"{prd[:4]}-{prd[4:6]}-01"
+                records.append({"date": date_str, "leading_cycle": float(val)})
+            except (ValueError, TypeError):
+                continue
+
+    records.sort(key=lambda x: x["date"])
+    if records:
+        print(f"{len(records)}개  최신: {records[-1]['date']} = {records[-1]['leading_cycle']}")
+    return records
+
+
+def update_macro_with_kosis(kosis_records: list[dict]) -> None:
+    """
+    KOSIS 월별 선행지수 데이터로 sample_macro_data.csv를 갱신한다.
+    leading_cycle 컬럼: 모두 NaN으로 초기화 후 KOSIS 월별 기준점만 설정.
+    → load_macro의 time 보간이 일별 값을 정확하게 채움.
+    """
+    if not kosis_records:
+        return
+
+    kosis_df = pd.DataFrame(kosis_records).set_index("date")
+    kosis_df.index = pd.to_datetime(kosis_df.index)
+
+    if SAMPLE_MACRO.exists():
+        macro = pd.read_csv(SAMPLE_MACRO)
+        macro["date"] = pd.to_datetime(macro["date"], errors="coerce")
+        macro = macro.dropna(subset=["date"]).set_index("date")
+    else:
+        macro = pd.DataFrame()
+
+    if macro.empty:
+        macro = kosis_df
+    else:
+        macro = macro.copy()
+        # ① 기존 leading_cycle 전체를 NaN으로 초기화
+        macro["leading_cycle"] = float("nan")
+        # ② KOSIS 월별 기준점만 설정
+        for dt, row in kosis_df.iterrows():
+            macro.loc[dt, "leading_cycle"] = row["leading_cycle"]
+        macro.sort_index(inplace=True)
+
+    macro.index.name = "date"
+    macro.reset_index().to_csv(SAMPLE_MACRO, index=False, float_format="%.4f")
+    print(f"  sample_macro_data.csv 갱신 완료 ({len(macro)}행, leading_cycle 기준점: {len(kosis_records)}개)")
 
 
 # ── Macro ──────────────────────────────────────────────────────────────────
@@ -454,18 +554,23 @@ def main():
     else:
         print("\n[2/3] KRX 갱신 건너뜀 (API 키 없음)")
 
-    # ── Step 3: 매크로 데이터 ─────────────────────────────────────────────
-    print("\n[3/3] 매크로 데이터 로드")
+    # ── Step 3: KOSIS 선행지수 갱신 ──────────────────────────────────────────
+    print("\n[3/5] KOSIS 선행지수 순환변동치")
+    kosis_records = fetch_kosis_leading_cycle()
+    update_macro_with_kosis(kosis_records)
+
+    # ── Step 4: 매크로 데이터 로드 ────────────────────────────────────────
+    print("\n[4/5] 매크로 데이터 로드")
     macro = load_macro(prices.index)
     print(f"  {len(macro)}행  컬럼: {list(macro.columns)}")
 
-    # ── Step 4: adrinfo.kr ADR ────────────────────────────────────────────
-    print("\n[4/5] adrinfo.kr ADR 스크래핑")
+    # ── Step 5: adrinfo.kr ADR ────────────────────────────────────────────
+    print("\n[5/7] adrinfo.kr ADR 스크래핑")
     adr_records = fetch_adr_data()
     save_adr_data(adr_records)
 
-    # ── Step 5: KOFIA 신용융자 잔고 ───────────────────────────────────────
-    print("\n[5/5] KOFIA 신용융자 잔고")
+    # ── Step 6: KOFIA 신용융자 잔고 ───────────────────────────────────────
+    print("\n[6/7] KOFIA 신용융자 잔고")
     if kofia_key:
         credit_records = fetch_kofia_credit(kofia_key)
         save_credit_data(credit_records)
