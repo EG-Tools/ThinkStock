@@ -1,4 +1,4 @@
-const DISPLAY_NAMES = {
+﻿const DISPLAY_NAMES = {
   leading_cycle: "선행지수 순환변동치",
   kospi_credit: "코스피 신용",
   kosdaq_credit: "코스닥 신용",
@@ -1378,6 +1378,9 @@ function renderChart(preserveZoom = true) {
       clearHoverOnChart(adrEl);
     });
     el.on("plotly_click", () => {
+      // iPhone Safari sends click after touchend; if we auto-reset here,
+      // double-tap zoom is immediately cancelled when the finger is lifted.
+      if (isTouchDevice()) return;
       Plotly.relayout(el, { "xaxis.autorange": true, "yaxis.autorange": true });
     });
     legendHandlerSet = true;
@@ -2148,6 +2151,7 @@ async function boot() {
 }
 
 boot();
+
 
 
 
