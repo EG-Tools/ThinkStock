@@ -951,8 +951,13 @@ function renderChart(preserveZoom = true) {
           Plotly.relayout(adrEl, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 }).finally(() => { chartSyncing = false; });
         } else if (eventData["xaxis.autorange"]) {
           pinnedXRange = null;
+          const mainRange = el._fullLayout?.xaxis?.range?.slice();
           chartSyncing = true;
-          Plotly.relayout(adrEl, { "xaxis.autorange": true }).finally(() => { chartSyncing = false; });
+          if (Array.isArray(mainRange) && mainRange.length === 2) {
+            Plotly.relayout(adrEl, { "xaxis.range[0]": mainRange[0], "xaxis.range[1]": mainRange[1] }).finally(() => { chartSyncing = false; });
+          } else {
+            Plotly.relayout(adrEl, { "xaxis.autorange": true }).finally(() => { chartSyncing = false; });
+          }
         }
       }
     });
@@ -975,7 +980,8 @@ function renderChart(preserveZoom = true) {
   }
 
   updateHandles();
-  renderAdrChart(savedXRange ? [...savedXRange] : null);
+  const mainRangeForAdr = el._fullLayout?.xaxis?.range?.slice() || (savedXRange ? [...savedXRange] : null);
+  renderAdrChart(mainRangeForAdr ? [...mainRangeForAdr] : null);
   bindCursorMoveSync();
 }
 
@@ -1201,8 +1207,13 @@ function renderAdrChart(xRange) {
           Plotly.relayout(mainEl, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 }).finally(() => { chartSyncing = false; });
         } else if (eventData["xaxis.autorange"]) {
           pinnedXRange = null;
+          const adrRange = el._fullLayout?.xaxis?.range?.slice();
           chartSyncing = true;
-          Plotly.relayout(mainEl, { "xaxis.autorange": true }).finally(() => { chartSyncing = false; });
+          if (Array.isArray(adrRange) && adrRange.length === 2) {
+            Plotly.relayout(mainEl, { "xaxis.range[0]": adrRange[0], "xaxis.range[1]": adrRange[1] }).finally(() => { chartSyncing = false; });
+          } else {
+            Plotly.relayout(mainEl, { "xaxis.autorange": true }).finally(() => { chartSyncing = false; });
+          }
         }
       }
     });
