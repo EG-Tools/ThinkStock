@@ -47,6 +47,13 @@ const seriesColor = (key) => SERIES_COLORS[key] || "#888";
 const toUtcMs = (d) => Date.parse(`${d}T00:00:00Z`);
 const isTouchDevice = () => typeof window !== "undefined"
   && (("ontouchstart" in window) || ((navigator && navigator.maxTouchPoints) > 0));
+const PLOTLY_CONFIG = {
+  responsive: true,
+  displayModeBar: false,
+  displaylogo: false,
+  scrollZoom: true,
+  doubleClick: false,
+};
 
 let pricePayload = null;
 let macroRows = [];
@@ -74,6 +81,7 @@ let apiSettings = { ...API_SETTINGS_DEFAULT };
 let lastTouchTapAt = 0;
 let lastTouchTapX = null;
 let lastTouchTapEl = null;
+let dragZoomBound = false;
 
 /* ── localStorage persistence ── */
 function saveState() {
@@ -491,84 +499,195 @@ function zoomAroundClientX(sourceEl, clientX, zoomFactor = 0.5) {
 
   applySyncedXRangeMs(startMs, endMs);
 }
+
+function ensureDragZoomOverlay(el) {
+  if (!el) return null;
+  let overlay = el.querySelector('.drag-zoom-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.className = 'drag-zoom-overlay';
+    const box = document.createElement('div');
+    box.className = 'drag-zoom-box';
+    overlay.appendChild(box);
+    el.appendChild(overlay);
+  }
+  const box = overlay.querySelector('.drag-zoom-box');
+  return { overlay, box };
+}
+
+function hideDragZoomOverlay(el) {
+  const ui = ensureDragZoomOverlay(el);
+  if (!ui) return;
+  ui.overlay.style.display = 'none';
+  ui.box.style.width = '0px';
+}
+
+function renderDragZoomOverlay(el, startClientX, currentClientX) {
+  const xa = el?._fullLayout?.xaxis;
+  if (!xa || !Number.isFinite(startClientX) || !Number.isFinite(currentClientX)) return;
+
+  const rect = el.getBoundingClientRect();
+  const minClient = rect.left + xa._offset;
+  const maxClient = minClient + xa._length;
+
+  const sx = Math.max(minClient, Math.min(maxClient, startClientX));
+  const cx = Math.max(minClient, Math.min(maxClient, currentClientX));
+
+  const left = Math.min(sx, cx) - rect.left;
+  const width = Math.max(1, Math.abs(cx - sx));
+
+  const ui = ensureDragZoomOverlay(el);
+  if (!ui) return;
+  ui.overlay.style.display = 'block';
+  ui.box.style.left = `${left}px`;
+  ui.box.style.width = `${width}px`;
+}
+
 function bindCursorMoveSync() {
   const mainEl = document.getElementById("chart");
   const adrEl = document.getElementById("chart-adr");
   if (!mainEl || !adrEl) return;
   ensureCursorLine(mainEl);
   ensureCursorLine(adrEl);
-  if (cursorMoveBound) return;
+  ensureDragZoomOverlay(mainEl);
+  ensureDragZoomOverlay(adrEl);
 
-  const moveAt = (sourceEl, clientX) => {
-    const xValue = axisPixelToXValue(sourceEl, clientX);
-    if (xValue == null) {
+  if (!cursorMoveBound) {
+    const moveAt = (sourceEl, clientX) => {
+      const xValue = axisPixelToXValue(sourceEl, clientX);
+      if (xValue == null) {
+        scheduleSyncedCursor(null);
+        return;
+      }
+      scheduleSyncedCursor(xValue, sourceEl, clientX);
+    };
+
+    const onMove = (event) => {
+      moveAt(event.currentTarget, event.clientX);
+    };
+
+    const onLeave = () => {
       scheduleSyncedCursor(null);
-      return;
-    }
-    scheduleSyncedCursor(xValue, sourceEl, clientX);
-  };
+      clearHoverOnChart(mainEl);
+      clearHoverOnChart(adrEl);
+    };
 
-  const onMove = (event) => {
-    moveAt(event.currentTarget, event.clientX);
-  };
-
-  const onLeave = () => {
-    scheduleSyncedCursor(null);
-    clearHoverOnChart(mainEl);
-    clearHoverOnChart(adrEl);
-  };
-
-  const onTouchStart = (event) => {
-    if (!event.touches || event.touches.length !== 1) return;
-    const touch = event.touches[0];
-    moveAt(event.currentTarget, touch.clientX);
-
-    const now = Date.now();
-    const sameTarget = lastTouchTapEl === event.currentTarget;
-    const nearX = Number.isFinite(lastTouchTapX) ? Math.abs(lastTouchTapX - touch.clientX) <= 28 : false;
-    const isDoubleTap = sameTarget && nearX && (now - lastTouchTapAt) <= 320;
-
-    if (isDoubleTap) {
+    const onTouchStart = (event) => {
+      if (!event.touches || event.touches.length !== 1) return;
       event.preventDefault();
-      zoomAroundClientX(event.currentTarget, touch.clientX, 0.5);
-      lastTouchTapAt = 0;
-      lastTouchTapX = null;
-      lastTouchTapEl = null;
-      return;
-    }
+      const touch = event.touches[0];
+      moveAt(event.currentTarget, touch.clientX);
 
-    lastTouchTapAt = now;
-    lastTouchTapX = touch.clientX;
-    lastTouchTapEl = event.currentTarget;
-  };
+      const now = Date.now();
+      const sameTarget = lastTouchTapEl === event.currentTarget;
+      const nearX = Number.isFinite(lastTouchTapX) ? Math.abs(lastTouchTapX - touch.clientX) <= 28 : false;
+      const isDoubleTap = sameTarget && nearX && (now - lastTouchTapAt) <= 320;
 
-  const onTouchMove = (event) => {
-    if (!event.touches || event.touches.length !== 1) return;
-    event.preventDefault();
-    const touch = event.touches[0];
-    moveAt(event.currentTarget, touch.clientX);
-  };
+      if (isDoubleTap) {
+        zoomAroundClientX(event.currentTarget, touch.clientX, 0.5);
+        lastTouchTapAt = 0;
+        lastTouchTapX = null;
+        lastTouchTapEl = null;
+        return;
+      }
 
-  const onTouchEnd = (event) => {
-    if (event.touches && event.touches.length > 0) return;
-    onLeave();
-  };
+      lastTouchTapAt = now;
+      lastTouchTapX = touch.clientX;
+      lastTouchTapEl = event.currentTarget;
+    };
 
-  mainEl.addEventListener("mousemove", onMove, { passive: true });
-  adrEl.addEventListener("mousemove", onMove, { passive: true });
-  mainEl.addEventListener("mouseleave", onLeave);
-  adrEl.addEventListener("mouseleave", onLeave);
+    const onTouchMove = (event) => {
+      if (!event.touches || event.touches.length !== 1) return;
+      event.preventDefault();
+      const touch = event.touches[0];
+      moveAt(event.currentTarget, touch.clientX);
+    };
 
-  mainEl.addEventListener("touchstart", onTouchStart, { passive: false });
-  adrEl.addEventListener("touchstart", onTouchStart, { passive: false });
-  mainEl.addEventListener("touchmove", onTouchMove, { passive: false });
-  adrEl.addEventListener("touchmove", onTouchMove, { passive: false });
-  mainEl.addEventListener("touchend", onTouchEnd);
-  adrEl.addEventListener("touchend", onTouchEnd);
-  mainEl.addEventListener("touchcancel", onTouchEnd);
-  adrEl.addEventListener("touchcancel", onTouchEnd);
+    const onTouchEnd = (event) => {
+      if (event.touches && event.touches.length > 0) return;
+      onLeave();
+    };
 
-  cursorMoveBound = true;
+    mainEl.addEventListener("mousemove", onMove, { passive: true });
+    adrEl.addEventListener("mousemove", onMove, { passive: true });
+    mainEl.addEventListener("mouseleave", onLeave);
+    adrEl.addEventListener("mouseleave", onLeave);
+
+    mainEl.addEventListener("touchstart", onTouchStart, { passive: false });
+    adrEl.addEventListener("touchstart", onTouchStart, { passive: false });
+    mainEl.addEventListener("touchmove", onTouchMove, { passive: false });
+    adrEl.addEventListener("touchmove", onTouchMove, { passive: false });
+    mainEl.addEventListener("touchend", onTouchEnd);
+    adrEl.addEventListener("touchend", onTouchEnd);
+    mainEl.addEventListener("touchcancel", onTouchEnd);
+    adrEl.addEventListener("touchcancel", onTouchEnd);
+
+    cursorMoveBound = true;
+  }
+
+  if (!dragZoomBound) {
+    let dragState = null;
+
+    const onMouseDown = (event) => {
+      if (isTouchDevice()) return;
+      if (event.button !== 0) return;
+      if (event.target?.closest('.y-handle')) return;
+
+      const sourceEl = event.currentTarget;
+      const xa = sourceEl?._fullLayout?.xaxis;
+      if (!xa) return;
+
+      dragState = {
+        sourceEl,
+        startClientX: event.clientX,
+        moved: false,
+      };
+
+      renderDragZoomOverlay(sourceEl, dragState.startClientX, dragState.startClientX);
+      event.preventDefault();
+
+      const onWindowMove = (moveEvent) => {
+        if (!dragState) return;
+        const delta = Math.abs(moveEvent.clientX - dragState.startClientX);
+        if (delta >= 3) dragState.moved = true;
+        renderDragZoomOverlay(dragState.sourceEl, dragState.startClientX, moveEvent.clientX);
+        const xValue = axisPixelToXValue(dragState.sourceEl, moveEvent.clientX);
+        if (xValue != null) scheduleSyncedCursor(xValue, dragState.sourceEl, moveEvent.clientX);
+      };
+
+      const onWindowUp = (upEvent) => {
+        const st = dragState;
+        dragState = null;
+
+        window.removeEventListener('mousemove', onWindowMove);
+        window.removeEventListener('mouseup', onWindowUp);
+
+        if (!st) return;
+        hideDragZoomOverlay(st.sourceEl);
+
+        if (!st.moved) return;
+
+        const xStart = axisPixelToXValue(st.sourceEl, st.startClientX);
+        const xEnd = axisPixelToXValue(st.sourceEl, upEvent.clientX);
+        const ms0 = toMsSafe(xStart);
+        const ms1 = toMsSafe(xEnd);
+        if (!Number.isFinite(ms0) || !Number.isFinite(ms1)) return;
+
+        const startMs = Math.min(ms0, ms1);
+        const endMs = Math.max(ms0, ms1);
+        if ((endMs - startMs) < DAY_MS) return;
+
+        applySyncedXRangeMs(startMs, endMs);
+      };
+
+      window.addEventListener('mousemove', onWindowMove);
+      window.addEventListener('mouseup', onWindowUp);
+    };
+
+    mainEl.addEventListener('mousedown', onMouseDown);
+    adrEl.addEventListener('mousedown', onMouseDown);
+    dragZoomBound = true;
+  }
 }
 function parseCsv(text) {
   const result = Papa.parse(text.trim(), {
@@ -1194,8 +1313,8 @@ function renderChart(preserveZoom = true) {
     yaxis: { showticklabels: false, title: "", showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, fixedrange: true, ...(savedYRange ? { range: savedYRange, autorange: false } : {}) },
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
     hoverlabel: hoverShowPopup ? { bgcolor: "rgba(34,34,34,0.45)", bordercolor: "rgba(140,140,140,0.35)", font: { color: "#eee" } } : { bgcolor: "rgba(0,0,0,0)", bordercolor: "rgba(0,0,0,0)", font: { color: "rgba(0,0,0,0)", size: 1 } },
-    dragmode: isTouchDevice() ? false : "zoom",
-  }, { responsive: true, displayModeBar: false, displaylogo: false, scrollZoom: true });
+    dragmode: false,
+  }, PLOTLY_CONFIG);
 
   if (!legendHandlerSet) {
     el.on("plotly_legendclick", (evtData) => {
@@ -1476,10 +1595,10 @@ function renderAdrChart(xRange) {
     },
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
     hoverlabel: hoverShowPopup ? { bgcolor: "rgba(34,34,34,0.45)", bordercolor: "rgba(140,140,140,0.35)", font: { color: "#eee", size: 11 } } : { bgcolor: "rgba(0,0,0,0)", bordercolor: "rgba(0,0,0,0)", font: { color: "rgba(0,0,0,0)", size: 1 } },
-    dragmode: isTouchDevice() ? false : "zoom",
+    dragmode: false,
   };
 
-  Plotly.react(el, traces, layout, { responsive: true, displayModeBar: false, displaylogo: false, scrollZoom: true });
+  Plotly.react(el, traces, layout, PLOTLY_CONFIG);
 
   if (!adrHandlerSet) {
     el.on("plotly_relayout", (eventData) => {
@@ -2029,6 +2148,7 @@ async function boot() {
 }
 
 boot();
+
 
 
 

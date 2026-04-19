@@ -356,6 +356,25 @@ body {
   overflow: hidden;
 }
 
+.drag-zoom-overlay {
+  position: absolute;
+  inset: 0;
+  display: none;
+  pointer-events: none;
+  z-index: 96;
+}
+
+.drag-zoom-box {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0;
+  background: rgba(150, 150, 150, 0.26);
+  border-left: 1px solid rgba(210, 210, 210, 0.65);
+  border-right: 1px solid rgba(210, 210, 210, 0.65);
+}
+
 .synced-cursor-line {
   position: absolute;
   top: 0;
