@@ -114,6 +114,22 @@ function parseCsv(text) {
   }).sort((a, b) => a.date.localeCompare(b.date));
 }
 
+
+function parseMacroPayload(text) {
+  const payload = JSON.parse(text.replace(/\bNaN\b/g, "null"));
+  const records = Array.isArray(payload?.records) ? payload.records : [];
+  return records.map((row) => {
+    const out = { date: String(row.date || "").slice(0, 10) };
+    Object.entries(row).forEach(([k, v]) => {
+      if (k === "date") return;
+      out[k] = toNum(v);
+    });
+    return out;
+  })
+    .filter((row) => row.date)
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
 function getSeriesColumns(rows) {
   const cols = new Set();
   rows.forEach((r) => Object.keys(r).forEach((k) => { if (k !== "date") cols.add(k); }));
@@ -382,6 +398,7 @@ function centeredScale(values, pct, normalized) {
 function autoFitScales(rows, selected, normBases) {
   const info = [];
   selected.forEach((s) => {
+    if (s === "leading_cycle") return;
     let vals = rows.map((r) => toNum(r[s])).filter((v) => v !== null);
     if (!vals.length) return;
     const base = normBases[s];
@@ -632,8 +649,12 @@ function renderChart(preserveZoom = true) {
       commonNormBases[s] = r ? toNum(r[s]) : null;
     });
   }
-
-  const autoScales = autoFitScales(rows, selected, commonNormBases);
+  const visibleForAuto = selected.filter((s) => !hiddenSeries.has(s));
+  const autoScales = autoFitScales(
+    rows,
+    visibleForAuto.length ? visibleForAuto : selected,
+    commonNormBases,
+  );
 
   const traces = selected.map((series, i) => {
     let values = rows.map((r) => toNum(r[series]));
@@ -641,7 +662,7 @@ function renderChart(preserveZoom = true) {
     values = (base && base !== 0)
       ? values.map((v) => (Number.isFinite(v) ? (v / base) * 100 : null))
       : normalizeSeries(values);
-    values = centeredScale(values, autoScales[series] || 100, true);
+    values = centeredScale(values, series === "leading_cycle" ? 100 : (autoScales[series] || 100), true);
 
     baseTraceValues[series] = values;
 
@@ -662,7 +683,7 @@ function renderChart(preserveZoom = true) {
       x: xValues,
       y: values,
       type: "scatter",
-      mode: "lines+markers",
+      mode: "lines",
       name: labelName(series),
       visible: hiddenSeries.has(series) ? "legendonly" : true,
       connectgaps: true,
@@ -1004,17 +1025,30 @@ async function refreshAdrFromWeb() {
 
 async function loadData(forceNetwork = false) {
   const opt = forceNetwork ? { cache: "reload" } : {};
-  const [priceRes, macroRes, adrRes, creditRes] = await Promise.all([
+  const [priceRes, macroJsonRes, macroCsvRes, adrRes, creditRes] = await Promise.all([
     fetch("./data/prices.json", opt),
+    fetch("./data/macro_data.json", opt),
     fetch("./data/sample_macro_data.csv", opt),
     fetch("./data/adr_data.json", opt),
     fetch("./data/credit_data.json", opt),
   ]);
   const priceText = await priceRes.text();
   pricePayload = JSON.parse(priceText.replace(/\bNaN\b/g, "null"));
-  const csvRows = parseCsv(await macroRes.text());
+
+  let macroSourceRows = [];
+  if (macroJsonRes.ok) {
+    try {
+      macroSourceRows = parseMacroPayload(await macroJsonRes.text());
+    } catch (_) {
+      macroSourceRows = [];
+    }
+  }
+  if (!macroSourceRows.length && macroCsvRes.ok) {
+    macroSourceRows = parseCsv(await macroCsvRes.text());
+  }
+
   const priceDates = (pricePayload.records || []).map((r) => r.date);
-  macroRows = buildDenseMacroRows(csvRows, priceDates);
+  macroRows = buildDenseMacroRows(macroSourceRows, priceDates);
   if (adrRes.ok) {
     const adrPayload = JSON.parse(await adrRes.text());
     adrRows = adrPayload.records || [];
