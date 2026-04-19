@@ -87,6 +87,13 @@ function shiftMonths(dateStr, months) {
   return d.toISOString().slice(0, 10);
 }
 
+function shiftDays(dateStr, days) {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return dateStr;
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
 function parseCsv(text) {
   const result = Papa.parse(text.trim(), {
     header: true, dynamicTyping: true, skipEmptyLines: true,
@@ -269,10 +276,31 @@ function buildCreditInterpolator(creditRowsSrc) {
 function mergeSources(priceRows, denseRows, creditRowsSrc, start, end) {
   const priceMap  = new Map(priceRows.map((r) => [r.date, r]));
   const macroMap  = new Map(denseRows.map((r) => [r.date, r]));
-  const findCredit = buildCreditInterpolator(creditRowsSrc);
+  const creditByDate = new Map();
+
+  // Base credit series from macro CSV (covers long history)
+  denseRows.forEach((r) => {
+    creditByDate.set(r.date, {
+      kospi_credit: toNum(r.kospi_credit),
+      kosdaq_credit: toNum(r.kosdaq_credit),
+    });
+  });
+
+  // Override same-date points with latest KOFIA values when available
+  creditRowsSrc.forEach((r) => {
+    const date = String(r.date || "").slice(0, 10);
+    if (!date) return;
+    const prev = creditByDate.get(date) || {};
+    const nextKospi = toNum(r.kospi_credit);
+    const nextKosdaq = toNum(r.kosdaq_credit);
+    creditByDate.set(date, {
+      kospi_credit: nextKospi ?? prev.kospi_credit ?? null,
+      kosdaq_credit: nextKosdaq ?? prev.kosdaq_credit ?? null,
+    });
+  });
 
   const liveCols   = getSeriesColumns(priceRows);
-  // 매크로 컬럼에서 credit 제거 — API 데이터 전용, CSV 폴백 없음
+  // Keep credit separate from macroCols; credit is merged via creditByDate map
   const macroCols  = getSeriesColumns(denseRows).filter((c) => !CREDIT_COLS.includes(c));
 
   const rows = [];
@@ -283,8 +311,8 @@ function mergeSources(priceRows, denseRows, creditRowsSrc, start, end) {
     const mr = macroMap.get(date) || {};
     liveCols.forEach((k) => { row[k] = toNum(pr[k]); });
     macroCols.forEach((k) => { row[k] = toNum(mr[k]); });
-    // 신용: 가장 가까운 거래일 레코드 (없으면 null → 차트에서 갭 처리)
-    const cr = findCredit(date);
+    // Credit comes from the merged per-date map (long history + latest override)
+    const cr = creditByDate.get(date) || null;
     CREDIT_COLS.forEach((k) => { row[k] = cr ? toNum(cr[k]) : null; });
     rows.push(row);
   });
@@ -566,8 +594,13 @@ function renderChart(preserveZoom = true) {
     const offset = seriesOffsets[series] || 0;
     if (offset) values = values.map((v) => (v !== null ? v + offset : null));
 
+    // Credit offset moves x only so the line shape never distorts
+    const xValues = CREDIT_COLS.includes(series)
+      ? rows.map((r) => shiftDays(r.date, -CREDIT_OFFSET_DAYS))
+      : rows.map((r) => r.date);
+
     return {
-      x: rows.map((r) => r.date),
+      x: xValues,
       y: values,
       type: "scatter",
       mode: "lines+markers",
@@ -601,7 +634,7 @@ function renderChart(preserveZoom = true) {
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
     hoverlabel: hoverShowPopup ? { bgcolor: "#222", bordercolor: "#444", font: { color: "#eee" } } : { bgcolor: "rgba(0,0,0,0)", bordercolor: "rgba(0,0,0,0)", font: { color: "rgba(0,0,0,0)", size: 1 } },
     dragmode: false,
-  }, { responsive: true, displaylogo: false, scrollZoom: true });
+  }, { responsive: true, displayModeBar: false, displaylogo: false, scrollZoom: true });
 
   if (!legendHandlerSet) {
     el.on("plotly_legendclick", (evtData) => {
@@ -831,7 +864,7 @@ function renderAdrChart(xRange) {
     dragmode: false,
   };
 
-  Plotly.react(el, traces, layout, { responsive: true, displaylogo: false, scrollZoom: true });
+  Plotly.react(el, traces, layout, { responsive: true, displayModeBar: false, displaylogo: false, scrollZoom: true });
 
   if (!adrHandlerSet) {
     el.on("plotly_relayout", (eventData) => {
