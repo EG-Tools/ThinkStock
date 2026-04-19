@@ -21,3 +21,10 @@ ThinkStock now ships in two modes from the same repository.
 ## Docs
 - `IPHONE_TESTING.md`: iPhone testing notes
 - `.github/workflows/deploy-pages.yml`: official GitHub Actions Pages workflow
+
+## API Keys (Local Only)
+- Never commit API keys to this repository.
+- Store keys only on your local machine using one of these:
+- `scripts/ecos_key.txt` (single line key)
+- `scripts/.env.local` or `/.env.local` with `ECOS_API_KEY=...`
+- The GitHub Actions workflow no longer injects `ECOS_API_KEY`.

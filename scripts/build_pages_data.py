@@ -29,6 +29,9 @@ ECOS_ITEM_CODE = "I16E"     # Leading index cyclical component
 ECOS_START = "199601"
 OECD_FRED_SERIES_ID = "KORLOLITOAASTSAM"  # OECD CLI (AA, STSA) mirrored by FRED
 OECD_FRED_URL = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={OECD_FRED_SERIES_ID}"
+LOCAL_ENV_FILE = ROOT / ".env.local"
+LOCAL_SCRIPT_ENV_FILE = ROOT / "scripts" / ".env.local"
+LOCAL_ECOS_KEY_FILE = ROOT / "scripts" / "ecos_key.txt"
 
 
 def extract_close_series(data: pd.DataFrame, ticker: str) -> pd.Series | None:
@@ -105,6 +108,42 @@ def load_macro_source() -> pd.DataFrame:
     macro.index.name = "date"
     return macro
 
+
+
+def _read_env_key(path: Path, key: str) -> str:
+    if not path.exists():
+        return ""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except Exception:
+        return ""
+    for line in lines:
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        k, v = s.split("=", 1)
+        if k.strip() != key:
+            continue
+        return v.strip().strip('"').strip("'")
+    return ""
+
+
+def resolve_ecos_api_key() -> str:
+    env_key = os.environ.get("ECOS_API_KEY", "").strip()
+    if env_key:
+        return env_key
+
+    for env_file in (LOCAL_ENV_FILE, LOCAL_SCRIPT_ENV_FILE):
+        file_key = _read_env_key(env_file, "ECOS_API_KEY")
+        if file_key:
+            return file_key
+
+    if LOCAL_ECOS_KEY_FILE.exists():
+        try:
+            return LOCAL_ECOS_KEY_FILE.read_text(encoding="utf-8", errors="ignore").strip()
+        except Exception:
+            return ""
+    return ""
 
 def fetch_ecos_leading_cycle(api_key: str) -> pd.DataFrame:
     if not api_key:
@@ -275,7 +314,7 @@ def main() -> None:
     prices = fetch_prices()
 
     macro_source = load_macro_source()
-    ecos_key = os.environ.get("ECOS_API_KEY", "").strip()
+    ecos_key = resolve_ecos_api_key()
     latest_ecos_month: pd.Timestamp | None = None
     if ecos_key:
         leading_cycle = fetch_ecos_leading_cycle(ecos_key)

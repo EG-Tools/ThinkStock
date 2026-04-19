@@ -35,8 +35,6 @@ jobs:
           pip install pandas yfinance requests
 
       - name: Build Pages Data
-        env:
-          ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}
         run: python scripts/build_pages_data.py
 
       - name: Setup Pages
