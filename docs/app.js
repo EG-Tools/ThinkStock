@@ -53,11 +53,8 @@ let isHandleDragging = false;
 let pinnedXRange = null;
 let hoverSyncing = false;
 let cursorSyncing = false;
-let cursorRafId = 0;
-let pendingCursorX = null;
 let cursorMoveBound = false;
-let appliedCursorX = null;
-const CURSOR_SHAPE_NAME = "__sync_cursor__";
+const CURSOR_LINE_CLASS = "synced-cursor-line";
 
 /* ── localStorage persistence ── */
 function saveState() {
@@ -193,51 +190,75 @@ function clearHoverOnChart(targetEl) {
   requestAnimationFrame(() => { hoverSyncing = false; });
 }
 
-function buildCursorShape(xValue) {
-  return {
-    name: CURSOR_SHAPE_NAME,
-    type: "line",
-    xref: "x",
-    yref: "paper",
-    x0: xValue,
-    x1: xValue,
-    y0: 0,
-    y1: 1,
-    line: { color: "rgba(255,255,255,0.35)", width: 1 },
-    layer: "above",
-  };
+function ensureCursorLine(el) {
+  if (!el) return null;
+  let line = el.querySelector(`.${CURSOR_LINE_CLASS}`);
+  if (!line) {
+    line = document.createElement("div");
+    line.className = CURSOR_LINE_CLASS;
+    el.appendChild(line);
+  }
+  return line;
 }
 
-function nextShapesWithCursor(el, xValue) {
-  const shapes = Array.isArray(el?._fullLayout?.shapes) ? el._fullLayout.shapes : [];
-  const base = shapes.filter((shape) => shape?.name !== CURSOR_SHAPE_NAME);
-  if (xValue == null) return base;
-  return [...base, buildCursorShape(xValue)];
+function hideCursorLine(el) {
+  const line = ensureCursorLine(el);
+  if (!line) return;
+  line.style.opacity = "0";
 }
 
-function applySyncedCursor(xValue) {
-  const nextX = xValue ?? null;
-  if (appliedCursorX === nextX) return;
+function toLocalXFromValue(el, xValue) {
+  const xa = el?._fullLayout?.xaxis;
+  if (!xa) return null;
+  let plotX = null;
+  try {
+    if (typeof xa.d2p === "function") plotX = xa.d2p(xValue);
+    else if (typeof xa.r2p === "function") plotX = xa.r2p(xValue);
+  } catch (_) {
+    plotX = null;
+  }
+  if (!Number.isFinite(plotX)) return null;
+  const localX = xa._offset + plotX;
+  if (!Number.isFinite(localX)) return null;
+  return localX;
+}
+
+function showCursorLine(el, localX) {
+  const line = ensureCursorLine(el);
+  const xa = el?._fullLayout?.xaxis;
+  if (!line || !xa || !Number.isFinite(localX)) return hideCursorLine(el);
+  const minX = xa._offset;
+  const maxX = xa._offset + xa._length;
+  if (!Number.isFinite(minX) || !Number.isFinite(maxX) || localX < minX || localX > maxX) return hideCursorLine(el);
+  line.style.opacity = "1";
+  line.style.transform = `translateX(${localX.toFixed(2)}px)`;
+}
+
+function applySyncedCursor(xValue, sourceEl, sourceClientX) {
   const mainEl = document.getElementById("chart");
   const adrEl = document.getElementById("chart-adr");
-  const targets = [mainEl, adrEl].filter((el) => el && el._fullLayout);
-  if (!targets.length || !window.Plotly?.relayout) return;
-  cursorSyncing = true;
-  Promise.allSettled(
-    targets.map((el) => Plotly.relayout(el, { shapes: nextShapesWithCursor(el, nextX) }))
-  ).finally(() => {
-    cursorSyncing = false;
-    appliedCursorX = nextX;
+  const targets = [mainEl, adrEl].filter(Boolean);
+  if (!targets.length) return;
+  if (xValue == null) {
+    targets.forEach((el) => hideCursorLine(el));
+    return;
+  }
+  targets.forEach((el) => {
+    if (!el?._fullLayout?.xaxis) {
+      hideCursorLine(el);
+      return;
+    }
+    if (el === sourceEl && Number.isFinite(sourceClientX)) {
+      const rect = el.getBoundingClientRect();
+      showCursorLine(el, sourceClientX - rect.left);
+      return;
+    }
+    showCursorLine(el, toLocalXFromValue(el, xValue));
   });
 }
 
-function scheduleSyncedCursor(xValue) {
-  pendingCursorX = xValue ?? null;
-  if (cursorRafId) return;
-  cursorRafId = requestAnimationFrame(() => {
-    cursorRafId = 0;
-    applySyncedCursor(pendingCursorX);
-  });
+function scheduleSyncedCursor(xValue, sourceEl, sourceClientX) {
+  applySyncedCursor(xValue, sourceEl, sourceClientX);
 }
 
 function axisPixelToXValue(el, clientX) {
@@ -270,15 +291,20 @@ function axisPixelToXValue(el, clientX) {
 }
 
 function bindCursorMoveSync() {
-  if (cursorMoveBound) return;
   const mainEl = document.getElementById("chart");
   const adrEl = document.getElementById("chart-adr");
   if (!mainEl || !adrEl) return;
+  ensureCursorLine(mainEl);
+  ensureCursorLine(adrEl);
+  if (cursorMoveBound) return;
 
   const onMove = (event) => {
     const xValue = axisPixelToXValue(event.currentTarget, event.clientX);
-    if (xValue == null) return;
-    scheduleSyncedCursor(xValue);
+    if (xValue == null) {
+      scheduleSyncedCursor(null);
+      return;
+    }
+    scheduleSyncedCursor(xValue, event.currentTarget, event.clientX);
   };
 
   const onLeave = () => {
