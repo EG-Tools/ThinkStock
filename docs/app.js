@@ -938,18 +938,23 @@ function renderChart(preserveZoom = true) {
       return false;
     });
     el.on("plotly_relayout", (eventData) => {
-      if (chartSyncing || isHandleDragging || cursorSyncing) return;
+      const rangePair = Array.isArray(eventData["xaxis.range"]) ? eventData["xaxis.range"] : null;
+      const hasRange = (eventData["xaxis.range[0]"] != null && eventData["xaxis.range[1]"] != null)
+        || (Array.isArray(rangePair) && rangePair.length === 2);
+      const hasAuto = eventData["xaxis.autorange"] === true;
+      if (chartSyncing || isHandleDragging) return;
+      if (cursorSyncing && !hasRange && !hasAuto) return;
       setTimeout(updateHandles, 50);
       // 메인 차트 pan/zoom → ADR 차트 x축 동기화
       const adrEl = document.getElementById("chart-adr");
       if (adrEl && adrEl.data) {
-        const r0 = eventData["xaxis.range[0]"];
-        const r1 = eventData["xaxis.range[1]"];
-        if (r0 && r1) {
+        const r0 = eventData["xaxis.range[0]"] ?? (Array.isArray(rangePair) ? rangePair[0] : null);
+        const r1 = eventData["xaxis.range[1]"] ?? (Array.isArray(rangePair) ? rangePair[1] : null);
+        if (r0 != null && r1 != null) {
           pinnedXRange = [r0, r1];
           chartSyncing = true;
           Plotly.relayout(adrEl, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 }).finally(() => { chartSyncing = false; });
-        } else if (eventData["xaxis.autorange"]) {
+        } else if (hasAuto) {
           pinnedXRange = null;
           const mainRange = el._fullLayout?.xaxis?.range?.slice();
           chartSyncing = true;
@@ -1196,16 +1201,21 @@ function renderAdrChart(xRange) {
 
   if (!adrHandlerSet) {
     el.on("plotly_relayout", (eventData) => {
-      if (chartSyncing || cursorSyncing) return;
+      const rangePair = Array.isArray(eventData["xaxis.range"]) ? eventData["xaxis.range"] : null;
+      const hasRange = (eventData["xaxis.range[0]"] != null && eventData["xaxis.range[1]"] != null)
+        || (Array.isArray(rangePair) && rangePair.length === 2);
+      const hasAuto = eventData["xaxis.autorange"] === true;
+      if (chartSyncing) return;
+      if (cursorSyncing && !hasRange && !hasAuto) return;
       const mainEl = document.getElementById("chart");
       if (mainEl && mainEl.data) {
-        const r0 = eventData["xaxis.range[0]"];
-        const r1 = eventData["xaxis.range[1]"];
-        if (r0 && r1) {
+        const r0 = eventData["xaxis.range[0]"] ?? (Array.isArray(rangePair) ? rangePair[0] : null);
+        const r1 = eventData["xaxis.range[1]"] ?? (Array.isArray(rangePair) ? rangePair[1] : null);
+        if (r0 != null && r1 != null) {
           pinnedXRange = [r0, r1];
           chartSyncing = true;
           Plotly.relayout(mainEl, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 }).finally(() => { chartSyncing = false; });
-        } else if (eventData["xaxis.autorange"]) {
+        } else if (hasAuto) {
           pinnedXRange = null;
           const adrRange = el._fullLayout?.xaxis?.range?.slice();
           chartSyncing = true;
