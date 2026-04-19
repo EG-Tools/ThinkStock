@@ -1,4 +1,4 @@
-﻿const DISPLAY_NAMES = {
+const DISPLAY_NAMES = {
   leading_cycle: "선행지수 순환변동치",
   kospi_credit: "코스피 신용",
   kosdaq_credit: "코스닥 신용",
@@ -45,6 +45,8 @@ const escapeHtml = (v) => String(v ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&
 const labelName = (key) => DISPLAY_NAMES[key] || key;
 const seriesColor = (key) => SERIES_COLORS[key] || "#888";
 const toUtcMs = (d) => Date.parse(`${d}T00:00:00Z`);
+const isTouchDevice = () => typeof window !== "undefined"
+  && (("ontouchstart" in window) || ((navigator && navigator.maxTouchPoints) > 0));
 
 let pricePayload = null;
 let macroRows = [];
@@ -69,6 +71,9 @@ let cursorSyncing = false;
 let cursorMoveBound = false;
 const CURSOR_LINE_CLASS = "synced-cursor-line";
 let apiSettings = { ...API_SETTINGS_DEFAULT };
+let lastTouchTapAt = 0;
+let lastTouchTapX = null;
+let lastTouchTapEl = null;
 
 /* ── localStorage persistence ── */
 function saveState() {
@@ -421,6 +426,71 @@ function axisPixelToXValue(el, clientX) {
   return linear;
 }
 
+function getCurrentXRangeMs(sourceEl) {
+  const el = sourceEl || document.getElementById("chart");
+  const range = el?._fullLayout?.xaxis?.range;
+  if (!Array.isArray(range) || range.length < 2) return null;
+  const r0 = toMsSafe(range[0]);
+  const r1 = toMsSafe(range[1]);
+  if (!Number.isFinite(r0) || !Number.isFinite(r1) || r1 <= r0) return null;
+  return [r0, r1];
+}
+
+function applySyncedXRangeMs(startMs, endMs) {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return;
+
+  const mainEl = document.getElementById("chart");
+  const adrEl = document.getElementById("chart-adr");
+  const r0 = new Date(startMs).toISOString();
+  const r1 = new Date(endMs).toISOString();
+
+  pinnedXRange = [r0, r1];
+  chartSyncing = true;
+
+  const tasks = [];
+  if (mainEl?.data) {
+    tasks.push(Plotly.relayout(mainEl, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 }));
+  }
+  if (adrEl?.data) {
+    tasks.push(Plotly.relayout(adrEl, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 }));
+  }
+
+  Promise.allSettled(tasks).finally(() => {
+    chartSyncing = false;
+  });
+}
+
+function zoomAroundClientX(sourceEl, clientX, zoomFactor = 0.5) {
+  const xValue = axisPixelToXValue(sourceEl, clientX);
+  const centerMs = toMsSafe(xValue);
+  if (!Number.isFinite(centerMs)) return;
+
+  const range = getCurrentXRangeMs(sourceEl);
+  if (!range) return;
+
+  const [curStart, curEnd] = range;
+  const span = curEnd - curStart;
+  if (!Number.isFinite(span) || span <= 0) return;
+
+  const targetSpan = Math.max(span * zoomFactor, DAY_MS * 7);
+  let startMs = centerMs - targetSpan / 2;
+  let endMs = centerMs + targetSpan / 2;
+
+  if (startMs < curStart) {
+    endMs += (curStart - startMs);
+    startMs = curStart;
+  }
+  if (endMs > curEnd) {
+    startMs -= (endMs - curEnd);
+    endMs = curEnd;
+  }
+
+  if (startMs < curStart) startMs = curStart;
+  if (endMs > curEnd) endMs = curEnd;
+  if (endMs <= startMs) return;
+
+  applySyncedXRangeMs(startMs, endMs);
+}
 function bindCursorMoveSync() {
   const mainEl = document.getElementById("chart");
   const adrEl = document.getElementById("chart-adr");
@@ -429,13 +499,17 @@ function bindCursorMoveSync() {
   ensureCursorLine(adrEl);
   if (cursorMoveBound) return;
 
-  const onMove = (event) => {
-    const xValue = axisPixelToXValue(event.currentTarget, event.clientX);
+  const moveAt = (sourceEl, clientX) => {
+    const xValue = axisPixelToXValue(sourceEl, clientX);
     if (xValue == null) {
       scheduleSyncedCursor(null);
       return;
     }
-    scheduleSyncedCursor(xValue, event.currentTarget, event.clientX);
+    scheduleSyncedCursor(xValue, sourceEl, clientX);
+  };
+
+  const onMove = (event) => {
+    moveAt(event.currentTarget, event.clientX);
   };
 
   const onLeave = () => {
@@ -444,13 +518,58 @@ function bindCursorMoveSync() {
     clearHoverOnChart(adrEl);
   };
 
+  const onTouchStart = (event) => {
+    if (!event.touches || event.touches.length !== 1) return;
+    const touch = event.touches[0];
+    moveAt(event.currentTarget, touch.clientX);
+
+    const now = Date.now();
+    const sameTarget = lastTouchTapEl === event.currentTarget;
+    const nearX = Number.isFinite(lastTouchTapX) ? Math.abs(lastTouchTapX - touch.clientX) <= 28 : false;
+    const isDoubleTap = sameTarget && nearX && (now - lastTouchTapAt) <= 320;
+
+    if (isDoubleTap) {
+      event.preventDefault();
+      zoomAroundClientX(event.currentTarget, touch.clientX, 0.5);
+      lastTouchTapAt = 0;
+      lastTouchTapX = null;
+      lastTouchTapEl = null;
+      return;
+    }
+
+    lastTouchTapAt = now;
+    lastTouchTapX = touch.clientX;
+    lastTouchTapEl = event.currentTarget;
+  };
+
+  const onTouchMove = (event) => {
+    if (!event.touches || event.touches.length !== 1) return;
+    event.preventDefault();
+    const touch = event.touches[0];
+    moveAt(event.currentTarget, touch.clientX);
+  };
+
+  const onTouchEnd = (event) => {
+    if (event.touches && event.touches.length > 0) return;
+    onLeave();
+  };
+
   mainEl.addEventListener("mousemove", onMove, { passive: true });
   adrEl.addEventListener("mousemove", onMove, { passive: true });
   mainEl.addEventListener("mouseleave", onLeave);
   adrEl.addEventListener("mouseleave", onLeave);
+
+  mainEl.addEventListener("touchstart", onTouchStart, { passive: false });
+  adrEl.addEventListener("touchstart", onTouchStart, { passive: false });
+  mainEl.addEventListener("touchmove", onTouchMove, { passive: false });
+  adrEl.addEventListener("touchmove", onTouchMove, { passive: false });
+  mainEl.addEventListener("touchend", onTouchEnd);
+  adrEl.addEventListener("touchend", onTouchEnd);
+  mainEl.addEventListener("touchcancel", onTouchEnd);
+  adrEl.addEventListener("touchcancel", onTouchEnd);
+
   cursorMoveBound = true;
 }
-
 function parseCsv(text) {
   const result = Papa.parse(text.trim(), {
     header: true, dynamicTyping: true, skipEmptyLines: true,
@@ -1075,7 +1194,7 @@ function renderChart(preserveZoom = true) {
     yaxis: { showticklabels: false, title: "", showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, fixedrange: true, ...(savedYRange ? { range: savedYRange, autorange: false } : {}) },
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
     hoverlabel: hoverShowPopup ? { bgcolor: "rgba(34,34,34,0.45)", bordercolor: "rgba(140,140,140,0.35)", font: { color: "#eee" } } : { bgcolor: "rgba(0,0,0,0)", bordercolor: "rgba(0,0,0,0)", font: { color: "rgba(0,0,0,0)", size: 1 } },
-    dragmode: false,
+    dragmode: isTouchDevice() ? false : "zoom",
   }, { responsive: true, displayModeBar: false, displaylogo: false, scrollZoom: true });
 
   if (!legendHandlerSet) {
@@ -1357,7 +1476,7 @@ function renderAdrChart(xRange) {
     },
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
     hoverlabel: hoverShowPopup ? { bgcolor: "rgba(34,34,34,0.45)", bordercolor: "rgba(140,140,140,0.35)", font: { color: "#eee", size: 11 } } : { bgcolor: "rgba(0,0,0,0)", bordercolor: "rgba(0,0,0,0)", font: { color: "rgba(0,0,0,0)", size: 1 } },
-    dragmode: false,
+    dragmode: isTouchDevice() ? false : "zoom",
   };
 
   Plotly.react(el, traces, layout, { responsive: true, displayModeBar: false, displaylogo: false, scrollZoom: true });
@@ -1910,5 +2029,6 @@ async function boot() {
 }
 
 boot();
+
 
 
