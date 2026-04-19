@@ -24,19 +24,31 @@ Optional variable:
   - Numeric Apple ID of your app in App Store Connect
   - If set, build number auto-increments from latest App Store build.
 
-## 3) Apple account requirements
+## 3) Verify group is attached to workflow
+
+In `codemagic.yaml`, this workflow imports:
+
+```yaml
+environment:
+  groups:
+    - appstore_credentials
+```
+
+If the group name is different in UI, either rename the group in UI or change the workflow to match exactly.
+
+## 4) Apple account requirements
 
 - Apple Developer Program membership is required.
 - API key should have `App Manager` permission.
 - Bundle id is currently `com.egtools.thinkstock`.
 
-## 4) Run build
+## 5) Run build
 
 1. Click `Start new build` in Codemagic.
 2. Choose workflow `thinkstock-ios-testflight`.
 3. On success, Codemagic produces IPA and uploads to App Store Connect/TestFlight.
 
-## 5) Install on iPhone
+## 6) Install on iPhone
 
 1. Install `TestFlight` from App Store.
 2. Add your Apple ID as internal tester in App Store Connect.
@@ -44,6 +56,9 @@ Optional variable:
 
 ## Quick troubleshooting
 
+- `Missing value ISSUER_ID` in `Fetch signing files`
+  - `APP_STORE_CONNECT_ISSUER_ID` is missing in build environment.
+  - Add it to group `appstore_credentials` and ensure the workflow imports that group.
 - `API key invalid`
   - Re-check key id, issuer id, and full `.p8` content.
 - `Signing` failed

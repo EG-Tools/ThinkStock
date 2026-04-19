@@ -32,6 +32,21 @@ workflows:
         script: |
           keychain initialize
 
+      - name: Validate App Store Connect variables
+        script: |
+          missing=0
+          for var_name in APP_STORE_CONNECT_PRIVATE_KEY APP_STORE_CONNECT_KEY_IDENTIFIER APP_STORE_CONNECT_ISSUER_ID; do
+            eval "var_value=\${$var_name}"
+            if [ -z "$var_value" ]; then
+              echo "Missing env var: $var_name"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "Add missing values in Codemagic UI > Environment variables > group appstore_credentials."
+            exit 1
+          fi
+
       - name: Fetch signing files
         script: |
           app-store-connect fetch-signing-files "$BUNDLE_ID" \
