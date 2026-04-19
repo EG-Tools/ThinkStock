@@ -697,7 +697,7 @@ function updateHandles() {
 }
 
 function defaultSeriesScale(seriesKey) {
-  return seriesKey === "leading_cycle" ? 10 : 1;
+  return seriesKey === "leading_cycle" ? 20 : 1;
 }
 
 function computeFinalValues(seriesKey) {

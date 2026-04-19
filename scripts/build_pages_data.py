@@ -1,4 +1,4 @@
-﻿import json
+import json
 import os
 from datetime import date
 from pathlib import Path
@@ -9,12 +9,12 @@ import yfinance as yf
 
 DEFAULT_TICKERS = ["^KS11", "^KQ11", "005930.KS", "218410.KQ"]
 DISPLAY_NAMES = {
-    "leading_cycle": "선행지수 순환변동치",
-    "kospi_credit": "코스피 신용잔고",
-    "kosdaq_credit": "코스닥 신용잔고",
-    "^KS11": "코스피",
-    "^KQ11": "코스닥",
-    "005930.KS": "삼성전자",
+    "leading_cycle": "\uC120\uD589\uC9C0\uC218 \uC21C\uD658\uBCC0\uB3D9\uCE58",
+    "kospi_credit": "\uCF54\uC2A4\uD53C \uC2E0\uC6A9\uC794\uACE0",
+    "kosdaq_credit": "\uCF54\uC2A4\uB2E5 \uC2E0\uC6A9\uC794\uACE0",
+    "^KS11": "\uCF54\uC2A4\uD53C",
+    "^KQ11": "\uCF54\uC2A4\uB2E5",
+    "005930.KS": "\uC0BC\uC131\uC804\uC790",
     "218410.KQ": "RFHIC",
 }
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,9 +24,11 @@ OUTPUT_JSON = DATA_DIR / "prices.json"
 OUTPUT_MACRO_JSON = DATA_DIR / "macro_data.json"
 OUTPUT_MACRO_CSV = DATA_DIR / "sample_macro_data.csv"
 LOOKBACK_YEARS = 30
-ECOS_STAT_CODE = "901Y067"  # 경기종합지수
-ECOS_ITEM_CODE = "I16E"     # 선행지수순환변동치
+ECOS_STAT_CODE = "901Y067"  # Composite Leading Indicator
+ECOS_ITEM_CODE = "I16E"     # Leading index cyclical component
 ECOS_START = "199601"
+OECD_FRED_SERIES_ID = "KORLOLITOAASTSAM"  # OECD CLI (AA, STSA) mirrored by FRED
+OECD_FRED_URL = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={OECD_FRED_SERIES_ID}"
 
 
 def extract_close_series(data: pd.DataFrame, ticker: str) -> pd.Series | None:
@@ -155,12 +157,73 @@ def merge_macro_with_leading_cycle(macro: pd.DataFrame, leading_cycle: pd.DataFr
     if macro.empty:
         return leading_cycle
     merged = macro.copy()
-    merged["leading_cycle"] = pd.NA
+    if "leading_cycle" not in merged.columns:
+        merged["leading_cycle"] = pd.NA
     for idx, row in leading_cycle.iterrows():
         merged.loc[idx, "leading_cycle"] = row["leading_cycle"]
     merged = merged.sort_index()
     merged.index.name = "date"
     return merged
+
+
+def fetch_oecd_leading_cycle_from_fred() -> pd.DataFrame:
+    try:
+        frame = pd.read_csv(OECD_FRED_URL)
+    except Exception as exc:
+        print(f"OECD(FRED mirror) fetch failed: {exc}")
+        return pd.DataFrame(columns=["leading_cycle"])
+
+    if frame.empty or "observation_date" not in frame.columns or OECD_FRED_SERIES_ID not in frame.columns:
+        return pd.DataFrame(columns=["leading_cycle"])
+
+    out = frame.rename(
+        columns={
+            "observation_date": "date",
+            OECD_FRED_SERIES_ID: "leading_cycle",
+        }
+    )
+    out["date"] = pd.to_datetime(out["date"], errors="coerce")
+    out["leading_cycle"] = pd.to_numeric(out["leading_cycle"], errors="coerce")
+    out = out.dropna(subset=["date", "leading_cycle"])
+    if out.empty:
+        return pd.DataFrame(columns=["leading_cycle"])
+    out = out.set_index("date").sort_index()
+    out.index.name = "date"
+    return out[["leading_cycle"]]
+
+
+def apply_recent_oecd_tail(macro: pd.DataFrame, oecd: pd.DataFrame, months: int = 2) -> tuple[pd.DataFrame, int]:
+    if oecd.empty or "leading_cycle" not in oecd.columns:
+        return macro, 0
+
+    tail = pd.to_numeric(oecd["leading_cycle"], errors="coerce").dropna().tail(months)
+    if tail.empty:
+        return macro, 0
+
+    if macro.empty:
+        merged = tail.to_frame(name="leading_cycle")
+        merged.index.name = "date"
+        return merged, len(tail)
+
+    merged = macro.copy()
+    if "leading_cycle" not in merged.columns:
+        merged["leading_cycle"] = pd.NA
+
+    # Override the most recent 2 calendar months with OECD values.
+    applied = 0
+    for month_start, value in tail.items():
+        month_end = (month_start + pd.offsets.MonthEnd(1)).normalize()
+        mask = (merged.index >= month_start) & (merged.index <= month_end)
+        if mask.any():
+            merged.loc[mask, "leading_cycle"] = float(value)
+            applied += 1
+        else:
+            merged.loc[month_start, "leading_cycle"] = float(value)
+            applied += 1
+
+    merged = merged.sort_index()
+    merged.index.name = "date"
+    return merged, applied
 
 
 def densify_macro(macro: pd.DataFrame, price_index: pd.DatetimeIndex) -> pd.DataFrame:
@@ -209,6 +272,13 @@ def main() -> None:
             macro_source = merge_macro_with_leading_cycle(macro_source, leading_cycle)
             latest = leading_cycle.index.max().strftime("%Y-%m")
             print(f"Applied ECOS leading_cycle rows: {len(leading_cycle)} (latest={latest})")
+
+    oecd_leading_cycle = fetch_oecd_leading_cycle_from_fred()
+    if not oecd_leading_cycle.empty:
+        macro_source, applied_months = apply_recent_oecd_tail(macro_source, oecd_leading_cycle, months=2)
+        if applied_months:
+            latest = oecd_leading_cycle.index.max().strftime("%Y-%m")
+            print(f"Applied OECD leading_cycle tail months: {applied_months} (latest={latest})")
 
     macro = densify_macro(macro_source, prices.index if not prices.empty else pd.DatetimeIndex([]))
 
