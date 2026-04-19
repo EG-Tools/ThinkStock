@@ -276,31 +276,74 @@ function buildCreditInterpolator(creditRowsSrc) {
 function mergeSources(priceRows, denseRows, creditRowsSrc, start, end) {
   const priceMap  = new Map(priceRows.map((r) => [r.date, r]));
   const macroMap  = new Map(denseRows.map((r) => [r.date, r]));
-  const creditByDate = new Map();
 
-  // Base credit series from macro CSV (covers long history)
+  const historicalCredit = new Map();
   denseRows.forEach((r) => {
-    creditByDate.set(r.date, {
+    historicalCredit.set(r.date, {
       kospi_credit: toNum(r.kospi_credit),
       kosdaq_credit: toNum(r.kosdaq_credit),
     });
   });
 
-  // Override same-date points with latest KOFIA values when available
+  const kofiaCredit = new Map();
   creditRowsSrc.forEach((r) => {
     const date = String(r.date || "").slice(0, 10);
     if (!date) return;
-    const prev = creditByDate.get(date) || {};
+    const prev = kofiaCredit.get(date) || {};
     const nextKospi = toNum(r.kospi_credit);
     const nextKosdaq = toNum(r.kosdaq_credit);
-    creditByDate.set(date, {
+    kofiaCredit.set(date, {
       kospi_credit: nextKospi ?? prev.kospi_credit ?? null,
       kosdaq_credit: nextKosdaq ?? prev.kosdaq_credit ?? null,
     });
   });
 
+  const kofiaDates = [...kofiaCredit.keys()].sort();
+  const firstKofiaDate = kofiaDates.length ? kofiaDates[0] : "";
+
+  // Align old historical credit scale to the KOFIA scale to avoid boundary jumps.
+  const calcAlignFactor = (key) => {
+    const ratios = [];
+    kofiaDates.forEach((d) => {
+      const h = historicalCredit.get(d)?.[key];
+      const k = kofiaCredit.get(d)?.[key];
+      if (Number.isFinite(h) && Number.isFinite(k) && h !== 0) ratios.push(k / h);
+    });
+    if (!ratios.length) return 1;
+    ratios.sort((a, b) => a - b);
+    const m = Math.floor(ratios.length / 2);
+    const med = ratios.length % 2 ? ratios[m] : (ratios[m - 1] + ratios[m]) / 2;
+    if (!(Number.isFinite(med) && med > 0)) return 1;
+    return (med > 1.15 || med < 0.85) ? med : 1;
+  };
+
+  const alignFactor = {
+    kospi_credit: calcAlignFactor("kospi_credit"),
+    kosdaq_credit: calcAlignFactor("kosdaq_credit"),
+  };
+
+  const creditByDate = new Map();
+  historicalCredit.forEach((vals, date) => {
+    const shouldAlign = firstKofiaDate && date < firstKofiaDate;
+    const out = {};
+    CREDIT_COLS.forEach((k) => {
+      const v = vals?.[k];
+      const f = alignFactor[k] ?? 1;
+      out[k] = shouldAlign && Number.isFinite(v) ? v * f : v;
+    });
+    creditByDate.set(date, out);
+  });
+
+  // Use KOFIA values on overlapping/new dates.
+  kofiaCredit.forEach((vals, date) => {
+    const prev = creditByDate.get(date) || {};
+    creditByDate.set(date, {
+      kospi_credit: Number.isFinite(vals.kospi_credit) ? vals.kospi_credit : (prev.kospi_credit ?? null),
+      kosdaq_credit: Number.isFinite(vals.kosdaq_credit) ? vals.kosdaq_credit : (prev.kosdaq_credit ?? null),
+    });
+  });
+
   const liveCols   = getSeriesColumns(priceRows);
-  // Keep credit separate from macroCols; credit is merged via creditByDate map
   const macroCols  = getSeriesColumns(denseRows).filter((c) => !CREDIT_COLS.includes(c));
 
   const rows = [];
@@ -311,7 +354,6 @@ function mergeSources(priceRows, denseRows, creditRowsSrc, start, end) {
     const mr = macroMap.get(date) || {};
     liveCols.forEach((k) => { row[k] = toNum(pr[k]); });
     macroCols.forEach((k) => { row[k] = toNum(mr[k]); });
-    // Credit comes from the merged per-date map (long history + latest override)
     const cr = creditByDate.get(date) || null;
     CREDIT_COLS.forEach((k) => { row[k] = cr ? toNum(cr[k]) : null; });
     rows.push(row);

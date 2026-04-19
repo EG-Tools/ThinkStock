@@ -205,7 +205,7 @@ body {
 .chart-frame {
   position: relative;
   margin-top: 8px;
-  min-height: 540px;
+  min-height: 486px;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 28px;
@@ -215,8 +215,8 @@ body {
 }
 
 .chart-frame-adr {
-  min-height: 150px;
-  max-height: 180px;
+  min-height: 204px;
+  max-height: 234px;
 }
 
 #y-handles {
@@ -299,6 +299,6 @@ body {
     line-height: 1.2;
   }
   .series-row:first-child .series-toggle-btn:first-child { white-space: normal; }
-  .chart-frame { border-radius: 22px; min-height: 432px; }
-  .chart-frame-adr { min-height: 150px; max-height: 180px; }
+  .chart-frame { border-radius: 22px; min-height: 389px; }
+  .chart-frame-adr { min-height: 204px; max-height: 234px; }
 }
