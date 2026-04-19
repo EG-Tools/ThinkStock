@@ -1,4 +1,4 @@
-const DISPLAY_NAMES = {
+﻿const DISPLAY_NAMES = {
   leading_cycle: "선행지수 순환변동치",
   kospi_credit: "코스피 신용",
   kosdaq_credit: "코스닥 신용",
@@ -1293,7 +1293,9 @@ function renderAdrChart(xRange) {
   const layout = {
     paper_bgcolor: "transparent",
     plot_bgcolor: "#111111",
-    margin: { l: 46, r: 46, t: 14, b: 36 },
+    // Keep left/right margins identical with the main chart so synced cursor lines
+    // stay visually aligned across the full width (especially near edges).
+    margin: { l: 42, r: 42, t: 14, b: 36 },
     hovermode: "x unified",
     showlegend: true,
     legend: {
@@ -1908,3 +1910,5 @@ async function boot() {
 }
 
 boot();
+
+
