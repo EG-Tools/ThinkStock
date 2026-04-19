@@ -49,6 +49,8 @@ let currentRows = [];
 let currentStart = "";
 let chartSyncing = false;   // relayout 무한루프 방지 플래그
 let hoverShowPopup = false;
+let isHandleDragging = false;
+let pinnedXRange = null;
 
 /* ── localStorage persistence ── */
 function saveState() {
@@ -483,9 +485,17 @@ function lockCurrentYAxisRange() {
   });
 }
 
+function getCurrentMainXRange() {
+  const range = document.getElementById("chart")?._fullLayout?.xaxis?.range;
+  if (!Array.isArray(range) || range.length < 2) return null;
+  return [range[0], range[1]];
+}
+
 function setupOffsetDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
   function onStart(startClientY) {
     const startOffset = seriesOffsets[seriesKey] || 0;
+    const lockedXRange = getCurrentMainXRange();
+    isHandleDragging = true;
     handle.classList.add("dragging");
     lockCurrentYAxisRange();
 
@@ -499,6 +509,8 @@ function setupOffsetDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
 
     function onEnd(clientY) {
       handle.classList.remove("dragging");
+      isHandleDragging = false;
+      if (lockedXRange) pinnedXRange = [...lockedXRange];
       const dy = clientY - startClientY;
       if (Math.abs(dy) < 3) {
         seriesOffsets[seriesKey] = startOffset;
@@ -519,6 +531,8 @@ function setupOffsetDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
 function setupScaleDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
   function onStart(startClientY) {
     const startScale = seriesScales[seriesKey] != null ? seriesScales[seriesKey] : 1;
+    const lockedXRange = getCurrentMainXRange();
+    isHandleDragging = true;
     handle.classList.add("dragging");
     lockCurrentYAxisRange();
 
@@ -532,6 +546,8 @@ function setupScaleDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
 
     function onEnd() {
       handle.classList.remove("dragging");
+      isHandleDragging = false;
+      if (lockedXRange) pinnedXRange = [...lockedXRange];
       saveState();
       renderChart();
     }
@@ -566,6 +582,7 @@ function addDragListeners(startClientY, onMove, onEnd) {
 function resetHandles() {
   seriesOffsets = {};
   seriesScales = {};
+  pinnedXRange = null;
   saveState();
   renderChart(false);
 }
@@ -661,7 +678,10 @@ function renderChart(preserveZoom = true) {
 
   // 핸들 드래그 후에만 줌 보존 — 범위 버튼 전환 시엔 초기화
 
-  const savedXRange = preserveZoom ? (el._fullLayout?.xaxis?.range?.slice() || null) : null;
+  if (!preserveZoom) pinnedXRange = null;
+  const savedXRange = preserveZoom
+    ? (pinnedXRange ? [...pinnedXRange] : (el._fullLayout?.xaxis?.range?.slice() || null))
+    : null;
   const savedYRange = preserveZoom ? (el._fullLayout?.yaxis?.range?.slice() || null) : null;
 
   Plotly.react(el, traces, {
@@ -700,16 +720,18 @@ function renderChart(preserveZoom = true) {
     });
     el.on("plotly_relayout", (eventData) => {
       setTimeout(updateHandles, 50);
-      if (chartSyncing) return;
+      if (chartSyncing || isHandleDragging) return;
       // 메인 차트 pan/zoom → ADR 차트 x축 동기화
       const adrEl = document.getElementById("chart-adr");
       if (adrEl && adrEl.data) {
         const r0 = eventData["xaxis.range[0]"];
         const r1 = eventData["xaxis.range[1]"];
         if (r0 && r1) {
+          pinnedXRange = [r0, r1];
           chartSyncing = true;
           Plotly.relayout(adrEl, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 }).finally(() => { chartSyncing = false; });
         } else if (eventData["xaxis.autorange"]) {
+          pinnedXRange = null;
           chartSyncing = true;
           Plotly.relayout(adrEl, { "xaxis.autorange": true }).finally(() => { chartSyncing = false; });
         }
@@ -722,7 +744,7 @@ function renderChart(preserveZoom = true) {
   }
 
   updateHandles();
-  renderAdrChart(preserveZoom ? (el._fullLayout?.xaxis?.range?.slice() || null) : null);
+  renderAdrChart(savedXRange ? [...savedXRange] : null);
 }
 
 /* ── ADR 미니 차트 (adrinfo.kr 스타일) ── */
@@ -916,9 +938,11 @@ function renderAdrChart(xRange) {
         const r0 = eventData["xaxis.range[0]"];
         const r1 = eventData["xaxis.range[1]"];
         if (r0 && r1) {
+          pinnedXRange = [r0, r1];
           chartSyncing = true;
           Plotly.relayout(mainEl, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 }).finally(() => { chartSyncing = false; });
         } else if (eventData["xaxis.autorange"]) {
+          pinnedXRange = null;
           chartSyncing = true;
           Plotly.relayout(mainEl, { "xaxis.autorange": true }).finally(() => { chartSyncing = false; });
         }
@@ -1012,6 +1036,7 @@ async function boot() {
     document.querySelectorAll(".range-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
         activeMonths = Number(btn.dataset.months);
+        pinnedXRange = null;
         syncButtons();
         saveState();
         renderChart(false);
