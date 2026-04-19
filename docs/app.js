@@ -55,6 +55,8 @@ let hoverSyncing = false;
 let cursorSyncing = false;
 let cursorRafId = 0;
 let pendingCursorX = null;
+let cursorMoveBound = false;
+let appliedCursorX = null;
 const CURSOR_SHAPE_NAME = "__sync_cursor__";
 
 /* ── localStorage persistence ── */
@@ -214,15 +216,18 @@ function nextShapesWithCursor(el, xValue) {
 }
 
 function applySyncedCursor(xValue) {
+  const nextX = xValue ?? null;
+  if (appliedCursorX === nextX) return;
   const mainEl = document.getElementById("chart");
   const adrEl = document.getElementById("chart-adr");
   const targets = [mainEl, adrEl].filter((el) => el && el._fullLayout);
   if (!targets.length || !window.Plotly?.relayout) return;
   cursorSyncing = true;
   Promise.allSettled(
-    targets.map((el) => Plotly.relayout(el, { shapes: nextShapesWithCursor(el, xValue) }))
+    targets.map((el) => Plotly.relayout(el, { shapes: nextShapesWithCursor(el, nextX) }))
   ).finally(() => {
     cursorSyncing = false;
+    appliedCursorX = nextX;
   });
 }
 
@@ -233,6 +238,58 @@ function scheduleSyncedCursor(xValue) {
     cursorRafId = 0;
     applySyncedCursor(pendingCursorX);
   });
+}
+
+function axisPixelToXValue(el, clientX) {
+  const xa = el?._fullLayout?.xaxis;
+  if (!xa || !Number.isFinite(clientX)) return null;
+  const px = clientX - xa._offset;
+  if (!Number.isFinite(px) || px < 0 || px > xa._length) return null;
+
+  try {
+    if (typeof xa.p2d === "function") {
+      const d = xa.p2d(px);
+      if (d != null) return d;
+    }
+  } catch (_) {
+    // no-op
+  }
+
+  let linear = null;
+  try {
+    if (typeof xa.p2l === "function") linear = xa.p2l(px);
+    else if (typeof xa.p2c === "function") linear = xa.p2c(px);
+  } catch (_) {
+    linear = null;
+  }
+  if (!Number.isFinite(linear)) return null;
+  if (xa.type === "date") return new Date(linear).toISOString().slice(0, 10);
+  return linear;
+}
+
+function bindCursorMoveSync() {
+  if (cursorMoveBound) return;
+  const mainEl = document.getElementById("chart");
+  const adrEl = document.getElementById("chart-adr");
+  if (!mainEl || !adrEl) return;
+
+  const onMove = (event) => {
+    const xValue = axisPixelToXValue(event.currentTarget, event.clientX);
+    if (xValue == null) return;
+    scheduleSyncedCursor(xValue);
+  };
+
+  const onLeave = () => {
+    scheduleSyncedCursor(null);
+    clearHoverOnChart(mainEl);
+    clearHoverOnChart(adrEl);
+  };
+
+  mainEl.addEventListener("mousemove", onMove, { passive: true });
+  adrEl.addEventListener("mousemove", onMove, { passive: true });
+  mainEl.addEventListener("mouseleave", onLeave);
+  adrEl.addEventListener("mouseleave", onLeave);
+  cursorMoveBound = true;
 }
 
 function parseCsv(text) {
@@ -907,7 +964,6 @@ function renderChart(preserveZoom = true) {
     });
     el.on("plotly_unhover", () => {
       if (hoverSyncing) return;
-      scheduleSyncedCursor(null);
       const adrEl = document.getElementById("chart-adr");
       clearHoverOnChart(adrEl);
     });
@@ -919,6 +975,7 @@ function renderChart(preserveZoom = true) {
 
   updateHandles();
   renderAdrChart(savedXRange ? [...savedXRange] : null);
+  bindCursorMoveSync();
 }
 
 /* ── ADR 미니 차트 (adrinfo.kr 스타일) ── */
@@ -1159,7 +1216,6 @@ function renderAdrChart(xRange) {
     });
     el.on("plotly_unhover", () => {
       if (hoverSyncing) return;
-      scheduleSyncedCursor(null);
       const mainEl = document.getElementById("chart");
       clearHoverOnChart(mainEl);
     });
