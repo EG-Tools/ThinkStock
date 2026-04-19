@@ -51,6 +51,7 @@ let chartSyncing = false;   // relayout 무한루프 방지 플래그
 let hoverShowPopup = false;
 let isHandleDragging = false;
 let pinnedXRange = null;
+let hoverSyncing = false;
 
 /* ── localStorage persistence ── */
 function saveState() {
@@ -94,6 +95,88 @@ function shiftDays(dateStr, days) {
   if (Number.isNaN(d.getTime())) return dateStr;
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
+}
+
+
+function toMsSafe(v) {
+  if (v == null) return null;
+  const n = Date.parse(String(v));
+  return Number.isFinite(n) ? n : null;
+}
+
+function findNearestHoverPoint(el, xValue) {
+  if (!el?.data?.length) return null;
+  const targetMs = toMsSafe(xValue);
+  if (targetMs === null) return null;
+
+  const nearestInTrace = (trace) => {
+    if (!trace || trace.visible === "legendonly" || !Array.isArray(trace.x) || !trace.x.length) return null;
+    const xs = trace.x;
+    const toMsAt = (i) => toMsSafe(xs[i]);
+
+    let lo = 0;
+    let hi = xs.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const ms = toMsAt(mid);
+      if (ms === null) return null;
+      if (ms < targetMs) lo = mid + 1;
+      else hi = mid - 1;
+    }
+
+    const cand = [];
+    if (lo >= 0 && lo < xs.length) cand.push(lo);
+    if (lo - 1 >= 0 && lo - 1 < xs.length) cand.push(lo - 1);
+    if (!cand.length) return null;
+
+    let bestIdx = cand[0];
+    let bestDiff = Math.abs(toMsAt(bestIdx) - targetMs);
+    for (let i = 1; i < cand.length; i += 1) {
+      const idx = cand[i];
+      const diff = Math.abs(toMsAt(idx) - targetMs);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestIdx = idx;
+      }
+    }
+    return { pointNumber: bestIdx, diff: bestDiff };
+  };
+
+  let best = null;
+  let bestDiff = Number.POSITIVE_INFINITY;
+  el.data.forEach((trace, curveNumber) => {
+    const near = nearestInTrace(trace);
+    if (!near) return;
+    if (near.diff < bestDiff) {
+      bestDiff = near.diff;
+      best = { curveNumber, pointNumber: near.pointNumber };
+    }
+  });
+  return best;
+}
+
+function syncHoverToChart(targetEl, xValue) {
+  if (!targetEl || !window.Plotly?.Fx?.hover) return;
+  const pt = findNearestHoverPoint(targetEl, xValue);
+  if (!pt) return;
+  hoverSyncing = true;
+  try {
+    Plotly.Fx.hover(targetEl, [pt], ["xy"]);
+  } catch (_) {
+    // no-op
+  }
+  requestAnimationFrame(() => { hoverSyncing = false; });
+}
+
+function clearHoverOnChart(targetEl) {
+  if (!targetEl || !window.Plotly?.Fx?.unhover) return;
+  hoverSyncing = true;
+  try {
+    Plotly.Fx.unhover(targetEl);
+  } catch (_) {
+    // no-op
+  }
+  requestAnimationFrame(() => { hoverSyncing = false; });
 }
 
 function parseCsv(text) {
@@ -758,6 +841,18 @@ function renderChart(preserveZoom = true) {
         }
       }
     });
+    el.on("plotly_hover", (eventData) => {
+      if (hoverSyncing) return;
+      const xValue = eventData?.points?.[0]?.x;
+      if (!xValue) return;
+      const adrEl = document.getElementById("chart-adr");
+      syncHoverToChart(adrEl, xValue);
+    });
+    el.on("plotly_unhover", () => {
+      if (hoverSyncing) return;
+      const adrEl = document.getElementById("chart-adr");
+      clearHoverOnChart(adrEl);
+    });
     el.on("plotly_click", () => {
       Plotly.relayout(el, { "xaxis.autorange": true, "yaxis.autorange": true });
     });
@@ -968,6 +1063,18 @@ function renderAdrChart(xRange) {
           Plotly.relayout(mainEl, { "xaxis.autorange": true }).finally(() => { chartSyncing = false; });
         }
       }
+    });
+    el.on("plotly_hover", (eventData) => {
+      if (hoverSyncing) return;
+      const xValue = eventData?.points?.[0]?.x;
+      if (!xValue) return;
+      const mainEl = document.getElementById("chart");
+      syncHoverToChart(mainEl, xValue);
+    });
+    el.on("plotly_unhover", () => {
+      if (hoverSyncing) return;
+      const mainEl = document.getElementById("chart");
+      clearHoverOnChart(mainEl);
     });
     adrHandlerSet = true;
   }
