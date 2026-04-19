@@ -1,0 +1,9 @@
+{
+  "appId": "com.egtools.thinkstock",
+  "appName": "ThinkStock",
+  "webDir": "docs",
+  "bundledWebRuntime": false,
+  "server": {
+    "iosScheme": "capacitor"
+  }
+}
