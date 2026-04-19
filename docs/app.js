@@ -696,10 +696,14 @@ function updateHandles() {
   });
 }
 
+function defaultSeriesScale(seriesKey) {
+  return seriesKey === "leading_cycle" ? 10 : 1;
+}
+
 function computeFinalValues(seriesKey) {
   const base = baseTraceValues[seriesKey];
   if (!base) return null;
-  const s = seriesScales[seriesKey] != null ? seriesScales[seriesKey] : 1;
+  const s = seriesScales[seriesKey] != null ? seriesScales[seriesKey] : defaultSeriesScale(seriesKey);
   const o = seriesOffsets[seriesKey] || 0;
   return base.map((v) => (v !== null ? 100 + (v - 100) * s + o : null));
 }
@@ -771,7 +775,7 @@ function setupOffsetDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
 
 function setupScaleDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
   function onStart(startClientY) {
-    const startScale = seriesScales[seriesKey] != null ? seriesScales[seriesKey] : 1;
+    const startScale = seriesScales[seriesKey] != null ? seriesScales[seriesKey] : defaultSeriesScale(seriesKey);
     const lockedXRange = getCurrentMainXRange();
     isHandleDragging = true;
     handle.classList.add("dragging");
@@ -890,7 +894,7 @@ function renderChart(preserveZoom = true) {
 
     baseTraceValues[series] = values;
 
-    const userScale = seriesScales[series] != null ? seriesScales[series] : 1;
+    const userScale = seriesScales[series] != null ? seriesScales[series] : defaultSeriesScale(series);
     if (userScale !== 1) {
       values = values.map((v) => (v !== null ? 100 + (v - 100) * userScale : null));
     }
