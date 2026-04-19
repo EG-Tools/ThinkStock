@@ -26,6 +26,7 @@ const SERIES_COLORS = {
 };
 
 const STATE_KEY = "thinkstock-v5";
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 const toNum = (v) => (v != null && Number.isFinite(Number(v))) ? Number(v) : null;
 const labelName = (key) => DISPLAY_NAMES[key] || key;
@@ -176,10 +177,69 @@ function buildCreditFinder(creditRowsSrc) {
   };
 }
 
+function buildCreditInterpolator(creditRowsSrc) {
+  if (!creditRowsSrc.length) return () => null;
+
+  const points = [...creditRowsSrc]
+    .map((r) => ({
+      time: toUtcMs(r.date),
+      kospi_credit: toNum(r.kospi_credit),
+      kosdaq_credit: toNum(r.kosdaq_credit),
+    }))
+    .filter((r) => Number.isFinite(r.time))
+    .sort((a, b) => a.time - b.time);
+  if (!points.length) return () => null;
+
+  const byTime = new Map(points.map((p) => [p.time, p]));
+  const firstTime = points[0].time;
+  const lastTime = points[points.length - 1].time;
+
+  function interpolate(targetTime) {
+    if (targetTime < firstTime || targetTime > lastTime) return null;
+
+    const exact = byTime.get(targetTime);
+    if (exact) return exact;
+
+    let lo = 0;
+    let hi = points.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (points[mid].time < targetTime) lo = mid + 1;
+      else hi = mid - 1;
+    }
+
+    const right = points[lo];
+    const left = points[lo - 1];
+    if (!left || !right) return null;
+
+    const span = right.time - left.time;
+    if (!Number.isFinite(span) || span <= 0) return null;
+    const t = (targetTime - left.time) / span;
+
+    const out = {};
+    CREDIT_COLS.forEach((k) => {
+      const lv = left[k];
+      const rv = right[k];
+      if (lv === null && rv === null) out[k] = null;
+      else if (lv === null) out[k] = rv;
+      else if (rv === null) out[k] = lv;
+      else out[k] = lv + (rv - lv) * t;
+    });
+    return out;
+  }
+
+  return function findShiftedCredit(priceDate) {
+    const baseTime = toUtcMs(priceDate);
+    if (!Number.isFinite(baseTime)) return null;
+    const shiftedTime = baseTime + CREDIT_OFFSET_DAYS * DAY_MS;
+    return interpolate(shiftedTime);
+  };
+}
+
 function mergeSources(priceRows, denseRows, creditRowsSrc, start, end) {
   const priceMap  = new Map(priceRows.map((r) => [r.date, r]));
   const macroMap  = new Map(denseRows.map((r) => [r.date, r]));
-  const findCredit = buildCreditFinder(creditRowsSrc);
+  const findCredit = buildCreditInterpolator(creditRowsSrc);
 
   const liveCols   = getSeriesColumns(priceRows);
   // 매크로 컬럼에서 credit 제거 — API 데이터 전용, CSV 폴백 없음
@@ -480,7 +540,9 @@ function renderChart(preserveZoom = true) {
   });
 
   // 핸들 드래그 후에만 줌 보존 — 범위 버튼 전환 시엔 초기화
+
   const savedXRange = preserveZoom ? (el._fullLayout?.xaxis?.range?.slice() || null) : null;
+  const savedYRange = preserveZoom ? (el._fullLayout?.yaxis?.range?.slice() || null) : null;
 
   Plotly.react(el, traces, {
     paper_bgcolor: "transparent",
@@ -489,7 +551,7 @@ function renderChart(preserveZoom = true) {
     hovermode: "x unified",
     legend: { orientation: "h", x: 0, y: 1.08, font: { color: "rgba(255,255,255,0.7)", size: 11 } },
     xaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, color: "#666", tickfont: { size: 10 }, fixedrange: false, showspikes: true, spikemode: "across", spikesnap: "cursor", spikecolor: "rgba(255,255,255,0.25)", spikethickness: 1, spikedash: "solid", ...(savedXRange ? { range: savedXRange } : {}) },
-    yaxis: { showticklabels: false, title: "", showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, fixedrange: true },
+    yaxis: { showticklabels: false, title: "", showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, fixedrange: true, ...(savedYRange ? { range: savedYRange, autorange: false } : {}) },
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
     hoverlabel: hoverShowPopup ? { bgcolor: "#222", bordercolor: "#444", font: { color: "#eee" } } : { bgcolor: "rgba(0,0,0,0)", bordercolor: "rgba(0,0,0,0)", font: { color: "rgba(0,0,0,0)", size: 1 } },
     dragmode: false,
@@ -860,6 +922,7 @@ async function boot() {
     }
 
     // 새로고침 버튼: 캐시 무시하고 최신 데이터 재요청
+    
     const refreshBtn = document.getElementById("refreshData");
     if (refreshBtn) {
       refreshBtn.addEventListener("click", async () => {
