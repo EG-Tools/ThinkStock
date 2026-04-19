@@ -17,15 +17,30 @@
   <body>
     <div class="app-shell">
       <header class="hero">
-        <div class="hero-row">
-          <h1>ThinkStock</h1>
-          <button id="refreshData" class="refresh-btn" title="데이터 새로고침">&#x21BB;</button>
-          <button id="hoverToggle" class="hover-toggle-btn" title="마우스 수치 팝업 표시/숨김">지수팝업</button>
-          <label class="credit-offset-wrap" title="신용잔고 발표 시차 보정 (일)">
-            <span class="credit-offset-label">신용 오프셋</span>
+        <h1>ThinkStock</h1>
+        <div class="top-controls">
+          <button id="refreshData" class="refresh-btn" title="새로고침">&#x21BB;</button>
+          <button id="hoverToggle" class="hover-toggle-btn" title="지수팝업 ON/OFF">지수팝업</button>
+          <label class="credit-offset-wrap" title="신용잔고 발표 시차 보정(일)">
+            <span class="credit-offset-label">신용옵셋</span>
             <input id="creditOffset" class="credit-offset-input" type="number" value="-2" step="1" min="-30" max="30">
           </label>
           <button id="resetHandles" class="reset-btn">리셋</button>
+        </div>
+        <div class="series-toggle-board" id="seriesToggleBoard">
+          <div class="series-row">
+            <button class="series-toggle-btn" data-series="leading_cycle">선행지수 순환변동치</button>
+            <button class="series-toggle-btn" data-series="^KS11">코스피</button>
+            <button class="series-toggle-btn" data-series="^KQ11">코스닥</button>
+          </div>
+          <div class="series-row">
+            <button class="series-toggle-btn" data-series="kospi_credit">코스피 신용</button>
+            <button class="series-toggle-btn" data-series="kosdaq_credit">코스닥 신용</button>
+            <button class="series-toggle-btn" data-series="005930.KS">삼성전자</button>
+          </div>
+          <div class="series-row">
+            <button class="series-toggle-btn single" data-series="218410.KQ">RFHIC</button>
+          </div>
         </div>
       </header>
       <div id="chart" class="chart-frame"></div>

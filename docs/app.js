@@ -1,7 +1,7 @@
 const DISPLAY_NAMES = {
   leading_cycle: "선행지수 순환변동치",
-  kospi_credit: "코스피 신용잔고",
-  kosdaq_credit: "코스닥 신용잔고",
+  kospi_credit: "코스피 신용",
+  kosdaq_credit: "코스닥 신용",
   "^KS11": "코스피",
   "^KQ11": "코스닥",
   "005930.KS": "삼성전자",
@@ -121,6 +121,35 @@ function sortSeries(list) {
 }
 
 /* ── Dense macro interpolation (for daily data) ── */
+
+function syncSeriesToggleBoard(allSeries) {
+  const available = new Set(allSeries || []);
+  document.querySelectorAll(".series-toggle-btn").forEach((btn) => {
+    const key = btn.dataset.series;
+    const isAvailable = available.has(key);
+    const isVisible = isAvailable && !hiddenSeries.has(key);
+    btn.disabled = !isAvailable;
+    btn.classList.toggle("is-disabled", !isAvailable);
+    btn.classList.toggle("is-on", isVisible);
+    btn.classList.toggle("is-off", isAvailable && !isVisible);
+  });
+}
+
+function bindSeriesToggleBoard() {
+  document.querySelectorAll(".series-toggle-btn").forEach((btn) => {
+    if (btn.dataset.bound === "1") return;
+    btn.dataset.bound = "1";
+    btn.addEventListener("click", () => {
+      const key = btn.dataset.series;
+      if (!key || btn.disabled) return;
+      if (hiddenSeries.has(key)) hiddenSeries.delete(key);
+      else hiddenSeries.add(key);
+      saveState();
+      renderChart();
+    });
+  });
+}
+
 function buildDenseMacroRows(sourceRows, targetDates) {
   const sorted = [...sourceRows].sort((a, b) => a.date.localeCompare(b.date));
   const cols = getSeriesColumns(sorted);
@@ -490,6 +519,7 @@ function renderChart(preserveZoom = true) {
   const allSeries = sortSeries(
     [...new Set([...liveCols, ...macroCols])].filter((s) => rows.some((r) => toNum(r[s]) !== null))
   );
+  syncSeriesToggleBoard(allSeries);
   // ADR 시리즈는 메인 차트에서 제외 — 별도 미니차트에 표시
   const selected = DEFAULT_SELECTED.filter((s) => allSeries.includes(s) && !ADR_SERIES.includes(s));
   if (!selected.length) selected.push(...allSeries.slice(0, 2));
@@ -563,6 +593,7 @@ function renderChart(preserveZoom = true) {
     plot_bgcolor: "#111111",
     margin: { l: 42, r: 42, t: 28, b: 32 },
     hovermode: "x unified",
+    showlegend: false,
     legend: { orientation: "h", x: 0, y: 1.08, font: { color: "rgba(255,255,255,0.7)", size: 11 } },
     xaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, color: "#666", tickfont: { size: 10 }, fixedrange: false, showspikes: true, spikemode: "across", spikesnap: "cursor", spikecolor: "rgba(255,255,255,0.25)", spikethickness: 1, spikedash: "solid", ...(savedXRange ? { range: savedXRange } : {}) },
     yaxis: { showticklabels: false, title: "", showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, fixedrange: true, ...(savedYRange ? { range: savedYRange, autorange: false } : {}) },
@@ -889,6 +920,7 @@ async function loadData(forceNetwork = false) {
 async function boot() {
   const msgEl = document.getElementById("messageArea");
   loadState();
+  bindSeriesToggleBoard();
   syncButtons();
   try {
     await loadData();

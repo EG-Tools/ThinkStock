@@ -8,39 +8,56 @@
   --border: rgba(255, 255, 255, 0.08);
   --shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
 }
+
 * { box-sizing: border-box; }
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Pretendard", "Segoe UI", sans-serif;
   color: var(--ink);
   background: var(--bg);
 }
+
 .app-shell { width: min(1120px, calc(100vw - 24px)); margin: 0 auto; padding: 20px 0 72px; }
 .hero { padding: 18px 20px 6px; }
-.hero-row { display: flex; align-items: center; gap: 14px; }
 .hero h1 { margin: 0; font-size: clamp(34px, 7vw, 58px); line-height: 0.95; letter-spacing: -0.04em; color: #fff; }
+
+.top-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
 .refresh-btn {
   flex-shrink: 0;
-  width: 36px; height: 36px;
+  width: 36px;
+  height: 36px;
   border: 1px solid var(--border);
   border-radius: 50%;
-  background: rgba(255,255,255,0.06);
+  background: rgba(255, 255, 255, 0.06);
   color: var(--muted);
   font-size: 18px;
   line-height: 1;
   cursor: pointer;
   transition: all 0.15s;
-  display: flex; align-items: center; justify-content: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.refresh-btn:hover { background: rgba(255,255,255,0.12); color: var(--ink); }
-.refresh-btn.spinning { animation: spin 0.7s linear infinite; color: var(--accent); border-color: rgba(74,222,128,0.3); }
+
+.refresh-btn:hover { background: rgba(255, 255, 255, 0.12); color: var(--ink); }
+.refresh-btn.spinning { animation: spin 0.7s linear infinite; color: var(--accent); border-color: rgba(74, 222, 128, 0.3); }
+
 @keyframes spin { to { transform: rotate(360deg); } }
+
 .hover-toggle-btn {
   flex-shrink: 0;
   padding: 6px 12px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: rgba(255,255,255,0.06);
+  background: rgba(255, 255, 255, 0.06);
   color: var(--muted);
   font-size: 12px;
   font-weight: 600;
@@ -48,33 +65,120 @@ body {
   transition: all 0.15s;
   white-space: nowrap;
 }
-.hover-toggle-btn:hover { background: rgba(255,255,255,0.12); color: var(--ink); }
-.hover-toggle-btn.is-active { background: var(--accent-soft); color: var(--accent); border-color: rgba(74,222,128,0.25); }
+
+.hover-toggle-btn:hover { background: rgba(255, 255, 255, 0.12); color: var(--ink); }
+.hover-toggle-btn.is-active { background: var(--accent-soft); color: var(--accent); border-color: rgba(74, 222, 128, 0.25); }
+
 .credit-offset-wrap {
-  display: flex; align-items: center; gap: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   cursor: default;
 }
+
 .credit-offset-label {
-  font-size: 11px; color: var(--muted); white-space: nowrap;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
 }
+
 .credit-offset-input {
-  width: 52px; padding: 4px 6px;
-  border: 1px solid var(--border); border-radius: 8px;
-  background: rgba(255,255,255,0.06); color: var(--ink);
-  font-size: 12px; font-weight: 600; text-align: center;
+  width: 52px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
   -moz-appearance: textfield;
 }
+
 .credit-offset-input::-webkit-outer-spin-button,
 .credit-offset-input::-webkit-inner-spin-button { -webkit-appearance: none; }
-.credit-offset-input:focus { outline: none; border-color: rgba(255,255,255,0.2); }
-.range-row { display: flex; align-items: center; gap: 6px; padding: 8px 20px; flex-wrap: nowrap; }
-.range-btn {
-  padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06); color: var(--ink); font-size: 12px;
-  font-weight: 600; cursor: pointer; transition: all 0.15s; white-space: nowrap;
+
+.credit-offset-input:focus { outline: none; border-color: rgba(255, 255, 255, 0.2); }
+
+.reset-btn {
+  flex-shrink: 0;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
 }
+
+.reset-btn:hover { background: rgba(255, 255, 255, 0.1); color: var(--ink); }
+
+.series-toggle-board {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.series-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.series-row:last-child {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.series-toggle-btn {
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.series-toggle-btn:hover { background: rgba(255, 255, 255, 0.12); }
+
+.series-toggle-btn.is-on {
+  border-color: rgba(255, 255, 255, 0.32);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+
+.series-toggle-btn.is-off {
+  opacity: 0.5;
+  filter: grayscale(0.25);
+}
+
+.series-toggle-btn.is-disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.range-row { display: flex; align-items: center; gap: 6px; padding: 8px 20px; flex-wrap: nowrap; }
+
+.range-btn {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
 .range-btn:hover { background: rgba(255, 255, 255, 0.1); }
 .range-btn.is-active { background: var(--accent-soft); color: var(--accent); border-color: rgba(74, 222, 128, 0.25); }
+
 .chart-frame {
   position: relative;
   margin-top: 8px;
@@ -91,7 +195,7 @@ body {
   min-height: 200px;
   max-height: 240px;
 }
-/* Y-axis drag handles */
+
 #y-handles {
   position: absolute;
   left: 0;
@@ -101,6 +205,7 @@ body {
   pointer-events: none;
   z-index: 100;
 }
+
 .y-handle {
   position: absolute;
   width: 14px;
@@ -112,18 +217,22 @@ body {
   transition: transform 0.1s, box-shadow 0.1s;
   z-index: 101;
 }
+
 .y-handle-left { left: 14px; }
-.y-handle-right { /* left set dynamically */ }
+.y-handle-right { }
+
 .y-handle:hover {
   transform: scale(1.4);
   box-shadow: 0 0 8px rgba(255, 255, 255, 0.3);
   border-color: rgba(255, 255, 255, 0.6);
 }
+
 .y-handle.dragging {
   transform: scale(1.5);
   box-shadow: 0 0 12px rgba(255, 255, 255, 0.4);
   border-color: rgba(255, 255, 255, 0.8);
 }
+
 .adr-source-link {
   margin-left: auto;
   flex-shrink: 0;
@@ -132,29 +241,40 @@ body {
   text-decoration: none;
   white-space: nowrap;
 }
+
 .adr-source-link:hover { color: var(--ink); text-decoration: underline; }
-.reset-btn {
-  flex-shrink: 0;
-  padding: 6px 14px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--muted);
-  font-size: 12px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.reset-btn:hover { background: rgba(255, 255, 255, 0.1); color: var(--ink); }
-/* 차트 데이터 점 숨김 — 범례에서는 원 아이콘으로 표시됨 */
+
 .cartesianlayer .point { display: none !important; }
-/* 범례 선(—) 아이콘 숨김 — 원만 표시 */
 .legend .legendlines { display: none !important; }
-/* 지수팝업 OFF: 팝업·hover 마커 숨김, spike 라인(path/line 직계자식)은 유지 */
 .no-hover-popup .hoverlayer > g { display: none !important; }
+
 .message-area { margin-top: 12px; }
 .message { padding: 12px 14px; border-radius: 18px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border); color: var(--muted); }
 .message.error { background: rgba(187, 67, 40, 0.2); color: #f87171; }
+
 @media (max-width: 820px) {
   .app-shell { width: min(100vw - 18px, 720px); padding-top: 12px; }
+  .hero { padding-top: 14px; }
+  .hero h1 { font-size: clamp(30px, 9vw, 44px); }
+  .top-controls {
+    display: grid;
+    grid-template-columns: auto auto auto auto;
+    gap: 8px;
+    justify-content: start;
+  }
+  .credit-offset-wrap {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 4px 8px;
+    gap: 5px;
+  }
+  .credit-offset-input { width: 40px; font-size: 11px; padding: 3px 4px; }
+  .series-toggle-btn {
+    font-size: 11px;
+    padding: 8px 6px;
+    line-height: 1.2;
+  }
+  .series-row:first-child .series-toggle-btn:first-child { white-space: normal; }
   .chart-frame { border-radius: 22px; min-height: 480px; }
 }
