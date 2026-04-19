@@ -126,6 +126,7 @@ function syncSeriesToggleBoard(allSeries) {
   const available = new Set(allSeries || []);
   document.querySelectorAll(".series-toggle-btn").forEach((btn) => {
     const key = btn.dataset.series;
+    btn.style.setProperty("--series-color", seriesColor(key));
     const isAvailable = available.has(key);
     const isVisible = isAvailable && !hiddenSeries.has(key);
     btn.disabled = !isAvailable;
@@ -750,6 +751,12 @@ function renderAdrChart(xRange) {
   const kospiVals  = filtered.map((r) => toNum(r.adr_kospi));
   const kosdaqVals = filtered.map((r) => toNum(r.adr_kosdaq));
 
+  const adrNums = [...kospiVals, ...kosdaqVals].filter((v) => Number.isFinite(v));
+  const adrRawMin = adrNums.length ? Math.min(...adrNums) : ADR_LOW_THRESH;
+  const adrRawMax = adrNums.length ? Math.max(...adrNums) : ADR_HIGH_THRESH;
+  const adrYMin = Math.min(adrRawMin, ADR_LOW_THRESH) - 2.5;
+  const adrYMax = Math.max(adrRawMax, ADR_HIGH_THRESH) + 1.2;
+
   const traces = [
     ...buildAdrZoneTraces(dates, kospiVals,  "#facc15", "ADR KOSPI"),
     ...buildAdrZoneTraces(dates, kosdaqVals, "#f472b6", "ADR KOSDAQ"),
@@ -816,6 +823,8 @@ function renderAdrChart(xRange) {
       zeroline: false, color: "#666", tickfont: { size: 9 },
       fixedrange: true, ticksuffix: "%",
       tickformat: ".0f",
+      autorange: false,
+      range: [adrYMin, adrYMax],
     },
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
     hoverlabel: hoverShowPopup ? { bgcolor: "#222", bordercolor: "#444", font: { color: "#eee", size: 11 } } : { bgcolor: "rgba(0,0,0,0)", bordercolor: "rgba(0,0,0,0)", font: { color: "rgba(0,0,0,0)", size: 1 } },
