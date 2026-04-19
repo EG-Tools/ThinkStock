@@ -82,6 +82,8 @@ let lastTouchTapAt = 0;
 let lastTouchTapX = null;
 let lastTouchTapEl = null;
 let dragZoomBound = false;
+let touchDoubleTapZoomActive = false;
+let touchDoubleTapPrevRange = null;
 
 /* ── localStorage persistence ── */
 function saveState() {
@@ -434,6 +436,10 @@ function axisPixelToXValue(el, clientX) {
   return linear;
 }
 
+function clearTouchDoubleTapZoomState() {
+  touchDoubleTapZoomActive = false;
+  touchDoubleTapPrevRange = null;
+}
 function getCurrentXRangeMs(sourceEl) {
   const el = sourceEl || document.getElementById("chart");
   const range = el?._fullLayout?.xaxis?.range;
@@ -471,14 +477,14 @@ function applySyncedXRangeMs(startMs, endMs) {
 function zoomAroundClientX(sourceEl, clientX, zoomFactor = 0.5) {
   const xValue = axisPixelToXValue(sourceEl, clientX);
   const centerMs = toMsSafe(xValue);
-  if (!Number.isFinite(centerMs)) return;
+  if (!Number.isFinite(centerMs)) return false;
 
   const range = getCurrentXRangeMs(sourceEl);
-  if (!range) return;
+  if (!range) return false;
 
   const [curStart, curEnd] = range;
   const span = curEnd - curStart;
-  if (!Number.isFinite(span) || span <= 0) return;
+  if (!Number.isFinite(span) || span <= 0) return false;
 
   const targetSpan = Math.max(span * zoomFactor, DAY_MS * 7);
   let startMs = centerMs - targetSpan / 2;
@@ -495,9 +501,10 @@ function zoomAroundClientX(sourceEl, clientX, zoomFactor = 0.5) {
 
   if (startMs < curStart) startMs = curStart;
   if (endMs > curEnd) endMs = curEnd;
-  if (endMs <= startMs) return;
+  if (endMs <= startMs) return false;
 
   applySyncedXRangeMs(startMs, endMs);
+  return true;
 }
 
 function ensureDragZoomOverlay(el) {
@@ -584,13 +591,24 @@ function bindCursorMoveSync() {
       const isDoubleTap = sameTarget && nearX && (now - lastTouchTapAt) <= 320;
 
       if (isDoubleTap) {
-        zoomAroundClientX(event.currentTarget, touch.clientX, 0.5);
+        if (touchDoubleTapZoomActive
+          && Array.isArray(touchDoubleTapPrevRange)
+          && touchDoubleTapPrevRange.length === 2) {
+          applySyncedXRangeMs(touchDoubleTapPrevRange[0], touchDoubleTapPrevRange[1]);
+          clearTouchDoubleTapZoomState();
+        } else {
+          const currentRange = getCurrentXRangeMs(event.currentTarget);
+          if (Array.isArray(currentRange) && currentRange.length === 2) {
+            touchDoubleTapPrevRange = [currentRange[0], currentRange[1]];
+            const zoomed = zoomAroundClientX(event.currentTarget, touch.clientX, 0.5);
+            if (zoomed) touchDoubleTapZoomActive = true;
+          }
+        }
         lastTouchTapAt = 0;
         lastTouchTapX = null;
         lastTouchTapEl = null;
         return;
       }
-
       lastTouchTapAt = now;
       lastTouchTapX = touch.clientX;
       lastTouchTapEl = event.currentTarget;
@@ -678,6 +696,7 @@ function bindCursorMoveSync() {
         if ((endMs - startMs) < DAY_MS) return;
 
         applySyncedXRangeMs(startMs, endMs);
+        clearTouchDoubleTapZoomState();
       };
 
       window.addEventListener('mousemove', onWindowMove);
@@ -2151,6 +2170,7 @@ async function boot() {
 }
 
 boot();
+
 
 
 
