@@ -110,7 +110,7 @@ function findNearestHoverPoint(el, xValue) {
   if (targetMs === null) return null;
 
   const nearestInTrace = (trace) => {
-    if (!trace || trace.visible === "legendonly" || !Array.isArray(trace.x) || !trace.x.length) return null;
+    if (!trace || trace.visible === "legendonly" || trace.hoverinfo === "skip" || !Array.isArray(trace.x) || !trace.x.length) return null;
     const xs = trace.x;
     const toMsAt = (i) => toMsSafe(xs[i]);
 
@@ -156,14 +156,22 @@ function findNearestHoverPoint(el, xValue) {
 }
 
 function syncHoverToChart(targetEl, xValue) {
-  if (!targetEl || !window.Plotly?.Fx?.hover) return;
-  const pt = findNearestHoverPoint(targetEl, xValue);
-  if (!pt) return;
+  if (!targetEl || !window.Plotly?.Fx?.hover || xValue == null) return;
   hoverSyncing = true;
   try {
-    Plotly.Fx.hover(targetEl, [pt], ["xy"]);
+    // Prefer exact x-date synchronization first.
+    Plotly.Fx.hover(targetEl, [{ xval: xValue }], ["xy"]);
   } catch (_) {
-    // no-op
+    const pt = findNearestHoverPoint(targetEl, xValue);
+    if (!pt) {
+      requestAnimationFrame(() => { hoverSyncing = false; });
+      return;
+    }
+    try {
+      Plotly.Fx.hover(targetEl, [pt], ["xy"]);
+    } catch (_) {
+      // no-op
+    }
   }
   requestAnimationFrame(() => { hoverSyncing = false; });
 }
@@ -798,7 +806,7 @@ function renderChart(preserveZoom = true) {
     xaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, color: "#666", tickfont: { size: 10 }, fixedrange: false, showspikes: true, spikemode: "across", spikesnap: "cursor", spikecolor: "rgba(255,255,255,0.25)", spikethickness: 1, spikedash: "solid", ...(savedXRange ? { range: savedXRange } : {}) },
     yaxis: { showticklabels: false, title: "", showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, fixedrange: true, ...(savedYRange ? { range: savedYRange, autorange: false } : {}) },
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
-    hoverlabel: hoverShowPopup ? { bgcolor: "#222", bordercolor: "#444", font: { color: "#eee" } } : { bgcolor: "rgba(0,0,0,0)", bordercolor: "rgba(0,0,0,0)", font: { color: "rgba(0,0,0,0)", size: 1 } },
+    hoverlabel: hoverShowPopup ? { bgcolor: "rgba(34,34,34,0.45)", bordercolor: "rgba(140,140,140,0.35)", font: { color: "#eee" } } : { bgcolor: "rgba(0,0,0,0)", bordercolor: "rgba(0,0,0,0)", font: { color: "rgba(0,0,0,0)", size: 1 } },
     dragmode: false,
   }, { responsive: true, displayModeBar: false, displaylogo: false, scrollZoom: true });
 
@@ -883,7 +891,6 @@ const ADR_HIGH_THRESH = 120;
 function buildAdrZoneTraces(dates, values, mainColor, legendName) {
   const base = { x: dates, type: "scatter", mode: "lines", connectgaps: false };
   const noHover = { hoverinfo: "skip", hovertemplate: undefined };
-  const ht = "%{x}<br><b>" + legendName + ": %{y:.2f}%</b><extra></extra>";
 
   // ── 3구간 분리 ──────────────────────────────────────────────
   const yLow = [], yMid = [], yHigh = [];
@@ -929,18 +936,18 @@ function buildAdrZoneTraces(dates, values, mainColor, legendName) {
     { ...base, mode: "lines+markers", y: yLow, name: legendName, showlegend: true, legendgroup: legendName,
       line: { color: ADR_ZONE_LOW_COLOR, width: 1.5 },
       marker: { symbol: "circle", size: 7, color: mainColor },
-      fill: "tonexty", fillcolor: "rgba(176,198,237,0.15)", hovertemplate: ht },
+      fill: "tonexty", fillcolor: "rgba(176,198,237,0.15)", ...noHover },
 
     // ── 정상 구간 (80~120) ──────────────────────────────────────
     { ...base, y: yMid, name: legendName, showlegend: false, legendgroup: legendName,
-      line: { color: mainColor, width: 2 }, hovertemplate: ht },
+      line: { color: mainColor, width: 2 }, ...noHover },
 
     // ── 과매수 (> 120): 기준선(120) 먼저, 실제값을 tonexty 로 채우기 ──
     { ...base, y: yBaseHigh, showlegend: false, legendgroup: legendName,
       line: { color: "transparent", width: 0 }, ...noHover },
     { ...base, y: yHigh, name: legendName, showlegend: false, legendgroup: legendName,
       line: { color: ADR_ZONE_HIGH_COLOR, width: 1.5 },
-      fill: "tonexty", fillcolor: "rgba(230,173,173,0.15)", hovertemplate: ht },
+      fill: "tonexty", fillcolor: "rgba(230,173,173,0.15)", ...noHover },
   ];
 }
 
@@ -970,9 +977,37 @@ function renderAdrChart(xRange) {
   const adrYMin = Math.min(adrRawMin, ADR_LOW_THRESH) - 2.5;
   const adrYMax = Math.max(adrRawMax, ADR_HIGH_THRESH) + 1.2;
 
+  const hoverProxyTraces = [
+    {
+      x: dates,
+      y: kospiVals,
+      type: "scatter",
+      mode: "lines",
+      name: "ADR KOSPI",
+      showlegend: false,
+      legendgroup: "ADR KOSPI",
+      connectgaps: false,
+      line: { color: "rgba(0,0,0,0)", width: 1 },
+      hovertemplate: "%{x}<br><b>ADR KOSPI: %{y:.2f}%</b><extra></extra>",
+    },
+    {
+      x: dates,
+      y: kosdaqVals,
+      type: "scatter",
+      mode: "lines",
+      name: "ADR KOSDAQ",
+      showlegend: false,
+      legendgroup: "ADR KOSDAQ",
+      connectgaps: false,
+      line: { color: "rgba(0,0,0,0)", width: 1 },
+      hovertemplate: "%{x}<br><b>ADR KOSDAQ: %{y:.2f}%</b><extra></extra>",
+    },
+  ];
+
   const traces = [
     ...buildAdrZoneTraces(dates, kospiVals,  "#facc15", "ADR KOSPI"),
     ...buildAdrZoneTraces(dates, kosdaqVals, "#f472b6", "ADR KOSDAQ"),
+    ...hoverProxyTraces,
   ];
 
   const layout = {
@@ -1040,7 +1075,7 @@ function renderAdrChart(xRange) {
       range: [adrYMin, adrYMax],
     },
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
-    hoverlabel: hoverShowPopup ? { bgcolor: "#222", bordercolor: "#444", font: { color: "#eee", size: 11 } } : { bgcolor: "rgba(0,0,0,0)", bordercolor: "rgba(0,0,0,0)", font: { color: "rgba(0,0,0,0)", size: 1 } },
+    hoverlabel: hoverShowPopup ? { bgcolor: "rgba(34,34,34,0.45)", bordercolor: "rgba(140,140,140,0.35)", font: { color: "#eee", size: 11 } } : { bgcolor: "rgba(0,0,0,0)", bordercolor: "rgba(0,0,0,0)", font: { color: "rgba(0,0,0,0)", size: 1 } },
     dragmode: false,
   };
 
