@@ -192,11 +192,21 @@ def fetch_oecd_leading_cycle_from_fred() -> pd.DataFrame:
     return out[["leading_cycle"]]
 
 
-def apply_recent_oecd_tail(macro: pd.DataFrame, oecd: pd.DataFrame, months: int = 2) -> tuple[pd.DataFrame, int]:
+def apply_recent_oecd_tail(
+    macro: pd.DataFrame,
+    oecd: pd.DataFrame,
+    months: int = 2,
+    after_month: pd.Timestamp | None = None,
+) -> tuple[pd.DataFrame, int]:
     if oecd.empty or "leading_cycle" not in oecd.columns:
         return macro, 0
 
-    tail = pd.to_numeric(oecd["leading_cycle"], errors="coerce").dropna().tail(months)
+    series = pd.to_numeric(oecd["leading_cycle"], errors="coerce").dropna()
+    if after_month is not None:
+        cutoff = pd.Timestamp(after_month).normalize()
+        series = series[series.index > cutoff]
+
+    tail = series.tail(months)
     if tail.empty:
         return macro, 0
 
@@ -209,7 +219,7 @@ def apply_recent_oecd_tail(macro: pd.DataFrame, oecd: pd.DataFrame, months: int 
     if "leading_cycle" not in merged.columns:
         merged["leading_cycle"] = pd.NA
 
-    # Override the most recent 2 calendar months with OECD values.
+    # Fill only the months after latest ECOS month (or latest 2 if ECOS missing).
     applied = 0
     for month_start, value in tail.items():
         month_end = (month_start + pd.offsets.MonthEnd(1)).normalize()
@@ -266,16 +276,23 @@ def main() -> None:
 
     macro_source = load_macro_source()
     ecos_key = os.environ.get("ECOS_API_KEY", "").strip()
+    latest_ecos_month: pd.Timestamp | None = None
     if ecos_key:
         leading_cycle = fetch_ecos_leading_cycle(ecos_key)
         if not leading_cycle.empty:
             macro_source = merge_macro_with_leading_cycle(macro_source, leading_cycle)
+            latest_ecos_month = leading_cycle.index.max().normalize()
             latest = leading_cycle.index.max().strftime("%Y-%m")
             print(f"Applied ECOS leading_cycle rows: {len(leading_cycle)} (latest={latest})")
 
     oecd_leading_cycle = fetch_oecd_leading_cycle_from_fred()
     if not oecd_leading_cycle.empty:
-        macro_source, applied_months = apply_recent_oecd_tail(macro_source, oecd_leading_cycle, months=2)
+        macro_source, applied_months = apply_recent_oecd_tail(
+            macro_source,
+            oecd_leading_cycle,
+            months=2,
+            after_month=latest_ecos_month,
+        )
         if applied_months:
             latest = oecd_leading_cycle.index.max().strftime("%Y-%m")
             print(f"Applied OECD leading_cycle tail months: {applied_months} (latest={latest})")
