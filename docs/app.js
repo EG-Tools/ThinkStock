@@ -46,6 +46,11 @@ const KOSIS_START = "199601";
 const KOFIA_CREDIT_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getGrantingOfCreditBalanceInfo";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+function appendCacheBust(url) {
+  const stamp = `_=${Date.now()}`;
+  return url.includes("?") ? `${url}&${stamp}` : `${url}?${stamp}`;
+}
+
 const toNum = (v) => (v != null && Number.isFinite(Number(v))) ? Number(v) : null;
 const escapeHtml = (v) => String(v ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 const labelName = (key) => DISPLAY_NAMES[key] || key;
@@ -101,6 +106,7 @@ let lastTouchTapEl = null;
 let dragZoomBound = false;
 let touchDoubleTapZoomActive = false;
 let touchDoubleTapPrevRange = null;
+let startupLoaderHideTimer = null;
 
 /* ???? localStorage persistence ???? */
 function sanitizeCustomStocks(raw) {
@@ -205,6 +211,48 @@ function setMessage(msgEl, lines, isError = false) {
   }
   const body = list.map((line) => escapeHtml(line)).join("<br>");
   msgEl.innerHTML = `<div class="message${isError ? " error" : ""}">${body}</div>`;
+}
+
+function ensureStartupLoader() {
+  let el = document.getElementById("startupLoader");
+  if (el) return el;
+
+  const shell = document.querySelector(".app-shell");
+  if (!shell) return null;
+
+  el = document.createElement("div");
+  el.id = "startupLoader";
+  el.className = "startup-loader";
+  el.hidden = true;
+  el.innerHTML = `
+    <div class="startup-loader-track"><div class="startup-loader-bar"></div></div>
+    <div class="startup-loader-text">Loading latest data...</div>
+  `;
+
+  const hero = shell.querySelector(".hero");
+  if (hero && hero.nextSibling) shell.insertBefore(el, hero.nextSibling);
+  else shell.appendChild(el);
+  return el;
+}
+
+function showStartupLoader() {
+  if (startupLoaderHideTimer) {
+    clearTimeout(startupLoaderHideTimer);
+    startupLoaderHideTimer = null;
+  }
+  const el = ensureStartupLoader();
+  if (!el) return;
+  el.hidden = false;
+}
+
+function hideStartupLoader() {
+  const el = document.getElementById("startupLoader");
+  if (!el) return;
+  if (startupLoaderHideTimer) clearTimeout(startupLoaderHideTimer);
+  startupLoaderHideTimer = setTimeout(() => {
+    el.hidden = true;
+    startupLoaderHideTimer = null;
+  }, 220);
 }
 
 function setupApiSettingsPanel(msgEl) {
@@ -894,9 +942,28 @@ function removeCustomStock(ticker) {
   delete seriesScales[ticker];
   delete DISPLAY_NAMES[ticker];
   loadingCustomStocks.delete(ticker);
+  clearTickerSeriesFromPricePayload(ticker);
   renderCustomStockButtons();
   saveState();
   renderChart(false);
+}
+
+function clearTickerSeriesFromPricePayload(ticker) {
+  if (!ticker || !pricePayload || typeof pricePayload !== "object") return;
+
+  if (Array.isArray(pricePayload.records)) {
+    pricePayload.records.forEach((row) => {
+      if (row && typeof row === "object") delete row[ticker];
+    });
+  }
+
+  if (Array.isArray(pricePayload.series)) {
+    pricePayload.series = pricePayload.series.filter((key) => key !== ticker);
+  }
+
+  if (pricePayload.display_names && typeof pricePayload.display_names === "object") {
+    delete pricePayload.display_names[ticker];
+  }
 }
 
 function toYyyymmdd(dateObj) {
@@ -1719,8 +1786,15 @@ function renderChart(preserveZoom = true) {
   const { rows, macroCols, liveCols } = mergeSources(priceRows, macroRows, creditRows, start, end);
   currentRows = rows;
   currentStart = start;
+  const allowedSeries = new Set([
+    ...CORE_SERIES,
+    ...ADR_SERIES,
+    ...customStocks.map((item) => item.ticker),
+  ]);
   const allSeries = sortSeries(
-    [...new Set([...liveCols, ...macroCols])].filter((s) => rows.some((r) => toNum(r[s]) !== null))
+    [...new Set([...liveCols, ...macroCols])]
+      .filter((s) => allowedSeries.has(s))
+      .filter((s) => rows.some((r) => toNum(r[s]) !== null))
   );
   syncSeriesToggleBoard(allSeries);
   // ADR ???꿔꺂???????믊삳�???????饔낅????????饔낅????�귥????ｋ궙??????????꿔꺂????????????�뮛?????????븍툖???�껊�?????????????????
@@ -2309,7 +2383,7 @@ async function fetchKofiaCreditLive(apiKey) {
           pageNo: String(pageNo),
           resultType: "json",
         });
-        const url = `${KOFIA_CREDIT_URL}?${query.toString()}`;
+        const url = appendCacheBust(`${KOFIA_CREDIT_URL}?${query.toString()}`);
         const payload = await fetchJsonWithProxyFallback(url);
 
         const header = payload?.response?.header || {};
@@ -2466,7 +2540,8 @@ async function refreshLiveApiData() {
  * ?????�땟戮녹???? { added: number, latestDate: string }
  */
 async function refreshAdrFromWeb() {
-  const proxyUrl = CORS_PROXY + encodeURIComponent(ADR_SOURCE_URL);
+  const sourceUrl = appendCacheBust(ADR_SOURCE_URL);
+  const proxyUrl = CORS_PROXY + encodeURIComponent(sourceUrl);
   const res = await fetch(proxyUrl, { cache: "no-store" });
   if (!res.ok) throw new Error(`adrinfo.kr ??????????????�굣?? ${res.status}`);
   const html = await res.text();
@@ -2543,6 +2618,7 @@ async function loadData(forceNetwork = false) {
 
 async function boot() {
   const msgEl = document.getElementById("messageArea");
+  showStartupLoader();
   loadState();
   loadApiSettings();
   renderCustomStockButtons();
@@ -2672,7 +2748,9 @@ async function boot() {
 
     renderChart(false);
   } catch (err) {
-    setMessage(msgEl, err.message || "?????�첎?�?濚밸�??????꿔꺂???影??��??? ?饔낅????�????�????????", true);
+    setMessage(msgEl, err.message || "데이터를 가져오지 못했습니다.", true);
+  } finally {
+    hideStartupLoader();
   }
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(() => null));
