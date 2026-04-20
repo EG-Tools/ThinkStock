@@ -489,6 +489,11 @@ body {
   background: rgba(74, 222, 128, 0.10);
 }
 
+.stock-suggest-item.is-active {
+  background: rgba(74, 222, 128, 0.18);
+  outline: 1px solid rgba(74, 222, 128, 0.35);
+}
+
 .stock-suggest-name {
   font-weight: 600;
 }

@@ -81,6 +81,7 @@ let krxUniverse = [];
 let krxUniverseLoaded = false;
 let krxUniverseLoading = false;
 let stockSuggestItems = [];
+let stockSuggestActiveIndex = -1;
 let loadingCustomStocks = new Set();
 let seriesOffsets = {};
 let seriesScales = {};
@@ -1137,12 +1138,38 @@ function hideStockSuggestList() {
   listEl.hidden = true;
   listEl.innerHTML = "";
   stockSuggestItems = [];
+  stockSuggestActiveIndex = -1;
+}
+
+function setStockSuggestActiveIndex(index) {
+  const listEl = document.getElementById("stockSuggestList");
+  const maxIndex = stockSuggestItems.length - 1;
+  if (!listEl || maxIndex < 0) {
+    stockSuggestActiveIndex = -1;
+    return;
+  }
+
+  let next = Number(index);
+  if (!Number.isFinite(next)) next = -1;
+  if (next < -1) next = -1;
+  if (next > maxIndex) next = maxIndex;
+  stockSuggestActiveIndex = next;
+
+  const nodes = listEl.querySelectorAll(".stock-suggest-item");
+  nodes.forEach((node, nodeIndex) => {
+    const isActive = nodeIndex === stockSuggestActiveIndex;
+    node.classList.toggle("is-active", isActive);
+    node.setAttribute("aria-selected", isActive ? "true" : "false");
+    if (isActive) node.scrollIntoView({ block: "nearest" });
+  });
 }
 
 function renderStockSuggestList(items) {
   const listEl = document.getElementById("stockSuggestList");
   if (!listEl) return;
   stockSuggestItems = Array.isArray(items) ? items : [];
+  stockSuggestActiveIndex = -1;
+
   if (!stockSuggestItems.length) {
     listEl.hidden = true;
     listEl.innerHTML = "";
@@ -1150,9 +1177,9 @@ function renderStockSuggestList(items) {
   }
 
   listEl.innerHTML = stockSuggestItems.map((item, idx) => `
-    <button type="button" class="stock-suggest-item" data-suggest-idx="${idx}">
+    <button type="button" class="stock-suggest-item" data-suggest-idx="${idx}" aria-selected="false">
       <span class="stock-suggest-name">${escapeHtml(item.name)}</span>
-      <span class="stock-suggest-meta">${escapeHtml(item.code)} ??${escapeHtml(item.market)}</span>
+      <span class="stock-suggest-meta">${escapeHtml(item.code)} / ${escapeHtml(item.market)}</span>
     </button>
   `).join("");
   listEl.hidden = false;
@@ -1276,7 +1303,7 @@ function setupStockAddPanel(msgEl) {
 
     if (!String(apiSettings?.krxApiKey || "").trim()) {
       hideStockSuggestList();
-      setMessage(msgEl, ["API ????�싲�?��???????KRX AUTH_KEY??????붺몭??�쨨?? ???????�굣�???꿔꺂??節?�젂???"], true);
+      setMessage(msgEl, ["API 키 설정에서 KRX AUTH_KEY를 먼저 입력해 주세요."], true);
       return;
     }
 
@@ -1289,35 +1316,84 @@ function setupStockAddPanel(msgEl) {
     } catch (err) {
       if (seq !== searchSeq) return;
       hideStockSuggestList();
-      setMessage(msgEl, `???????�틢???饔낅?????????�뇡?꾩땡沃섏�???????�???�뺛??????????�슣?? ${err.message}`, true);
+      setMessage(msgEl, `종목 검색 목록을 불러오지 못했습니다: ${err.message}`, true);
     }
   };
 
-  inputEl.addEventListener("input", () => {
-    refreshSuggest();
-  });
-
-  inputEl.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
-    const first = stockSuggestItems[0];
-    if (!first) return;
-    addCustomStock(first, msgEl).finally(() => {
-      inputEl.value = "";
-      hideStockSuggestList();
-    });
-  });
-
-  listEl.addEventListener("click", (event) => {
-    const btn = event.target.closest("[data-suggest-idx]");
-    if (!btn) return;
-    const idx = Number(btn.dataset.suggestIdx);
+  const submitSuggestByIndex = (idx) => {
     const item = stockSuggestItems[idx];
     if (!item) return;
     addCustomStock(item, msgEl).finally(() => {
       inputEl.value = "";
       hideStockSuggestList();
     });
+  };
+
+  inputEl.addEventListener("input", () => {
+    refreshSuggest();
+  });
+
+  inputEl.addEventListener("focus", () => {
+    if (!inputEl.value.trim()) return;
+    refreshSuggest();
+  });
+
+  inputEl.addEventListener("click", () => {
+    if (!inputEl.value.trim()) return;
+    if (!listEl.hidden) return;
+    refreshSuggest();
+  });
+
+  inputEl.addEventListener("keydown", (event) => {
+    const key = event.key;
+
+    if (key === "ArrowDown") {
+      if (!stockSuggestItems.length) return;
+      event.preventDefault();
+      const next = stockSuggestActiveIndex < 0
+        ? 0
+        : ((stockSuggestActiveIndex + 1) % stockSuggestItems.length);
+      setStockSuggestActiveIndex(next);
+      return;
+    }
+
+    if (key === "ArrowUp") {
+      if (!stockSuggestItems.length) return;
+      event.preventDefault();
+      const next = stockSuggestActiveIndex < 0
+        ? (stockSuggestItems.length - 1)
+        : ((stockSuggestActiveIndex - 1 + stockSuggestItems.length) % stockSuggestItems.length);
+      setStockSuggestActiveIndex(next);
+      return;
+    }
+
+    if (key === "Escape") {
+      hideStockSuggestList();
+      return;
+    }
+
+    if (key !== "Enter") return;
+    event.preventDefault();
+    if (!stockSuggestItems.length) return;
+    const pickIndex = stockSuggestActiveIndex >= 0 ? stockSuggestActiveIndex : 0;
+    submitSuggestByIndex(pickIndex);
+  });
+
+  listEl.addEventListener("mousemove", (event) => {
+    const btn = event.target.closest("[data-suggest-idx]");
+    if (!btn) return;
+    const idx = Number(btn.dataset.suggestIdx);
+    if (!Number.isFinite(idx)) return;
+    setStockSuggestActiveIndex(idx);
+  });
+
+  listEl.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-suggest-idx]");
+    if (!btn) return;
+    const idx = Number(btn.dataset.suggestIdx);
+    if (!Number.isFinite(idx)) return;
+    setStockSuggestActiveIndex(idx);
+    submitSuggestByIndex(idx);
   });
 
   document.addEventListener("click", (event) => {
