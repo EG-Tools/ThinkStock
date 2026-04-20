@@ -215,41 +215,26 @@ function setMessage(msgEl, lines, isError = false) {
 }
 
 function ensureStartupLoader() {
-  let el = document.getElementById("startupLoader");
-  if (el) return el;
+  const titleEl = document.querySelector(".hero h1");
+  if (!titleEl) return null;
 
-  const shell = document.querySelector(".app-shell");
-  if (!shell) return null;
+  if (!titleEl.dataset.title) {
+    const titleText = String(titleEl.textContent || "ThinkStock").trim() || "ThinkStock";
+    titleEl.dataset.title = titleText;
+  }
 
-  el = document.createElement("div");
-  el.id = "startupLoader";
-  el.className = "startup-loader";
-  el.hidden = true;
-  el.innerHTML = `
-    <div class="startup-loader-track"><div class="startup-loader-bar"></div></div>
-    <div class="startup-loader-text">Loading latest data... 0%</div>
-  `;
-
-  const hero = shell.querySelector(".hero");
-  if (hero && hero.nextSibling) shell.insertBefore(el, hero.nextSibling);
-  else shell.appendChild(el);
-  return el;
+  return titleEl;
 }
 
-function setStartupLoaderProgress(percent, label = "Loading latest data") {
-  const el = ensureStartupLoader();
-  if (!el) return;
+function setStartupLoaderProgress(percent, _label = "") {
+  const titleEl = ensureStartupLoader();
+  if (!titleEl) return;
 
   const value = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
-  const bar = el.querySelector(".startup-loader-bar");
-  const text = el.querySelector(".startup-loader-text");
-
-  if (bar) bar.style.width = `${value}%`;
-  if (text) text.textContent = `${label}... ${value}%`;
-
-  el.setAttribute("aria-valuemin", "0");
-  el.setAttribute("aria-valuemax", "100");
-  el.setAttribute("aria-valuenow", String(value));
+  titleEl.style.setProperty("--title-load", `${value}%`);
+  titleEl.setAttribute("aria-valuemin", "0");
+  titleEl.setAttribute("aria-valuemax", "100");
+  titleEl.setAttribute("aria-valuenow", String(value));
 }
 
 function showStartupLoader() {
@@ -257,21 +242,24 @@ function showStartupLoader() {
     clearTimeout(startupLoaderHideTimer);
     startupLoaderHideTimer = null;
   }
-  const el = ensureStartupLoader();
-  if (!el) return;
-  el.hidden = false;
-  setStartupLoaderProgress(0, "Loading latest data");
+
+  const titleEl = ensureStartupLoader();
+  if (!titleEl) return;
+
+  titleEl.classList.add("is-loading");
+  setStartupLoaderProgress(0);
 }
 
 function hideStartupLoader() {
-  const el = document.getElementById("startupLoader");
-  if (!el) return;
-  setStartupLoaderProgress(100, "Loading latest data");
+  const titleEl = ensureStartupLoader();
+  if (!titleEl) return;
+
+  setStartupLoaderProgress(100);
   if (startupLoaderHideTimer) clearTimeout(startupLoaderHideTimer);
   startupLoaderHideTimer = setTimeout(() => {
-    el.hidden = true;
+    titleEl.classList.remove("is-loading");
     startupLoaderHideTimer = null;
-  }, 280);
+  }, 320);
 }
 
 function setupApiSettingsPanel(msgEl) {

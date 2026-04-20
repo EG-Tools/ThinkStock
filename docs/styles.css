@@ -20,7 +20,31 @@ body {
 
 .app-shell { width: min(1120px, calc(100vw - 24px)); margin: 0 auto; padding: 20px 0 72px; }
 .hero { padding: 18px 20px 6px; }
-.hero h1 { margin: 0; font-size: clamp(34px, 7vw, 58px); line-height: 0.95; letter-spacing: -0.04em; color: #fff; }
+.hero h1 {
+  margin: 0;
+  font-size: clamp(34px, 7vw, 58px);
+  line-height: 0.95;
+  letter-spacing: -0.04em;
+  color: rgba(255, 255, 255, 0.09);
+  position: relative;
+  display: inline-block;
+  --title-load: 100%;
+}
+
+.hero h1::after {
+  content: attr(data-title);
+  position: absolute;
+  inset: 0;
+  color: #fff;
+  white-space: nowrap;
+  pointer-events: none;
+  clip-path: inset(0 calc(100% - var(--title-load)) 0 0);
+  transition: clip-path 0.24s ease, filter 0.24s ease;
+}
+
+.hero h1.is-loading::after {
+  filter: drop-shadow(0 0 8px rgba(255, 255, 255, 0.2));
+}
 
 .hero-title-row {
   display: flex;
