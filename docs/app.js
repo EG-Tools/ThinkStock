@@ -2493,8 +2493,13 @@ async function fetchKofiaCreditLive(apiKey) {
     try {
       const rows = [];
       const numOfRows = 1000;
+      const fetchedPages = new Set();
 
-      for (let pageNo = 1; pageNo <= 30; pageNo += 1) {
+      const fetchPage = async (pageNo) => {
+        if (!Number.isFinite(pageNo) || pageNo < 1) return null;
+        if (fetchedPages.has(pageNo)) return null;
+        fetchedPages.add(pageNo);
+
         const query = new URLSearchParams({
           serviceKey,
           numOfRows: String(numOfRows),
@@ -2512,7 +2517,6 @@ async function fetchKofiaCreditLive(apiKey) {
         const body = payload?.response?.body || {};
         const rawItems = body?.items?.item;
         const items = Array.isArray(rawItems) ? rawItems : (rawItems ? [rawItems] : []);
-        if (!items.length) break;
 
         items.forEach((item) => {
           const basDt = String(item?.basDt || "");
@@ -2525,10 +2529,36 @@ async function fetchKofiaCreditLive(apiKey) {
         });
 
         const totalCount = Number(body?.totalCount);
-        const rowsPerPage = Number(body?.numOfRows) || numOfRows;
+        const bodyNumRows = Number(body?.numOfRows);
+        const rowsPerPage = Number.isFinite(bodyNumRows) && bodyNumRows > 0
+          ? bodyNumRows
+          : (items.length || numOfRows);
         const currentPage = Number(body?.pageNo) || pageNo;
-        if (Number.isFinite(totalCount) && totalCount > 0 && currentPage * rowsPerPage >= totalCount) break;
-        if (items.length < rowsPerPage) break;
+
+        return {
+          totalCount: Number.isFinite(totalCount) ? totalCount : 0,
+          rowsPerPage,
+          currentPage,
+          itemCount: items.length,
+        };
+      };
+
+      const firstMeta = await fetchPage(1);
+      if (!firstMeta || !firstMeta.itemCount) {
+        const normalized = normalizeCreditRows(rows);
+        if (normalized.length) return normalized;
+        continue;
+      }
+
+      const totalCount = firstMeta.totalCount;
+      const rowsPerPage = Math.max(1, Number(firstMeta.rowsPerPage) || numOfRows);
+      const lastPage = totalCount > 0 ? Math.ceil(totalCount / rowsPerPage) : 1;
+
+      const pagesToFetch = [2, 3, lastPage, lastPage - 1, lastPage - 2]
+        .filter((p) => Number.isFinite(p) && p > 1);
+
+      for (const page of pagesToFetch) {
+        await fetchPage(page);
       }
 
       const normalized = normalizeCreditRows(rows);
@@ -2618,7 +2648,7 @@ async function refreshLiveApiData() {
     try {
       ecosRows = await fetchEcosLeadingCycleLive(apiSettings.ecosApiKey);
     } catch (err) {
-      warnings.push(`ECOS ???????�슣?? ${err.message}`);
+      warnings.push(`ECOS 불러오기 오류: ${err.message}`);
     }
   }
 
@@ -2626,14 +2656,14 @@ async function refreshLiveApiData() {
     try {
       kosisRows = await fetchKosisLeadingCycleLive(apiSettings.kosisApiKey);
     } catch (err) {
-      warnings.push(`KOSIS ???????�슣?? ${err.message}`);
+      warnings.push(`KOSIS 불러오기 오류: ${err.message}`);
     }
   }
 
   const leadingRows = mergeLeadingSources(ecosRows, kosisRows);
   if (leadingRows.length) {
     const info = applyLeadingCycleLiveRows(leadingRows);
-    applied.push(`????影??�筌�?�??�납???�????源녾?????????�늉????(${info.updated}???????�땟戮녹???? ?饔낅??????�??${info.latestDate})`);
+    applied.push(`선행지수 순환변동치 반영(${info.updated}건, 최신일 ${info.latestDate})`);
   }
 
   if (apiSettings.kofiaApiKey) {
@@ -2641,12 +2671,12 @@ async function refreshLiveApiData() {
       const kofiaRows = await fetchKofiaCreditLive(apiSettings.kofiaApiKey);
       if (kofiaRows.length) {
         const info = applyCreditLiveRows(kofiaRows);
-        applied.push(`???????�????????????�늉????(${info.updated}???????�땟戮녹???? ?饔낅??????�??${info.latestDate})`);
+        applied.push(`신용잔고 반영(${info.updated}건, 최신일 ${info.latestDate})`);
       } else {
-        warnings.push("KOFIA ?????????????????? ??????깅즽?????????�졄.");
+        warnings.push("KOFIA 응답에서 신용잔고 데이터를 찾지 못했습니다.");
       }
     } catch (err) {
-      warnings.push(`KOFIA ???????�슣?? ${err.message}`);
+      warnings.push(`KOFIA 불러오기 오류: ${err.message}`);
     }
   }
 
