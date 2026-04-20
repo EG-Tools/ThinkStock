@@ -30,6 +30,10 @@ const KRX_BASE_INFO_ENDPOINTS = {
   KOSPI: "stk_isu_base_info",
   KOSDAQ: "ksq_isu_base_info",
 };
+const KRX_INDEX_ENDPOINTS = {
+  KOSPI: "kospi_dd_trd",
+  KOSDAQ: "kosdaq_dd_trd",
+};
 
 const STATE_KEY = "thinkstock-v5";
 const API_SETTINGS_KEY = "thinkstock-api-v1";
@@ -555,13 +559,17 @@ function scheduleSyncedCursor(xValue, sourceEl, sourceClientX) {
   applySyncedCursor(xValue, sourceEl, sourceClientX);
 }
 
-function axisPixelToXValue(el, clientX) {
+function axisPixelToXValue(el, clientX, clampToAxis = false) {
   const xa = el?._fullLayout?.xaxis;
   if (!xa || !Number.isFinite(clientX)) return null;
   const rect = el.getBoundingClientRect();
   const localX = clientX - rect.left;
-  const px = localX - xa._offset;
-  if (!Number.isFinite(px) || px < 0 || px > xa._length) return null;
+  let px = localX - xa._offset;
+  if (!Number.isFinite(px)) return null;
+  if (px < 0 || px > xa._length) {
+    if (!clampToAxis) return null;
+    px = Math.max(0, Math.min(xa._length, px));
+  }
 
   try {
     if (typeof xa.p2d === "function") {
@@ -623,7 +631,7 @@ function applySyncedXRangeMs(startMs, endMs) {
 }
 
 function zoomAroundClientX(sourceEl, clientX, zoomFactor = 0.5) {
-  const xValue = axisPixelToXValue(sourceEl, clientX);
+  const xValue = axisPixelToXValue(sourceEl, clientX, true);
   const centerMs = toMsSafe(xValue);
   if (!Number.isFinite(centerMs)) return false;
 
@@ -817,7 +825,7 @@ function bindCursorMoveSync() {
         const delta = Math.abs(moveEvent.clientX - dragState.startClientX);
         if (delta >= 3) dragState.moved = true;
         renderDragZoomOverlay(dragState.sourceEl, dragState.startClientX, moveEvent.clientX);
-        const xValue = axisPixelToXValue(dragState.sourceEl, moveEvent.clientX);
+        const xValue = axisPixelToXValue(dragState.sourceEl, moveEvent.clientX, true);
         if (xValue != null) scheduleSyncedCursor(xValue, dragState.sourceEl, moveEvent.clientX);
       };
 
@@ -833,8 +841,8 @@ function bindCursorMoveSync() {
 
         if (!st.moved) return;
 
-        const xStart = axisPixelToXValue(st.sourceEl, st.startClientX);
-        const xEnd = axisPixelToXValue(st.sourceEl, upEvent.clientX);
+        const xStart = axisPixelToXValue(st.sourceEl, st.startClientX, true);
+        const xEnd = axisPixelToXValue(st.sourceEl, upEvent.clientX, true);
         const ms0 = toMsSafe(xStart);
         const ms1 = toMsSafe(xEnd);
         if (!Number.isFinite(ms0) || !Number.isFinite(ms1)) return;
@@ -1212,7 +1220,8 @@ function renderStockSuggestList(items) {
 }
 
 async function fetchYahooHistorySeries(ticker) {
-  const url = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=30y`;
+  const baseUrl = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=30y`;
+  const url = appendCacheBust(baseUrl);
   const payload = await fetchJsonWithProxyFallback(url);
   const result = payload?.chart?.result?.[0];
   if (!result) throw new Error(`${ticker} ?????�늉?????????????? ?饔낅??????? ?饔낅????�????�????????`);
@@ -1273,6 +1282,106 @@ async function ensureCustomTickerSeriesLoaded(ticker) {
   mergeTickerSeriesIntoPricePayload(ticker, points);
 }
 
+function parseLooseNumber(raw) {
+  const cleaned = String(raw ?? "").replace(/,/g, "").trim();
+  if (!cleaned) return null;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
+}
+
+function normalizeKrxDate(raw) {
+  const text = String(raw ?? "").trim();
+  if (!/^\d{8}$/.test(text)) return "";
+  return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
+}
+
+function scoreKrxIndexName(name, market) {
+  const text = String(name || "").toUpperCase().replace(/\s+/g, "");
+  if (!text) return 0;
+  if (market === "KOSPI") {
+    if (text === "코스피" || text === "KOSPI") return 100;
+    if (text.includes("코스피")) return 70;
+    if (text.includes("KOSPI")) return 50;
+    return 0;
+  }
+  if (market === "KOSDAQ") {
+    if (text === "코스닥" || text === "KOSDAQ") return 100;
+    if (text.includes("코스닥")) return 70;
+    if (text.includes("KOSDAQ")) return 50;
+    return 0;
+  }
+  return 0;
+}
+
+function pickKrxIndexSeriesPoint(rows, market) {
+  const list = Array.isArray(rows)
+    ? rows
+    : ((rows && typeof rows === "object") ? [rows] : []);
+  let best = null;
+
+  list.forEach((row) => {
+    const date = normalizeKrxDate(row?.BAS_DD ?? row?.basDd ?? row?.BASDD);
+    const close = parseLooseNumber(
+      row?.CLSPRC_IDX ?? row?.TDD_CLSPRC ?? row?.CLSPRC ?? row?.closePrice,
+    );
+    if (!date || !Number.isFinite(close)) return;
+
+    const score = scoreKrxIndexName(
+      row?.IDX_NM ?? row?.IDX_NM_KOR ?? row?.IDX_NM_ENG ?? row?.IDX_NM_EN ?? "",
+      market,
+    );
+
+    if (!best || score > best.score) {
+      best = { date, close, score };
+    }
+  });
+
+  return best ? { date: best.date, close: best.close } : null;
+}
+
+async function fetchKrxIndexPoint(apiKey, market, baseDate) {
+  const endpoint = KRX_INDEX_ENDPOINTS[market];
+  const key = String(apiKey || "").trim();
+  if (!endpoint || !key || !/^\d{8}$/.test(String(baseDate || ""))) return null;
+
+  const roots = [
+    `https://data-dbg.krx.co.kr/svc/apis/idx/${endpoint}`,
+    `https://data-dbg.krx.co.kr/svc/sample/apis/idx/${endpoint}`,
+  ];
+
+  for (const root of roots) {
+    const url = `${root}?basDd=${encodeURIComponent(baseDate)}&AUTH_KEY=${encodeURIComponent(key)}`;
+    try {
+      const payload = await fetchJsonWithProxyFallback(url);
+      const rows = payload?.OutBlock_1 ?? payload?.output ?? payload?.data ?? [];
+      const point = pickKrxIndexSeriesPoint(rows, market);
+      if (point) return point;
+    } catch (_) {
+      // try next endpoint root/date
+    }
+  }
+  return null;
+}
+
+async function fetchLatestKrxCoreIndexRows(apiKey, daysBack = 20) {
+  const key = String(apiKey || "").trim();
+  if (!key) return [];
+  const dates = getRecentKrxBaseDates(daysBack);
+  const targets = [
+    { market: "KOSPI", ticker: "^KS11" },
+    { market: "KOSDAQ", ticker: "^KQ11" },
+  ];
+
+  const found = await Promise.all(targets.map(async (target) => {
+    for (const baseDate of dates) {
+      const point = await fetchKrxIndexPoint(key, target.market, baseDate);
+      if (point) return { ticker: target.ticker, date: point.date, close: point.close };
+    }
+    return null;
+  }));
+
+  return found.filter(Boolean);
+}
 async function refreshCoreIndexSeries() {
   const tickers = ["^KS11", "^KQ11"];
   const beforeLatest = {};
@@ -1294,7 +1403,7 @@ async function refreshCoreIndexSeries() {
   const applied = [];
   const warnings = [];
 
-  const results = await Promise.allSettled(
+  const yahooResults = await Promise.allSettled(
     tickers.map(async (ticker) => {
       const points = await fetchYahooHistorySeries(ticker);
       if (!points.length) throw new Error("price history is empty");
@@ -1303,7 +1412,7 @@ async function refreshCoreIndexSeries() {
     }),
   );
 
-  results.forEach((result, idx) => {
+  yahooResults.forEach((result, idx) => {
     const ticker = tickers[idx];
     if (result.status === "fulfilled") {
       const latestDate = String(result.value?.latestDate || "");
@@ -1316,8 +1425,29 @@ async function refreshCoreIndexSeries() {
     warnings.push(`${labelName(ticker)} 갱신 오류: ${reason}`);
   });
 
+  const krxKey = String(apiSettings?.krxApiKey || "").trim();
+  if (krxKey) {
+    try {
+      const latestRows = await fetchLatestKrxCoreIndexRows(krxKey, 25);
+      const found = new Set();
+      latestRows.forEach((row) => {
+        if (!row?.ticker || !row?.date || !Number.isFinite(row?.close)) return;
+        found.add(row.ticker);
+        mergeTickerSeriesIntoPricePayload(row.ticker, [{ date: row.date, close: row.close }]);
+        applied.push(`${labelName(row.ticker)} KRX 반영(${row.date})`);
+      });
+
+      tickers.forEach((ticker) => {
+        if (!found.has(ticker)) warnings.push(`${labelName(ticker)} KRX 최신값을 찾지 못했습니다.`);
+      });
+    } catch (err) {
+      warnings.push(`KRX 지수 불러오기 오류: ${err.message}`);
+    }
+  }
+
   return { applied, warnings };
 }
+
 async function addCustomStock(candidate, msgEl) {
   if (!candidate?.ticker || !candidate?.name) return;
 
