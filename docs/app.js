@@ -2723,7 +2723,18 @@ async function refreshLiveApiData() {
   const applied = [];
   const warnings = [];
 
-  if (!hasAnyApiKey()) return { applied, warnings };
+  const hasLeadingApi = Boolean(apiSettings.ecosApiKey || apiSettings.kosisApiKey);
+  const hasCreditApi = Boolean(apiSettings.kofiaApiKey);
+  if (!hasLeadingApi) {
+    warnings.push("선행지수 API 키(ECOS 또는 KOSIS)가 없어 선행지수를 불러오지 못했습니다.");
+  }
+  if (!hasCreditApi) {
+    warnings.push("KOFIA API 키가 없어 신용잔고를 불러오지 못했습니다.");
+  }
+  if (!hasLeadingApi && !hasCreditApi) return { applied, warnings };
+
+  if (hasLeadingApi) macroRows = [];
+  if (hasCreditApi) creditRows = [];
 
   let ecosRows = [];
   let kosisRows = [];
@@ -2813,38 +2824,29 @@ async function refreshAdrFromWeb() {
 }
 
 async function loadData(forceNetwork = false) {
-  const opt = forceNetwork ? { cache: "reload" } : {};
-  const [priceRes, macroJsonRes, macroCsvRes, adrRes, creditRes] = await Promise.all([
-    fetch("./data/prices.json", opt),
-    fetch("./data/macro_data.json", opt),
-    fetch("./data/sample_macro_data.csv", opt),
-    fetch("./data/adr_data.json", opt),
-    fetch("./data/credit_data.json", opt),
-  ]);
-  const priceText = await priceRes.text();
-  pricePayload = JSON.parse(priceText.replace(/\bNaN\b/g, "null"));
-
-  let macroSourceRows = [];
-  if (macroJsonRes.ok) {
-    try {
-      macroSourceRows = parseMacroPayload(await macroJsonRes.text());
-    } catch (_) {
-      macroSourceRows = [];
+  if (!pricePayload || typeof pricePayload !== "object") {
+    pricePayload = { records: [], series: [], display_names: {} };
+  } else {
+    if (!Array.isArray(pricePayload.records)) pricePayload.records = [];
+    if (!Array.isArray(pricePayload.series)) pricePayload.series = [];
+    if (!pricePayload.display_names || typeof pricePayload.display_names !== "object") {
+      pricePayload.display_names = {};
     }
   }
-  if (!macroSourceRows.length && macroCsvRes.ok) {
-    macroSourceRows = parseCsv(await macroCsvRes.text());
-  }
+  if (!Array.isArray(macroRows)) macroRows = [];
+  if (!Array.isArray(creditRows)) creditRows = [];
 
-  const priceDates = (pricePayload.records || []).map((r) => r.date);
-  macroRows = buildDenseMacroRows(macroSourceRows, priceDates);
-  if (adrRes.ok) {
-    const adrPayload = JSON.parse(await adrRes.text());
-    adrRows = adrPayload.records || [];
-  }
-  if (creditRes.ok) {
-    const creditPayload = JSON.parse(await creditRes.text());
-    creditRows = creditPayload.records || [];
+  const opt = forceNetwork ? { cache: "reload" } : {};
+  try {
+    const adrRes = await fetch("./data/adr_data.json", opt);
+    if (adrRes.ok) {
+      const adrPayload = JSON.parse(await adrRes.text());
+      if (Array.isArray(adrPayload?.records)) {
+        adrRows = adrPayload.records;
+      }
+    }
+  } catch (_) {
+    // ADR seed load failed; runtime refresh will try web source next.
   }
 }
 
