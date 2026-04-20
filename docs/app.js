@@ -1373,11 +1373,23 @@ async function fetchLatestKrxCoreIndexRows(apiKey, daysBack = 20) {
   ];
 
   const found = await Promise.all(targets.map(async (target) => {
+    let best = null;
+
     for (const baseDate of dates) {
       const point = await fetchKrxIndexPoint(key, target.market, baseDate);
-      if (point) return { ticker: target.ticker, date: point.date, close: point.close };
+      if (!point) continue;
+
+      if (!best || point.date > best.date) {
+        best = { ticker: target.ticker, date: point.date, close: point.close };
+      }
+
+      const baseDateIso = normalizeKrxDate(baseDate);
+      if (best && baseDateIso && baseDateIso <= best.date) {
+        break;
+      }
     }
-    return null;
+
+    return best;
   }));
 
   return found.filter(Boolean);
@@ -2069,11 +2081,31 @@ function resetHandles() {
 function renderChart(preserveZoom = true) {
   const el = document.getElementById("chart");
   const msgEl = document.getElementById("messageArea");
-
   const priceRows = pricePayload.records || [];
-  const dates = priceRows.map((r) => r.date);
-  const maxDate = dates[dates.length - 1] || new Date().toISOString().slice(0, 10);
-  const minDate = dates[0] || maxDate;
+  const today = new Date().toISOString().slice(0, 10);
+
+  const minCandidates = [];
+  const maxCandidates = [];
+  const pushBounds = (rows) => {
+    if (!Array.isArray(rows) || !rows.length) return;
+    const first = String(rows[0]?.date || "").slice(0, 10);
+    const last = String(rows[rows.length - 1]?.date || "").slice(0, 10);
+    if (first) minCandidates.push(first);
+    if (last) maxCandidates.push(last);
+  };
+
+  pushBounds(priceRows);
+  pushBounds(macroRows);
+  pushBounds(creditRows);
+  pushBounds(adrRows);
+
+  const maxDate = maxCandidates.length
+    ? maxCandidates.reduce((mx, d) => (d > mx ? d : mx), maxCandidates[0])
+    : today;
+  const minDate = minCandidates.length
+    ? minCandidates.reduce((mn, d) => (d < mn ? d : mn), minCandidates[0])
+    : maxDate;
+
   const end = maxDate;
   let start = shiftMonths(end, activeMonths);
   if (start < minDate) start = minDate;
@@ -2178,6 +2210,7 @@ function renderChart(preserveZoom = true) {
     ? (pinnedXRange ? [...pinnedXRange] : (el._fullLayout?.xaxis?.range?.slice() || null))
     : null;
   const savedYRange = preserveZoom ? (el._fullLayout?.yaxis?.range?.slice() || null) : null;
+  const defaultXRange = [start, end];
 
   Plotly.react(el, traces, {
     paper_bgcolor: "transparent",
@@ -2186,7 +2219,7 @@ function renderChart(preserveZoom = true) {
     hovermode: "x unified",
     showlegend: false,
     legend: { orientation: "h", x: 0, y: 1.08, font: { color: "rgba(255,255,255,0.7)", size: 11 } },
-    xaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, color: "#666", tickfont: { size: 10 }, fixedrange: false, showspikes: false, ...(savedXRange ? { range: savedXRange } : {}) },
+    xaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, color: "#666", tickfont: { size: 10 }, fixedrange: false, showspikes: false, ...(savedXRange ? { range: savedXRange } : { range: defaultXRange, autorange: false }) },
     yaxis: { showticklabels: false, title: "", showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, fixedrange: true, ...(savedYRange ? { range: savedYRange, autorange: false } : {}) },
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
     hoverlabel: hoverShowPopup ? { bgcolor: "rgba(34,34,34,0.45)", bordercolor: "rgba(140,140,140,0.35)", font: { color: "#eee" } } : { bgcolor: "rgba(0,0,0,0)", bordercolor: "rgba(0,0,0,0)", font: { color: "rgba(0,0,0,0)", size: 1 } },
@@ -3102,10 +3135,10 @@ async function boot() {
           try {
             const { added, latestDate } = await refreshAdrFromWeb();
             if (added > 0) {
-              infoLines.push(`ADR ${added}???μ?�媛?�???�펾�???????�뱼????(~ ${latestDate})`);
+              infoLines.push(`ADR ${added}건 추가 반영(~ ${latestDate})`);
             }
           } catch (adrErr) {
-            warnLines.push(`ADR ?????�늉???????????�슣?? ${adrErr.message}`);
+            warnLines.push(`ADR 불러오기 오류: ${adrErr.message}`);
           }
 
           const liveResult = await refreshLiveApiData();
@@ -3120,7 +3153,7 @@ async function boot() {
             setMessage(msgEl, []);
           }
         } catch (err) {
-          setMessage(msgEl, `????????????????????�슣?? ${err.message}`, true);
+          setMessage(msgEl, `데이터 갱신 중 오류: ${err.message}`, true);
         } finally {
           refreshBtn.classList.remove("spinning");
         }
