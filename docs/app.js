@@ -1300,6 +1300,16 @@ function mergeTickerSeriesIntoPricePayload(ticker, points) {
   if (DISPLAY_NAMES[ticker]) pricePayload.display_names[ticker] = DISPLAY_NAMES[ticker];
 }
 
+function getLatestTickerDateFromPricePayload(ticker) {
+  let latest = "";
+  (pricePayload?.records || []).forEach((row) => {
+    const date = String(row?.date || "").slice(0, 10);
+    const value = toNum(row?.[ticker]);
+    if (!date || value === null) return;
+    if (!latest || date > latest) latest = date;
+  });
+  return latest;
+}
 async function ensureCustomTickerSeriesLoaded(ticker) {
   const hasExisting = (pricePayload?.records || []).some((row) => toNum(row?.[ticker]) !== null);
   if (hasExisting) return;
@@ -1472,6 +1482,8 @@ async function refreshCoreIndexSeries() {
       latestRows.forEach((row) => {
         if (!row?.ticker || !row?.date || !Number.isFinite(row?.close)) return;
         found.add(row.ticker);
+        const yahooLatest = getLatestTickerDateFromPricePayload(row.ticker);
+        if (yahooLatest && row.date <= yahooLatest) return;
         mergeTickerSeriesIntoPricePayload(row.ticker, [{ date: row.date, close: row.close }]);
         applied.push(`${labelName(row.ticker)} KRX 반영(${row.date})`);
       });

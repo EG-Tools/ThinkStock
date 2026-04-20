@@ -55,7 +55,7 @@ body {
 
 .stock-add-panel-inline {
   margin-top: 0;
-  width: min(320px, 46vw);
+  width: min(288px, 41vw);
   flex: 0 0 auto;
 }
 
@@ -659,7 +659,7 @@ body {
     align-items: flex-end;
     gap: 10px;
   }
-  .stock-add-panel-inline { width: min(180px, 48vw); }
+  .stock-add-panel-inline { width: min(162px, 43vw); }
   .top-controls {
     display: grid;
     grid-template-columns: auto auto auto auto auto;
