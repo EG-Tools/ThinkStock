@@ -48,8 +48,11 @@ const ECOS_ITEM_CODE = "I16E";
 const ECOS_START = "199601";
 const KOSIS_START = "199601";
 const KOFIA_CREDIT_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getGrantingOfCreditBalanceInfo";
+const FREESIS_CREDIT_META_URL = "https://freesis.kofia.or.kr/meta/getMetaDataList.do";
+const FREESIS_CREDIT_OBJ_NM = "STATSCU0100000070BO";
+const FREESIS_CREDIT_LOOKBACK_DAYS = 120;
+const FREESIS_CREDIT_UNIT_CODE = "06";
 const DAY_MS = 24 * 60 * 60 * 1000;
-
 function appendCacheBust(url) {
   const stamp = `_=${Date.now()}`;
   return url.includes("?") ? `${url}&${stamp}` : `${url}?${stamp}`;
@@ -2575,6 +2578,12 @@ function monthCodeToDate(code) {
   return `${raw.slice(0, 4)}-${raw.slice(4, 6)}-01`;
 }
 
+function dayCodeToDate(code) {
+  const raw = String(code || "").trim();
+  if (!/^\d{8}$/.test(raw)) return "";
+  return `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`;
+}
+
 function normalizeLeadingRows(rows) {
   const map = new Map();
   (rows || []).forEach((row) => {
@@ -2622,12 +2631,13 @@ function sameNullableNumber(a, b) {
   return Math.abs(na - nb) <= 1e-9;
 }
 
-async function fetchJsonWithProxyFallback(url) {
+async function fetchJsonWithProxyFallback(url, init = null) {
   const candidates = [url, CORS_PROXY + encodeURIComponent(url)];
   let lastError = "Request failed";
   for (const target of candidates) {
     try {
-      const res = await fetch(target, { cache: "no-store" });
+      const requestInit = { cache: "no-store", ...(init || {}) };
+      const res = await fetch(target, requestInit);
       if (!res.ok) {
         lastError = `HTTP ${res.status}`;
         continue;
@@ -2644,7 +2654,6 @@ async function fetchJsonWithProxyFallback(url) {
   }
   throw new Error(lastError);
 }
-
 async function fetchEcosLeadingCycleLive(apiKey) {
   const clean = String(apiKey || "").trim();
   if (!clean) return [];
@@ -2819,6 +2828,44 @@ async function fetchKofiaCreditLive(apiKey) {
   return [];
 }
 
+async function fetchFreesisCreditLive(startDate = "", endDate = "") {
+  const today = new Date().toISOString().slice(0, 10);
+  const safeEnd = String(endDate || "").slice(0, 10) || today;
+  const safeStart = String(startDate || "").slice(0, 10)
+    || shiftDays(safeEnd, -FREESIS_CREDIT_LOOKBACK_DAYS);
+  const fromYmd = safeStart.replace(/-/g, "");
+  const toYmd = safeEnd.replace(/-/g, "");
+  if (!/^\d{8}$/.test(fromYmd) || !/^\d{8}$/.test(toYmd)) return [];
+
+  const payload = {
+    dmSearch: {
+      OBJ_NM: FREESIS_CREDIT_OBJ_NM,
+      tmpV1: "D",
+      tmpV40: FREESIS_CREDIT_UNIT_CODE,
+      tmpV45: fromYmd,
+      tmpV46: toYmd,
+    },
+  };
+
+  const response = await fetchJsonWithProxyFallback(
+    appendCacheBust(FREESIS_CREDIT_META_URL),
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json; charset=UTF-8",
+      },
+      body: JSON.stringify(payload),
+    },
+  );
+
+  const rows = Array.isArray(response?.ds1) ? response.ds1 : [];
+  return normalizeCreditRows(rows.map((row) => ({
+    date: dayCodeToDate(row?.TMPV1),
+    kospi_credit: parseKofiaAmountToTrillion(row?.TMPV3),
+    kosdaq_credit: parseKofiaAmountToTrillion(row?.TMPV4),
+  })));
+}
+
 function applyLeadingCycleLiveRows(monthlyRows) {
   const normalized = normalizeLeadingRows(monthlyRows);
   if (!normalized.length || !pricePayload?.records?.length) return { updated: 0, latestDate: "" };
@@ -2892,9 +2939,8 @@ async function refreshLiveApiData() {
     warnings.push("선행지수 API 키(ECOS 또는 KOSIS)가 없어 선행지수를 불러오지 못했습니다.");
   }
   if (!hasCreditApi) {
-    warnings.push("KOFIA API 키가 없어 신용잔고를 불러오지 못했습니다.");
+    warnings.push("KOFIA API 키가 없어 신용잔고는 저장 데이터 + freesis 최신값으로만 갱신됩니다.");
   }
-  if (!hasLeadingApi && !hasCreditApi) return { applied, warnings };
 
   if (hasLeadingApi) macroRows = [];
   if (hasCreditApi) creditRows = [];
@@ -2938,9 +2984,32 @@ async function refreshLiveApiData() {
     }
   }
 
+  try {
+    const latestCreditDate = creditRows.length
+      ? String(creditRows[creditRows.length - 1]?.date || "").slice(0, 10)
+      : "";
+    const today = new Date().toISOString().slice(0, 10);
+    const freesisStartDate = latestCreditDate
+      ? shiftDays(latestCreditDate, -30)
+      : shiftDays(today, -FREESIS_CREDIT_LOOKBACK_DAYS);
+
+    const freesisRows = await fetchFreesisCreditLive(freesisStartDate, today);
+    if (freesisRows.length) {
+      const info = applyCreditLiveRows(freesisRows);
+      if (info.updated > 0) {
+        applied.push(`신용잔고 최신(Freesis) 반영(${info.updated}건, 최신일 ${info.latestDate})`);
+      } else {
+        applied.push(`신용잔고 최신(Freesis) 확인(최신일 ${info.latestDate})`);
+      }
+    } else {
+      warnings.push("freesis 응답에서 신용융자 데이터를 찾지 못했습니다.");
+    }
+  } catch (err) {
+    warnings.push(`freesis 불러오기 오류: ${err.message}`);
+  }
+
   return { applied, warnings };
 }
-
 /**
  * adrinfo.kr/chart ??CORS ?????諛몃�??λ?????꿔꺂?????轅멸???????�늉????? adrRows ??????嶺뚮???????????�?????????�뱼?????꿔꺂?????
  * ?????�땟戮녹???? { added: number, latestDate: string }
