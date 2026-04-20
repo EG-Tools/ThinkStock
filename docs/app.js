@@ -1,4 +1,4 @@
-﻿const DISPLAY_NAMES = {
+const DISPLAY_NAMES = {
   leading_cycle: "선행지수 순환변동치",
   kospi_credit: "코스피 신용",
   kosdaq_credit: "코스닥 신용",
@@ -2067,9 +2067,24 @@ async function boot() {
   try {
     await loadData(true);
 
+    const startupInfo = [];
+    const startupWarn = [];
+
+    try {
+      const { added, latestDate } = await refreshAdrFromWeb();
+      if (added > 0) {
+        startupInfo.push(`ADR added ${added} rows (~ ${latestDate})`);
+      }
+    } catch (adrErr) {
+      startupWarn.push(`ADR refresh failed: ${adrErr.message}`);
+    }
+
     const startupLive = await refreshLiveApiData();
-    if (startupLive.applied.length || startupLive.warnings.length) {
-      setMessage(msgEl, [...startupLive.applied, ...startupLive.warnings], startupLive.applied.length === 0);
+    startupInfo.push(...startupLive.applied);
+    startupWarn.push(...startupLive.warnings);
+
+    if (startupInfo.length || startupWarn.length) {
+      setMessage(msgEl, [...startupInfo, ...startupWarn], startupInfo.length === 0);
     }
 
     document.querySelectorAll(".range-btn").forEach((btn) => {
