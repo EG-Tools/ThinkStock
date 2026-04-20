@@ -271,6 +271,21 @@ body {
   gap: 8px;
 }
 
+.api-settings-meta {
+  margin: 12px 2px 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.api-settings-meta a {
+  color: #9ed6ff;
+  text-decoration: none;
+}
+
+.api-settings-meta a:hover {
+  text-decoration: underline;
+}
 .api-action-btn {
   border: 1px solid var(--border);
   border-radius: 999px;
