@@ -108,6 +108,9 @@ let dragZoomBound = false;
 let touchDoubleTapZoomActive = false;
 let touchDoubleTapPrevRange = null;
 let startupLoaderHideTimer = null;
+let startupLoaderRafId = 0;
+let startupLoaderDisplayProgress = 100;
+let startupLoaderTargetProgress = 100;
 
 /* ???? localStorage persistence ???? */
 function sanitizeCustomStocks(raw) {
@@ -219,11 +222,36 @@ function ensureStartupLoader() {
   if (!titleEl) return null;
 
   if (!titleEl.dataset.title) {
-    const titleText = String(titleEl.textContent || "ThinkStock").trim() || "ThinkStock";
+    const titleText = String(titleEl.textContent || "Think Stock").trim() || "Think Stock";
     titleEl.dataset.title = titleText;
   }
 
   return titleEl;
+}
+
+function renderStartupLoaderProgress(value) {
+  const titleEl = ensureStartupLoader();
+  if (!titleEl) return;
+
+  const clamped = Math.max(0, Math.min(100, value));
+  titleEl.style.setProperty("--title-load", `${clamped.toFixed(2)}%`);
+  titleEl.setAttribute("aria-valuemin", "0");
+  titleEl.setAttribute("aria-valuemax", "100");
+  titleEl.setAttribute("aria-valuenow", String(Math.round(clamped)));
+}
+
+function runStartupLoaderTween() {
+  const diff = startupLoaderTargetProgress - startupLoaderDisplayProgress;
+  if (Math.abs(diff) < 0.28) {
+    startupLoaderDisplayProgress = startupLoaderTargetProgress;
+    renderStartupLoaderProgress(startupLoaderDisplayProgress);
+    startupLoaderRafId = 0;
+    return;
+  }
+
+  startupLoaderDisplayProgress += diff * 0.16;
+  renderStartupLoaderProgress(startupLoaderDisplayProgress);
+  startupLoaderRafId = requestAnimationFrame(runStartupLoaderTween);
 }
 
 function setStartupLoaderProgress(percent, _label = "") {
@@ -231,10 +259,11 @@ function setStartupLoaderProgress(percent, _label = "") {
   if (!titleEl) return;
 
   const value = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
-  titleEl.style.setProperty("--title-load", `${value}%`);
-  titleEl.setAttribute("aria-valuemin", "0");
-  titleEl.setAttribute("aria-valuemax", "100");
-  titleEl.setAttribute("aria-valuenow", String(value));
+  startupLoaderTargetProgress = value;
+
+  if (!startupLoaderRafId) {
+    startupLoaderRafId = requestAnimationFrame(runStartupLoaderTween);
+  }
 }
 
 function showStartupLoader() {
@@ -243,11 +272,18 @@ function showStartupLoader() {
     startupLoaderHideTimer = null;
   }
 
+  if (startupLoaderRafId) {
+    cancelAnimationFrame(startupLoaderRafId);
+    startupLoaderRafId = 0;
+  }
+
   const titleEl = ensureStartupLoader();
   if (!titleEl) return;
 
   titleEl.classList.add("is-loading");
-  setStartupLoaderProgress(0);
+  startupLoaderDisplayProgress = 0;
+  startupLoaderTargetProgress = 0;
+  renderStartupLoaderProgress(0);
 }
 
 function hideStartupLoader() {
@@ -259,7 +295,7 @@ function hideStartupLoader() {
   startupLoaderHideTimer = setTimeout(() => {
     titleEl.classList.remove("is-loading");
     startupLoaderHideTimer = null;
-  }, 320);
+  }, 460);
 }
 
 function setupApiSettingsPanel(msgEl) {

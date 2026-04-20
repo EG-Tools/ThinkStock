@@ -39,11 +39,11 @@ body {
   white-space: nowrap;
   pointer-events: none;
   clip-path: inset(0 calc(100% - var(--title-load)) 0 0);
-  transition: clip-path 0.24s ease, filter 0.24s ease;
+  transition: clip-path 0.42s cubic-bezier(0.22, 0.61, 0.36, 1), filter 0.32s ease;
 }
 
 .hero h1.is-loading::after {
-  filter: drop-shadow(0 0 8px rgba(255, 255, 255, 0.2));
+  filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.22));
 }
 
 .hero-title-row {
