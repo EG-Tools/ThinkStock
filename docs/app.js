@@ -862,7 +862,7 @@ function renderCustomStockButtons() {
     const color = seriesColor(ticker);
     return `
       <div class="custom-stock-chip" data-custom-series="${escapeHtml(ticker)}">
-        <button class="series-toggle-btn" data-series="${escapeHtml(ticker)}" style="--series-color:${escapeHtml(color)}">${escapeHtml(name)}</button>
+        <button class="series-toggle-btn custom-stock-toggle-btn" data-series="${escapeHtml(ticker)}" style="--series-color:${escapeHtml(color)}">${escapeHtml(name)}</button>
         <button class="stock-remove-btn" type="button" data-remove-series="${escapeHtml(ticker)}" aria-label="${escapeHtml(name)} remove">-</button>
       </div>
     `;
