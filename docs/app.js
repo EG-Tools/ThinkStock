@@ -226,13 +226,29 @@ function ensureStartupLoader() {
   el.hidden = true;
   el.innerHTML = `
     <div class="startup-loader-track"><div class="startup-loader-bar"></div></div>
-    <div class="startup-loader-text">Loading latest data...</div>
+    <div class="startup-loader-text">Loading latest data... 0%</div>
   `;
 
   const hero = shell.querySelector(".hero");
   if (hero && hero.nextSibling) shell.insertBefore(el, hero.nextSibling);
   else shell.appendChild(el);
   return el;
+}
+
+function setStartupLoaderProgress(percent, label = "Loading latest data") {
+  const el = ensureStartupLoader();
+  if (!el) return;
+
+  const value = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
+  const bar = el.querySelector(".startup-loader-bar");
+  const text = el.querySelector(".startup-loader-text");
+
+  if (bar) bar.style.width = `${value}%`;
+  if (text) text.textContent = `${label}... ${value}%`;
+
+  el.setAttribute("aria-valuemin", "0");
+  el.setAttribute("aria-valuemax", "100");
+  el.setAttribute("aria-valuenow", String(value));
 }
 
 function showStartupLoader() {
@@ -243,16 +259,18 @@ function showStartupLoader() {
   const el = ensureStartupLoader();
   if (!el) return;
   el.hidden = false;
+  setStartupLoaderProgress(0, "Loading latest data");
 }
 
 function hideStartupLoader() {
   const el = document.getElementById("startupLoader");
   if (!el) return;
+  setStartupLoaderProgress(100, "Loading latest data");
   if (startupLoaderHideTimer) clearTimeout(startupLoaderHideTimer);
   startupLoaderHideTimer = setTimeout(() => {
     el.hidden = true;
     startupLoaderHideTimer = null;
-  }, 220);
+  }, 280);
 }
 
 function setupApiSettingsPanel(msgEl) {
@@ -2619,6 +2637,7 @@ async function loadData(forceNetwork = false) {
 async function boot() {
   const msgEl = document.getElementById("messageArea");
   showStartupLoader();
+  setStartupLoaderProgress(4, "Preparing");
   loadState();
   loadApiSettings();
   renderCustomStockButtons();
@@ -2627,9 +2646,12 @@ async function boot() {
   syncButtons();
   setupApiSettingsPanel(msgEl);
   syncApiOptionsButton();
+  setStartupLoaderProgress(10, "Preparing");
   try {
     await loadData(true);
+    setStartupLoaderProgress(45, "Loading data");
     const preloadResult = await preloadCustomStocks();
+    setStartupLoaderProgress(60, "Loading stocks");
 
     const startupInfo = [];
     const startupWarn = [];
@@ -2646,9 +2668,11 @@ async function boot() {
       startupWarn.push(`ADR refresh failed: ${adrErr.message}`);
     }
 
+    setStartupLoaderProgress(74, "Refreshing ADR");
     const startupLive = await refreshLiveApiData();
     startupInfo.push(...startupLive.applied);
     startupWarn.push(...startupLive.warnings);
+    setStartupLoaderProgress(90, "Applying data");
 
     if (startupInfo.length || startupWarn.length) {
       setMessage(msgEl, [...startupInfo, ...startupWarn], startupInfo.length === 0);
@@ -2746,6 +2770,7 @@ async function boot() {
       });
     }
 
+    setStartupLoaderProgress(100, "Rendering");
     renderChart(false);
   } catch (err) {
     setMessage(msgEl, err.message || "데이터를 가져오지 못했습니다.", true);

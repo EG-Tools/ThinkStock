@@ -438,21 +438,16 @@ body {
 }
 
 .startup-loader-bar {
-  width: 40%;
+  width: 0%;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, rgba(74, 222, 128, 0.2), rgba(74, 222, 128, 0.95), rgba(74, 222, 128, 0.2));
-  animation: startupLoaderSweep 1.2s linear infinite;
+  background: linear-gradient(90deg, rgba(74, 222, 128, 0.65), rgba(74, 222, 128, 0.95));
+  transition: width 0.22s ease;
 }
 
 .startup-loader-text {
   font-size: 11px;
   color: var(--muted);
-}
-
-@keyframes startupLoaderSweep {
-  0% { transform: translateX(-120%); }
-  100% { transform: translateX(260%); }
 }
 
 .stock-suggest-list {
