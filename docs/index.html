@@ -17,7 +17,15 @@
   <body>
     <div class="app-shell">
       <header class="hero">
-        <h1>ThinkStock</h1>
+        <div class="hero-title-row">
+          <h1>ThinkStock</h1>
+          <div class="stock-add-panel stock-add-panel-inline" id="stockAddPanel">
+            <div class="stock-search-wrap">
+              <input id="stockSearchInput" class="stock-search-input" type="text" autocomplete="off" spellcheck="false" placeholder="&#xC885;&#xBAA9;&#xCD94;&#xAC00;">
+              <div id="stockSuggestList" class="stock-suggest-list" hidden></div>
+            </div>
+          </div>
+        </div>
         <div class="top-controls">
           <button id="hoverToggle" class="hover-toggle-btn" title="지수팝업 ON/OFF">지수팝업</button>
           <label class="credit-offset-wrap" title="신용잔고 발표 시차 보정(일)">
@@ -39,13 +47,6 @@
             <button class="series-toggle-btn" data-series="kosdaq_credit">코스닥 신용</button>
           </div>
           <div class="series-row custom-series-row" id="customStockButtons"></div>
-        </div>
-        <div class="stock-add-panel" id="stockAddPanel">
-          <label class="stock-add-label" for="stockSearchInput">종목추가</label>
-          <div class="stock-search-wrap">
-            <input id="stockSearchInput" class="stock-search-input" type="text" autocomplete="off" spellcheck="false" placeholder="한글 종목명 또는 코드 검색 (최대 10개)">
-          </div>
-          <div id="stockSuggestList" class="stock-suggest-list" hidden></div>
         </div>
       </header>
       <div id="chart" class="chart-frame"></div>

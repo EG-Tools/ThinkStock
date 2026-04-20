@@ -22,6 +22,22 @@ body {
 .hero { padding: 18px 20px 6px; }
 .hero h1 { margin: 0; font-size: clamp(34px, 7vw, 58px); line-height: 0.95; letter-spacing: -0.04em; color: #fff; }
 
+.hero-title-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.stock-add-panel-inline {
+  margin-top: 0;
+  width: min(360px, 100%);
+}
+
+.stock-add-panel-inline .stock-search-wrap {
+  min-height: 36px;
+}
+
 .top-controls {
   display: flex;
   align-items: center;
@@ -577,6 +593,12 @@ body {
   .app-shell { width: min(100vw - 18px, 720px); padding-top: 12px; }
   .hero { padding-top: 14px; }
   .hero h1 { font-size: clamp(30px, 9vw, 44px); }
+  .hero-title-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .stock-add-panel-inline { width: 100%; }
   .top-controls {
     display: grid;
     grid-template-columns: auto auto auto auto auto;
@@ -617,4 +639,3 @@ body {
     max-height: 82vh;
   }
 }
-
