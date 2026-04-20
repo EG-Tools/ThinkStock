@@ -57,8 +57,19 @@ self.addEventListener("fetch", (event) => {
 // 앱에서 REFRESH_DATA 메시지를 받으면 데이터 캐시만 삭제
 self.addEventListener("message", (event) => {
   if (event.data === "REFRESH_DATA") {
-    caches.open(CACHE_NAME).then((cache) => {
-      ASSETS.filter((a) => a.includes("/data/")).forEach((url) => cache.delete(url));
+    caches.open(CACHE_NAME).then(async (cache) => {
+      const requests = await cache.keys();
+      await Promise.all(
+        requests
+          .filter((req) => {
+            try {
+              return new URL(req.url).pathname.includes("/data/");
+            } catch (_) {
+              return false;
+            }
+          })
+          .map((req) => cache.delete(req))
+      );
     });
   }
 });

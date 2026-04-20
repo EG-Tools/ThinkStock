@@ -2493,12 +2493,11 @@ async function fetchKofiaCreditLive(apiKey) {
     try {
       const rows = [];
       const numOfRows = 1000;
-      const fetchedPages = new Set();
+      const pageMeta = new Map();
 
       const fetchPage = async (pageNo) => {
         if (!Number.isFinite(pageNo) || pageNo < 1) return null;
-        if (fetchedPages.has(pageNo)) return null;
-        fetchedPages.add(pageNo);
+        if (pageMeta.has(pageNo)) return pageMeta.get(pageNo);
 
         const query = new URLSearchParams({
           serviceKey,
@@ -2511,6 +2510,11 @@ async function fetchKofiaCreditLive(apiKey) {
 
         const header = payload?.response?.header || {};
         if (header.resultCode && header.resultCode !== "00") {
+          if (pageNo > 1) {
+            const empty = { totalCount: 0, rowsPerPage: numOfRows, currentPage: pageNo, itemCount: 0 };
+            pageMeta.set(pageNo, empty);
+            return empty;
+          }
           throw new Error(header.resultMsg || "KOFIA API error");
         }
 
@@ -2535,12 +2539,14 @@ async function fetchKofiaCreditLive(apiKey) {
           : (items.length || numOfRows);
         const currentPage = Number(body?.pageNo) || pageNo;
 
-        return {
+        const meta = {
           totalCount: Number.isFinite(totalCount) ? totalCount : 0,
           rowsPerPage,
           currentPage,
           itemCount: items.length,
         };
+        pageMeta.set(pageNo, meta);
+        return meta;
       };
 
       const firstMeta = await fetchPage(1);
@@ -2550,11 +2556,38 @@ async function fetchKofiaCreditLive(apiKey) {
         continue;
       }
 
-      const totalCount = firstMeta.totalCount;
-      const rowsPerPage = Math.max(1, Number(firstMeta.rowsPerPage) || numOfRows);
-      const lastPage = totalCount > 0 ? Math.ceil(totalCount / rowsPerPage) : 1;
+      let lastPage = 1;
+      if (Number.isFinite(firstMeta.totalCount) && firstMeta.totalCount > 0) {
+        const rowsPerPage = Math.max(1, Number(firstMeta.rowsPerPage) || numOfRows);
+        lastPage = Math.max(1, Math.ceil(firstMeta.totalCount / rowsPerPage));
+      } else {
+        let low = 1;
+        let high = 2;
+        let highMeta = await fetchPage(high);
+        const maxProbe = 4096;
 
-      const pagesToFetch = [2, 3, lastPage, lastPage - 1, lastPage - 2]
+        while (highMeta && highMeta.itemCount > 0 && high < maxProbe) {
+          low = high;
+          high *= 2;
+          highMeta = await fetchPage(high);
+        }
+
+        if (highMeta && highMeta.itemCount > 0) {
+          lastPage = high;
+        } else {
+          let lo = low;
+          let hi = high;
+          while (lo + 1 < hi) {
+            const mid = Math.floor((lo + hi) / 2);
+            const midMeta = await fetchPage(mid);
+            if (midMeta && midMeta.itemCount > 0) lo = mid;
+            else hi = mid;
+          }
+          lastPage = lo;
+        }
+      }
+
+      const pagesToFetch = [2, 3, lastPage, lastPage - 1, lastPage - 2, lastPage - 3]
         .filter((p) => Number.isFinite(p) && p > 1);
 
       for (const page of pagesToFetch) {
