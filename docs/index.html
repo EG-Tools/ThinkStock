@@ -28,20 +28,24 @@
           <button id="refreshData" class="refresh-btn" title="새로고침">&#x21BB;</button>
           <button id="apiOptionsBtn" class="icon-btn" title="API 설정" aria-label="API 설정">⚙</button>
         </div>
-        <div class="series-toggle-board" id="seriesToggleBoard">
-          <div class="series-row">
+                <div class="series-toggle-board" id="seriesToggleBoard">
+          <div class="series-row base-row">
             <button class="series-toggle-btn" data-series="leading_cycle">선행지수 순환변동치</button>
             <button class="series-toggle-btn" data-series="^KS11">코스피</button>
             <button class="series-toggle-btn" data-series="^KQ11">코스닥</button>
           </div>
-          <div class="series-row">
+          <div class="series-row base-row">
             <button class="series-toggle-btn" data-series="kospi_credit">코스피 신용</button>
             <button class="series-toggle-btn" data-series="kosdaq_credit">코스닥 신용</button>
-            <button class="series-toggle-btn" data-series="005930.KS">삼성전자</button>
           </div>
-          <div class="series-row">
-            <button class="series-toggle-btn single" data-series="218410.KQ">RFHIC</button>
+          <div class="series-row custom-series-row" id="customStockButtons"></div>
+        </div>
+        <div class="stock-add-panel" id="stockAddPanel">
+          <label class="stock-add-label" for="stockSearchInput">종목추가</label>
+          <div class="stock-search-wrap">
+            <input id="stockSearchInput" class="stock-search-input" type="text" autocomplete="off" spellcheck="false" placeholder="한글 종목명 또는 코드 검색 (최대 10개)">
           </div>
+          <div id="stockSuggestList" class="stock-suggest-list" hidden></div>
         </div>
       </header>
       <div id="chart" class="chart-frame"></div>

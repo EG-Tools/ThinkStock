@@ -1,28 +1,34 @@
 const DISPLAY_NAMES = {
-  leading_cycle: "선행지수 순환변동치",
-  kospi_credit: "코스피 신용",
-  kosdaq_credit: "코스닥 신용",
-  "^KS11": "코스피",
-  "^KQ11": "코스닥",
-  "005930.KS": "삼성전자",
-  "218410.KQ": "RFHIC",
+  leading_cycle: "\uC120\uD589\uC9C0\uC218 \uC21C\uD658\uBCC0\uB3D9\uCE58",
+  kospi_credit: "\uCF54\uC2A4\uD53C \uC2E0\uC6A9",
+  kosdaq_credit: "\uCF54\uC2A4\uB2E5 \uC2E0\uC6A9",
+  "^KS11": "\uCF54\uC2A4\uD53C",
+  "^KQ11": "\uCF54\uC2A4\uB2E5",
   adr_kospi: "ADR K",
   adr_kosdaq: "ADR KQ",
 };
 
 const ADR_SERIES = ["adr_kospi", "adr_kosdaq"];
-const DEFAULT_SELECTED = ["leading_cycle", "^KS11", "kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ"];
-const SERIES_PRIORITY = ["leading_cycle", "^KS11", "kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ", "adr_kospi", "adr_kosdaq"];
+const CORE_SERIES = ["leading_cycle", "^KS11", "kospi_credit", "^KQ11", "kosdaq_credit"];
+const BASE_SERIES_PRIORITY = ["leading_cycle", "^KS11", "kospi_credit", "^KQ11", "kosdaq_credit", "adr_kospi", "adr_kosdaq"];
 const SERIES_COLORS = {
   leading_cycle: "#999999",
   "^KS11": "#4ade80",
   kospi_credit: "#60a5fa",
   "^KQ11": "#f87171",
   kosdaq_credit: "#a78bfa",
-  "005930.KS": "#2dd4bf",
-  "218410.KQ": "#fb923c",
   adr_kospi: "#facc15",
   adr_kosdaq: "#f472b6",
+};
+const CUSTOM_COLOR_PALETTE = [
+  "#2dd4bf", "#fb923c", "#22d3ee", "#facc15", "#f472b6",
+  "#84cc16", "#c084fc", "#38bdf8", "#f59e0b", "#10b981",
+];
+const MAX_CUSTOM_STOCKS = 10;
+const KRX_LOOKBACK_DAYS = 14;
+const KRX_BASE_INFO_ENDPOINTS = {
+  KOSPI: "stk_isu_base_info",
+  KOSDAQ: "ksq_isu_base_info",
 };
 
 const STATE_KEY = "thinkstock-v5";
@@ -43,7 +49,12 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const toNum = (v) => (v != null && Number.isFinite(Number(v))) ? Number(v) : null;
 const escapeHtml = (v) => String(v ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 const labelName = (key) => DISPLAY_NAMES[key] || key;
-const seriesColor = (key) => SERIES_COLORS[key] || "#888";
+function customColorForTicker(key) {
+  const idx = customStocks.findIndex((item) => item.ticker === key);
+  if (idx < 0) return null;
+  return CUSTOM_COLOR_PALETTE[idx % CUSTOM_COLOR_PALETTE.length];
+}
+const seriesColor = (key) => SERIES_COLORS[key] || customColorForTicker(key) || "#888";
 const toUtcMs = (d) => Date.parse(`${d}T00:00:00Z`);
 const isTouchDevice = () => typeof window !== "undefined"
   && (("ontouchstart" in window) || ((navigator && navigator.maxTouchPoints) > 0));
@@ -57,9 +68,15 @@ const PLOTLY_CONFIG = {
 
 let pricePayload = null;
 let macroRows = [];
-let creditRows = [];   // KOFIA 신용융자 잔고 (credit_data.json)
+let creditRows = [];   // KOFIA ???????�????????????(credit_data.json)
 let activeMonths = 120;
-let hiddenSeries = new Set(["kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ"]);
+let hiddenSeries = new Set(["kospi_credit", "^KQ11", "kosdaq_credit"]);
+let customStocks = [];
+let krxUniverse = [];
+let krxUniverseLoaded = false;
+let krxUniverseLoading = false;
+let stockSuggestItems = [];
+let loadingCustomStocks = new Set();
 let seriesOffsets = {};
 let seriesScales = {};
 let currentSelected = [];
@@ -69,7 +86,7 @@ let adrHandlerSet = false;
 let dragRafId = null;
 let currentRows = [];
 let currentStart = "";
-let chartSyncing = false;   // relayout 무한루프 방지 플래그
+let chartSyncing = false;   // relayout sync loop guard
 let hoverShowPopup = false;
 let isHandleDragging = false;
 let pinnedXRange = null;
@@ -85,12 +102,38 @@ let dragZoomBound = false;
 let touchDoubleTapZoomActive = false;
 let touchDoubleTapPrevRange = null;
 
-/* ── localStorage persistence ── */
+/* ???? localStorage persistence ???? */
+function sanitizeCustomStocks(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  const seen = new Set();
+  raw.forEach((item) => {
+    if (!item || typeof item !== "object") return;
+    const ticker = String(item.ticker || "").trim().toUpperCase();
+    const name = String(item.name || "").trim();
+    const code = String(item.code || "").trim();
+    const market = String(item.market || "").trim().toUpperCase();
+    if (!ticker || !name) return;
+    if (!/^[0-9]{6}\.(KS|KQ)$/.test(ticker)) return;
+    if (seen.has(ticker)) return;
+    seen.add(ticker);
+    out.push({ ticker, name, code, market });
+  });
+  return out.slice(0, MAX_CUSTOM_STOCKS);
+}
+
+function applyCustomStockDisplayNames() {
+  customStocks.forEach((item) => {
+    if (item?.ticker && item?.name) DISPLAY_NAMES[item.ticker] = item.name;
+  });
+}
+
 function saveState() {
   try {
     localStorage.setItem(STATE_KEY, JSON.stringify({
       activeMonths,
       hiddenSeries: [...hiddenSeries],
+      customStocks,
       seriesOffsets,
       seriesScales,
       creditOffset: -CREDIT_OFFSET_DAYS,
@@ -110,9 +153,10 @@ function loadState() {
     if (p.seriesScales && typeof p.seriesScales === "object") seriesScales = p.seriesScales;
     if (typeof p.creditOffset === "number") CREDIT_OFFSET_DAYS = Math.abs(p.creditOffset);
     if (typeof p.hoverShowPopup === "boolean") hoverShowPopup = p.hoverShowPopup;
+    if (Array.isArray(p.customStocks)) customStocks = sanitizeCustomStocks(p.customStocks);
+    applyCustomStockDisplayNames();
   } catch (_) {}
 }
-
 
 function sanitizeApiSettings(raw) {
   const src = raw && typeof raw === "object" ? raw : {};
@@ -213,19 +257,30 @@ function setupApiSettingsPanel(msgEl) {
   });
 
   saveBtn?.addEventListener("click", () => {
+    const prevKrxKey = String(apiSettings?.krxApiKey || "").trim();
     apiSettings = readInputs();
     saveApiSettings();
+    const nextKrxKey = String(apiSettings?.krxApiKey || "").trim();
+    if (prevKrxKey !== nextKrxKey) {
+      resetKrxUniverseCache();
+      hideStockSuggestList();
+    }
     syncApiOptionsButton();
     close();
-    setMessage(msgEl, ["API 키를 이 기기에 저장했습니다."]);
+    setMessage(msgEl, ["API keys saved on this device."]);
   });
 
   clearBtn?.addEventListener("click", () => {
+    const hadKrxKey = String(apiSettings?.krxApiKey || "").trim().length > 0;
     apiSettings = { ...API_SETTINGS_DEFAULT };
     saveApiSettings();
+    if (hadKrxKey) {
+      resetKrxUniverseCache();
+      hideStockSuggestList();
+    }
     fillInputs();
     syncApiOptionsButton();
-    setMessage(msgEl, ["저장된 API 키를 삭제했습니다."]);
+    setMessage(msgEl, ["Saved API keys were cleared."]);
   });
 
   syncApiOptionsButton();
@@ -714,7 +769,7 @@ function parseCsv(text) {
     transformHeader: (h) => h.trim(),
   });
   if (result.errors.length) throw new Error(result.errors[0].message);
-  if (!result.meta.fields.includes("date")) throw new Error("CSV에 date 컬럼이 필요합니다.");
+  if (!result.meta.fields.includes("date")) throw new Error("CSV??date ???棺堉???????????諛몃�????꿔꺂??????");
   return result.data.map((row) => {
     const out = { date: String(row.date).slice(0, 10) };
     Object.entries(row).forEach(([k, v]) => {
@@ -748,16 +803,26 @@ function getSeriesColumns(rows) {
   return [...cols];
 }
 
+function getSeriesPriorityOrder() {
+  const customOrder = customStocks.map((item) => item.ticker);
+  return [
+    ...CORE_SERIES,
+    ...customOrder,
+    ...ADR_SERIES,
+  ];
+}
+
 function sortSeries(list) {
-  const pri = new Map(SERIES_PRIORITY.map((n, i) => [n, i]));
+  const priorityOrder = getSeriesPriorityOrder();
+  const pri = new Map(priorityOrder.map((name, idx) => [name, idx]));
   return [...list].sort((a, b) => {
-    const ar = pri.has(a) ? pri.get(a) : SERIES_PRIORITY.length + 1;
-    const br = pri.has(b) ? pri.get(b) : SERIES_PRIORITY.length + 1;
+    const ar = pri.has(a) ? pri.get(a) : priorityOrder.length + 1;
+    const br = pri.has(b) ? pri.get(b) : priorityOrder.length + 1;
     return ar !== br ? ar - br : labelName(a).localeCompare(labelName(b), "ko");
   });
 }
 
-/* ── Dense macro interpolation (for daily data) ── */
+/* ???? Dense macro interpolation (for daily data) ???? */
 
 function syncSeriesToggleBoard(allSeries) {
   const available = new Set(allSeries || []);
@@ -788,6 +853,423 @@ function bindSeriesToggleBoard() {
   });
 }
 
+function renderCustomStockButtons() {
+  const container = document.getElementById("customStockButtons");
+  if (!container) return;
+  container.innerHTML = customStocks.map((item) => {
+    const ticker = item.ticker;
+    const name = item.name;
+    const color = seriesColor(ticker);
+    return `
+      <div class="custom-stock-chip" data-custom-series="${escapeHtml(ticker)}">
+        <button class="series-toggle-btn" data-series="${escapeHtml(ticker)}" style="--series-color:${escapeHtml(color)}">${escapeHtml(name)}</button>
+        <button class="stock-remove-btn" type="button" data-remove-series="${escapeHtml(ticker)}" aria-label="${escapeHtml(name)} remove">-</button>
+      </div>
+    `;
+  }).join("");
+  bindSeriesToggleBoard();
+  bindCustomStockRemoveButtons();
+}
+
+function bindCustomStockRemoveButtons() {
+  document.querySelectorAll(".stock-remove-btn").forEach((btn) => {
+    if (btn.dataset.bound === "1") return;
+    btn.dataset.bound = "1";
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const ticker = btn.dataset.removeSeries;
+      if (!ticker) return;
+      removeCustomStock(ticker);
+    });
+  });
+}
+
+function removeCustomStock(ticker) {
+  const before = customStocks.length;
+  customStocks = customStocks.filter((item) => item.ticker !== ticker);
+  if (customStocks.length === before) return;
+  hiddenSeries.delete(ticker);
+  delete seriesOffsets[ticker];
+  delete seriesScales[ticker];
+  delete DISPLAY_NAMES[ticker];
+  loadingCustomStocks.delete(ticker);
+  renderCustomStockButtons();
+  saveState();
+  renderChart(false);
+}
+
+function toYyyymmdd(dateObj) {
+  const y = dateObj.getUTCFullYear();
+  const m = `${dateObj.getUTCMonth() + 1}`.padStart(2, "0");
+  const d = `${dateObj.getUTCDate()}`.padStart(2, "0");
+  return `${y}${m}${d}`;
+}
+
+function getRecentKrxBaseDates(daysBack = KRX_LOOKBACK_DAYS) {
+  const out = [];
+  for (let i = 0; i <= daysBack; i += 1) {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() - i);
+    out.push(toYyyymmdd(d));
+  }
+  return out;
+}
+
+function normalizeKrxUniverseRows(rows, fallbackMarket) {
+  const normalized = [];
+  const seen = new Set();
+  rows.forEach((row) => {
+    const codeRaw = String(row?.ISU_SRT_CD || "").replace(/\D/g, "");
+    if (!codeRaw) return;
+    const code = codeRaw.padStart(6, "0").slice(-6);
+    const marketRaw = String(row?.MKT_TP_NM || fallbackMarket || "").toUpperCase();
+    const isKosdaq = marketRaw.includes("KOSDAQ");
+    const isKospi = marketRaw.includes("KOSPI") || (!isKosdaq && String(fallbackMarket || "").toUpperCase() === "KOSPI");
+    if (!isKospi && !isKosdaq) return;
+    const market = isKosdaq ? "KOSDAQ" : "KOSPI";
+    const suffix = isKosdaq ? "KQ" : "KS";
+    const ticker = `${code}.${suffix}`;
+    if (seen.has(ticker)) return;
+    seen.add(ticker);
+    const name = String(row?.ISU_ABBRV || row?.ISU_NM || "").trim();
+    if (!name) return;
+    normalized.push({
+      ticker,
+      code,
+      name,
+      market,
+    });
+  });
+  return normalized;
+}
+
+async function fetchKrxUniverseRows(apiKey, baseDate, market) {
+  const endpoint = KRX_BASE_INFO_ENDPOINTS[market];
+  if (!endpoint) return [];
+  const key = String(apiKey || "").trim();
+  if (!key) return [];
+  const roots = [
+    `https://data-dbg.krx.co.kr/svc/apis/sto/${endpoint}`,
+    `https://data-dbg.krx.co.kr/svc/sample/apis/sto/${endpoint}`,
+  ];
+  for (const root of roots) {
+    const url = `${root}?basDd=${encodeURIComponent(baseDate)}&AUTH_KEY=${encodeURIComponent(key)}`;
+    try {
+      const payload = await fetchJsonWithProxyFallback(url);
+      const rows = Array.isArray(payload?.OutBlock_1) ? payload.OutBlock_1 : [];
+      if (rows.length) return rows;
+    } catch (_) {
+      // try next endpoint
+    }
+  }
+  return [];
+}
+
+let krxUniversePromise = null;
+
+function resetKrxUniverseCache() {
+  krxUniverse = [];
+  krxUniverseLoaded = false;
+  krxUniverseLoading = false;
+  krxUniversePromise = null;
+}
+
+async function ensureKrxUniverseLoaded() {
+  if (krxUniverseLoaded && krxUniverse.length) return;
+  if (krxUniversePromise) {
+    await krxUniversePromise;
+    return;
+  }
+
+  const key = String(apiSettings?.krxApiKey || "").trim();
+  if (!key) throw new Error("KRX AUTH_KEY??????붺몭??�쨨?? ???????�굣�???꿔꺂??節?�젂???");
+
+  krxUniverseLoading = true;
+  krxUniversePromise = (async () => {
+    let universe = [];
+    const dates = getRecentKrxBaseDates();
+    for (const baseDate of dates) {
+      const [kospiRows, kosdaqRows] = await Promise.all([
+        fetchKrxUniverseRows(key, baseDate, "KOSPI"),
+        fetchKrxUniverseRows(key, baseDate, "KOSDAQ"),
+      ]);
+      const merged = [
+        ...normalizeKrxUniverseRows(kospiRows, "KOSPI"),
+        ...normalizeKrxUniverseRows(kosdaqRows, "KOSDAQ"),
+      ];
+      if (merged.length) {
+        universe = merged;
+        break;
+      }
+    }
+
+    if (!universe.length) {
+      throw new Error("KRX ???????�틢???饔낅?????????�뇡?꾩땡沃섏�?????????�늉????轅붽?????筌뤾?�裕?棺堉??????源녾?? ?饔낅????�????�????????");
+    }
+
+    krxUniverse = universe.sort((a, b) => a.name.localeCompare(b.name, "ko"));
+    krxUniverseLoaded = true;
+  })().finally(() => {
+    krxUniverseLoading = false;
+    krxUniversePromise = null;
+  });
+
+  await krxUniversePromise;
+}
+
+function filterKrxUniverse(keyword) {
+  const q = String(keyword || "").trim().toLowerCase().replace(/\s+/g, "");
+  if (!q) return [];
+
+  const scored = [];
+  krxUniverse.forEach((item) => {
+    const name = item.name.toLowerCase().replace(/\s+/g, "");
+    const code = item.code.toLowerCase();
+    const ticker = item.ticker.toLowerCase();
+
+    let score = -1;
+    if (name.startsWith(q)) score = 0;
+    else if (name.includes(q)) score = 1;
+    else if (code.startsWith(q)) score = 2;
+    else if (code.includes(q) || ticker.includes(q)) score = 3;
+    if (score < 0) return;
+
+    scored.push({ item, score });
+  });
+
+  scored.sort((a, b) => {
+    if (a.score !== b.score) return a.score - b.score;
+    return a.item.name.localeCompare(b.item.name, "ko");
+  });
+
+  return scored.slice(0, 12).map((entry) => entry.item);
+}
+
+function hideStockSuggestList() {
+  const listEl = document.getElementById("stockSuggestList");
+  if (!listEl) return;
+  listEl.hidden = true;
+  listEl.innerHTML = "";
+  stockSuggestItems = [];
+}
+
+function renderStockSuggestList(items) {
+  const listEl = document.getElementById("stockSuggestList");
+  if (!listEl) return;
+  stockSuggestItems = Array.isArray(items) ? items : [];
+  if (!stockSuggestItems.length) {
+    listEl.hidden = true;
+    listEl.innerHTML = "";
+    return;
+  }
+
+  listEl.innerHTML = stockSuggestItems.map((item, idx) => `
+    <button type="button" class="stock-suggest-item" data-suggest-idx="${idx}">
+      <span class="stock-suggest-name">${escapeHtml(item.name)}</span>
+      <span class="stock-suggest-meta">${escapeHtml(item.code)} ??${escapeHtml(item.market)}</span>
+    </button>
+  `).join("");
+  listEl.hidden = false;
+}
+
+async function fetchYahooHistorySeries(ticker) {
+  const url = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=30y`;
+  const payload = await fetchJsonWithProxyFallback(url);
+  const result = payload?.chart?.result?.[0];
+  if (!result) throw new Error(`${ticker} ?????�늉?????????????? ?饔낅??????? ?饔낅????�????�????????`);
+
+  const timestamps = Array.isArray(result.timestamp) ? result.timestamp : [];
+  const quote = result?.indicators?.quote?.[0] || {};
+  const closes = Array.isArray(quote.close) ? quote.close : [];
+  const offsetSec = Number(result?.meta?.gmtoffset || 0);
+  const byDate = new Map();
+
+  for (let i = 0; i < timestamps.length; i += 1) {
+    const ts = Number(timestamps[i]);
+    const close = toNum(closes[i]);
+    if (!Number.isFinite(ts) || close === null) continue;
+    const date = new Date((ts + offsetSec) * 1000).toISOString().slice(0, 10);
+    byDate.set(date, close);
+  }
+
+  return [...byDate.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([date, close]) => ({ date, close }));
+}
+
+function mergeTickerSeriesIntoPricePayload(ticker, points) {
+  const byDate = new Map();
+  (pricePayload?.records || []).forEach((row) => {
+    const date = String(row?.date || "").slice(0, 10);
+    if (!date) return;
+    byDate.set(date, { ...row });
+  });
+
+  points.forEach(({ date, close }) => {
+    if (!date || !Number.isFinite(close)) return;
+    const prev = byDate.get(date) || { date };
+    prev[ticker] = close;
+    byDate.set(date, prev);
+  });
+
+  const merged = [...byDate.values()].sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  if (!pricePayload) pricePayload = {};
+  pricePayload.records = merged;
+
+  if (!Array.isArray(pricePayload.series)) pricePayload.series = [];
+  if (!pricePayload.series.includes(ticker)) pricePayload.series.push(ticker);
+
+  if (!pricePayload.display_names || typeof pricePayload.display_names !== "object") {
+    pricePayload.display_names = {};
+  }
+  if (DISPLAY_NAMES[ticker]) pricePayload.display_names[ticker] = DISPLAY_NAMES[ticker];
+}
+
+async function ensureCustomTickerSeriesLoaded(ticker) {
+  const hasExisting = (pricePayload?.records || []).some((row) => toNum(row?.[ticker]) !== null);
+  if (hasExisting) return;
+
+  const points = await fetchYahooHistorySeries(ticker);
+  if (!points.length) throw new Error(`${ticker} ?????�늉????????????????????????????????�졄.`);
+  mergeTickerSeriesIntoPricePayload(ticker, points);
+}
+
+async function addCustomStock(candidate, msgEl) {
+  if (!candidate?.ticker || !candidate?.name) return;
+
+  if (customStocks.some((item) => item.ticker === candidate.ticker)) {
+    setMessage(msgEl, ["???? ??????�뱼???????????�틢???????�?Ĳ??"], true);
+    return;
+  }
+  if (customStocks.length >= MAX_CUSTOM_STOCKS) {
+    setMessage(msgEl, [`???????�틢??? ?饔낅??????�? ${MAX_CUSTOM_STOCKS}?????�늉??????? ??????�뱼???????????????????�졄.`], true);
+    return;
+  }
+  if (loadingCustomStocks.has(candidate.ticker)) return;
+
+  loadingCustomStocks.add(candidate.ticker);
+  try {
+    DISPLAY_NAMES[candidate.ticker] = candidate.name;
+    await ensureCustomTickerSeriesLoaded(candidate.ticker);
+
+    customStocks.push({
+      ticker: candidate.ticker,
+      name: candidate.name,
+      code: candidate.code,
+      market: candidate.market,
+    });
+
+    hiddenSeries.delete(candidate.ticker);
+    renderCustomStockButtons();
+    saveState();
+    renderChart(false);
+    setMessage(msgEl, [`${candidate.name} ???????�틢?????????�뱼???????????????�졄.`]);
+  } catch (err) {
+    delete DISPLAY_NAMES[candidate.ticker];
+    setMessage(msgEl, `???????�틢????????�뱼?? ???????�슣?? ${err.message}`, true);
+  } finally {
+    loadingCustomStocks.delete(candidate.ticker);
+  }
+}
+
+function setupStockAddPanel(msgEl) {
+  const inputEl = document.getElementById("stockSearchInput");
+  const listEl = document.getElementById("stockSuggestList");
+  if (!inputEl || !listEl) return;
+  if (inputEl.dataset.bound === "1") return;
+  inputEl.dataset.bound = "1";
+
+  let searchSeq = 0;
+
+  const refreshSuggest = async () => {
+    const keyword = inputEl.value.trim();
+    if (!keyword) {
+      hideStockSuggestList();
+      return;
+    }
+
+    if (!String(apiSettings?.krxApiKey || "").trim()) {
+      hideStockSuggestList();
+      setMessage(msgEl, ["API ????�싲�?��???????KRX AUTH_KEY??????붺몭??�쨨?? ???????�굣�???꿔꺂??節?�젂???"], true);
+      return;
+    }
+
+    const seq = ++searchSeq;
+    try {
+      await ensureKrxUniverseLoaded();
+      if (seq !== searchSeq) return;
+      const items = filterKrxUniverse(keyword);
+      renderStockSuggestList(items);
+    } catch (err) {
+      if (seq !== searchSeq) return;
+      hideStockSuggestList();
+      setMessage(msgEl, `???????�틢???饔낅?????????�뇡?꾩땡沃섏�???????�???�뺛??????????�슣?? ${err.message}`, true);
+    }
+  };
+
+  inputEl.addEventListener("input", () => {
+    refreshSuggest();
+  });
+
+  inputEl.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    const first = stockSuggestItems[0];
+    if (!first) return;
+    addCustomStock(first, msgEl).finally(() => {
+      inputEl.value = "";
+      hideStockSuggestList();
+    });
+  });
+
+  listEl.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-suggest-idx]");
+    if (!btn) return;
+    const idx = Number(btn.dataset.suggestIdx);
+    const item = stockSuggestItems[idx];
+    if (!item) return;
+    addCustomStock(item, msgEl).finally(() => {
+      inputEl.value = "";
+      hideStockSuggestList();
+    });
+  });
+
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (target === inputEl || listEl.contains(target)) return;
+    hideStockSuggestList();
+  });
+}
+
+async function preloadCustomStocks() {
+  if (!customStocks.length) return { failedNames: [] };
+
+  const failed = [];
+  const failedNames = [];
+  for (const item of customStocks) {
+    try {
+      await ensureCustomTickerSeriesLoaded(item.ticker);
+      DISPLAY_NAMES[item.ticker] = item.name;
+    } catch (_) {
+      failed.push(item.ticker);
+      failedNames.push(item.name || item.ticker);
+    }
+  }
+
+  if (!failed.length) return { failedNames: [] };
+
+  customStocks = customStocks.filter((item) => !failed.includes(item.ticker));
+  failed.forEach((ticker) => {
+    hiddenSeries.delete(ticker);
+    delete seriesOffsets[ticker];
+    delete seriesScales[ticker];
+    delete DISPLAY_NAMES[ticker];
+  });
+  renderCustomStockButtons();
+  saveState();
+  return { failedNames };
+}
 function buildDenseMacroRows(sourceRows, targetDates) {
   const sorted = [...sourceRows].sort((a, b) => a.date.localeCompare(b.date));
   const cols = getSeriesColumns(sorted);
@@ -812,15 +1294,15 @@ function buildDenseMacroRows(sourceRows, targetDates) {
   return dense.filter((r) => cols.some((c) => toNum(r[c]) !== null));
 }
 
-let CREDIT_OFFSET_DAYS = 2;  // 신용잔고 발표 시차 (양수 = 앞당겨 표시). UI 입력값의 절댓값.
+let CREDIT_OFFSET_DAYS = 2;  // ???????�????????????�땟戮녹???�딆맚嶺??��???롳펲???????(??????= ?????????????. UI ???????�굣�?????�늉???????????�슦???
 const CREDIT_COLS = ["kospi_credit", "kosdaq_credit"];
 
 /**
- * creditRowsSrc 를 정렬된 배열로 인덱싱하고,
- * 주어진 price 날짜에 대해 (date + CREDIT_OFFSET_DAYS) 에서
- * ±4 캘린더일 범위 안의 가장 가까운 실제 거래일 레코드를 반환한다.
+ * creditRowsSrc ????轅붽????壤굿?????????�땟戮녹??�?��????�?�??�ル???????轅붽??????????�첎?�????�렧???
+ * ??????�름???????�슖?꿸강????price ???????�???????(date + CREDIT_OFFSET_DAYS) ?????
+ * ?? ????????�??????????????�싲�?��????????�늉?????????�늉??????�?��?�???????�싲�?��?源???饔낅챷維??????????????? ?????�땟戮녹??????꿔꺂?????
  *
- * 캘린더 오프셋으로 주말·공휴일에 걸릴 때 데이터가 누락되던 문제를 해결.
+ * ?????????????????꿔꺂??琉뷩�????????�름??�ル??��?�땟?룹춹?????????�룸?????μ?�媛?�??곸삃???饔낅챷維?????????????????? ?????諛몃�??ｌ꽔????汝뷴????�뙼�??????�?????????嶺뚮??�볠�????????�?�럺.
  */
 function buildCreditFinder(creditRowsSrc) {
   if (!creditRowsSrc.length) return () => null;
@@ -828,10 +1310,10 @@ function buildCreditFinder(creditRowsSrc) {
   const byDate = new Map(sorted.map((r) => [r.date, r]));
 
   return function findNearest(priceDate) {
-    // priceDate 기준으로 CREDIT_OFFSET_DAYS 앞의 날짜를 중심으로 탐색
+    // priceDate ???????????????CREDIT_OFFSET_DAYS ?????????????�????????꾨き???�곥�???????????????
     const base = new Date(`${priceDate}T00:00:00Z`);
     base.setUTCDate(base.getUTCDate() + CREDIT_OFFSET_DAYS);
-    // 중심에서 바깥으로 ±4일 탐색
+    // ?????꾨き???�곥�????????????�땟戮녹??????�베??????????????????
     for (let delta = 0; delta <= 4; delta++) {
       for (const sign of (delta === 0 ? [0] : [1, -1])) {
         const d = new Date(base);
@@ -1024,7 +1506,7 @@ function autoFitScales(rows, selected, normBases) {
   return Object.fromEntries(info.map(([s, r]) => [s, Math.max(5, Math.min(5000, Math.round((target / r) * 100)))]));
 }
 
-/* ── Drag handles ── */
+/* ???? Drag handles ???? */
 
 function updateHandles() {
   const el = document.getElementById("chart");
@@ -1069,7 +1551,7 @@ function updateHandles() {
     leftHandle.className = "y-handle y-handle-left";
     leftHandle.style.top = leftPixelY - 7 + "px";
     leftHandle.style.backgroundColor = color;
-    leftHandle.title = labelName(key) + " (위치)";
+    leftHandle.title = labelName(key) + " (?????諛몃�??";
     setupOffsetDrag(leftHandle, i, key, leftPixelY, ya);
     container.appendChild(leftHandle);
 
@@ -1078,7 +1560,7 @@ function updateHandles() {
     rightHandle.style.top = rightPixelY - 7 + "px";
     rightHandle.style.left = rightX + "px";
     rightHandle.style.backgroundColor = color;
-    rightHandle.title = labelName(key) + " (스케일)";
+    rightHandle.title = labelName(key) + " (?????";
     setupScaleDrag(rightHandle, i, key, rightPixelY, ya);
     container.appendChild(rightHandle);
   });
@@ -1220,7 +1702,7 @@ function resetHandles() {
   renderChart(false);
 }
 
-/* ── Chart ── */
+/* ???? Chart ???? */
 
 function renderChart(preserveZoom = true) {
   const el = document.getElementById("chart");
@@ -1241,13 +1723,16 @@ function renderChart(preserveZoom = true) {
     [...new Set([...liveCols, ...macroCols])].filter((s) => rows.some((r) => toNum(r[s]) !== null))
   );
   syncSeriesToggleBoard(allSeries);
-  // ADR 시리즈는 메인 차트에서 제외 — 별도 미니차트에 표시
-  const selected = DEFAULT_SELECTED.filter((s) => allSeries.includes(s) && !ADR_SERIES.includes(s));
-  if (!selected.length) selected.push(...allSeries.slice(0, 2));
+  // ADR ???꿔꺂???????믊삳�???????饔낅????????饔낅????�귥????ｋ궙??????????꿔꺂????????????�뮛?????????븍툖???�껊�?????????????????
+  const selected = sortSeries(allSeries.filter((s) => !ADR_SERIES.includes(s)));
+  if (!selected.length) {
+    const fallback = sortSeries(allSeries);
+    selected.push(...fallback.slice(0, 2));
+  }
   currentSelected = [...selected];
 
   if (!rows.length || !selected.length) {
-    msgEl.innerHTML = '<div class="message error">표시할 데이터가 없습니다.</div>';
+    msgEl.innerHTML = '<div class="message error">????????????????? ??????깅즽?????????�졄.</div>';
     return;
   }
   msgEl.innerHTML = "";
@@ -1313,7 +1798,7 @@ function renderChart(preserveZoom = true) {
     };
   });
 
-  // 핸들 드래그 후에만 줌 보존 — 범위 버튼 전환 시엔 초기화
+  // ??轅붽?????곌램伊볟?????꿔꺂???????????????諛몃�??????��?????????�뮛?????????????????????????�곻?�夷???????�??? ??????멸괜???
 
   if (!preserveZoom) pinnedXRange = null;
   const savedXRange = preserveZoom
@@ -1363,7 +1848,7 @@ function renderChart(preserveZoom = true) {
       if (chartSyncing || isHandleDragging) return;
       if (cursorSyncing && !hasRange && !hasAuto) return;
       setTimeout(updateHandles, 50);
-      // 메인 차트 pan/zoom → ADR 차트 x축 동기화
+      // ?饔낅????????饔낅????�귥????ｋ궙???pan/zoom ??ADR ?饔낅????�귥????ｋ궙???x????????????
       const adrEl = document.getElementById("chart-adr");
       if (adrEl && adrEl.data) {
         const r0 = eventData["xaxis.range[0]"] ?? (Array.isArray(rangePair) ? rangePair[0] : null);
@@ -1411,30 +1896,30 @@ function renderChart(preserveZoom = true) {
   bindCursorMoveSync();
 }
 
-/* ── ADR 미니 차트 (adrinfo.kr 스타일) ── */
+/* ???? ADR ????븍툖???�껊�????饔낅????�귥????ｋ궙???(adrinfo.kr ????? ???? */
 
-// adrinfo.kr 와 동일한 색상 상수
-const ADR_ZONE_LOW_COLOR   = "#b0c6ed";   // < 80  (과매도 구간 — 파란색)
-const ADR_ZONE_HIGH_COLOR  = "#e6adad";   // > 120 (과매수 구간 — 붉은색)
+// adrinfo.kr ?? ???????�쿋??????μ?�媛????�귥?�留????????�쑄??
+const ADR_ZONE_LOW_COLOR   = "#b0c6ed";   // < 80  (?????????????????????
+const ADR_ZONE_HIGH_COLOR  = "#e6adad";   // > 120 (?????????????????????�?�럯????
 const ADR_BAND_COLOR       = "rgba(100,100,100,0.06)";
 const ADR_LOW_THRESH  = 80;
 const ADR_HIGH_THRESH = 120;
 
 /**
- * 하나의 ADR 시리즈를 Plotly 트레이스 배열로 변환한다.
- *   - below 80  → 파란색 선 + 80 기준선 사이만 채우기
- *   - 80 ~ 120  → 기본 컬러 선
- *   - above 120 → 붉은색 선 + 120 기준선 사이만 채우기
+ * ???汝뷴??琉껆????ADR ???꿔꺂???????믊삳�????? Plotly ??轅붽???????????깅즽???????�땟戮녹??�?��????�?�??�ル??????????�뮛??????????
+ *   - below 80  ?????????+ 80 ??????????????????????????
+ *   - 80 ~ 120  ?????????????棺堉???????
+ *   - above 120 ???????�?�럯??????+ 120 ??????????????????????????
  *
- * fill:"tonexty" 를 사용해 threshold ↔ 실제값 사이만 칠한다 (tozeroy 하면 y=0 까지 채워져 여백 과잉).
+ * fill:"tonexty" ???????threshold ??????�싲�?��?源??????????????????�듋??�???��?�걡????(tozeroy ??????y=0 ????�?��?�?? ????????????????.
  */
 function buildAdrZoneTraces(dates, values, mainColor, legendName) {
   const base = { x: dates, type: "scatter", mode: "lines", connectgaps: false };
   const noHover = { hoverinfo: "skip", hovertemplate: undefined };
 
-  // ── 3구간 분리 ──────────────────────────────────────────────
+  // ???? 3????????????�?�츧???????????????????????????????????????????????????????????????????????????????????????????????
   const yLow = [], yMid = [], yHigh = [];
-  const yBaseLow = [], yBaseHigh = [];   // threshold 기준선 (채우기 하한/상한)
+  const yBaseLow = [], yBaseHigh = [];   // threshold ?????????(????????????????????�슣�??
 
   values.forEach((v) => {
     const isLow  = v !== null && v < ADR_LOW_THRESH;
@@ -1447,30 +1932,30 @@ function buildAdrZoneTraces(dates, values, mainColor, legendName) {
     yBaseHigh.push(isHigh ? ADR_HIGH_THRESH : null);
   });
 
-  // ── 구간 전환 시 브릿지 포인트 공유 ────────────────────────
-  // 전환에는 4가지 방향이 있다:
-  //   (A) mid → low 진입: 첫 low 값을 mid 에도 추가
-  //   (B) low → mid 이탈: 첫 mid 값을 low 에도 추가
-  //   (C) mid → high 진입: 첫 high 값을 mid 에도 추가
-  //   (D) high → mid 이탈: 첫 mid 값을 high 에도 추가
-  // 방향이 빠지면 트레이스 사이 틈이 생겨 선이 끊겨 보인다.
+  // ???? ????????????�곻?�夷????????????????꿔꺂????? ???????????�룹??? ????????????????????????????????????????????????
+  // ?????�곻?�夷??????4?????�늉???饔낅????? ?????�땟??貫沅?????????????�졄:
+  //   (A) mid ??low ?饔낅??????? ??low ?????�늉????mid ???????????�뱼??
+  //   (B) low ??mid ?????袁ㅻ?�?? ??mid ?????�늉????low ???????????�뱼??
+  //   (C) mid ??high ?饔낅??????? ??high ?????�늉????mid ???????????�뱼??
+  //   (D) high ??mid ?????袁ㅻ?�?? ??mid ?????�늉????high ???????????�뱼??
+  // ?????�땟??貫沅???????�?????轅붽???????????깅즽??????????�싲�?��??�옃�??????�고???????????�????�??????袁ㅻ?�???????�뮛?????
   for (let i = 0; i < values.length; i++) {
     const v    = values[i];
     if (v === null) continue;
     const prev = i > 0 ? values[i - 1] : null;
     if (prev === null) continue;
-    // (A) mid → low
+    // (A) mid ??low
     if (v < ADR_LOW_THRESH  && prev >= ADR_LOW_THRESH)  { yMid[i]  = v; yBaseLow[i]  = ADR_LOW_THRESH; }
-    // (B) low → mid
+    // (B) low ??mid
     if (v >= ADR_LOW_THRESH && prev <  ADR_LOW_THRESH)  { yLow[i]  = v; yBaseLow[i]  = ADR_LOW_THRESH; }
-    // (C) mid → high
+    // (C) mid ??high
     if (v > ADR_HIGH_THRESH && prev <= ADR_HIGH_THRESH) { yMid[i]  = v; yBaseHigh[i] = ADR_HIGH_THRESH; }
-    // (D) high → mid
+    // (D) high ??mid
     if (v <= ADR_HIGH_THRESH && prev > ADR_HIGH_THRESH) { yHigh[i] = v; yBaseHigh[i] = ADR_HIGH_THRESH; }
   }
 
   return [
-    // ── 과매도 (< 80): 기준선(80) 먼저, 실제값을 tonexty 로 채우기 ──
+    // ???? ???????(< 80): ?????????80) ????붺몭??�쨨??, ????�싲�?��?源??????�늉????tonexty ?????????????
     { ...base, y: yBaseLow,  showlegend: false, legendgroup: legendName,
       line: { color: "transparent", width: 0 }, ...noHover },
     { ...base, mode: "lines+markers", y: yLow, name: legendName, showlegend: true, legendgroup: legendName,
@@ -1478,11 +1963,11 @@ function buildAdrZoneTraces(dates, values, mainColor, legendName) {
       marker: { symbol: "circle", size: 7, color: mainColor },
       fill: "tonexty", fillcolor: "rgba(176,198,237,0.15)", ...noHover },
 
-    // ── 정상 구간 (80~120) ──────────────────────────────────────
+    // ???? ??轅붽????????곷뼱????????(80~120) ????????????????????????????????????????????????????????????????????????????
     { ...base, y: yMid, name: legendName, showlegend: false, legendgroup: legendName,
       line: { color: mainColor, width: 2 }, ...noHover },
 
-    // ── 과매수 (> 120): 기준선(120) 먼저, 실제값을 tonexty 로 채우기 ──
+    // ???? ???????(> 120): ?????????120) ????붺몭??�쨨??, ????�싲�?��?源??????�늉????tonexty ?????????????
     { ...base, y: yBaseHigh, showlegend: false, legendgroup: legendName,
       line: { color: "transparent", width: 0 }, ...noHover },
     { ...base, y: yHigh, name: legendName, showlegend: false, legendgroup: legendName,
@@ -1491,7 +1976,7 @@ function buildAdrZoneTraces(dates, values, mainColor, legendName) {
   ];
 }
 
-let adrRows = [];   // ADR 전용 데이터 (adr_data.json 에서 로드 + 웹 갱신으로 확장)
+let adrRows = [];   // ADR ?????諛몃�???????????(adr_data.json ?????????�????�맪??+ ???????�늉?????????????轅붽???????
 
 const ADR_SOURCE_URL = "http://www.adrinfo.kr/chart";
 const CORS_PROXY     = "https://corsproxy.io/?url=";
@@ -1500,7 +1985,7 @@ function renderAdrChart(xRange) {
   const el = document.getElementById("chart-adr");
   if (!el || !adrRows.length) return;
 
-  // 현재 activeMonths 에 맞춰 날짜 범위 필터
+  // ?????諛몃�??activeMonths ???饔낅??????????????�? ????????????�곻?�夷??
   const allDates = adrRows.map((r) => r.date);
   const maxDate = allDates[allDates.length - 1];
   const startDate = shiftMonths(maxDate, activeMonths);
@@ -1563,25 +2048,25 @@ function renderAdrChart(xRange) {
       font: { color: "rgba(255,255,255,0.7)", size: 10 },
     },
     shapes: [
-      // 80~120 배경 밴드
+      // 80~120 ?????�땟戮녹?????�귥빓愿??????�땟戮녹????
       {
         type: "rect", xref: "paper", yref: "y",
         x0: 0, x1: 1, y0: ADR_LOW_THRESH, y1: ADR_HIGH_THRESH,
         fillcolor: ADR_BAND_COLOR, line: { width: 0 }, layer: "below",
       },
-      // 80% 선
+      // 80% ??
       {
         type: "line", xref: "paper", yref: "y",
         x0: 0, x1: 1, y0: ADR_LOW_THRESH, y1: ADR_LOW_THRESH,
         line: { color: ADR_ZONE_LOW_COLOR, width: 0.9, dash: "dash" },
       },
-      // 120% 선
+      // 120% ??
       {
         type: "line", xref: "paper", yref: "y",
         x0: 0, x1: 1, y0: ADR_HIGH_THRESH, y1: ADR_HIGH_THRESH,
         line: { color: ADR_ZONE_HIGH_COLOR, width: 0.9, dash: "dash" },
       },
-      // 100% 중심선
+      // 100% ?????꾨き???�곥�????
       {
         type: "line", xref: "paper", yref: "y",
         x0: 0, x1: 1, y0: 100, y1: 100,
@@ -1733,7 +2218,7 @@ function sameNullableNumber(a, b) {
 
 async function fetchJsonWithProxyFallback(url) {
   const candidates = [url, CORS_PROXY + encodeURIComponent(url)];
-  let lastError = "요청 실패";
+  let lastError = "Request failed";
   for (const target of candidates) {
     try {
       const res = await fetch(target, { cache: "no-store" });
@@ -1743,7 +2228,7 @@ async function fetchJsonWithProxyFallback(url) {
       }
       const text = await res.text();
       if (!text) {
-        lastError = "빈 응답";
+        lastError = "Empty response";
         continue;
       }
       return JSON.parse(text);
@@ -1829,7 +2314,7 @@ async function fetchKofiaCreditLive(apiKey) {
 
         const header = payload?.response?.header || {};
         if (header.resultCode && header.resultCode !== "00") {
-          throw new Error(header.resultMsg || "KOFIA 인증 오류");
+          throw new Error(header.resultMsg || "KOFIA API error");
         }
 
         const body = payload?.response?.body || {};
@@ -1941,7 +2426,7 @@ async function refreshLiveApiData() {
     try {
       ecosRows = await fetchEcosLeadingCycleLive(apiSettings.ecosApiKey);
     } catch (err) {
-      warnings.push(`ECOS 실패: ${err.message}`);
+      warnings.push(`ECOS ???????�슣?? ${err.message}`);
     }
   }
 
@@ -1949,14 +2434,14 @@ async function refreshLiveApiData() {
     try {
       kosisRows = await fetchKosisLeadingCycleLive(apiSettings.kosisApiKey);
     } catch (err) {
-      warnings.push(`KOSIS 실패: ${err.message}`);
+      warnings.push(`KOSIS ???????�슣?? ${err.message}`);
     }
   }
 
   const leadingRows = mergeLeadingSources(ecosRows, kosisRows);
   if (leadingRows.length) {
     const info = applyLeadingCycleLiveRows(leadingRows);
-    applied.push(`선행지수 갱신 (${info.updated}개 반영, 최신 ${info.latestDate})`);
+    applied.push(`????影??�筌�?�??�납???�????源녾?????????�늉????(${info.updated}???????�땟戮녹???? ?饔낅??????�??${info.latestDate})`);
   }
 
   if (apiSettings.kofiaApiKey) {
@@ -1964,12 +2449,12 @@ async function refreshLiveApiData() {
       const kofiaRows = await fetchKofiaCreditLive(apiSettings.kofiaApiKey);
       if (kofiaRows.length) {
         const info = applyCreditLiveRows(kofiaRows);
-        applied.push(`신용잔고 갱신 (${info.updated}개 반영, 최신 ${info.latestDate})`);
+        applied.push(`???????�????????????�늉????(${info.updated}???????�땟戮녹???? ?饔낅??????�??${info.latestDate})`);
       } else {
-        warnings.push("KOFIA 응답에 데이터가 없습니다.");
+        warnings.push("KOFIA ?????????????????? ??????깅즽?????????�졄.");
       }
     } catch (err) {
-      warnings.push(`KOFIA 실패: ${err.message}`);
+      warnings.push(`KOFIA ???????�슣?? ${err.message}`);
     }
   }
 
@@ -1977,13 +2462,13 @@ async function refreshLiveApiData() {
 }
 
 /**
- * adrinfo.kr/chart 를 CORS 프록시로 가져와 adrRows 에 없는 날짜만 추가한다.
- * 반환: { added: number, latestDate: string }
+ * adrinfo.kr/chart ??CORS ?????諛몃�??λ?????꿔꺂?????轅멸???????�늉????? adrRows ??????嶺뚮???????????�?????????�뱼?????꿔꺂?????
+ * ?????�땟戮녹???? { added: number, latestDate: string }
  */
 async function refreshAdrFromWeb() {
   const proxyUrl = CORS_PROXY + encodeURIComponent(ADR_SOURCE_URL);
   const res = await fetch(proxyUrl, { cache: "no-store" });
-  if (!res.ok) throw new Error(`adrinfo.kr 응답 오류: ${res.status}`);
+  if (!res.ok) throw new Error(`adrinfo.kr ??????????????�굣?? ${res.status}`);
   const html = await res.text();
 
   function extractJsArray(src, varName) {
@@ -1996,13 +2481,13 @@ async function refreshAdrFromWeb() {
 
   const kospiRaw  = extractJsArray(html, "kospi_adr");
   const kosdaqRaw = extractJsArray(html, "kosdaq_adr");
-  if (!kospiRaw.length && !kosdaqRaw.length) throw new Error("ADR 데이터 파싱 실패 — 사이트 구조 변경 가능성");
+  if (!kospiRaw.length && !kosdaqRaw.length) throw new Error("ADR data parse failed. Source format may have changed.");
 
   const tsToDate = (ms) => new Date(ms + 9 * 3600000).toISOString().slice(0, 10);
   const kospiMap  = new Map(kospiRaw.map(([ts, v])  => [tsToDate(ts), v]));
   const kosdaqMap = new Map(kosdaqRaw.map(([ts, v]) => [tsToDate(ts), v]));
 
-  // 현재 adrRows 의 마지막 날짜 이후만 추가
+  // ?????諛몃�??adrRows ???饔낅???????????????�? ??????밸븶???袁⑤�???????�뱼??
   const lastKnown = adrRows.length ? adrRows[adrRows.length - 1].date : "";
   const allDates  = [...new Set([...kospiMap.keys(), ...kosdaqMap.keys()])].sort();
   const newRows   = allDates
@@ -2060,15 +2545,21 @@ async function boot() {
   const msgEl = document.getElementById("messageArea");
   loadState();
   loadApiSettings();
+  renderCustomStockButtons();
   bindSeriesToggleBoard();
+  setupStockAddPanel(msgEl);
   syncButtons();
   setupApiSettingsPanel(msgEl);
   syncApiOptionsButton();
   try {
     await loadData(true);
+    const preloadResult = await preloadCustomStocks();
 
     const startupInfo = [];
     const startupWarn = [];
+    if (preloadResult.failedNames.length) {
+      startupWarn.push(`Some selected stocks were removed because price history could not be loaded: ${preloadResult.failedNames.join(", ")}`);
+    }
 
     try {
       const { added, latestDate } = await refreshAdrFromWeb();
@@ -2099,7 +2590,7 @@ async function boot() {
 
     document.getElementById("resetHandles").addEventListener("click", resetHandles);
 
-    // 지수팝업 토글 버튼
+    // ?饔낅???????????????? ???????
     const hoverToggleBtn = document.getElementById("hoverToggle");
     const applyHoverState = () => {
       document.getElementById("chart")?.classList.toggle("no-hover-popup", !hoverShowPopup);
@@ -2117,7 +2608,7 @@ async function boot() {
       });
     }
 
-    // 신용 오프셋 입력박스
+    // ???????�??????????????????�굣�?????�땟戮녹??諛명�??
     const creditOffsetEl = document.getElementById("creditOffset");
     if (creditOffsetEl) {
       creditOffsetEl.value = -CREDIT_OFFSET_DAYS;
@@ -2131,7 +2622,7 @@ async function boot() {
       });
     }
 
-    // 새로고침 버튼: 캐시 무시하고 최신 데이터 재요청
+    // ???????????????????? ????????嶺뚮Ĳ???????濡ろ?????饔낅??????�??????????????????�뺄?�?��???
     const refreshBtn = document.getElementById("refreshData");
     if (refreshBtn) {
       refreshBtn.addEventListener("click", async () => {
@@ -2143,17 +2634,21 @@ async function boot() {
             navigator.serviceWorker.controller.postMessage("REFRESH_DATA");
           }
           await loadData(true);
+          const preloadResult = await preloadCustomStocks();
 
           const infoLines = [];
           const warnLines = [];
+          if (preloadResult.failedNames.length) {
+            warnLines.push(`Some selected stocks were removed because price history could not be loaded: ${preloadResult.failedNames.join(", ")}`);
+          }
 
           try {
             const { added, latestDate } = await refreshAdrFromWeb();
             if (added > 0) {
-              infoLines.push(`ADR ${added}일치 추가됨 (~ ${latestDate})`);
+              infoLines.push(`ADR ${added}???μ?�媛?�???�펾�???????�뱼????(~ ${latestDate})`);
             }
           } catch (adrErr) {
-            warnLines.push(`ADR 갱신 실패: ${adrErr.message}`);
+            warnLines.push(`ADR ?????�늉???????????�슣?? ${adrErr.message}`);
           }
 
           const liveResult = await refreshLiveApiData();
@@ -2168,7 +2663,7 @@ async function boot() {
             setMessage(msgEl, []);
           }
         } catch (err) {
-          setMessage(msgEl, `새로고침 실패: ${err.message}`, true);
+          setMessage(msgEl, `????????????????????�슣?? ${err.message}`, true);
         } finally {
           refreshBtn.classList.remove("spinning");
         }
@@ -2177,7 +2672,7 @@ async function boot() {
 
     renderChart(false);
   } catch (err) {
-    setMessage(msgEl, err.message || "앱을 시작하지 못했습니다.", true);
+    setMessage(msgEl, err.message || "?????�첎?�?濚밸�??????꿔꺂???影??��??? ?饔낅????�????�????????", true);
   }
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(() => null));
@@ -2185,7 +2680,6 @@ async function boot() {
 }
 
 boot();
-
 
 
 
