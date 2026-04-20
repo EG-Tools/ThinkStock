@@ -52,6 +52,8 @@ function appendCacheBust(url) {
 }
 
 const toNum = (v) => (v != null && Number.isFinite(Number(v))) ? Number(v) : null;
+const POPUP_NUMBER_FORMAT = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 4 });
+const formatActualValue = (v) => (Number.isFinite(v) ? POPUP_NUMBER_FORMAT.format(v) : "N/A");
 const escapeHtml = (v) => String(v ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 const labelName = (key) => DISPLAY_NAMES[key] || key;
 function customColorForTicker(key) {
@@ -1950,7 +1952,10 @@ function renderChart(preserveZoom = true) {
   );
 
   const traces = selected.map((series, i) => {
-    let values = rows.map((r) => toNum(r[series]));
+    const rawValues = rows.map((r) => toNum(r[series]));
+    const rawTexts = rawValues.map((v) => formatActualValue(v));
+
+    let values = [...rawValues];
     const base = commonNormBases[series];
     values = (base && base !== 0)
       ? values.map((v) => (Number.isFinite(v) ? (v / base) * 100 : null))
@@ -1975,6 +1980,7 @@ function renderChart(preserveZoom = true) {
     return {
       x: xValues,
       y: values,
+      text: rawTexts,
       type: "scatter",
       mode: "lines",
       name: labelName(series),
@@ -1986,7 +1992,7 @@ function renderChart(preserveZoom = true) {
         shape: "linear",
       },
       marker: { symbol: "circle", size: 7, color: seriesColor(series) },
-      hovertemplate: "%{x}<br>%{y:,.2f}<extra>%{fullData.name}</extra>",
+      hovertemplate: "Value: %{text}<extra>%{fullData.name}</extra>",
     };
   });
 
