@@ -429,6 +429,10 @@ body {
   gap: 6px;
 }
 
+.startup-loader[hidden] {
+  display: none !important;
+}
+
 .startup-loader-track {
   width: 100%;
   height: 4px;
