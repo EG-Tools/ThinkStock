@@ -330,7 +330,7 @@ body {
 }
 
 .custom-stock-toggle-btn {
-  padding-right: 34px;
+  padding-right: 42px;
 }
 
 .series-toggle-btn {
@@ -387,7 +387,7 @@ body {
 
 .stock-remove-btn {
   position: absolute;
-  right: 6px;
+  right: 8px;
   top: 50%;
   transform: translateY(-50%);
   width: 16px;
