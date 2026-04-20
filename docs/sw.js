@@ -1,4 +1,4 @@
-const CACHE_NAME = "thinkstock-v14";
+const CACHE_NAME = "thinkstock-v15";
 const ASSETS = [
   "./",
   "./index.html",
@@ -34,13 +34,12 @@ self.addEventListener("fetch", (event) => {
 
   if (isData) {
     event.respondWith(
-      caches.match(event.request).then((cached) => {
-        if (cached) return cached;
-        return fetch(event.request).then((res) => {
+      fetch(event.request)
+        .then((res) => {
           caches.open(CACHE_NAME).then((c) => c.put(event.request, res.clone()));
           return res;
-        });
-      })
+        })
+        .catch(() => caches.match(event.request))
     );
   } else {
     event.respondWith(
@@ -57,6 +56,7 @@ self.addEventListener("fetch", (event) => {
 // 앱에서 REFRESH_DATA 메시지를 받으면 데이터 캐시만 삭제
 self.addEventListener("message", (event) => {
   if (event.data === "REFRESH_DATA") {
+    const replyPort = event.ports && event.ports[0];
     caches.open(CACHE_NAME).then(async (cache) => {
       const requests = await cache.keys();
       await Promise.all(
@@ -70,6 +70,9 @@ self.addEventListener("message", (event) => {
           })
           .map((req) => cache.delete(req))
       );
+      if (replyPort) replyPort.postMessage({ ok: true });
+    }).catch(() => {
+      if (replyPort) replyPort.postMessage({ ok: false });
     });
   }
 });

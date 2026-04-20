@@ -23,6 +23,7 @@ SAMPLE_MACRO = ROOT / "sample_macro_data.csv"
 OUTPUT_JSON = DATA_DIR / "prices.json"
 OUTPUT_MACRO_JSON = DATA_DIR / "macro_data.json"
 OUTPUT_MACRO_CSV = DATA_DIR / "sample_macro_data.csv"
+OUTPUT_CREDIT_JSON = DATA_DIR / "credit_data.json"
 LOOKBACK_YEARS = 30
 ECOS_STAT_CODE = "901Y067"  # Composite Leading Indicator
 ECOS_ITEM_CODE = "I16E"     # Leading index cyclical component
@@ -32,6 +33,10 @@ OECD_FRED_URL = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={OECD_FRED_
 LOCAL_ENV_FILE = ROOT / ".env.local"
 LOCAL_SCRIPT_ENV_FILE = ROOT / "scripts" / ".env.local"
 LOCAL_ECOS_KEY_FILE = ROOT / "scripts" / "ecos_key.txt"
+FREESIS_CREDIT_META_URL = "https://freesis.kofia.or.kr/meta/getMetaDataList.do"
+FREESIS_CREDIT_OBJ_NM = "STATSCU0100000070BO"
+FREESIS_CREDIT_UNIT_CODE = "06"
+FREESIS_CREDIT_START = "19980101"
 
 
 def extract_close_series(data: pd.DataFrame, ticker: str) -> pd.Series | None:
@@ -275,6 +280,139 @@ def apply_recent_oecd_tail(
     return merged, applied
 
 
+
+def parse_won_to_trillion(raw: object) -> float | None:
+    try:
+        n = float(str(raw).replace(",", ""))
+    except Exception:
+        return None
+    return round(n / 1e12, 4)
+
+
+def fetch_freesis_credit() -> pd.DataFrame:
+    today_ymd = pd.Timestamp.today().strftime("%Y%m%d")
+    payload = {
+        "dmSearch": {
+            "OBJ_NM": FREESIS_CREDIT_OBJ_NM,
+            "tmpV1": "D",
+            "tmpV40": FREESIS_CREDIT_UNIT_CODE,
+            "tmpV45": FREESIS_CREDIT_START,
+            "tmpV46": today_ymd,
+        }
+    }
+    headers = {"Content-Type": "application/json; charset=UTF-8"}
+
+    try:
+        response = requests.post(
+            FREESIS_CREDIT_META_URL,
+            json=payload,
+            headers=headers,
+            timeout=30,
+        )
+        response.raise_for_status()
+        body = response.json()
+    except Exception as exc:
+        print(f"Freesis credit fetch failed: {exc}")
+        return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
+
+    rows = body.get("ds1", [])
+    if not rows:
+        return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
+
+    records: list[dict] = []
+    for row in rows:
+        raw_date = str(row.get("TMPV1", ""))
+        if len(raw_date) != 8:
+            continue
+        dt = pd.to_datetime(f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}", errors="coerce")
+        if pd.isna(dt):
+            continue
+
+        kospi = parse_won_to_trillion(row.get("TMPV3"))
+        kosdaq = parse_won_to_trillion(row.get("TMPV4"))
+        if kospi is None and kosdaq is None:
+            continue
+
+        records.append(
+            {
+                "date": dt,
+                "kospi_credit": kospi,
+                "kosdaq_credit": kosdaq,
+            }
+        )
+
+    if not records:
+        return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
+
+    out = pd.DataFrame.from_records(records)
+    out = out.drop_duplicates(subset=["date"]).sort_values("date").set_index("date")
+    out.index.name = "date"
+    return out[["kospi_credit", "kosdaq_credit"]]
+
+
+def load_existing_credit_seed() -> pd.DataFrame:
+    if not OUTPUT_CREDIT_JSON.exists():
+        return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
+    try:
+        payload = json.loads(OUTPUT_CREDIT_JSON.read_text(encoding="utf-8"))
+    except Exception:
+        return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
+
+    rows = payload.get("records", []) if isinstance(payload, dict) else []
+    if not isinstance(rows, list) or not rows:
+        return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
+
+    frame = pd.DataFrame.from_records(rows)
+    if "date" not in frame.columns:
+        return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
+
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    frame["kospi_credit"] = pd.to_numeric(frame.get("kospi_credit"), errors="coerce")
+    frame["kosdaq_credit"] = pd.to_numeric(frame.get("kosdaq_credit"), errors="coerce")
+    frame = frame.dropna(subset=["date"]).drop_duplicates(subset=["date"]).sort_values("date")
+    if frame.empty:
+        return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
+
+    out = frame.set_index("date")[["kospi_credit", "kosdaq_credit"]]
+    out.index.name = "date"
+    return out
+
+
+def median_scale_factor(seed: pd.Series, live: pd.Series) -> float:
+    merged = pd.concat([seed, live], axis=1, keys=["seed", "live"]).dropna()
+    if merged.empty:
+        return 1.0
+    ratios = (merged["seed"] / merged["live"]).replace([pd.NA, float("inf"), float("-inf")], pd.NA).dropna()
+    ratios = ratios[(ratios > 0)]
+    if ratios.empty:
+        return 1.0
+    return float(ratios.median())
+
+
+def merge_credit_seed_with_freesis(seed: pd.DataFrame, live: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    if live.empty:
+        return seed, 0
+    if seed.empty:
+        return live, len(live)
+
+    scale_k = median_scale_factor(seed["kospi_credit"], live["kospi_credit"])
+    scale_q = median_scale_factor(seed["kosdaq_credit"], live["kosdaq_credit"])
+
+    scaled = live.copy()
+    scaled["kospi_credit"] = pd.to_numeric(scaled["kospi_credit"], errors="coerce") * scale_k
+    scaled["kosdaq_credit"] = pd.to_numeric(scaled["kosdaq_credit"], errors="coerce") * scale_q
+
+    latest_seed = seed.index.max()
+    new_tail = scaled[scaled.index > latest_seed]
+    if new_tail.empty:
+        return seed, 0
+
+    merged = pd.concat([seed, new_tail], axis=0)
+    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+    merged.index.name = "date"
+    return merged, len(new_tail)
+
+
 def densify_macro(macro: pd.DataFrame, price_index: pd.DatetimeIndex) -> pd.DataFrame:
     if macro.empty:
         return macro
@@ -338,9 +476,21 @@ def main() -> None:
 
     macro = densify_macro(macro_source, prices.index if not prices.empty else pd.DatetimeIndex([]))
 
+    credit_seed = load_existing_credit_seed()
+    credit_live = fetch_freesis_credit()
+    credit_merged, appended_credit = merge_credit_seed_with_freesis(credit_seed, credit_live)
+
+    if appended_credit > 0:
+        latest_credit = credit_merged.index.max().strftime("%Y-%m-%d")
+        print(f"Applied Freesis credit tail rows: {appended_credit} (latest={latest_credit})")
+
+    credit_payload = build_payload(
+        credit_merged,
+        DISPLAY_NAMES,
+        ["kospi_credit", "kosdaq_credit"],
+    )
     price_payload = build_payload(prices, DISPLAY_NAMES, DEFAULT_TICKERS)
     macro_payload = build_payload(macro, DISPLAY_NAMES, list(macro.columns))
-
     OUTPUT_JSON.write_text(
         json.dumps(price_payload, ensure_ascii=False, indent=2, allow_nan=False),
         encoding="utf-8",
@@ -350,6 +500,13 @@ def main() -> None:
         encoding="utf-8",
     )
 
+    if credit_merged.empty:
+        print("Freesis credit is empty — keeping existing credit_data.json")
+    else:
+        OUTPUT_CREDIT_JSON.write_text(
+            json.dumps(credit_payload, ensure_ascii=False, indent=2, allow_nan=False),
+            encoding="utf-8",
+        )
     if macro_source.empty:
         OUTPUT_MACRO_CSV.write_text("date\n", encoding="utf-8")
     else:
@@ -359,8 +516,9 @@ def main() -> None:
 
     print(f"Wrote {OUTPUT_JSON}")
     print(f"Wrote {OUTPUT_MACRO_JSON}")
+    if not credit_merged.empty:
+        print(f"Wrote {OUTPUT_CREDIT_JSON}")
     print(f"Wrote {OUTPUT_MACRO_CSV}")
-
 
 if __name__ == "__main__":
     main()

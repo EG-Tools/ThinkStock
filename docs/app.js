@@ -57,6 +57,30 @@ function appendCacheBust(url) {
   const stamp = `_=${Date.now()}`;
   return url.includes("?") ? `${url}&${stamp}` : `${url}?${stamp}`;
 }
+function requestServiceWorkerDataRefresh(timeoutMs = 1200) {
+  return new Promise((resolve) => {
+    try {
+      const controller = navigator?.serviceWorker?.controller;
+      if (!controller || typeof MessageChannel === "undefined") {
+        resolve(false);
+        return;
+      }
+      const channel = new MessageChannel();
+      let settled = false;
+      const done = (ok) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(ok);
+      };
+      channel.port1.onmessage = () => done(true);
+      const timer = setTimeout(() => done(false), timeoutMs);
+      controller.postMessage("REFRESH_DATA", [channel.port2]);
+    } catch (_) {
+      resolve(false);
+    }
+  });
+}
 
 const toNum = (v) => (v != null && Number.isFinite(Number(v))) ? Number(v) : null;
 const POPUP_NUMBER_FORMAT = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 4 });
@@ -2926,7 +2950,10 @@ function applyCreditLiveRows(liveRows) {
   });
 
   creditRows = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
-  return { updated, latestDate: normalized[normalized.length - 1].date };
+  const latestDate = creditRows.length
+    ? String(creditRows[creditRows.length - 1].date || "").slice(0, 10)
+    : normalized[normalized.length - 1].date;
+  return { updated, latestDate };
 }
 
 async function refreshLiveApiData() {
@@ -2943,8 +2970,7 @@ async function refreshLiveApiData() {
   }
 
   if (hasLeadingApi) macroRows = [];
-  if (hasCreditApi) creditRows = [];
-
+  // Keep seeded credit rows from docs/data/credit_data.json as a fallback.
   let ecosRows = [];
   let kosisRows = [];
 
@@ -3067,12 +3093,42 @@ async function loadData(forceNetwork = false) {
   }
   if (!Array.isArray(macroRows)) macroRows = [];
   if (!Array.isArray(creditRows)) creditRows = [];
-
   const opt = forceNetwork ? { cache: "reload" } : {};
+  const buildUrl = (path) => (forceNetwork ? appendCacheBust(path) : path);
+  async function fetchSeedText(path) {
+    const firstUrl = buildUrl(path);
+    try {
+      const firstRes = await fetch(firstUrl, opt);
+      if (firstRes.ok) return await firstRes.text();
+    } catch (_) {
+      // Try fallback below.
+    }
+    if (!forceNetwork) return null;
+    try {
+      const fallbackRes = await fetch(path, { cache: "no-store" });
+      if (fallbackRes.ok) return await fallbackRes.text();
+    } catch (_) {
+      // Ignore.
+    }
+    return null;
+  }
+
   try {
-    const adrRes = await fetch("./data/adr_data.json", opt);
-    if (adrRes.ok) {
-      const adrPayload = JSON.parse(await adrRes.text());
+    const creditText = await fetchSeedText("./data/credit_data.json");
+    if (creditText) {
+      const seededCreditRows = parseMacroPayload(creditText);
+      if (seededCreditRows.length) {
+        creditRows = normalizeCreditRows(seededCreditRows);
+      }
+    }
+  } catch (_) {
+    // Credit seed load failed; runtime refresh will still try live APIs.
+  }
+
+  try {
+    const adrText = await fetchSeedText("./data/adr_data.json");
+    if (adrText) {
+      const adrPayload = JSON.parse(adrText);
       if (Array.isArray(adrPayload?.records)) {
         adrRows = adrPayload.records;
       }
@@ -3081,7 +3137,6 @@ async function loadData(forceNetwork = false) {
     // ADR seed load failed; runtime refresh will try web source next.
   }
 }
-
 async function boot() {
   const msgEl = document.getElementById("messageArea");
   showStartupLoader();
@@ -3185,7 +3240,7 @@ async function boot() {
         setMessage(msgEl, []);
         try {
           if (navigator.serviceWorker.controller) {
-            navigator.serviceWorker.controller.postMessage("REFRESH_DATA");
+            await requestServiceWorkerDataRefresh();
           }
           await loadData(true);
 
