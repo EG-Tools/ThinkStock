@@ -1273,6 +1273,51 @@ async function ensureCustomTickerSeriesLoaded(ticker) {
   mergeTickerSeriesIntoPricePayload(ticker, points);
 }
 
+async function refreshCoreIndexSeries() {
+  const tickers = ["^KS11", "^KQ11"];
+  const beforeLatest = {};
+
+  tickers.forEach((ticker) => {
+    beforeLatest[ticker] = "";
+  });
+
+  (pricePayload?.records || []).forEach((row) => {
+    const date = String(row?.date || "").slice(0, 10);
+    if (!date) return;
+    tickers.forEach((ticker) => {
+      const v = toNum(row?.[ticker]);
+      if (v === null) return;
+      if (!beforeLatest[ticker] || date > beforeLatest[ticker]) beforeLatest[ticker] = date;
+    });
+  });
+
+  const applied = [];
+  const warnings = [];
+
+  const results = await Promise.allSettled(
+    tickers.map(async (ticker) => {
+      const points = await fetchYahooHistorySeries(ticker);
+      if (!points.length) throw new Error("price history is empty");
+      mergeTickerSeriesIntoPricePayload(ticker, points);
+      return { ticker, latestDate: points[points.length - 1]?.date || "" };
+    }),
+  );
+
+  results.forEach((result, idx) => {
+    const ticker = tickers[idx];
+    if (result.status === "fulfilled") {
+      const latestDate = String(result.value?.latestDate || "");
+      if (latestDate && latestDate !== beforeLatest[ticker]) {
+        applied.push(`${labelName(ticker)} 반영(${latestDate})`);
+      }
+      return;
+    }
+    const reason = result.reason?.message || String(result.reason || "unknown error");
+    warnings.push(`${labelName(ticker)} 갱신 오류: ${reason}`);
+  });
+
+  return { applied, warnings };
+}
 async function addCustomStock(candidate, msgEl) {
   if (!candidate?.ticker || !candidate?.name) return;
 
@@ -1992,7 +2037,7 @@ function renderChart(preserveZoom = true) {
         shape: "linear",
       },
       marker: { symbol: "circle", size: 7, color: seriesColor(series) },
-      hovertemplate: "Value: %{text}<extra>%{fullData.name}</extra>",
+      hovertemplate: "%{text}<extra>%{fullData.name}</extra>",
     };
   });
 
@@ -2819,11 +2864,17 @@ async function boot() {
   try {
     await loadData(true);
     setStartupLoaderProgress(45, "Loading data");
+
+    const coreIndexResult = await refreshCoreIndexSeries();
+    setStartupLoaderProgress(54, "Refreshing index");
+
     const preloadResult = await preloadCustomStocks();
     setStartupLoaderProgress(60, "Loading stocks");
 
     const startupInfo = [];
     const startupWarn = [];
+    startupInfo.push(...coreIndexResult.applied);
+    startupWarn.push(...coreIndexResult.warnings);
     if (preloadResult.failedNames.length) {
       startupWarn.push(`Some selected stocks were removed because price history could not be loaded: ${preloadResult.failedNames.join(", ")}`);
     }
@@ -2903,10 +2954,15 @@ async function boot() {
             navigator.serviceWorker.controller.postMessage("REFRESH_DATA");
           }
           await loadData(true);
-          const preloadResult = await preloadCustomStocks();
 
           const infoLines = [];
           const warnLines = [];
+
+          const coreIndexResult = await refreshCoreIndexSeries();
+          infoLines.push(...coreIndexResult.applied);
+          warnLines.push(...coreIndexResult.warnings);
+
+          const preloadResult = await preloadCustomStocks();
           if (preloadResult.failedNames.length) {
             warnLines.push(`Some selected stocks were removed because price history could not be loaded: ${preloadResult.failedNames.join(", ")}`);
           }
