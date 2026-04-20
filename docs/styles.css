@@ -289,7 +289,7 @@ body {
 }
 
 .custom-stock-toggle-btn {
-  padding-right: 26px;
+  padding-right: 34px;
 }
 
 .series-toggle-btn {
@@ -373,6 +373,8 @@ body {
   margin-top: 10px;
   display: grid;
   gap: 6px;
+  position: relative;
+  z-index: 30;
 }
 
 .stock-add-label {
@@ -386,6 +388,8 @@ body {
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.06);
   padding: 0 10px;
+  position: relative;
+  overflow: visible;
 }
 
 .stock-search-input {
@@ -403,12 +407,18 @@ body {
 }
 
 .stock-suggest-list {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: -1px;
+  right: -1px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: rgba(12, 15, 20, 0.95);
   overflow: hidden;
-  max-height: 220px;
+  max-height: 144px;
   overflow-y: auto;
+  z-index: 40;
+  box-shadow: 0 14px 24px rgba(0, 0, 0, 0.42);
 }
 
 .stock-suggest-item {
@@ -597,8 +607,8 @@ body {
     line-height: 1.2;
   }
   .series-row.base-row .series-toggle-btn:first-child { white-space: normal; }
-  .custom-stock-chip .series-toggle-btn { padding: 7px 24px 7px 8px; }
-  .stock-remove-btn { width: 14px; height: 14px; font-size: 11px; right: 5px; }
+  .custom-stock-chip .series-toggle-btn { padding: 7px 32px 7px 8px; }
+  .stock-remove-btn { width: 14px; height: 14px; font-size: 11px; right: 6px; }
   .chart-frame { border-radius: 22px; min-height: 350px; }
   .chart-frame-adr { min-height: 243px; max-height: 273px; }
   .api-settings-panel {
@@ -607,5 +617,4 @@ body {
     max-height: 82vh;
   }
 }
-
 
