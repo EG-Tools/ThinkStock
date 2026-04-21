@@ -2450,27 +2450,22 @@ function renderAdrChart(xRange) {
   const hoverProxyTraces = [
     {
       x: dates,
-      y: kospiVals,
+      y: dates.map((_, i) => {
+        const k = kospiVals[i];
+        const q = kosdaqVals[i];
+        return Number.isFinite(k) ? k : (Number.isFinite(q) ? q : null);
+      }),
+      customdata: dates.map((_, i) => [
+        Number.isFinite(kospiVals[i]) ? `${kospiVals[i].toFixed(2)}%` : "N/A",
+        Number.isFinite(kosdaqVals[i]) ? `${kosdaqVals[i].toFixed(2)}%` : "N/A",
+      ]),
       type: "scatter",
       mode: "lines",
-      name: "ADR KOSPI",
+      name: "ADR HOVER",
       showlegend: false,
-      legendgroup: "ADR KOSPI",
       connectgaps: false,
       line: { color: "rgba(0,0,0,0)", width: 1 },
-      hovertemplate: "KOSPI. %{y:.2f}%<extra></extra>",
-    },
-    {
-      x: dates,
-      y: kosdaqVals,
-      type: "scatter",
-      mode: "lines",
-      name: "ADR KOSDAQ",
-      showlegend: false,
-      legendgroup: "ADR KOSDAQ",
-      connectgaps: false,
-      line: { color: "rgba(0,0,0,0)", width: 1 },
-      hovertemplate: "KOSDAQ. %{y:.2f}%<extra></extra>",
+      hovertemplate: "KOSPI. %{customdata[0]}<br>KOSDAQ. %{customdata[1]}<extra></extra>",
     },
   ];
 
