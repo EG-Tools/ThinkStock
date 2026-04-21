@@ -2258,7 +2258,7 @@ function renderChart(preserveZoom = true) {
     hovermode: "x unified",
     showlegend: false,
     legend: { orientation: "h", x: 0, y: 1.08, font: { color: "rgba(255,255,255,0.7)", size: 11 } },
-    xaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, color: "#666", tickfont: { size: 10 }, fixedrange: false, showspikes: false, ...(savedXRange ? { range: savedXRange } : { range: defaultXRange, autorange: false }) },
+    xaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, color: "#666", tickfont: { size: 10 }, fixedrange: false, showspikes: false, hoverformat: "%Y.%-m.%-d", ...(savedXRange ? { range: savedXRange } : { range: defaultXRange, autorange: false }) },
     yaxis: { showticklabels: false, title: "", showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, fixedrange: true, ...(savedYRange ? { range: savedYRange, autorange: false } : {}) },
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
     hoverlabel: hoverShowPopup ? { bgcolor: "rgba(34,34,34,0.45)", bordercolor: "rgba(140,140,140,0.35)", font: { color: "#eee" } } : { bgcolor: "rgba(0,0,0,0)", bordercolor: "rgba(0,0,0,0)", font: { color: "rgba(0,0,0,0)", size: 1 } },
@@ -2458,7 +2458,7 @@ function renderAdrChart(xRange) {
       legendgroup: "ADR KOSPI",
       connectgaps: false,
       line: { color: "rgba(0,0,0,0)", width: 1 },
-      hovertemplate: "%{x}<br><b>ADR KOSPI: %{y:.2f}%</b><extra></extra>",
+      hovertemplate: "KOSPI. %{y:.2f}%<extra></extra>",
     },
     {
       x: dates,
@@ -2470,7 +2470,7 @@ function renderAdrChart(xRange) {
       legendgroup: "ADR KOSDAQ",
       connectgaps: false,
       line: { color: "rgba(0,0,0,0)", width: 1 },
-      hovertemplate: "%{x}<br><b>ADR KOSDAQ: %{y:.2f}%</b><extra></extra>",
+      hovertemplate: "KOSDAQ. %{y:.2f}%<extra></extra>",
     },
   ];
 
@@ -2535,6 +2535,7 @@ function renderAdrChart(xRange) {
       zeroline: false, color: "#666", tickfont: { size: 9 },
       fixedrange: false,
       showspikes: false,
+      hoverformat: "%Y, %-m, %-d",
       ...(xRange ? { range: xRange } : {}),
     },
     yaxis: {
