@@ -897,7 +897,7 @@ function parseCsv(text) {
     transformHeader: (h) => h.trim(),
   });
   if (result.errors.length) throw new Error(result.errors[0].message);
-  if (!result.meta.fields.includes("date")) throw new Error("CSV??date ???棺堉???????????諛몃�????꿔꺂??????");
+  if (!result.meta.fields.includes("date")) throw new Error("CSV에 date 컬럼이 있어야 합니다.");
   return result.data.map((row) => {
     const out = { date: String(row.date).slice(0, 10) };
     Object.entries(row).forEach(([k, v]) => {
@@ -1152,7 +1152,7 @@ async function ensureKrxUniverseLoaded() {
     }
 
     if (!universe.length) {
-      throw new Error("KRX ???????�틢???饔낅?????????�뇡?꾩땡沃섏�?????????�늉????轅붽?????筌뤾?�裕?棺堉??????源녾?? ?饔낅????�????�????????");
+      throw new Error("KRX 종목 목록을 불러오지 못했습니다. AUTH_KEY 또는 기준일을 확인해 주세요.");
     }
 
     krxUniverse = universe.sort((a, b) => a.name.localeCompare(b.name, "ko"));
@@ -1251,7 +1251,7 @@ async function fetchYahooHistorySeries(ticker) {
   const url = appendCacheBust(baseUrl);
   const payload = await fetchJsonWithProxyFallback(url);
   const result = payload?.chart?.result?.[0];
-  if (!result) throw new Error(`${ticker} ?????�늉?????????????? ?饔낅??????? ?饔낅????�????�????????`);
+  if (!result) throw new Error(`${ticker} 가격 이력을 불러오지 못했습니다.`);
 
   const timestamps = Array.isArray(result.timestamp) ? result.timestamp : [];
   const quote = result?.indicators?.quote?.[0] || {};
@@ -1964,7 +1964,7 @@ function updateHandles() {
     leftHandle.className = "y-handle y-handle-left";
     leftHandle.style.top = leftPixelY - 7 + "px";
     leftHandle.style.backgroundColor = color;
-    leftHandle.title = labelName(key) + " (?????諛몃�??";
+    leftHandle.title = labelName(key) + " (위치)";
     setupOffsetDrag(leftHandle, i, key, leftPixelY, ya);
     container.appendChild(leftHandle);
 
@@ -1973,7 +1973,7 @@ function updateHandles() {
     rightHandle.style.top = rightPixelY - 7 + "px";
     rightHandle.style.left = rightX + "px";
     rightHandle.style.backgroundColor = color;
-    rightHandle.title = labelName(key) + " (?????";
+    rightHandle.title = labelName(key) + " (스케일)";
     setupScaleDrag(rightHandle, i, key, rightPixelY, ya);
     container.appendChild(rightHandle);
   });
@@ -2172,7 +2172,7 @@ function renderChart(preserveZoom = true) {
   currentSelected = [...selected];
 
   if (!rows.length || !selected.length) {
-    msgEl.innerHTML = '<div class="message error">????????????????? ??????깅즽?????????�졄.</div>';
+    msgEl.innerHTML = '<div class="message error">표시할 데이터가 없습니다.</div>';
     return;
   }
   msgEl.innerHTML = "";
@@ -3052,7 +3052,7 @@ async function refreshAdrFromWeb() {
   const sourceUrl = appendCacheBust(ADR_SOURCE_URL);
   const proxyUrl = CORS_PROXY + encodeURIComponent(sourceUrl);
   const res = await fetch(proxyUrl, { cache: "no-store" });
-  if (!res.ok) throw new Error(`adrinfo.kr ??????????????�굣?? ${res.status}`);
+  if (!res.ok) throw new Error(`adrinfo.kr 응답 오류: ${res.status}`);
   const html = await res.text();
 
   function extractJsArray(src, varName) {
