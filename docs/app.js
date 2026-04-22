@@ -1310,9 +1310,10 @@ function getLatestTickerDateFromPricePayload(ticker) {
   });
   return latest;
 }
-async function ensureCustomTickerSeriesLoaded(ticker) {
+async function ensureCustomTickerSeriesLoaded(ticker, options = {}) {
+  const forceRefresh = Boolean(options?.forceRefresh);
   const hasExisting = (pricePayload?.records || []).some((row) => toNum(row?.[ticker]) !== null);
-  if (hasExisting) return;
+  if (hasExisting && !forceRefresh) return;
 
   const points = await fetchYahooHistorySeries(ticker);
   if (!points.length) throw new Error(`${ticker} 종목의 가격 히스토리를 가져오지 못했습니다.`);
@@ -1655,16 +1656,23 @@ function setupStockAddPanel(msgEl) {
   });
 }
 
-async function preloadCustomStocks() {
+async function preloadCustomStocks(options = {}) {
   if (!customStocks.length) return { failedNames: [] };
 
+  const forceRefresh = Boolean(options?.forceRefresh);
   const failed = [];
   const failedNames = [];
   for (const item of customStocks) {
+    const hadExisting = (pricePayload?.records || []).some((row) => toNum(row?.[item.ticker]) !== null);
     try {
-      await ensureCustomTickerSeriesLoaded(item.ticker);
+      await ensureCustomTickerSeriesLoaded(item.ticker, { forceRefresh });
       DISPLAY_NAMES[item.ticker] = item.name;
     } catch (_) {
+      // Keep ticker if older history exists and refresh fails.
+      if (hadExisting) {
+        DISPLAY_NAMES[item.ticker] = item.name;
+        continue;
+      }
       failed.push(item.ticker);
       failedNames.push(item.name || item.ticker);
     }
@@ -3165,7 +3173,7 @@ async function boot() {
     const coreIndexResult = await refreshCoreIndexSeries();
     setStartupLoaderProgress(54, "Refreshing index");
 
-    const preloadResult = await preloadCustomStocks();
+    const preloadResult = await preloadCustomStocks({ forceRefresh: true });
     setStartupLoaderProgress(60, "Loading stocks");
 
     const startupInfo = [];
@@ -3259,7 +3267,7 @@ async function boot() {
           infoLines.push(...coreIndexResult.applied);
           warnLines.push(...coreIndexResult.warnings);
 
-          const preloadResult = await preloadCustomStocks();
+          const preloadResult = await preloadCustomStocks({ forceRefresh: true });
           if (preloadResult.failedNames.length) {
             warnLines.push(`Some selected stocks were removed because price history could not be loaded: ${preloadResult.failedNames.join(", ")}`);
           }
