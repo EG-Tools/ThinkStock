@@ -834,10 +834,12 @@ function setupApiSettingsPanel(msgEl) {
   saveBtn?.addEventListener("click", () => {
     const prevKrxKey = String(apiSettings?.krxApiKey || "").trim();
     const prevDartKey = String(apiSettings?.dartApiKey || "").trim();
+    const prevDartProxyEnabled = Boolean(apiSettings?.dartProxyEnabled);
     apiSettings = readInputs();
     saveApiSettings();
     const nextKrxKey = String(apiSettings?.krxApiKey || "").trim();
     const nextDartKey = String(apiSettings?.dartApiKey || "").trim();
+    const nextDartProxyEnabled = Boolean(apiSettings?.dartProxyEnabled);
     if (prevKrxKey !== nextKrxKey) {
       resetKrxUniverseCache();
       hideStockSuggestList();
@@ -845,13 +847,25 @@ function setupApiSettingsPanel(msgEl) {
     syncApiOptionsButton();
     close();
     setMessage(msgEl, ["API keys saved for this browser tab."]);
-    if (nextDartKey && prevDartKey !== nextDartKey) {
-      setMessage(msgEl, ["DART API 저장됨. 최근 공시를 불러오는 중입니다..."]);
-      refreshDartDisclosuresFromApi(nextDartKey)
+    if (nextDartKey && (prevDartKey !== nextDartKey || prevDartProxyEnabled !== nextDartProxyEnabled)) {
+      const refreshCurrentTickers = nextDartProxyEnabled;
+      setMessage(msgEl, [
+        refreshCurrentTickers
+          ? "DART 공개 프록시 설정이 저장됐습니다. 현재 차트 종목의 3년 공시를 갱신하는 중입니다..."
+          : "DART API 저장됨. 최근 공시를 불러오는 중입니다...",
+      ]);
+      const refreshTask = refreshCurrentTickers
+        ? refreshDartDisclosuresForVisibleTickersFromApi(nextDartKey)
+        : refreshDartDisclosuresFromApi(nextDartKey);
+      refreshTask
         .then((info) => {
           renderChart();
           saveLastRuntimeSnapshot().catch(() => {});
-          setMessage(msgEl, [`DART 공시 ${info.fetched}건 확인, ${info.added}건 반영${info.latestDate ? `(~ ${info.latestDate})` : ""}`]);
+          const lines = [`DART 공시 ${info.fetched}건 확인, ${info.added}건 반영${info.latestDate ? `(~ ${info.latestDate})` : ""}`];
+          if (Array.isArray(info.failed) && info.failed.length) {
+            lines.push(`일부 종목 실패: ${info.failed.slice(0, 2).join(" / ")}`);
+          }
+          setMessage(msgEl, lines, Array.isArray(info.failed) && info.failed.length > 0);
         })
         .catch((err) => {
           setMessage(msgEl, `DART 공시 불러오기 오류: ${err.message}`, true);
@@ -3259,6 +3273,33 @@ async function refreshDartDisclosuresFromApi(apiKey, ticker = "") {
     fetched: liveRows.length,
     added: Math.max(0, disclosureRows.length - beforeCount),
     latestDate,
+  };
+}
+
+async function refreshDartDisclosuresForVisibleTickersFromApi(apiKey) {
+  const tickers = disclosureTargetTickers()
+    .filter((ticker) => !hiddenSeries.has(ticker));
+  const uniqueTickers = [...new Set(tickers)];
+  const beforeCount = disclosureRows.length;
+  let fetched = 0;
+  const failed = [];
+
+  for (const ticker of uniqueTickers) {
+    try {
+      const rows = await fetchDartDisclosuresForTickerLive(apiKey, ticker);
+      fetched += rows.length;
+      disclosureRows = mergeDisclosureRows(disclosureRows, rows);
+    } catch (err) {
+      failed.push(`${labelName(ticker)}: ${err.message}`);
+    }
+  }
+
+  const latestDate = disclosureRows.length ? disclosureRows[disclosureRows.length - 1].date : "";
+  return {
+    fetched,
+    added: Math.max(0, disclosureRows.length - beforeCount),
+    latestDate,
+    failed,
   };
 }
 
