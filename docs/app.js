@@ -53,7 +53,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.47";
+const APP_VERSION = "0.48";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -183,6 +183,12 @@ const HANDLE_UPDATE_DEBOUNCE_MS = 120;
 const DISCLOSURE_HOVER_DELAY_MS = 90;
 const SNAPSHOT_SAVE_IDLE_TIMEOUT_MS = 3500;
 const MAIN_LINE_TRACE_TYPE = hasWebGlSupport() ? "scattergl" : "scatter";
+const MAIN_CHART_MIN_DISPLAY_POINTS = 720;
+const MAIN_CHART_MAX_DISPLAY_POINTS = 1500;
+const MAIN_CHART_POINTS_PER_PIXEL = 1.45;
+const INTERACTION_RENDER_DELAY_MS = 260;
+const PERF_DEBUG_KEY = "thinkstock-perf-debug";
+const PERF_SAMPLE_LIMIT = 80;
 const DISCLOSURE_TRACE_NAME = "공시";
 const DISCLOSURE_MARKER_COLOR = "#fde047";
 const DISCLOSURE_MARKER_LINE_COLOR = "rgba(10,10,10,0.96)";
@@ -231,6 +237,8 @@ let pendingHoverSync = null;
 let lastHoverSyncKey = "";
 let currentRows = [];
 let currentStart = "";
+let mainChartCalcCache = null;
+let lastMainChartModelCacheHit = false;
 let chartSyncing = false;   // relayout sync loop guard
 let hoverShowPopup = false;
 let showDisclosures = true;
@@ -241,11 +249,15 @@ let cursorSyncing = false;
 let cursorMoveBound = false;
 let renderChartRafId = 0;
 let pendingRenderPreserveZoom = true;
+let deferredRenderTimer = 0;
+let pendingDeferredRenderPreserveZoom = true;
 let handleUpdateTimer = 0;
 let viewportSyncTimer = 0;
 let pendingViewportSync = null;
 let disclosureHoverTimer = 0;
 let pendingDisclosureHoverData = null;
+let disclosureGroupStore = new Map();
+let disclosureGroupStoreSeq = 0;
 const CURSOR_LINE_CLASS = "synced-cursor-line";
 let apiSettings = { ...API_SETTINGS_DEFAULT };
 let lastTouchTapAt = 0;
@@ -261,10 +273,55 @@ let appliedLineHighlightTraceIndex = null;
 let isViewportDragging = false;
 let lastLineHitTestAt = 0;
 let runtimeSnapshotIdleTimer = 0;
+let perfSamples = [];
+let perfDebugEnabled = false;
 let startupLoaderHideTimer = null;
 let startupLoaderRafId = 0;
 let startupLoaderDisplayProgress = 100;
 let startupLoaderTargetProgress = 100;
+
+function initPerfDebugAccess() {
+  try {
+    const params = new URLSearchParams(window.location.search || "");
+    perfDebugEnabled = params.get("perf") === "1" || localStorage.getItem(PERF_DEBUG_KEY) === "1";
+    window.ThinkStockPerf = {
+      enable() {
+        perfDebugEnabled = true;
+        try { localStorage.setItem(PERF_DEBUG_KEY, "1"); } catch (_) {}
+        return true;
+      },
+      disable() {
+        perfDebugEnabled = false;
+        try { localStorage.removeItem(PERF_DEBUG_KEY); } catch (_) {}
+        return true;
+      },
+      get() {
+        return [...perfSamples];
+      },
+      clear() {
+        perfSamples = [];
+      },
+    };
+  } catch (_) {
+    perfDebugEnabled = false;
+  }
+}
+
+function recordPerfSample(label, startedAt, meta = {}) {
+  if (!perfDebugEnabled || typeof performance === "undefined") return;
+  const duration = performance.now() - startedAt;
+  const sample = {
+    label,
+    duration: Math.round(duration * 10) / 10,
+    at: new Date().toISOString(),
+    ...meta,
+  };
+  perfSamples.push(sample);
+  if (perfSamples.length > PERF_SAMPLE_LIMIT) perfSamples.splice(0, perfSamples.length - PERF_SAMPLE_LIMIT);
+  if (duration >= 50) {
+    try { console.debug("[ThinkStockPerf]", sample); } catch (_) {}
+  }
+}
 
 /* localStorage persistence */
 function sanitizeCustomStocks(raw) {
@@ -3316,6 +3373,192 @@ function autoFitScales(rows, selected, normBases) {
   return Object.fromEntries(info.map(([s, r]) => [s, Math.max(5, Math.min(5000, Math.round((target / r) * 100)))]));
 }
 
+function hashStringFast(text) {
+  let hash = 0;
+  const str = String(text || "");
+  for (let i = 0; i < str.length; i += 1) {
+    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+  }
+  return hash.toString(36);
+}
+
+function rowsSignature(rows) {
+  if (!Array.isArray(rows) || !rows.length) return "0";
+  const first = rows[0] || {};
+  const mid = rows[Math.floor(rows.length / 2)] || {};
+  const last = rows[rows.length - 1] || {};
+  return [
+    rows.length,
+    first.date || "",
+    mid.date || "",
+    last.date || "",
+    hashStringFast(`${JSON.stringify(first)}|${JSON.stringify(mid)}|${JSON.stringify(last)}`),
+  ].join(":");
+}
+
+function sortedObjectSignature(obj) {
+  if (!obj || typeof obj !== "object") return "";
+  return Object.keys(obj)
+    .sort()
+    .map((key) => `${key}:${obj[key]}`)
+    .join("|");
+}
+
+function getMainChartCalcCacheKey(priceRows, start, end) {
+  return [
+    start,
+    end,
+    activeMonths,
+    CREDIT_OFFSET_DAYS,
+    rowsSignature(priceRows),
+    rowsSignature(macroRows),
+    rowsSignature(creditRows),
+    customStocks.map((item) => item.ticker).join(","),
+    [...hiddenSeries].sort().join(","),
+    sortedObjectSignature(seriesOffsets),
+    sortedObjectSignature(seriesScales),
+  ].join("::");
+}
+
+function buildMainChartModel(priceRows, start, end, allowedSeries) {
+  const { rows, macroCols, liveCols } = mergeSources(priceRows, macroRows, creditRows, start, end);
+  const allSeries = sortSeries(
+    [...new Set([...liveCols, ...macroCols])]
+      .filter((s) => allowedSeries.has(s))
+      .filter((s) => rows.some((r) => toNum(r[s]) !== null))
+  );
+  const selected = sortSeries(allSeries.filter((s) => !ADR_SERIES.includes(s)));
+  if (!selected.length) {
+    const fallback = sortSeries(allSeries);
+    selected.push(...fallback.slice(0, 2));
+  }
+
+  const commonNormBases = {};
+  const firstDates = selected.map((s) => {
+    const r = rows.find((row) => toNum(row[s]) !== null);
+    return r ? r.date : null;
+  }).filter(Boolean);
+  const commonBaseDate = firstDates.length ? firstDates.reduce((mx, d) => (d > mx ? d : mx)) : null;
+  if (commonBaseDate) {
+    selected.forEach((s) => {
+      const r = rows.find((row) => row.date >= commonBaseDate && toNum(row[s]) !== null);
+      commonNormBases[s] = r ? toNum(r[s]) : null;
+    });
+  }
+
+  const visibleForAuto = selected.filter((s) => !hiddenSeries.has(s));
+  const autoScales = autoFitScales(
+    rows,
+    visibleForAuto.length ? visibleForAuto : selected,
+    commonNormBases,
+  );
+  const chartYBySeries = {};
+
+  const seriesModels = selected.map((series) => {
+    const rawValues = rows.map((r) => toNum(r[series]));
+    const rawTexts = rawValues.map((v) => formatActualValue(v));
+    const baseLineWidth = macroCols.includes(series) ? 3 : 2;
+    const xValues = rows.map((r) => r.date);
+
+    let values = [...rawValues];
+    const base = commonNormBases[series];
+    values = (base && base !== 0)
+      ? values.map((v) => (Number.isFinite(v) ? (v / base) * 100 : null))
+      : normalizeSeries(values);
+    values = centeredScale(values, series === "leading_cycle" ? 100 : (autoScales[series] || 100), true);
+    const baseValues = values;
+
+    const userScale = seriesScales[series] != null ? seriesScales[series] : defaultSeriesScale(series);
+    if (userScale !== 1) {
+      values = values.map((v) => (v !== null ? 100 + (v - 100) * userScale : null));
+    }
+
+    const offset = seriesOffsets[series] || 0;
+    if (offset) values = values.map((v) => (v !== null ? v + offset : null));
+
+    chartYBySeries[series] = new Map(xValues.map((date, valueIndex) => [date, values[valueIndex]]));
+    return { series, rawTexts, baseLineWidth, xValues, values, baseValues };
+  });
+
+  return { rows, allSeries, selected, chartYBySeries, seriesModels };
+}
+
+function getMainChartModel(priceRows, start, end, allowedSeries) {
+  const key = getMainChartCalcCacheKey(priceRows, start, end);
+  if (mainChartCalcCache?.key === key) {
+    lastMainChartModelCacheHit = true;
+    return mainChartCalcCache.model;
+  }
+  lastMainChartModelCacheHit = false;
+  const model = buildMainChartModel(priceRows, start, end, allowedSeries);
+  mainChartCalcCache = { key, model };
+  return model;
+}
+
+function getMainChartDisplayPointBudget(el) {
+  const width = Math.max(320, Math.round(el?.getBoundingClientRect?.().width || window.innerWidth || 390));
+  return Math.max(
+    MAIN_CHART_MIN_DISPLAY_POINTS,
+    Math.min(MAIN_CHART_MAX_DISPLAY_POINTS, Math.round(width * MAIN_CHART_POINTS_PER_PIXEL)),
+  );
+}
+
+function pickByIndexes(values, indexes) {
+  return indexes.map((idx) => values[idx]);
+}
+
+function thinIndexList(indexes, budget, rowCount) {
+  const sorted = [...new Set(indexes)].sort((a, b) => a - b);
+  if (sorted.length <= budget) return sorted;
+  const out = new Set([0, rowCount - 1]);
+  const slots = Math.max(1, budget - 2);
+  for (let i = 1; i <= slots; i += 1) {
+    const idx = sorted[Math.round((i * (sorted.length - 1)) / (slots + 1))];
+    if (Number.isInteger(idx)) out.add(idx);
+  }
+  return [...out].sort((a, b) => a - b);
+}
+
+function buildMainChartDisplayIndexes(rows, seriesModels, selected, budget) {
+  const rowCount = rows.length;
+  if (!rowCount || rowCount <= budget) return null;
+  const visible = selected.filter((key) => !hiddenSeries.has(key));
+  const targets = visible.length ? visible : selected;
+  const bySeries = new Map(seriesModels.map((model) => [model.series, model.values]));
+  const perBucketCost = Math.max(2, targets.length * 2);
+  const bucketCount = Math.max(1, Math.floor((budget - 2) / perBucketCost));
+  const bucketSize = Math.max(1, Math.ceil((rowCount - 2) / bucketCount));
+  const keep = new Set([0, rowCount - 1]);
+
+  for (let startIndex = 1; startIndex < rowCount - 1; startIndex += bucketSize) {
+    const endIndex = Math.min(rowCount - 1, startIndex + bucketSize);
+    targets.forEach((series) => {
+      const values = bySeries.get(series);
+      if (!values) return;
+      let minIdx = -1;
+      let maxIdx = -1;
+      let minVal = Number.POSITIVE_INFINITY;
+      let maxVal = Number.NEGATIVE_INFINITY;
+      for (let i = startIndex; i < endIndex; i += 1) {
+        const value = values[i];
+        if (!Number.isFinite(value)) continue;
+        if (value < minVal) {
+          minVal = value;
+          minIdx = i;
+        }
+        if (value > maxVal) {
+          maxVal = value;
+          maxIdx = i;
+        }
+      }
+      if (minIdx >= 0) keep.add(minIdx);
+      if (maxIdx >= 0) keep.add(maxIdx);
+    });
+  }
+
+  return thinIndexList([...keep], budget, rowCount);
+}
+
 /* Drag handles */
 
 function updateHandles() {
@@ -3596,13 +3839,19 @@ function buildDisclosureTrace(rows, selected, chartYBySeries, start, end) {
 
   const groups = [...grouped.values()].sort((a, b) => a.plotDate.localeCompare(b.plotDate));
   lastDisclosureTraceStats.markers = groups.length;
+  disclosureGroupStore = new Map();
   if (!groups.length) return null;
+  const groupIds = groups.map((group) => {
+    const id = `d${++disclosureGroupStoreSeq}`;
+    disclosureGroupStore.set(id, group);
+    return id;
+  });
 
   return {
     x: groups.map((group) => group.plotDate),
     y: groups.map((group) => group.y),
     text: groups.map(() => "v"),
-    customdata: groups.map((group) => [JSON.stringify(group)]),
+    customdata: groupIds.map((id) => [id]),
     type: "scatter",
     mode: "markers+text",
     name: DISCLOSURE_TRACE_NAME,
@@ -3694,7 +3943,7 @@ function handleDisclosureClick(evtData) {
   if (!point) return false;
   try {
     const raw = point.customdata?.[0];
-    const group = JSON.parse(raw);
+    const group = disclosureGroupStore.get(raw) || JSON.parse(raw);
     showDisclosurePopover(group, evtData.event);
     return true;
   } catch (_) {
@@ -4419,7 +4668,26 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
 
 /* Main chart */
 
-function requestChartRender(preserveZoom = true) {
+function scheduleDeferredChartRender(preserveZoom = true) {
+  pendingDeferredRenderPreserveZoom = pendingDeferredRenderPreserveZoom && preserveZoom;
+  if (deferredRenderTimer) clearTimeout(deferredRenderTimer);
+  deferredRenderTimer = setTimeout(() => {
+    deferredRenderTimer = 0;
+    const nextPreserveZoom = pendingDeferredRenderPreserveZoom;
+    pendingDeferredRenderPreserveZoom = true;
+    if (isChartInteractionBusy()) {
+      scheduleDeferredChartRender(nextPreserveZoom);
+      return;
+    }
+    requestChartRender(nextPreserveZoom, { deferDuringInteraction: false });
+  }, INTERACTION_RENDER_DELAY_MS);
+}
+
+function requestChartRender(preserveZoom = true, options = {}) {
+  if (options.deferDuringInteraction !== false && isChartInteractionBusy()) {
+    scheduleDeferredChartRender(preserveZoom);
+    return;
+  }
   pendingRenderPreserveZoom = pendingRenderPreserveZoom && preserveZoom;
   if (renderChartRafId) return;
   renderChartRafId = requestAnimationFrame(() => {
@@ -4430,7 +4698,17 @@ function requestChartRender(preserveZoom = true) {
   });
 }
 
+function renderChartWhenIdleOrNow(preserveZoom = true) {
+  if (isChartInteractionBusy()) {
+    requestChartRender(preserveZoom);
+    return false;
+  }
+  renderChart(preserveZoom);
+  return true;
+}
+
 function renderChart(preserveZoom = true) {
+  const perfStartedAt = (typeof performance !== "undefined") ? performance.now() : 0;
   const el = document.getElementById("chart");
   const msgEl = document.getElementById("messageArea");
   if (!window.Plotly) {
@@ -4469,26 +4747,16 @@ function renderChart(preserveZoom = true) {
   let start = shiftMonths(end, activeMonths);
   if (start < minDate) start = minDate;
 
-  const { rows, macroCols, liveCols } = mergeSources(priceRows, macroRows, creditRows, start, end);
-  currentRows = rows;
-  currentStart = start;
   const allowedSeries = new Set([
     ...CORE_SERIES,
     ...ADR_SERIES,
     ...customStocks.map((item) => item.ticker),
   ]);
-  const allSeries = sortSeries(
-    [...new Set([...liveCols, ...macroCols])]
-      .filter((s) => allowedSeries.has(s))
-      .filter((s) => rows.some((r) => toNum(r[s]) !== null))
-  );
+  const model = getMainChartModel(priceRows, start, end, allowedSeries);
+  const { rows, allSeries, selected, chartYBySeries, seriesModels } = model;
+  currentRows = rows;
+  currentStart = start;
   syncSeriesToggleBoard(allSeries);
-  // ADR series are rendered in the sub-chart, so exclude them from the main chart set.
-  const selected = sortSeries(allSeries.filter((s) => !ADR_SERIES.includes(s)));
-  if (!selected.length) {
-    const fallback = sortSeries(allSeries);
-    selected.push(...fallback.slice(0, 2));
-  }
   currentSelected = [...selected];
   if (!showDisclosures) hideDisclosurePopover();
   hoveredLineTraceIndex = null;
@@ -4503,62 +4771,26 @@ function renderChart(preserveZoom = true) {
   }
   msgEl.innerHTML = "";
 
-  // Common normalization base
-  const commonNormBases = {};
-  const firstDates = selected.map((s) => {
-    const r = rows.find((row) => toNum(row[s]) !== null);
-    return r ? r.date : null;
-  }).filter(Boolean);
-  const commonBaseDate = firstDates.length ? firstDates.reduce((mx, d) => (d > mx ? d : mx)) : null;
-  if (commonBaseDate) {
-    selected.forEach((s) => {
-      const r = rows.find((row) => row.date >= commonBaseDate && toNum(row[s]) !== null);
-      commonNormBases[s] = r ? toNum(r[s]) : null;
-    });
-  }
-  const visibleForAuto = selected.filter((s) => !hiddenSeries.has(s));
-  const autoScales = autoFitScales(
-    rows,
-    visibleForAuto.length ? visibleForAuto : selected,
-    commonNormBases,
-  );
-  const chartYBySeries = {};
+  const displayBudget = getMainChartDisplayPointBudget(el);
+  const displayIndexes = buildMainChartDisplayIndexes(rows, seriesModels, selected, displayBudget);
+  const displayPointCount = displayIndexes ? displayIndexes.length : rows.length;
 
-  const traces = selected.map((series, i) => {
-    const rawValues = rows.map((r) => toNum(r[series]));
-    const rawTexts = rawValues.map((v) => formatActualValue(v));
-    const baseLineWidth = macroCols.includes(series) ? 3 : 2;
-
-    let values = [...rawValues];
-    const base = commonNormBases[series];
-    values = (base && base !== 0)
-      ? values.map((v) => (Number.isFinite(v) ? (v / base) * 100 : null))
-      : normalizeSeries(values);
-    values = centeredScale(values, series === "leading_cycle" ? 100 : (autoScales[series] || 100), true);
-
-    baseTraceValues[series] = values;
-
-    const userScale = seriesScales[series] != null ? seriesScales[series] : defaultSeriesScale(series);
-    if (userScale !== 1) {
-      values = values.map((v) => (v !== null ? 100 + (v - 100) * userScale : null));
-    }
-
-    const offset = seriesOffsets[series] || 0;
-    if (offset) values = values.map((v) => (v !== null ? v + offset : null));
-
-    const xValues = rows.map((r) => r.date);
-    chartYBySeries[series] = new Map(xValues.map((date, valueIndex) => [date, values[valueIndex]]));
+  const traces = seriesModels.map(({ series, rawTexts, baseLineWidth, xValues, values, baseValues }) => {
+    const traceX = displayIndexes ? pickByIndexes(xValues, displayIndexes) : xValues;
+    const traceY = displayIndexes ? pickByIndexes(values, displayIndexes) : values;
+    const traceText = displayIndexes ? pickByIndexes(rawTexts, displayIndexes) : rawTexts;
+    baseTraceValues[series] = displayIndexes ? pickByIndexes(baseValues, displayIndexes) : baseValues;
 
     return {
-      x: xValues,
-      y: values,
-      text: rawTexts,
+      x: traceX,
+      y: traceY,
+      text: traceText,
       type: MAIN_LINE_TRACE_TYPE,
       mode: "lines",
       name: labelName(series),
       visible: hiddenSeries.has(series) ? "legendonly" : true,
       connectgaps: true,
-      meta: { seriesKey: series, baseLineWidth },
+      meta: { seriesKey: series, baseLineWidth, sourcePointCount: xValues.length, displayPointCount },
       line: {
         color: seriesColor(series),
         width: baseLineWidth,
@@ -4678,6 +4910,13 @@ function renderChart(preserveZoom = true) {
   const mainRangeForAdr = el._fullLayout?.xaxis?.range?.slice() || (savedXRange ? [...savedXRange] : null);
   renderAdrChart(mainRangeForAdr ? [...mainRangeForAdr] : null);
   bindCursorMoveSync();
+  recordPerfSample("renderChart", perfStartedAt, {
+    rows: rows.length,
+    displayRows: displayPointCount,
+    series: selected.length,
+    disclosures: lastDisclosureTraceStats.markers,
+    cacheHit: lastMainChartModelCacheHit,
+  });
 }
 
 /* ADR sub-chart rendering (source: adrinfo.kr) */
@@ -5612,7 +5851,7 @@ async function refreshRuntimeData(msgEl) {
   infoLines.push(...liveResult.applied);
   warnLines.push(...liveResult.warnings);
 
-  renderChart(false);
+  renderChartWhenIdleOrNow(false);
   if (refreshedDart) {
     if (lastDisclosureTraceStats.markers > 0) {
       infoLines.push(`현재 차트에 공시 마커 ${lastDisclosureTraceStats.markers}개 표시됨`);
@@ -5644,6 +5883,7 @@ async function boot() {
   const msgEl = document.getElementById("messageArea");
   showStartupLoader();
   setStartupLoaderProgress(4, "Preparing");
+  initPerfDebugAccess();
   loadState();
   loadApiSettings();
   renderCustomStockButtons();
