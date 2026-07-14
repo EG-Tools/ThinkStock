@@ -3493,6 +3493,17 @@ async function refreshRuntimeData(msgEl) {
   }
 }
 
+function waitForFirstPaint() {
+  return new Promise((resolve) => {
+    const done = () => setTimeout(resolve, 0);
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(done);
+    } else {
+      done();
+    }
+  });
+}
+
 async function boot() {
   const msgEl = document.getElementById("messageArea");
   showStartupLoader();
@@ -3510,15 +3521,7 @@ async function boot() {
     await loadData(true);
     setStartupLoaderProgress(45, "Loading data");
     renderChart(false);
-    setStartupLoaderProgress(70, "Rendering");
-
-    const refreshAfterFirstPaint = () => {
-      setTimeout(() => {
-        refreshRuntimeData(msgEl).catch((err) => {
-          setMessage(msgEl, `백그라운드 최신화 오류: ${err.message}`, true);
-        });
-      }, 0);
-    };
+    setStartupLoaderProgress(72, "Rendering saved data");
 
     document.querySelectorAll(".range-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -3585,8 +3588,14 @@ async function boot() {
       });
     }
 
+    await waitForFirstPaint();
+    setStartupLoaderProgress(84, "Refreshing latest data");
+    try {
+      await refreshRuntimeData(msgEl);
+    } catch (refreshErr) {
+      setMessage(msgEl, `최신 데이터 갱신 오류: ${refreshErr.message}`, true);
+    }
     setStartupLoaderProgress(100, "Ready");
-    refreshAfterFirstPaint();
   } catch (err) {
     setMessage(msgEl, err.message || "데이터를 가져오지 못했습니다.", true);
   } finally {
