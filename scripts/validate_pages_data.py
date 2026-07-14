@@ -15,6 +15,7 @@ DATASETS = {
     "macro": DATA_DIR / "macro_data.json",
     "credit": DATA_DIR / "credit_data.json",
     "adr": DATA_DIR / "adr_data.json",
+    "disclosures": DATA_DIR / "disclosures.json",
 }
 
 CREDIT_COLUMNS = ("kospi_credit", "kosdaq_credit")
@@ -180,6 +181,29 @@ def validate_credit(rows: list[dict]) -> None:
                 )
 
 
+def validate_disclosures(payload: dict) -> list[dict]:
+    rows = payload.get("records")
+    if not isinstance(rows, list):
+        fail("disclosures: records must be a list")
+
+    prev_key: tuple[str, str, str] | None = None
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            fail(f"disclosures: row {idx} must be an object")
+        ticker = str(row.get("ticker") or "")
+        title = str(row.get("title") or "")
+        row_date = parse_date(row.get("date"), f"disclosures row {idx}")
+        if not ticker.endswith((".KS", ".KQ")):
+            fail(f"disclosures: invalid ticker on row {idx}: {ticker!r}")
+        if not title:
+            fail(f"disclosures: row {idx} missing title")
+        key = (row_date.isoformat(), ticker, title)
+        if prev_key and key < prev_key:
+            fail(f"disclosures: rows must be sorted near {key}")
+        prev_key = key
+    return rows
+
+
 def read_committed_credit_latest() -> date | None:
     try:
         raw = subprocess.check_output(
@@ -200,8 +224,13 @@ def read_committed_credit_latest() -> date | None:
 
 def main() -> int:
     summaries: list[str] = []
-    for name in ("prices", "macro", "credit", "adr"):
+    for name in ("prices", "macro", "credit", "adr", "disclosures"):
         payload = load_payload(name)
+        if name == "disclosures":
+            rows = validate_disclosures(payload)
+            latest = rows[-1]["date"] if rows else "empty"
+            summaries.append(f"{name}: {len(rows)} rows, latest {latest}")
+            continue
         rows = validate_records(name, payload)
         summaries.append(f"{name}: {len(rows)} rows, latest {rows[-1]['date']}")
         if name == "prices":

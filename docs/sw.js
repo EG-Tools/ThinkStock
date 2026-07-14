@@ -13,6 +13,7 @@ const ASSETS = [
   "./data/sample_macro_data.csv",
   "./data/adr_data.json",
   "./data/credit_data.json",
+  "./data/disclosures.json",
 ];
 
 self.addEventListener("install", (event) => {

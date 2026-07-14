@@ -38,6 +38,8 @@ jobs:
         env:
           ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}
           KOFIA_API_KEY: ${{ secrets.KOFIA_API_KEY }}
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          DART_DISCLOSURE_STOCK_CODES: ${{ vars.DART_DISCLOSURE_STOCK_CODES }}
           ENABLE_FREESIS_CREDIT_TAIL: "1"
         run: python scripts/build_pages_data.py
 

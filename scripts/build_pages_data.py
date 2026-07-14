@@ -1,9 +1,12 @@
 import json
 import os
 import re
+import zipfile
 from datetime import date
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import unquote
+from xml.etree import ElementTree as ET
 
 import pandas as pd
 import requests
@@ -27,7 +30,9 @@ OUTPUT_MACRO_JSON = DATA_DIR / "macro_data.json"
 OUTPUT_MACRO_CSV = DATA_DIR / "sample_macro_data.csv"
 OUTPUT_CREDIT_JSON = DATA_DIR / "credit_data.json"
 OUTPUT_ADR_JSON = DATA_DIR / "adr_data.json"
+OUTPUT_DISCLOSURES_JSON = DATA_DIR / "disclosures.json"
 LOOKBACK_YEARS = 30
+DART_DISCLOSURE_LOOKBACK_YEARS = 3
 ECOS_STAT_CODE = "901Y067"  # Composite Leading Indicator
 ECOS_ITEM_CODE = "I16E"     # Leading index cyclical component
 ECOS_START = "199601"
@@ -44,6 +49,8 @@ FREESIS_CREDIT_UNIT_CODE = "06"
 FREESIS_CREDIT_START = "19980101"
 ENABLE_FREESIS_CREDIT_TAIL = os.environ.get("ENABLE_FREESIS_CREDIT_TAIL", "").strip() == "1"
 ADR_SOURCE_URL = "http://www.adrinfo.kr/chart"
+DART_CORP_CODE_URL = "https://opendart.fss.or.kr/api/corpCode.xml"
+DART_DISCLOSURE_URL = "https://opendart.fss.or.kr/api/list.json"
 
 
 def extract_close_series(data: pd.DataFrame, ticker: str) -> pd.Series | None:
@@ -174,6 +181,26 @@ def resolve_kofia_api_key() -> str:
         except Exception:
             return ""
     return ""
+
+
+def resolve_dart_api_key() -> str:
+    return os.environ.get("DART_API_KEY", "").strip()
+
+
+def configured_disclosure_stock_codes() -> list[str]:
+    raw = os.environ.get("DART_DISCLOSURE_STOCK_CODES", "")
+    extras = [part.strip() for part in raw.split(",") if part.strip()]
+    codes = [ticker.split(".")[0] for ticker in DEFAULT_TICKERS] + extras
+    seen: set[str] = set()
+    out: list[str] = []
+    for code in codes:
+        clean = re.sub(r"\D", "", code)[:6]
+        if len(clean) != 6 or clean in seen:
+            continue
+        seen.add(clean)
+        out.append(clean)
+    return out
+
 
 def fetch_ecos_leading_cycle(api_key: str) -> pd.DataFrame:
     if not api_key:
@@ -532,6 +559,144 @@ def build_adr_payload(records: list[dict]) -> dict:
     }
 
 
+def disclosure_type_from_title(title: str) -> str | None:
+    text = str(title or "")
+    if re.search(r"반기보고서|분기보고서|사업보고서", text):
+        return "실적"
+    if re.search(r"배당|현금ㆍ현물배당|현금.?현물배당", text):
+        return "배당"
+    if re.search(r"단일판매|공급계약|수주", text):
+        return "수주"
+    if re.search(r"유상증자|신주인수권|증권신고서\(지분증권\)", text):
+        return "유상증자"
+    if re.search(r"전환사채|신주인수권부사채|교환사채", text):
+        return "자금조달"
+    if re.search(r"합병|분할|영업양수|영업양도", text):
+        return "구조변경"
+    return None
+
+
+def fetch_dart_corp_code_map(api_key: str) -> dict[str, dict[str, str]]:
+    response = requests.get(DART_CORP_CODE_URL, params={"crtfc_key": api_key}, timeout=30)
+    response.raise_for_status()
+    with zipfile.ZipFile(BytesIO(response.content)) as archive:
+        xml_name = next((name for name in archive.namelist() if name.lower().endswith(".xml")), "")
+        if not xml_name:
+            return {}
+        root = ET.fromstring(archive.read(xml_name))
+
+    out: dict[str, dict[str, str]] = {}
+    for node in root.findall("list"):
+        stock_code = (node.findtext("stock_code") or "").strip()
+        corp_code = (node.findtext("corp_code") or "").strip()
+        corp_name = (node.findtext("corp_name") or "").strip()
+        if len(stock_code) == 6 and corp_code:
+            out[stock_code] = {"corp_code": corp_code, "corp_name": corp_name}
+    return out
+
+
+def stock_code_to_ticker(stock_code: str, corp_cls: str = "") -> str:
+    if stock_code.endswith(".KS") or stock_code.endswith(".KQ"):
+        return stock_code
+    for ticker in DEFAULT_TICKERS:
+        if ticker.startswith(stock_code):
+            return ticker
+    return f"{stock_code}.KQ" if corp_cls == "K" else f"{stock_code}.KS"
+
+
+def fetch_dart_disclosures(api_key: str, stock_codes: list[str]) -> list[dict]:
+    if not api_key or not stock_codes:
+        return []
+    try:
+        corp_map = fetch_dart_corp_code_map(api_key)
+    except Exception as exc:
+        print(f"DART corp code fetch failed: {exc}")
+        return []
+
+    start_date = years_before(date.today(), DART_DISCLOSURE_LOOKBACK_YEARS).strftime("%Y%m%d")
+    end_date = date.today().strftime("%Y%m%d")
+    records: list[dict] = []
+
+    for stock_code in stock_codes:
+        corp = corp_map.get(stock_code)
+        if not corp:
+            print(f"DART corp code not found for {stock_code}")
+            continue
+
+        page_no = 1
+        total_page = 1
+        while page_no <= total_page:
+            try:
+                response = requests.get(
+                    DART_DISCLOSURE_URL,
+                    params={
+                        "crtfc_key": api_key,
+                        "corp_code": corp["corp_code"],
+                        "bgn_de": start_date,
+                        "end_de": end_date,
+                        "last_reprt_at": "Y",
+                        "sort": "date",
+                        "sort_mth": "asc",
+                        "page_no": str(page_no),
+                        "page_count": "100",
+                    },
+                    timeout=30,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except Exception as exc:
+                print(f"DART disclosure fetch failed for {stock_code}: {exc}")
+                break
+
+            status = str(payload.get("status", ""))
+            if status == "013":
+                break
+            if status and status != "000":
+                print(f"DART returned {status} for {stock_code}: {payload.get('message')}")
+                break
+
+            total_page = int(payload.get("total_page") or 1)
+            for item in payload.get("list", []) or []:
+                title = str(item.get("report_nm") or "").strip()
+                event_type = disclosure_type_from_title(title)
+                if not event_type:
+                    continue
+                raw_date = str(item.get("rcept_dt") or "")
+                if len(raw_date) != 8:
+                    continue
+                receipt_no = str(item.get("rcept_no") or "").strip()
+                corp_cls = str(item.get("corp_cls") or "").strip()
+                records.append(
+                    {
+                        "ticker": stock_code_to_ticker(stock_code, corp_cls),
+                        "code": stock_code,
+                        "name": str(item.get("corp_name") or corp["corp_name"] or stock_code).strip(),
+                        "date": f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}",
+                        "type": event_type,
+                        "title": title,
+                        "summary": "",
+                        "source": "OpenDART",
+                        "receiptNo": receipt_no,
+                        "url": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={receipt_no}" if receipt_no else "",
+                    }
+                )
+            page_no += 1
+
+    dedup: dict[tuple[str, str, str], dict] = {}
+    for record in records:
+        dedup[(record["ticker"], record["date"], record["title"])] = record
+    return sorted(dedup.values(), key=lambda row: (row["date"], row["ticker"], row["title"]))
+
+
+def build_disclosure_payload(records: list[dict]) -> dict:
+    return {
+        "generated_at": pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "source": "OpenDART",
+        "series": ["disclosures"],
+        "records": records,
+    }
+
+
 def load_existing_credit_seed() -> pd.DataFrame:
     if not OUTPUT_CREDIT_JSON.exists():
         return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
@@ -719,6 +884,13 @@ def main() -> None:
     else:
         print("ADR fetch had no rows; keeping existing adr_data.json.")
 
+    dart_key = resolve_dart_api_key()
+    disclosure_records = fetch_dart_disclosures(dart_key, configured_disclosure_stock_codes()) if dart_key else []
+    if disclosure_records:
+        print(f"Applied DART disclosure rows: {len(disclosure_records)} (latest={disclosure_records[-1]['date']})")
+    else:
+        print("DART_API_KEY is not configured or returned no disclosure rows.")
+
     credit_payload = build_payload(
         credit_merged,
         DISPLAY_NAMES,
@@ -747,6 +919,10 @@ def main() -> None:
             json.dumps(build_adr_payload(adr_records), ensure_ascii=False, indent=2, allow_nan=False),
             encoding="utf-8",
         )
+    OUTPUT_DISCLOSURES_JSON.write_text(
+        json.dumps(build_disclosure_payload(disclosure_records), ensure_ascii=False, indent=2, allow_nan=False),
+        encoding="utf-8",
+    )
     if macro_source.empty:
         OUTPUT_MACRO_CSV.write_text("date\n", encoding="utf-8")
     else:
@@ -760,6 +936,7 @@ def main() -> None:
         print(f"Wrote {OUTPUT_CREDIT_JSON}")
     if adr_records:
         print(f"Wrote {OUTPUT_ADR_JSON}")
+    print(f"Wrote {OUTPUT_DISCLOSURES_JSON}")
     print(f"Wrote {OUTPUT_MACRO_CSV}")
 
 if __name__ == "__main__":

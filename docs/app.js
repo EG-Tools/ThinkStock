@@ -124,10 +124,13 @@ const PLOTLY_CONFIG = {
 const LINE_DRAG_TOLERANCE_PX = 14;
 const LINE_DRAG_TOUCH_TOLERANCE_PX = 24;
 const LINE_HIGHLIGHT_EXTRA_WIDTH = 2;
+const DISCLOSURE_TRACE_NAME = "공시";
+const DISCLOSURE_MARKER_COLOR = "#fbbf24";
 
 let pricePayload = null;
 let macroRows = [];
 let creditRows = [];   // KOFIA credit balance seed data (credit_data.json)
+let disclosureRows = [];
 let activeMonths = 120;
 let hiddenSeries = new Set(["kospi_credit", "^KQ11", "kosdaq_credit"]);
 let customStocks = [];
@@ -148,6 +151,7 @@ let currentRows = [];
 let currentStart = "";
 let chartSyncing = false;   // relayout sync loop guard
 let hoverShowPopup = false;
+let showDisclosures = true;
 let isHandleDragging = false;
 let pinnedXRange = null;
 let hoverSyncing = false;
@@ -206,6 +210,7 @@ function saveState() {
       seriesScales,
       creditOffset: -CREDIT_OFFSET_DAYS,
       hoverShowPopup,
+      showDisclosures,
     }));
   } catch (_) {}
 }
@@ -221,6 +226,7 @@ function loadState() {
     if (p.seriesScales && typeof p.seriesScales === "object") seriesScales = p.seriesScales;
     if (typeof p.creditOffset === "number") CREDIT_OFFSET_DAYS = Math.abs(p.creditOffset);
     if (typeof p.hoverShowPopup === "boolean") hoverShowPopup = p.hoverShowPopup;
+    if (typeof p.showDisclosures === "boolean") showDisclosures = p.showDisclosures;
     if (Array.isArray(p.customStocks)) customStocks = sanitizeCustomStocks(p.customStocks);
     applyCustomStockDisplayNames();
   } catch (_) {}
@@ -297,13 +303,57 @@ function sanitizePricePayloadForSnapshot(raw) {
   };
 }
 
+function classifyDisclosureType(title) {
+  const text = String(title || "");
+  if (/반기보고서|분기보고서|사업보고서/.test(text)) return "실적";
+  if (/배당|현금ㆍ현물배당|현금.?현물배당/.test(text)) return "배당";
+  if (/단일판매|공급계약|수주/.test(text)) return "수주";
+  if (/유상증자|신주인수권|증권신고서\(지분증권\)/.test(text)) return "유상증자";
+  if (/전환사채|신주인수권부사채|교환사채/.test(text)) return "자금조달";
+  if (/합병|분할|영업양수|영업양도/.test(text)) return "구조변경";
+  return "공시";
+}
+
+function sanitizeDisclosureRows(records) {
+  if (!Array.isArray(records)) return [];
+  const out = [];
+  const seen = new Set();
+  records.forEach((record) => {
+    if (!record || typeof record !== "object") return;
+    const ticker = String(record.ticker || "").trim().toUpperCase();
+    const code = String(record.code || ticker.split(".")[0] || "").trim();
+    const date = String(record.date || "").slice(0, 10);
+    const title = String(record.title || record.report_nm || "").trim();
+    if (!/^[0-9]{6}\.(KS|KQ)$/.test(ticker)) return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !title) return;
+    const url = String(record.url || "").trim();
+    const key = `${ticker}|${date}|${title}|${url}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({
+      ticker,
+      code,
+      name: String(record.name || record.corp_name || labelName(ticker)).trim() || labelName(ticker),
+      date,
+      type: String(record.type || classifyDisclosureType(title)).trim(),
+      title,
+      summary: String(record.summary || "").trim(),
+      url,
+      source: String(record.source || "DART").trim(),
+      receiptNo: String(record.receiptNo || record.rcept_no || "").trim(),
+    });
+  });
+  return out.sort((a, b) => a.date.localeCompare(b.date) || a.ticker.localeCompare(b.ticker));
+}
+
 function buildRuntimeDataSnapshot() {
   const safePricePayload = sanitizePricePayloadForSnapshot(pricePayload);
   const safeMacroRows = normalizePayloadRecords(macroRows);
   const safeCreditRows = normalizeCreditRows(creditRows);
   const safeAdrRows = normalizePayloadRecords(adrRows);
+  const safeDisclosureRows = sanitizeDisclosureRows(disclosureRows);
 
-  if (!safePricePayload && !safeMacroRows.length && !safeCreditRows.length && !safeAdrRows.length) return null;
+  if (!safePricePayload && !safeMacroRows.length && !safeCreditRows.length && !safeAdrRows.length && !safeDisclosureRows.length) return null;
 
   return {
     version: DATA_CACHE_SCHEMA_VERSION,
@@ -313,6 +363,7 @@ function buildRuntimeDataSnapshot() {
     macroRows: safeMacroRows,
     creditRows: safeCreditRows,
     adrRows: safeAdrRows,
+    disclosureRows: safeDisclosureRows,
   };
 }
 
@@ -334,8 +385,9 @@ function applyRuntimeDataSnapshot(snapshot) {
   const safeMacroRows = normalizePayloadRecords(snapshot.macroRows);
   const safeCreditRows = normalizeCreditRows(snapshot.creditRows);
   const safeAdrRows = normalizePayloadRecords(snapshot.adrRows);
+  const safeDisclosureRows = sanitizeDisclosureRows(snapshot.disclosureRows);
 
-  if (!safePricePayload && !safeMacroRows.length && !safeCreditRows.length && !safeAdrRows.length) return false;
+  if (!safePricePayload && !safeMacroRows.length && !safeCreditRows.length && !safeAdrRows.length && !safeDisclosureRows.length) return false;
 
   if (safePricePayload) {
     pricePayload = safePricePayload;
@@ -344,6 +396,7 @@ function applyRuntimeDataSnapshot(snapshot) {
   if (safeMacroRows.length) macroRows = safeMacroRows;
   if (safeCreditRows.length) creditRows = safeCreditRows;
   if (safeAdrRows.length) adrRows = safeAdrRows;
+  if (safeDisclosureRows.length) disclosureRows = safeDisclosureRows;
   return true;
 }
 
@@ -2697,6 +2750,155 @@ function resetHandles() {
   renderChart(false);
 }
 
+function findNearestDisclosurePoint(eventDate, ticker, rows, chartYBySeries) {
+  const yByDate = chartYBySeries?.[ticker];
+  if (!yByDate) return null;
+  const targetMs = toUtcMs(eventDate);
+  if (!Number.isFinite(targetMs)) return null;
+
+  let best = null;
+  rows.forEach((row) => {
+    const date = String(row?.date || "").slice(0, 10);
+    const y = yByDate.get(date);
+    if (!date || !Number.isFinite(y)) return;
+    const ms = toUtcMs(date);
+    if (!Number.isFinite(ms)) return;
+    const diff = Math.abs(ms - targetMs);
+    if (diff > 10 * DAY_MS) return;
+    if (!best || diff < best.diff || (diff === best.diff && date >= eventDate && best.date < eventDate)) {
+      best = { date, y, diff };
+    }
+  });
+  return best;
+}
+
+function buildDisclosureTrace(rows, selected, chartYBySeries, start, end) {
+  if (!disclosureRows.length || !rows.length) return null;
+  const selectedSet = new Set(selected);
+  const grouped = new Map();
+
+  disclosureRows.forEach((event) => {
+    if (!selectedSet.has(event.ticker) || hiddenSeries.has(event.ticker)) return;
+    if (event.date < start || event.date > end) return;
+    const point = findNearestDisclosurePoint(event.date, event.ticker, rows, chartYBySeries);
+    if (!point) return;
+    const key = `${event.ticker}|${point.date}`;
+    const group = grouped.get(key) || {
+      ticker: event.ticker,
+      name: event.name || labelName(event.ticker),
+      plotDate: point.date,
+      y: point.y,
+      events: [],
+    };
+    group.events.push(event);
+    grouped.set(key, group);
+  });
+
+  const groups = [...grouped.values()].sort((a, b) => a.plotDate.localeCompare(b.plotDate));
+  if (!groups.length) return null;
+
+  return {
+    x: groups.map((group) => group.plotDate),
+    y: groups.map((group) => group.y),
+    text: groups.map(() => "v"),
+    customdata: groups.map((group) => [JSON.stringify(group)]),
+    type: "scatter",
+    mode: "markers+text",
+    name: DISCLOSURE_TRACE_NAME,
+    showlegend: false,
+    cliponaxis: false,
+    hovertemplate: groups.map((group) => {
+      const first = group.events[0];
+      const more = group.events.length > 1 ? ` 외 ${group.events.length - 1}건` : "";
+      return `${escapeHtml(group.name)}<br>${escapeHtml(first.type)}: ${escapeHtml(first.title)}${more}<extra>공시</extra>`;
+    }),
+    meta: { isDisclosureTrace: true },
+    textposition: "top center",
+    textfont: { color: DISCLOSURE_MARKER_COLOR, size: 13, family: "Arial Black, sans-serif" },
+    marker: {
+      symbol: "triangle-down",
+      size: 11,
+      color: DISCLOSURE_MARKER_COLOR,
+      line: { color: "rgba(10,10,10,0.92)", width: 1.5 },
+    },
+  };
+}
+
+function ensureDisclosurePopover() {
+  const chart = document.getElementById("chart");
+  if (!chart) return null;
+  let node = chart.querySelector(".disclosure-popover");
+  if (!node) {
+    node = document.createElement("div");
+    node.className = "disclosure-popover";
+    node.hidden = true;
+    chart.appendChild(node);
+  }
+  return node;
+}
+
+function hideDisclosurePopover() {
+  const node = document.querySelector(".disclosure-popover");
+  if (node) node.hidden = true;
+}
+
+function showDisclosurePopover(group, sourceEvent) {
+  const node = ensureDisclosurePopover();
+  const chart = document.getElementById("chart");
+  if (!node || !chart || !group?.events?.length) return;
+
+  const items = group.events.map((event) => {
+    const url = event.url ? `<a href="${escapeHtml(event.url)}" target="_blank" rel="noopener">원문</a>` : "";
+    const summary = event.summary ? `<p>${escapeHtml(event.summary)}</p>` : "";
+    return `
+      <li>
+        <span class="disclosure-type">${escapeHtml(event.type || "공시")}</span>
+        <strong>${escapeHtml(event.title)}</strong>
+        ${summary}
+        ${url}
+      </li>
+    `;
+  }).join("");
+
+  node.innerHTML = `
+    <div class="disclosure-popover-head">
+      <div>
+        <b>${escapeHtml(group.name || labelName(group.ticker))}</b>
+        <span>${escapeHtml(group.plotDate || "")}</span>
+      </div>
+      <button type="button" aria-label="공시 닫기">×</button>
+    </div>
+    <ul>${items}</ul>
+  `;
+  node.querySelector("button")?.addEventListener("click", hideDisclosurePopover, { once: true });
+
+  const rect = chart.getBoundingClientRect();
+  const clientX = sourceEvent?.clientX ?? (rect.left + rect.width * 0.5);
+  const clientY = sourceEvent?.clientY ?? (rect.top + rect.height * 0.35);
+  const width = Math.min(320, Math.max(248, rect.width - 24));
+  const left = Math.max(12, Math.min(rect.width - width - 12, clientX - rect.left - width * 0.5));
+  const maxTop = Math.max(12, rect.height - 180);
+  const top = Math.max(12, Math.min(maxTop, clientY - rect.top + 12));
+
+  node.style.width = `${width}px`;
+  node.style.left = `${left}px`;
+  node.style.top = `${top}px`;
+  node.hidden = false;
+}
+
+function handleDisclosureClick(evtData) {
+  const point = evtData?.points?.find((p) => p?.data?.meta?.isDisclosureTrace);
+  if (!point) return false;
+  try {
+    const raw = point.customdata?.[0];
+    const group = JSON.parse(raw);
+    showDisclosurePopover(group, evtData.event);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 /* Main chart */
 
 function renderChart(preserveZoom = true) {
@@ -2753,6 +2955,7 @@ function renderChart(preserveZoom = true) {
     selected.push(...fallback.slice(0, 2));
   }
   currentSelected = [...selected];
+  if (!showDisclosures) hideDisclosurePopover();
   hoveredLineTraceIndex = null;
   activeLineTraceIndex = null;
   appliedLineHighlightTraceIndex = null;
@@ -2783,6 +2986,7 @@ function renderChart(preserveZoom = true) {
     visibleForAuto.length ? visibleForAuto : selected,
     commonNormBases,
   );
+  const chartYBySeries = {};
 
   const traces = selected.map((series, i) => {
     const rawValues = rows.map((r) => toNum(r[series]));
@@ -2807,6 +3011,7 @@ function renderChart(preserveZoom = true) {
     if (offset) values = values.map((v) => (v !== null ? v + offset : null));
 
     const xValues = rows.map((r) => r.date);
+    chartYBySeries[series] = new Map(xValues.map((date, valueIndex) => [date, values[valueIndex]]));
 
     return {
       x: xValues,
@@ -2827,6 +3032,11 @@ function renderChart(preserveZoom = true) {
       hovertemplate: "%{text}<extra>%{fullData.name}</extra>",
     };
   });
+
+  const disclosureTrace = showDisclosures
+    ? buildDisclosureTrace(rows, selected, chartYBySeries, start, end)
+    : null;
+  if (disclosureTrace) traces.push(disclosureTrace);
 
   // Preserve zoom while reapplying handle transforms and updated traces.
 
@@ -2912,8 +3122,9 @@ function renderChart(preserveZoom = true) {
       const adrEl = document.getElementById("chart-adr");
       clearHoverOnChart(adrEl);
     });
-    el.on("plotly_click", () => {
+    el.on("plotly_click", (evtData) => {
       if (Date.now() < suppressPlotlyClickUntil) return;
+      if (handleDisclosureClick(evtData)) return;
       // iPhone Safari sends click after touchend; if we auto-reset here,
       // double-tap zoom is immediately cancelled when the finger is lifted.
       if (isTouchDevice()) return;
@@ -3731,11 +3942,12 @@ async function loadData(forceNetwork = false, options = {}) {
     return null;
   }
 
-  const [priceText, macroText, creditText, adrText] = await Promise.all([
+  const [priceText, macroText, creditText, adrText, disclosureText] = await Promise.all([
     fetchSeedText("./data/prices.json"),
     fetchSeedText("./data/macro_data.json"),
     fetchSeedText("./data/credit_data.json"),
     fetchSeedText("./data/adr_data.json"),
+    fetchSeedText("./data/disclosures.json"),
   ]);
 
   try {
@@ -3796,6 +4008,15 @@ async function loadData(forceNetwork = false, options = {}) {
     }
   } catch (_) {
     // ADR seed load failed; runtime refresh will try web source next.
+  }
+
+  try {
+    if (disclosureText) {
+      const disclosurePayload = JSON.parse(disclosureText);
+      disclosureRows = sanitizeDisclosureRows(disclosurePayload?.records || []);
+    }
+  } catch (_) {
+    // Disclosure seed load failed; chart simply renders without event markers.
   }
 }
 
@@ -3900,6 +4121,18 @@ async function boot() {
         hoverShowPopup = !hoverShowPopup;
         hoverToggleBtn.classList.toggle("is-active", hoverShowPopup);
         applyHoverState();
+        saveState();
+        renderChart();
+      });
+    }
+
+    const disclosureToggleBtn = document.getElementById("disclosureToggle");
+    if (disclosureToggleBtn) {
+      disclosureToggleBtn.classList.toggle("is-active", showDisclosures);
+      disclosureToggleBtn.addEventListener("click", () => {
+        showDisclosures = !showDisclosures;
+        disclosureToggleBtn.classList.toggle("is-active", showDisclosures);
+        if (!showDisclosures) hideDisclosurePopover();
         saveState();
         renderChart();
       });
