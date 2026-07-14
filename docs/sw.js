@@ -1,9 +1,9 @@
-const CACHE_NAME = "thinkstock-v17";
+const CACHE_NAME = "thinkstock-dev";
 const ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
-  "./app.js?v=20260714-data-health",
+  "./app.js?v=dev",
   "./manifest.webmanifest",
   "./icon.svg",
   "./data/prices.json",

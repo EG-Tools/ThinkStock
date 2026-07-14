@@ -251,8 +251,13 @@ function setMessage(msgEl, lines, isError = false) {
 }
 
 function latestDateForRows(rows, keys = []) {
-  if (!Array.isArray(rows)) return "";
+  return dateSpanForRows(rows, keys).latest;
+}
+
+function dateSpanForRows(rows, keys = []) {
+  if (!Array.isArray(rows)) return { first: "", latest: "" };
   const targetKeys = Array.isArray(keys) ? keys : [];
+  let first = "";
   let latest = "";
   rows.forEach((row) => {
     const date = String(row?.date || "").slice(0, 10);
@@ -260,9 +265,11 @@ function latestDateForRows(rows, keys = []) {
     const hasValue = targetKeys.length
       ? targetKeys.some((key) => toNum(row?.[key]) !== null)
       : Object.entries(row).some(([key, value]) => key !== "date" && toNum(value) !== null);
-    if (hasValue && (!latest || date > latest)) latest = date;
+    if (!hasValue) return;
+    if (!first || date < first) first = date;
+    if (!latest || date > latest) latest = date;
   });
-  return latest;
+  return { first, latest };
 }
 
 function daysSinceDate(dateText) {
@@ -278,12 +285,13 @@ function renderDataFreshness() {
   if (!el) return;
 
   const priceKeys = Array.isArray(pricePayload?.series) ? pricePayload.series : [];
+  const creditSourceRows = [...(macroRows || []), ...(creditRows || [])];
   const items = [
-    { label: "가격", date: latestDateForRows(pricePayload?.records || [], priceKeys), staleDays: 10 },
-    { label: "선행", date: latestDateForRows(macroRows, ["leading_cycle"]), staleDays: 75 },
-    { label: "신용", date: latestDateForRows(creditRows, CREDIT_COLS), staleDays: 14 },
-    { label: "ADR", date: latestDateForRows(adrRows, ADR_SERIES), staleDays: 10 },
-  ];
+    { label: "가격", ...dateSpanForRows(pricePayload?.records || [], priceKeys), staleDays: 10 },
+    { label: "선행", ...dateSpanForRows(macroRows, ["leading_cycle"]), staleDays: 75 },
+    { label: "신용", ...dateSpanForRows(creditSourceRows, CREDIT_COLS), staleDays: 14 },
+    { label: "ADR", ...dateSpanForRows(adrRows, ADR_SERIES), staleDays: 10 },
+  ].map((item) => ({ ...item, date: item.latest }));
 
   el.innerHTML = items.map((item) => {
     const age = daysSinceDate(item.date);
@@ -294,7 +302,9 @@ function renderDataFreshness() {
       isEmpty ? "is-empty" : "",
       isStale ? "is-stale" : "",
     ].filter(Boolean).join(" ");
-    const title = isStale ? `최신 데이터 확인 필요: ${age}일 전` : "";
+    const rangeTitle = item.first && item.latest ? `범위: ${item.first} ~ ${item.latest}` : "";
+    const staleTitle = isStale ? `최신 데이터 확인 필요: ${age}일 전` : "";
+    const title = [rangeTitle, staleTitle].filter(Boolean).join(" / ");
     return `<span class="${classes}" title="${escapeHtml(title)}"><strong>${escapeHtml(item.label)}</strong>${escapeHtml(item.date || "없음")}</span>`;
   }).join("");
 }
@@ -959,10 +969,9 @@ function parseCsv(text) {
 }
 
 
-function parseMacroPayload(text) {
-  const payload = JSON.parse(text.replace(/\bNaN\b/g, "null"));
-  const records = Array.isArray(payload?.records) ? payload.records : [];
-  return records.map((row) => {
+function normalizePayloadRecords(records) {
+  const list = Array.isArray(records) ? records : [];
+  return list.map((row) => {
     const out = { date: String(row.date || "").slice(0, 10) };
     Object.entries(row).forEach(([k, v]) => {
       if (k === "date") return;
@@ -972,6 +981,11 @@ function parseMacroPayload(text) {
   })
     .filter((row) => row.date)
     .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function parseMacroPayload(text) {
+  const payload = JSON.parse(text.replace(/\bNaN\b/g, "null"));
+  return normalizePayloadRecords(payload?.records);
 }
 
 function getSeriesColumns(rows) {
@@ -3179,8 +3193,43 @@ async function loadData(forceNetwork = false) {
     return null;
   }
 
+  const [priceText, macroText, creditText, adrText] = await Promise.all([
+    fetchSeedText("./data/prices.json"),
+    fetchSeedText("./data/macro_data.json"),
+    fetchSeedText("./data/credit_data.json"),
+    fetchSeedText("./data/adr_data.json"),
+  ]);
+
   try {
-    const creditText = await fetchSeedText("./data/credit_data.json");
+    if (priceText) {
+      const payload = JSON.parse(priceText.replace(/\bNaN\b/g, "null"));
+      if (payload && typeof payload === "object" && Array.isArray(payload.records)) {
+        const priceRows = normalizePayloadRecords(payload.records);
+        pricePayload = {
+          ...payload,
+          records: priceRows,
+          series: Array.isArray(payload.series) ? payload.series : getSeriesColumns(priceRows),
+          display_names: payload.display_names && typeof payload.display_names === "object" ? payload.display_names : {},
+        };
+        Object.assign(DISPLAY_NAMES, pricePayload.display_names || {});
+      }
+    }
+  } catch (_) {
+    // Price seed load failed; runtime refresh will still try core index APIs.
+  }
+
+  try {
+    if (macroText) {
+      const seededMacroRows = parseMacroPayload(macroText);
+      if (seededMacroRows.length) {
+        macroRows = seededMacroRows;
+      }
+    }
+  } catch (_) {
+    // Macro seed load failed; runtime refresh will still try live APIs.
+  }
+
+  try {
     if (creditText) {
       const seededCreditRows = parseMacroPayload(creditText);
       if (seededCreditRows.length) {
@@ -3192,7 +3241,6 @@ async function loadData(forceNetwork = false) {
   }
 
   try {
-    const adrText = await fetchSeedText("./data/adr_data.json");
     if (adrText) {
       const adrPayload = JSON.parse(adrText);
       if (Array.isArray(adrPayload?.records)) {
@@ -3203,6 +3251,42 @@ async function loadData(forceNetwork = false) {
     // ADR seed load failed; runtime refresh will try web source next.
   }
 }
+
+async function refreshRuntimeData(msgEl) {
+  const infoLines = [];
+  const warnLines = [];
+
+  const coreIndexResult = await refreshCoreIndexSeries();
+  infoLines.push(...coreIndexResult.applied);
+  warnLines.push(...coreIndexResult.warnings);
+
+  const preloadResult = await preloadCustomStocks({ forceRefresh: true });
+  if (preloadResult.failedNames.length) {
+    warnLines.push(`일부 선택 종목을 불러오지 못했습니다: ${preloadResult.failedNames.join(", ")}`);
+  }
+
+  try {
+    const { added, latestDate } = await refreshAdrFromWeb();
+    if (added > 0) {
+      infoLines.push(`ADR ${added}건 추가 반영(~ ${latestDate})`);
+    }
+  } catch (adrErr) {
+    warnLines.push(`ADR 불러오기 오류: ${adrErr.message}`);
+  }
+
+  const liveResult = await refreshLiveApiData();
+  infoLines.push(...liveResult.applied);
+  warnLines.push(...liveResult.warnings);
+
+  renderChart(false);
+
+  if (infoLines.length || warnLines.length) {
+    setMessage(msgEl, [...infoLines, ...warnLines], infoLines.length === 0);
+  } else {
+    setMessage(msgEl, []);
+  }
+}
+
 async function boot() {
   const msgEl = document.getElementById("messageArea");
   showStartupLoader();
@@ -3219,39 +3303,16 @@ async function boot() {
   try {
     await loadData(true);
     setStartupLoaderProgress(45, "Loading data");
+    renderChart(false);
+    setStartupLoaderProgress(70, "Rendering");
 
-    const coreIndexResult = await refreshCoreIndexSeries();
-    setStartupLoaderProgress(54, "Refreshing index");
-
-    const preloadResult = await preloadCustomStocks({ forceRefresh: true });
-    setStartupLoaderProgress(60, "Loading stocks");
-
-    const startupInfo = [];
-    const startupWarn = [];
-    startupInfo.push(...coreIndexResult.applied);
-    startupWarn.push(...coreIndexResult.warnings);
-    if (preloadResult.failedNames.length) {
-      startupWarn.push(`Some selected stocks were removed because price history could not be loaded: ${preloadResult.failedNames.join(", ")}`);
-    }
-
-    try {
-      const { added, latestDate } = await refreshAdrFromWeb();
-      if (added > 0) {
-        startupInfo.push(`ADR added ${added} rows (~ ${latestDate})`);
-      }
-    } catch (adrErr) {
-      startupWarn.push(`ADR refresh failed: ${adrErr.message}`);
-    }
-
-    setStartupLoaderProgress(74, "Refreshing ADR");
-    const startupLive = await refreshLiveApiData();
-    startupInfo.push(...startupLive.applied);
-    startupWarn.push(...startupLive.warnings);
-    setStartupLoaderProgress(90, "Applying data");
-
-    if (startupInfo.length || startupWarn.length) {
-      setMessage(msgEl, [...startupInfo, ...startupWarn], startupInfo.length === 0);
-    }
+    const refreshAfterFirstPaint = () => {
+      setTimeout(() => {
+        refreshRuntimeData(msgEl).catch((err) => {
+          setMessage(msgEl, `백그라운드 최신화 오류: ${err.message}`, true);
+        });
+      }, 0);
+    };
 
     document.querySelectorAll(".range-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -3309,39 +3370,7 @@ async function boot() {
             await requestServiceWorkerDataRefresh();
           }
           await loadData(true);
-
-          const infoLines = [];
-          const warnLines = [];
-
-          const coreIndexResult = await refreshCoreIndexSeries();
-          infoLines.push(...coreIndexResult.applied);
-          warnLines.push(...coreIndexResult.warnings);
-
-          const preloadResult = await preloadCustomStocks({ forceRefresh: true });
-          if (preloadResult.failedNames.length) {
-            warnLines.push(`Some selected stocks were removed because price history could not be loaded: ${preloadResult.failedNames.join(", ")}`);
-          }
-
-          try {
-            const { added, latestDate } = await refreshAdrFromWeb();
-            if (added > 0) {
-              infoLines.push(`ADR ${added}건 추가 반영(~ ${latestDate})`);
-            }
-          } catch (adrErr) {
-            warnLines.push(`ADR 불러오기 오류: ${adrErr.message}`);
-          }
-
-          const liveResult = await refreshLiveApiData();
-          infoLines.push(...liveResult.applied);
-          warnLines.push(...liveResult.warnings);
-
-          renderChart(false);
-
-          if (infoLines.length || warnLines.length) {
-            setMessage(msgEl, [...infoLines, ...warnLines], infoLines.length === 0);
-          } else {
-            setMessage(msgEl, []);
-          }
+          await refreshRuntimeData(msgEl);
         } catch (err) {
           setMessage(msgEl, `데이터 갱신 중 오류: ${err.message}`, true);
         } finally {
@@ -3350,8 +3379,8 @@ async function boot() {
       });
     }
 
-    setStartupLoaderProgress(100, "Rendering");
-    renderChart(false);
+    setStartupLoaderProgress(100, "Ready");
+    refreshAfterFirstPaint();
   } catch (err) {
     setMessage(msgEl, err.message || "데이터를 가져오지 못했습니다.", true);
   } finally {

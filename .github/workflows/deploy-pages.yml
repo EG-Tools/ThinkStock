@@ -45,6 +45,9 @@ jobs:
           KOFIA_API_KEY: ${{ secrets.KOFIA_API_KEY }}
         run: python scripts/validate_pages_data.py
 
+      - name: Stamp Pages Asset Version
+        run: python scripts/stamp_pages_assets.py
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
