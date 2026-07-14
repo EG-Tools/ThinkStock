@@ -728,12 +728,45 @@ def fetch_dart_disclosures(
     return sorted(dedup.values(), key=lambda row: (row["date"], row["ticker"], row["title"]))
 
 
+def normalize_disclosure_records(records: list[dict]) -> list[dict]:
+    out: dict[tuple[str, str, str], dict] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        ticker = str(record.get("ticker") or "").strip().upper()
+        code = str(record.get("code") or (ticker.split(".")[0] if ticker else "")).strip()
+        date_value = str(record.get("date") or "").strip()[:10]
+        title = str(record.get("title") or record.get("report_nm") or "").strip()
+        if not re.match(r"^[0-9]{6}\.(KS|KQ)$", ticker):
+            continue
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", date_value) or not title:
+            continue
+        classified_type = disclosure_type_from_title(title)
+        raw_type = str(record.get("type") or "").strip()
+        event_type = classified_type if not raw_type or raw_type == "공시" else raw_type
+        if not should_display_disclosure(title, event_type):
+            continue
+        out[(ticker, date_value, title)] = {
+            "ticker": ticker,
+            "code": code,
+            "name": str(record.get("name") or record.get("corp_name") or ticker).strip(),
+            "date": date_value,
+            "type": event_type,
+            "title": title,
+            "summary": str(record.get("summary") or "").strip(),
+            "source": str(record.get("source") or "OpenDART").strip(),
+            "receiptNo": str(record.get("receiptNo") or record.get("rcept_no") or "").strip(),
+            "url": str(record.get("url") or "").strip(),
+        }
+    return sorted(out.values(), key=lambda row: (row["date"], row["ticker"], row["title"]))
+
+
 def build_disclosure_payload(records: list[dict]) -> dict:
     return {
         "generated_at": pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
         "source": "OpenDART",
         "series": ["disclosures"],
-        "records": records,
+        "records": normalize_disclosure_records(records),
     }
 
 
@@ -786,7 +819,7 @@ def load_existing_disclosure_seed() -> list[dict]:
     records = payload.get("records", [])
     if not isinstance(records, list):
         return []
-    return [record for record in records if isinstance(record, dict)]
+    return normalize_disclosure_records(records)
 
 
 def load_existing_credit_seed() -> pd.DataFrame:
