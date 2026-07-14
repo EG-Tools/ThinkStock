@@ -3071,8 +3071,8 @@ async function refreshLiveApiData() {
     warnings.push("KOFIA API 키가 없어 신용잔고는 저장 데이터까지만 표시됩니다.");
   }
 
-  if (hasLeadingApi) macroRows = [];
-  // Keep seeded credit rows from docs/data/credit_data.json as a fallback.
+  // Preserve seeded macro credit history while live APIs refresh only their own series.
+  // Clearing macroRows here would remove pre-KOFIA credit data before 2021-11-09.
   let ecosRows = [];
   let kosisRows = [];
 
