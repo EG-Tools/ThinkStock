@@ -657,6 +657,41 @@ body {
 
 .adr-source-link:hover { color: var(--ink); text-decoration: underline; }
 
+.data-freshness {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 20px 4px;
+}
+
+.freshness-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.freshness-chip strong {
+  color: #d4d4d4;
+  font-weight: 700;
+}
+
+.freshness-chip.is-stale {
+  border-color: rgba(250, 204, 21, 0.28);
+  background: rgba(250, 204, 21, 0.08);
+}
+
+.freshness-chip.is-empty {
+  opacity: 0.62;
+}
+
 .cartesianlayer .point { display: none !important; }
 .legend .legendlines { display: none !important; }
 .no-hover-popup .hoverlayer > g { display: none !important; }

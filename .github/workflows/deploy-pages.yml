@@ -35,7 +35,15 @@ jobs:
           pip install pandas yfinance requests
 
       - name: Build Pages Data
+        env:
+          ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}
+          KOFIA_API_KEY: ${{ secrets.KOFIA_API_KEY }}
         run: python scripts/build_pages_data.py
+
+      - name: Validate Pages Data
+        env:
+          KOFIA_API_KEY: ${{ secrets.KOFIA_API_KEY }}
+        run: python scripts/validate_pages_data.py
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

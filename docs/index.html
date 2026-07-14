@@ -12,7 +12,7 @@
     <link rel="stylesheet" href="./styles.css">
     <script defer src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-    <script defer src="./app.js?v=20260714-credit-fix"></script>
+    <script defer src="./app.js?v=20260714-data-health"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -64,6 +64,7 @@
         <button class="range-btn" data-months="360">30Y</button>
         <a class="adr-source-link" href="http://www.adrinfo.kr/chart" target="_blank" rel="noopener">ADR 출처: adrinfo.kr</a>
       </div>
+      <div id="dataFreshness" class="data-freshness" aria-live="polite"></div>
       <div id="messageArea" class="message-area"></div>
     </div>
 

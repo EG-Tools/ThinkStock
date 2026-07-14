@@ -2,6 +2,7 @@ import json
 import os
 from datetime import date
 from pathlib import Path
+from urllib.parse import unquote
 
 import pandas as pd
 import requests
@@ -33,6 +34,8 @@ OECD_FRED_URL = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={OECD_FRED_
 LOCAL_ENV_FILE = ROOT / ".env.local"
 LOCAL_SCRIPT_ENV_FILE = ROOT / "scripts" / ".env.local"
 LOCAL_ECOS_KEY_FILE = ROOT / "scripts" / "ecos_key.txt"
+LOCAL_KOFIA_KEY_FILE = ROOT / "scripts" / "kofia_key.txt"
+KOFIA_CREDIT_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getGrantingOfCreditBalanceInfo"
 FREESIS_CREDIT_META_URL = "https://freesis.kofia.or.kr/meta/getMetaDataList.do"
 FREESIS_CREDIT_OBJ_NM = "STATSCU0100000070BO"
 FREESIS_CREDIT_UNIT_CODE = "06"
@@ -147,6 +150,24 @@ def resolve_ecos_api_key() -> str:
     if LOCAL_ECOS_KEY_FILE.exists():
         try:
             return LOCAL_ECOS_KEY_FILE.read_text(encoding="utf-8", errors="ignore").strip()
+        except Exception:
+            return ""
+    return ""
+
+
+def resolve_kofia_api_key() -> str:
+    env_key = os.environ.get("KOFIA_API_KEY", "").strip()
+    if env_key:
+        return env_key
+
+    for env_file in (LOCAL_ENV_FILE, LOCAL_SCRIPT_ENV_FILE):
+        file_key = _read_env_key(env_file, "KOFIA_API_KEY")
+        if file_key:
+            return file_key
+
+    if LOCAL_KOFIA_KEY_FILE.exists():
+        try:
+            return LOCAL_KOFIA_KEY_FILE.read_text(encoding="utf-8", errors="ignore").strip()
         except Exception:
             return ""
     return ""
@@ -290,6 +311,101 @@ def parse_won_to_trillion(raw: object) -> float | None:
     return round(n / 1e12, 4)
 
 
+def _credit_frame_from_records(records: list[dict]) -> pd.DataFrame:
+    if not records:
+        return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
+
+    out = pd.DataFrame.from_records(records)
+    out["date"] = pd.to_datetime(out["date"], errors="coerce")
+    out["kospi_credit"] = pd.to_numeric(out.get("kospi_credit"), errors="coerce")
+    out["kosdaq_credit"] = pd.to_numeric(out.get("kosdaq_credit"), errors="coerce")
+    out = out.dropna(subset=["date"])
+    if out.empty:
+        return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
+    out = out.drop_duplicates(subset=["date"], keep="last").sort_values("date").set_index("date")
+    out.index.name = "date"
+    return out[["kospi_credit", "kosdaq_credit"]]
+
+
+def fetch_kofia_credit(api_key: str) -> pd.DataFrame:
+    clean = str(api_key or "").strip()
+    if not clean:
+        return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
+
+    key_candidates = [clean]
+    decoded = unquote(clean)
+    if decoded and decoded != clean:
+        key_candidates.append(decoded)
+
+    last_error = ""
+    for service_key in dict.fromkeys(key_candidates):
+        records: list[dict] = []
+        try:
+            num_rows = 1000
+            page_no = 1
+            last_page = 1
+
+            while page_no <= last_page:
+                response = requests.get(
+                    KOFIA_CREDIT_URL,
+                    params={
+                        "serviceKey": service_key,
+                        "numOfRows": str(num_rows),
+                        "pageNo": str(page_no),
+                        "resultType": "json",
+                    },
+                    timeout=30,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                header = payload.get("response", {}).get("header", {})
+                result_code = str(header.get("resultCode", ""))
+                if result_code and result_code != "00":
+                    raise RuntimeError(header.get("resultMsg") or "KOFIA API error")
+
+                body = payload.get("response", {}).get("body", {})
+                raw_items = body.get("items", {}).get("item")
+                items = raw_items if isinstance(raw_items, list) else ([raw_items] if raw_items else [])
+
+                for item in items:
+                    bas_dt = str(item.get("basDt", ""))
+                    if len(bas_dt) != 8 or not bas_dt.isdigit():
+                        continue
+                    kospi = parse_won_to_trillion(item.get("crdTrFingScrs"))
+                    kosdaq = parse_won_to_trillion(item.get("crdTrFingKosdaq"))
+                    if kospi is None and kosdaq is None:
+                        continue
+                    records.append(
+                        {
+                            "date": f"{bas_dt[:4]}-{bas_dt[4:6]}-{bas_dt[6:8]}",
+                            "kospi_credit": kospi,
+                            "kosdaq_credit": kosdaq,
+                        }
+                    )
+
+                total_count = pd.to_numeric(body.get("totalCount"), errors="coerce")
+                rows_per_page = pd.to_numeric(body.get("numOfRows"), errors="coerce")
+                if page_no == 1 and pd.notna(total_count) and total_count > 0:
+                    per_page = int(rows_per_page) if pd.notna(rows_per_page) and rows_per_page > 0 else num_rows
+                    last_page = max(1, int((int(total_count) + per_page - 1) / per_page))
+
+                if not items:
+                    break
+                page_no += 1
+
+        except Exception as exc:
+            last_error = str(exc)
+            continue
+
+        out = _credit_frame_from_records(records)
+        if not out.empty:
+            return out
+
+    if last_error:
+        print(f"KOFIA credit fetch failed: {last_error}")
+    return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
+
+
 def fetch_freesis_credit() -> pd.DataFrame:
     today_ymd = pd.Timestamp.today().strftime("%Y%m%d")
     payload = {
@@ -342,13 +458,7 @@ def fetch_freesis_credit() -> pd.DataFrame:
             }
         )
 
-    if not records:
-        return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
-
-    out = pd.DataFrame.from_records(records)
-    out = out.drop_duplicates(subset=["date"]).sort_values("date").set_index("date")
-    out.index.name = "date"
-    return out[["kospi_credit", "kosdaq_credit"]]
+    return _credit_frame_from_records(records)
 
 
 def load_existing_credit_seed() -> pd.DataFrame:
@@ -412,6 +522,36 @@ def merge_credit_seed_with_freesis(seed: pd.DataFrame, live: pd.DataFrame) -> tu
     merged = merged[~merged.index.duplicated(keep="last")].sort_index()
     merged.index.name = "date"
     return merged, len(new_tail)
+
+
+def merge_credit_seed_with_kofia(seed: pd.DataFrame, live: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    if live.empty:
+        return seed, 0
+    if seed.empty:
+        return live.sort_index(), len(live)
+
+    merged = seed.copy()
+    applied = 0
+    for idx, row in live.sort_index().iterrows():
+        prev = merged.loc[idx] if idx in merged.index else pd.Series(dtype="float64")
+        next_kospi = row["kospi_credit"] if pd.notna(row["kospi_credit"]) else prev.get("kospi_credit", pd.NA)
+        next_kosdaq = row["kosdaq_credit"] if pd.notna(row["kosdaq_credit"]) else prev.get("kosdaq_credit", pd.NA)
+        prev_kospi = prev.get("kospi_credit", pd.NA)
+        prev_kosdaq = prev.get("kosdaq_credit", pd.NA)
+        changed = idx not in merged.index or (
+            (pd.isna(prev_kospi) and pd.notna(next_kospi))
+            or (pd.notna(prev_kospi) and pd.notna(next_kospi) and float(next_kospi) != float(prev_kospi))
+            or (pd.isna(prev_kosdaq) and pd.notna(next_kosdaq))
+            or (pd.notna(prev_kosdaq) and pd.notna(next_kosdaq) and float(next_kosdaq) != float(prev_kosdaq))
+        )
+        if changed:
+            applied += 1
+        merged.loc[idx, "kospi_credit"] = next_kospi
+        merged.loc[idx, "kosdaq_credit"] = next_kosdaq
+
+    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+    merged.index.name = "date"
+    return merged[["kospi_credit", "kosdaq_credit"]], applied
 
 
 def densify_macro(macro: pd.DataFrame, price_index: pd.DatetimeIndex) -> pd.DataFrame:
@@ -478,11 +618,24 @@ def main() -> None:
     macro = densify_macro(macro_source, prices.index if not prices.empty else pd.DatetimeIndex([]))
 
     credit_seed = load_existing_credit_seed()
+    credit_merged = credit_seed
+    kofia_key = resolve_kofia_api_key()
+    if kofia_key:
+        credit_kofia = fetch_kofia_credit(kofia_key)
+        credit_merged, applied_kofia_credit = merge_credit_seed_with_kofia(credit_merged, credit_kofia)
+        if applied_kofia_credit > 0:
+            latest_credit = credit_merged.index.max().strftime("%Y-%m-%d")
+            print(f"Applied KOFIA credit rows: {applied_kofia_credit} (latest={latest_credit})")
+        else:
+            print("KOFIA credit had no new rows.")
+    else:
+        print("KOFIA_API_KEY is not configured; using existing verified credit seed.")
+
     if ENABLE_FREESIS_CREDIT_TAIL:
         credit_live = fetch_freesis_credit()
-        credit_merged, appended_credit = merge_credit_seed_with_freesis(credit_seed, credit_live)
+        credit_merged, appended_credit = merge_credit_seed_with_freesis(credit_merged, credit_live)
     else:
-        credit_merged, appended_credit = credit_seed, 0
+        appended_credit = 0
         print("Skipped Freesis credit tail; using existing verified credit seed only.")
 
     if appended_credit > 0:

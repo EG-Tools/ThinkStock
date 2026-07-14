@@ -1,0 +1,167 @@
+import json
+import math
+import os
+import subprocess
+import sys
+from datetime import date, datetime
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = ROOT / "docs" / "data"
+
+DATASETS = {
+    "prices": DATA_DIR / "prices.json",
+    "macro": DATA_DIR / "macro_data.json",
+    "credit": DATA_DIR / "credit_data.json",
+    "adr": DATA_DIR / "adr_data.json",
+}
+
+CREDIT_COLUMNS = ("kospi_credit", "kosdaq_credit")
+CREDIT_LIMITS = {
+    "kospi_credit": (1.0, 80.0),
+    "kosdaq_credit": (1.0, 50.0),
+}
+CREDIT_MAX_DAILY_PCT_CHANGE = 0.12
+CREDIT_MAX_FRESH_DAYS = 14
+
+
+def fail(message: str) -> None:
+    raise AssertionError(message)
+
+
+def parse_date(raw: object, label: str) -> date:
+    text = str(raw or "").strip()[:10]
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise AssertionError(f"{label}: invalid date {raw!r}") from exc
+
+
+def load_payload(name: str) -> dict:
+    path = DATASETS[name]
+    if not path.exists():
+        fail(f"{name}: missing {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise AssertionError(f"{name}: invalid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        fail(f"{name}: payload must be an object")
+    return payload
+
+
+def validate_records(name: str, payload: dict) -> list[dict]:
+    rows = payload.get("records")
+    if not isinstance(rows, list) or not rows:
+        fail(f"{name}: records must be a non-empty list")
+
+    prev_date: date | None = None
+    seen: set[date] = set()
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            fail(f"{name}: row {idx} must be an object")
+        row_date = parse_date(row.get("date"), f"{name} row {idx}")
+        if prev_date and row_date <= prev_date:
+            fail(f"{name}: dates must be strictly increasing near {row_date.isoformat()}")
+        if row_date in seen:
+            fail(f"{name}: duplicate date {row_date.isoformat()}")
+        seen.add(row_date)
+        prev_date = row_date
+
+        numeric_values = 0
+        for key, value in row.items():
+            if key == "date" or value is None:
+                continue
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(float(value)):
+                fail(f"{name}: {key} on {row_date.isoformat()} must be a finite number")
+            numeric_values += 1
+        if numeric_values == 0:
+            fail(f"{name}: row {row_date.isoformat()} has no numeric values")
+
+    return rows
+
+
+def validate_credit(rows: list[dict]) -> None:
+    last_seen = {key: None for key in CREDIT_COLUMNS}
+    for row in rows:
+        row_date = parse_date(row.get("date"), "credit")
+        for key in CREDIT_COLUMNS:
+            value = row.get(key)
+            if value is None:
+                continue
+            value = float(value)
+            lower, upper = CREDIT_LIMITS[key]
+            if not lower <= value <= upper:
+                fail(f"credit: {key} on {row_date.isoformat()} out of expected range: {value}")
+
+            prev = last_seen[key]
+            if prev is not None:
+                prev_date, prev_value = prev
+                if prev_value > 0:
+                    pct_change = abs(value / prev_value - 1.0)
+                    day_span = max(1, (row_date - prev_date).days)
+                    daily_pct_change = pct_change / day_span
+                    if daily_pct_change > CREDIT_MAX_DAILY_PCT_CHANGE:
+                        fail(
+                            "credit: "
+                            f"{key} changed {pct_change:.2%} over {day_span} day(s) from {prev_date.isoformat()} "
+                            f"to {row_date.isoformat()} ({prev_value} -> {value})"
+                        )
+            last_seen[key] = (row_date, value)
+
+    if os.environ.get("KOFIA_API_KEY", "").strip():
+        latest = parse_date(rows[-1].get("date"), "credit latest")
+        age_days = (date.today() - latest).days
+        if age_days > CREDIT_MAX_FRESH_DAYS:
+            fail(f"credit: latest date {latest.isoformat()} is stale ({age_days} days old)")
+    else:
+        committed_latest = read_committed_credit_latest()
+        if committed_latest:
+            latest = parse_date(rows[-1].get("date"), "credit latest")
+            if latest > committed_latest:
+                fail(
+                    "credit: latest date advanced without KOFIA_API_KEY "
+                    f"({committed_latest.isoformat()} -> {latest.isoformat()})"
+                )
+
+
+def read_committed_credit_latest() -> date | None:
+    try:
+        raw = subprocess.check_output(
+            ["git", "show", "HEAD:docs/data/credit_data.json"],
+            cwd=ROOT,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+        )
+        payload = json.loads(raw)
+        rows = payload.get("records", [])
+        if not rows:
+            return None
+        return parse_date(rows[-1].get("date"), "committed credit latest")
+    except Exception:
+        return None
+
+
+def main() -> int:
+    summaries: list[str] = []
+    for name in ("prices", "macro", "credit", "adr"):
+        payload = load_payload(name)
+        rows = validate_records(name, payload)
+        summaries.append(f"{name}: {len(rows)} rows, latest {rows[-1]['date']}")
+        if name == "credit":
+            validate_credit(rows)
+
+    print("Pages data validation passed:")
+    for summary in summaries:
+        print(f"- {summary}")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except AssertionError as exc:
+        print(f"Pages data validation failed: {exc}", file=sys.stderr)
+        raise SystemExit(1)

@@ -250,6 +250,55 @@ function setMessage(msgEl, lines, isError = false) {
   msgEl.innerHTML = `<div class="message${isError ? " error" : ""}">${body}</div>`;
 }
 
+function latestDateForRows(rows, keys = []) {
+  if (!Array.isArray(rows)) return "";
+  const targetKeys = Array.isArray(keys) ? keys : [];
+  let latest = "";
+  rows.forEach((row) => {
+    const date = String(row?.date || "").slice(0, 10);
+    if (!date) return;
+    const hasValue = targetKeys.length
+      ? targetKeys.some((key) => toNum(row?.[key]) !== null)
+      : Object.entries(row).some(([key, value]) => key !== "date" && toNum(value) !== null);
+    if (hasValue && (!latest || date > latest)) latest = date;
+  });
+  return latest;
+}
+
+function daysSinceDate(dateText) {
+  const time = toUtcMs(dateText);
+  if (!Number.isFinite(time)) return null;
+  const today = toUtcMs(new Date().toISOString().slice(0, 10));
+  if (!Number.isFinite(today)) return null;
+  return Math.floor((today - time) / DAY_MS);
+}
+
+function renderDataFreshness() {
+  const el = document.getElementById("dataFreshness");
+  if (!el) return;
+
+  const priceKeys = Array.isArray(pricePayload?.series) ? pricePayload.series : [];
+  const items = [
+    { label: "가격", date: latestDateForRows(pricePayload?.records || [], priceKeys), staleDays: 10 },
+    { label: "선행", date: latestDateForRows(macroRows, ["leading_cycle"]), staleDays: 75 },
+    { label: "신용", date: latestDateForRows(creditRows, CREDIT_COLS), staleDays: 14 },
+    { label: "ADR", date: latestDateForRows(adrRows, ADR_SERIES), staleDays: 10 },
+  ];
+
+  el.innerHTML = items.map((item) => {
+    const age = daysSinceDate(item.date);
+    const isEmpty = !item.date;
+    const isStale = Number.isFinite(age) && age > item.staleDays;
+    const classes = [
+      "freshness-chip",
+      isEmpty ? "is-empty" : "",
+      isStale ? "is-stale" : "",
+    ].filter(Boolean).join(" ");
+    const title = isStale ? `최신 데이터 확인 필요: ${age}일 전` : "";
+    return `<span class="${classes}" title="${escapeHtml(title)}"><strong>${escapeHtml(item.label)}</strong>${escapeHtml(item.date || "없음")}</span>`;
+  }).join("");
+}
+
 function ensureStartupLoader() {
   const titleEl = document.querySelector(".hero h1");
   if (!titleEl) return null;
@@ -2127,6 +2176,7 @@ function renderChart(preserveZoom = true) {
   pushBounds(macroRows);
   pushBounds(creditRows);
   pushBounds(adrRows);
+  renderDataFreshness();
 
   const maxDate = maxCandidates.length
     ? maxCandidates.reduce((mx, d) => (d > mx ? d : mx), maxCandidates[0])
