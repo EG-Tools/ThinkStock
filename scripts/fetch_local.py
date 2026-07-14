@@ -610,12 +610,9 @@ def main():
 
     out_p = DATA_DIR / "prices.json"
     out_m = DATA_DIR / "macro_data.json"
-    out_c = DATA_DIR / "sample_macro_data.csv"
 
     out_p.write_text(json.dumps(price_payload, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
     out_m.write_text(json.dumps(macro_payload, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
-    if SAMPLE_MACRO.exists():
-        out_c.write_text(SAMPLE_MACRO.read_text(encoding="utf-8"), encoding="utf-8")
 
     print(f"\n완료!")
     print(f"  prices.json     {len(price_payload['records'])}행  시리즈: {price_payload['series']}")

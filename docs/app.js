@@ -44,7 +44,7 @@ const DATA_CACHE_RECORD_KEY = "latest";
 const DATA_CACHE_LOCAL_KEY = "thinkstock-runtime-cache-v1";
 const DATA_CACHE_SCHEMA_VERSION = 1;
 const DATA_CACHE_MAX_AGE_DAYS = 7;
-const APP_VERSION = "0.29";
+const APP_VERSION = "0.30";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -151,6 +151,8 @@ let macroRows = [];
 let creditRows = [];   // KOFIA credit balance seed data (credit_data.json)
 let disclosureRows = [];
 let dartCorpCodeMap = new Map();
+let dartCorpCodeMapLoaded = false;
+let dartCorpCodeMapPromise = null;
 let activeMonths = 120;
 let hiddenSeries = new Set(["kospi_credit", "^KQ11", "kosdaq_credit"]);
 let customStocks = [];
@@ -436,6 +438,43 @@ function setDartCorpCodeRows(records) {
   sanitizeDartCorpCodeRows(records).forEach((record) => {
     dartCorpCodeMap.set(record.stock_code, record);
   });
+  dartCorpCodeMapLoaded = dartCorpCodeMap.size > 0;
+}
+
+async function fetchSeedText(path, forceNetwork = false) {
+  const firstUrl = forceNetwork ? appendCacheBust(path) : path;
+  const opt = forceNetwork ? { cache: "reload" } : {};
+  try {
+    const firstRes = await fetch(firstUrl, opt);
+    if (firstRes.ok) return await firstRes.text();
+  } catch (_) {
+    // Try fallback below.
+  }
+  if (!forceNetwork) return null;
+  try {
+    const fallbackRes = await fetch(path, { cache: "no-store" });
+    if (fallbackRes.ok) return await fallbackRes.text();
+  } catch (_) {
+    // Ignore.
+  }
+  return null;
+}
+
+async function ensureDartCorpCodeMapLoaded(forceNetwork = false) {
+  if (dartCorpCodeMapLoaded && dartCorpCodeMap.size) return true;
+  if (dartCorpCodeMapPromise) return dartCorpCodeMapPromise;
+
+  dartCorpCodeMapPromise = (async () => {
+    const text = await fetchSeedText("./data/dart_corp_codes.json", forceNetwork);
+    if (!text) return false;
+    const payload = JSON.parse(text);
+    setDartCorpCodeRows(payload?.records || []);
+    return dartCorpCodeMapLoaded;
+  })().finally(() => {
+    dartCorpCodeMapPromise = null;
+  });
+
+  return dartCorpCodeMapPromise;
 }
 
 function buildRuntimeDataSnapshot() {
@@ -1716,23 +1755,6 @@ function bindCursorMoveSync() {
     adrEl.addEventListener('mousedown', onMouseDown);
     dragZoomBound = true;
   }
-}
-function parseCsv(text) {
-  const result = Papa.parse(text.trim(), {
-    header: true, dynamicTyping: true, skipEmptyLines: true,
-    transformHeader: (h) => h.trim(),
-  });
-  if (result.errors.length) throw new Error(result.errors[0].message);
-  if (!result.meta.fields.includes("date")) throw new Error("CSV에 date 컬럼이 있어야 합니다.");
-  return result.data.map((row) => {
-    const out = { date: String(row.date).slice(0, 10) };
-    Object.entries(row).forEach(([k, v]) => {
-      if (k === "date" || v === "") return;
-      const n = Number(v);
-      out[k] = Number.isFinite(n) ? n : v;
-    });
-    return out;
-  }).sort((a, b) => a.date.localeCompare(b.date));
 }
 
 
@@ -3375,6 +3397,11 @@ async function fetchDartDisclosuresForTickerLive(apiKey, ticker) {
   const code = targetTicker.slice(0, 6);
   if (!clean || !/^[0-9]{6}\.(KS|KQ)$/.test(targetTicker)) return [];
 
+  const mapLoaded = await ensureDartCorpCodeMapLoaded();
+  if (!mapLoaded) {
+    throw new Error("DART corp_code 매핑을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.");
+  }
+
   const corp = dartCorpCodeMap.get(code);
   if (!corp?.corp_code) {
     throw new Error("DART corp_code 매핑을 찾지 못했습니다. 앱을 새로고침한 뒤 다시 시도해 주세요.");
@@ -4558,33 +4585,12 @@ async function loadData(forceNetwork = false, options = {}) {
   }
   if (!Array.isArray(macroRows)) macroRows = [];
   if (!Array.isArray(creditRows)) creditRows = [];
-  const opt = forceNetwork ? { cache: "reload" } : {};
-  const buildUrl = (path) => (forceNetwork ? appendCacheBust(path) : path);
-  async function fetchSeedText(path) {
-    const firstUrl = buildUrl(path);
-    try {
-      const firstRes = await fetch(firstUrl, opt);
-      if (firstRes.ok) return await firstRes.text();
-    } catch (_) {
-      // Try fallback below.
-    }
-    if (!forceNetwork) return null;
-    try {
-      const fallbackRes = await fetch(path, { cache: "no-store" });
-      if (fallbackRes.ok) return await fallbackRes.text();
-    } catch (_) {
-      // Ignore.
-    }
-    return null;
-  }
-
-  const [priceText, macroText, creditText, adrText, disclosureText, dartCorpCodeText] = await Promise.all([
-    fetchSeedText("./data/prices.json"),
-    fetchSeedText("./data/macro_data.json"),
-    fetchSeedText("./data/credit_data.json"),
-    fetchSeedText("./data/adr_data.json"),
-    fetchSeedText("./data/disclosures.json"),
-    fetchSeedText("./data/dart_corp_codes.json"),
+  const [priceText, macroText, creditText, adrText, disclosureText] = await Promise.all([
+    fetchSeedText("./data/prices.json", forceNetwork),
+    fetchSeedText("./data/macro_data.json", forceNetwork),
+    fetchSeedText("./data/credit_data.json", forceNetwork),
+    fetchSeedText("./data/adr_data.json", forceNetwork),
+    fetchSeedText("./data/disclosures.json", forceNetwork),
   ]);
 
   try {
@@ -4659,14 +4665,6 @@ async function loadData(forceNetwork = false, options = {}) {
     // Disclosure seed load failed; chart simply renders without event markers.
   }
 
-  try {
-    if (dartCorpCodeText) {
-      const dartCorpCodePayload = JSON.parse(dartCorpCodeText);
-      setDartCorpCodeRows(dartCorpCodePayload?.records || []);
-    }
-  } catch (_) {
-    // DART corp code seed load failed; dynamic disclosure refresh will explain if needed.
-  }
 }
 
 async function refreshRuntimeData(msgEl) {

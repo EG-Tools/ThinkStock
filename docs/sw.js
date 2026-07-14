@@ -5,16 +5,13 @@ const ASSETS = [
   "./styles.css",
   "./app.js?v=dev",
   "./vendor/plotly-2.35.2.min.js",
-  "./vendor/papaparse-5.4.1.min.js",
   "./manifest.webmanifest",
   "./icon.svg",
   "./data/prices.json",
   "./data/macro_data.json",
-  "./data/sample_macro_data.csv",
   "./data/adr_data.json",
   "./data/credit_data.json",
   "./data/disclosures.json",
-  "./data/dart_corp_codes.json",
 ];
 
 self.addEventListener("install", (event) => {
@@ -30,8 +27,7 @@ self.addEventListener("activate", (event) => {
   );
 });
 
-// 데이터 파일: cache-first (빠른 시작, 새로고침 버튼으로만 갱신)
-// 앱 셸: network-first (코드 변경 즉시 반영)
+// 데이터와 앱 셸 모두 network-first로 갱신하고, 실패 시 캐시를 fallback으로 사용한다.
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   const isData = url.pathname.includes("/data/");

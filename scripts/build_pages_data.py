@@ -27,7 +27,6 @@ DATA_DIR = ROOT / "docs" / "data"
 SAMPLE_MACRO = ROOT / "sample_macro_data.csv"
 OUTPUT_JSON = DATA_DIR / "prices.json"
 OUTPUT_MACRO_JSON = DATA_DIR / "macro_data.json"
-OUTPUT_MACRO_CSV = DATA_DIR / "sample_macro_data.csv"
 OUTPUT_CREDIT_JSON = DATA_DIR / "credit_data.json"
 OUTPUT_ADR_JSON = DATA_DIR / "adr_data.json"
 OUTPUT_DISCLOSURES_JSON = DATA_DIR / "disclosures.json"
@@ -1077,13 +1076,6 @@ def main() -> None:
             json.dumps(build_dart_corp_code_payload(dart_corp_map), ensure_ascii=False, indent=2, allow_nan=False),
             encoding="utf-8",
         )
-    if macro_source.empty:
-        OUTPUT_MACRO_CSV.write_text("date\n", encoding="utf-8")
-    else:
-        macro_source_out = macro_source.reset_index().copy()
-        macro_source_out["date"] = pd.to_datetime(macro_source_out["date"]).dt.strftime("%Y-%m-%d")
-        macro_source_out.to_csv(OUTPUT_MACRO_CSV, index=False, float_format="%.4f")
-
     print(f"Wrote {OUTPUT_JSON}")
     print(f"Wrote {OUTPUT_MACRO_JSON}")
     if not credit_merged.empty:
@@ -1093,7 +1085,6 @@ def main() -> None:
     print(f"Wrote {OUTPUT_DISCLOSURES_JSON}")
     if dart_corp_map:
         print(f"Wrote {OUTPUT_DART_CORP_CODES_JSON}")
-    print(f"Wrote {OUTPUT_MACRO_CSV}")
 
 if __name__ == "__main__":
     main()
