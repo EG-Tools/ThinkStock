@@ -16,6 +16,7 @@ DEFAULT_TICKERS = ["^KS11", "^KQ11", "005930.KS", "218410.KQ"]
 MACRO_SERIES = ["leading_cycle"]
 CREDIT_SERIES = ["kospi_credit", "kosdaq_credit"]
 CREDIT_MAX_DAILY_PCT_CHANGE = 0.12
+CREDIT_SEED_LIVE_OVERLAP_DAYS = 21
 CREDIT_MAX_DAILY_ABS_CHANGE = {
     "kospi_credit": 3.0,
     "kosdaq_credit": 1.0,
@@ -188,31 +189,66 @@ def is_plausible_credit_transition(
 
 
 def merge_credit_seed_with_existing_tail(seed: pd.DataFrame, existing: pd.DataFrame) -> pd.DataFrame:
-    seed = pick_numeric_columns(seed, CREDIT_SERIES)
-    existing = pick_numeric_columns(existing, CREDIT_SERIES)
-    if seed.empty:
-        return existing
-    if existing.empty:
-        return seed
+    merged, _ = merge_credit_seed_shape_with_live_tail(seed, existing, "existing")
+    return merged
 
-    tail = existing[existing.index > seed.index.max()].sort_index()
+
+def recent_credit_scale_factor(seed: pd.Series, live: pd.Series, latest_seed: pd.Timestamp) -> float:
+    merged = pd.concat([seed, live], axis=1, keys=["seed", "live"]).dropna()
+    if merged.empty:
+        return 1.0
+
+    cutoff = latest_seed - pd.Timedelta(days=CREDIT_SEED_LIVE_OVERLAP_DAYS)
+    recent = merged[(merged.index >= cutoff) & (merged.index <= latest_seed)]
+    if recent.empty:
+        recent = merged[merged.index <= latest_seed].tail(60)
+    if recent.empty:
+        recent = merged.tail(60)
+
+    ratios = (recent["live"] / recent["seed"]).replace([pd.NA, float("inf"), float("-inf")], pd.NA).dropna()
+    ratios = ratios[(ratios > 0)]
+    if ratios.empty:
+        return 1.0
+    return float(ratios.median())
+
+
+def merge_credit_seed_shape_with_live_tail(
+    seed: pd.DataFrame,
+    live: pd.DataFrame,
+    label: str,
+) -> tuple[pd.DataFrame, int]:
+    seed = pick_numeric_columns(seed, CREDIT_SERIES)
+    live = pick_numeric_columns(live, CREDIT_SERIES)
+    if seed.empty:
+        return live.sort_index(), len(live)
+    if live.empty:
+        return seed, 0
+
+    latest_seed = seed.index.max()
+    scaled_seed = seed.copy()
+    for column in CREDIT_SERIES:
+        factor = recent_credit_scale_factor(seed[column], live[column], latest_seed)
+        if factor > 1.15 or factor < 0.85:
+            scaled_seed[column] = pd.to_numeric(scaled_seed[column], errors="coerce") * factor
+
+    tail = live[live.index > latest_seed].sort_index()
     if tail.empty:
-        return seed
+        return scaled_seed, 0
 
     keep: list[pd.Timestamp] = []
-    prev_date = seed.index.max()
-    prev_row = seed.loc[prev_date]
+    prev_date = latest_seed
+    prev_row = scaled_seed.loc[latest_seed]
     for row_date, row in tail.iterrows():
         if not is_plausible_credit_transition(prev_date, prev_row, row_date, row):
-            print(f"Dropped existing credit tail from {row_date.strftime('%Y-%m-%d')} due to discontinuity.")
+            print(f"Dropped {label} credit tail from {row_date.strftime('%Y-%m-%d')} due to discontinuity.")
             break
         keep.append(row_date)
         prev_date = row_date
         prev_row = row
 
     if not keep:
-        return seed
-    return merge_credit_frames(seed, tail.loc[keep])
+        return scaled_seed, 0
+    return merge_credit_frames(scaled_seed, tail.loc[keep]), len(keep)
 
 
 def align_historical_credit_seed(historical: pd.DataFrame, reference: pd.DataFrame) -> pd.DataFrame:
@@ -1098,36 +1134,7 @@ def merge_credit_seed_with_freesis(seed: pd.DataFrame, live: pd.DataFrame) -> tu
 
 
 def merge_credit_seed_with_kofia(seed: pd.DataFrame, live: pd.DataFrame) -> tuple[pd.DataFrame, int]:
-    if live.empty:
-        return seed, 0
-    if seed.empty:
-        return live.sort_index(), len(live)
-
-    live = live.sort_index()
-    first_live_date = live.index.min()
-    merged = align_historical_credit_seed(seed, live).copy()
-    merged = merged[merged.index < first_live_date]
-    applied = 0
-    for idx, row in live.iterrows():
-        prev = merged.loc[idx] if idx in merged.index else pd.Series(dtype="float64")
-        next_kospi = row["kospi_credit"] if pd.notna(row["kospi_credit"]) else prev.get("kospi_credit", pd.NA)
-        next_kosdaq = row["kosdaq_credit"] if pd.notna(row["kosdaq_credit"]) else prev.get("kosdaq_credit", pd.NA)
-        prev_kospi = prev.get("kospi_credit", pd.NA)
-        prev_kosdaq = prev.get("kosdaq_credit", pd.NA)
-        changed = idx not in merged.index or (
-            (pd.isna(prev_kospi) and pd.notna(next_kospi))
-            or (pd.notna(prev_kospi) and pd.notna(next_kospi) and float(next_kospi) != float(prev_kospi))
-            or (pd.isna(prev_kosdaq) and pd.notna(next_kosdaq))
-            or (pd.notna(prev_kosdaq) and pd.notna(next_kosdaq) and float(next_kosdaq) != float(prev_kosdaq))
-        )
-        if changed:
-            applied += 1
-        merged.loc[idx, "kospi_credit"] = next_kospi
-        merged.loc[idx, "kosdaq_credit"] = next_kosdaq
-
-    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
-    merged.index.name = "date"
-    return merged[["kospi_credit", "kosdaq_credit"]], applied
+    return merge_credit_seed_shape_with_live_tail(seed, live, "KOFIA")
 
 
 def densify_macro(macro: pd.DataFrame, price_index: pd.DatetimeIndex) -> pd.DataFrame:
@@ -1282,18 +1289,15 @@ def main() -> None:
 
     existing_credit_seed = load_existing_credit_seed()
     kofia_key = resolve_kofia_api_key()
-    existing_credit_is_newer = (
+    credit_seed = merge_credit_seed_with_existing_tail(historical_credit_seed, existing_credit_seed)
+    if (
         not existing_credit_seed.empty
         and not historical_credit_seed.empty
         and existing_credit_seed.index.max() > historical_credit_seed.index.max()
-    )
-    if not kofia_key and existing_credit_is_newer:
-        credit_seed = existing_credit_seed
-        latest_existing_credit = existing_credit_seed.index.max().strftime("%Y-%m-%d")
-        print(f"Keeping existing verified credit seed (latest={latest_existing_credit}).")
-        build_report["events"].append(f"Keeping existing verified credit seed latest={latest_existing_credit}")
-    else:
-        credit_seed = merge_credit_seed_with_existing_tail(historical_credit_seed, existing_credit_seed)
+    ):
+        latest_existing_credit = credit_seed.index.max().strftime("%Y-%m-%d")
+        print(f"Applied existing verified credit tail (latest={latest_existing_credit}).")
+        build_report["events"].append(f"Applied existing verified credit tail latest={latest_existing_credit}")
     build_report["sources"]["credit_seed"] = frame_summary(credit_seed)
     credit_merged = credit_seed
     if kofia_key:

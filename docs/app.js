@@ -44,7 +44,7 @@ const DATA_CACHE_RECORD_KEY = "latest";
 const DATA_CACHE_LOCAL_KEY = "thinkstock-runtime-cache-v1";
 const DATA_CACHE_SCHEMA_VERSION = 1;
 const DATA_CACHE_MAX_AGE_DAYS = 7;
-const APP_VERSION = "0.33";
+const APP_VERSION = "0.34";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
