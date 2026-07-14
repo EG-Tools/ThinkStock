@@ -61,6 +61,7 @@ const API_SETTINGS_DEFAULT = Object.freeze({
   kosisApiKey: "",
   krxApiKey: "",
   dartApiKey: "",
+  dartProxyEnabled: false,
 });
 const ECOS_STAT_CODE = "901Y067";
 const ECOS_ITEM_CODE = "I16E";
@@ -73,6 +74,7 @@ const FREESIS_CREDIT_LOOKBACK_DAYS = 120;
 const FREESIS_CREDIT_UNIT_CODE = "06";
 const DART_DISCLOSURE_URL = "https://opendart.fss.or.kr/api/list.json";
 const DART_RUNTIME_LOOKBACK_DAYS = 92;
+const DART_STOCK_LOOKBACK_YEARS = 3;
 const DART_RUNTIME_MAX_PAGES_PER_MARKET = 60;
 const DART_RUNTIME_PAGE_BATCH = 6;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -131,11 +133,21 @@ const LINE_DRAG_TOUCH_TOLERANCE_PX = 24;
 const LINE_HIGHLIGHT_EXTRA_WIDTH = 2;
 const DISCLOSURE_TRACE_NAME = "공시";
 const DISCLOSURE_MARKER_COLOR = "#fbbf24";
+const DISCLOSURE_MARKER_LINE_COLOR = "rgba(10,10,10,0.92)";
+const DISCLOSURE_MARKER_SIZE = 11;
+const DISCLOSURE_MARKER_LINE_WIDTH = 1.5;
+const DISCLOSURE_MARKER_HOVER_COLOR = "#111827";
+const DISCLOSURE_MARKER_HOVER_LINE_COLOR = "#fef3c7";
+const DISCLOSURE_MARKER_HOVER_SIZE = 18;
+const DISCLOSURE_MARKER_HOVER_LINE_WIDTH = 3.5;
+const DISCLOSURE_TEXT_SIZE = 13;
+const DISCLOSURE_TEXT_HOVER_SIZE = 18;
 
 let pricePayload = null;
 let macroRows = [];
 let creditRows = [];   // KOFIA credit balance seed data (credit_data.json)
 let disclosureRows = [];
+let dartCorpCodeMap = new Map();
 let activeMonths = 120;
 let hiddenSeries = new Set(["kospi_credit", "^KQ11", "kosdaq_credit"]);
 let customStocks = [];
@@ -148,6 +160,7 @@ let loadingCustomStocks = new Set();
 let seriesOffsets = {};
 let seriesScales = {};
 let currentSelected = [];
+let currentDisclosureHighlight = null;
 let baseTraceValues = {};
 let legendHandlerSet = false;
 let adrHandlerSet = false;
@@ -242,7 +255,11 @@ function sanitizeApiSettings(raw) {
   const out = {};
   Object.keys(API_SETTINGS_DEFAULT).forEach((key) => {
     const value = src[key];
-    out[key] = typeof value === "string" ? value.trim() : "";
+    if (typeof API_SETTINGS_DEFAULT[key] === "boolean") {
+      out[key] = value === true;
+    } else {
+      out[key] = typeof value === "string" ? value.trim() : "";
+    }
   });
   return out;
 }
@@ -320,9 +337,12 @@ function classifyDisclosureType(title) {
 }
 
 function explainDartFetchError(err) {
-  const message = err?.message || String(err || "unknown error");
+  const message = String(err?.message || err || "unknown error");
   if (/Failed to fetch|NetworkError|Load failed|CORS|fetch/i.test(message)) {
-    return "OpenDART가 브라우저 직접 호출(CORS)을 허용하지 않아 앱에 입력한 키로는 응답을 읽지 못했습니다. GitHub Secret DART_API_KEY를 등록하면 배포 빌드에서 공시 데이터를 만들어 차트에 표시할 수 있습니다.";
+    if (!apiSettings?.dartProxyEnabled) {
+      return "OpenDART가 브라우저 직접 호출(CORS)을 허용하지 않습니다. 추가 종목 공시를 바로 받으려면 API 설정에서 DART 공개 프록시 사용을 켜야 합니다.";
+    }
+    return "OpenDART 공시를 불러오지 못했습니다. 공개 프록시가 일시적으로 막혔거나 DART API 응답이 지연됐을 수 있습니다.";
   }
   return message;
 }
@@ -357,6 +377,32 @@ function sanitizeDisclosureRows(records) {
     });
   });
   return out.sort((a, b) => a.date.localeCompare(b.date) || a.ticker.localeCompare(b.ticker));
+}
+
+function sanitizeDartCorpCodeRows(records) {
+  if (!Array.isArray(records)) return [];
+  const out = [];
+  const seen = new Set();
+  records.forEach((record) => {
+    if (!record || typeof record !== "object") return;
+    const stockCode = String(record.stock_code || record.stockCode || "").replace(/\D/g, "").slice(0, 6);
+    const corpCode = String(record.corp_code || record.corpCode || "").replace(/\D/g, "");
+    if (stockCode.length !== 6 || !corpCode || seen.has(stockCode)) return;
+    seen.add(stockCode);
+    out.push({
+      stock_code: stockCode,
+      corp_code: corpCode,
+      corp_name: String(record.corp_name || record.corpName || "").trim(),
+    });
+  });
+  return out;
+}
+
+function setDartCorpCodeRows(records) {
+  dartCorpCodeMap = new Map();
+  sanitizeDartCorpCodeRows(records).forEach((record) => {
+    dartCorpCodeMap.set(record.stock_code, record);
+  });
 }
 
 function buildRuntimeDataSnapshot() {
@@ -561,7 +607,10 @@ function bindRuntimeSnapshotExitSave() {
 }
 
 function hasAnyApiKey() {
-  return Object.values(apiSettings || {}).some((v) => String(v || "").trim().length > 0);
+  return Object.entries(apiSettings || {}).some(([key, value]) => {
+    if (typeof API_SETTINGS_DEFAULT[key] === "boolean") return value === true;
+    return String(value || "").trim().length > 0;
+  });
 }
 
 function syncApiOptionsButton() {
@@ -738,11 +787,17 @@ function setupApiSettingsPanel(msgEl) {
     kosisApiKey: document.getElementById("kosisApiInput"),
     krxApiKey: document.getElementById("krxApiInput"),
     dartApiKey: document.getElementById("dartApiInput"),
+    dartProxyEnabled: document.getElementById("dartProxyEnabledInput"),
   };
 
   const fillInputs = () => {
     Object.entries(inputs).forEach(([key, el]) => {
-      if (el) el.value = apiSettings[key] || "";
+      if (!el) return;
+      if (el.type === "checkbox") {
+        el.checked = Boolean(apiSettings[key]);
+      } else {
+        el.value = apiSettings[key] || "";
+      }
     });
   };
 
@@ -752,6 +807,7 @@ function setupApiSettingsPanel(msgEl) {
     kosisApiKey: inputs.kosisApiKey?.value || "",
     krxApiKey: inputs.krxApiKey?.value || "",
     dartApiKey: inputs.dartApiKey?.value || "",
+    dartProxyEnabled: Boolean(inputs.dartProxyEnabled?.checked),
   });
 
   const close = () => { modal.hidden = true; };
@@ -2204,6 +2260,7 @@ async function addCustomStock(candidate, msgEl) {
     saveState();
     renderChart(false);
     setMessage(msgEl, [`${candidate.name} 종목이 추가되었습니다.`]);
+    requestDartDisclosureRefreshForTicker(candidate.ticker, msgEl);
   } catch (err) {
     delete DISPLAY_NAMES[candidate.ticker];
     setMessage(msgEl, `종목 추가 중 오류가 발생했습니다: ${err.message}`, true);
@@ -2843,12 +2900,12 @@ function buildDisclosureTrace(rows, selected, chartYBySeries, start, end) {
     }),
     meta: { isDisclosureTrace: true },
     textposition: "top center",
-    textfont: { color: DISCLOSURE_MARKER_COLOR, size: 13, family: "Arial Black, sans-serif" },
+    textfont: { color: DISCLOSURE_MARKER_COLOR, size: DISCLOSURE_TEXT_SIZE, family: "Arial Black, sans-serif" },
     marker: {
       symbol: "triangle-down",
-      size: 11,
+      size: DISCLOSURE_MARKER_SIZE,
       color: DISCLOSURE_MARKER_COLOR,
-      line: { color: "rgba(10,10,10,0.92)", width: 1.5 },
+      line: { color: DISCLOSURE_MARKER_LINE_COLOR, width: DISCLOSURE_MARKER_LINE_WIDTH },
     },
   };
 }
@@ -2928,8 +2985,82 @@ function handleDisclosureClick(evtData) {
   }
 }
 
+function findDisclosureEventPoint(evtData) {
+  return evtData?.points?.find((p) => p?.data?.meta?.isDisclosureTrace) || null;
+}
+
+function resetDisclosureHoverHighlight(chartEl = document.getElementById("chart")) {
+  if (!chartEl || !currentDisclosureHighlight) return;
+  const traceIndex = currentDisclosureHighlight.traceIndex;
+  currentDisclosureHighlight = null;
+  Plotly.restyle(chartEl, {
+    "marker.size": [DISCLOSURE_MARKER_SIZE],
+    "marker.color": [DISCLOSURE_MARKER_COLOR],
+    "marker.line.width": [DISCLOSURE_MARKER_LINE_WIDTH],
+    "marker.line.color": [DISCLOSURE_MARKER_LINE_COLOR],
+    "textfont.size": [DISCLOSURE_TEXT_SIZE],
+    "textfont.color": [DISCLOSURE_MARKER_COLOR],
+  }, [traceIndex]).catch(() => {});
+}
+
+function highlightDisclosureHoverPoint(evtData) {
+  const chartEl = document.getElementById("chart");
+  const point = findDisclosureEventPoint(evtData);
+  if (!chartEl || !point) {
+    resetDisclosureHoverHighlight(chartEl);
+    return;
+  }
+
+  const traceIndex = point.curveNumber;
+  const pointIndex = point.pointIndex ?? point.pointNumber;
+  const count = Array.isArray(point.data?.x) ? point.data.x.length : 0;
+  if (!Number.isInteger(traceIndex) || !Number.isInteger(pointIndex) || count <= 0) return;
+  if (
+    currentDisclosureHighlight
+    && currentDisclosureHighlight.traceIndex === traceIndex
+    && currentDisclosureHighlight.pointIndex === pointIndex
+  ) {
+    return;
+  }
+
+  resetDisclosureHoverHighlight(chartEl);
+
+  const sizes = Array(count).fill(DISCLOSURE_MARKER_SIZE);
+  const colors = Array(count).fill(DISCLOSURE_MARKER_COLOR);
+  const lineWidths = Array(count).fill(DISCLOSURE_MARKER_LINE_WIDTH);
+  const lineColors = Array(count).fill(DISCLOSURE_MARKER_LINE_COLOR);
+  const textSizes = Array(count).fill(DISCLOSURE_TEXT_SIZE);
+  const textColors = Array(count).fill(DISCLOSURE_MARKER_COLOR);
+
+  sizes[pointIndex] = DISCLOSURE_MARKER_HOVER_SIZE;
+  colors[pointIndex] = DISCLOSURE_MARKER_HOVER_COLOR;
+  lineWidths[pointIndex] = DISCLOSURE_MARKER_HOVER_LINE_WIDTH;
+  lineColors[pointIndex] = DISCLOSURE_MARKER_HOVER_LINE_COLOR;
+  textSizes[pointIndex] = DISCLOSURE_TEXT_HOVER_SIZE;
+  textColors[pointIndex] = DISCLOSURE_MARKER_HOVER_LINE_COLOR;
+
+  currentDisclosureHighlight = { traceIndex, pointIndex };
+  Plotly.restyle(chartEl, {
+    "marker.size": [sizes],
+    "marker.color": [colors],
+    "marker.line.width": [lineWidths],
+    "marker.line.color": [lineColors],
+    "textfont.size": [textSizes],
+    "textfont.color": [textColors],
+  }, [traceIndex]).catch(() => {});
+}
+
 function yyyymmddFromDate(dateStr) {
   return String(dateStr || "").slice(0, 10).replace(/-/g, "");
+}
+
+function shiftYears(dateStr, years) {
+  const d = new Date(`${String(dateStr || "").slice(0, 10)}T00:00:00Z`);
+  if (!Number.isFinite(d.getTime())) return dateStr;
+  const originalMonth = d.getUTCMonth();
+  d.setUTCFullYear(d.getUTCFullYear() + years);
+  if (d.getUTCMonth() !== originalMonth) d.setUTCDate(0);
+  return d.toISOString().slice(0, 10);
 }
 
 function disclosureTargetTickers() {
@@ -2994,7 +3125,36 @@ async function fetchDartDisclosurePage(apiKey, market, pageNo) {
     page_count: "100",
   });
   try {
-    return await fetchJsonWithProxyFallback(`${DART_DISCLOSURE_URL}?${query.toString()}`, null, { allowProxy: false });
+    return await fetchJsonWithProxyFallback(
+      `${DART_DISCLOSURE_URL}?${query.toString()}`,
+      null,
+      { allowProxy: Boolean(apiSettings?.dartProxyEnabled) },
+    );
+  } catch (err) {
+    throw new Error(explainDartFetchError(err));
+  }
+}
+
+async function fetchDartDisclosurePageForCorp(apiKey, corpCode, pageNo) {
+  const endDate = new Date().toISOString().slice(0, 10);
+  const startDate = shiftYears(endDate, -DART_STOCK_LOOKBACK_YEARS);
+  const query = new URLSearchParams({
+    crtfc_key: String(apiKey || "").trim(),
+    corp_code: String(corpCode || "").trim(),
+    bgn_de: yyyymmddFromDate(startDate),
+    end_de: yyyymmddFromDate(endDate),
+    last_reprt_at: "Y",
+    sort: "date",
+    sort_mth: "asc",
+    page_no: String(pageNo),
+    page_count: "100",
+  });
+  try {
+    return await fetchJsonWithProxyFallback(
+      `${DART_DISCLOSURE_URL}?${query.toString()}`,
+      null,
+      { allowProxy: Boolean(apiSettings?.dartProxyEnabled) },
+    );
   } catch (err) {
     throw new Error(explainDartFetchError(err));
   }
@@ -3045,6 +3205,38 @@ async function fetchDartDisclosuresLive(apiKey) {
   return sanitizeDisclosureRows(records);
 }
 
+async function fetchDartDisclosuresForTickerLive(apiKey, ticker) {
+  const clean = String(apiKey || "").trim();
+  const targetTicker = String(ticker || "").trim().toUpperCase();
+  const code = targetTicker.slice(0, 6);
+  if (!clean || !/^[0-9]{6}\.(KS|KQ)$/.test(targetTicker)) return [];
+
+  const corp = dartCorpCodeMap.get(code);
+  if (!corp?.corp_code) {
+    throw new Error("DART corp_code 매핑을 찾지 못했습니다. 앱을 새로고침한 뒤 다시 시도해 주세요.");
+  }
+
+  const targetByCode = new Map([[code, targetTicker]]);
+  const records = [];
+  let pageNo = 1;
+  let totalPage = 1;
+  while (pageNo <= totalPage) {
+    const payload = await fetchDartDisclosurePageForCorp(clean, corp.corp_code, pageNo);
+    const status = String(payload?.status || "");
+    if (status === "013") break;
+    if (status && status !== "000") {
+      throw new Error(payload?.message || `DART status ${status}`);
+    }
+    totalPage = Math.max(1, Number(payload?.total_page) || 1);
+    (payload?.list || []).forEach((item) => {
+      const record = dartItemToDisclosureRecord(item, targetByCode);
+      if (record) records.push(record);
+    });
+    pageNo += 1;
+  }
+  return sanitizeDisclosureRows(records);
+}
+
 function mergeDisclosureRows(existingRows, incomingRows) {
   const map = new Map();
   sanitizeDisclosureRows(existingRows).forEach((row) => {
@@ -3056,8 +3248,10 @@ function mergeDisclosureRows(existingRows, incomingRows) {
   return [...map.values()].sort((a, b) => a.date.localeCompare(b.date) || a.ticker.localeCompare(b.ticker));
 }
 
-async function refreshDartDisclosuresFromApi(apiKey) {
-  const liveRows = await fetchDartDisclosuresLive(apiKey);
+async function refreshDartDisclosuresFromApi(apiKey, ticker = "") {
+  const liveRows = ticker
+    ? await fetchDartDisclosuresForTickerLive(apiKey, ticker)
+    : await fetchDartDisclosuresLive(apiKey);
   const beforeCount = disclosureRows.length;
   disclosureRows = mergeDisclosureRows(disclosureRows, liveRows);
   const latestDate = disclosureRows.length ? disclosureRows[disclosureRows.length - 1].date : "";
@@ -3066,6 +3260,41 @@ async function refreshDartDisclosuresFromApi(apiKey) {
     added: Math.max(0, disclosureRows.length - beforeCount),
     latestDate,
   };
+}
+
+let dartDisclosureRefreshPromise = null;
+
+function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
+  const apiKey = String(apiSettings?.dartApiKey || "").trim();
+  if (!apiKey || dartDisclosureRefreshPromise) return;
+
+  const name = labelName(ticker);
+  setMessage(msgEl, [`${name} 종목을 추가했습니다. DART 공시를 백그라운드로 확인하는 중입니다...`]);
+  dartDisclosureRefreshPromise = refreshDartDisclosuresFromApi(apiKey, ticker)
+    .then((info) => {
+      renderChart(false);
+      saveLastRuntimeSnapshot().catch(() => {});
+      if (info.fetched > 0) {
+        setMessage(msgEl, [
+          `${name} 종목을 추가했습니다.`,
+          `DART 공시 ${info.fetched}건 확인, ${info.added}건 반영${info.latestDate ? `(~ ${info.latestDate})` : ""}`,
+        ]);
+      } else {
+        setMessage(msgEl, [
+          `${name} 종목을 추가했습니다.`,
+          "DART 최근 공시에서 현재 차트 종목의 이벤트를 찾지 못했습니다.",
+        ]);
+      }
+    })
+    .catch((err) => {
+      setMessage(msgEl, [
+        `${name} 종목은 추가됐지만 DART 공시 백그라운드 갱신은 실패했습니다.`,
+        err.message,
+      ], true);
+    })
+    .finally(() => {
+      dartDisclosureRefreshPromise = null;
+    });
 }
 
 /* Main chart */
@@ -3128,6 +3357,7 @@ function renderChart(preserveZoom = true) {
   hoveredLineTraceIndex = null;
   activeLineTraceIndex = null;
   appliedLineHighlightTraceIndex = null;
+  currentDisclosureHighlight = null;
   el.classList.remove("is-line-hovering", "is-line-dragging");
 
   if (!rows.length || !selected.length) {
@@ -3280,6 +3510,7 @@ function renderChart(preserveZoom = true) {
       }
     });
     el.on("plotly_hover", (eventData) => {
+      highlightDisclosureHoverPoint(eventData);
       if (hoverSyncing) return;
       const xValue = eventData?.points?.[0]?.x;
       if (!xValue) return;
@@ -3287,6 +3518,7 @@ function renderChart(preserveZoom = true) {
       syncHoverToChart(adrEl, xValue);
     });
     el.on("plotly_unhover", () => {
+      resetDisclosureHoverHighlight(el);
       if (hoverSyncing) return;
       const adrEl = document.getElementById("chart-adr");
       clearHoverOnChart(adrEl);
@@ -4111,12 +4343,13 @@ async function loadData(forceNetwork = false, options = {}) {
     return null;
   }
 
-  const [priceText, macroText, creditText, adrText, disclosureText] = await Promise.all([
+  const [priceText, macroText, creditText, adrText, disclosureText, dartCorpCodeText] = await Promise.all([
     fetchSeedText("./data/prices.json"),
     fetchSeedText("./data/macro_data.json"),
     fetchSeedText("./data/credit_data.json"),
     fetchSeedText("./data/adr_data.json"),
     fetchSeedText("./data/disclosures.json"),
+    fetchSeedText("./data/dart_corp_codes.json"),
   ]);
 
   try {
@@ -4189,6 +4422,15 @@ async function loadData(forceNetwork = false, options = {}) {
     }
   } catch (_) {
     // Disclosure seed load failed; chart simply renders without event markers.
+  }
+
+  try {
+    if (dartCorpCodeText) {
+      const dartCorpCodePayload = JSON.parse(dartCorpCodeText);
+      setDartCorpCodeRows(dartCorpCodePayload?.records || []);
+    }
+  } catch (_) {
+    // DART corp code seed load failed; dynamic disclosure refresh will explain if needed.
   }
 }
 

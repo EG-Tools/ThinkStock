@@ -14,6 +14,7 @@ const ASSETS = [
   "./data/adr_data.json",
   "./data/credit_data.json",
   "./data/disclosures.json",
+  "./data/dart_corp_codes.json",
 ];
 
 self.addEventListener("install", (event) => {

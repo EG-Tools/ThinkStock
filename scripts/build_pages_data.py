@@ -31,6 +31,7 @@ OUTPUT_MACRO_CSV = DATA_DIR / "sample_macro_data.csv"
 OUTPUT_CREDIT_JSON = DATA_DIR / "credit_data.json"
 OUTPUT_ADR_JSON = DATA_DIR / "adr_data.json"
 OUTPUT_DISCLOSURES_JSON = DATA_DIR / "disclosures.json"
+OUTPUT_DART_CORP_CODES_JSON = DATA_DIR / "dart_corp_codes.json"
 LOOKBACK_YEARS = 30
 DART_DISCLOSURE_LOOKBACK_YEARS = 3
 ECOS_STAT_CODE = "901Y067"  # Composite Leading Indicator
@@ -594,14 +595,19 @@ def stock_code_to_ticker(stock_code: str, corp_cls: str = "") -> str:
     return f"{stock_code}.KQ" if corp_cls == "K" else f"{stock_code}.KS"
 
 
-def fetch_dart_disclosures(api_key: str, stock_codes: list[str]) -> list[dict]:
+def fetch_dart_disclosures(
+    api_key: str,
+    stock_codes: list[str],
+    corp_map: dict[str, dict[str, str]] | None = None,
+) -> list[dict]:
     if not api_key or not stock_codes:
         return []
-    try:
-        corp_map = fetch_dart_corp_code_map(api_key)
-    except Exception as exc:
-        print(f"DART corp code fetch failed: {exc}")
-        return []
+    if corp_map is None:
+        try:
+            corp_map = fetch_dart_corp_code_map(api_key)
+        except Exception as exc:
+            print(f"DART corp code fetch failed: {exc}")
+            return []
 
     start_date = years_before(date.today(), DART_DISCLOSURE_LOOKBACK_YEARS).strftime("%Y%m%d")
     end_date = date.today().strftime("%Y%m%d")
@@ -685,6 +691,45 @@ def build_disclosure_payload(records: list[dict]) -> dict:
         "series": ["disclosures"],
         "records": records,
     }
+
+
+def build_dart_corp_code_payload(corp_map: dict[str, dict[str, str]]) -> dict:
+    records = []
+    for stock_code, item in sorted(corp_map.items()):
+        records.append(
+            {
+                "stock_code": stock_code,
+                "corp_code": str(item.get("corp_code") or "").strip(),
+                "corp_name": str(item.get("corp_name") or "").strip(),
+            }
+        )
+    return {
+        "generated_at": pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "source": "OpenDART",
+        "records": records,
+    }
+
+
+def load_existing_dart_corp_code_seed() -> dict[str, dict[str, str]]:
+    if not OUTPUT_DART_CORP_CODES_JSON.exists():
+        return {}
+    try:
+        payload = json.loads(OUTPUT_DART_CORP_CODES_JSON.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    records = payload.get("records", [])
+    if not isinstance(records, list):
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        stock_code = str(record.get("stock_code") or "").strip()
+        corp_code = str(record.get("corp_code") or "").strip()
+        corp_name = str(record.get("corp_name") or "").strip()
+        if len(stock_code) == 6 and corp_code:
+            out[stock_code] = {"corp_code": corp_code, "corp_name": corp_name}
+    return out
 
 
 def load_existing_disclosure_seed() -> list[dict]:
@@ -888,8 +933,23 @@ def main() -> None:
         print("ADR fetch had no rows; keeping existing adr_data.json.")
 
     dart_key = resolve_dart_api_key()
+    dart_corp_map = {}
+    if dart_key:
+        try:
+            dart_corp_map = fetch_dart_corp_code_map(dart_key)
+        except Exception as exc:
+            print(f"DART corp code map fetch failed: {exc}")
+    if not dart_corp_map:
+        dart_corp_map = load_existing_dart_corp_code_seed()
+        if dart_corp_map:
+            print(f"Keeping existing DART corp code map ({len(dart_corp_map)} rows).")
+
     existing_disclosure_records = load_existing_disclosure_seed()
-    disclosure_records = fetch_dart_disclosures(dart_key, configured_disclosure_stock_codes()) if dart_key else []
+    disclosure_records = (
+        fetch_dart_disclosures(dart_key, configured_disclosure_stock_codes(), dart_corp_map)
+        if dart_key
+        else []
+    )
     if disclosure_records:
         print(f"Applied DART disclosure rows: {len(disclosure_records)} (latest={disclosure_records[-1]['date']})")
     else:
@@ -935,6 +995,11 @@ def main() -> None:
         json.dumps(build_disclosure_payload(disclosure_records), ensure_ascii=False, indent=2, allow_nan=False),
         encoding="utf-8",
     )
+    if dart_corp_map:
+        OUTPUT_DART_CORP_CODES_JSON.write_text(
+            json.dumps(build_dart_corp_code_payload(dart_corp_map), ensure_ascii=False, indent=2, allow_nan=False),
+            encoding="utf-8",
+        )
     if macro_source.empty:
         OUTPUT_MACRO_CSV.write_text("date\n", encoding="utf-8")
     else:
@@ -949,6 +1014,8 @@ def main() -> None:
     if adr_records:
         print(f"Wrote {OUTPUT_ADR_JSON}")
     print(f"Wrote {OUTPUT_DISCLOSURES_JSON}")
+    if dart_corp_map:
+        print(f"Wrote {OUTPUT_DART_CORP_CODES_JSON}")
     print(f"Wrote {OUTPUT_MACRO_CSV}")
 
 if __name__ == "__main__":

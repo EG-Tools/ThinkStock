@@ -269,6 +269,21 @@ body {
   border-color: rgba(74, 222, 128, 0.35);
 }
 
+.api-check-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.api-check-field input {
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
 .api-settings-actions {
   margin-top: 14px;
   display: flex;

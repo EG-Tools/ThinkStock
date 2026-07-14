@@ -97,6 +97,10 @@
           <span>DART (전자공시)</span>
           <input id="dartApiInput" type="password" autocomplete="off" spellcheck="false" placeholder="공시 마커 데이터">
         </label>
+        <label class="api-check-field">
+          <input id="dartProxyEnabledInput" type="checkbox">
+          <span>DART 공개 프록시 사용 (추가 종목 공시를 즉시 불러올 수 있지만 API 키가 프록시 서버를 거칩니다)</span>
+        </label>
         <p class="api-settings-note">ADR 제외 지표는 실행 시 API로 불러옵니다. DART는 브라우저 직접 호출이 막힐 수 있어, 안정적인 3년 공시는 GitHub Secret DART_API_KEY로 빌드됩니다.</p>
         <div class="api-settings-actions">
           <button id="apiSettingsSaveBtn" class="api-action-btn primary" type="button">저장</button>
