@@ -450,7 +450,10 @@ def _credit_frame_from_records(records: list[dict]) -> pd.DataFrame:
     out["date"] = pd.to_datetime(out["date"], errors="coerce")
     out["kospi_credit"] = pd.to_numeric(out.get("kospi_credit"), errors="coerce")
     out["kosdaq_credit"] = pd.to_numeric(out.get("kosdaq_credit"), errors="coerce")
+    for column in CREDIT_SERIES:
+        out.loc[out[column] <= 0, column] = pd.NA
     out = out.dropna(subset=["date"])
+    out = out.dropna(subset=CREDIT_SERIES, how="all")
     if out.empty:
         return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
     out = out.drop_duplicates(subset=["date"], keep="last").sort_values("date").set_index("date")

@@ -20,9 +20,11 @@ DATASETS = {
 
 CREDIT_COLUMNS = ("kospi_credit", "kosdaq_credit")
 ADR_COLUMNS = ("adr_kospi", "adr_kosdaq")
+# Freesis historical KOSDAQ credit starts with very small positive values.
+# True zero or negative source values are normalized to null during build.
 CREDIT_LIMITS = {
-    "kospi_credit": (0.1, 80.0),
-    "kosdaq_credit": (0.1, 50.0),
+    "kospi_credit": (0.0001, 80.0),
+    "kosdaq_credit": (0.0001, 50.0),
 }
 CREDIT_MAX_DAILY_PCT_CHANGE = 0.12
 CREDIT_MAX_DAILY_ABS_CHANGE = {

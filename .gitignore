@@ -17,3 +17,5 @@ scripts/dart_key.txt
 .claude/
 node_modules/
 .capacitor/
+.codex-ci-deps/
+docs/data/build_report.json
