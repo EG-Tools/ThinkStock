@@ -2951,6 +2951,49 @@ function applyCreditLiveRows(liveRows) {
   return { updated, latestDate };
 }
 
+function medianCreditScaleFactor(existingRows, liveRows, key) {
+  const existingByDate = new Map();
+  normalizeCreditRows(existingRows).forEach((row) => {
+    existingByDate.set(row.date, row);
+  });
+
+  const ratios = [];
+  normalizeCreditRows(liveRows).forEach((row) => {
+    const existing = existingByDate.get(row.date);
+    const existingValue = toNum(existing?.[key]);
+    const liveValue = toNum(row?.[key]);
+    if (Number.isFinite(existingValue) && Number.isFinite(liveValue) && liveValue > 0) {
+      ratios.push(existingValue / liveValue);
+    }
+  });
+
+  if (!ratios.length) return 1;
+  ratios.sort((a, b) => a - b);
+  const mid = Math.floor(ratios.length / 2);
+  const factor = ratios.length % 2 ? ratios[mid] : (ratios[mid - 1] + ratios[mid]) / 2;
+  return Number.isFinite(factor) && factor > 0 ? factor : 1;
+}
+
+function scaleCreditRowsToExisting(liveRows, existingRows) {
+  const normalized = normalizeCreditRows(liveRows);
+  if (!normalized.length) return normalized;
+
+  const factors = {
+    kospi_credit: medianCreditScaleFactor(existingRows, normalized, "kospi_credit"),
+    kosdaq_credit: medianCreditScaleFactor(existingRows, normalized, "kosdaq_credit"),
+  };
+
+  return normalized.map((row) => ({
+    date: row.date,
+    kospi_credit: Number.isFinite(toNum(row.kospi_credit))
+      ? toNum(row.kospi_credit) * factors.kospi_credit
+      : null,
+    kosdaq_credit: Number.isFinite(toNum(row.kosdaq_credit))
+      ? toNum(row.kosdaq_credit) * factors.kosdaq_credit
+      : null,
+  }));
+}
+
 async function refreshLiveApiData() {
   const applied = [];
   const warnings = [];
@@ -3016,7 +3059,8 @@ async function refreshLiveApiData() {
 
     const freesisRows = await fetchFreesisCreditLive(freesisStartDate, today);
     if (freesisRows.length) {
-      const info = applyCreditLiveRows(freesisRows);
+      const scaledFreesisRows = scaleCreditRowsToExisting(freesisRows, creditRows);
+      const info = applyCreditLiveRows(scaledFreesisRows);
       if (info.updated > 0) {
         applied.push(`신용잔고 최신(Freesis) 반영(${info.updated}건, 최신일 ${info.latestDate})`);
       } else {
