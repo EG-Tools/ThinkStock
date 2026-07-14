@@ -54,7 +54,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.50";
+const APP_VERSION = "0.51";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -474,13 +474,6 @@ function isImportantDisclosureTitle(title, type = "") {
   const normalizedType = String(type || "");
   if (/^(실적|배당|수주|증자\/감자|자금조달|자사주|구조\/투자|경영변동)$/.test(normalizedType)) return true;
   return /반기보고서|분기보고서|사업보고서|영업\(잠정\)실적|잠정실적|매출액.?또는.?손익구조|감사보고서제출|배당|현금ㆍ현물배당|단일판매|공급계약|수주|유상증자|무상증자|감자|증권신고서\(지분증권\)|전환사채|신주인수권|신주인수권부사채|교환사채|사채권|자기주식(취득|처분)결정|주식소각|합병|분할|영업양수|영업양도|타법인주식|출자증권|신규시설투자|시설투자|최대주주변경|대표이사.*변경|영업정지|거래정지|상장폐지|관리종목|소송|횡령|배임|회생|파산|부도|공개매수|장래사업|경영계획/.test(text);
-}
-
-function isDisclosureHiddenInPopover(title, type = "") {
-  const text = String(title || "");
-  const normalizedType = String(type || "");
-  if (/^(실적|수주)$/.test(normalizedType)) return true;
-  return /실적|반기보고서|분기보고서|사업보고서|매출액.?또는.?손익구조|매출액.?및.?손익구조|감사보고서제출|단일판매|공급계약|수주/.test(text);
 }
 
 function isLowImpactDisclosureTitle(title) {
@@ -3905,13 +3898,7 @@ function showDisclosurePopover(group, sourceEvent) {
   const chart = document.getElementById("chart");
   if (!node || !chart || !group?.events?.length) return;
 
-  const popupEvents = group.events.filter((event) => !isDisclosureHiddenInPopover(event.title, event.type));
-  if (!popupEvents.length) {
-    hideDisclosurePopover();
-    return;
-  }
-
-  const items = popupEvents.map((event) => {
+  const items = group.events.map((event) => {
     const title = escapeHtml(event.title);
     const titleHtml = event.url
       ? `<a class="disclosure-title-link" href="${escapeHtml(event.url)}" target="_blank" rel="noopener">${title}</a>`
