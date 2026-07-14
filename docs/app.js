@@ -53,7 +53,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.45";
+const APP_VERSION = "0.46";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -167,6 +167,9 @@ async function ensurePlotlyReady() {
 const LINE_DRAG_TOLERANCE_PX = 14;
 const LINE_DRAG_TOUCH_TOLERANCE_PX = 24;
 const LINE_HIGHLIGHT_EXTRA_WIDTH = 2;
+const LINE_HIT_TEST_INTERVAL_MS = 45;
+const VIEWPORT_SYNC_DEBOUNCE_MS = 70;
+const HANDLE_UPDATE_DEBOUNCE_MS = 120;
 const DISCLOSURE_TRACE_NAME = "공시";
 const DISCLOSURE_MARKER_COLOR = "#fde047";
 const DISCLOSURE_MARKER_LINE_COLOR = "rgba(10,10,10,0.96)";
@@ -225,6 +228,9 @@ let cursorSyncing = false;
 let cursorMoveBound = false;
 let renderChartRafId = 0;
 let pendingRenderPreserveZoom = true;
+let handleUpdateTimer = 0;
+let viewportSyncTimer = 0;
+let pendingViewportSync = null;
 const CURSOR_LINE_CLASS = "synced-cursor-line";
 let apiSettings = { ...API_SETTINGS_DEFAULT };
 let lastTouchTapAt = 0;
@@ -237,6 +243,8 @@ let suppressPlotlyClickUntil = 0;
 let hoveredLineTraceIndex = null;
 let activeLineTraceIndex = null;
 let appliedLineHighlightTraceIndex = null;
+let isViewportDragging = false;
+let lastLineHitTestAt = 0;
 let startupLoaderHideTimer = null;
 let startupLoaderRafId = 0;
 let startupLoaderDisplayProgress = 100;
@@ -1177,6 +1185,29 @@ function toMsSafe(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+function getTraceTimeMsArray(trace) {
+  const xs = trace?.x;
+  if (!Array.isArray(xs) || !xs.length) return [];
+  const cached = trace._thinkStockTimeMs;
+  if (
+    Array.isArray(cached)
+    && cached.length === xs.length
+    && cached._firstX === xs[0]
+    && cached._lastX === xs[xs.length - 1]
+  ) {
+    return cached;
+  }
+  const times = xs.map((x) => toMsSafe(x));
+  times._firstX = xs[0];
+  times._lastX = xs[xs.length - 1];
+  try {
+    trace._thinkStockTimeMs = times;
+  } catch (_) {
+    // Plotly traces are normally mutable, but the cache is optional.
+  }
+  return times;
+}
+
 function findNearestHoverPoint(el, xValue) {
   if (!el?.data?.length) return null;
   const targetMs = toMsSafe(xValue);
@@ -1184,29 +1215,31 @@ function findNearestHoverPoint(el, xValue) {
 
   const nearestInTrace = (trace) => {
     if (!trace || trace.visible === "legendonly" || trace.hoverinfo === "skip" || !Array.isArray(trace.x) || !trace.x.length) return null;
-    const xs = trace.x;
-    const toMsAt = (i) => toMsSafe(xs[i]);
+    const times = getTraceTimeMsArray(trace);
+    if (!times.length) return null;
 
     let lo = 0;
-    let hi = xs.length - 1;
+    let hi = times.length - 1;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
-      const ms = toMsAt(mid);
-      if (ms === null) return null;
+      const ms = times[mid];
+      if (!Number.isFinite(ms)) return null;
       if (ms < targetMs) lo = mid + 1;
       else hi = mid - 1;
     }
 
     const cand = [];
-    if (lo >= 0 && lo < xs.length) cand.push(lo);
-    if (lo - 1 >= 0 && lo - 1 < xs.length) cand.push(lo - 1);
+    if (lo >= 0 && lo < times.length) cand.push(lo);
+    if (lo - 1 >= 0 && lo - 1 < times.length) cand.push(lo - 1);
     if (!cand.length) return null;
 
     let bestIdx = cand[0];
-    let bestDiff = Math.abs(toMsAt(bestIdx) - targetMs);
+    if (!Number.isFinite(times[bestIdx])) return null;
+    let bestDiff = Math.abs(times[bestIdx] - targetMs);
     for (let i = 1; i < cand.length; i += 1) {
       const idx = cand[i];
-      const diff = Math.abs(toMsAt(idx) - targetMs);
+      if (!Number.isFinite(times[idx])) continue;
+      const diff = Math.abs(times[idx] - targetMs);
       if (diff < bestDiff) {
         bestDiff = diff;
         bestIdx = idx;
@@ -1431,6 +1464,57 @@ function applySyncedXRangeMs(startMs, endMs) {
   });
 }
 
+function scheduleHandleUpdate(delay = HANDLE_UPDATE_DEBOUNCE_MS) {
+  if (handleUpdateTimer) clearTimeout(handleUpdateTimer);
+  handleUpdateTimer = setTimeout(() => {
+    handleUpdateTimer = 0;
+    updateHandles();
+  }, delay);
+}
+
+function xRangeMatches(el, r0, r1) {
+  const current = el?._fullLayout?.xaxis?.range;
+  if (!Array.isArray(current) || current.length < 2) return false;
+  const a0 = toMsSafe(current[0]);
+  const a1 = toMsSafe(current[1]);
+  const b0 = toMsSafe(r0);
+  const b1 = toMsSafe(r1);
+  if (![a0, a1, b0, b1].every(Number.isFinite)) return false;
+  return Math.abs(a0 - b0) < 2 && Math.abs(a1 - b1) < 2;
+}
+
+function scheduleViewportRangeSync(targetEl, payload) {
+  if (!targetEl?.data || !payload) return;
+  pendingViewportSync = { targetEl, payload };
+  if (viewportSyncTimer) clearTimeout(viewportSyncTimer);
+  viewportSyncTimer = setTimeout(() => {
+    const pending = pendingViewportSync;
+    pendingViewportSync = null;
+    viewportSyncTimer = 0;
+    if (!pending?.targetEl?.data) return;
+
+    const { targetEl: el, payload: nextPayload } = pending;
+    const r0 = nextPayload["xaxis.range[0]"];
+    const r1 = nextPayload["xaxis.range[1]"];
+    if (r0 != null && r1 != null && xRangeMatches(el, r0, r1)) return;
+
+    chartSyncing = true;
+    let task = null;
+    try {
+      task = Plotly.relayout(el, nextPayload);
+    } catch (_) {
+      chartSyncing = false;
+      return;
+    }
+    Promise.resolve(task)
+      .catch(() => {})
+      .finally(() => {
+        chartSyncing = false;
+        if (el.id === "chart") scheduleHandleUpdate(40);
+      });
+  }, VIEWPORT_SYNC_DEBOUNCE_MS);
+}
+
 function zoomAroundClientX(sourceEl, clientX, zoomFactor = 0.5) {
   const xValue = axisPixelToXValue(sourceEl, clientX, true);
   const centerMs = toMsSafe(xValue);
@@ -1523,12 +1607,14 @@ function interpolateTraceYAtMs(trace, targetMs) {
 
   const xs = trace.x;
   const ys = trace.y;
+  const times = getTraceTimeMsArray(trace);
+  if (!times.length || times.length !== xs.length) return null;
   let lo = 0;
   let hi = xs.length - 1;
   let rightIndex = xs.length;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
-    const time = toMsSafe(xs[mid]);
+    const time = times[mid];
     if (!Number.isFinite(time) || time < targetMs) {
       lo = mid + 1;
     } else {
@@ -1541,7 +1627,7 @@ function interpolateTraceYAtMs(trace, targetMs) {
   for (let i = Math.min(rightIndex, xs.length - 1); i >= 0; i -= 1) {
     const y = toNum(ys[i]);
     if (y === null) continue;
-    const time = toMsSafe(xs[i]);
+    const time = times[i];
     if (!Number.isFinite(time) || time > targetMs) continue;
     if (time === targetMs) return y;
     left = { time, y };
@@ -1552,7 +1638,7 @@ function interpolateTraceYAtMs(trace, targetMs) {
   for (let i = Math.max(0, rightIndex); i < xs.length; i += 1) {
     const y = toNum(ys[i]);
     if (y === null) continue;
-    const time = toMsSafe(xs[i]);
+    const time = times[i];
     if (!Number.isFinite(time) || time < targetMs) continue;
     if (time === targetMs) return y;
     right = { time, y };
@@ -1724,8 +1810,12 @@ function bindCursorMoveSync() {
 
     const processPointerMove = (sourceEl, clientX, clientY, findLineTarget) => {
       if (findLineTarget) {
-        const lineTarget = findNearestLineDragTarget(sourceEl, clientX, clientY, false);
-        setHoveredLineTarget(lineTarget);
+        const now = performance.now();
+        if (!isViewportDragging && now - lastLineHitTestAt >= LINE_HIT_TEST_INTERVAL_MS) {
+          lastLineHitTestAt = now;
+          const lineTarget = findNearestLineDragTarget(sourceEl, clientX, clientY, false);
+          setHoveredLineTarget(lineTarget);
+        }
       }
       moveAt(sourceEl, clientX);
     };
@@ -1743,6 +1833,7 @@ function bindCursorMoveSync() {
     };
 
     const onMove = (event) => {
+      if (isHandleDragging || isViewportDragging) return;
       schedulePointerMove(event.currentTarget, event.clientX, event.clientY, event.currentTarget === mainEl);
     };
 
@@ -1805,6 +1896,7 @@ function bindCursorMoveSync() {
 
     const onTouchMove = (event) => {
       if (!event.touches || event.touches.length !== 1) return;
+      if (isHandleDragging) return;
       event.preventDefault();
       const touch = event.touches[0];
       schedulePointerMove(event.currentTarget, touch.clientX, touch.clientY, false);
@@ -1859,6 +1951,8 @@ function bindCursorMoveSync() {
         startClientX: event.clientX,
         moved: false,
       };
+      isViewportDragging = true;
+      setHoveredLineTarget(null);
 
       renderDragZoomOverlay(sourceEl, dragState.startClientX, dragState.startClientX);
       event.preventDefault();
@@ -1875,6 +1969,7 @@ function bindCursorMoveSync() {
       const onWindowUp = (upEvent) => {
         const st = dragState;
         dragState = null;
+        isViewportDragging = false;
 
         window.removeEventListener('mousemove', onWindowMove);
         window.removeEventListener('mouseup', onWindowUp);
@@ -4449,7 +4544,7 @@ function renderChart(preserveZoom = true) {
       const hasAuto = eventData["xaxis.autorange"] === true;
       if (chartSyncing || isHandleDragging) return;
       if (cursorSyncing && !hasRange && !hasAuto) return;
-      setTimeout(updateHandles, 50);
+      scheduleHandleUpdate();
       // Sync main chart pan/zoom to ADR chart x-axis.
       const adrEl = document.getElementById("chart-adr");
       if (adrEl && adrEl.data) {
@@ -4457,16 +4552,14 @@ function renderChart(preserveZoom = true) {
         const r1 = eventData["xaxis.range[1]"] ?? (Array.isArray(rangePair) ? rangePair[1] : null);
         if (r0 != null && r1 != null) {
           pinnedXRange = [r0, r1];
-          chartSyncing = true;
-          Plotly.relayout(adrEl, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 }).finally(() => { chartSyncing = false; });
+          scheduleViewportRangeSync(adrEl, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 });
         } else if (hasAuto) {
           pinnedXRange = null;
           const mainRange = el._fullLayout?.xaxis?.range?.slice();
-          chartSyncing = true;
           if (Array.isArray(mainRange) && mainRange.length === 2) {
-            Plotly.relayout(adrEl, { "xaxis.range[0]": mainRange[0], "xaxis.range[1]": mainRange[1] }).finally(() => { chartSyncing = false; });
+            scheduleViewportRangeSync(adrEl, { "xaxis.range[0]": mainRange[0], "xaxis.range[1]": mainRange[1] });
           } else {
-            Plotly.relayout(adrEl, { "xaxis.autorange": true }).finally(() => { chartSyncing = false; });
+            scheduleViewportRangeSync(adrEl, { "xaxis.autorange": true });
           }
         }
       }
@@ -4718,22 +4811,21 @@ function renderAdrChart(xRange) {
       const hasAuto = eventData["xaxis.autorange"] === true;
       if (chartSyncing) return;
       if (cursorSyncing && !hasRange && !hasAuto) return;
+      scheduleHandleUpdate();
       const mainEl = document.getElementById("chart");
       if (mainEl && mainEl.data) {
         const r0 = eventData["xaxis.range[0]"] ?? (Array.isArray(rangePair) ? rangePair[0] : null);
         const r1 = eventData["xaxis.range[1]"] ?? (Array.isArray(rangePair) ? rangePair[1] : null);
         if (r0 != null && r1 != null) {
           pinnedXRange = [r0, r1];
-          chartSyncing = true;
-          Plotly.relayout(mainEl, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 }).finally(() => { chartSyncing = false; });
+          scheduleViewportRangeSync(mainEl, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 });
         } else if (hasAuto) {
           pinnedXRange = null;
           const adrRange = el._fullLayout?.xaxis?.range?.slice();
-          chartSyncing = true;
           if (Array.isArray(adrRange) && adrRange.length === 2) {
-            Plotly.relayout(mainEl, { "xaxis.range[0]": adrRange[0], "xaxis.range[1]": adrRange[1] }).finally(() => { chartSyncing = false; });
+            scheduleViewportRangeSync(mainEl, { "xaxis.range[0]": adrRange[0], "xaxis.range[1]": adrRange[1] });
           } else {
-            Plotly.relayout(mainEl, { "xaxis.autorange": true }).finally(() => { chartSyncing = false; });
+            scheduleViewportRangeSync(mainEl, { "xaxis.autorange": true });
           }
         }
       }
