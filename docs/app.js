@@ -50,8 +50,10 @@ const TICKER_DISCLOSURE_CACHE_STORE_NAME = "tickerDisclosures";
 const GRANULAR_CACHE_SCHEMA_VERSION = 1;
 const GRANULAR_CACHE_MAX_IDLE_DAYS = 120;
 const GRANULAR_CACHE_MAX_TICKERS = 60;
-const TICKER_PRICE_CACHE_FRESH_DAYS = 3;
-const APP_VERSION = "0.44";
+const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
+const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
+const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
+const APP_VERSION = "0.45";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -2447,6 +2449,47 @@ function getTickerPricePointsFromPayload(ticker) {
   })));
 }
 
+function priceDivergenceRatio(a, b) {
+  const left = toNum(a);
+  const right = toNum(b);
+  if (left === null || right === null || left <= 0 || right <= 0) return 1;
+  const ratio = Math.max(left, right) / Math.min(left, right);
+  return Number.isFinite(ratio) ? ratio : 1;
+}
+
+function dateDistanceDays(a, b) {
+  const left = Date.parse(`${String(a || "").slice(0, 10)}T00:00:00Z`);
+  const right = Date.parse(`${String(b || "").slice(0, 10)}T00:00:00Z`);
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return null;
+  return Math.abs(Math.round((right - left) / DAY_MS));
+}
+
+function findTickerPriceRebaseSignal(existingPoints, incomingPoints) {
+  const existing = normalizeTickerPricePoints(existingPoints);
+  const incoming = normalizeTickerPricePoints(incomingPoints);
+  if (!existing.length || !incoming.length) return null;
+
+  const existingByDate = new Map(existing.map((point) => [point.date, point.close]));
+  for (const point of incoming) {
+    if (!existingByDate.has(point.date)) continue;
+    const ratio = priceDivergenceRatio(existingByDate.get(point.date), point.close);
+    if (ratio >= PRICE_CACHE_REBASE_RATIO_THRESHOLD) {
+      return { type: "overlap", date: point.date, ratio };
+    }
+  }
+
+  const latestExisting = existing[existing.length - 1];
+  const firstAfterExisting = incoming.find((point) => point.date > latestExisting.date);
+  if (!firstAfterExisting) return null;
+  const gapDays = dateDistanceDays(latestExisting.date, firstAfterExisting.date);
+  if (gapDays === null || gapDays > PRICE_CACHE_REBASE_BOUNDARY_DAYS) return null;
+  const ratio = priceDivergenceRatio(latestExisting.close, firstAfterExisting.close);
+  if (ratio >= PRICE_CACHE_REBASE_RATIO_THRESHOLD) {
+    return { type: "boundary", date: firstAfterExisting.date, ratio };
+  }
+  return null;
+}
+
 function isTickerPriceCacheFresh(latestDate) {
   const latest = String(latestDate || "").slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(latest)) return false;
@@ -2521,9 +2564,17 @@ async function ensureCustomTickerSeriesLoaded(ticker, options = {}) {
   if (hasExisting && !forceRefresh && isTickerPriceCacheFresh(latestExisting)) return;
 
   try {
+    const existingPoints = getTickerPricePointsFromPayload(key);
     const sinceDate = hasExisting ? getLatestTickerDateFromPricePayload(key) : "";
-    const points = await fetchYahooHistorySeries(key, { sinceDate });
+    let points = await fetchYahooHistorySeries(key, { sinceDate });
     if (!points.length) throw new Error(`${key} price history is empty`);
+    const rebaseSignal = sinceDate ? findTickerPriceRebaseSignal(existingPoints, points) : null;
+    if (rebaseSignal) {
+      points = await fetchYahooHistorySeries(key);
+      if (!points.length) throw new Error(`${key} price history is empty`);
+      await deleteIndexedDbRecord(TICKER_PRICE_CACHE_STORE_NAME, key).catch(() => {});
+      clearTickerSeriesFromPricePayload(key);
+    }
     mergeTickerSeriesIntoPricePayload(key, points);
     await writeTickerPriceCache(key, getTickerPricePointsFromPayload(key), displayName);
   } catch (err) {
