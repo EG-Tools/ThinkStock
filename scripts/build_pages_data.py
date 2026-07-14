@@ -1281,10 +1281,21 @@ def main() -> None:
     macro = densify_macro(public_macro_source, prices.index if not prices.empty else pd.DatetimeIndex([]))
 
     existing_credit_seed = load_existing_credit_seed()
-    credit_seed = merge_credit_seed_with_existing_tail(historical_credit_seed, existing_credit_seed)
+    kofia_key = resolve_kofia_api_key()
+    existing_credit_is_newer = (
+        not existing_credit_seed.empty
+        and not historical_credit_seed.empty
+        and existing_credit_seed.index.max() > historical_credit_seed.index.max()
+    )
+    if not kofia_key and existing_credit_is_newer:
+        credit_seed = existing_credit_seed
+        latest_existing_credit = existing_credit_seed.index.max().strftime("%Y-%m-%d")
+        print(f"Keeping existing verified credit seed (latest={latest_existing_credit}).")
+        build_report["events"].append(f"Keeping existing verified credit seed latest={latest_existing_credit}")
+    else:
+        credit_seed = merge_credit_seed_with_existing_tail(historical_credit_seed, existing_credit_seed)
     build_report["sources"]["credit_seed"] = frame_summary(credit_seed)
     credit_merged = credit_seed
-    kofia_key = resolve_kofia_api_key()
     if kofia_key:
         credit_kofia = fetch_kofia_credit(kofia_key)
         build_report["sources"]["kofia_credit"] = frame_summary(credit_kofia)
