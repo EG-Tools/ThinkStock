@@ -1715,38 +1715,14 @@ function buildDenseMacroRows(sourceRows, targetDates) {
   return dense.filter((r) => cols.some((c) => toNum(r[c]) !== null));
 }
 
-let CREDIT_OFFSET_DAYS = 2;  // Shift credit series in days (UI uses negative sign for display)
+let CREDIT_OFFSET_DAYS = 2;  // Credit publication-lag alignment in days (UI uses negative sign for display)
 const CREDIT_COLS = ["kospi_credit", "kosdaq_credit"];
 
 /**
- * Build credit lookup from source rows and align it to price dates.
- * The lookup uses (date + CREDIT_OFFSET_DAYS) because credit data is published with a lag.
- * To keep the curve shape stable, offset is applied on x-axis alignment instead of value scaling.
- * This avoids visual distortion when users adjust the credit offset control.
- *
+ * Interpolate credit rows onto the price-date axis after applying the
+ * publication-lag offset. This keeps credit values on trading dates instead of
+ * visually spilling into weekends when the offset is enabled.
  */
-function buildCreditFinder(creditRowsSrc) {
-  if (!creditRowsSrc.length) return () => null;
-  const sorted = [...creditRowsSrc].sort((a, b) => a.date.localeCompare(b.date));
-  const byDate = new Map(sorted.map((r) => [r.date, r]));
-
-  return function findNearest(priceDate) {
-    // Shift price date by CREDIT_OFFSET_DAYS to align publication lag.
-    const base = new Date(`${priceDate}T00:00:00Z`);
-    base.setUTCDate(base.getUTCDate() + CREDIT_OFFSET_DAYS);
-    // Search nearby dates (±4 days) to handle weekends and holidays.
-    for (let delta = 0; delta <= 4; delta++) {
-      for (const sign of (delta === 0 ? [0] : [1, -1])) {
-        const d = new Date(base);
-        d.setUTCDate(d.getUTCDate() + delta * sign);
-        const key = d.toISOString().slice(0, 10);
-        if (byDate.has(key)) return byDate.get(key);
-      }
-    }
-    return null;
-  };
-}
-
 function buildCreditInterpolator(creditRowsSrc) {
   if (!creditRowsSrc.length) return () => null;
 
@@ -1876,6 +1852,11 @@ function mergeSources(priceRows, denseRows, creditRowsSrc, start, end) {
     });
   });
 
+  const creditSeriesRows = [...creditByDate.entries()]
+    .map(([date, vals]) => ({ date, ...vals }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const shiftedCreditAtPriceDate = buildCreditInterpolator(creditSeriesRows);
+
   const liveCols   = getSeriesColumns(priceRows);
   const macroCols  = getSeriesColumns(denseRows).filter((c) => !CREDIT_COLS.includes(c));
 
@@ -1885,10 +1866,11 @@ function mergeSources(priceRows, denseRows, creditRowsSrc, start, end) {
     const row = { date };
     const pr = priceMap.get(date) || {};
     const mr = macroMap.get(date) || {};
+    const exactCredit = creditByDate.get(date) || null;
+    const shiftedCredit = shiftedCreditAtPriceDate(date) || exactCredit;
     liveCols.forEach((k) => { row[k] = toNum(pr[k]); });
     macroCols.forEach((k) => { row[k] = toNum(mr[k]); });
-    const cr = creditByDate.get(date) || null;
-    CREDIT_COLS.forEach((k) => { row[k] = cr ? toNum(cr[k]) : null; });
+    CREDIT_COLS.forEach((k) => { row[k] = shiftedCredit ? toNum(shiftedCredit[k]) : null; });
     rows.push(row);
   });
 
@@ -2226,10 +2208,7 @@ function renderChart(preserveZoom = true) {
     const offset = seriesOffsets[series] || 0;
     if (offset) values = values.map((v) => (v !== null ? v + offset : null));
 
-    // Credit offset moves x only so the line shape never distorts
-    const xValues = CREDIT_COLS.includes(series)
-      ? rows.map((r) => shiftDays(r.date, -CREDIT_OFFSET_DAYS))
-      : rows.map((r) => r.date);
+    const xValues = rows.map((r) => r.date);
 
     return {
       x: xValues,
