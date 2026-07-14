@@ -160,7 +160,11 @@ def validate_credit(rows: list[dict]) -> None:
                         )
             last_seen[key] = (row_date, value)
 
-    if os.environ.get("KOFIA_API_KEY", "").strip():
+    has_live_credit_source = (
+        os.environ.get("KOFIA_API_KEY", "").strip()
+        or os.environ.get("ENABLE_FREESIS_CREDIT_TAIL", "").strip() == "1"
+    )
+    if has_live_credit_source:
         latest = parse_date(rows[-1].get("date"), "credit latest")
         age_days = (date.today() - latest).days
         if age_days > CREDIT_MAX_FRESH_DAYS:
