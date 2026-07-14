@@ -44,7 +44,7 @@ const DATA_CACHE_RECORD_KEY = "latest";
 const DATA_CACHE_LOCAL_KEY = "thinkstock-runtime-cache-v1";
 const DATA_CACHE_SCHEMA_VERSION = 7;
 const DATA_CACHE_MAX_AGE_DAYS = 7;
-const APP_VERSION = "0.40";
+const APP_VERSION = "0.41";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -315,10 +315,13 @@ function sanitizeApiSettings(raw) {
 }
 
 function saveApiSettings() {
+  const sanitized = sanitizeApiSettings(apiSettings);
   try {
-    sessionStorage.setItem(API_SETTINGS_SESSION_KEY, JSON.stringify(sanitizeApiSettings(apiSettings)));
+    sessionStorage.setItem(API_SETTINGS_SESSION_KEY, JSON.stringify(sanitized));
   } catch (_) {}
-  try { localStorage.removeItem(API_SETTINGS_KEY); } catch (_) {}
+  try {
+    localStorage.setItem(API_SETTINGS_KEY, JSON.stringify(sanitized));
+  } catch (_) {}
 }
 
 function clearApiSettingsStorage() {
@@ -327,31 +330,27 @@ function clearApiSettingsStorage() {
 }
 
 function loadApiSettings() {
+  let loaded = null;
   try {
-    const raw = sessionStorage.getItem(API_SETTINGS_SESSION_KEY);
+    const raw = localStorage.getItem(API_SETTINGS_KEY);
     if (raw) {
-      apiSettings = sanitizeApiSettings(JSON.parse(raw));
-      try { localStorage.removeItem(API_SETTINGS_KEY); } catch (_) {}
-      return;
+      loaded = sanitizeApiSettings(JSON.parse(raw));
     }
-  } catch (_) {
-    apiSettings = { ...API_SETTINGS_DEFAULT };
+  } catch (_) {}
+
+  if (!loaded) {
+    try {
+      const raw = sessionStorage.getItem(API_SETTINGS_SESSION_KEY);
+      if (raw) {
+        loaded = sanitizeApiSettings(JSON.parse(raw));
+      }
+    } catch (_) {
+      loaded = null;
+    }
   }
 
-  try {
-    const legacyRaw = localStorage.getItem(API_SETTINGS_KEY);
-    if (!legacyRaw) {
-      apiSettings = { ...API_SETTINGS_DEFAULT };
-      return;
-    }
-    apiSettings = sanitizeApiSettings(JSON.parse(legacyRaw));
-    try {
-      sessionStorage.setItem(API_SETTINGS_SESSION_KEY, JSON.stringify(apiSettings));
-    } catch (_) {}
-    localStorage.removeItem(API_SETTINGS_KEY);
-  } catch (_) {
-    apiSettings = { ...API_SETTINGS_DEFAULT };
-  }
+  apiSettings = loaded || { ...API_SETTINGS_DEFAULT };
+  saveApiSettings();
 }
 
 function copyDisplayNames(raw) {
@@ -983,7 +982,7 @@ function setupApiSettingsPanel(msgEl) {
     }
     syncApiOptionsButton();
     close();
-    setMessage(msgEl, ["API keys saved for this browser tab."]);
+    setMessage(msgEl, ["API keys saved on this device."]);
     const dartSettingChanged = prevDartKey !== nextDartKey || prevDartProxyEnabled !== nextDartProxyEnabled;
     const shouldRefreshDart = Boolean(nextDartKey) && (dartSettingChanged || nextDartProxyEnabled);
     if (shouldRefreshDart) {
