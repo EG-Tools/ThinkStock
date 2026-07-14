@@ -37,6 +37,11 @@ const KRX_INDEX_ENDPOINTS = {
 
 const STATE_KEY = "thinkstock-v5";
 const API_SETTINGS_KEY = "thinkstock-api-v1";
+const DATA_CACHE_DB_NAME = "thinkstock-runtime-cache-v1";
+const DATA_CACHE_STORE_NAME = "snapshots";
+const DATA_CACHE_RECORD_KEY = "latest";
+const DATA_CACHE_LOCAL_KEY = "thinkstock-runtime-cache-v1";
+const DATA_CACHE_SCHEMA_VERSION = 1;
 const API_SETTINGS_DEFAULT = Object.freeze({
   ecosApiKey: "",
   kofiaApiKey: "",
@@ -232,6 +237,186 @@ function loadApiSettings() {
   } catch (_) {
     apiSettings = { ...API_SETTINGS_DEFAULT };
   }
+}
+
+function copyDisplayNames(raw) {
+  const src = raw && typeof raw === "object" ? raw : {};
+  return Object.fromEntries(
+    Object.entries(src)
+      .filter(([key, value]) => key && typeof value === "string" && value.trim())
+      .map(([key, value]) => [key, value.trim()]),
+  );
+}
+
+function sanitizePricePayloadForSnapshot(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const records = normalizePayloadRecords(raw.records);
+  if (!records.length) return null;
+  return {
+    generated_at: typeof raw.generated_at === "string" ? raw.generated_at : "",
+    records,
+    series: Array.isArray(raw.series) ? raw.series.filter(Boolean) : getSeriesColumns(records),
+    display_names: copyDisplayNames(raw.display_names),
+  };
+}
+
+function buildRuntimeDataSnapshot() {
+  const safePricePayload = sanitizePricePayloadForSnapshot(pricePayload);
+  const safeMacroRows = normalizePayloadRecords(macroRows);
+  const safeCreditRows = normalizeCreditRows(creditRows);
+  const safeAdrRows = normalizePayloadRecords(adrRows);
+
+  if (!safePricePayload && !safeMacroRows.length && !safeCreditRows.length && !safeAdrRows.length) return null;
+
+  return {
+    version: DATA_CACHE_SCHEMA_VERSION,
+    saved_at: new Date().toISOString(),
+    pricePayload: safePricePayload,
+    macroRows: safeMacroRows,
+    creditRows: safeCreditRows,
+    adrRows: safeAdrRows,
+  };
+}
+
+function applyRuntimeDataSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return false;
+  if (snapshot.version !== DATA_CACHE_SCHEMA_VERSION) return false;
+
+  const safePricePayload = sanitizePricePayloadForSnapshot(snapshot.pricePayload);
+  const safeMacroRows = normalizePayloadRecords(snapshot.macroRows);
+  const safeCreditRows = normalizeCreditRows(snapshot.creditRows);
+  const safeAdrRows = normalizePayloadRecords(snapshot.adrRows);
+
+  if (!safePricePayload && !safeMacroRows.length && !safeCreditRows.length && !safeAdrRows.length) return false;
+
+  if (safePricePayload) {
+    pricePayload = safePricePayload;
+    Object.assign(DISPLAY_NAMES, safePricePayload.display_names || {});
+  }
+  if (safeMacroRows.length) macroRows = safeMacroRows;
+  if (safeCreditRows.length) creditRows = safeCreditRows;
+  if (safeAdrRows.length) adrRows = safeAdrRows;
+  return true;
+}
+
+function hasRuntimeDataLoaded() {
+  return Boolean(
+    pricePayload?.records?.length
+    || macroRows?.length
+    || creditRows?.length
+    || adrRows?.length
+  );
+}
+
+function openRuntimeCacheDb() {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === "undefined") {
+      reject(new Error("IndexedDB unavailable"));
+      return;
+    }
+
+    const req = indexedDB.open(DATA_CACHE_DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(DATA_CACHE_STORE_NAME)) {
+        db.createObjectStore(DATA_CACHE_STORE_NAME);
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error("IndexedDB open failed"));
+    req.onblocked = () => reject(new Error("IndexedDB blocked"));
+  });
+}
+
+async function readRuntimeSnapshotFromIndexedDb() {
+  let db = null;
+  try {
+    db = await openRuntimeCacheDb();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(DATA_CACHE_STORE_NAME, "readonly");
+      const store = tx.objectStore(DATA_CACHE_STORE_NAME);
+      const req = store.get(DATA_CACHE_RECORD_KEY);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error || new Error("IndexedDB read failed"));
+    });
+  } finally {
+    try { db?.close(); } catch (_) {}
+  }
+}
+
+async function writeRuntimeSnapshotToIndexedDb(snapshot) {
+  let db = null;
+  try {
+    db = await openRuntimeCacheDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(DATA_CACHE_STORE_NAME, "readwrite");
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error("IndexedDB write failed"));
+      tx.onabort = () => reject(tx.error || new Error("IndexedDB write aborted"));
+      tx.objectStore(DATA_CACHE_STORE_NAME).put(snapshot, DATA_CACHE_RECORD_KEY);
+    });
+  } finally {
+    try { db?.close(); } catch (_) {}
+  }
+}
+
+function readRuntimeSnapshotFromLocalStorage() {
+  try {
+    const raw = localStorage.getItem(DATA_CACHE_LOCAL_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeRuntimeSnapshotToLocalStorage(snapshot) {
+  localStorage.setItem(DATA_CACHE_LOCAL_KEY, JSON.stringify(snapshot));
+}
+
+async function readLastRuntimeSnapshot() {
+  try {
+    const snapshot = await readRuntimeSnapshotFromIndexedDb();
+    if (snapshot) return snapshot;
+  } catch (_) {
+    // Fall back to localStorage for browsers or modes that block IndexedDB.
+  }
+  return readRuntimeSnapshotFromLocalStorage();
+}
+
+async function saveLastRuntimeSnapshot() {
+  const snapshot = buildRuntimeDataSnapshot();
+  if (!snapshot) return false;
+
+  try {
+    await writeRuntimeSnapshotToIndexedDb(snapshot);
+    return true;
+  } catch (idbErr) {
+    try {
+      writeRuntimeSnapshotToLocalStorage(snapshot);
+      return true;
+    } catch (storageErr) {
+      const message = storageErr?.message || idbErr?.message || "runtime cache write failed";
+      throw new Error(message);
+    }
+  }
+}
+
+async function loadLastRuntimeSnapshot() {
+  const snapshot = await readLastRuntimeSnapshot();
+  return applyRuntimeDataSnapshot(snapshot);
+}
+
+let runtimeSnapshotExitSaveBound = false;
+function bindRuntimeSnapshotExitSave() {
+  if (runtimeSnapshotExitSaveBound || typeof window === "undefined") return;
+  runtimeSnapshotExitSaveBound = true;
+  const save = () => {
+    saveLastRuntimeSnapshot().catch(() => {});
+  };
+  window.addEventListener("pagehide", save);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") save();
+  });
 }
 
 function hasAnyApiKey() {
@@ -1191,6 +1376,50 @@ function getSeriesColumns(rows) {
   const cols = new Set();
   rows.forEach((r) => Object.keys(r).forEach((k) => { if (k !== "date") cols.add(k); }));
   return [...cols];
+}
+
+function mergeRowsPreservingExisting(existingRows, incomingRows) {
+  const byDate = new Map();
+  normalizePayloadRecords(existingRows).forEach((row) => {
+    byDate.set(row.date, { ...row });
+  });
+
+  normalizePayloadRecords(incomingRows).forEach((row) => {
+    const prev = byDate.get(row.date);
+    if (!prev) {
+      byDate.set(row.date, { ...row });
+      return;
+    }
+
+    const merged = { ...prev };
+    Object.entries(row).forEach(([key, value]) => {
+      if (key === "date") return;
+      if (toNum(merged[key]) === null && toNum(value) !== null) {
+        merged[key] = toNum(value);
+      }
+    });
+    byDate.set(row.date, merged);
+  });
+
+  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function mergePricePayloadPreservingExisting(existingPayload, incomingPayload) {
+  const existing = sanitizePricePayloadForSnapshot(existingPayload);
+  const incoming = sanitizePricePayloadForSnapshot(incomingPayload);
+  if (!existing) return incoming;
+  if (!incoming) return existing;
+
+  const records = mergeRowsPreservingExisting(existing.records, incoming.records);
+  return {
+    ...incoming,
+    records,
+    series: [...new Set([...(incoming.series || []), ...(existing.series || []), ...getSeriesColumns(records)])],
+    display_names: {
+      ...(incoming.display_names || {}),
+      ...(existing.display_names || {}),
+    },
+  };
 }
 
 function getSeriesPriorityOrder() {
@@ -3367,7 +3596,8 @@ async function refreshAdrFromWeb() {
   };
 }
 
-async function loadData(forceNetwork = false) {
+async function loadData(forceNetwork = false, options = {}) {
+  const mergeWithExisting = Boolean(options?.mergeWithExisting);
   if (!pricePayload || typeof pricePayload !== "object") {
     pricePayload = { records: [], series: [], display_names: {} };
   } else {
@@ -3411,12 +3641,15 @@ async function loadData(forceNetwork = false) {
       const payload = JSON.parse(priceText.replace(/\bNaN\b/g, "null"));
       if (payload && typeof payload === "object" && Array.isArray(payload.records)) {
         const priceRows = normalizePayloadRecords(payload.records);
-        pricePayload = {
+        const seededPricePayload = {
           ...payload,
           records: priceRows,
           series: Array.isArray(payload.series) ? payload.series : getSeriesColumns(priceRows),
           display_names: payload.display_names && typeof payload.display_names === "object" ? payload.display_names : {},
         };
+        pricePayload = mergeWithExisting
+          ? mergePricePayloadPreservingExisting(pricePayload, seededPricePayload)
+          : seededPricePayload;
         Object.assign(DISPLAY_NAMES, pricePayload.display_names || {});
       }
     }
@@ -3428,7 +3661,9 @@ async function loadData(forceNetwork = false) {
     if (macroText) {
       const seededMacroRows = parseMacroPayload(macroText);
       if (seededMacroRows.length) {
-        macroRows = seededMacroRows;
+        macroRows = mergeWithExisting
+          ? mergeRowsPreservingExisting(macroRows, seededMacroRows)
+          : seededMacroRows;
       }
     }
   } catch (_) {
@@ -3439,7 +3674,9 @@ async function loadData(forceNetwork = false) {
     if (creditText) {
       const seededCreditRows = parseMacroPayload(creditText);
       if (seededCreditRows.length) {
-        creditRows = normalizeCreditRows(seededCreditRows);
+        creditRows = mergeWithExisting
+          ? normalizeCreditRows(mergeRowsPreservingExisting(creditRows, seededCreditRows))
+          : normalizeCreditRows(seededCreditRows);
       }
     }
   } catch (_) {
@@ -3450,7 +3687,9 @@ async function loadData(forceNetwork = false) {
     if (adrText) {
       const adrPayload = JSON.parse(adrText);
       if (Array.isArray(adrPayload?.records)) {
-        adrRows = adrPayload.records;
+        adrRows = mergeWithExisting
+          ? mergeRowsPreservingExisting(adrRows, adrPayload.records)
+          : adrPayload.records;
       }
     }
   } catch (_) {
@@ -3485,6 +3724,11 @@ async function refreshRuntimeData(msgEl) {
   warnLines.push(...liveResult.warnings);
 
   renderChart(false);
+  try {
+    await saveLastRuntimeSnapshot();
+  } catch (cacheErr) {
+    warnLines.push(`마지막 화면 저장 오류: ${cacheErr.message}`);
+  }
 
   if (infoLines.length || warnLines.length) {
     setMessage(msgEl, [...infoLines, ...warnLines], infoLines.length === 0);
@@ -3516,12 +3760,18 @@ async function boot() {
   syncButtons();
   setupApiSettingsPanel(msgEl);
   syncApiOptionsButton();
+  bindRuntimeSnapshotExitSave();
   setStartupLoaderProgress(10, "Preparing");
   try {
-    await loadData(true);
-    setStartupLoaderProgress(45, "Loading data");
+    const restoredLastSnapshot = await loadLastRuntimeSnapshot();
+    if (restoredLastSnapshot) {
+      setStartupLoaderProgress(42, "Restoring last view");
+    } else {
+      await loadData(true);
+      setStartupLoaderProgress(45, "Loading saved data");
+    }
     renderChart(false);
-    setStartupLoaderProgress(72, "Rendering saved data");
+    setStartupLoaderProgress(72, restoredLastSnapshot ? "Rendering last view" : "Rendering saved data");
 
     document.querySelectorAll(".range-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -3578,7 +3828,13 @@ async function boot() {
           if (navigator.serviceWorker.controller) {
             await requestServiceWorkerDataRefresh();
           }
-          await loadData(true);
+          if (hasRuntimeDataLoaded()) {
+            await loadData(true, { mergeWithExisting: true });
+          } else {
+            const restored = await loadLastRuntimeSnapshot();
+            if (restored) renderChart(false);
+            else await loadData(true);
+          }
           await refreshRuntimeData(msgEl);
         } catch (err) {
           setMessage(msgEl, `데이터 갱신 중 오류: ${err.message}`, true);
@@ -3591,6 +3847,9 @@ async function boot() {
     await waitForFirstPaint();
     setStartupLoaderProgress(84, "Refreshing latest data");
     try {
+      if (restoredLastSnapshot) {
+        await loadData(true, { mergeWithExisting: true });
+      }
       await refreshRuntimeData(msgEl);
     } catch (refreshErr) {
       setMessage(msgEl, `최신 데이터 갱신 오류: ${refreshErr.message}`, true);
