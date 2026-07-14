@@ -39,12 +39,19 @@ const STATE_KEY = "thinkstock-v5";
 const API_SETTINGS_KEY = "thinkstock-api-v1";
 const API_SETTINGS_SESSION_KEY = "thinkstock-api-session-v1";
 const DATA_CACHE_DB_NAME = "thinkstock-runtime-cache-v1";
+const DATA_CACHE_DB_VERSION = 2;
 const DATA_CACHE_STORE_NAME = "snapshots";
 const DATA_CACHE_RECORD_KEY = "latest";
 const DATA_CACHE_LOCAL_KEY = "thinkstock-runtime-cache-v1";
 const DATA_CACHE_SCHEMA_VERSION = 7;
 const DATA_CACHE_MAX_AGE_DAYS = 7;
-const APP_VERSION = "0.43";
+const TICKER_PRICE_CACHE_STORE_NAME = "tickerPrices";
+const TICKER_DISCLOSURE_CACHE_STORE_NAME = "tickerDisclosures";
+const GRANULAR_CACHE_SCHEMA_VERSION = 1;
+const GRANULAR_CACHE_MAX_IDLE_DAYS = 120;
+const GRANULAR_CACHE_MAX_TICKERS = 60;
+const TICKER_PRICE_CACHE_FRESH_DAYS = 3;
+const APP_VERSION = "0.44";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -577,11 +584,17 @@ function openRuntimeCacheDb() {
       return;
     }
 
-    const req = indexedDB.open(DATA_CACHE_DB_NAME, 1);
+    const req = indexedDB.open(DATA_CACHE_DB_NAME, DATA_CACHE_DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(DATA_CACHE_STORE_NAME)) {
         db.createObjectStore(DATA_CACHE_STORE_NAME);
+      }
+      if (!db.objectStoreNames.contains(TICKER_PRICE_CACHE_STORE_NAME)) {
+        db.createObjectStore(TICKER_PRICE_CACHE_STORE_NAME);
+      }
+      if (!db.objectStoreNames.contains(TICKER_DISCLOSURE_CACHE_STORE_NAME)) {
+        db.createObjectStore(TICKER_DISCLOSURE_CACHE_STORE_NAME);
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -636,6 +649,98 @@ async function deleteRuntimeSnapshotFromIndexedDb() {
   } finally {
     try { db?.close(); } catch (_) {}
   }
+}
+
+async function readIndexedDbRecord(storeName, key) {
+  let db = null;
+  try {
+    db = await openRuntimeCacheDb();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, "readonly");
+      const req = tx.objectStore(storeName).get(key);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error || new Error("IndexedDB record read failed"));
+    });
+  } finally {
+    try { db?.close(); } catch (_) {}
+  }
+}
+
+async function writeIndexedDbRecord(storeName, key, value) {
+  let db = null;
+  try {
+    db = await openRuntimeCacheDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, "readwrite");
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error("IndexedDB record write failed"));
+      tx.onabort = () => reject(tx.error || new Error("IndexedDB record write aborted"));
+      tx.objectStore(storeName).put(value, key);
+    });
+    return true;
+  } finally {
+    try { db?.close(); } catch (_) {}
+  }
+}
+
+async function deleteIndexedDbRecord(storeName, key) {
+  let db = null;
+  try {
+    db = await openRuntimeCacheDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, "readwrite");
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error("IndexedDB record delete failed"));
+      tx.onabort = () => reject(tx.error || new Error("IndexedDB record delete aborted"));
+      tx.objectStore(storeName).delete(key);
+    });
+  } finally {
+    try { db?.close(); } catch (_) {}
+  }
+}
+
+async function readAllIndexedDbRecords(storeName) {
+  let db = null;
+  try {
+    db = await openRuntimeCacheDb();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, "readonly");
+      const req = tx.objectStore(storeName).getAll();
+      req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
+      req.onerror = () => reject(req.error || new Error("IndexedDB records read failed"));
+    });
+  } finally {
+    try { db?.close(); } catch (_) {}
+  }
+}
+
+async function pruneGranularCacheStore(storeName, maxRecords = GRANULAR_CACHE_MAX_TICKERS) {
+  try {
+    const records = await readAllIndexedDbRecords(storeName);
+    if (!records.length) return;
+    const now = Date.now();
+    const expired = records.filter((record) => {
+      const lastAccessed = Number(record?.lastAccessed || record?.savedAt || 0);
+      return !Number.isFinite(lastAccessed) || now - lastAccessed > GRANULAR_CACHE_MAX_IDLE_DAYS * DAY_MS;
+    });
+    const survivors = records
+      .filter((record) => !expired.includes(record))
+      .sort((a, b) => Number(b?.lastAccessed || b?.savedAt || 0) - Number(a?.lastAccessed || a?.savedAt || 0));
+    const overflow = survivors.slice(Math.max(0, maxRecords));
+    await Promise.all([...expired, ...overflow].map((record) => {
+      const ticker = String(record?.ticker || "").toUpperCase();
+      return ticker ? deleteIndexedDbRecord(storeName, ticker) : Promise.resolve();
+    }));
+  } catch (_) {
+    // Cache cleanup should never block the app.
+  }
+}
+
+function scheduleGranularCacheCleanup() {
+  setTimeout(() => {
+    pruneGranularCacheStore(TICKER_PRICE_CACHE_STORE_NAME).catch(() => {});
+    pruneGranularCacheStore(TICKER_DISCLOSURE_CACHE_STORE_NAME).catch(() => {});
+  }, 2500);
 }
 
 function readRuntimeSnapshotFromLocalStorage() {
@@ -2322,15 +2427,109 @@ function getLatestTickerDateFromPricePayload(ticker) {
   });
   return latest;
 }
-async function ensureCustomTickerSeriesLoaded(ticker, options = {}) {
-  const forceRefresh = Boolean(options?.forceRefresh);
-  const hasExisting = (pricePayload?.records || []).some((row) => toNum(row?.[ticker]) !== null);
-  if (hasExisting && !forceRefresh) return;
 
-  const sinceDate = hasExisting && forceRefresh ? getLatestTickerDateFromPricePayload(ticker) : "";
-  const points = await fetchYahooHistorySeries(ticker, { sinceDate });
-  if (!points.length) throw new Error(`${ticker} 종목의 가격 히스토리를 가져오지 못했습니다.`);
-  mergeTickerSeriesIntoPricePayload(ticker, points);
+function normalizeTickerPricePoints(points) {
+  const map = new Map();
+  (Array.isArray(points) ? points : []).forEach((point) => {
+    const date = String(point?.date || "").slice(0, 10);
+    const close = toNum(point?.close);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || close === null) return;
+    map.set(date, { date, close });
+  });
+  return [...map.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function getTickerPricePointsFromPayload(ticker) {
+  const key = String(ticker || "").trim().toUpperCase();
+  return normalizeTickerPricePoints((pricePayload?.records || []).map((row) => ({
+    date: row?.date,
+    close: row?.[key],
+  })));
+}
+
+function isTickerPriceCacheFresh(latestDate) {
+  const latest = String(latestDate || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(latest)) return false;
+  return latest >= shiftDays(new Date().toISOString().slice(0, 10), -TICKER_PRICE_CACHE_FRESH_DAYS);
+}
+
+async function readTickerPriceCache(ticker) {
+  const key = String(ticker || "").trim().toUpperCase();
+  if (!key) return null;
+  try {
+    const record = await readIndexedDbRecord(TICKER_PRICE_CACHE_STORE_NAME, key);
+    if (!record || record.schema !== GRANULAR_CACHE_SCHEMA_VERSION || record.ticker !== key) return null;
+    const points = normalizeTickerPricePoints(record.points);
+    if (!points.length) return null;
+    const nextRecord = {
+      ...record,
+      points,
+      lastAccessed: Date.now(),
+    };
+    writeIndexedDbRecord(TICKER_PRICE_CACHE_STORE_NAME, key, nextRecord).catch(() => {});
+    return nextRecord;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function writeTickerPriceCache(ticker, points, displayName = "") {
+  const key = String(ticker || "").trim().toUpperCase();
+  const normalized = normalizeTickerPricePoints(points);
+  if (!key || !normalized.length) return false;
+  const now = Date.now();
+  const record = {
+    schema: GRANULAR_CACHE_SCHEMA_VERSION,
+    ticker: key,
+    displayName: String(displayName || DISPLAY_NAMES[key] || key).trim(),
+    savedAt: now,
+    lastAccessed: now,
+    latestDate: normalized[normalized.length - 1].date,
+    points: normalized,
+  };
+  try {
+    await writeIndexedDbRecord(TICKER_PRICE_CACHE_STORE_NAME, key, record);
+    pruneGranularCacheStore(TICKER_PRICE_CACHE_STORE_NAME).catch(() => {});
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function applyTickerPriceCache(ticker, displayName = "") {
+  const key = String(ticker || "").trim().toUpperCase();
+  const record = await readTickerPriceCache(key);
+  if (!record) return { applied: false, count: 0, latestDate: "" };
+  if (displayName || record.displayName) {
+    DISPLAY_NAMES[key] = displayName || record.displayName;
+  }
+  mergeTickerSeriesIntoPricePayload(key, record.points);
+  return {
+    applied: true,
+    count: record.points.length,
+    latestDate: record.latestDate || record.points[record.points.length - 1]?.date || "",
+  };
+}
+
+async function ensureCustomTickerSeriesLoaded(ticker, options = {}) {
+  const key = String(ticker || "").trim().toUpperCase();
+  const forceRefresh = Boolean(options?.forceRefresh);
+  const displayName = String(options?.displayName || DISPLAY_NAMES[key] || "").trim();
+  const cacheInfo = await applyTickerPriceCache(key, displayName);
+  const hasExisting = (pricePayload?.records || []).some((row) => toNum(row?.[key]) !== null);
+  const latestExisting = cacheInfo.latestDate || getLatestTickerDateFromPricePayload(key);
+  if (hasExisting && !forceRefresh && isTickerPriceCacheFresh(latestExisting)) return;
+
+  try {
+    const sinceDate = hasExisting ? getLatestTickerDateFromPricePayload(key) : "";
+    const points = await fetchYahooHistorySeries(key, { sinceDate });
+    if (!points.length) throw new Error(`${key} price history is empty`);
+    mergeTickerSeriesIntoPricePayload(key, points);
+    await writeTickerPriceCache(key, getTickerPricePointsFromPayload(key), displayName);
+  } catch (err) {
+    if (hasExisting || cacheInfo.applied) return;
+    throw err;
+  }
 }
 
 function parseLooseNumber(raw) {
@@ -2529,7 +2728,7 @@ async function addCustomStock(candidate, msgEl) {
   loadingCustomStocks.add(candidate.ticker);
   try {
     DISPLAY_NAMES[candidate.ticker] = candidate.name;
-    await ensureCustomTickerSeriesLoaded(candidate.ticker);
+    await ensureCustomTickerSeriesLoaded(candidate.ticker, { displayName: candidate.name });
 
     customStocks.push({
       ticker: candidate.ticker,
@@ -2679,7 +2878,7 @@ async function preloadCustomStocks(options = {}) {
   for (const item of customStocks) {
     const hadExisting = (pricePayload?.records || []).some((row) => toNum(row?.[item.ticker]) !== null);
     try {
-      await ensureCustomTickerSeriesLoaded(item.ticker, { forceRefresh });
+      await ensureCustomTickerSeriesLoaded(item.ticker, { forceRefresh, displayName: item.name });
       DISPLAY_NAMES[item.ticker] = item.name;
     } catch (_) {
       // Keep ticker if older history exists and refresh fails.
@@ -3634,6 +3833,65 @@ function hasFreshDartDisclosureRefresh(ticker) {
   return Boolean(getDartDisclosureRefreshCacheEntry(ticker));
 }
 
+function disclosureRowsForTicker(ticker) {
+  const target = String(ticker || "").trim().toUpperCase();
+  return sanitizeDisclosureRows(disclosureRows.filter((row) => row.ticker === target));
+}
+
+async function readTickerDisclosureCache(ticker) {
+  const key = String(ticker || "").trim().toUpperCase();
+  if (!key) return null;
+  try {
+    const record = await readIndexedDbRecord(TICKER_DISCLOSURE_CACHE_STORE_NAME, key);
+    if (!record || record.schema !== GRANULAR_CACHE_SCHEMA_VERSION || record.ticker !== key) return null;
+    const rows = sanitizeDisclosureRows(record.rows);
+    if (!rows.length) return null;
+    const nextRecord = {
+      ...record,
+      rows,
+      lastAccessed: Date.now(),
+    };
+    writeIndexedDbRecord(TICKER_DISCLOSURE_CACHE_STORE_NAME, key, nextRecord).catch(() => {});
+    return nextRecord;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function writeTickerDisclosureCache(ticker, rows) {
+  const key = String(ticker || "").trim().toUpperCase();
+  const normalized = sanitizeDisclosureRows(rows).filter((row) => row.ticker === key);
+  if (!key || !normalized.length) return false;
+  const now = Date.now();
+  const record = {
+    schema: GRANULAR_CACHE_SCHEMA_VERSION,
+    ticker: key,
+    savedAt: now,
+    lastAccessed: now,
+    latestDate: normalized[normalized.length - 1]?.date || "",
+    rows: normalized,
+  };
+  try {
+    await writeIndexedDbRecord(TICKER_DISCLOSURE_CACHE_STORE_NAME, key, record);
+    pruneGranularCacheStore(TICKER_DISCLOSURE_CACHE_STORE_NAME).catch(() => {});
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function applyTickerDisclosureCache(ticker) {
+  const record = await readTickerDisclosureCache(ticker);
+  if (!record) return { applied: false, added: 0, latestDate: "" };
+  const beforeCount = disclosureRows.length;
+  disclosureRows = mergeDisclosureRows(disclosureRows, record.rows);
+  return {
+    applied: true,
+    added: Math.max(0, disclosureRows.length - beforeCount),
+    latestDate: record.latestDate || record.rows[record.rows.length - 1]?.date || "",
+  };
+}
+
 function getDisclosureSeedTickers() {
   const tickers = [
     ...(Array.isArray(pricePayload?.series) ? pricePayload.series : []),
@@ -3653,10 +3911,17 @@ function getDisclosureSeedPath(ticker) {
 async function ensureDisclosureSeedForTicker(ticker, forceNetwork = false) {
   const target = String(ticker || "").trim().toUpperCase();
   if (!/^[0-9]{6}\.(KS|KQ)$/.test(target)) return { ticker: target, added: 0 };
-  const manifestTickers = Array.isArray(disclosureManifest?.tickers) ? disclosureManifest.tickers : [];
-  if (manifestTickers.length && !manifestTickers.includes(target)) return { ticker: target, added: 0 };
   if (disclosureSeedLoadedTickers.has(target)) return { ticker: target, added: 0 };
   if (disclosureSeedLoadPromises.has(target)) return disclosureSeedLoadPromises.get(target);
+
+  const cached = await applyTickerDisclosureCache(target);
+  if (cached.applied && !forceNetwork) {
+    disclosureSeedLoadedTickers.add(target);
+    return { ticker: target, added: cached.added, cached: true, latestDate: cached.latestDate };
+  }
+
+  const manifestTickers = Array.isArray(disclosureManifest?.tickers) ? disclosureManifest.tickers : [];
+  if (manifestTickers.length && !manifestTickers.includes(target)) return { ticker: target, added: 0 };
 
   const task = (async () => {
     const beforeCount = disclosureRows.length;
@@ -3666,6 +3931,7 @@ async function ensureDisclosureSeedForTicker(ticker, forceNetwork = false) {
     const rows = sanitizeDisclosureRows(normalizeDisclosureSeedRows(payload?.records || []));
     disclosureRows = mergeDisclosureRows(disclosureRows, rows);
     disclosureSeedLoadedTickers.add(target);
+    writeTickerDisclosureCache(target, disclosureRowsForTicker(target)).catch(() => {});
     return { ticker: target, added: Math.max(0, disclosureRows.length - beforeCount) };
   })().catch(() => ({ ticker: target, added: 0 })).finally(() => {
     disclosureSeedLoadPromises.delete(target);
@@ -3703,7 +3969,13 @@ async function refreshDartDisclosuresFromApi(apiKey, ticker = "", options = {}) 
     added: Math.max(0, disclosureRows.length - beforeCount),
     latestDate,
   };
-  if (targetTicker) rememberDartDisclosureRefresh(targetTicker, info);
+  if (targetTicker) {
+    rememberDartDisclosureRefresh(targetTicker, info);
+    writeTickerDisclosureCache(targetTicker, disclosureRowsForTicker(targetTicker)).catch(() => {});
+  } else {
+    [...new Set(liveRows.map((row) => row.ticker).filter(Boolean))]
+      .forEach((ticker) => writeTickerDisclosureCache(ticker, disclosureRowsForTicker(ticker)).catch(() => {}));
+  }
   return info;
 }
 
@@ -3762,6 +4034,9 @@ async function refreshDartDisclosuresForVisibleTickersFromApi(apiKey, options = 
   });
 
   disclosureRows = mergeDisclosureRows(disclosureRows, incomingRows);
+  uniqueTickers.forEach((ticker) => {
+    writeTickerDisclosureCache(ticker, disclosureRowsForTicker(ticker)).catch(() => {});
+  });
 
   const latestDate = disclosureRows.length ? disclosureRows[disclosureRows.length - 1].date : "";
   return {
@@ -5155,6 +5430,7 @@ async function boot() {
   syncApiOptionsButton();
   renderAppVersionLabel();
   bindRuntimeSnapshotExitSave();
+  scheduleGranularCacheCleanup();
   setStartupLoaderProgress(10, "Preparing");
   try {
     const restoredLastSnapshot = await loadLastRuntimeSnapshot();
