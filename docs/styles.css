@@ -573,7 +573,9 @@ body {
   overflow: hidden;
 }
 
+.chart-frame.is-line-hovering,
 .chart-frame.is-line-dragging,
+.chart-frame.is-line-hovering .main-svg,
 .chart-frame.is-line-dragging .main-svg {
   cursor: ns-resize !important;
 }

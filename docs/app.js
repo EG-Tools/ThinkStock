@@ -105,6 +105,7 @@ const PLOTLY_CONFIG = {
 };
 const LINE_DRAG_TOLERANCE_PX = 14;
 const LINE_DRAG_TOUCH_TOLERANCE_PX = 24;
+const LINE_HIGHLIGHT_EXTRA_WIDTH = 2;
 
 let pricePayload = null;
 let macroRows = [];
@@ -143,6 +144,9 @@ let dragZoomBound = false;
 let touchDoubleTapZoomActive = false;
 let touchDoubleTapPrevRange = null;
 let suppressPlotlyClickUntil = 0;
+let hoveredLineTraceIndex = null;
+let activeLineTraceIndex = null;
+let appliedLineHighlightTraceIndex = null;
 let startupLoaderHideTimer = null;
 let startupLoaderRafId = 0;
 let startupLoaderDisplayProgress = 100;
@@ -874,6 +878,56 @@ function findNearestLineDragTarget(el, clientX, clientY, isTouch = false) {
   return best;
 }
 
+function getTraceBaseLineWidth(trace) {
+  const metaWidth = toNum(trace?.meta?.baseLineWidth);
+  if (metaWidth !== null) return metaWidth;
+  const lineWidth = toNum(trace?.line?.width);
+  return lineWidth !== null ? lineWidth : 2;
+}
+
+function setTraceLineHighlighted(el, traceIndex, highlighted) {
+  if (!el?.data || traceIndex == null || traceIndex < 0 || traceIndex >= el.data.length) return;
+  const trace = el.data[traceIndex];
+  if (!trace || trace.visible === "legendonly") return;
+  const baseWidth = getTraceBaseLineWidth(trace);
+  const nextWidth = highlighted ? baseWidth + LINE_HIGHLIGHT_EXTRA_WIDTH : baseWidth;
+  Plotly.restyle(el, { "line.width": [nextWidth] }, [traceIndex]);
+}
+
+function refreshLineHighlight() {
+  const el = document.getElementById("chart");
+  if (!el?.data) return;
+
+  const nextIndex = activeLineTraceIndex ?? hoveredLineTraceIndex;
+  if (appliedLineHighlightTraceIndex === nextIndex) return;
+
+  const prevIndex = appliedLineHighlightTraceIndex;
+  appliedLineHighlightTraceIndex = nextIndex;
+
+  if (prevIndex != null && prevIndex !== nextIndex) {
+    setTraceLineHighlighted(el, prevIndex, false);
+  }
+  if (nextIndex != null) {
+    setTraceLineHighlighted(el, nextIndex, true);
+  }
+
+  el.classList.toggle("is-line-hovering", nextIndex != null);
+}
+
+function setHoveredLineTarget(target) {
+  const nextIndex = target?.traceIndex ?? null;
+  if (hoveredLineTraceIndex === nextIndex) return;
+  hoveredLineTraceIndex = nextIndex;
+  refreshLineHighlight();
+}
+
+function setActiveLineTarget(target) {
+  const nextIndex = target?.traceIndex ?? null;
+  if (activeLineTraceIndex === nextIndex) return;
+  activeLineTraceIndex = nextIndex;
+  refreshLineHighlight();
+}
+
 function beginLineOffsetDrag(el, target, startClientY) {
   const ya = el?._fullLayout?.yaxis;
   const range = ya?.range;
@@ -885,6 +939,7 @@ function beginLineOffsetDrag(el, target, startClientY) {
 
   suppressPlotlyClickUntil = Date.now() + 500;
   isHandleDragging = true;
+  setActiveLineTarget(target);
   el.classList.add("is-line-dragging");
   hideDragZoomOverlay(el);
   lockCurrentYAxisRange();
@@ -900,6 +955,7 @@ function beginLineOffsetDrag(el, target, startClientY) {
   function onEnd(clientY) {
     el.classList.remove("is-line-dragging");
     isHandleDragging = false;
+    setActiveLineTarget(null);
     if (lockedXRange) pinnedXRange = [...lockedXRange];
     if (!moved || Math.abs(clientY - startClientY) < 3) {
       seriesOffsets[target.seriesKey] = startOffset;
@@ -932,10 +988,13 @@ function bindCursorMoveSync() {
     };
 
     const onMove = (event) => {
+      const lineTarget = findNearestLineDragTarget(event.currentTarget, event.clientX, event.clientY, false);
+      setHoveredLineTarget(lineTarget);
       moveAt(event.currentTarget, event.clientX);
     };
 
     const onLeave = () => {
+      setHoveredLineTarget(null);
       scheduleSyncedCursor(null);
       clearHoverOnChart(mainEl);
       clearHoverOnChart(adrEl);
@@ -947,12 +1006,14 @@ function bindCursorMoveSync() {
       const touch = event.touches[0];
       const lineTarget = findNearestLineDragTarget(event.currentTarget, touch.clientX, touch.clientY, true);
       if (lineTarget && beginLineOffsetDrag(event.currentTarget, lineTarget, touch.clientY)) {
+        setHoveredLineTarget(lineTarget);
         lastTouchTapAt = 0;
         lastTouchTapX = null;
         lastTouchTapEl = null;
         clearTouchDoubleTapZoomState();
         return;
       }
+      setHoveredLineTarget(null);
       moveAt(event.currentTarget, touch.clientX);
 
       const now = Date.now();
@@ -993,6 +1054,7 @@ function bindCursorMoveSync() {
 
     const onTouchEnd = (event) => {
       if (event.touches && event.touches.length > 0) return;
+      setHoveredLineTarget(null);
       onLeave();
     };
 
@@ -2361,6 +2423,10 @@ function renderChart(preserveZoom = true) {
     selected.push(...fallback.slice(0, 2));
   }
   currentSelected = [...selected];
+  hoveredLineTraceIndex = null;
+  activeLineTraceIndex = null;
+  appliedLineHighlightTraceIndex = null;
+  el.classList.remove("is-line-hovering", "is-line-dragging");
 
   if (!rows.length || !selected.length) {
     msgEl.innerHTML = '<div class="message error">표시할 데이터가 없습니다.</div>';
@@ -2391,6 +2457,7 @@ function renderChart(preserveZoom = true) {
   const traces = selected.map((series, i) => {
     const rawValues = rows.map((r) => toNum(r[series]));
     const rawTexts = rawValues.map((v) => formatActualValue(v));
+    const baseLineWidth = macroCols.includes(series) ? 3 : 2;
 
     let values = [...rawValues];
     const base = commonNormBases[series];
@@ -2420,9 +2487,10 @@ function renderChart(preserveZoom = true) {
       name: labelName(series),
       visible: hiddenSeries.has(series) ? "legendonly" : true,
       connectgaps: true,
+      meta: { seriesKey: series, baseLineWidth },
       line: {
         color: seriesColor(series),
-        width: macroCols.includes(series) ? 3 : 2,
+        width: baseLineWidth,
         shape: "linear",
       },
       marker: { symbol: "circle", size: 7, color: seriesColor(series) },
