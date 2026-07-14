@@ -15,6 +15,11 @@ import yfinance as yf
 DEFAULT_TICKERS = ["^KS11", "^KQ11", "005930.KS", "218410.KQ"]
 MACRO_SERIES = ["leading_cycle"]
 CREDIT_SERIES = ["kospi_credit", "kosdaq_credit"]
+CREDIT_MAX_DAILY_PCT_CHANGE = 0.12
+CREDIT_MAX_DAILY_ABS_CHANGE = {
+    "kospi_credit": 3.0,
+    "kosdaq_credit": 1.0,
+}
 DISPLAY_NAMES = {
     "leading_cycle": "\uC120\uD589\uC9C0\uC218 \uC21C\uD658\uBCC0\uB3D9\uCE58",
     "kospi_credit": "\uCF54\uC2A4\uD53C \uC2E0\uC6A9\uC794\uACE0",
@@ -157,6 +162,56 @@ def merge_credit_frames(*frames: pd.DataFrame) -> pd.DataFrame:
     merged = merged[~merged.index.duplicated(keep="last")].sort_index()
     merged.index.name = "date"
     return merged[CREDIT_SERIES]
+
+
+def is_plausible_credit_transition(
+    prev_date: pd.Timestamp,
+    prev_row: pd.Series,
+    row_date: pd.Timestamp,
+    row: pd.Series,
+) -> bool:
+    day_span = max(1, (row_date.normalize() - prev_date.normalize()).days)
+    for column in CREDIT_SERIES:
+        prev_value = pd.to_numeric(prev_row.get(column), errors="coerce")
+        value = pd.to_numeric(row.get(column), errors="coerce")
+        if pd.isna(prev_value) or pd.isna(value) or float(prev_value) <= 0:
+            continue
+        daily_pct_change = abs(float(value) / float(prev_value) - 1.0) / day_span
+        daily_abs_change = abs(float(value) - float(prev_value)) / day_span
+        if (
+            daily_pct_change > CREDIT_MAX_DAILY_PCT_CHANGE
+            and daily_abs_change > CREDIT_MAX_DAILY_ABS_CHANGE[column]
+        ):
+            return False
+    return True
+
+
+def merge_credit_seed_with_existing_tail(seed: pd.DataFrame, existing: pd.DataFrame) -> pd.DataFrame:
+    seed = pick_numeric_columns(seed, CREDIT_SERIES)
+    existing = pick_numeric_columns(existing, CREDIT_SERIES)
+    if seed.empty:
+        return existing
+    if existing.empty:
+        return seed
+
+    tail = existing[existing.index > seed.index.max()].sort_index()
+    if tail.empty:
+        return seed
+
+    keep: list[pd.Timestamp] = []
+    prev_date = seed.index.max()
+    prev_row = seed.loc[prev_date]
+    for row_date, row in tail.iterrows():
+        if not is_plausible_credit_transition(prev_date, prev_row, row_date, row):
+            print(f"Dropped existing credit tail from {row_date.strftime('%Y-%m-%d')} due to discontinuity.")
+            break
+        keep.append(row_date)
+        prev_date = row_date
+        prev_row = row
+
+    if not keep:
+        return seed
+    return merge_credit_frames(seed, tail.loc[keep])
 
 
 def align_historical_credit_seed(historical: pd.DataFrame, reference: pd.DataFrame) -> pd.DataFrame:
@@ -1096,6 +1151,25 @@ def build_payload(df: pd.DataFrame, labels: dict[str, str], series_names: list[s
     }
 
 
+def write_columnar_payload_or_keep(path: Path, payload: dict, label: str) -> bool:
+    if payload.get("dates"):
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False),
+            encoding="utf-8",
+        )
+        return True
+
+    if path.exists():
+        print(f"{label} payload is empty; keeping existing {path.name}.")
+        return False
+
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False),
+        encoding="utf-8",
+    )
+    return True
+
+
 def main() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     prices = fetch_prices()
@@ -1129,7 +1203,7 @@ def main() -> None:
 
     existing_credit_seed = load_existing_credit_seed()
     historical_credit_seed = align_historical_credit_seed(historical_credit_seed, existing_credit_seed)
-    credit_seed = merge_credit_frames(historical_credit_seed, existing_credit_seed)
+    credit_seed = merge_credit_seed_with_existing_tail(historical_credit_seed, existing_credit_seed)
     credit_merged = credit_seed
     kofia_key = resolve_kofia_api_key()
     if kofia_key:
@@ -1198,14 +1272,8 @@ def main() -> None:
     )
     price_payload = build_payload(prices, DISPLAY_NAMES, DEFAULT_TICKERS)
     macro_payload = build_payload(macro, DISPLAY_NAMES, MACRO_SERIES)
-    OUTPUT_JSON.write_text(
-        json.dumps(price_payload, ensure_ascii=False, indent=2, allow_nan=False),
-        encoding="utf-8",
-    )
-    OUTPUT_MACRO_JSON.write_text(
-        json.dumps(macro_payload, ensure_ascii=False, indent=2, allow_nan=False),
-        encoding="utf-8",
-    )
+    wrote_prices = write_columnar_payload_or_keep(OUTPUT_JSON, price_payload, "Price")
+    wrote_macro = write_columnar_payload_or_keep(OUTPUT_MACRO_JSON, macro_payload, "Macro")
 
     if credit_merged.empty:
         print("Freesis credit is empty — keeping existing credit_data.json")
@@ -1229,8 +1297,10 @@ def main() -> None:
             json.dumps(build_dart_corp_code_payload(dart_corp_map), ensure_ascii=False, indent=2, allow_nan=False),
             encoding="utf-8",
         )
-    print(f"Wrote {OUTPUT_JSON}")
-    print(f"Wrote {OUTPUT_MACRO_JSON}")
+    if wrote_prices:
+        print(f"Wrote {OUTPUT_JSON}")
+    if wrote_macro:
+        print(f"Wrote {OUTPUT_MACRO_JSON}")
     if not credit_merged.empty:
         print(f"Wrote {OUTPUT_CREDIT_JSON}")
     if adr_records:

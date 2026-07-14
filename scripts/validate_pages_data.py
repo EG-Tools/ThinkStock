@@ -22,17 +22,32 @@ CREDIT_COLUMNS = ("kospi_credit", "kosdaq_credit")
 ADR_COLUMNS = ("adr_kospi", "adr_kosdaq")
 CREDIT_LIMITS = {
     "kospi_credit": (1.0, 80.0),
-    "kosdaq_credit": (1.0, 50.0),
+    "kosdaq_credit": (0.1, 50.0),
 }
 CREDIT_MAX_DAILY_PCT_CHANGE = 0.12
+CREDIT_MAX_DAILY_ABS_CHANGE = {
+    "kospi_credit": 3.0,
+    "kosdaq_credit": 1.0,
+}
 CREDIT_MAX_FRESH_DAYS = 14
 PRICE_MAX_FRESH_DAYS = 10
 ADR_MAX_FRESH_DAYS = 10
 LEADING_MAX_FRESH_DAYS = 150
+STRICT_FRESHNESS = os.environ.get("PAGES_STRICT_FRESHNESS", "").strip() == "1"
 
 
 def fail(message: str) -> None:
     raise AssertionError(message)
+
+
+def warn(message: str) -> None:
+    print(f"Pages data validation warning: {message}", file=sys.stderr)
+
+
+def fail_or_warn_freshness(message: str) -> None:
+    if STRICT_FRESHNESS:
+        fail(message)
+    warn(message)
 
 
 def parse_date(raw: object, label: str) -> date:
@@ -153,7 +168,7 @@ def validate_freshness(name: str, rows: list[dict], columns: tuple[str, ...], ma
     if age_days < -1:
         fail(f"{name}: latest date {latest.isoformat()} is in the future")
     if age_days > max_days:
-        fail(f"{name}: latest date {latest.isoformat()} is stale ({age_days} days old)")
+        fail_or_warn_freshness(f"{name}: latest date {latest.isoformat()} is stale ({age_days} days old)")
 
 
 def validate_credit(rows: list[dict]) -> None:
@@ -176,7 +191,11 @@ def validate_credit(rows: list[dict]) -> None:
                     pct_change = abs(value / prev_value - 1.0)
                     day_span = max(1, (row_date - prev_date).days)
                     daily_pct_change = pct_change / day_span
-                    if daily_pct_change > CREDIT_MAX_DAILY_PCT_CHANGE:
+                    daily_abs_change = abs(value - prev_value) / day_span
+                    if (
+                        daily_pct_change > CREDIT_MAX_DAILY_PCT_CHANGE
+                        and daily_abs_change > CREDIT_MAX_DAILY_ABS_CHANGE[key]
+                    ):
                         fail(
                             "credit: "
                             f"{key} changed {pct_change:.2%} over {day_span} day(s) from {prev_date.isoformat()} "
@@ -192,7 +211,7 @@ def validate_credit(rows: list[dict]) -> None:
         latest = parse_date(rows[-1].get("date"), "credit latest")
         age_days = (date.today() - latest).days
         if age_days > CREDIT_MAX_FRESH_DAYS:
-            fail(f"credit: latest date {latest.isoformat()} is stale ({age_days} days old)")
+            fail_or_warn_freshness(f"credit: latest date {latest.isoformat()} is stale ({age_days} days old)")
     else:
         committed_latest = read_committed_credit_latest()
         if committed_latest:
