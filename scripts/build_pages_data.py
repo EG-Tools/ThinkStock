@@ -573,7 +573,7 @@ def disclosure_type_from_title(title: str) -> str | None:
         return "자금조달"
     if re.search(r"합병|분할|영업양수|영업양도", text):
         return "구조변경"
-    return None
+    return "공시"
 
 
 def fetch_dart_corp_code_map(api_key: str) -> dict[str, dict[str, str]]:

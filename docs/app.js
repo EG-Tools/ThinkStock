@@ -319,6 +319,14 @@ function classifyDisclosureType(title) {
   return "공시";
 }
 
+function explainDartFetchError(err) {
+  const message = err?.message || String(err || "unknown error");
+  if (/Failed to fetch|NetworkError|Load failed|CORS|fetch/i.test(message)) {
+    return "OpenDART가 브라우저 직접 호출(CORS)을 허용하지 않아 앱에 입력한 키로는 응답을 읽지 못했습니다. GitHub Secret DART_API_KEY를 등록하면 배포 빌드에서 공시 데이터를 만들어 차트에 표시할 수 있습니다.";
+  }
+  return message;
+}
+
 function sanitizeDisclosureRows(records) {
   if (!Array.isArray(records)) return [];
   const out = [];
@@ -2953,7 +2961,7 @@ function dartItemToDisclosureRecord(item, targetByCode) {
   if (!/^\d{6}$/.test(code) || !targetByCode.has(code)) return null;
   const title = String(item?.report_nm || "").trim();
   const type = classifyDisclosureType(title);
-  if (!type || type === "공시") return null;
+  if (!title) return null;
   const rawDate = String(item?.rcept_dt || "").trim();
   if (!/^\d{8}$/.test(rawDate)) return null;
   const receiptNo = String(item?.rcept_no || "").trim();
@@ -2985,7 +2993,11 @@ async function fetchDartDisclosurePage(apiKey, market, pageNo) {
     page_no: String(pageNo),
     page_count: "100",
   });
-  return fetchJsonWithProxyFallback(`${DART_DISCLOSURE_URL}?${query.toString()}`, null, { allowProxy: false });
+  try {
+    return await fetchJsonWithProxyFallback(`${DART_DISCLOSURE_URL}?${query.toString()}`, null, { allowProxy: false });
+  } catch (err) {
+    throw new Error(explainDartFetchError(err));
+  }
 }
 
 async function fetchDartDisclosuresLive(apiKey) {
