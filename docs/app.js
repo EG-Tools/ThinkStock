@@ -71,6 +71,10 @@ const FREESIS_CREDIT_META_URL = "https://freesis.kofia.or.kr/meta/getMetaDataLis
 const FREESIS_CREDIT_OBJ_NM = "STATSCU0100000070BO";
 const FREESIS_CREDIT_LOOKBACK_DAYS = 120;
 const FREESIS_CREDIT_UNIT_CODE = "06";
+const DART_DISCLOSURE_URL = "https://opendart.fss.or.kr/api/list.json";
+const DART_RUNTIME_LOOKBACK_DAYS = 92;
+const DART_RUNTIME_MAX_PAGES_PER_MARKET = 60;
+const DART_RUNTIME_PAGE_BATCH = 6;
 const DAY_MS = 24 * 60 * 60 * 1000;
 function appendCacheBust(url) {
   const stamp = `_=${Date.now()}`;
@@ -765,9 +769,11 @@ function setupApiSettingsPanel(msgEl) {
 
   saveBtn?.addEventListener("click", () => {
     const prevKrxKey = String(apiSettings?.krxApiKey || "").trim();
+    const prevDartKey = String(apiSettings?.dartApiKey || "").trim();
     apiSettings = readInputs();
     saveApiSettings();
     const nextKrxKey = String(apiSettings?.krxApiKey || "").trim();
+    const nextDartKey = String(apiSettings?.dartApiKey || "").trim();
     if (prevKrxKey !== nextKrxKey) {
       resetKrxUniverseCache();
       hideStockSuggestList();
@@ -775,6 +781,18 @@ function setupApiSettingsPanel(msgEl) {
     syncApiOptionsButton();
     close();
     setMessage(msgEl, ["API keys saved for this browser tab."]);
+    if (nextDartKey && prevDartKey !== nextDartKey) {
+      setMessage(msgEl, ["DART API 저장됨. 최근 공시를 불러오는 중입니다..."]);
+      refreshDartDisclosuresFromApi(nextDartKey)
+        .then((info) => {
+          renderChart();
+          saveLastRuntimeSnapshot().catch(() => {});
+          setMessage(msgEl, [`DART 공시 ${info.fetched}건 확인, ${info.added}건 반영${info.latestDate ? `(~ ${info.latestDate})` : ""}`]);
+        })
+        .catch((err) => {
+          setMessage(msgEl, `DART 공시 불러오기 오류: ${err.message}`, true);
+        });
+    }
   });
 
   clearBtn?.addEventListener("click", () => {
@@ -2902,6 +2920,142 @@ function handleDisclosureClick(evtData) {
   }
 }
 
+function yyyymmddFromDate(dateStr) {
+  return String(dateStr || "").slice(0, 10).replace(/-/g, "");
+}
+
+function disclosureTargetTickers() {
+  const tickers = new Set();
+  (pricePayload?.series || []).forEach((series) => {
+    const ticker = String(series || "").trim().toUpperCase();
+    if (/^[0-9]{6}\.(KS|KQ)$/.test(ticker)) tickers.add(ticker);
+  });
+  customStocks.forEach((item) => {
+    const ticker = String(item?.ticker || "").trim().toUpperCase();
+    if (/^[0-9]{6}\.(KS|KQ)$/.test(ticker)) tickers.add(ticker);
+  });
+  return [...tickers];
+}
+
+function disclosureTargetMaps() {
+  const byCode = new Map();
+  const markets = new Set();
+  disclosureTargetTickers().forEach((ticker) => {
+    const code = ticker.slice(0, 6);
+    if (!byCode.has(code)) byCode.set(code, ticker);
+    markets.add(ticker.endsWith(".KQ") ? "K" : "Y");
+  });
+  return { byCode, markets: [...markets] };
+}
+
+function dartItemToDisclosureRecord(item, targetByCode) {
+  const code = String(item?.stock_code || "").trim();
+  if (!/^\d{6}$/.test(code) || !targetByCode.has(code)) return null;
+  const title = String(item?.report_nm || "").trim();
+  const type = classifyDisclosureType(title);
+  if (!type || type === "공시") return null;
+  const rawDate = String(item?.rcept_dt || "").trim();
+  if (!/^\d{8}$/.test(rawDate)) return null;
+  const receiptNo = String(item?.rcept_no || "").trim();
+  return {
+    ticker: targetByCode.get(code),
+    code,
+    name: String(item?.corp_name || labelName(targetByCode.get(code))).trim(),
+    date: `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`,
+    type,
+    title,
+    summary: "",
+    source: "OpenDART",
+    receiptNo,
+    url: receiptNo ? `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${encodeURIComponent(receiptNo)}` : "",
+  };
+}
+
+async function fetchDartDisclosurePage(apiKey, market, pageNo) {
+  const endDate = new Date().toISOString().slice(0, 10);
+  const startDate = shiftDays(endDate, -DART_RUNTIME_LOOKBACK_DAYS);
+  const query = new URLSearchParams({
+    crtfc_key: String(apiKey || "").trim(),
+    bgn_de: yyyymmddFromDate(startDate),
+    end_de: yyyymmddFromDate(endDate),
+    last_reprt_at: "Y",
+    corp_cls: market,
+    sort: "date",
+    sort_mth: "desc",
+    page_no: String(pageNo),
+    page_count: "100",
+  });
+  return fetchJsonWithProxyFallback(`${DART_DISCLOSURE_URL}?${query.toString()}`, null, { allowProxy: false });
+}
+
+async function fetchDartDisclosuresLive(apiKey) {
+  const clean = String(apiKey || "").trim();
+  if (!clean) return [];
+  const { byCode, markets } = disclosureTargetMaps();
+  if (!byCode.size || !markets.length) return [];
+
+  const records = [];
+  for (const market of markets) {
+    const firstPayload = await fetchDartDisclosurePage(clean, market, 1);
+    const status = String(firstPayload?.status || "");
+    if (status === "013") continue;
+    if (status && status !== "000") {
+      throw new Error(firstPayload?.message || `DART status ${status}`);
+    }
+
+    (firstPayload?.list || []).forEach((item) => {
+      const record = dartItemToDisclosureRecord(item, byCode);
+      if (record) records.push(record);
+    });
+
+    const totalPage = Math.min(
+      DART_RUNTIME_MAX_PAGES_PER_MARKET,
+      Math.max(1, Number(firstPayload?.total_page) || 1),
+    );
+    for (let pageStart = 2; pageStart <= totalPage; pageStart += DART_RUNTIME_PAGE_BATCH) {
+      const pageNos = [];
+      for (let pageNo = pageStart; pageNo < pageStart + DART_RUNTIME_PAGE_BATCH && pageNo <= totalPage; pageNo += 1) {
+        pageNos.push(pageNo);
+      }
+      const pages = await Promise.allSettled(pageNos.map((pageNo) => fetchDartDisclosurePage(clean, market, pageNo)));
+      pages.forEach((result) => {
+        if (result.status !== "fulfilled") return;
+        const payload = result.value;
+        const pageStatus = String(payload?.status || "");
+        if (pageStatus && pageStatus !== "000" && pageStatus !== "013") return;
+        (payload?.list || []).forEach((item) => {
+          const record = dartItemToDisclosureRecord(item, byCode);
+          if (record) records.push(record);
+        });
+      });
+    }
+  }
+  return sanitizeDisclosureRows(records);
+}
+
+function mergeDisclosureRows(existingRows, incomingRows) {
+  const map = new Map();
+  sanitizeDisclosureRows(existingRows).forEach((row) => {
+    map.set(`${row.ticker}|${row.date}|${row.title}`, row);
+  });
+  sanitizeDisclosureRows(incomingRows).forEach((row) => {
+    map.set(`${row.ticker}|${row.date}|${row.title}`, row);
+  });
+  return [...map.values()].sort((a, b) => a.date.localeCompare(b.date) || a.ticker.localeCompare(b.ticker));
+}
+
+async function refreshDartDisclosuresFromApi(apiKey) {
+  const liveRows = await fetchDartDisclosuresLive(apiKey);
+  const beforeCount = disclosureRows.length;
+  disclosureRows = mergeDisclosureRows(disclosureRows, liveRows);
+  const latestDate = disclosureRows.length ? disclosureRows[disclosureRows.length - 1].date : "";
+  return {
+    fetched: liveRows.length,
+    added: Math.max(0, disclosureRows.length - beforeCount),
+    latestDate,
+  };
+}
+
 /* Main chart */
 
 function renderChart(preserveZoom = true) {
@@ -4016,7 +4170,10 @@ async function loadData(forceNetwork = false, options = {}) {
   try {
     if (disclosureText) {
       const disclosurePayload = JSON.parse(disclosureText);
-      disclosureRows = sanitizeDisclosureRows(disclosurePayload?.records || []);
+      const seededDisclosureRows = sanitizeDisclosureRows(disclosurePayload?.records || []);
+      disclosureRows = mergeWithExisting
+        ? mergeDisclosureRows(disclosureRows, seededDisclosureRows)
+        : seededDisclosureRows;
     }
   } catch (_) {
     // Disclosure seed load failed; chart simply renders without event markers.
@@ -4043,6 +4200,19 @@ async function refreshRuntimeData(msgEl) {
     }
   } catch (adrErr) {
     warnLines.push(`ADR 불러오기 오류: ${adrErr.message}`);
+  }
+
+  if (apiSettings.dartApiKey) {
+    try {
+      const info = await refreshDartDisclosuresFromApi(apiSettings.dartApiKey);
+      if (info.fetched > 0) {
+        infoLines.push(`DART 공시 ${info.fetched}건 확인, ${info.added}건 반영${info.latestDate ? `(~ ${info.latestDate})` : ""}`);
+      } else {
+        warnLines.push("DART 최근 공시에서 현재 차트 종목의 주요 이벤트를 찾지 못했습니다.");
+      }
+    } catch (dartErr) {
+      warnLines.push(`DART 공시 불러오기 오류: ${dartErr.message}`);
+    }
   }
 
   const liveResult = await refreshLiveApiData();
