@@ -77,6 +77,8 @@ const DART_RUNTIME_LOOKBACK_DAYS = 92;
 const DART_STOCK_LOOKBACK_YEARS = 3;
 const DART_RUNTIME_MAX_PAGES_PER_MARKET = 60;
 const DART_RUNTIME_PAGE_BATCH = 6;
+const DART_STOCK_PAGE_BATCH = 4;
+const DART_VISIBLE_REFRESH_CONCURRENCY = 2;
 const DAY_MS = 24 * 60 * 60 * 1000;
 function appendCacheBust(url) {
   const stamp = `_=${Date.now()}`;
@@ -166,6 +168,11 @@ let baseTraceValues = {};
 let legendHandlerSet = false;
 let adrHandlerSet = false;
 let dragRafId = null;
+let cursorRafId = 0;
+let pendingCursorState = null;
+let hoverSyncRafId = 0;
+let pendingHoverSync = null;
+let lastHoverSyncKey = "";
 let currentRows = [];
 let currentStart = "";
 let chartSyncing = false;   // relayout sync loop guard
@@ -328,13 +335,33 @@ function sanitizePricePayloadForSnapshot(raw) {
 
 function classifyDisclosureType(title) {
   const text = String(title || "");
-  if (/반기보고서|분기보고서|사업보고서/.test(text)) return "실적";
+  if (/반기보고서|분기보고서|사업보고서|영업\(잠정\)실적|잠정실적|매출액.?또는.?손익구조|감사보고서제출/.test(text)) return "실적";
   if (/배당|현금ㆍ현물배당|현금.?현물배당/.test(text)) return "배당";
   if (/단일판매|공급계약|수주/.test(text)) return "수주";
-  if (/유상증자|신주인수권|증권신고서\(지분증권\)/.test(text)) return "유상증자";
-  if (/전환사채|신주인수권부사채|교환사채/.test(text)) return "자금조달";
-  if (/합병|분할|영업양수|영업양도/.test(text)) return "구조변경";
+  if (/유상증자|무상증자|감자|증권신고서\(지분증권\)/.test(text)) return "증자/감자";
+  if (/전환사채|신주인수권|신주인수권부사채|교환사채|사채권/.test(text)) return "자금조달";
+  if (/자기주식(취득|처분)결정|주식소각/.test(text)) return "자사주";
+  if (/합병|분할|영업양수|영업양도|타법인주식|출자증권|신규시설투자|시설투자/.test(text)) return "구조/투자";
+  if (/최대주주변경|대표이사.*변경|영업정지|거래정지|상장폐지|관리종목|소송|횡령|배임|회생|파산|부도|공개매수|장래사업|경영계획/.test(text)) return "경영변동";
   return "공시";
+}
+
+function isImportantDisclosureTitle(title, type = "") {
+  const text = String(title || "");
+  const normalizedType = String(type || "");
+  if (/^(실적|배당|수주|증자\/감자|자금조달|자사주|구조\/투자|경영변동)$/.test(normalizedType)) return true;
+  return /반기보고서|분기보고서|사업보고서|영업\(잠정\)실적|잠정실적|매출액.?또는.?손익구조|감사보고서제출|배당|현금ㆍ현물배당|단일판매|공급계약|수주|유상증자|무상증자|감자|증권신고서\(지분증권\)|전환사채|신주인수권|신주인수권부사채|교환사채|사채권|자기주식(취득|처분)결정|주식소각|합병|분할|영업양수|영업양도|타법인주식|출자증권|신규시설투자|시설투자|최대주주변경|대표이사.*변경|영업정지|거래정지|상장폐지|관리종목|소송|횡령|배임|회생|파산|부도|공개매수|장래사업|경영계획/.test(text);
+}
+
+function isLowImpactDisclosureTitle(title) {
+  const text = String(title || "");
+  return /임원ㆍ주요주주특정증권등소유상황보고서|주식등의대량보유상황보고서|최대주주등소유주식변동신고서|기업설명회|IR\)|대규모기업집단현황공시|기업지배구조보고서|지속가능경영보고서|동일인등출자계열회사|특수관계인|지급수단별|주주총회소집공고|주주총회소집결의|주주총회집중일|정기주주총회결과|의결권대리행사|주주명부폐쇄|기준일설정|사외이사의선임|해임또는중도퇴임|자기주식취득결과보고서|자기주식처분결과보고서/.test(text);
+}
+
+function shouldDisplayDisclosure(title, type = "") {
+  if (isImportantDisclosureTitle(title, type)) return true;
+  if (isLowImpactDisclosureTitle(title)) return false;
+  return false;
 }
 
 function explainDartFetchError(err) {
@@ -360,6 +387,10 @@ function sanitizeDisclosureRows(records) {
     const title = String(record.title || record.report_nm || "").trim();
     if (!/^[0-9]{6}\.(KS|KQ)$/.test(ticker)) return;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !title) return;
+    const classifiedType = classifyDisclosureType(title);
+    const rawType = String(record.type || "").trim();
+    const type = (!rawType || rawType === "공시") ? classifiedType : rawType;
+    if (!shouldDisplayDisclosure(title, type)) return;
     const url = String(record.url || "").trim();
     const key = `${ticker}|${date}|${title}|${url}`;
     if (seen.has(key)) return;
@@ -369,7 +400,7 @@ function sanitizeDisclosureRows(records) {
       code,
       name: String(record.name || record.corp_name || labelName(ticker)).trim() || labelName(ticker),
       date,
-      type: String(record.type || classifyDisclosureType(title)).trim(),
+      type,
       title,
       summary: String(record.summary || "").trim(),
       url,
@@ -1004,7 +1035,7 @@ function findNearestHoverPoint(el, xValue) {
   return best;
 }
 
-function syncHoverToChart(targetEl, xValue) {
+function syncHoverToChartNow(targetEl, xValue) {
   if (!targetEl || !window.Plotly?.Fx?.hover || xValue == null) return;
   hoverSyncing = true;
   try {
@@ -1025,8 +1056,29 @@ function syncHoverToChart(targetEl, xValue) {
   requestAnimationFrame(() => { hoverSyncing = false; });
 }
 
+function syncHoverToChart(targetEl, xValue) {
+  if (!targetEl || xValue == null) return;
+  const key = `${targetEl.id || "chart"}|${String(xValue)}`;
+  pendingHoverSync = { targetEl, xValue, key };
+  if (hoverSyncRafId) return;
+  hoverSyncRafId = requestAnimationFrame(() => {
+    const pending = pendingHoverSync;
+    pendingHoverSync = null;
+    hoverSyncRafId = 0;
+    if (!pending || pending.key === lastHoverSyncKey) return;
+    lastHoverSyncKey = pending.key;
+    syncHoverToChartNow(pending.targetEl, pending.xValue);
+  });
+}
+
 function clearHoverOnChart(targetEl) {
   if (!targetEl || !window.Plotly?.Fx?.unhover) return;
+  if (hoverSyncRafId) {
+    cancelAnimationFrame(hoverSyncRafId);
+    hoverSyncRafId = 0;
+  }
+  pendingHoverSync = null;
+  lastHoverSyncKey = "";
   hoverSyncing = true;
   try {
     Plotly.Fx.unhover(targetEl);
@@ -1104,7 +1156,15 @@ function applySyncedCursor(xValue, sourceEl, sourceClientX) {
 }
 
 function scheduleSyncedCursor(xValue, sourceEl, sourceClientX) {
-  applySyncedCursor(xValue, sourceEl, sourceClientX);
+  pendingCursorState = { xValue, sourceEl, sourceClientX };
+  if (cursorRafId) return;
+  cursorRafId = requestAnimationFrame(() => {
+    const pending = pendingCursorState;
+    pendingCursorState = null;
+    cursorRafId = 0;
+    if (!pending) return;
+    applySyncedCursor(pending.xValue, pending.sourceEl, pending.sourceClientX);
+  });
 }
 
 function axisPixelToXValue(el, clientX, clampToAxis = false) {
@@ -1268,18 +1328,40 @@ function yValueToLocalPixel(el, value) {
 function interpolateTraceYAtMs(trace, targetMs) {
   if (!trace || !Array.isArray(trace.x) || !Array.isArray(trace.y) || !Number.isFinite(targetMs)) return null;
 
-  let left = null;
-  let right = null;
-  for (let i = 0; i < trace.x.length; i += 1) {
-    const y = toNum(trace.y[i]);
-    if (y === null) continue;
-    const time = toMsSafe(trace.x[i]);
-    if (!Number.isFinite(time)) continue;
-    if (time === targetMs) return y;
-    if (time < targetMs) {
-      left = { time, y };
-      continue;
+  const xs = trace.x;
+  const ys = trace.y;
+  let lo = 0;
+  let hi = xs.length - 1;
+  let rightIndex = xs.length;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const time = toMsSafe(xs[mid]);
+    if (!Number.isFinite(time) || time < targetMs) {
+      lo = mid + 1;
+    } else {
+      rightIndex = mid;
+      hi = mid - 1;
     }
+  }
+
+  let left = null;
+  for (let i = Math.min(rightIndex, xs.length - 1); i >= 0; i -= 1) {
+    const y = toNum(ys[i]);
+    if (y === null) continue;
+    const time = toMsSafe(xs[i]);
+    if (!Number.isFinite(time) || time > targetMs) continue;
+    if (time === targetMs) return y;
+    left = { time, y };
+    break;
+  }
+
+  let right = null;
+  for (let i = Math.max(0, rightIndex); i < xs.length; i += 1) {
+    const y = toNum(ys[i]);
+    if (y === null) continue;
+    const time = toMsSafe(xs[i]);
+    if (!Number.isFinite(time) || time < targetMs) continue;
+    if (time === targetMs) return y;
     right = { time, y };
     break;
   }
@@ -1433,6 +1515,9 @@ function bindCursorMoveSync() {
   ensureDragZoomOverlay(adrEl);
 
   if (!cursorMoveBound) {
+    let pointerMoveRafId = 0;
+    let pendingPointerMove = null;
+
     const moveAt = (sourceEl, clientX) => {
       const xValue = axisPixelToXValue(sourceEl, clientX);
       if (xValue == null) {
@@ -1442,13 +1527,36 @@ function bindCursorMoveSync() {
       scheduleSyncedCursor(xValue, sourceEl, clientX);
     };
 
+    const processPointerMove = (sourceEl, clientX, clientY, findLineTarget) => {
+      if (findLineTarget) {
+        const lineTarget = findNearestLineDragTarget(sourceEl, clientX, clientY, false);
+        setHoveredLineTarget(lineTarget);
+      }
+      moveAt(sourceEl, clientX);
+    };
+
+    const schedulePointerMove = (sourceEl, clientX, clientY, findLineTarget) => {
+      pendingPointerMove = { sourceEl, clientX, clientY, findLineTarget };
+      if (pointerMoveRafId) return;
+      pointerMoveRafId = requestAnimationFrame(() => {
+        const pending = pendingPointerMove;
+        pendingPointerMove = null;
+        pointerMoveRafId = 0;
+        if (!pending) return;
+        processPointerMove(pending.sourceEl, pending.clientX, pending.clientY, pending.findLineTarget);
+      });
+    };
+
     const onMove = (event) => {
-      const lineTarget = findNearestLineDragTarget(event.currentTarget, event.clientX, event.clientY, false);
-      setHoveredLineTarget(lineTarget);
-      moveAt(event.currentTarget, event.clientX);
+      schedulePointerMove(event.currentTarget, event.clientX, event.clientY, true);
     };
 
     const onLeave = () => {
+      if (pointerMoveRafId) {
+        cancelAnimationFrame(pointerMoveRafId);
+        pointerMoveRafId = 0;
+      }
+      pendingPointerMove = null;
       setHoveredLineTarget(null);
       scheduleSyncedCursor(null);
       clearHoverOnChart(mainEl);
@@ -1504,7 +1612,7 @@ function bindCursorMoveSync() {
       if (!event.touches || event.touches.length !== 1) return;
       event.preventDefault();
       const touch = event.touches[0];
-      moveAt(event.currentTarget, touch.clientX);
+      schedulePointerMove(event.currentTarget, touch.clientX, touch.clientY, false);
     };
 
     const onTouchEnd = (event) => {
@@ -3142,6 +3250,7 @@ function dartItemToDisclosureRecord(item, targetByCode) {
   const title = String(item?.report_nm || "").trim();
   const type = classifyDisclosureType(title);
   if (!title) return null;
+  if (!shouldDisplayDisclosure(title, type)) return null;
   const rawDate = String(item?.rcept_dt || "").trim();
   if (!/^\d{8}$/.test(rawDate)) return null;
   const receiptNo = String(item?.rcept_no || "").trim();
@@ -3209,6 +3318,13 @@ async function fetchDartDisclosurePageForCorp(apiKey, corpCode, pageNo) {
   }
 }
 
+function appendDartDisclosureRecordsFromPayload(payload, targetByCode, records) {
+  (payload?.list || []).forEach((item) => {
+    const record = dartItemToDisclosureRecord(item, targetByCode);
+    if (record) records.push(record);
+  });
+}
+
 async function fetchDartDisclosuresLive(apiKey) {
   const clean = String(apiKey || "").trim();
   if (!clean) return [];
@@ -3224,10 +3340,7 @@ async function fetchDartDisclosuresLive(apiKey) {
       throw new Error(firstPayload?.message || `DART status ${status}`);
     }
 
-    (firstPayload?.list || []).forEach((item) => {
-      const record = dartItemToDisclosureRecord(item, byCode);
-      if (record) records.push(record);
-    });
+    appendDartDisclosureRecordsFromPayload(firstPayload, byCode, records);
 
     const totalPage = Math.min(
       DART_RUNTIME_MAX_PAGES_PER_MARKET,
@@ -3244,10 +3357,7 @@ async function fetchDartDisclosuresLive(apiKey) {
         const payload = result.value;
         const pageStatus = String(payload?.status || "");
         if (pageStatus && pageStatus !== "000" && pageStatus !== "013") return;
-        (payload?.list || []).forEach((item) => {
-          const record = dartItemToDisclosureRecord(item, byCode);
-          if (record) records.push(record);
-        });
+        appendDartDisclosureRecordsFromPayload(payload, byCode, records);
       });
     }
   }
@@ -3267,21 +3377,31 @@ async function fetchDartDisclosuresForTickerLive(apiKey, ticker) {
 
   const targetByCode = new Map([[code, targetTicker]]);
   const records = [];
-  let pageNo = 1;
-  let totalPage = 1;
-  while (pageNo <= totalPage) {
-    const payload = await fetchDartDisclosurePageForCorp(clean, corp.corp_code, pageNo);
-    const status = String(payload?.status || "");
-    if (status === "013") break;
-    if (status && status !== "000") {
-      throw new Error(payload?.message || `DART status ${status}`);
+
+  const firstPayload = await fetchDartDisclosurePageForCorp(clean, corp.corp_code, 1);
+  const firstStatus = String(firstPayload?.status || "");
+  if (firstStatus === "013") return [];
+  if (firstStatus && firstStatus !== "000") {
+    throw new Error(firstPayload?.message || `DART status ${firstStatus}`);
+  }
+  appendDartDisclosureRecordsFromPayload(firstPayload, targetByCode, records);
+
+  const totalPage = Math.max(1, Number(firstPayload?.total_page) || 1);
+  for (let pageStart = 2; pageStart <= totalPage; pageStart += DART_STOCK_PAGE_BATCH) {
+    const pageNos = [];
+    for (let pageNo = pageStart; pageNo < pageStart + DART_STOCK_PAGE_BATCH && pageNo <= totalPage; pageNo += 1) {
+      pageNos.push(pageNo);
     }
-    totalPage = Math.max(1, Number(payload?.total_page) || 1);
-    (payload?.list || []).forEach((item) => {
-      const record = dartItemToDisclosureRecord(item, targetByCode);
-      if (record) records.push(record);
+    const pages = await Promise.allSettled(
+      pageNos.map((pageNo) => fetchDartDisclosurePageForCorp(clean, corp.corp_code, pageNo)),
+    );
+    pages.forEach((result) => {
+      if (result.status !== "fulfilled") return;
+      const payload = result.value;
+      const status = String(payload?.status || "");
+      if (status && status !== "000" && status !== "013") return;
+      appendDartDisclosureRecordsFromPayload(payload, targetByCode, records);
     });
-    pageNo += 1;
   }
   return sanitizeDisclosureRows(records);
 }
@@ -3311,27 +3431,52 @@ async function refreshDartDisclosuresFromApi(apiKey, ticker = "") {
   };
 }
 
+async function mapWithConcurrency(items, limit, worker) {
+  const source = Array.isArray(items) ? items : [];
+  const size = Math.max(1, Math.min(Number(limit) || 1, source.length || 1));
+  const results = Array(source.length);
+  let nextIndex = 0;
+  await Promise.all(Array.from({ length: size }, async () => {
+    while (nextIndex < source.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await worker(source[index], index);
+    }
+  }));
+  return results;
+}
+
 async function refreshDartDisclosuresForVisibleTickersFromApi(apiKey) {
   const tickers = disclosureTargetTickers()
     .filter((ticker) => !hiddenSeries.has(ticker));
   const uniqueTickers = [...new Set(tickers)];
   const beforeCount = disclosureRows.length;
-  let fetched = 0;
+  const incomingRows = [];
   const failed = [];
 
-  for (const ticker of uniqueTickers) {
+  const results = await mapWithConcurrency(uniqueTickers, DART_VISIBLE_REFRESH_CONCURRENCY, async (ticker) => {
     try {
       const rows = await fetchDartDisclosuresForTickerLive(apiKey, ticker);
-      fetched += rows.length;
-      disclosureRows = mergeDisclosureRows(disclosureRows, rows);
+      return { ticker, rows };
     } catch (err) {
-      failed.push(`${labelName(ticker)}: ${err.message}`);
+      return { ticker, error: err };
     }
-  }
+  });
+
+  results.forEach((result) => {
+    if (!result) return;
+    if (result.error) {
+      failed.push(`${labelName(result.ticker)}: ${result.error.message}`);
+      return;
+    }
+    incomingRows.push(...(result.rows || []));
+  });
+
+  disclosureRows = mergeDisclosureRows(disclosureRows, incomingRows);
 
   const latestDate = disclosureRows.length ? disclosureRows[disclosureRows.length - 1].date : "";
   return {
-    fetched,
+    fetched: incomingRows.length,
     added: Math.max(0, disclosureRows.length - beforeCount),
     latestDate,
     failed,
