@@ -1,4 +1,3 @@
-import csv
 import json
 import math
 import os
@@ -10,7 +9,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "docs" / "data"
-SAMPLE_MACRO = ROOT / "sample_macro_data.csv"
 
 DATASETS = {
     "prices": DATA_DIR / "prices.json",
@@ -174,7 +172,6 @@ def validate_freshness(name: str, rows: list[dict], columns: tuple[str, ...], ma
 
 
 def validate_credit(rows: list[dict]) -> None:
-    source_boundary_date = read_credit_source_boundary_date()
     last_seen = {key: None for key in CREDIT_COLUMNS}
     for row in rows:
         row_date = parse_date(row.get("date"), "credit")
@@ -191,9 +188,6 @@ def validate_credit(rows: list[dict]) -> None:
             if prev is not None:
                 prev_date, prev_value = prev
                 if prev_value > 0:
-                    if source_boundary_date and prev_date == source_boundary_date and row_date > source_boundary_date:
-                        last_seen[key] = (row_date, value)
-                        continue
                     pct_change = abs(value / prev_value - 1.0)
                     day_span = max(1, (row_date - prev_date).days)
                     daily_pct_change = pct_change / day_span
@@ -227,23 +221,6 @@ def validate_credit(rows: list[dict]) -> None:
                     "credit: latest date advanced without KOFIA_API_KEY "
                     f"({committed_latest.isoformat()} -> {latest.isoformat()})"
                 )
-
-
-def read_credit_source_boundary_date() -> date | None:
-    if not SAMPLE_MACRO.exists():
-        return None
-    latest: date | None = None
-    try:
-        with SAMPLE_MACRO.open("r", encoding="utf-8-sig", newline="") as handle:
-            for row in csv.DictReader(handle):
-                row_date = parse_date(row.get("date"), "sample macro")
-                if not any(str(row.get(key) or "").strip() for key in CREDIT_COLUMNS):
-                    continue
-                if latest is None or row_date > latest:
-                    latest = row_date
-    except Exception:
-        return None
-    return latest
 
 
 def validate_macro_columns(payload: dict, rows: list[dict]) -> None:

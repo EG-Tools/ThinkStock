@@ -188,44 +188,31 @@ def is_plausible_credit_transition(
 
 
 def merge_credit_seed_with_existing_tail(seed: pd.DataFrame, existing: pd.DataFrame) -> pd.DataFrame:
-    merged, _ = merge_credit_seed_shape_with_live_tail(seed, existing, "existing")
-    return merged
-
-
-def merge_credit_seed_shape_with_live_tail(
-    seed: pd.DataFrame,
-    live: pd.DataFrame,
-    label: str,
-) -> tuple[pd.DataFrame, int]:
     seed = pick_numeric_columns(seed, CREDIT_SERIES)
-    live = pick_numeric_columns(live, CREDIT_SERIES)
+    existing = pick_numeric_columns(existing, CREDIT_SERIES)
     if seed.empty:
-        return live.sort_index(), len(live)
-    if live.empty:
-        return seed, 0
+        return existing
+    if existing.empty:
+        return seed
 
-    latest_seed = seed.index.max()
-    tail = live[live.index > latest_seed].sort_index()
+    tail = existing[existing.index > seed.index.max()].sort_index()
     if tail.empty:
-        return seed, 0
+        return seed
 
     keep: list[pd.Timestamp] = []
-    prev_date = latest_seed
-    prev_row = seed.loc[latest_seed]
-    has_overlap = not live[live.index <= latest_seed].empty
+    prev_date = seed.index.max()
+    prev_row = seed.loc[prev_date]
     for row_date, row in tail.iterrows():
         if not is_plausible_credit_transition(prev_date, prev_row, row_date, row):
-            if keep or not has_overlap:
-                print(f"Dropped {label} credit tail from {row_date.strftime('%Y-%m-%d')} due to discontinuity.")
-                break
-            print(f"Kept {label} credit tail from {row_date.strftime('%Y-%m-%d')} after source-scale boundary.")
+            print(f"Dropped existing credit tail from {row_date.strftime('%Y-%m-%d')} due to discontinuity.")
+            break
         keep.append(row_date)
         prev_date = row_date
         prev_row = row
 
     if not keep:
-        return seed, 0
-    return merge_credit_frames(seed, tail.loc[keep]), len(keep)
+        return seed
+    return merge_credit_frames(seed, tail.loc[keep])
 
 
 def align_historical_credit_seed(historical: pd.DataFrame, reference: pd.DataFrame) -> pd.DataFrame:
@@ -1111,7 +1098,36 @@ def merge_credit_seed_with_freesis(seed: pd.DataFrame, live: pd.DataFrame) -> tu
 
 
 def merge_credit_seed_with_kofia(seed: pd.DataFrame, live: pd.DataFrame) -> tuple[pd.DataFrame, int]:
-    return merge_credit_seed_shape_with_live_tail(seed, live, "KOFIA")
+    if live.empty:
+        return seed, 0
+    if seed.empty:
+        return live.sort_index(), len(live)
+
+    live = live.sort_index()
+    first_live_date = live.index.min()
+    merged = align_historical_credit_seed(seed, live).copy()
+    merged = merged[merged.index < first_live_date]
+    applied = 0
+    for idx, row in live.iterrows():
+        prev = merged.loc[idx] if idx in merged.index else pd.Series(dtype="float64")
+        next_kospi = row["kospi_credit"] if pd.notna(row["kospi_credit"]) else prev.get("kospi_credit", pd.NA)
+        next_kosdaq = row["kosdaq_credit"] if pd.notna(row["kosdaq_credit"]) else prev.get("kosdaq_credit", pd.NA)
+        prev_kospi = prev.get("kospi_credit", pd.NA)
+        prev_kosdaq = prev.get("kosdaq_credit", pd.NA)
+        changed = idx not in merged.index or (
+            (pd.isna(prev_kospi) and pd.notna(next_kospi))
+            or (pd.notna(prev_kospi) and pd.notna(next_kospi) and float(next_kospi) != float(prev_kospi))
+            or (pd.isna(prev_kosdaq) and pd.notna(next_kosdaq))
+            or (pd.notna(prev_kosdaq) and pd.notna(next_kosdaq) and float(next_kosdaq) != float(prev_kosdaq))
+        )
+        if changed:
+            applied += 1
+        merged.loc[idx, "kospi_credit"] = next_kospi
+        merged.loc[idx, "kosdaq_credit"] = next_kosdaq
+
+    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+    merged.index.name = "date"
+    return merged[["kospi_credit", "kosdaq_credit"]], applied
 
 
 def densify_macro(macro: pd.DataFrame, price_index: pd.DatetimeIndex) -> pd.DataFrame:
@@ -1266,15 +1282,18 @@ def main() -> None:
 
     existing_credit_seed = load_existing_credit_seed()
     kofia_key = resolve_kofia_api_key()
-    credit_seed = merge_credit_seed_with_existing_tail(historical_credit_seed, existing_credit_seed)
-    if (
+    existing_credit_is_newer = (
         not existing_credit_seed.empty
         and not historical_credit_seed.empty
         and existing_credit_seed.index.max() > historical_credit_seed.index.max()
-    ):
-        latest_existing_credit = credit_seed.index.max().strftime("%Y-%m-%d")
-        print(f"Applied existing verified credit tail (latest={latest_existing_credit}).")
-        build_report["events"].append(f"Applied existing verified credit tail latest={latest_existing_credit}")
+    )
+    if not kofia_key and existing_credit_is_newer:
+        credit_seed = existing_credit_seed
+        latest_existing_credit = existing_credit_seed.index.max().strftime("%Y-%m-%d")
+        print(f"Keeping existing verified credit seed (latest={latest_existing_credit}).")
+        build_report["events"].append(f"Keeping existing verified credit seed latest={latest_existing_credit}")
+    else:
+        credit_seed = merge_credit_seed_with_existing_tail(historical_credit_seed, existing_credit_seed)
     build_report["sources"]["credit_seed"] = frame_summary(credit_seed)
     credit_merged = credit_seed
     if kofia_key:
