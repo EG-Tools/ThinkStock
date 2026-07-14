@@ -42,9 +42,9 @@ const DATA_CACHE_DB_NAME = "thinkstock-runtime-cache-v1";
 const DATA_CACHE_STORE_NAME = "snapshots";
 const DATA_CACHE_RECORD_KEY = "latest";
 const DATA_CACHE_LOCAL_KEY = "thinkstock-runtime-cache-v1";
-const DATA_CACHE_SCHEMA_VERSION = 1;
+const DATA_CACHE_SCHEMA_VERSION = 2;
 const DATA_CACHE_MAX_AGE_DAYS = 7;
-const APP_VERSION = "0.34";
+const APP_VERSION = "0.35";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -1886,6 +1886,26 @@ function mergeRowsPreservingExisting(existingRows, incomingRows) {
       }
     });
     byDate.set(row.date, merged);
+  });
+
+  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function mergeCreditRowsPreservingSeed(existingRows, seedRows) {
+  const seed = normalizeCreditRows(seedRows);
+  if (!seed.length) return normalizeCreditRows(existingRows);
+
+  const latestSeedDate = seed[seed.length - 1].date;
+  const byDate = new Map(seed.map((row) => [row.date, { ...row }]));
+
+  normalizeCreditRows(existingRows).forEach((row) => {
+    if (row.date <= latestSeedDate) return;
+    const prev = byDate.get(row.date) || { date: row.date, kospi_credit: null, kosdaq_credit: null };
+    byDate.set(row.date, {
+      date: row.date,
+      kospi_credit: Number.isFinite(toNum(row.kospi_credit)) ? toNum(row.kospi_credit) : prev.kospi_credit,
+      kosdaq_credit: Number.isFinite(toNum(row.kosdaq_credit)) ? toNum(row.kosdaq_credit) : prev.kosdaq_credit,
+    });
   });
 
   return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
@@ -4751,7 +4771,9 @@ function applyCreditLiveRows(liveRows) {
   });
 
   let updated = 0;
+  const latestExistingDate = [...byDate.keys()].sort().pop() || "";
   normalized.forEach((row) => {
+    if (latestExistingDate && row.date <= latestExistingDate) return;
     const prev = byDate.get(row.date) || { date: row.date, kospi_credit: null, kosdaq_credit: null };
     const next = {
       date: row.date,
@@ -5002,7 +5024,7 @@ async function loadData(forceNetwork = false, options = {}) {
 
   if (parsed.creditRows?.length) {
     creditRows = mergeWithExisting
-      ? normalizeCreditRows(mergeRowsPreservingExisting(creditRows, parsed.creditRows))
+      ? mergeCreditRowsPreservingSeed(creditRows, parsed.creditRows)
       : normalizeCreditRows(parsed.creditRows);
   }
 
