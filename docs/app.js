@@ -60,6 +60,7 @@ const API_SETTINGS_DEFAULT = Object.freeze({
   kofiaApiKey: "",
   kosisApiKey: "",
   krxApiKey: "",
+  dartApiKey: "",
 });
 const ECOS_STAT_CODE = "901Y067";
 const ECOS_ITEM_CODE = "I16E";
@@ -724,6 +725,7 @@ function setupApiSettingsPanel(msgEl) {
     kofiaApiKey: document.getElementById("kofiaApiInput"),
     kosisApiKey: document.getElementById("kosisApiInput"),
     krxApiKey: document.getElementById("krxApiInput"),
+    dartApiKey: document.getElementById("dartApiInput"),
   };
 
   const fillInputs = () => {
@@ -737,6 +739,7 @@ function setupApiSettingsPanel(msgEl) {
     kofiaApiKey: inputs.kofiaApiKey?.value || "",
     kosisApiKey: inputs.kosisApiKey?.value || "",
     krxApiKey: inputs.krxApiKey?.value || "",
+    dartApiKey: inputs.dartApiKey?.value || "",
   });
 
   const close = () => { modal.hidden = true; };
