@@ -1063,11 +1063,16 @@ def merge_credit_seed_with_freesis(seed: pd.DataFrame, live: pd.DataFrame) -> tu
     if live.empty:
         return seed, 0
     if seed.empty:
-        return live, len(live)
+        return live.sort_index(), len(live)
 
     # Unit code 01 matches the KOFIA public API scale, so Freesis can replace
-    # the rough historical seed instead of being scaled as a tail-only source.
-    merged = merge_credit_frames(seed, live)
+    # the rough historical seed. When a full history is available, prefer it
+    # outright so rough pre-2021 seed rows do not create validation jumps.
+    live = live.sort_index()
+    if len(live) >= 1000:
+        merged = live.copy()
+    else:
+        merged = merge_credit_frames(seed, live)
     merged.index.name = "date"
     changed = 0
     for idx, row in live.iterrows():
@@ -1301,12 +1306,12 @@ def main() -> None:
         credit_merged, appended_credit = merge_credit_seed_with_freesis(credit_merged, credit_live)
     else:
         appended_credit = 0
-        print("Skipped Freesis credit tail; using existing verified credit seed only.")
+        print("Skipped Freesis credit history; using existing verified credit seed only.")
 
     if appended_credit > 0:
         latest_credit = credit_merged.index.max().strftime("%Y-%m-%d")
-        print(f"Applied Freesis credit tail rows: {appended_credit} (latest={latest_credit})")
-        build_report["events"].append(f"Applied Freesis credit tail rows: {appended_credit} latest={latest_credit}")
+        print(f"Applied Freesis credit rows: {appended_credit} (latest={latest_credit})")
+        build_report["events"].append(f"Applied Freesis credit rows: {appended_credit} latest={latest_credit}")
 
     adr_records = fetch_adr_data()
     build_report["sources"]["adr"] = record_summary(adr_records)
