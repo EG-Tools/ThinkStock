@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from datetime import date
 from pathlib import Path
 from urllib.parse import unquote
@@ -25,6 +26,7 @@ OUTPUT_JSON = DATA_DIR / "prices.json"
 OUTPUT_MACRO_JSON = DATA_DIR / "macro_data.json"
 OUTPUT_MACRO_CSV = DATA_DIR / "sample_macro_data.csv"
 OUTPUT_CREDIT_JSON = DATA_DIR / "credit_data.json"
+OUTPUT_ADR_JSON = DATA_DIR / "adr_data.json"
 LOOKBACK_YEARS = 30
 ECOS_STAT_CODE = "901Y067"  # Composite Leading Indicator
 ECOS_ITEM_CODE = "I16E"     # Leading index cyclical component
@@ -41,6 +43,7 @@ FREESIS_CREDIT_OBJ_NM = "STATSCU0100000070BO"
 FREESIS_CREDIT_UNIT_CODE = "06"
 FREESIS_CREDIT_START = "19980101"
 ENABLE_FREESIS_CREDIT_TAIL = os.environ.get("ENABLE_FREESIS_CREDIT_TAIL", "").strip() == "1"
+ADR_SOURCE_URL = "http://www.adrinfo.kr/chart"
 
 
 def extract_close_series(data: pd.DataFrame, ticker: str) -> pd.Series | None:
@@ -461,6 +464,74 @@ def fetch_freesis_credit() -> pd.DataFrame:
     return _credit_frame_from_records(records)
 
 
+def extract_adr_array(html: str, var_name: str) -> list:
+    token = f"const {var_name}="
+    start = html.find(token)
+    if start < 0:
+        return []
+    start += len(token)
+    end = html.find("];", start)
+    if end < 0:
+        return []
+    raw = re.sub(r",\s*\]", "]", html[start:end + 1])
+    return json.loads(raw)
+
+
+def fetch_adr_data() -> list[dict]:
+    try:
+        response = requests.get(
+            ADR_SOURCE_URL,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=20,
+        )
+        response.raise_for_status()
+        html = response.text
+        kospi_raw = extract_adr_array(html, "kospi_adr")
+        kosdaq_raw = extract_adr_array(html, "kosdaq_adr")
+    except Exception as exc:
+        print(f"ADR fetch failed: {exc}")
+        return []
+
+    from datetime import datetime, timedelta, timezone
+
+    kst = timezone(timedelta(hours=9))
+
+    def ts_to_date(ts_ms: object) -> str:
+        try:
+            return datetime.fromtimestamp(float(ts_ms) / 1000, tz=kst).strftime("%Y-%m-%d")
+        except Exception:
+            return ""
+
+    kospi_map = {ts_to_date(item[0]): item[1] for item in kospi_raw if isinstance(item, list) and len(item) >= 2}
+    kosdaq_map = {ts_to_date(item[0]): item[1] for item in kosdaq_raw if isinstance(item, list) and len(item) >= 2}
+    all_dates = sorted(date_key for date_key in set(kospi_map) | set(kosdaq_map) if date_key)
+
+    records: list[dict] = []
+    for date_key in all_dates:
+        kospi = pd.to_numeric(kospi_map.get(date_key), errors="coerce")
+        kosdaq = pd.to_numeric(kosdaq_map.get(date_key), errors="coerce")
+        record = {
+            "date": date_key,
+            "adr_kospi": None if pd.isna(kospi) else round(float(kospi), 6),
+            "adr_kosdaq": None if pd.isna(kosdaq) else round(float(kosdaq), 6),
+        }
+        if record["adr_kospi"] is not None or record["adr_kosdaq"] is not None:
+            records.append(record)
+
+    return records
+
+
+def build_adr_payload(records: list[dict]) -> dict:
+    return {
+        "generated_at": pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "description": "ADR (Advance-Decline Ratio) - KOSPI / KOSDAQ",
+        "source": "adrinfo.kr",
+        "note": "Values are percentages. 100=balanced, >120=overbought, <80=oversold",
+        "series": ["adr_kospi", "adr_kosdaq"],
+        "records": records,
+    }
+
+
 def load_existing_credit_seed() -> pd.DataFrame:
     if not OUTPUT_CREDIT_JSON.exists():
         return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
@@ -642,6 +713,12 @@ def main() -> None:
         latest_credit = credit_merged.index.max().strftime("%Y-%m-%d")
         print(f"Applied Freesis credit tail rows: {appended_credit} (latest={latest_credit})")
 
+    adr_records = fetch_adr_data()
+    if adr_records:
+        print(f"Applied ADR rows: {len(adr_records)} (latest={adr_records[-1]['date']})")
+    else:
+        print("ADR fetch had no rows; keeping existing adr_data.json.")
+
     credit_payload = build_payload(
         credit_merged,
         DISPLAY_NAMES,
@@ -665,6 +742,11 @@ def main() -> None:
             json.dumps(credit_payload, ensure_ascii=False, indent=2, allow_nan=False),
             encoding="utf-8",
         )
+    if adr_records:
+        OUTPUT_ADR_JSON.write_text(
+            json.dumps(build_adr_payload(adr_records), ensure_ascii=False, indent=2, allow_nan=False),
+            encoding="utf-8",
+        )
     if macro_source.empty:
         OUTPUT_MACRO_CSV.write_text("date\n", encoding="utf-8")
     else:
@@ -676,6 +758,8 @@ def main() -> None:
     print(f"Wrote {OUTPUT_MACRO_JSON}")
     if not credit_merged.empty:
         print(f"Wrote {OUTPUT_CREDIT_JSON}")
+    if adr_records:
+        print(f"Wrote {OUTPUT_ADR_JSON}")
     print(f"Wrote {OUTPUT_MACRO_CSV}")
 
 if __name__ == "__main__":
