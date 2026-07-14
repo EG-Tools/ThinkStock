@@ -44,7 +44,7 @@ const DATA_CACHE_RECORD_KEY = "latest";
 const DATA_CACHE_LOCAL_KEY = "thinkstock-runtime-cache-v1";
 const DATA_CACHE_SCHEMA_VERSION = 1;
 const DATA_CACHE_MAX_AGE_DAYS = 7;
-const APP_VERSION = "0.32";
+const APP_VERSION = "0.33";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -80,6 +80,8 @@ const DART_RUNTIME_MAX_PAGES_PER_MARKET = 60;
 const DART_RUNTIME_PAGE_BATCH = 6;
 const DART_STOCK_PAGE_BATCH = 4;
 const DART_VISIBLE_REFRESH_CONCURRENCY = 2;
+const DART_DISCLOSURE_CACHE_KEY = "thinkstock-dart-disclosure-cache-v1";
+const DART_DISCLOSURE_CACHE_TTL_DAYS = 1;
 const DAY_MS = 24 * 60 * 60 * 1000;
 function appendCacheBust(url) {
   const stamp = `_=${Date.now()}`;
@@ -131,6 +133,29 @@ const PLOTLY_CONFIG = {
   scrollZoom: true,
   doubleClick: false,
 };
+function plotlyHoverLabel(fontSize) {
+  return hoverShowPopup
+    ? {
+      bgcolor: "rgba(34,34,34,0.45)",
+      bordercolor: "rgba(140,140,140,0.35)",
+      font: { color: "#eee", ...(fontSize ? { size: fontSize } : {}) },
+    }
+    : {
+      bgcolor: "rgba(0,0,0,0)",
+      bordercolor: "rgba(0,0,0,0)",
+      font: { color: "rgba(0,0,0,0)", size: 1 },
+    };
+}
+
+function applyHoverPopupLayoutFast() {
+  if (!window.Plotly) return false;
+  const tasks = [];
+  const mainEl = document.getElementById("chart");
+  const adrEl = document.getElementById("chart-adr");
+  if (mainEl?.data) tasks.push(Plotly.relayout(mainEl, { hoverlabel: plotlyHoverLabel() }));
+  if (adrEl?.data) tasks.push(Plotly.relayout(adrEl, { hoverlabel: plotlyHoverLabel(11) }));
+  return tasks.length > 0;
+}
 async function ensurePlotlyReady() {
   if (window.Plotly) return window.Plotly;
   const loader = window.ThinkStockChartLoader;
@@ -164,6 +189,7 @@ let disclosureSeedLoadedTickers = new Set();
 let dartCorpCodeMap = new Map();
 let dartCorpCodeMapLoaded = false;
 let dartCorpCodeMapPromise = null;
+let dartDisclosureTickerRefreshPromises = new Map();
 let activeMonths = 120;
 let hiddenSeries = new Set(["kospi_credit", "^KQ11", "kosdaq_credit"]);
 let customStocks = [];
@@ -970,8 +996,8 @@ function setupApiSettingsPanel(msgEl) {
           : "DART API 저장됨. 최근 공시를 불러오는 중입니다...",
       ]);
       const refreshTask = refreshCurrentTickers
-        ? refreshDartDisclosuresForVisibleTickersFromApi(nextDartKey)
-        : refreshDartDisclosuresFromApi(nextDartKey);
+          ? refreshDartDisclosuresForVisibleTickersFromApi(nextDartKey, { forceNetwork: true })
+          : refreshDartDisclosuresFromApi(nextDartKey, "", { forceNetwork: true });
       refreshTask
         .then((info) => {
           requestChartRender(false);
@@ -1553,9 +1579,11 @@ function beginLineOffsetDrag(el, target, startClientY) {
     if (lockedXRange) pinnedXRange = [...lockedXRange];
     if (!moved || Math.abs(clientY - startClientY) < 3) {
       seriesOffsets[target.seriesKey] = startOffset;
+      restyleLive(target.traceIndex, target.seriesKey);
+      finishTraceYEdit(false);
+      return;
     }
-    saveState();
-    requestChartRender();
+    finishTraceYEdit(true);
   }
 
   addDragListeners(startClientY, onMove, onEnd);
@@ -1916,6 +1944,20 @@ function syncSeriesToggleBoard(allSeries) {
   });
 }
 
+function applySeriesVisibilityFast(seriesKey) {
+  if (showDisclosures) return false;
+  if (!window.Plotly) return false;
+  const el = document.getElementById("chart");
+  const traceIndex = currentSelected.indexOf(seriesKey);
+  if (!el?.data || traceIndex < 0 || traceIndex >= el.data.length) return false;
+
+  Plotly.restyle(el, { visible: hiddenSeries.has(seriesKey) ? "legendonly" : true }, [traceIndex])
+    .then(() => updateHandles())
+    .catch(() => requestChartRender());
+  syncSeriesToggleBoard(currentSelected);
+  return true;
+}
+
 function bindSeriesToggleBoard() {
   document.querySelectorAll(".series-toggle-btn").forEach((btn) => {
     if (btn.dataset.bound === "1") return;
@@ -1926,7 +1968,7 @@ function bindSeriesToggleBoard() {
       if (hiddenSeries.has(key)) hiddenSeries.delete(key);
       else hiddenSeries.add(key);
       saveState();
-      requestChartRender();
+      if (!applySeriesVisibilityFast(key)) requestChartRender();
     });
   });
 }
@@ -2960,6 +3002,16 @@ function restyleLive(traceIndex, seriesKey) {
   });
 }
 
+function finishTraceYEdit(rebuildForDisclosures = true) {
+  saveState();
+  if (showDisclosures && rebuildForDisclosures) {
+    requestChartRender();
+    return;
+  }
+  updateHandles();
+  saveLastRuntimeSnapshot().catch(() => {});
+}
+
 
 function lockCurrentYAxisRange() {
   const el = document.getElementById("chart");
@@ -3003,9 +3055,12 @@ function setupOffsetDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
         seriesOffsets[seriesKey] = startOffset;
         if (hiddenSeries.has(seriesKey)) hiddenSeries.delete(seriesKey);
         else hiddenSeries.add(seriesKey);
+        restyleLive(traceIndex, seriesKey);
+        saveState();
+        if (!applySeriesVisibilityFast(seriesKey)) requestChartRender();
+        return;
       }
-      saveState();
-      requestChartRender();
+      finishTraceYEdit(true);
     }
 
     addDragListeners(startClientY, onMove, onEnd);
@@ -3035,8 +3090,7 @@ function setupScaleDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
       handle.classList.remove("dragging");
       isHandleDragging = false;
       if (lockedXRange) pinnedXRange = [...lockedXRange];
-      saveState();
-      requestChartRender();
+      finishTraceYEdit(true);
     }
 
     addDragListeners(startClientY, onMove, onEnd);
@@ -3508,6 +3562,51 @@ function mergeDisclosureRows(existingRows, incomingRows) {
   return [...map.values()].sort((a, b) => a.date.localeCompare(b.date) || a.ticker.localeCompare(b.ticker));
 }
 
+function readDartDisclosureRefreshCache() {
+  try {
+    const raw = localStorage.getItem(DART_DISCLOSURE_CACHE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function writeDartDisclosureRefreshCache(cache) {
+  try {
+    localStorage.setItem(DART_DISCLOSURE_CACHE_KEY, JSON.stringify(cache));
+  } catch (_) {
+    // Local storage can be full or unavailable in private browsing.
+  }
+}
+
+function getDartDisclosureRefreshCacheEntry(ticker) {
+  const target = String(ticker || "").trim().toUpperCase();
+  if (!target) return null;
+  const entry = readDartDisclosureRefreshCache()[target];
+  if (!entry || typeof entry !== "object") return null;
+  const savedAt = Number(entry.savedAt || 0);
+  if (!Number.isFinite(savedAt) || Date.now() - savedAt > DART_DISCLOSURE_CACHE_TTL_DAYS * DAY_MS) return null;
+  return entry;
+}
+
+function rememberDartDisclosureRefresh(ticker, info) {
+  const target = String(ticker || "").trim().toUpperCase();
+  if (!target) return;
+  const cache = readDartDisclosureRefreshCache();
+  cache[target] = {
+    savedAt: Date.now(),
+    fetched: Number(info?.fetched || 0),
+    added: Number(info?.added || 0),
+    latestDate: String(info?.latestDate || ""),
+  };
+  writeDartDisclosureRefreshCache(cache);
+}
+
+function hasFreshDartDisclosureRefresh(ticker) {
+  return Boolean(getDartDisclosureRefreshCacheEntry(ticker));
+}
+
 function getDisclosureSeedTickers() {
   const tickers = [
     ...(Array.isArray(pricePayload?.series) ? pricePayload.series : []),
@@ -3555,18 +3654,30 @@ async function ensureDisclosureSeedsForTickers(tickers, forceNetwork = false) {
   return results.reduce((sum, result) => sum + (result?.added || 0), 0);
 }
 
-async function refreshDartDisclosuresFromApi(apiKey, ticker = "") {
+async function refreshDartDisclosuresFromApi(apiKey, ticker = "", options = {}) {
+  const targetTicker = String(ticker || "").trim().toUpperCase();
+  if (targetTicker && !options.forceNetwork && hasFreshDartDisclosureRefresh(targetTicker)) {
+    const cached = getDartDisclosureRefreshCacheEntry(targetTicker);
+    return {
+      fetched: 0,
+      added: 0,
+      latestDate: cached?.latestDate || "",
+      cached: true,
+    };
+  }
   const liveRows = ticker
-    ? await fetchDartDisclosuresForTickerLive(apiKey, ticker)
+    ? await fetchDartDisclosuresForTickerLive(apiKey, targetTicker)
     : await fetchDartDisclosuresLive(apiKey);
   const beforeCount = disclosureRows.length;
   disclosureRows = mergeDisclosureRows(disclosureRows, liveRows);
   const latestDate = disclosureRows.length ? disclosureRows[disclosureRows.length - 1].date : "";
-  return {
+  const info = {
     fetched: liveRows.length,
     added: Math.max(0, disclosureRows.length - beforeCount),
     latestDate,
   };
+  if (targetTicker) rememberDartDisclosureRefresh(targetTicker, info);
+  return info;
 }
 
 async function mapWithConcurrency(items, limit, worker) {
@@ -3584,17 +3695,26 @@ async function mapWithConcurrency(items, limit, worker) {
   return results;
 }
 
-async function refreshDartDisclosuresForVisibleTickersFromApi(apiKey) {
+async function refreshDartDisclosuresForVisibleTickersFromApi(apiKey, options = {}) {
   const tickers = disclosureTargetTickers()
     .filter((ticker) => !hiddenSeries.has(ticker));
   const uniqueTickers = [...new Set(tickers)];
   const beforeCount = disclosureRows.length;
   const incomingRows = [];
   const failed = [];
+  let cached = 0;
 
   const results = await mapWithConcurrency(uniqueTickers, DART_VISIBLE_REFRESH_CONCURRENCY, async (ticker) => {
     try {
+      if (!options.forceNetwork && hasFreshDartDisclosureRefresh(ticker)) {
+        return { ticker, rows: [], cached: true };
+      }
       const rows = await fetchDartDisclosuresForTickerLive(apiKey, ticker);
+      rememberDartDisclosureRefresh(ticker, {
+        fetched: rows.length,
+        added: rows.length,
+        latestDate: rows.length ? rows[rows.length - 1].date : "",
+      });
       return { ticker, rows };
     } catch (err) {
       return { ticker, error: err };
@@ -3605,6 +3725,10 @@ async function refreshDartDisclosuresForVisibleTickersFromApi(apiKey) {
     if (!result) return;
     if (result.error) {
       failed.push(`${labelName(result.ticker)}: ${result.error.message}`);
+      return;
+    }
+    if (result.cached) {
+      cached += 1;
       return;
     }
     incomingRows.push(...(result.rows || []));
@@ -3618,12 +3742,13 @@ async function refreshDartDisclosuresForVisibleTickersFromApi(apiKey) {
     added: Math.max(0, disclosureRows.length - beforeCount),
     latestDate,
     failed,
+    cached,
   };
 }
 
 let dartDisclosureRefreshPromise = null;
 
-function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
+function requestDartDisclosureRefreshForTickerLegacy(ticker, msgEl) {
   const apiKey = String(apiSettings?.dartApiKey || "").trim();
   if (dartDisclosureRefreshPromise) return;
 
@@ -3673,6 +3798,89 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
     .finally(() => {
       dartDisclosureRefreshPromise = null;
     });
+}
+
+function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
+  const apiKey = String(apiSettings?.dartApiKey || "").trim();
+  const target = String(ticker || "").trim().toUpperCase();
+  if (!/^[0-9]{6}\.(KS|KQ)$/.test(target)) return;
+
+  if (dartDisclosureTickerRefreshPromises.has(target)) {
+    setMessage(msgEl, [
+      `${labelName(target)} 공시 갱신이 이미 진행 중입니다.`,
+      `대기/진행 중인 공시 작업: ${dartDisclosureTickerRefreshPromises.size}개`,
+    ]);
+    return;
+  }
+
+  const name = labelName(target);
+  enableDisclosureMarkers();
+  saveState();
+  setMessage(msgEl, [
+    `${name} 종목을 추가했습니다.`,
+    `공시 백그라운드 갱신 대기/진행: ${dartDisclosureTickerRefreshPromises.size + 1}개`,
+  ]);
+
+  const seedTask = ensureDisclosureSeedForTicker(target).then((seedInfo) => {
+    if (seedInfo?.added > 0) {
+      requestChartRender(false);
+      saveLastRuntimeSnapshot().catch(() => {});
+    }
+  });
+
+  if (!apiKey) {
+    const task = seedTask.finally(() => {
+      dartDisclosureTickerRefreshPromises.delete(target);
+    });
+    dartDisclosureTickerRefreshPromises.set(target, task);
+    return;
+  }
+
+  const cacheEntry = getDartDisclosureRefreshCacheEntry(target);
+  if (cacheEntry) {
+    const task = seedTask.then(() => {
+      requestChartRender(false);
+      saveLastRuntimeSnapshot().catch(() => {});
+      setMessage(msgEl, [
+        `${name} 종목을 추가했습니다.`,
+        `DART 공시는 오늘 이미 확인했습니다${cacheEntry.latestDate ? `(~ ${cacheEntry.latestDate})` : ""}.`,
+      ]);
+    }).finally(() => {
+      dartDisclosureTickerRefreshPromises.delete(target);
+    });
+    dartDisclosureTickerRefreshPromises.set(target, task);
+    return;
+  }
+
+  const task = seedTask.then(() => refreshDartDisclosuresFromApi(apiKey, target))
+    .then((info) => {
+      requestChartRender(false);
+      saveLastRuntimeSnapshot().catch(() => {});
+      if (info.fetched > 0) {
+        setMessage(msgEl, [
+          `${name} 종목을 추가했습니다.`,
+          `DART 공시 ${info.fetched}건 확인, ${info.added}건 반영${info.latestDate ? `(~ ${info.latestDate})` : ""}`,
+          lastDisclosureTraceStats.markers > 0
+            ? `현재 차트에 공시 마커 ${lastDisclosureTraceStats.markers}개 표시됨`
+            : "공시 데이터는 확인했지만 현재 차트 범위에는 표시할 마커가 없습니다.",
+        ]);
+      } else {
+        setMessage(msgEl, [
+          `${name} 종목을 추가했습니다.`,
+          "DART 최근 공시에서 현재 차트 종목의 주요 이벤트를 찾지 못했습니다.",
+        ]);
+      }
+    })
+    .catch((err) => {
+      setMessage(msgEl, [
+        `${name} 종목은 추가됐지만 DART 공시 백그라운드 갱신은 실패했습니다.`,
+        err.message,
+      ], true);
+    })
+    .finally(() => {
+      dartDisclosureTickerRefreshPromises.delete(target);
+    });
+  dartDisclosureTickerRefreshPromises.set(target, task);
 }
 
 /* Main chart */
@@ -3855,7 +4063,7 @@ function renderChart(preserveZoom = true) {
     xaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, color: "#666", tickfont: { size: 10 }, fixedrange: false, showspikes: false, hoverformat: "%Y.%-m.%-d", ...(savedXRange ? { range: savedXRange } : { range: defaultXRange, autorange: false }) },
     yaxis: { showticklabels: false, title: "", showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, fixedrange: true, ...(savedYRange ? { range: savedYRange, autorange: false } : {}) },
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
-    hoverlabel: hoverShowPopup ? { bgcolor: "rgba(34,34,34,0.45)", bordercolor: "rgba(140,140,140,0.35)", font: { color: "#eee" } } : { bgcolor: "rgba(0,0,0,0)", bordercolor: "rgba(0,0,0,0)", font: { color: "rgba(0,0,0,0)", size: 1 } },
+    hoverlabel: plotlyHoverLabel(),
     dragmode: false,
   }, PLOTLY_CONFIG);
 
@@ -4140,7 +4348,7 @@ function renderAdrChart(xRange) {
       range: [adrYMin, adrYMax],
     },
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
-    hoverlabel: hoverShowPopup ? { bgcolor: "rgba(34,34,34,0.45)", bordercolor: "rgba(140,140,140,0.35)", font: { color: "#eee", size: 11 } } : { bgcolor: "rgba(0,0,0,0)", bordercolor: "rgba(0,0,0,0)", font: { color: "rgba(0,0,0,0)", size: 1 } },
+    hoverlabel: plotlyHoverLabel(11),
     dragmode: false,
   };
 
@@ -4851,8 +5059,8 @@ async function refreshRuntimeData(msgEl) {
         saveState();
       }
       const info = refreshCurrentTickers
-        ? await refreshDartDisclosuresForVisibleTickersFromApi(apiSettings.dartApiKey)
-        : await refreshDartDisclosuresFromApi(apiSettings.dartApiKey);
+        ? await refreshDartDisclosuresForVisibleTickersFromApi(apiSettings.dartApiKey, { forceNetwork: true })
+        : await refreshDartDisclosuresFromApi(apiSettings.dartApiKey, "", { forceNetwork: true });
       refreshedDart = true;
       if (info.fetched > 0) {
         infoLines.push(`DART 공시 ${info.fetched}건 확인, ${info.added}건 반영${info.latestDate ? `(~ ${info.latestDate})` : ""}`);
@@ -4957,7 +5165,7 @@ async function boot() {
         hoverToggleBtn.classList.toggle("is-active", hoverShowPopup);
         applyHoverState();
         saveState();
-        requestChartRender();
+        if (!applyHoverPopupLayoutFast()) requestChartRender();
       });
     }
 

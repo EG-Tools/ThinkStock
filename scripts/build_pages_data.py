@@ -39,6 +39,7 @@ OUTPUT_ADR_JSON = DATA_DIR / "adr_data.json"
 OUTPUT_DISCLOSURES_JSON = DATA_DIR / "disclosures.json"
 DISCLOSURE_DATA_DIR = DATA_DIR / "disclosures"
 OUTPUT_DART_CORP_CODES_JSON = DATA_DIR / "dart_corp_codes.json"
+OUTPUT_BUILD_REPORT_JSON = DATA_DIR / "build_report.json"
 LOOKBACK_YEARS = 30
 DART_DISCLOSURE_LOOKBACK_YEARS = 3
 ECOS_STAT_CODE = "901Y067"  # Composite Leading Indicator
@@ -1187,22 +1188,82 @@ def write_columnar_payload_or_keep(path: Path, payload: dict, label: str) -> boo
     return True
 
 
+def utc_stamp() -> str:
+    return pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def frame_summary(frame: pd.DataFrame) -> dict:
+    if frame is None or frame.empty:
+        return {"rows": 0, "latest": ""}
+    try:
+        latest = pd.to_datetime(frame.index.max()).strftime("%Y-%m-%d")
+    except Exception:
+        latest = ""
+    return {"rows": int(len(frame)), "latest": latest}
+
+
+def record_summary(records: list[dict]) -> dict:
+    if not records:
+        return {"rows": 0, "latest": ""}
+    latest = max(str(record.get("date") or "")[:10] for record in records)
+    return {"rows": len(records), "latest": latest}
+
+
+def payload_file_summary(path: Path) -> dict:
+    if not path.exists():
+        return {"rows": 0, "latest": ""}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"rows": 0, "latest": ""}
+
+    dates = payload.get("dates")
+    if isinstance(dates, list) and dates:
+        return {"rows": len(dates), "latest": str(dates[-1])[:10]}
+
+    records = payload.get("records")
+    if isinstance(records, list):
+        return record_summary(records)
+
+    return {"rows": int(payload.get("total") or 0), "latest": max(payload.get("latest", {}).values(), default="")}
+
+
+def write_build_report(report: dict) -> None:
+    OUTPUT_BUILD_REPORT_JSON.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False),
+        encoding="utf-8",
+    )
+
+
 def main() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    build_report = {
+        "generated_at": utc_stamp(),
+        "sources": {},
+        "outputs": {},
+        "events": [],
+    }
     prices = fetch_prices()
+    build_report["sources"]["prices"] = frame_summary(prices)
 
     macro_source = load_macro_source()
+    build_report["sources"]["sample_macro"] = frame_summary(macro_source)
     ecos_key = resolve_ecos_api_key()
     latest_ecos_month: pd.Timestamp | None = None
     if ecos_key:
         leading_cycle = fetch_ecos_leading_cycle(ecos_key)
+        build_report["sources"]["ecos_leading_cycle"] = frame_summary(leading_cycle)
         if not leading_cycle.empty:
             macro_source = merge_macro_with_leading_cycle(macro_source, leading_cycle)
             latest_ecos_month = leading_cycle.index.max().normalize()
             latest = leading_cycle.index.max().strftime("%Y-%m")
             print(f"Applied ECOS leading_cycle rows: {len(leading_cycle)} (latest={latest})")
+            build_report["events"].append(f"Applied ECOS leading_cycle rows: {len(leading_cycle)} latest={latest}")
+    else:
+        build_report["events"].append("ECOS_API_KEY is not configured.")
 
     oecd_leading_cycle = fetch_oecd_leading_cycle_from_fred()
+    build_report["sources"]["oecd_leading_cycle"] = frame_summary(oecd_leading_cycle)
     if not oecd_leading_cycle.empty:
         macro_source, applied_months = apply_recent_oecd_tail(
             macro_source,
@@ -1213,6 +1274,7 @@ def main() -> None:
         if applied_months:
             latest = oecd_leading_cycle.index.max().strftime("%Y-%m")
             print(f"Applied OECD leading_cycle tail months: {applied_months} (latest={latest})")
+            build_report["events"].append(f"Applied OECD leading_cycle tail months: {applied_months} latest={latest}")
 
     historical_credit_seed = extract_credit_seed_from_macro(macro_source)
     public_macro_source = extract_public_macro_source(macro_source)
@@ -1220,21 +1282,27 @@ def main() -> None:
 
     existing_credit_seed = load_existing_credit_seed()
     credit_seed = merge_credit_seed_with_existing_tail(historical_credit_seed, existing_credit_seed)
+    build_report["sources"]["credit_seed"] = frame_summary(credit_seed)
     credit_merged = credit_seed
     kofia_key = resolve_kofia_api_key()
     if kofia_key:
         credit_kofia = fetch_kofia_credit(kofia_key)
+        build_report["sources"]["kofia_credit"] = frame_summary(credit_kofia)
         credit_merged, applied_kofia_credit = merge_credit_seed_with_kofia(credit_merged, credit_kofia)
         if applied_kofia_credit > 0:
             latest_credit = credit_merged.index.max().strftime("%Y-%m-%d")
             print(f"Applied KOFIA credit rows: {applied_kofia_credit} (latest={latest_credit})")
+            build_report["events"].append(f"Applied KOFIA credit rows: {applied_kofia_credit} latest={latest_credit}")
         else:
             print("KOFIA credit had no new rows.")
+            build_report["events"].append("KOFIA credit had no new rows.")
     else:
         print("KOFIA_API_KEY is not configured; using existing verified credit seed.")
+        build_report["events"].append("KOFIA_API_KEY is not configured; using existing verified credit seed.")
 
     if ENABLE_FREESIS_CREDIT_TAIL:
         credit_live = fetch_freesis_credit()
+        build_report["sources"]["freesis_credit"] = frame_summary(credit_live)
         credit_merged, appended_credit = merge_credit_seed_with_freesis(credit_merged, credit_live)
     else:
         appended_credit = 0
@@ -1243,12 +1311,16 @@ def main() -> None:
     if appended_credit > 0:
         latest_credit = credit_merged.index.max().strftime("%Y-%m-%d")
         print(f"Applied Freesis credit tail rows: {appended_credit} (latest={latest_credit})")
+        build_report["events"].append(f"Applied Freesis credit tail rows: {appended_credit} latest={latest_credit}")
 
     adr_records = fetch_adr_data()
+    build_report["sources"]["adr"] = record_summary(adr_records)
     if adr_records:
         print(f"Applied ADR rows: {len(adr_records)} (latest={adr_records[-1]['date']})")
+        build_report["events"].append(f"Applied ADR rows: {len(adr_records)} latest={adr_records[-1]['date']}")
     else:
         print("ADR fetch had no rows; keeping existing adr_data.json.")
+        build_report["events"].append("ADR fetch had no rows; keeping existing adr_data.json.")
 
     dart_key = resolve_dart_api_key()
     dart_corp_map = {}
@@ -1261,6 +1333,8 @@ def main() -> None:
         dart_corp_map = load_existing_dart_corp_code_seed()
         if dart_corp_map:
             print(f"Keeping existing DART corp code map ({len(dart_corp_map)} rows).")
+            build_report["events"].append(f"Keeping existing DART corp code map rows: {len(dart_corp_map)}")
+    build_report["sources"]["dart_corp_codes"] = {"rows": len(dart_corp_map), "latest": ""}
 
     existing_disclosure_records = load_existing_disclosure_seed()
     disclosure_records = (
@@ -1270,6 +1344,7 @@ def main() -> None:
     )
     if disclosure_records:
         print(f"Applied DART disclosure rows: {len(disclosure_records)} (latest={disclosure_records[-1]['date']})")
+        build_report["events"].append(f"Applied DART disclosure rows: {len(disclosure_records)} latest={disclosure_records[-1]['date']}")
     else:
         disclosure_records = existing_disclosure_records
         if disclosure_records:
@@ -1278,8 +1353,13 @@ def main() -> None:
                 "DART_API_KEY is not configured or returned no disclosure rows; "
                 f"keeping existing disclosures.json ({len(disclosure_records)} rows, latest={latest_disclosure})."
             )
+            build_report["events"].append(
+                f"Keeping existing disclosures rows: {len(disclosure_records)} latest={latest_disclosure}"
+            )
         else:
             print("DART_API_KEY is not configured or returned no disclosure rows.")
+            build_report["events"].append("DART_API_KEY is not configured or returned no disclosure rows.")
+    build_report["sources"]["disclosures"] = record_summary(disclosure_records)
 
     credit_payload = build_payload(
         credit_merged,
@@ -1313,6 +1393,16 @@ def main() -> None:
             json.dumps(build_dart_corp_code_payload(dart_corp_map), ensure_ascii=False, indent=2, allow_nan=False),
             encoding="utf-8",
         )
+    build_report["outputs"]["prices"] = payload_file_summary(OUTPUT_JSON)
+    build_report["outputs"]["macro"] = payload_file_summary(OUTPUT_MACRO_JSON)
+    build_report["outputs"]["credit"] = payload_file_summary(OUTPUT_CREDIT_JSON)
+    build_report["outputs"]["adr"] = payload_file_summary(OUTPUT_ADR_JSON)
+    build_report["outputs"]["disclosures"] = {
+        **payload_file_summary(OUTPUT_DISCLOSURES_JSON),
+        "tickers": len(disclosure_manifest.get("tickers", [])),
+    }
+    build_report["outputs"]["dart_corp_codes"] = payload_file_summary(OUTPUT_DART_CORP_CODES_JSON)
+    write_build_report(build_report)
     if wrote_prices:
         print(f"Wrote {OUTPUT_JSON}")
     if wrote_macro:
@@ -1324,6 +1414,7 @@ def main() -> None:
     print(f"Wrote {OUTPUT_DISCLOSURES_JSON}")
     if dart_corp_map:
         print(f"Wrote {OUTPUT_DART_CORP_CODES_JSON}")
+    print(f"Wrote {OUTPUT_BUILD_REPORT_JSON}")
 
 if __name__ == "__main__":
     main()

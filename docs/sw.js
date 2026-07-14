@@ -1,5 +1,5 @@
 const CACHE_NAME = "thinkstock-dev";
-const ASSETS = [
+const PRECACHE_ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
@@ -8,53 +8,81 @@ const ASSETS = [
   "./app.js?v=dev",
   "./manifest.webmanifest",
   "./icon.svg",
-  "./data/prices.json",
-  "./data/macro_data.json",
-  "./data/adr_data.json",
-  "./data/credit_data.json",
-  "./data/disclosures.json",
 ];
+const DATA_URL_PATTERNS = [
+  "/data/prices.json",
+  "/data/macro_data.json",
+  "/data/adr_data.json",
+  "/data/credit_data.json",
+  "/data/disclosures.json",
+  "/data/build_report.json",
+  "/data/disclosures/",
+];
+
+function isDataUrl(url) {
+  return DATA_URL_PATTERNS.some((pattern) => url.pathname.includes(pattern));
+}
+
+async function putIfOk(cache, request, response) {
+  if (response && response.ok) {
+    await cache.put(request, response.clone());
+  }
+}
+
+async function networkFirst(request) {
+  const cache = await caches.open(CACHE_NAME);
+  try {
+    const response = await fetch(request);
+    await putIfOk(cache, request, response);
+    return response;
+  } catch (_) {
+    return caches.match(request, { ignoreSearch: true });
+  }
+}
+
+async function staleWhileRevalidate(request) {
+  const cache = await caches.open(CACHE_NAME);
+  const cached = await caches.match(request, { ignoreSearch: true });
+  const refresh = fetch(request)
+    .then(async (response) => {
+      await putIfOk(cache, request, response);
+      return response;
+    })
+    .catch(() => null);
+
+  if (cached) return cached;
+  return (await refresh) || caches.match("./index.html");
+}
 
 self.addEventListener("install", (event) => {
   self.skipWaiting();
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)).catch(() => null));
+  event.waitUntil(
+    caches.open(CACHE_NAME)
+      .then((cache) => cache.addAll(PRECACHE_ASSETS))
+      .catch(() => null),
+  );
 });
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys()
       .then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))))
-      .then(() => self.clients.claim())
+      .then(() => self.clients.claim()),
   );
 });
 
-// Keep both data and shell files network-first, with cached files as fallback.
 self.addEventListener("fetch", (event) => {
+  if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
-  const isData = url.pathname.includes("/data/");
+  if (url.origin !== self.location.origin) return;
 
-  if (isData) {
-    event.respondWith(
-      fetch(event.request)
-        .then((res) => {
-          caches.open(CACHE_NAME).then((c) => c.put(event.request, res.clone()));
-          return res;
-        })
-        .catch(() => caches.match(event.request))
-    );
-  } else {
-    event.respondWith(
-      fetch(event.request)
-        .then((res) => {
-          caches.open(CACHE_NAME).then((c) => c.put(event.request, res.clone()));
-          return res;
-        })
-        .catch(() => caches.match(event.request).then((cached) => cached || caches.match("./index.html")))
-    );
-  }
+  event.respondWith(
+    isDataUrl(url)
+      ? networkFirst(event.request)
+      : staleWhileRevalidate(event.request),
+  );
 });
 
-// Delete cached data when the app requests REFRESH_DATA.
 self.addEventListener("message", (event) => {
   if (event.data === "REFRESH_DATA") {
     const replyPort = event.ports && event.ports[0];
@@ -64,12 +92,12 @@ self.addEventListener("message", (event) => {
         requests
           .filter((req) => {
             try {
-              return new URL(req.url).pathname.includes("/data/");
+              return isDataUrl(new URL(req.url));
             } catch (_) {
               return false;
             }
           })
-          .map((req) => cache.delete(req))
+          .map((req) => cache.delete(req)),
       );
       if (replyPort) replyPort.postMessage({ ok: true });
     }).catch(() => {
