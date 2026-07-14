@@ -44,7 +44,7 @@ const DATA_CACHE_RECORD_KEY = "latest";
 const DATA_CACHE_LOCAL_KEY = "thinkstock-runtime-cache-v1";
 const DATA_CACHE_SCHEMA_VERSION = 1;
 const DATA_CACHE_MAX_AGE_DAYS = 7;
-const APP_VERSION = "0.31";
+const APP_VERSION = "0.32";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -158,6 +158,9 @@ let pricePayload = null;
 let macroRows = [];
 let creditRows = [];   // KOFIA credit balance seed data (credit_data.json)
 let disclosureRows = [];
+let disclosureManifest = null;
+let disclosureSeedLoadPromises = new Map();
+let disclosureSeedLoadedTickers = new Set();
 let dartCorpCodeMap = new Map();
 let dartCorpCodeMapLoaded = false;
 let dartCorpCodeMapPromise = null;
@@ -194,6 +197,8 @@ let pinnedXRange = null;
 let hoverSyncing = false;
 let cursorSyncing = false;
 let cursorMoveBound = false;
+let renderChartRafId = 0;
+let pendingRenderPreserveZoom = true;
 const CURSOR_LINE_CLASS = "synced-cursor-line";
 let apiSettings = { ...API_SETTINGS_DEFAULT };
 let lastTouchTapAt = 0;
@@ -334,7 +339,7 @@ function copyDisplayNames(raw) {
 
 function sanitizePricePayloadForSnapshot(raw) {
   if (!raw || typeof raw !== "object") return null;
-  const records = normalizePayloadRecords(raw.records);
+  const records = Array.isArray(raw.records) ? normalizePayloadRecords(raw.records) : rowsFromColumnarPayload(raw);
   if (!records.length) return null;
   return {
     generated_at: typeof raw.generated_at === "string" ? raw.generated_at : "",
@@ -969,7 +974,7 @@ function setupApiSettingsPanel(msgEl) {
         : refreshDartDisclosuresFromApi(nextDartKey);
       refreshTask
         .then((info) => {
-          renderChart(false);
+          requestChartRender(false);
           saveLastRuntimeSnapshot().catch(() => {});
           const lines = [`DART 공시 ${info.fetched}건 확인, ${info.added}건 반영${info.latestDate ? `(~ ${info.latestDate})` : ""}`];
           lines.push(
@@ -1550,7 +1555,7 @@ function beginLineOffsetDrag(el, target, startClientY) {
       seriesOffsets[target.seriesKey] = startOffset;
     }
     saveState();
-    renderChart();
+    requestChartRender();
   }
 
   addDragListeners(startClientY, onMove, onEnd);
@@ -1780,9 +1785,50 @@ function normalizePayloadRecords(records) {
     .sort((a, b) => a.date.localeCompare(b.date));
 }
 
+function rowsFromColumnarPayload(payload) {
+  if (!payload || typeof payload !== "object") return [];
+  const dates = Array.isArray(payload.dates) ? payload.dates : [];
+  const columns = payload.columns && typeof payload.columns === "object" ? payload.columns : null;
+  if (!dates.length || !columns) return normalizePayloadRecords(payload.records);
+
+  const series = Array.isArray(payload.series) && payload.series.length
+    ? payload.series.map(String).filter(Boolean)
+    : Object.keys(columns);
+  return dates.map((rawDate, index) => {
+    const row = { date: String(rawDate || "").slice(0, 10) };
+    series.forEach((key) => {
+      const values = Array.isArray(columns[key]) ? columns[key] : [];
+      row[key] = toNum(values[index]);
+    });
+    return row;
+  })
+    .filter((row) => row.date)
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function parsePayloadText(text) {
+  if (!text) return null;
+  return JSON.parse(String(text).replace(/\bNaN\b/g, "null"));
+}
+
 function parseMacroPayload(text) {
-  const payload = JSON.parse(text.replace(/\bNaN\b/g, "null"));
-  return normalizePayloadRecords(payload?.records);
+  return rowsFromColumnarPayload(parsePayloadText(text));
+}
+
+function normalizeDisclosureSeedRows(records) {
+  return (Array.isArray(records) ? records : [])
+    .filter((row) => row && typeof row === "object")
+    .map((row) => ({
+      ...row,
+      date: String(row.date || "").slice(0, 10),
+      ticker: String(row.ticker || "").toUpperCase(),
+    }))
+    .filter((row) => row.date && row.ticker)
+    .sort((a, b) => (
+      a.date.localeCompare(b.date)
+      || a.ticker.localeCompare(b.ticker)
+      || String(a.title || "").localeCompare(String(b.title || ""))
+    ));
 }
 
 function getSeriesColumns(rows) {
@@ -1880,7 +1926,7 @@ function bindSeriesToggleBoard() {
       if (hiddenSeries.has(key)) hiddenSeries.delete(key);
       else hiddenSeries.add(key);
       saveState();
-      renderChart();
+      requestChartRender();
     });
   });
 }
@@ -1929,7 +1975,7 @@ function removeCustomStock(ticker) {
   clearTickerSeriesFromPricePayload(ticker);
   renderCustomStockButtons();
   saveState();
-  renderChart(false);
+  requestChartRender(false);
 }
 
 function clearTickerSeriesFromPricePayload(ticker) {
@@ -1939,6 +1985,9 @@ function clearTickerSeriesFromPricePayload(ticker) {
     pricePayload.records.forEach((row) => {
       if (row && typeof row === "object") delete row[ticker];
     });
+  }
+  if (pricePayload.columns && typeof pricePayload.columns === "object") {
+    delete pricePayload.columns[ticker];
   }
 
   if (Array.isArray(pricePayload.series)) {
@@ -2447,7 +2496,7 @@ async function addCustomStock(candidate, msgEl) {
     hiddenSeries.delete(candidate.ticker);
     renderCustomStockButtons();
     saveState();
-    renderChart(false);
+    requestChartRender(false);
     setMessage(msgEl, [`${candidate.name} 종목이 추가되었습니다.`]);
     requestDartDisclosureRefreshForTicker(candidate.ticker, msgEl);
   } catch (err) {
@@ -2956,7 +3005,7 @@ function setupOffsetDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
         else hiddenSeries.add(seriesKey);
       }
       saveState();
-      renderChart();
+      requestChartRender();
     }
 
     addDragListeners(startClientY, onMove, onEnd);
@@ -2987,7 +3036,7 @@ function setupScaleDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
       isHandleDragging = false;
       if (lockedXRange) pinnedXRange = [...lockedXRange];
       saveState();
-      renderChart();
+      requestChartRender();
     }
 
     addDragListeners(startClientY, onMove, onEnd);
@@ -3022,7 +3071,7 @@ function resetHandles() {
   seriesScales = {};
   pinnedXRange = null;
   saveState();
-  renderChart(false);
+  requestChartRender(false);
 }
 
 function findNearestDisclosurePoint(eventDate, ticker, rows, chartYBySeries) {
@@ -3126,14 +3175,16 @@ function showDisclosurePopover(group, sourceEvent) {
   if (!node || !chart || !group?.events?.length) return;
 
   const items = group.events.map((event) => {
-    const url = event.url ? `<a href="${escapeHtml(event.url)}" target="_blank" rel="noopener">원문</a>` : "";
+    const title = escapeHtml(event.title);
+    const titleHtml = event.url
+      ? `<a class="disclosure-title-link" href="${escapeHtml(event.url)}" target="_blank" rel="noopener">${title}</a>`
+      : `<strong>${title}</strong>`;
     const summary = event.summary ? `<p>${escapeHtml(event.summary)}</p>` : "";
     return `
       <li>
         <span class="disclosure-type">${escapeHtml(event.type || "공시")}</span>
-        <strong>${escapeHtml(event.title)}</strong>
+        ${titleHtml}
         ${summary}
-        ${url}
       </li>
     `;
   }).join("");
@@ -3457,6 +3508,53 @@ function mergeDisclosureRows(existingRows, incomingRows) {
   return [...map.values()].sort((a, b) => a.date.localeCompare(b.date) || a.ticker.localeCompare(b.ticker));
 }
 
+function getDisclosureSeedTickers() {
+  const tickers = [
+    ...(Array.isArray(pricePayload?.series) ? pricePayload.series : []),
+    ...customStocks.map((item) => item.ticker),
+    ...currentSelected,
+  ];
+  return [...new Set(tickers.map((ticker) => String(ticker || "").toUpperCase()))]
+    .filter((ticker) => /^[0-9]{6}\.(KS|KQ)$/.test(ticker));
+}
+
+function getDisclosureSeedPath(ticker) {
+  const files = disclosureManifest?.files;
+  if (files && typeof files === "object" && files[ticker]) return files[ticker];
+  return `./data/disclosures/${ticker}.json`;
+}
+
+async function ensureDisclosureSeedForTicker(ticker, forceNetwork = false) {
+  const target = String(ticker || "").trim().toUpperCase();
+  if (!/^[0-9]{6}\.(KS|KQ)$/.test(target)) return { ticker: target, added: 0 };
+  const manifestTickers = Array.isArray(disclosureManifest?.tickers) ? disclosureManifest.tickers : [];
+  if (manifestTickers.length && !manifestTickers.includes(target)) return { ticker: target, added: 0 };
+  if (disclosureSeedLoadedTickers.has(target)) return { ticker: target, added: 0 };
+  if (disclosureSeedLoadPromises.has(target)) return disclosureSeedLoadPromises.get(target);
+
+  const task = (async () => {
+    const beforeCount = disclosureRows.length;
+    const text = await fetchSeedText(getDisclosureSeedPath(target), forceNetwork);
+    if (!text) return { ticker: target, added: 0 };
+    const payload = parsePayloadText(text);
+    const rows = sanitizeDisclosureRows(normalizeDisclosureSeedRows(payload?.records || []));
+    disclosureRows = mergeDisclosureRows(disclosureRows, rows);
+    disclosureSeedLoadedTickers.add(target);
+    return { ticker: target, added: Math.max(0, disclosureRows.length - beforeCount) };
+  })().catch(() => ({ ticker: target, added: 0 })).finally(() => {
+    disclosureSeedLoadPromises.delete(target);
+  });
+
+  disclosureSeedLoadPromises.set(target, task);
+  return task;
+}
+
+async function ensureDisclosureSeedsForTickers(tickers, forceNetwork = false) {
+  const targets = [...new Set((tickers || []).map((ticker) => String(ticker || "").toUpperCase()))];
+  const results = await Promise.all(targets.map((ticker) => ensureDisclosureSeedForTicker(ticker, forceNetwork)));
+  return results.reduce((sum, result) => sum + (result?.added || 0), 0);
+}
+
 async function refreshDartDisclosuresFromApi(apiKey, ticker = "") {
   const liveRows = ticker
     ? await fetchDartDisclosuresForTickerLive(apiKey, ticker)
@@ -3527,15 +3625,29 @@ let dartDisclosureRefreshPromise = null;
 
 function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
   const apiKey = String(apiSettings?.dartApiKey || "").trim();
-  if (!apiKey || dartDisclosureRefreshPromise) return;
+  if (dartDisclosureRefreshPromise) return;
 
   const name = labelName(ticker);
   enableDisclosureMarkers();
   saveState();
   setMessage(msgEl, [`${name} 종목을 추가했습니다. DART 공시를 백그라운드로 확인하는 중입니다...`]);
-  dartDisclosureRefreshPromise = refreshDartDisclosuresFromApi(apiKey, ticker)
+  const seedTask = ensureDisclosureSeedForTicker(ticker).then((seedInfo) => {
+    if (seedInfo?.added > 0) {
+      requestChartRender(false);
+      saveLastRuntimeSnapshot().catch(() => {});
+    }
+  });
+
+  if (!apiKey) {
+    dartDisclosureRefreshPromise = seedTask.finally(() => {
+      dartDisclosureRefreshPromise = null;
+    });
+    return;
+  }
+
+  dartDisclosureRefreshPromise = seedTask.then(() => refreshDartDisclosuresFromApi(apiKey, ticker))
     .then((info) => {
-      renderChart(false);
+      requestChartRender(false);
       saveLastRuntimeSnapshot().catch(() => {});
       if (info.fetched > 0) {
         setMessage(msgEl, [
@@ -3564,6 +3676,17 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
 }
 
 /* Main chart */
+
+function requestChartRender(preserveZoom = true) {
+  pendingRenderPreserveZoom = pendingRenderPreserveZoom && preserveZoom;
+  if (renderChartRafId) return;
+  renderChartRafId = requestAnimationFrame(() => {
+    const nextPreserveZoom = pendingRenderPreserveZoom;
+    renderChartRafId = 0;
+    pendingRenderPreserveZoom = true;
+    renderChart(nextPreserveZoom);
+  });
+}
 
 function renderChart(preserveZoom = true) {
   const el = document.getElementById("chart");
@@ -4586,6 +4709,54 @@ async function refreshAdrFromWeb() {
   };
 }
 
+function parseSeedBundleSync(texts) {
+  const pricePayloadRaw = parsePayloadText(texts.priceText);
+  const priceRows = rowsFromColumnarPayload(pricePayloadRaw);
+  const disclosurePayload = parsePayloadText(texts.disclosureText);
+  return {
+    pricePayload: pricePayloadRaw ? {
+      ...pricePayloadRaw,
+      records: priceRows,
+      series: Array.isArray(pricePayloadRaw.series) ? pricePayloadRaw.series : getSeriesColumns(priceRows),
+      display_names: pricePayloadRaw.display_names && typeof pricePayloadRaw.display_names === "object" ? pricePayloadRaw.display_names : {},
+    } : null,
+    macroRows: parseMacroPayload(texts.macroText),
+    creditRows: parseMacroPayload(texts.creditText),
+    adrRows: parseMacroPayload(texts.adrText),
+    disclosurePayload,
+    disclosureRows: normalizeDisclosureSeedRows(disclosurePayload?.records || []),
+  };
+}
+
+function parseSeedBundleInWorker(texts) {
+  if (typeof Worker === "undefined") return Promise.resolve(parseSeedBundleSync(texts));
+
+  return new Promise((resolve, reject) => {
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const workerUrl = `./modules/data-worker.js?v=${encodeURIComponent(APP_BUILD_VERSION || "dev")}`;
+    const worker = new Worker(workerUrl);
+    const timeoutId = setTimeout(() => {
+      worker.terminate();
+      reject(new Error("seed parse worker timeout"));
+    }, 8000);
+
+    worker.onmessage = (event) => {
+      const message = event.data || {};
+      if (message.id !== id) return;
+      clearTimeout(timeoutId);
+      worker.terminate();
+      if (message.ok) resolve(message.result || {});
+      else reject(new Error(message.error || "seed parse worker failed"));
+    };
+    worker.onerror = (event) => {
+      clearTimeout(timeoutId);
+      worker.terminate();
+      reject(new Error(event?.message || "seed parse worker failed"));
+    };
+    worker.postMessage({ id, type: "parseSeedBundle", texts });
+  }).catch(() => parseSeedBundleSync(texts));
+}
+
 async function loadData(forceNetwork = false, options = {}) {
   const mergeWithExisting = Boolean(options?.mergeWithExisting);
   if (!pricePayload || typeof pricePayload !== "object") {
@@ -4607,76 +4778,44 @@ async function loadData(forceNetwork = false, options = {}) {
     fetchSeedText("./data/disclosures.json", forceNetwork),
   ]);
 
-  try {
-    if (priceText) {
-      const payload = JSON.parse(priceText.replace(/\bNaN\b/g, "null"));
-      if (payload && typeof payload === "object" && Array.isArray(payload.records)) {
-        const priceRows = normalizePayloadRecords(payload.records);
-        const seededPricePayload = {
-          ...payload,
-          records: priceRows,
-          series: Array.isArray(payload.series) ? payload.series : getSeriesColumns(priceRows),
-          display_names: payload.display_names && typeof payload.display_names === "object" ? payload.display_names : {},
-        };
-        pricePayload = mergeWithExisting
-          ? mergePricePayloadPreservingExisting(pricePayload, seededPricePayload)
-          : seededPricePayload;
-        Object.assign(DISPLAY_NAMES, pricePayload.display_names || {});
-      }
-    }
-  } catch (_) {
-    // Price seed load failed; runtime refresh will still try core index APIs.
+  const parsed = await parseSeedBundleInWorker({ priceText, macroText, creditText, adrText, disclosureText });
+  if (parsed.pricePayload?.records?.length) {
+    pricePayload = mergeWithExisting
+      ? mergePricePayloadPreservingExisting(pricePayload, parsed.pricePayload)
+      : parsed.pricePayload;
+    Object.assign(DISPLAY_NAMES, pricePayload.display_names || {});
   }
 
-  try {
-    if (macroText) {
-      const seededMacroRows = parseMacroPayload(macroText);
-      if (seededMacroRows.length) {
-        macroRows = mergeWithExisting
-          ? mergeRowsPreservingExisting(macroRows, seededMacroRows)
-          : seededMacroRows;
-      }
-    }
-  } catch (_) {
-    // Macro seed load failed; runtime refresh will still try live APIs.
+  if (parsed.macroRows?.length) {
+    macroRows = mergeWithExisting
+      ? mergeRowsPreservingExisting(macroRows, parsed.macroRows)
+      : parsed.macroRows;
   }
 
-  try {
-    if (creditText) {
-      const seededCreditRows = parseMacroPayload(creditText);
-      if (seededCreditRows.length) {
-        creditRows = mergeWithExisting
-          ? normalizeCreditRows(mergeRowsPreservingExisting(creditRows, seededCreditRows))
-          : normalizeCreditRows(seededCreditRows);
-      }
-    }
-  } catch (_) {
-    // Credit seed load failed; runtime refresh will still try live APIs.
+  if (parsed.creditRows?.length) {
+    creditRows = mergeWithExisting
+      ? normalizeCreditRows(mergeRowsPreservingExisting(creditRows, parsed.creditRows))
+      : normalizeCreditRows(parsed.creditRows);
   }
 
-  try {
-    if (adrText) {
-      const adrPayload = JSON.parse(adrText);
-      if (Array.isArray(adrPayload?.records)) {
-        adrRows = mergeWithExisting
-          ? mergeRowsPreservingExisting(adrRows, adrPayload.records)
-          : adrPayload.records;
-      }
-    }
-  } catch (_) {
-    // ADR seed load failed; runtime refresh will try web source next.
+  if (parsed.adrRows?.length) {
+    adrRows = mergeWithExisting
+      ? mergeRowsPreservingExisting(adrRows, parsed.adrRows)
+      : parsed.adrRows;
   }
 
-  try {
-    if (disclosureText) {
-      const disclosurePayload = JSON.parse(disclosureText);
-      const seededDisclosureRows = sanitizeDisclosureRows(disclosurePayload?.records || []);
-      disclosureRows = mergeWithExisting
-        ? mergeDisclosureRows(disclosureRows, seededDisclosureRows)
-        : seededDisclosureRows;
+  if (parsed.disclosurePayload?.format === "by-ticker-v1") {
+    disclosureManifest = parsed.disclosurePayload;
+    if (!mergeWithExisting) {
+      disclosureRows = [];
+      disclosureSeedLoadedTickers = new Set();
     }
-  } catch (_) {
-    // Disclosure seed load failed; chart simply renders without event markers.
+    await ensureDisclosureSeedsForTickers(getDisclosureSeedTickers(), forceNetwork);
+  } else if (parsed.disclosurePayload) {
+    const seededDisclosureRows = sanitizeDisclosureRows(parsed.disclosureRows || []);
+    disclosureRows = mergeWithExisting
+      ? mergeDisclosureRows(disclosureRows, seededDisclosureRows)
+      : seededDisclosureRows;
   }
 
 }
@@ -4798,7 +4937,7 @@ async function boot() {
         pinnedXRange = null;
         syncButtons();
         saveState();
-        renderChart(false);
+        requestChartRender(false);
       });
     });
 
@@ -4818,7 +4957,7 @@ async function boot() {
         hoverToggleBtn.classList.toggle("is-active", hoverShowPopup);
         applyHoverState();
         saveState();
-        renderChart();
+        requestChartRender();
       });
     }
 
@@ -4830,7 +4969,7 @@ async function boot() {
         syncDisclosureToggleButton(lastDisclosureTraceStats.markers);
         if (!showDisclosures) hideDisclosurePopover();
         saveState();
-        renderChart();
+        requestChartRender();
       });
     }
 
@@ -4843,7 +4982,7 @@ async function boot() {
         if (Number.isFinite(v)) {
           CREDIT_OFFSET_DAYS = Math.abs(v);
           saveState();
-          renderChart();
+          requestChartRender();
         }
       });
     }

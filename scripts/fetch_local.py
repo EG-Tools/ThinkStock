@@ -380,22 +380,27 @@ def load_macro(price_index: pd.DatetimeIndex) -> pd.DataFrame:
 # ── Payload ────────────────────────────────────────────────────────────────
 
 def build_payload(df: pd.DataFrame, series: list[str]) -> dict:
-    records: list[dict] = []
+    dates: list[str] = []
+    columns: dict[str, list[float | None]] = {key: [] for key in series}
     if not df.empty:
         keep = [column for column in series if column in df.columns]
-        clean = df[keep].reset_index().copy()
+        clean = df[keep].copy()
+        for key in series:
+            if key not in clean.columns:
+                clean[key] = pd.NA
+        clean = clean[series].reset_index().copy()
         clean["date"] = pd.to_datetime(clean["date"]).dt.strftime("%Y-%m-%d")
-        for col in clean.columns:
-            if col == "date":
-                continue
+        dates = clean["date"].tolist()
+        for col in series:
             clean[col] = pd.to_numeric(clean[col], errors="coerce").round(6)
-        clean = clean.astype(object).where(pd.notna(clean), None)
-        records = clean.to_dict(orient="records")
+            columns[col] = clean[col].astype(object).where(pd.notna(clean[col]), None).tolist()
     return {
         "generated_at": pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "format": "columnar-v1",
         "series": series,
         "display_names": {k: v for k, v in DISPLAY_NAMES.items() if k in series},
-        "records": records,
+        "dates": dates,
+        "columns": columns,
     }
 
 
@@ -477,6 +482,15 @@ def save_adr_data(records: list[dict]) -> None:
         "series": ["adr_kospi", "adr_kosdaq"],
         "records": records,
     }
+    frame = pd.DataFrame.from_records(records)
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    frame = frame.dropna(subset=["date"]).set_index("date").sort_index()
+    payload = build_payload(frame, ["adr_kospi", "adr_kosdaq"])
+    payload.update({
+        "description": "ADR (Advance-Decline Ratio) - KOSPI / KOSDAQ",
+        "source": "adrinfo.kr",
+        "note": "Values are percentages. 100=balanced, >120=overbought, <80=oversold",
+    })
     out = DATA_DIR / "adr_data.json"
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
     print(f"  adr_data.json 저장: {len(records)}행  {records[0]['date']} ~ {records[-1]['date']}")
@@ -546,6 +560,26 @@ def normalize_credit_records(records: list[dict]) -> list[dict]:
     return [by_date[key] for key in sorted(by_date)]
 
 
+def records_from_payload(payload: dict) -> list[dict]:
+    records = payload.get("records", []) if isinstance(payload, dict) else []
+    if isinstance(records, list) and records:
+        return records
+    dates = payload.get("dates", []) if isinstance(payload, dict) else []
+    columns = payload.get("columns", {}) if isinstance(payload, dict) else {}
+    if not isinstance(dates, list) or not isinstance(columns, dict):
+        return []
+    raw_series = payload.get("series", [])
+    series = [str(value).strip() for value in raw_series if str(value).strip()] if isinstance(raw_series, list) else list(columns)
+    out: list[dict] = []
+    for idx, raw_date in enumerate(dates):
+        row = {"date": raw_date}
+        for key in series:
+            values = columns.get(key)
+            row[key] = values[idx] if isinstance(values, list) and idx < len(values) else None
+        out.append(row)
+    return out
+
+
 def load_existing_credit_records() -> list[dict]:
     path = DATA_DIR / "credit_data.json"
     if not path.exists():
@@ -554,8 +588,7 @@ def load_existing_credit_records() -> list[dict]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return []
-    rows = payload.get("records", []) if isinstance(payload, dict) else []
-    return rows if isinstance(rows, list) else []
+    return records_from_payload(payload)
 
 
 def save_credit_data(records: list[dict]) -> None:
@@ -571,8 +604,17 @@ def save_credit_data(records: list[dict]) -> None:
         "series": CREDIT_SERIES,
         "records": records,
     }
+    frame = pd.DataFrame.from_records(records)
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    frame = frame.dropna(subset=["date"]).set_index("date").sort_index()
+    payload = build_payload(frame, CREDIT_SERIES)
+    payload.update({
+        "description": "코스피·코스닥 신용융자 잔고",
+        "source": "금융투자협회 종합통계정보 API (data.go.kr)",
+        "unit": "조원 (10^12 KRW)",
+    })
     out = DATA_DIR / "credit_data.json"
-    out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    out.write_text(json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
     print(f"  credit_data.json 저장: {len(records)}행  {records[0]['date']} ~ {records[-1]['date']}")
 
 
@@ -651,8 +693,8 @@ def main():
     out_m.write_text(json.dumps(macro_payload, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
 
     print(f"\n완료!")
-    print(f"  prices.json     {len(price_payload['records'])}행  시리즈: {price_payload['series']}")
-    print(f"  macro_data.json {len(macro_payload['records'])}행  시리즈: {macro_payload['series']}")
+    print(f"  prices.json     {len(price_payload['dates'])}행  시리즈: {price_payload['series']}")
+    print(f"  macro_data.json {len(macro_payload['dates'])}행  시리즈: {macro_payload['series']}")
     print(f"\n다음 단계: git add docs/data/ && git commit -m '데이터 갱신' && git push")
 
 

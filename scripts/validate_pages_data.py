@@ -56,8 +56,30 @@ def load_payload(name: str) -> dict:
     return payload
 
 
-def validate_records(name: str, payload: dict) -> list[dict]:
+def records_from_payload(payload: dict) -> list[dict]:
     rows = payload.get("records")
+    if isinstance(rows, list) and rows:
+        return rows
+
+    dates = payload.get("dates")
+    columns = payload.get("columns")
+    if not isinstance(dates, list) or not isinstance(columns, dict):
+        return []
+
+    raw_series = payload.get("series")
+    series = [str(value).strip() for value in raw_series if str(value).strip()] if isinstance(raw_series, list) else list(columns)
+    out: list[dict] = []
+    for idx, raw_date in enumerate(dates):
+        row = {"date": raw_date}
+        for key in series:
+            values = columns.get(key)
+            row[key] = values[idx] if isinstance(values, list) and idx < len(values) else None
+        out.append(row)
+    return out
+
+
+def validate_records(name: str, payload: dict) -> list[dict]:
+    rows = records_from_payload(payload)
     if not isinstance(rows, list) or not rows:
         fail(f"{name}: records must be a non-empty list")
 
@@ -191,8 +213,31 @@ def validate_macro_columns(payload: dict, rows: list[dict]) -> None:
 
 def validate_disclosures(payload: dict) -> list[dict]:
     rows = payload.get("records")
+    if not isinstance(rows, list) and payload.get("format") == "by-ticker-v1":
+        rows = []
+        files = payload.get("files")
+        if not isinstance(files, dict) or not files:
+            fail("disclosures: by-ticker manifest must include files")
+        for rel_path in files.values():
+            path = ROOT / str(rel_path).lstrip("./").replace("/", os.sep)
+            if not path.exists():
+                fail(f"disclosures: missing ticker file {path}")
+            try:
+                ticker_payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                raise AssertionError(f"disclosures: invalid ticker JSON {path}: {exc}") from exc
+            ticker_rows = ticker_payload.get("records", [])
+            if not isinstance(ticker_rows, list):
+                fail(f"disclosures: ticker file records must be a list {path}")
+            rows.extend(ticker_rows)
+
     if not isinstance(rows, list):
         fail("disclosures: records must be a list")
+    rows = sorted(rows, key=lambda row: (
+        str(row.get("date") or ""),
+        str(row.get("ticker") or ""),
+        str(row.get("title") or ""),
+    ))
 
     prev_key: tuple[str, str, str] | None = None
     for idx, row in enumerate(rows):
@@ -222,7 +267,7 @@ def read_committed_credit_latest() -> date | None:
             encoding="utf-8",
         )
         payload = json.loads(raw)
-        rows = payload.get("records", [])
+        rows = records_from_payload(payload)
         if not rows:
             return None
         return parse_date(rows[-1].get("date"), "committed credit latest")

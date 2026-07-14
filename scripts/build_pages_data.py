@@ -32,6 +32,7 @@ OUTPUT_MACRO_JSON = DATA_DIR / "macro_data.json"
 OUTPUT_CREDIT_JSON = DATA_DIR / "credit_data.json"
 OUTPUT_ADR_JSON = DATA_DIR / "adr_data.json"
 OUTPUT_DISCLOSURES_JSON = DATA_DIR / "disclosures.json"
+DISCLOSURE_DATA_DIR = DATA_DIR / "disclosures"
 OUTPUT_DART_CORP_CODES_JSON = DATA_DIR / "dart_corp_codes.json"
 LOOKBACK_YEARS = 30
 DART_DISCLOSURE_LOOKBACK_YEARS = 3
@@ -593,14 +594,17 @@ def fetch_adr_data() -> list[dict]:
 
 
 def build_adr_payload(records: list[dict]) -> dict:
-    return {
-        "generated_at": pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    frame = pd.DataFrame.from_records(records)
+    if not frame.empty and "date" in frame.columns:
+        frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+        frame = frame.dropna(subset=["date"]).set_index("date").sort_index()
+    payload = build_payload(frame, DISPLAY_NAMES, ["adr_kospi", "adr_kosdaq"])
+    payload.update({
         "description": "ADR (Advance-Decline Ratio) - KOSPI / KOSDAQ",
         "source": "adrinfo.kr",
         "note": "Values are percentages. 100=balanced, >120=overbought, <80=oversold",
-        "series": ["adr_kospi", "adr_kosdaq"],
-        "records": records,
-    }
+    })
+    return payload
 
 
 def disclosure_type_from_title(title: str) -> str | None:
@@ -823,6 +827,54 @@ def build_disclosure_payload(records: list[dict]) -> dict:
     }
 
 
+def disclosure_file_name(ticker: str) -> str:
+    return f"{ticker}.json"
+
+
+def build_disclosure_manifest(records: list[dict]) -> dict:
+    normalized = normalize_disclosure_records(records)
+    tickers = sorted({str(record.get("ticker") or "") for record in normalized if record.get("ticker")})
+    files = {ticker: f"./data/disclosures/{disclosure_file_name(ticker)}" for ticker in tickers}
+    counts = {ticker: 0 for ticker in tickers}
+    latest = {ticker: "" for ticker in tickers}
+    for record in normalized:
+        ticker = record["ticker"]
+        counts[ticker] += 1
+        latest[ticker] = max(latest[ticker], record["date"])
+    return {
+        "generated_at": pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "source": "OpenDART",
+        "format": "by-ticker-v1",
+        "series": ["disclosures"],
+        "tickers": tickers,
+        "files": files,
+        "counts": counts,
+        "latest": latest,
+        "total": len(normalized),
+    }
+
+
+def write_disclosure_payloads(records: list[dict]) -> dict:
+    normalized = normalize_disclosure_records(records)
+    DISCLOSURE_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    by_ticker: dict[str, list[dict]] = {}
+    for record in normalized:
+        by_ticker.setdefault(record["ticker"], []).append(record)
+
+    for stale in DISCLOSURE_DATA_DIR.glob("*.json"):
+        if stale.stem not in by_ticker:
+            stale.unlink()
+
+    for ticker, ticker_records in by_ticker.items():
+        path = DISCLOSURE_DATA_DIR / disclosure_file_name(ticker)
+        path.write_text(
+            json.dumps(build_disclosure_payload(ticker_records), ensure_ascii=False, indent=2, allow_nan=False),
+            encoding="utf-8",
+        )
+
+    return build_disclosure_manifest(normalized)
+
+
 def build_dart_corp_code_payload(corp_map: dict[str, dict[str, str]]) -> dict:
     records = []
     for stock_code, item in sorted(corp_map.items()):
@@ -870,9 +922,46 @@ def load_existing_disclosure_seed() -> list[dict]:
     except Exception:
         return []
     records = payload.get("records", [])
-    if not isinstance(records, list):
+    if isinstance(records, list) and records:
+        return normalize_disclosure_records(records)
+
+    files = payload.get("files", {}) if isinstance(payload, dict) else {}
+    if not isinstance(files, dict):
         return []
-    return normalize_disclosure_records(records)
+    out: list[dict] = []
+    for rel_path in files.values():
+        path = ROOT / str(rel_path).lstrip("./").replace("/", os.sep)
+        if not path.exists():
+            continue
+        try:
+            ticker_payload = json.loads(path.read_text(encoding="utf-8"))
+            ticker_records = ticker_payload.get("records", [])
+        except Exception:
+            continue
+        if isinstance(ticker_records, list):
+            out.extend(ticker_records)
+    return normalize_disclosure_records(out)
+
+
+def records_from_payload(payload: dict) -> list[dict]:
+    records = payload.get("records", []) if isinstance(payload, dict) else []
+    if isinstance(records, list) and records:
+        return records
+
+    dates = payload.get("dates", []) if isinstance(payload, dict) else []
+    columns = payload.get("columns", {}) if isinstance(payload, dict) else {}
+    if not isinstance(dates, list) or not isinstance(columns, dict):
+        return []
+    raw_series = payload.get("series", [])
+    series = [str(value).strip() for value in raw_series if str(value).strip()] if isinstance(raw_series, list) else list(columns)
+    out: list[dict] = []
+    for idx, raw_date in enumerate(dates):
+        row = {"date": raw_date}
+        for key in series:
+            values = columns.get(key)
+            row[key] = values[idx] if isinstance(values, list) and idx < len(values) else None
+        out.append(row)
+    return out
 
 
 def load_existing_credit_seed() -> pd.DataFrame:
@@ -883,7 +972,7 @@ def load_existing_credit_seed() -> pd.DataFrame:
     except Exception:
         return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
 
-    rows = payload.get("records", []) if isinstance(payload, dict) else []
+    rows = records_from_payload(payload)
     if not isinstance(rows, list) or not rows:
         return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
 
@@ -984,21 +1073,26 @@ def densify_macro(macro: pd.DataFrame, price_index: pd.DatetimeIndex) -> pd.Data
 
 
 def build_payload(df: pd.DataFrame, labels: dict[str, str], series_names: list[str]) -> dict:
-    records: list[dict] = []
+    dates: list[str] = []
+    columns: dict[str, list[float | None]] = {series: [] for series in series_names}
     if not df.empty:
-        clean = df.reset_index().copy()
+        clean = df.copy()
+        for series in series_names:
+            if series not in clean.columns:
+                clean[series] = pd.NA
+        clean = clean[series_names].reset_index().copy()
         clean["date"] = pd.to_datetime(clean["date"]).dt.strftime("%Y-%m-%d")
-        for column in clean.columns:
-            if column == "date":
-                continue
+        dates = clean["date"].tolist()
+        for column in series_names:
             clean[column] = pd.to_numeric(clean[column], errors="coerce").round(6)
-        clean = clean.astype(object).where(pd.notna(clean), None)
-        records = clean.to_dict(orient="records")
+            columns[column] = clean[column].astype(object).where(pd.notna(clean[column]), None).tolist()
     return {
         "generated_at": pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "format": "columnar-v1",
         "series": series_names,
-        "display_names": labels,
-        "records": records,
+        "display_names": {key: labels[key] for key in series_names if key in labels},
+        "dates": dates,
+        "columns": columns,
     }
 
 
@@ -1125,8 +1219,9 @@ def main() -> None:
             json.dumps(build_adr_payload(adr_records), ensure_ascii=False, indent=2, allow_nan=False),
             encoding="utf-8",
         )
+    disclosure_manifest = write_disclosure_payloads(disclosure_records)
     OUTPUT_DISCLOSURES_JSON.write_text(
-        json.dumps(build_disclosure_payload(disclosure_records), ensure_ascii=False, indent=2, allow_nan=False),
+        json.dumps(disclosure_manifest, ensure_ascii=False, indent=2, allow_nan=False),
         encoding="utf-8",
     )
     if dart_corp_map:

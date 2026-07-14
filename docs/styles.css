@@ -712,9 +712,15 @@ body {
   font-weight: 700;
 }
 
-.disclosure-popover strong {
+.disclosure-popover strong,
+.disclosure-title-link {
   font-size: 12px;
   font-weight: 700;
+}
+
+.disclosure-title-link {
+  display: inline;
+  line-height: 1.35;
 }
 
 .disclosure-popover p {

@@ -48,6 +48,7 @@ def replace_once(text: str, pattern: str, replacement: str, label: str) -> str:
 def main() -> int:
     version = resolve_build_version()
     chart_loader_src = f"./modules/chart-loader.js?v={version}"
+    data_worker_src = f"./modules/data-worker.js?v={version}"
     app_src = f"./app.js?v={version}"
 
     index = INDEX_HTML.read_text(encoding="utf-8")
@@ -77,6 +78,12 @@ def main() -> int:
         r'"\./modules/chart-loader\.js(?:\?v=[^"]*)?",',
         f'"{chart_loader_src}",',
         "service worker chart-loader.js asset",
+    )
+    sw = replace_once(
+        sw,
+        r'"\./modules/data-worker\.js(?:\?v=[^"]*)?",',
+        f'"{data_worker_src}",',
+        "service worker data-worker.js asset",
     )
     sw = replace_once(
         sw,
