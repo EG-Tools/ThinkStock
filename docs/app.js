@@ -132,16 +132,16 @@ const LINE_DRAG_TOLERANCE_PX = 14;
 const LINE_DRAG_TOUCH_TOLERANCE_PX = 24;
 const LINE_HIGHLIGHT_EXTRA_WIDTH = 2;
 const DISCLOSURE_TRACE_NAME = "공시";
-const DISCLOSURE_MARKER_COLOR = "#fbbf24";
-const DISCLOSURE_MARKER_LINE_COLOR = "rgba(10,10,10,0.92)";
-const DISCLOSURE_MARKER_SIZE = 11;
-const DISCLOSURE_MARKER_LINE_WIDTH = 1.5;
+const DISCLOSURE_MARKER_COLOR = "#fde047";
+const DISCLOSURE_MARKER_LINE_COLOR = "rgba(10,10,10,0.96)";
+const DISCLOSURE_MARKER_SIZE = 15;
+const DISCLOSURE_MARKER_LINE_WIDTH = 2.25;
 const DISCLOSURE_MARKER_HOVER_COLOR = "#111827";
 const DISCLOSURE_MARKER_HOVER_LINE_COLOR = "#fef3c7";
-const DISCLOSURE_MARKER_HOVER_SIZE = 18;
+const DISCLOSURE_MARKER_HOVER_SIZE = 22;
 const DISCLOSURE_MARKER_HOVER_LINE_WIDTH = 3.5;
-const DISCLOSURE_TEXT_SIZE = 13;
-const DISCLOSURE_TEXT_HOVER_SIZE = 18;
+const DISCLOSURE_TEXT_SIZE = 16;
+const DISCLOSURE_TEXT_HOVER_SIZE = 21;
 
 let pricePayload = null;
 let macroRows = [];
@@ -161,6 +161,7 @@ let seriesOffsets = {};
 let seriesScales = {};
 let currentSelected = [];
 let currentDisclosureHighlight = null;
+let lastDisclosureTraceStats = { total: 0, candidates: 0, markers: 0 };
 let baseTraceValues = {};
 let legendHandlerSet = false;
 let adrHandlerSet = false;
@@ -619,6 +620,11 @@ function syncApiOptionsButton() {
   btn.classList.toggle("is-configured", hasAnyApiKey());
 }
 
+function renderAppVersionLabel() {
+  const el = document.getElementById("appVersionText");
+  if (el) el.textContent = APP_BUILD_VERSION;
+}
+
 function setMessage(msgEl, lines, isError = false) {
   if (!msgEl) return;
   const list = (Array.isArray(lines) ? lines : [lines])
@@ -630,6 +636,23 @@ function setMessage(msgEl, lines, isError = false) {
   }
   const body = list.map((line) => escapeHtml(line)).join("<br>");
   msgEl.innerHTML = `<div class="message${isError ? " error" : ""}">${body}</div>`;
+}
+
+function syncDisclosureToggleButton(markerCount = null) {
+  const btn = document.getElementById("disclosureToggle");
+  if (!btn) return;
+  const count = Number(markerCount);
+  const hasCount = showDisclosures && Number.isFinite(count) && count > 0;
+  btn.classList.toggle("is-active", showDisclosures);
+  btn.textContent = showDisclosures ? `공시${hasCount ? ` ${count}` : ""}` : "공시 OFF";
+  btn.title = showDisclosures
+    ? `공시 마커 켜짐${hasCount ? ` - 현재 범위 ${count}개` : ""}`
+    : "공시 마커 꺼짐";
+}
+
+function enableDisclosureMarkers() {
+  showDisclosures = true;
+  syncDisclosureToggleButton(lastDisclosureTraceStats.markers);
 }
 
 function latestDateForRows(rows, keys = []) {
@@ -847,11 +870,15 @@ function setupApiSettingsPanel(msgEl) {
     syncApiOptionsButton();
     close();
     setMessage(msgEl, ["API keys saved for this browser tab."]);
-    if (nextDartKey && (prevDartKey !== nextDartKey || prevDartProxyEnabled !== nextDartProxyEnabled)) {
+    const dartSettingChanged = prevDartKey !== nextDartKey || prevDartProxyEnabled !== nextDartProxyEnabled;
+    const shouldRefreshDart = Boolean(nextDartKey) && (dartSettingChanged || nextDartProxyEnabled);
+    if (shouldRefreshDart) {
       const refreshCurrentTickers = nextDartProxyEnabled;
+      enableDisclosureMarkers();
+      saveState();
       setMessage(msgEl, [
         refreshCurrentTickers
-          ? "DART 공개 프록시 설정이 저장됐습니다. 현재 차트 종목의 3년 공시를 갱신하는 중입니다..."
+          ? "DART 공개 프록시 설정이 저장됐습니다. 현재 차트 종목의 3년 공시를 다시 갱신하는 중입니다..."
           : "DART API 저장됨. 최근 공시를 불러오는 중입니다...",
       ]);
       const refreshTask = refreshCurrentTickers
@@ -859,9 +886,14 @@ function setupApiSettingsPanel(msgEl) {
         : refreshDartDisclosuresFromApi(nextDartKey);
       refreshTask
         .then((info) => {
-          renderChart();
+          renderChart(false);
           saveLastRuntimeSnapshot().catch(() => {});
           const lines = [`DART 공시 ${info.fetched}건 확인, ${info.added}건 반영${info.latestDate ? `(~ ${info.latestDate})` : ""}`];
+          lines.push(
+            lastDisclosureTraceStats.markers > 0
+              ? `현재 차트에 공시 마커 ${lastDisclosureTraceStats.markers}개 표시됨`
+              : "공시 데이터는 확인했지만 현재 차트 범위/종목에는 표시할 마커가 없습니다. 기간을 넓히거나 종목선이 켜져 있는지 확인해 주세요.",
+          );
           if (Array.isArray(info.failed) && info.failed.length) {
             lines.push(`일부 종목 실패: ${info.failed.slice(0, 2).join(" / ")}`);
           }
@@ -2873,6 +2905,7 @@ function findNearestDisclosurePoint(eventDate, ticker, rows, chartYBySeries) {
 }
 
 function buildDisclosureTrace(rows, selected, chartYBySeries, start, end) {
+  lastDisclosureTraceStats = { total: disclosureRows.length, candidates: 0, markers: 0 };
   if (!disclosureRows.length || !rows.length) return null;
   const selectedSet = new Set(selected);
   const grouped = new Map();
@@ -2880,6 +2913,7 @@ function buildDisclosureTrace(rows, selected, chartYBySeries, start, end) {
   disclosureRows.forEach((event) => {
     if (!selectedSet.has(event.ticker) || hiddenSeries.has(event.ticker)) return;
     if (event.date < start || event.date > end) return;
+    lastDisclosureTraceStats.candidates += 1;
     const point = findNearestDisclosurePoint(event.date, event.ticker, rows, chartYBySeries);
     if (!point) return;
     const key = `${event.ticker}|${point.date}`;
@@ -2895,6 +2929,7 @@ function buildDisclosureTrace(rows, selected, chartYBySeries, start, end) {
   });
 
   const groups = [...grouped.values()].sort((a, b) => a.plotDate.localeCompare(b.plotDate));
+  lastDisclosureTraceStats.markers = groups.length;
   if (!groups.length) return null;
 
   return {
@@ -3310,6 +3345,8 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
   if (!apiKey || dartDisclosureRefreshPromise) return;
 
   const name = labelName(ticker);
+  enableDisclosureMarkers();
+  saveState();
   setMessage(msgEl, [`${name} 종목을 추가했습니다. DART 공시를 백그라운드로 확인하는 중입니다...`]);
   dartDisclosureRefreshPromise = refreshDartDisclosuresFromApi(apiKey, ticker)
     .then((info) => {
@@ -3319,6 +3356,9 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
         setMessage(msgEl, [
           `${name} 종목을 추가했습니다.`,
           `DART 공시 ${info.fetched}건 확인, ${info.added}건 반영${info.latestDate ? `(~ ${info.latestDate})` : ""}`,
+          lastDisclosureTraceStats.markers > 0
+            ? `현재 차트에 공시 마커 ${lastDisclosureTraceStats.markers}개 표시됨`
+            : "공시 데이터는 확인했지만 현재 차트 범위에는 표시할 마커가 없습니다.",
         ]);
       } else {
         setMessage(msgEl, [
@@ -3473,10 +3513,14 @@ function renderChart(preserveZoom = true) {
     };
   });
 
+  if (!showDisclosures) {
+    lastDisclosureTraceStats = { total: disclosureRows.length, candidates: 0, markers: 0 };
+  }
   const disclosureTrace = showDisclosures
     ? buildDisclosureTrace(rows, selected, chartYBySeries, start, end)
     : null;
   if (disclosureTrace) traces.push(disclosureTrace);
+  syncDisclosureToggleButton(lastDisclosureTraceStats.markers);
 
   // Preserve zoom while reapplying handle transforms and updated traces.
 
@@ -4478,6 +4522,7 @@ async function loadData(forceNetwork = false, options = {}) {
 async function refreshRuntimeData(msgEl) {
   const infoLines = [];
   const warnLines = [];
+  let refreshedDart = false;
 
   const coreIndexResult = await refreshCoreIndexSeries();
   infoLines.push(...coreIndexResult.applied);
@@ -4499,9 +4544,20 @@ async function refreshRuntimeData(msgEl) {
 
   if (apiSettings.dartApiKey) {
     try {
-      const info = await refreshDartDisclosuresFromApi(apiSettings.dartApiKey);
+      const refreshCurrentTickers = Boolean(apiSettings.dartProxyEnabled);
+      if (refreshCurrentTickers) {
+        enableDisclosureMarkers();
+        saveState();
+      }
+      const info = refreshCurrentTickers
+        ? await refreshDartDisclosuresForVisibleTickersFromApi(apiSettings.dartApiKey)
+        : await refreshDartDisclosuresFromApi(apiSettings.dartApiKey);
+      refreshedDart = true;
       if (info.fetched > 0) {
         infoLines.push(`DART 공시 ${info.fetched}건 확인, ${info.added}건 반영${info.latestDate ? `(~ ${info.latestDate})` : ""}`);
+        if (Array.isArray(info.failed) && info.failed.length) {
+          warnLines.push(`일부 DART 종목 실패: ${info.failed.slice(0, 2).join(" / ")}`);
+        }
       } else {
         warnLines.push("DART 최근 공시에서 현재 차트 종목의 주요 이벤트를 찾지 못했습니다.");
       }
@@ -4515,6 +4571,13 @@ async function refreshRuntimeData(msgEl) {
   warnLines.push(...liveResult.warnings);
 
   renderChart(false);
+  if (refreshedDart) {
+    if (lastDisclosureTraceStats.markers > 0) {
+      infoLines.push(`현재 차트에 공시 마커 ${lastDisclosureTraceStats.markers}개 표시됨`);
+    } else if (showDisclosures && disclosureRows.length) {
+      warnLines.push("공시 데이터는 있지만 현재 차트 범위/켜진 종목에는 표시할 마커가 없습니다.");
+    }
+  }
   try {
     await saveLastRuntimeSnapshot();
   } catch (cacheErr) {
@@ -4551,6 +4614,7 @@ async function boot() {
   syncButtons();
   setupApiSettingsPanel(msgEl);
   syncApiOptionsButton();
+  renderAppVersionLabel();
   bindRuntimeSnapshotExitSave();
   setStartupLoaderProgress(10, "Preparing");
   try {
@@ -4596,10 +4660,10 @@ async function boot() {
 
     const disclosureToggleBtn = document.getElementById("disclosureToggle");
     if (disclosureToggleBtn) {
-      disclosureToggleBtn.classList.toggle("is-active", showDisclosures);
+      syncDisclosureToggleButton(lastDisclosureTraceStats.markers);
       disclosureToggleBtn.addEventListener("click", () => {
         showDisclosures = !showDisclosures;
-        disclosureToggleBtn.classList.toggle("is-active", showDisclosures);
+        syncDisclosureToggleButton(lastDisclosureTraceStats.markers);
         if (!showDisclosures) hideDisclosurePopover();
         saveState();
         renderChart();
