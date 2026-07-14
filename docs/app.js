@@ -53,7 +53,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.46";
+const APP_VERSION = "0.47";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -156,6 +156,16 @@ function plotlyHoverLabel(fontSize) {
     };
 }
 
+function hasWebGlSupport() {
+  try {
+    if (typeof window === "undefined" || !window.WebGLRenderingContext || typeof document === "undefined") return false;
+    const canvas = document.createElement("canvas");
+    return Boolean(canvas.getContext("webgl") || canvas.getContext("experimental-webgl"));
+  } catch (_) {
+    return false;
+  }
+}
+
 async function ensurePlotlyReady() {
   if (window.Plotly) return window.Plotly;
   const loader = window.ThinkStockChartLoader;
@@ -170,6 +180,9 @@ const LINE_HIGHLIGHT_EXTRA_WIDTH = 2;
 const LINE_HIT_TEST_INTERVAL_MS = 45;
 const VIEWPORT_SYNC_DEBOUNCE_MS = 70;
 const HANDLE_UPDATE_DEBOUNCE_MS = 120;
+const DISCLOSURE_HOVER_DELAY_MS = 90;
+const SNAPSHOT_SAVE_IDLE_TIMEOUT_MS = 3500;
+const MAIN_LINE_TRACE_TYPE = hasWebGlSupport() ? "scattergl" : "scatter";
 const DISCLOSURE_TRACE_NAME = "공시";
 const DISCLOSURE_MARKER_COLOR = "#fde047";
 const DISCLOSURE_MARKER_LINE_COLOR = "rgba(10,10,10,0.96)";
@@ -231,6 +244,8 @@ let pendingRenderPreserveZoom = true;
 let handleUpdateTimer = 0;
 let viewportSyncTimer = 0;
 let pendingViewportSync = null;
+let disclosureHoverTimer = 0;
+let pendingDisclosureHoverData = null;
 const CURSOR_LINE_CLASS = "synced-cursor-line";
 let apiSettings = { ...API_SETTINGS_DEFAULT };
 let lastTouchTapAt = 0;
@@ -245,6 +260,7 @@ let activeLineTraceIndex = null;
 let appliedLineHighlightTraceIndex = null;
 let isViewportDragging = false;
 let lastLineHitTestAt = 0;
+let runtimeSnapshotIdleTimer = 0;
 let startupLoaderHideTimer = null;
 let startupLoaderRafId = 0;
 let startupLoaderDisplayProgress = 100;
@@ -804,11 +820,42 @@ async function saveLastRuntimeSnapshot() {
 }
 
 let runtimeSnapshotSaveTimer = 0;
-function scheduleLastRuntimeSnapshotSave(delayMs = 500) {
+function isChartInteractionBusy() {
+  return Boolean(isViewportDragging || isHandleDragging || dragRafId || cursorRafId || viewportSyncTimer);
+}
+
+function cancelRuntimeSnapshotIdleSave() {
+  if (!runtimeSnapshotIdleTimer) return;
+  if (typeof cancelIdleCallback === "function") {
+    try { cancelIdleCallback(runtimeSnapshotIdleTimer); } catch (_) {}
+  } else {
+    clearTimeout(runtimeSnapshotIdleTimer);
+  }
+  runtimeSnapshotIdleTimer = 0;
+}
+
+function queueRuntimeSnapshotIdleSave() {
+  cancelRuntimeSnapshotIdleSave();
+  const run = () => {
+    runtimeSnapshotIdleTimer = 0;
+    if (isChartInteractionBusy()) {
+      scheduleLastRuntimeSnapshotSave(1200);
+      return;
+    }
+    saveLastRuntimeSnapshot().catch(() => {});
+  };
+  if (typeof requestIdleCallback === "function") {
+    runtimeSnapshotIdleTimer = requestIdleCallback(run, { timeout: SNAPSHOT_SAVE_IDLE_TIMEOUT_MS });
+  } else {
+    runtimeSnapshotIdleTimer = setTimeout(run, 250);
+  }
+}
+
+function scheduleLastRuntimeSnapshotSave(delayMs = 1500) {
   if (runtimeSnapshotSaveTimer) clearTimeout(runtimeSnapshotSaveTimer);
   runtimeSnapshotSaveTimer = setTimeout(() => {
     runtimeSnapshotSaveTimer = 0;
-    saveLastRuntimeSnapshot().catch(() => {});
+    queueRuntimeSnapshotIdleSave();
   }, delayMs);
 }
 
@@ -828,6 +875,7 @@ function bindRuntimeSnapshotExitSave() {
       clearTimeout(runtimeSnapshotSaveTimer);
       runtimeSnapshotSaveTimer = 0;
     }
+    cancelRuntimeSnapshotIdleSave();
     saveLastRuntimeSnapshot().catch(() => {});
   };
   window.addEventListener("pagehide", save);
@@ -3658,7 +3706,14 @@ function findDisclosureEventPoint(evtData) {
   return evtData?.points?.find((p) => p?.data?.meta?.isDisclosureTrace) || null;
 }
 
+function clearDisclosureHoverTimer() {
+  if (disclosureHoverTimer) clearTimeout(disclosureHoverTimer);
+  disclosureHoverTimer = 0;
+  pendingDisclosureHoverData = null;
+}
+
 function resetDisclosureHoverHighlight(chartEl = document.getElementById("chart")) {
+  clearDisclosureHoverTimer();
   if (!chartEl || !currentDisclosureHighlight) return;
   const traceIndex = currentDisclosureHighlight.traceIndex;
   currentDisclosureHighlight = null;
@@ -3670,6 +3725,36 @@ function resetDisclosureHoverHighlight(chartEl = document.getElementById("chart"
     "textfont.size": [DISCLOSURE_TEXT_SIZE],
     "textfont.color": [DISCLOSURE_MARKER_COLOR],
   }, [traceIndex]).catch(() => {});
+}
+
+function scheduleDisclosureHoverHighlight(evtData) {
+  if (isViewportDragging || isHandleDragging) return;
+  const chartEl = document.getElementById("chart");
+  const point = findDisclosureEventPoint(evtData);
+  if (!chartEl || !point) {
+    resetDisclosureHoverHighlight(chartEl);
+    return;
+  }
+
+  const traceIndex = point.curveNumber;
+  const pointIndex = point.pointIndex ?? point.pointNumber;
+  if (
+    currentDisclosureHighlight
+    && currentDisclosureHighlight.traceIndex === traceIndex
+    && currentDisclosureHighlight.pointIndex === pointIndex
+  ) {
+    return;
+  }
+
+  pendingDisclosureHoverData = evtData;
+  if (disclosureHoverTimer) clearTimeout(disclosureHoverTimer);
+  disclosureHoverTimer = setTimeout(() => {
+    const pending = pendingDisclosureHoverData;
+    disclosureHoverTimer = 0;
+    pendingDisclosureHoverData = null;
+    if (isViewportDragging || isHandleDragging || !pending) return;
+    highlightDisclosureHoverPoint(pending);
+  }, DISCLOSURE_HOVER_DELAY_MS);
 }
 
 function highlightDisclosureHoverPoint(evtData) {
@@ -4468,7 +4553,7 @@ function renderChart(preserveZoom = true) {
       x: xValues,
       y: values,
       text: rawTexts,
-      type: "scatter",
+      type: MAIN_LINE_TRACE_TYPE,
       mode: "lines",
       name: labelName(series),
       visible: hiddenSeries.has(series) ? "legendonly" : true,
@@ -4565,7 +4650,7 @@ function renderChart(preserveZoom = true) {
       }
     });
     el.on("plotly_hover", (eventData) => {
-      highlightDisclosureHoverPoint(eventData);
+      scheduleDisclosureHoverHighlight(eventData);
       if (!hoverShowPopup || hoverSyncing) return;
       const xValue = eventData?.points?.[0]?.x;
       if (!xValue) return;
@@ -5535,11 +5620,7 @@ async function refreshRuntimeData(msgEl) {
       warnLines.push("공시 데이터는 있지만 현재 차트 범위/켜진 종목에는 표시할 마커가 없습니다.");
     }
   }
-  try {
-    await saveLastRuntimeSnapshot();
-  } catch (cacheErr) {
-    warnLines.push(`마지막 화면 저장 오류: ${cacheErr.message}`);
-  }
+  scheduleLastRuntimeSnapshotSave(1800);
 
   if (infoLines.length || warnLines.length) {
     setMessage(msgEl, [...infoLines, ...warnLines], infoLines.length === 0);
