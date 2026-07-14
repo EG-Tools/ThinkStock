@@ -227,7 +227,7 @@ def align_historical_credit_seed(historical: pd.DataFrame, reference: pd.DataFra
         return aligned
 
     for column in CREDIT_SERIES:
-        factor = median_scale_factor(historical[column], reference[column])
+        factor = median_scale_factor(reference[column], historical[column])
         if factor > 1.15 or factor < 0.85:
             aligned.loc[before_reference, column] = aligned.loc[before_reference, column] * factor
 
@@ -1076,10 +1076,24 @@ def merge_credit_seed_with_freesis(seed: pd.DataFrame, live: pd.DataFrame) -> tu
     if new_tail.empty:
         return seed, 0
 
-    merged = pd.concat([seed, new_tail], axis=0)
+    keep: list[pd.Timestamp] = []
+    prev_date = latest_seed
+    prev_row = seed.loc[latest_seed]
+    for row_date, row in new_tail.sort_index().iterrows():
+        if not is_plausible_credit_transition(prev_date, prev_row, row_date, row):
+            print(f"Dropped Freesis credit tail from {row_date.strftime('%Y-%m-%d')} due to discontinuity.")
+            break
+        keep.append(row_date)
+        prev_date = row_date
+        prev_row = row
+
+    if not keep:
+        return seed, 0
+
+    merged = pd.concat([seed, new_tail.loc[keep]], axis=0)
     merged = merged[~merged.index.duplicated(keep="last")].sort_index()
     merged.index.name = "date"
-    return merged, len(new_tail)
+    return merged, len(keep)
 
 
 def merge_credit_seed_with_kofia(seed: pd.DataFrame, live: pd.DataFrame) -> tuple[pd.DataFrame, int]:
@@ -1088,9 +1102,12 @@ def merge_credit_seed_with_kofia(seed: pd.DataFrame, live: pd.DataFrame) -> tupl
     if seed.empty:
         return live.sort_index(), len(live)
 
+    live = live.sort_index()
+    first_live_date = live.index.min()
     merged = align_historical_credit_seed(seed, live).copy()
+    merged = merged[merged.index < first_live_date]
     applied = 0
-    for idx, row in live.sort_index().iterrows():
+    for idx, row in live.iterrows():
         prev = merged.loc[idx] if idx in merged.index else pd.Series(dtype="float64")
         next_kospi = row["kospi_credit"] if pd.notna(row["kospi_credit"]) else prev.get("kospi_credit", pd.NA)
         next_kosdaq = row["kosdaq_credit"] if pd.notna(row["kosdaq_credit"]) else prev.get("kosdaq_credit", pd.NA)
@@ -1202,7 +1219,6 @@ def main() -> None:
     macro = densify_macro(public_macro_source, prices.index if not prices.empty else pd.DatetimeIndex([]))
 
     existing_credit_seed = load_existing_credit_seed()
-    historical_credit_seed = align_historical_credit_seed(historical_credit_seed, existing_credit_seed)
     credit_seed = merge_credit_seed_with_existing_tail(historical_credit_seed, existing_credit_seed)
     credit_merged = credit_seed
     kofia_key = resolve_kofia_api_key()
