@@ -24,6 +24,9 @@ CREDIT_LIMITS = {
 }
 CREDIT_MAX_DAILY_PCT_CHANGE = 0.12
 CREDIT_MAX_FRESH_DAYS = 14
+PRICE_MAX_FRESH_DAYS = 10
+ADR_MAX_FRESH_DAYS = 10
+LEADING_MAX_FRESH_DAYS = 90
 
 
 def fail(message: str) -> None:
@@ -80,6 +83,53 @@ def validate_records(name: str, payload: dict) -> list[dict]:
             fail(f"{name}: row {row_date.isoformat()} has no numeric values")
 
     return rows
+
+
+def numeric_columns_from_payload(payload: dict, rows: list[dict]) -> tuple[str, ...]:
+    raw_series = payload.get("series")
+    if isinstance(raw_series, list):
+        columns = tuple(str(value).strip() for value in raw_series if str(value).strip())
+        if columns:
+            return columns
+
+    seen: set[str] = set()
+    columns: list[str] = []
+    for row in rows:
+        for key, value in row.items():
+            if key == "date" or key in seen:
+                continue
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)):
+                seen.add(key)
+                columns.append(key)
+    return tuple(columns)
+
+
+def latest_numeric_date(name: str, rows: list[dict], columns: tuple[str, ...]) -> date:
+    if not columns:
+        fail(f"{name}: no numeric columns available for freshness validation")
+
+    latest: date | None = None
+    for row in rows:
+        row_date = parse_date(row.get("date"), name)
+        for key in columns:
+            value = row.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)):
+                if latest is None or row_date > latest:
+                    latest = row_date
+                break
+
+    if latest is None:
+        fail(f"{name}: no numeric values available for freshness validation")
+    return latest
+
+
+def validate_freshness(name: str, rows: list[dict], columns: tuple[str, ...], max_days: int) -> None:
+    latest = latest_numeric_date(name, rows, columns)
+    age_days = (date.today() - latest).days
+    if age_days < -1:
+        fail(f"{name}: latest date {latest.isoformat()} is in the future")
+    if age_days > max_days:
+        fail(f"{name}: latest date {latest.isoformat()} is stale ({age_days} days old)")
 
 
 def validate_credit(rows: list[dict]) -> None:
@@ -150,6 +200,12 @@ def main() -> int:
         payload = load_payload(name)
         rows = validate_records(name, payload)
         summaries.append(f"{name}: {len(rows)} rows, latest {rows[-1]['date']}")
+        if name == "prices":
+            validate_freshness(name, rows, numeric_columns_from_payload(payload, rows), PRICE_MAX_FRESH_DAYS)
+        elif name == "macro":
+            validate_freshness(name, rows, ("leading_cycle",), LEADING_MAX_FRESH_DAYS)
+        elif name == "adr":
+            validate_freshness(name, rows, ("adr_kospi", "adr_kosdaq"), ADR_MAX_FRESH_DAYS)
         if name == "credit":
             validate_credit(rows)
 

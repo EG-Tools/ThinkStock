@@ -10,8 +10,8 @@
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" href="./icon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./styles.css">
-    <script defer src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+    <script defer src="./vendor/plotly-2.35.2.min.js"></script>
+    <script defer src="./vendor/papaparse-5.4.1.min.js"></script>
     <script defer src="./app.js?v=dev"></script>
   </head>
   <body>
@@ -75,7 +75,7 @@
           <h2 id="apiSettingsTitle">API 설정</h2>
           <button id="apiSettingsCloseBtn" class="api-close-btn" type="button" aria-label="닫기">×</button>
         </header>
-        <p class="api-settings-help">입력한 키는 이 기기 브라우저(LocalStorage)에만 저장됩니다.</p>
+        <p class="api-settings-help">입력한 키는 현재 브라우저 탭 세션에만 저장됩니다. 마지막 차트 화면은 이 기기에 임시 저장됩니다.</p>
         <label class="api-field">
           <span>ECOS (한국은행)</span>
           <input id="ecosApiInput" type="password" autocomplete="off" spellcheck="false" placeholder="선행지수 순환변동치">
@@ -96,6 +96,7 @@
         <div class="api-settings-actions">
           <button id="apiSettingsSaveBtn" class="api-action-btn primary" type="button">저장</button>
           <button id="apiSettingsClearBtn" class="api-action-btn" type="button">전체 삭제</button>
+          <button id="dataCacheClearBtn" class="api-action-btn" type="button">마지막 화면 초기화</button>
         </div>
         <p class="api-settings-meta">
           Version : 0.2<br>

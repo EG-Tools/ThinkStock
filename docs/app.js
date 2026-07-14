@@ -37,11 +37,24 @@ const KRX_INDEX_ENDPOINTS = {
 
 const STATE_KEY = "thinkstock-v5";
 const API_SETTINGS_KEY = "thinkstock-api-v1";
+const API_SETTINGS_SESSION_KEY = "thinkstock-api-session-v1";
 const DATA_CACHE_DB_NAME = "thinkstock-runtime-cache-v1";
 const DATA_CACHE_STORE_NAME = "snapshots";
 const DATA_CACHE_RECORD_KEY = "latest";
 const DATA_CACHE_LOCAL_KEY = "thinkstock-runtime-cache-v1";
 const DATA_CACHE_SCHEMA_VERSION = 1;
+const DATA_CACHE_MAX_AGE_DAYS = 7;
+function getAppBuildVersion() {
+  try {
+    const script = document.currentScript
+      || [...document.scripts].find((node) => String(node?.src || "").includes("/app.js"));
+    const src = String(script?.src || "");
+    return src ? (new URL(src, window.location.href).searchParams.get("v") || "dev") : "dev";
+  } catch (_) {
+    return "dev";
+  }
+}
+const APP_BUILD_VERSION = getAppBuildVersion();
 const API_SETTINGS_DEFAULT = Object.freeze({
   ecosApiKey: "",
   kofiaApiKey: "",
@@ -225,15 +238,39 @@ function sanitizeApiSettings(raw) {
 
 function saveApiSettings() {
   try {
-    localStorage.setItem(API_SETTINGS_KEY, JSON.stringify(sanitizeApiSettings(apiSettings)));
+    sessionStorage.setItem(API_SETTINGS_SESSION_KEY, JSON.stringify(sanitizeApiSettings(apiSettings)));
   } catch (_) {}
+  try { localStorage.removeItem(API_SETTINGS_KEY); } catch (_) {}
+}
+
+function clearApiSettingsStorage() {
+  try { sessionStorage.removeItem(API_SETTINGS_SESSION_KEY); } catch (_) {}
+  try { localStorage.removeItem(API_SETTINGS_KEY); } catch (_) {}
 }
 
 function loadApiSettings() {
   try {
-    const raw = localStorage.getItem(API_SETTINGS_KEY);
-    if (!raw) return;
-    apiSettings = sanitizeApiSettings(JSON.parse(raw));
+    const raw = sessionStorage.getItem(API_SETTINGS_SESSION_KEY);
+    if (raw) {
+      apiSettings = sanitizeApiSettings(JSON.parse(raw));
+      try { localStorage.removeItem(API_SETTINGS_KEY); } catch (_) {}
+      return;
+    }
+  } catch (_) {
+    apiSettings = { ...API_SETTINGS_DEFAULT };
+  }
+
+  try {
+    const legacyRaw = localStorage.getItem(API_SETTINGS_KEY);
+    if (!legacyRaw) {
+      apiSettings = { ...API_SETTINGS_DEFAULT };
+      return;
+    }
+    apiSettings = sanitizeApiSettings(JSON.parse(legacyRaw));
+    try {
+      sessionStorage.setItem(API_SETTINGS_SESSION_KEY, JSON.stringify(apiSettings));
+    } catch (_) {}
+    localStorage.removeItem(API_SETTINGS_KEY);
   } catch (_) {
     apiSettings = { ...API_SETTINGS_DEFAULT };
   }
@@ -270,6 +307,7 @@ function buildRuntimeDataSnapshot() {
 
   return {
     version: DATA_CACHE_SCHEMA_VERSION,
+    app_version: APP_BUILD_VERSION,
     saved_at: new Date().toISOString(),
     pricePayload: safePricePayload,
     macroRows: safeMacroRows,
@@ -278,9 +316,19 @@ function buildRuntimeDataSnapshot() {
   };
 }
 
-function applyRuntimeDataSnapshot(snapshot) {
+function isRuntimeSnapshotUsable(snapshot) {
   if (!snapshot || typeof snapshot !== "object") return false;
   if (snapshot.version !== DATA_CACHE_SCHEMA_VERSION) return false;
+  const savedAtMs = Date.parse(String(snapshot.saved_at || ""));
+  if (!Number.isFinite(savedAtMs)) return false;
+  const now = Date.now();
+  if (savedAtMs > now + DAY_MS) return false;
+  if (now - savedAtMs > DATA_CACHE_MAX_AGE_DAYS * DAY_MS) return false;
+  return true;
+}
+
+function applyRuntimeDataSnapshot(snapshot) {
+  if (!isRuntimeSnapshotUsable(snapshot)) return false;
 
   const safePricePayload = sanitizePricePayloadForSnapshot(snapshot.pricePayload);
   const safeMacroRows = normalizePayloadRecords(snapshot.macroRows);
@@ -360,6 +408,22 @@ async function writeRuntimeSnapshotToIndexedDb(snapshot) {
   }
 }
 
+async function deleteRuntimeSnapshotFromIndexedDb() {
+  let db = null;
+  try {
+    db = await openRuntimeCacheDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(DATA_CACHE_STORE_NAME, "readwrite");
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error("IndexedDB delete failed"));
+      tx.onabort = () => reject(tx.error || new Error("IndexedDB delete aborted"));
+      tx.objectStore(DATA_CACHE_STORE_NAME).delete(DATA_CACHE_RECORD_KEY);
+    });
+  } finally {
+    try { db?.close(); } catch (_) {}
+  }
+}
+
 function readRuntimeSnapshotFromLocalStorage() {
   try {
     const raw = localStorage.getItem(DATA_CACHE_LOCAL_KEY);
@@ -373,6 +437,10 @@ function writeRuntimeSnapshotToLocalStorage(snapshot) {
   localStorage.setItem(DATA_CACHE_LOCAL_KEY, JSON.stringify(snapshot));
 }
 
+function deleteRuntimeSnapshotFromLocalStorage() {
+  localStorage.removeItem(DATA_CACHE_LOCAL_KEY);
+}
+
 async function readLastRuntimeSnapshot() {
   try {
     const snapshot = await readRuntimeSnapshotFromIndexedDb();
@@ -381,6 +449,11 @@ async function readLastRuntimeSnapshot() {
     // Fall back to localStorage for browsers or modes that block IndexedDB.
   }
   return readRuntimeSnapshotFromLocalStorage();
+}
+
+async function clearLastRuntimeSnapshot() {
+  try { await deleteRuntimeSnapshotFromIndexedDb(); } catch (_) {}
+  try { deleteRuntimeSnapshotFromLocalStorage(); } catch (_) {}
 }
 
 async function saveLastRuntimeSnapshot() {
@@ -403,7 +476,9 @@ async function saveLastRuntimeSnapshot() {
 
 async function loadLastRuntimeSnapshot() {
   const snapshot = await readLastRuntimeSnapshot();
-  return applyRuntimeDataSnapshot(snapshot);
+  const applied = applyRuntimeDataSnapshot(snapshot);
+  if (!applied && snapshot) clearLastRuntimeSnapshot().catch(() => {});
+  return applied;
 }
 
 let runtimeSnapshotExitSaveBound = false;
@@ -590,6 +665,7 @@ function setupApiSettingsPanel(msgEl) {
   const closeBtn = document.getElementById("apiSettingsCloseBtn");
   const saveBtn = document.getElementById("apiSettingsSaveBtn");
   const clearBtn = document.getElementById("apiSettingsClearBtn");
+  const dataCacheClearBtn = document.getElementById("dataCacheClearBtn");
   const inputs = {
     ecosApiKey: document.getElementById("ecosApiInput"),
     kofiaApiKey: document.getElementById("kofiaApiInput"),
@@ -642,13 +718,13 @@ function setupApiSettingsPanel(msgEl) {
     }
     syncApiOptionsButton();
     close();
-    setMessage(msgEl, ["API keys saved on this device."]);
+    setMessage(msgEl, ["API keys saved for this browser tab."]);
   });
 
   clearBtn?.addEventListener("click", () => {
     const hadKrxKey = String(apiSettings?.krxApiKey || "").trim().length > 0;
     apiSettings = { ...API_SETTINGS_DEFAULT };
-    saveApiSettings();
+    clearApiSettingsStorage();
     if (hadKrxKey) {
       resetKrxUniverseCache();
       hideStockSuggestList();
@@ -656,6 +732,16 @@ function setupApiSettingsPanel(msgEl) {
     fillInputs();
     syncApiOptionsButton();
     setMessage(msgEl, ["Saved API keys were cleared."]);
+  });
+
+  dataCacheClearBtn?.addEventListener("click", async () => {
+    try {
+      await clearLastRuntimeSnapshot();
+      close();
+      setMessage(msgEl, ["Last chart screen cache was cleared."]);
+    } catch (err) {
+      setMessage(msgEl, `Last chart screen cache could not be cleared: ${err.message}`, true);
+    }
   });
 
   syncApiOptionsButton();
@@ -1594,7 +1680,7 @@ async function fetchKrxUniverseRows(apiKey, baseDate, market) {
   for (const root of roots) {
     const url = `${root}?basDd=${encodeURIComponent(baseDate)}&AUTH_KEY=${encodeURIComponent(key)}`;
     try {
-      const payload = await fetchJsonWithProxyFallback(url);
+      const payload = await fetchJsonWithProxyFallback(url, null, { allowProxy: false });
       const rows = Array.isArray(payload?.OutBlock_1) ? payload.OutBlock_1 : [];
       if (rows.length) return rows;
     } catch (_) {
@@ -1737,8 +1823,22 @@ function renderStockSuggestList(items) {
   listEl.hidden = false;
 }
 
-async function fetchYahooHistorySeries(ticker) {
-  const baseUrl = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=30y`;
+function buildYahooHistoryUrl(ticker, sinceDate = "") {
+  const baseUrl = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d`;
+  const safeSinceDate = String(sinceDate || "").slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(safeSinceDate)) {
+    const startDate = shiftDays(safeSinceDate, -7);
+    const period1 = Math.floor(Date.parse(`${startDate}T00:00:00Z`) / 1000);
+    const period2 = Math.floor((Date.now() + DAY_MS) / 1000);
+    if (Number.isFinite(period1) && Number.isFinite(period2) && period2 > period1) {
+      return `${baseUrl}&period1=${period1}&period2=${period2}`;
+    }
+  }
+  return `${baseUrl}&range=30y`;
+}
+
+async function fetchYahooHistorySeries(ticker, options = {}) {
+  const baseUrl = buildYahooHistoryUrl(ticker, options?.sinceDate || "");
   const url = appendCacheBust(baseUrl);
   const payload = await fetchJsonWithProxyFallback(url);
   const result = payload?.chart?.result?.[0];
@@ -1806,7 +1906,8 @@ async function ensureCustomTickerSeriesLoaded(ticker, options = {}) {
   const hasExisting = (pricePayload?.records || []).some((row) => toNum(row?.[ticker]) !== null);
   if (hasExisting && !forceRefresh) return;
 
-  const points = await fetchYahooHistorySeries(ticker);
+  const sinceDate = hasExisting && forceRefresh ? getLatestTickerDateFromPricePayload(ticker) : "";
+  const points = await fetchYahooHistorySeries(ticker, { sinceDate });
   if (!points.length) throw new Error(`${ticker} 종목의 가격 히스토리를 가져오지 못했습니다.`);
   mergeTickerSeriesIntoPricePayload(ticker, points);
 }
@@ -1881,7 +1982,7 @@ async function fetchKrxIndexPoint(apiKey, market, baseDate) {
   for (const root of roots) {
     const url = `${root}?basDd=${encodeURIComponent(baseDate)}&AUTH_KEY=${encodeURIComponent(key)}`;
     try {
-      const payload = await fetchJsonWithProxyFallback(url);
+      const payload = await fetchJsonWithProxyFallback(url, null, { allowProxy: false });
       const rows = payload?.OutBlock_1 ?? payload?.output ?? payload?.data ?? [];
       const point = pickKrxIndexSeriesPoint(rows, market);
       if (point) return point;
@@ -1946,7 +2047,7 @@ async function refreshCoreIndexSeries() {
 
   const yahooResults = await Promise.allSettled(
     tickers.map(async (ticker) => {
-      const points = await fetchYahooHistorySeries(ticker);
+      const points = await fetchYahooHistorySeries(ticker, { sinceDate: beforeLatest[ticker] });
       if (!points.length) throw new Error("price history is empty");
       mergeTickerSeriesIntoPricePayload(ticker, points);
       return { ticker, latestDate: points[points.length - 1]?.date || "" };
@@ -3149,8 +3250,9 @@ function sameNullableNumber(a, b) {
   return Math.abs(na - nb) <= 1e-9;
 }
 
-async function fetchJsonWithProxyFallback(url, init = null) {
-  const candidates = [url, CORS_PROXY + encodeURIComponent(url)];
+async function fetchJsonWithProxyFallback(url, init = null, options = {}) {
+  const allowProxy = options?.allowProxy !== false;
+  const candidates = allowProxy ? [url, CORS_PROXY + encodeURIComponent(url)] : [url];
   let lastError = "Request failed";
   for (const target of candidates) {
     try {
@@ -3177,7 +3279,7 @@ async function fetchEcosLeadingCycleLive(apiKey) {
   if (!clean) return [];
   const endYm = toYyyymm(new Date());
   const url = `https://ecos.bok.or.kr/api/StatisticSearch/${encodeURIComponent(clean)}/json/kr/1/5000/${ECOS_STAT_CODE}/M/${ECOS_START}/${endYm}/${ECOS_ITEM_CODE}`;
-  const payload = await fetchJsonWithProxyFallback(url);
+  const payload = await fetchJsonWithProxyFallback(url, null, { allowProxy: false });
   const rows = Array.isArray(payload?.StatisticSearch?.row) ? payload.StatisticSearch.row : [];
   return normalizeLeadingRows(rows.map((row) => ({
     date: monthCodeToDate(row?.TIME),
@@ -3202,7 +3304,7 @@ async function fetchKosisLeadingCycleLive(apiKey) {
     endPrdDe: "209912",
   });
   const url = `https://kosis.kr/openapi/Param/statisticsParameterData.do?${query.toString()}`;
-  const payload = await fetchJsonWithProxyFallback(url);
+  const payload = await fetchJsonWithProxyFallback(url, null, { allowProxy: false });
   const rows = Array.isArray(payload) ? payload : [];
   return normalizeLeadingRows(rows.map((row) => ({
     date: monthCodeToDate(row?.PRD_DE),
@@ -3247,7 +3349,7 @@ async function fetchKofiaCreditLive(apiKey) {
           resultType: "json",
         });
         const url = appendCacheBust(`${KOFIA_CREDIT_URL}?${query.toString()}`);
-        const payload = await fetchJsonWithProxyFallback(url);
+        const payload = await fetchJsonWithProxyFallback(url, null, { allowProxy: false });
 
         const header = payload?.response?.header || {};
         if (header.resultCode && header.resultCode !== "00") {

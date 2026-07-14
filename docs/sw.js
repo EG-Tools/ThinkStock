@@ -4,6 +4,8 @@ const ASSETS = [
   "./index.html",
   "./styles.css",
   "./app.js?v=dev",
+  "./vendor/plotly-2.35.2.min.js",
+  "./vendor/papaparse-5.4.1.min.js",
   "./manifest.webmanifest",
   "./icon.svg",
   "./data/prices.json",
