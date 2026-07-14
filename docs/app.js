@@ -103,6 +103,8 @@ const PLOTLY_CONFIG = {
   scrollZoom: true,
   doubleClick: false,
 };
+const LINE_DRAG_TOLERANCE_PX = 14;
+const LINE_DRAG_TOUCH_TOLERANCE_PX = 24;
 
 let pricePayload = null;
 let macroRows = [];
@@ -140,6 +142,7 @@ let lastTouchTapEl = null;
 let dragZoomBound = false;
 let touchDoubleTapZoomActive = false;
 let touchDoubleTapPrevRange = null;
+let suppressPlotlyClickUntil = 0;
 let startupLoaderHideTimer = null;
 let startupLoaderRafId = 0;
 let startupLoaderDisplayProgress = 100;
@@ -792,6 +795,123 @@ function renderDragZoomOverlay(el, startClientX, currentClientX) {
   ui.box.style.width = `${width}px`;
 }
 
+function yValueToLocalPixel(el, value) {
+  const ya = el?._fullLayout?.yaxis;
+  const range = ya?.range;
+  if (!ya || !Array.isArray(range) || range.length < 2 || !Number.isFinite(value)) return null;
+  const [minY, maxY] = range;
+  const span = maxY - minY;
+  if (!Number.isFinite(span) || span === 0) return null;
+  const frac = (value - minY) / span;
+  return ya._offset + ya._length * (1 - frac);
+}
+
+function interpolateTraceYAtMs(trace, targetMs) {
+  if (!trace || !Array.isArray(trace.x) || !Array.isArray(trace.y) || !Number.isFinite(targetMs)) return null;
+
+  let left = null;
+  let right = null;
+  for (let i = 0; i < trace.x.length; i += 1) {
+    const y = toNum(trace.y[i]);
+    if (y === null) continue;
+    const time = toMsSafe(trace.x[i]);
+    if (!Number.isFinite(time)) continue;
+    if (time === targetMs) return y;
+    if (time < targetMs) {
+      left = { time, y };
+      continue;
+    }
+    right = { time, y };
+    break;
+  }
+
+  if (!left || !right) return null;
+  const span = right.time - left.time;
+  if (!Number.isFinite(span) || span <= 0) return null;
+  const t = (targetMs - left.time) / span;
+  return left.y + (right.y - left.y) * t;
+}
+
+function findNearestLineDragTarget(el, clientX, clientY, isTouch = false) {
+  const mainEl = document.getElementById("chart");
+  if (!el || el !== mainEl || !el._fullLayout || !Array.isArray(el.data)) return null;
+
+  const xa = el._fullLayout.xaxis;
+  const ya = el._fullLayout.yaxis;
+  if (!xa || !ya) return null;
+
+  const rect = el.getBoundingClientRect();
+  const localX = clientX - rect.left;
+  const localY = clientY - rect.top;
+  const minX = xa._offset;
+  const maxX = xa._offset + xa._length;
+  const minY = ya._offset;
+  const maxY = ya._offset + ya._length;
+  if (localX < minX || localX > maxX || localY < minY || localY > maxY) return null;
+
+  const xValue = axisPixelToXValue(el, clientX);
+  const targetMs = toMsSafe(xValue);
+  if (!Number.isFinite(targetMs)) return null;
+
+  const tolerance = isTouch ? LINE_DRAG_TOUCH_TOLERANCE_PX : LINE_DRAG_TOLERANCE_PX;
+  let best = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  el.data.forEach((trace, traceIndex) => {
+    if (!trace || trace.visible === "legendonly") return;
+    const seriesKey = currentSelected[traceIndex];
+    if (!seriesKey) return;
+    const y = interpolateTraceYAtMs(trace, targetMs);
+    const pixelY = yValueToLocalPixel(el, y);
+    if (!Number.isFinite(pixelY)) return;
+    const distance = Math.abs(pixelY - localY);
+    if (distance <= tolerance && distance < bestDistance) {
+      bestDistance = distance;
+      best = { traceIndex, seriesKey };
+    }
+  });
+
+  return best;
+}
+
+function beginLineOffsetDrag(el, target, startClientY) {
+  const ya = el?._fullLayout?.yaxis;
+  const range = ya?.range;
+  if (!target || !ya || !Array.isArray(range) || range.length < 2 || !ya._length) return false;
+
+  const startOffset = seriesOffsets[target.seriesKey] || 0;
+  const lockedXRange = getCurrentMainXRange();
+  let moved = false;
+
+  suppressPlotlyClickUntil = Date.now() + 500;
+  isHandleDragging = true;
+  el.classList.add("is-line-dragging");
+  hideDragZoomOverlay(el);
+  lockCurrentYAxisRange();
+
+  function onMove(clientY) {
+    const dy = clientY - startClientY;
+    if (Math.abs(dy) >= 3) moved = true;
+    const dataDelta = -dy * (range[1] - range[0]) / ya._length;
+    seriesOffsets[target.seriesKey] = startOffset + dataDelta;
+    restyleLive(target.traceIndex, target.seriesKey);
+  }
+
+  function onEnd(clientY) {
+    el.classList.remove("is-line-dragging");
+    isHandleDragging = false;
+    if (lockedXRange) pinnedXRange = [...lockedXRange];
+    if (!moved || Math.abs(clientY - startClientY) < 3) {
+      seriesOffsets[target.seriesKey] = startOffset;
+    }
+    saveState();
+    renderChart();
+  }
+
+  addDragListeners(startClientY, onMove, onEnd);
+  return true;
+}
+
 function bindCursorMoveSync() {
   const mainEl = document.getElementById("chart");
   const adrEl = document.getElementById("chart-adr");
@@ -825,6 +945,14 @@ function bindCursorMoveSync() {
       if (!event.touches || event.touches.length !== 1) return;
       event.preventDefault();
       const touch = event.touches[0];
+      const lineTarget = findNearestLineDragTarget(event.currentTarget, touch.clientX, touch.clientY, true);
+      if (lineTarget && beginLineOffsetDrag(event.currentTarget, lineTarget, touch.clientY)) {
+        lastTouchTapAt = 0;
+        lastTouchTapX = null;
+        lastTouchTapEl = null;
+        clearTouchDoubleTapZoomState();
+        return;
+      }
       moveAt(event.currentTarget, touch.clientX);
 
       const now = Date.now();
@@ -889,13 +1017,22 @@ function bindCursorMoveSync() {
     let dragState = null;
 
     const onMouseDown = (event) => {
-      if (isTouchDevice()) return;
       if (event.button !== 0) return;
       if (event.target?.closest('.y-handle')) return;
 
       const sourceEl = event.currentTarget;
       const xa = sourceEl?._fullLayout?.xaxis;
       if (!xa) return;
+
+      const lineTarget = findNearestLineDragTarget(sourceEl, event.clientX, event.clientY, false);
+      if (lineTarget && beginLineOffsetDrag(sourceEl, lineTarget, event.clientY)) {
+        event.preventDefault();
+        event.stopPropagation();
+        clearTouchDoubleTapZoomState();
+        return;
+      }
+
+      if (isTouchDevice()) return;
 
       dragState = {
         sourceEl,
@@ -2378,6 +2515,7 @@ function renderChart(preserveZoom = true) {
       clearHoverOnChart(adrEl);
     });
     el.on("plotly_click", () => {
+      if (Date.now() < suppressPlotlyClickUntil) return;
       // iPhone Safari sends click after touchend; if we auto-reset here,
       // double-tap zoom is immediately cancelled when the finger is lifted.
       if (isTouchDevice()) return;

@@ -573,6 +573,11 @@ body {
   overflow: hidden;
 }
 
+.chart-frame.is-line-dragging,
+.chart-frame.is-line-dragging .main-svg {
+  cursor: ns-resize !important;
+}
+
 .drag-zoom-overlay {
   position: absolute;
   inset: 0;
