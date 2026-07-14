@@ -11,9 +11,8 @@ ThinkStock 로컬 데이터 갱신 스크립트
     python scripts/fetch_local.py           # 전체 재빌드 (yfinance + KRX 최근 30일)
     python scripts/fetch_local.py --days 5  # 최근 5일만 KRX 갱신
 
-API 키:
-    scripts/krx_key.txt    (KRX API 키, 한 줄, git 비포함)
-    scripts/kofia_key.txt  (금융투자협회 API 키, 한 줄, git 비포함)
+API keys:
+    .env.local (DART_API_KEY, KOFIA_API_KEY, KOSIS_API_KEY, KRX_API_KEY)
 
 KRX 승인된 서비스:
     idx/kospi_dd_trd   - KOSPI 시리즈 일별시세
@@ -29,6 +28,7 @@ KRX 승인된 서비스:
 
 import argparse
 import json
+import os
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -37,9 +37,7 @@ import pandas as pd
 
 ROOT      = Path(__file__).resolve().parents[1]
 DATA_DIR  = ROOT / "docs" / "data"
-KEY_FILE  = Path(__file__).parent / "krx_key.txt"
-KOFIA_KEY_FILE = Path(__file__).parent / "kofia_key.txt"
-KOSIS_KEY_FILE = Path(__file__).parent / "kosis_key.txt"
+LOCAL_ENV_FILE = ROOT / ".env.local"
 SAMPLE_MACRO = ROOT / "sample_macro_data.csv"
 
 KRX_BASE     = "http://data-dbg.krx.co.kr/svc/apis"
@@ -76,17 +74,46 @@ KOFIA_CREDIT_URL = (
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
-def load_key() -> str | None:
-    if KEY_FILE.exists():
-        k = KEY_FILE.read_text().strip()
-        return k if k else None
+def _read_env_key(path: Path, key: str) -> str | None:
+    if not path.exists():
+        return None
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except Exception:
+        return None
+    for line in lines:
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        k, v = s.split("=", 1)
+        if k.strip().lstrip("\ufeff") == key:
+            value = v.strip().strip('"').strip("'")
+            return value if value else None
     return None
 
-def load_kofia_key() -> str | None:
-    if KOFIA_KEY_FILE.exists():
-        k = KOFIA_KEY_FILE.read_text().strip()
-        return k if k else None
+
+def resolve_api_key(*keys: str) -> str | None:
+    for key in keys:
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    for key in keys:
+        value = _read_env_key(LOCAL_ENV_FILE, key)
+        if value:
+            return value
     return None
+
+
+def load_key() -> str | None:
+    return resolve_api_key("KRX_API_KEY", "KRX_AUTH_KEY")
+
+
+def load_kofia_key() -> str | None:
+    return resolve_api_key("KOFIA_API_KEY")
+
+
+def load_kosis_key() -> str | None:
+    return resolve_api_key("KOSIS_API_KEY")
 
 
 def years_before(ref: date, y: int) -> date:
@@ -233,10 +260,10 @@ def fetch_kosis_leading_cycle() -> list[dict]:
     KOSIS Open API 에서 선행종합지수 순환변동치(월별)를 가져온다.
     반환: [{'date': 'YYYY-MM-01', 'leading_cycle': float}, ...]
     """
-    if not KOSIS_KEY_FILE.exists():
-        print("  kosis_key.txt 없음 — 건너뜀")
+    api_key = load_kosis_key()
+    if not api_key:
+        print("KOSIS_API_KEY missing in .env.local - skip")
         return []
-    api_key = KOSIS_KEY_FILE.read_text().strip()
 
     try:
         import requests as _req
@@ -525,15 +552,15 @@ def main():
 
     key = load_key()
     if key:
-        print(f"KRX API 키: {key[:8]}...")
+        print("KRX API key configured.")
     else:
         print("KRX API 키 없음 — yfinance 만 사용합니다.")
 
     kofia_key = load_kofia_key()
     if kofia_key:
-        print(f"KOFIA API 키: {kofia_key[:8]}...")
+        print("KOFIA API key configured.")
     else:
-        print("KOFIA API 키 없음 — scripts/kofia_key.txt 에 키를 저장하세요.")
+        print("KOFIA_API_KEY missing in .env.local.")
 
     today = date.today()
     hist_start = years_before(today, LOOKBACK_YRS)

@@ -10,6 +10,7 @@ scripts/.env.local
 scripts/kofia_key.txt
 scripts/kosis_key.txt
 scripts/ecos_key.txt
+scripts/dart_key.txt
 .env
 .env.*
 !.env.example

@@ -39,9 +39,6 @@ ECOS_START = "199601"
 OECD_FRED_SERIES_ID = "KORLOLITOAASTSAM"  # OECD CLI (AA, STSA) mirrored by FRED
 OECD_FRED_URL = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={OECD_FRED_SERIES_ID}"
 LOCAL_ENV_FILE = ROOT / ".env.local"
-LOCAL_SCRIPT_ENV_FILE = ROOT / "scripts" / ".env.local"
-LOCAL_ECOS_KEY_FILE = ROOT / "scripts" / "ecos_key.txt"
-LOCAL_KOFIA_KEY_FILE = ROOT / "scripts" / "kofia_key.txt"
 KOFIA_CREDIT_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getGrantingOfCreditBalanceInfo"
 FREESIS_CREDIT_META_URL = "https://freesis.kofia.or.kr/meta/getMetaDataList.do"
 FREESIS_CREDIT_OBJ_NM = "STATSCU0100000070BO"
@@ -141,7 +138,7 @@ def _read_env_key(path: Path, key: str) -> str:
         if not s or s.startswith("#") or "=" not in s:
             continue
         k, v = s.split("=", 1)
-        if k.strip() != key:
+        if k.strip().lstrip("\ufeff") != key:
             continue
         return v.strip().strip('"').strip("'")
     return ""
@@ -152,16 +149,9 @@ def resolve_ecos_api_key() -> str:
     if env_key:
         return env_key
 
-    for env_file in (LOCAL_ENV_FILE, LOCAL_SCRIPT_ENV_FILE):
-        file_key = _read_env_key(env_file, "ECOS_API_KEY")
-        if file_key:
-            return file_key
-
-    if LOCAL_ECOS_KEY_FILE.exists():
-        try:
-            return LOCAL_ECOS_KEY_FILE.read_text(encoding="utf-8", errors="ignore").strip()
-        except Exception:
-            return ""
+    file_key = _read_env_key(LOCAL_ENV_FILE, "ECOS_API_KEY")
+    if file_key:
+        return file_key
     return ""
 
 
@@ -170,21 +160,21 @@ def resolve_kofia_api_key() -> str:
     if env_key:
         return env_key
 
-    for env_file in (LOCAL_ENV_FILE, LOCAL_SCRIPT_ENV_FILE):
-        file_key = _read_env_key(env_file, "KOFIA_API_KEY")
-        if file_key:
-            return file_key
-
-    if LOCAL_KOFIA_KEY_FILE.exists():
-        try:
-            return LOCAL_KOFIA_KEY_FILE.read_text(encoding="utf-8", errors="ignore").strip()
-        except Exception:
-            return ""
+    file_key = _read_env_key(LOCAL_ENV_FILE, "KOFIA_API_KEY")
+    if file_key:
+        return file_key
     return ""
 
 
 def resolve_dart_api_key() -> str:
-    return os.environ.get("DART_API_KEY", "").strip()
+    env_key = os.environ.get("DART_API_KEY", "").strip()
+    if env_key:
+        return env_key
+
+    file_key = _read_env_key(LOCAL_ENV_FILE, "DART_API_KEY")
+    if file_key:
+        return file_key
+    return ""
 
 
 def configured_disclosure_stock_codes() -> list[str]:
@@ -697,6 +687,19 @@ def build_disclosure_payload(records: list[dict]) -> dict:
     }
 
 
+def load_existing_disclosure_seed() -> list[dict]:
+    if not OUTPUT_DISCLOSURES_JSON.exists():
+        return []
+    try:
+        payload = json.loads(OUTPUT_DISCLOSURES_JSON.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    records = payload.get("records", [])
+    if not isinstance(records, list):
+        return []
+    return [record for record in records if isinstance(record, dict)]
+
+
 def load_existing_credit_seed() -> pd.DataFrame:
     if not OUTPUT_CREDIT_JSON.exists():
         return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
@@ -885,11 +888,20 @@ def main() -> None:
         print("ADR fetch had no rows; keeping existing adr_data.json.")
 
     dart_key = resolve_dart_api_key()
+    existing_disclosure_records = load_existing_disclosure_seed()
     disclosure_records = fetch_dart_disclosures(dart_key, configured_disclosure_stock_codes()) if dart_key else []
     if disclosure_records:
         print(f"Applied DART disclosure rows: {len(disclosure_records)} (latest={disclosure_records[-1]['date']})")
     else:
-        print("DART_API_KEY is not configured or returned no disclosure rows.")
+        disclosure_records = existing_disclosure_records
+        if disclosure_records:
+            latest_disclosure = max(str(record.get("date") or "") for record in disclosure_records)
+            print(
+                "DART_API_KEY is not configured or returned no disclosure rows; "
+                f"keeping existing disclosures.json ({len(disclosure_records)} rows, latest={latest_disclosure})."
+            )
+        else:
+            print("DART_API_KEY is not configured or returned no disclosure rows.")
 
     credit_payload = build_payload(
         credit_merged,

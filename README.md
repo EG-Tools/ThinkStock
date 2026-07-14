@@ -40,7 +40,10 @@ ThinkStock ships in two modes from the same repository.
 
 ## API Keys (Local Only)
 - Never commit API keys to this repository.
-- Store keys only on your local machine using one of these:
-  - `scripts/ecos_key.txt` (single line key)
-  - `scripts/.env.local` or `/.env.local` with `ECOS_API_KEY=...`
-- GitHub Actions workflow no longer injects `ECOS_API_KEY`.
+- Store local keys in `/.env.local` only:
+  - `DART_API_KEY=...`
+  - `KOFIA_API_KEY=...`
+  - `KOSIS_API_KEY=...`
+  - `KRX_API_KEY=...`
+  - `ECOS_API_KEY=...`
+- GitHub Pages builds use GitHub Secrets, not local `.env.local`.
