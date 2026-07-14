@@ -18,9 +18,23 @@ const DATA_URL_PATTERNS = [
   "/data/build_report.json",
   "/data/disclosures/",
 ];
+const CORE_ASSET_PATHS = [
+  "/",
+  "/index.html",
+  "/styles.css",
+  "/app.js",
+  "/manifest.webmanifest",
+  "/icon.svg",
+  "/modules/chart-loader.js",
+  "/modules/data-worker.js",
+];
 
 function isDataUrl(url) {
   return DATA_URL_PATTERNS.some((pattern) => url.pathname.includes(pattern));
+}
+
+function isCoreAssetUrl(url) {
+  return CORE_ASSET_PATHS.some((path) => url.pathname.endsWith(path));
 }
 
 async function putIfOk(cache, request, response) {
@@ -42,7 +56,7 @@ async function networkFirst(request) {
 
 async function staleWhileRevalidate(request) {
   const cache = await caches.open(CACHE_NAME);
-  const cached = await caches.match(request, { ignoreSearch: true });
+  const cached = await caches.match(request);
   const refresh = fetch(request)
     .then(async (response) => {
       await putIfOk(cache, request, response);
@@ -51,7 +65,7 @@ async function staleWhileRevalidate(request) {
     .catch(() => null);
 
   if (cached) return cached;
-  return (await refresh) || caches.match("./index.html");
+  return (await refresh) || caches.match(request, { ignoreSearch: true }) || caches.match("./index.html");
 }
 
 self.addEventListener("install", (event) => {
@@ -77,7 +91,7 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
 
   event.respondWith(
-    isDataUrl(url)
+    isDataUrl(url) || isCoreAssetUrl(url)
       ? networkFirst(event.request)
       : staleWhileRevalidate(event.request),
   );

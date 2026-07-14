@@ -44,7 +44,7 @@ const DATA_CACHE_RECORD_KEY = "latest";
 const DATA_CACHE_LOCAL_KEY = "thinkstock-runtime-cache-v1";
 const DATA_CACHE_SCHEMA_VERSION = 7;
 const DATA_CACHE_MAX_AGE_DAYS = 7;
-const APP_VERSION = "0.41";
+const APP_VERSION = "0.43";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -147,15 +147,6 @@ function plotlyHoverLabel(fontSize) {
     };
 }
 
-function applyHoverPopupLayoutFast() {
-  if (!window.Plotly) return false;
-  const tasks = [];
-  const mainEl = document.getElementById("chart");
-  const adrEl = document.getElementById("chart-adr");
-  if (mainEl?.data) tasks.push(Plotly.relayout(mainEl, { hoverlabel: plotlyHoverLabel() }));
-  if (adrEl?.data) tasks.push(Plotly.relayout(adrEl, { hoverlabel: plotlyHoverLabel(11) }));
-  return tasks.length > 0;
-}
 async function ensurePlotlyReady() {
   if (window.Plotly) return window.Plotly;
   const loader = window.ThinkStockChartLoader;
@@ -697,6 +688,15 @@ async function saveLastRuntimeSnapshot() {
   }
 }
 
+let runtimeSnapshotSaveTimer = 0;
+function scheduleLastRuntimeSnapshotSave(delayMs = 500) {
+  if (runtimeSnapshotSaveTimer) clearTimeout(runtimeSnapshotSaveTimer);
+  runtimeSnapshotSaveTimer = setTimeout(() => {
+    runtimeSnapshotSaveTimer = 0;
+    saveLastRuntimeSnapshot().catch(() => {});
+  }, delayMs);
+}
+
 async function loadLastRuntimeSnapshot() {
   const snapshot = await readLastRuntimeSnapshot();
   const applied = applyRuntimeDataSnapshot(snapshot);
@@ -709,6 +709,10 @@ function bindRuntimeSnapshotExitSave() {
   if (runtimeSnapshotExitSaveBound || typeof window === "undefined") return;
   runtimeSnapshotExitSaveBound = true;
   const save = () => {
+    if (runtimeSnapshotSaveTimer) {
+      clearTimeout(runtimeSnapshotSaveTimer);
+      runtimeSnapshotSaveTimer = 0;
+    }
     saveLastRuntimeSnapshot().catch(() => {});
   };
   window.addEventListener("pagehide", save);
@@ -1000,7 +1004,7 @@ function setupApiSettingsPanel(msgEl) {
       refreshTask
         .then((info) => {
           requestChartRender(false);
-          saveLastRuntimeSnapshot().catch(() => {});
+          scheduleLastRuntimeSnapshotSave();
           const lines = [`DART 공시 ${info.fetched}건 확인, ${info.added}건 반영${info.latestDate ? `(~ ${info.latestDate})` : ""}`];
           lines.push(
             lastDisclosureTraceStats.markers > 0
@@ -1632,7 +1636,7 @@ function bindCursorMoveSync() {
     };
 
     const onMove = (event) => {
-      schedulePointerMove(event.currentTarget, event.clientX, event.clientY, true);
+      schedulePointerMove(event.currentTarget, event.clientX, event.clientY, event.currentTarget === mainEl);
     };
 
     const onLeave = () => {
@@ -3127,25 +3131,48 @@ function resetHandles() {
   requestChartRender(false);
 }
 
-function findNearestDisclosurePoint(eventDate, ticker, rows, chartYBySeries) {
-  const yByDate = chartYBySeries?.[ticker];
-  if (!yByDate) return null;
+function buildDisclosurePointIndex(rows, chartYBySeries, selected) {
+  const index = {};
+  (selected || []).forEach((ticker) => {
+    const yByDate = chartYBySeries?.[ticker];
+    if (!yByDate) return;
+    index[ticker] = rows
+      .map((row) => {
+        const date = String(row?.date || "").slice(0, 10);
+        const y = yByDate.get(date);
+        const ms = toUtcMs(date);
+        return date && Number.isFinite(y) && Number.isFinite(ms) ? { date, y, ms } : null;
+      })
+      .filter(Boolean);
+  });
+  return index;
+}
+
+function findNearestDisclosurePoint(eventDate, ticker, pointIndex) {
+  const points = pointIndex?.[ticker];
+  if (!points?.length) return null;
   const targetMs = toUtcMs(eventDate);
   if (!Number.isFinite(targetMs)) return null;
 
   let best = null;
-  rows.forEach((row) => {
-    const date = String(row?.date || "").slice(0, 10);
-    const y = yByDate.get(date);
-    if (!date || !Number.isFinite(y)) return;
-    const ms = toUtcMs(date);
-    if (!Number.isFinite(ms)) return;
-    const diff = Math.abs(ms - targetMs);
+  const consider = (point) => {
+    if (!point) return;
+    const diff = Math.abs(point.ms - targetMs);
     if (diff > 10 * DAY_MS) return;
-    if (!best || diff < best.diff || (diff === best.diff && date >= eventDate && best.date < eventDate)) {
-      best = { date, y, diff };
+    if (!best || diff < best.diff || (diff === best.diff && point.date >= eventDate && best.date < eventDate)) {
+      best = { date: point.date, y: point.y, diff };
     }
-  });
+  };
+
+  let lo = 0;
+  let hi = points.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (points[mid].ms < targetMs) lo = mid + 1;
+    else hi = mid;
+  }
+  consider(points[lo]);
+  consider(points[lo - 1]);
   return best;
 }
 
@@ -3153,13 +3180,14 @@ function buildDisclosureTrace(rows, selected, chartYBySeries, start, end) {
   lastDisclosureTraceStats = { total: disclosureRows.length, candidates: 0, markers: 0 };
   if (!disclosureRows.length || !rows.length) return null;
   const selectedSet = new Set(selected);
+  const pointIndex = buildDisclosurePointIndex(rows, chartYBySeries, selected);
   const grouped = new Map();
 
   disclosureRows.forEach((event) => {
     if (!selectedSet.has(event.ticker) || hiddenSeries.has(event.ticker)) return;
     if (event.date < start || event.date > end) return;
     lastDisclosureTraceStats.candidates += 1;
-    const point = findNearestDisclosurePoint(event.date, event.ticker, rows, chartYBySeries);
+    const point = findNearestDisclosurePoint(event.date, event.ticker, pointIndex);
     if (!point) return;
     const key = `${event.ticker}|${point.date}`;
     const group = grouped.get(key) || {
@@ -3758,7 +3786,7 @@ function requestDartDisclosureRefreshForTickerLegacy(ticker, msgEl) {
   const seedTask = ensureDisclosureSeedForTicker(ticker).then((seedInfo) => {
     if (seedInfo?.added > 0) {
       requestChartRender(false);
-      saveLastRuntimeSnapshot().catch(() => {});
+      scheduleLastRuntimeSnapshotSave();
     }
   });
 
@@ -3769,10 +3797,11 @@ function requestDartDisclosureRefreshForTickerLegacy(ticker, msgEl) {
     return;
   }
 
-  dartDisclosureRefreshPromise = seedTask.then(() => refreshDartDisclosuresFromApi(apiKey, ticker))
+  dartDisclosureRefreshPromise = seedTask
+    .then(() => refreshDartDisclosuresFromApi(apiKey, ticker))
     .then((info) => {
       requestChartRender(false);
-      saveLastRuntimeSnapshot().catch(() => {});
+      scheduleLastRuntimeSnapshotSave();
       if (info.fetched > 0) {
         setMessage(msgEl, [
           `${name} 종목을 추가했습니다.`,
@@ -3823,7 +3852,7 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
   const seedTask = ensureDisclosureSeedForTicker(target).then((seedInfo) => {
     if (seedInfo?.added > 0) {
       requestChartRender(false);
-      saveLastRuntimeSnapshot().catch(() => {});
+      scheduleLastRuntimeSnapshotSave();
     }
   });
 
@@ -3839,7 +3868,7 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
   if (cacheEntry) {
     const task = seedTask.then(() => {
       requestChartRender(false);
-      saveLastRuntimeSnapshot().catch(() => {});
+      scheduleLastRuntimeSnapshotSave();
       setMessage(msgEl, [
         `${name} 종목을 추가했습니다.`,
         `DART 공시는 오늘 이미 확인했습니다${cacheEntry.latestDate ? `(~ ${cacheEntry.latestDate})` : ""}.`,
@@ -3854,7 +3883,7 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
   const task = seedTask.then(() => refreshDartDisclosuresFromApi(apiKey, target))
     .then((info) => {
       requestChartRender(false);
-      saveLastRuntimeSnapshot().catch(() => {});
+      scheduleLastRuntimeSnapshotSave();
       if (info.fetched > 0) {
         setMessage(msgEl, [
           `${name} 종목을 추가했습니다.`,
@@ -4030,7 +4059,8 @@ function renderChart(preserveZoom = true) {
         shape: "linear",
       },
       marker: { symbol: "circle", size: 7, color: seriesColor(series) },
-      hovertemplate: "%{text}<extra>%{fullData.name}</extra>",
+      hoverinfo: hoverShowPopup ? undefined : "skip",
+      hovertemplate: hoverShowPopup ? "%{text}<extra>%{fullData.name}</extra>" : undefined,
     };
   });
 
@@ -4056,7 +4086,7 @@ function renderChart(preserveZoom = true) {
     paper_bgcolor: "transparent",
     plot_bgcolor: "#111111",
     margin: { l: 42, r: 42, t: 28, b: 32 },
-    hovermode: "x unified",
+    hovermode: hoverShowPopup ? "x unified" : "closest",
     showlegend: false,
     legend: { orientation: "h", x: 0, y: 1.08, font: { color: "rgba(255,255,255,0.7)", size: 11 } },
     xaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, color: "#666", tickfont: { size: 10 }, fixedrange: false, showspikes: false, hoverformat: "%Y.%-m.%-d", ...(savedXRange ? { range: savedXRange } : { range: defaultXRange, autorange: false }) },
@@ -4117,7 +4147,7 @@ function renderChart(preserveZoom = true) {
     });
     el.on("plotly_hover", (eventData) => {
       highlightDisclosureHoverPoint(eventData);
-      if (hoverSyncing) return;
+      if (!hoverShowPopup || hoverSyncing) return;
       const xValue = eventData?.points?.[0]?.x;
       if (!xValue) return;
       const adrEl = document.getElementById("chart-adr");
@@ -4125,7 +4155,7 @@ function renderChart(preserveZoom = true) {
     });
     el.on("plotly_unhover", () => {
       resetDisclosureHoverHighlight(el);
-      if (hoverSyncing) return;
+      if (!hoverShowPopup || hoverSyncing) return;
       const adrEl = document.getElementById("chart-adr");
       clearHoverOnChart(adrEl);
     });
@@ -4270,7 +4300,8 @@ function renderAdrChart(xRange) {
       showlegend: false,
       connectgaps: false,
       line: { color: "rgba(0,0,0,0)", width: 1 },
-      hovertemplate: "KOSPI. %{customdata[0]}<br>KOSDAQ. %{customdata[1]}<extra></extra>",
+      hoverinfo: hoverShowPopup ? undefined : "skip",
+      hovertemplate: hoverShowPopup ? "KOSPI. %{customdata[0]}<br>KOSDAQ. %{customdata[1]}<extra></extra>" : undefined,
     },
   ];
 
@@ -4286,7 +4317,7 @@ function renderAdrChart(xRange) {
     // Keep left/right margins identical with the main chart so synced cursor lines
     // stay visually aligned across the full width (especially near edges).
     margin: { l: 42, r: 42, t: 14, b: 36 },
-    hovermode: "x unified",
+    hovermode: hoverShowPopup ? "x unified" : false,
     showlegend: true,
     legend: {
       orientation: "h", x: 0.5, y: 1.12, xanchor: "center",
@@ -4382,14 +4413,14 @@ function renderAdrChart(xRange) {
       }
     });
     el.on("plotly_hover", (eventData) => {
-      if (hoverSyncing) return;
+      if (!hoverShowPopup || hoverSyncing) return;
       const xValue = eventData?.points?.[0]?.x;
       if (!xValue) return;
       const mainEl = document.getElementById("chart");
       syncHoverToChart(mainEl, xValue);
     });
     el.on("plotly_unhover", () => {
-      if (hoverSyncing) return;
+      if (!hoverShowPopup || hoverSyncing) return;
       const mainEl = document.getElementById("chart");
       clearHoverOnChart(mainEl);
     });
@@ -5164,7 +5195,7 @@ async function boot() {
         hoverToggleBtn.classList.toggle("is-active", hoverShowPopup);
         applyHoverState();
         saveState();
-        if (!applyHoverPopupLayoutFast()) requestChartRender();
+        requestChartRender();
       });
     }
 
