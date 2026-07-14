@@ -3004,7 +3004,7 @@ async function refreshLiveApiData() {
     warnings.push("선행지수 API 키(ECOS 또는 KOSIS)가 없어 선행지수를 불러오지 못했습니다.");
   }
   if (!hasCreditApi) {
-    warnings.push("KOFIA API 키가 없어 신용잔고는 저장 데이터 + freesis 최신값으로만 갱신됩니다.");
+    warnings.push("KOFIA API 키가 없어 신용잔고는 저장 데이터까지만 표시됩니다.");
   }
 
   if (hasLeadingApi) macroRows = [];
@@ -3048,30 +3048,7 @@ async function refreshLiveApiData() {
     }
   }
 
-  try {
-    const latestCreditDate = creditRows.length
-      ? String(creditRows[creditRows.length - 1]?.date || "").slice(0, 10)
-      : "";
-    const today = new Date().toISOString().slice(0, 10);
-    const freesisStartDate = latestCreditDate
-      ? shiftDays(latestCreditDate, -30)
-      : shiftDays(today, -FREESIS_CREDIT_LOOKBACK_DAYS);
-
-    const freesisRows = await fetchFreesisCreditLive(freesisStartDate, today);
-    if (freesisRows.length) {
-      const scaledFreesisRows = scaleCreditRowsToExisting(freesisRows, creditRows);
-      const info = applyCreditLiveRows(scaledFreesisRows);
-      if (info.updated > 0) {
-        applied.push(`신용잔고 최신(Freesis) 반영(${info.updated}건, 최신일 ${info.latestDate})`);
-      } else {
-        applied.push(`신용잔고 최신(Freesis) 확인(최신일 ${info.latestDate})`);
-      }
-    } else {
-      warnings.push("freesis 응답에서 신용융자 데이터를 찾지 못했습니다.");
-    }
-  } catch (err) {
-    warnings.push(`freesis 불러오기 오류: ${err.message}`);
-  }
+  warnings.push("Freesis 신용잔고 보조 데이터는 KOFIA와 값 체계가 달라 적용하지 않았습니다.");
 
   return { applied, warnings };
 }

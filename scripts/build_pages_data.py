@@ -37,6 +37,7 @@ FREESIS_CREDIT_META_URL = "https://freesis.kofia.or.kr/meta/getMetaDataList.do"
 FREESIS_CREDIT_OBJ_NM = "STATSCU0100000070BO"
 FREESIS_CREDIT_UNIT_CODE = "06"
 FREESIS_CREDIT_START = "19980101"
+ENABLE_FREESIS_CREDIT_TAIL = os.environ.get("ENABLE_FREESIS_CREDIT_TAIL", "").strip() == "1"
 
 
 def extract_close_series(data: pd.DataFrame, ticker: str) -> pd.Series | None:
@@ -477,8 +478,12 @@ def main() -> None:
     macro = densify_macro(macro_source, prices.index if not prices.empty else pd.DatetimeIndex([]))
 
     credit_seed = load_existing_credit_seed()
-    credit_live = fetch_freesis_credit()
-    credit_merged, appended_credit = merge_credit_seed_with_freesis(credit_seed, credit_live)
+    if ENABLE_FREESIS_CREDIT_TAIL:
+        credit_live = fetch_freesis_credit()
+        credit_merged, appended_credit = merge_credit_seed_with_freesis(credit_seed, credit_live)
+    else:
+        credit_merged, appended_credit = credit_seed, 0
+        print("Skipped Freesis credit tail; using existing verified credit seed only.")
 
     if appended_credit > 0:
         latest_credit = credit_merged.index.max().strftime("%Y-%m-%d")
