@@ -16,7 +16,6 @@ DEFAULT_TICKERS = ["^KS11", "^KQ11", "005930.KS", "218410.KQ"]
 MACRO_SERIES = ["leading_cycle"]
 CREDIT_SERIES = ["kospi_credit", "kosdaq_credit"]
 CREDIT_MAX_DAILY_PCT_CHANGE = 0.12
-CREDIT_SEED_LIVE_OVERLAP_DAYS = 21
 CREDIT_MAX_DAILY_ABS_CHANGE = {
     "kospi_credit": 3.0,
     "kosdaq_credit": 1.0,
@@ -193,25 +192,6 @@ def merge_credit_seed_with_existing_tail(seed: pd.DataFrame, existing: pd.DataFr
     return merged
 
 
-def recent_credit_scale_factor(seed: pd.Series, live: pd.Series, latest_seed: pd.Timestamp) -> float:
-    merged = pd.concat([seed, live], axis=1, keys=["seed", "live"]).dropna()
-    if merged.empty:
-        return 1.0
-
-    cutoff = latest_seed - pd.Timedelta(days=CREDIT_SEED_LIVE_OVERLAP_DAYS)
-    recent = merged[(merged.index >= cutoff) & (merged.index <= latest_seed)]
-    if recent.empty:
-        recent = merged[merged.index <= latest_seed].tail(60)
-    if recent.empty:
-        recent = merged.tail(60)
-
-    ratios = (recent["live"] / recent["seed"]).replace([pd.NA, float("inf"), float("-inf")], pd.NA).dropna()
-    ratios = ratios[(ratios > 0)]
-    if ratios.empty:
-        return 1.0
-    return float(ratios.median())
-
-
 def merge_credit_seed_shape_with_live_tail(
     seed: pd.DataFrame,
     live: pd.DataFrame,
@@ -225,30 +205,27 @@ def merge_credit_seed_shape_with_live_tail(
         return seed, 0
 
     latest_seed = seed.index.max()
-    scaled_seed = seed.copy()
-    for column in CREDIT_SERIES:
-        factor = recent_credit_scale_factor(seed[column], live[column], latest_seed)
-        if factor > 1.15 or factor < 0.85:
-            scaled_seed[column] = pd.to_numeric(scaled_seed[column], errors="coerce") * factor
-
     tail = live[live.index > latest_seed].sort_index()
     if tail.empty:
-        return scaled_seed, 0
+        return seed, 0
 
     keep: list[pd.Timestamp] = []
     prev_date = latest_seed
-    prev_row = scaled_seed.loc[latest_seed]
+    prev_row = seed.loc[latest_seed]
+    has_overlap = not live[live.index <= latest_seed].empty
     for row_date, row in tail.iterrows():
         if not is_plausible_credit_transition(prev_date, prev_row, row_date, row):
-            print(f"Dropped {label} credit tail from {row_date.strftime('%Y-%m-%d')} due to discontinuity.")
-            break
+            if keep or not has_overlap:
+                print(f"Dropped {label} credit tail from {row_date.strftime('%Y-%m-%d')} due to discontinuity.")
+                break
+            print(f"Kept {label} credit tail from {row_date.strftime('%Y-%m-%d')} after source-scale boundary.")
         keep.append(row_date)
         prev_date = row_date
         prev_row = row
 
     if not keep:
-        return scaled_seed, 0
-    return merge_credit_frames(scaled_seed, tail.loc[keep]), len(keep)
+        return seed, 0
+    return merge_credit_frames(seed, tail.loc[keep]), len(keep)
 
 
 def align_historical_credit_seed(historical: pd.DataFrame, reference: pd.DataFrame) -> pd.DataFrame:

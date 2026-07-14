@@ -42,9 +42,9 @@ const DATA_CACHE_DB_NAME = "thinkstock-runtime-cache-v1";
 const DATA_CACHE_STORE_NAME = "snapshots";
 const DATA_CACHE_RECORD_KEY = "latest";
 const DATA_CACHE_LOCAL_KEY = "thinkstock-runtime-cache-v1";
-const DATA_CACHE_SCHEMA_VERSION = 2;
+const DATA_CACHE_SCHEMA_VERSION = 3;
 const DATA_CACHE_MAX_AGE_DAYS = 7;
-const APP_VERSION = "0.35";
+const APP_VERSION = "0.36";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
