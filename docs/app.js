@@ -42,9 +42,9 @@ const DATA_CACHE_DB_NAME = "thinkstock-runtime-cache-v1";
 const DATA_CACHE_STORE_NAME = "snapshots";
 const DATA_CACHE_RECORD_KEY = "latest";
 const DATA_CACHE_LOCAL_KEY = "thinkstock-runtime-cache-v1";
-const DATA_CACHE_SCHEMA_VERSION = 4;
+const DATA_CACHE_SCHEMA_VERSION = 5;
 const DATA_CACHE_MAX_AGE_DAYS = 7;
-const APP_VERSION = "0.37";
+const APP_VERSION = "0.38";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -72,7 +72,7 @@ const KOFIA_CREDIT_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatis
 const FREESIS_CREDIT_META_URL = "https://freesis.kofia.or.kr/meta/getMetaDataList.do";
 const FREESIS_CREDIT_OBJ_NM = "STATSCU0100000070BO";
 const FREESIS_CREDIT_LOOKBACK_DAYS = 120;
-const FREESIS_CREDIT_UNIT_CODE = "06";
+const FREESIS_CREDIT_UNIT_CODE = "01";
 const DART_DISCLOSURE_URL = "https://opendart.fss.or.kr/api/list.json";
 const DART_RUNTIME_LOOKBACK_DAYS = 92;
 const DART_STOCK_LOOKBACK_YEARS = 3;

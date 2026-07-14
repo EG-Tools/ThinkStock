@@ -51,8 +51,8 @@ LOCAL_ENV_FILE = ROOT / ".env.local"
 KOFIA_CREDIT_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getGrantingOfCreditBalanceInfo"
 FREESIS_CREDIT_META_URL = "https://freesis.kofia.or.kr/meta/getMetaDataList.do"
 FREESIS_CREDIT_OBJ_NM = "STATSCU0100000070BO"
-FREESIS_CREDIT_UNIT_CODE = "06"
-FREESIS_CREDIT_START = "19980101"
+FREESIS_CREDIT_UNIT_CODE = "01"
+FREESIS_CREDIT_START = "19960101"
 ENABLE_FREESIS_CREDIT_TAIL = os.environ.get("ENABLE_FREESIS_CREDIT_TAIL", "").strip() == "1"
 ADR_SOURCE_URL = "http://www.adrinfo.kr/chart"
 DART_CORP_CODE_URL = "https://opendart.fss.or.kr/api/corpCode.xml"
@@ -1065,36 +1065,20 @@ def merge_credit_seed_with_freesis(seed: pd.DataFrame, live: pd.DataFrame) -> tu
     if seed.empty:
         return live, len(live)
 
-    scale_k = median_scale_factor(seed["kospi_credit"], live["kospi_credit"])
-    scale_q = median_scale_factor(seed["kosdaq_credit"], live["kosdaq_credit"])
-
-    scaled = live.copy()
-    scaled["kospi_credit"] = pd.to_numeric(scaled["kospi_credit"], errors="coerce") * scale_k
-    scaled["kosdaq_credit"] = pd.to_numeric(scaled["kosdaq_credit"], errors="coerce") * scale_q
-
-    latest_seed = seed.index.max()
-    new_tail = scaled[scaled.index > latest_seed]
-    if new_tail.empty:
-        return seed, 0
-
-    keep: list[pd.Timestamp] = []
-    prev_date = latest_seed
-    prev_row = seed.loc[latest_seed]
-    for row_date, row in new_tail.sort_index().iterrows():
-        if not is_plausible_credit_transition(prev_date, prev_row, row_date, row):
-            print(f"Dropped Freesis credit tail from {row_date.strftime('%Y-%m-%d')} due to discontinuity.")
-            break
-        keep.append(row_date)
-        prev_date = row_date
-        prev_row = row
-
-    if not keep:
-        return seed, 0
-
-    merged = pd.concat([seed, new_tail.loc[keep]], axis=0)
-    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+    # Unit code 01 matches the KOFIA public API scale, so Freesis can replace
+    # the rough historical seed instead of being scaled as a tail-only source.
+    merged = merge_credit_frames(seed, live)
     merged.index.name = "date"
-    return merged, len(keep)
+    changed = 0
+    for idx, row in live.iterrows():
+        prev = seed.loc[idx] if idx in seed.index else pd.Series(dtype="float64")
+        for column in CREDIT_SERIES:
+            prev_value = pd.to_numeric(prev.get(column), errors="coerce")
+            next_value = pd.to_numeric(row.get(column), errors="coerce")
+            if pd.notna(next_value) and (pd.isna(prev_value) or float(prev_value) != float(next_value)):
+                changed += 1
+                break
+    return merged, changed
 
 
 def merge_credit_seed_with_kofia(seed: pd.DataFrame, live: pd.DataFrame) -> tuple[pd.DataFrame, int]:
