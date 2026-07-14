@@ -44,7 +44,7 @@ const DATA_CACHE_RECORD_KEY = "latest";
 const DATA_CACHE_LOCAL_KEY = "thinkstock-runtime-cache-v1";
 const DATA_CACHE_SCHEMA_VERSION = 1;
 const DATA_CACHE_MAX_AGE_DAYS = 7;
-const APP_VERSION = "0.30";
+const APP_VERSION = "0.31";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -131,6 +131,14 @@ const PLOTLY_CONFIG = {
   scrollZoom: true,
   doubleClick: false,
 };
+async function ensurePlotlyReady() {
+  if (window.Plotly) return window.Plotly;
+  const loader = window.ThinkStockChartLoader;
+  if (loader?.ensurePlotlyLoaded) {
+    return loader.ensurePlotlyLoaded();
+  }
+  throw new Error("차트 엔진을 불러오지 못했습니다. 앱을 새로고침해 주세요.");
+}
 const LINE_DRAG_TOLERANCE_PX = 14;
 const LINE_DRAG_TOUCH_TOLERANCE_PX = 24;
 const LINE_HIGHLIGHT_EXTRA_WIDTH = 2;
@@ -3560,6 +3568,12 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
 function renderChart(preserveZoom = true) {
   const el = document.getElementById("chart");
   const msgEl = document.getElementById("messageArea");
+  if (!window.Plotly) {
+    ensurePlotlyReady()
+      .then(() => renderChart(preserveZoom))
+      .catch((err) => setMessage(msgEl, err.message || "차트 엔진을 불러오지 못했습니다.", true));
+    return;
+  }
   const priceRows = pricePayload.records || [];
   const today = new Date().toISOString().slice(0, 10);
 
@@ -4773,6 +4787,8 @@ async function boot() {
       await loadData(true);
       setStartupLoaderProgress(45, "Loading saved data");
     }
+    setStartupLoaderProgress(56, "Loading chart engine");
+    await ensurePlotlyReady();
     renderChart(false);
     setStartupLoaderProgress(72, restoredLastSnapshot ? "Rendering last view" : "Rendering saved data");
 

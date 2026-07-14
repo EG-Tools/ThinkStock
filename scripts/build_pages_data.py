@@ -13,6 +13,8 @@ import requests
 import yfinance as yf
 
 DEFAULT_TICKERS = ["^KS11", "^KQ11", "005930.KS", "218410.KQ"]
+MACRO_SERIES = ["leading_cycle"]
+CREDIT_SERIES = ["kospi_credit", "kosdaq_credit"]
 DISPLAY_NAMES = {
     "leading_cycle": "\uC120\uD589\uC9C0\uC218 \uC21C\uD658\uBCC0\uB3D9\uCE58",
     "kospi_credit": "\uCF54\uC2A4\uD53C \uC2E0\uC6A9\uC794\uACE0",
@@ -123,6 +125,58 @@ def load_macro_source() -> pd.DataFrame:
     macro = macro.set_index("date")
     macro.index.name = "date"
     return macro
+
+
+def pick_numeric_columns(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame(columns=columns)
+    out = frame.copy()
+    for column in columns:
+        if column not in out.columns:
+            out[column] = pd.NA
+        out[column] = pd.to_numeric(out[column], errors="coerce")
+    out = out[columns].dropna(how="all").sort_index()
+    out.index.name = "date"
+    return out
+
+
+def extract_credit_seed_from_macro(macro: pd.DataFrame) -> pd.DataFrame:
+    return pick_numeric_columns(macro, CREDIT_SERIES)
+
+
+def extract_public_macro_source(macro: pd.DataFrame) -> pd.DataFrame:
+    return pick_numeric_columns(macro, MACRO_SERIES)
+
+
+def merge_credit_frames(*frames: pd.DataFrame) -> pd.DataFrame:
+    prepared = [pick_numeric_columns(frame, CREDIT_SERIES) for frame in frames if frame is not None and not frame.empty]
+    if not prepared:
+        return pd.DataFrame(columns=CREDIT_SERIES)
+    merged = pd.concat(prepared, axis=0)
+    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+    merged.index.name = "date"
+    return merged[CREDIT_SERIES]
+
+
+def align_historical_credit_seed(historical: pd.DataFrame, reference: pd.DataFrame) -> pd.DataFrame:
+    historical = pick_numeric_columns(historical, CREDIT_SERIES)
+    reference = pick_numeric_columns(reference, CREDIT_SERIES)
+    if historical.empty or reference.empty:
+        return historical
+
+    aligned = historical.copy()
+    first_reference_date = reference.index.min()
+    before_reference = aligned.index < first_reference_date
+    if not before_reference.any():
+        return aligned
+
+    for column in CREDIT_SERIES:
+        factor = median_scale_factor(historical[column], reference[column])
+        if factor > 1.15 or factor < 0.85:
+            aligned.loc[before_reference, column] = aligned.loc[before_reference, column] * factor
+
+    aligned.index.name = "date"
+    return aligned[CREDIT_SERIES]
 
 
 
@@ -890,7 +944,7 @@ def merge_credit_seed_with_kofia(seed: pd.DataFrame, live: pd.DataFrame) -> tupl
     if seed.empty:
         return live.sort_index(), len(live)
 
-    merged = seed.copy()
+    merged = align_historical_credit_seed(seed, live).copy()
     applied = 0
     for idx, row in live.sort_index().iterrows():
         prev = merged.loc[idx] if idx in merged.index else pd.Series(dtype="float64")
@@ -975,9 +1029,13 @@ def main() -> None:
             latest = oecd_leading_cycle.index.max().strftime("%Y-%m")
             print(f"Applied OECD leading_cycle tail months: {applied_months} (latest={latest})")
 
-    macro = densify_macro(macro_source, prices.index if not prices.empty else pd.DatetimeIndex([]))
+    historical_credit_seed = extract_credit_seed_from_macro(macro_source)
+    public_macro_source = extract_public_macro_source(macro_source)
+    macro = densify_macro(public_macro_source, prices.index if not prices.empty else pd.DatetimeIndex([]))
 
-    credit_seed = load_existing_credit_seed()
+    existing_credit_seed = load_existing_credit_seed()
+    historical_credit_seed = align_historical_credit_seed(historical_credit_seed, existing_credit_seed)
+    credit_seed = merge_credit_frames(historical_credit_seed, existing_credit_seed)
     credit_merged = credit_seed
     kofia_key = resolve_kofia_api_key()
     if kofia_key:
@@ -1042,10 +1100,10 @@ def main() -> None:
     credit_payload = build_payload(
         credit_merged,
         DISPLAY_NAMES,
-        ["kospi_credit", "kosdaq_credit"],
+        CREDIT_SERIES,
     )
     price_payload = build_payload(prices, DISPLAY_NAMES, DEFAULT_TICKERS)
-    macro_payload = build_payload(macro, DISPLAY_NAMES, list(macro.columns))
+    macro_payload = build_payload(macro, DISPLAY_NAMES, MACRO_SERIES)
     OUTPUT_JSON.write_text(
         json.dumps(price_payload, ensure_ascii=False, indent=2, allow_nan=False),
         encoding="utf-8",

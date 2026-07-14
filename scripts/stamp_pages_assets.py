@@ -47,9 +47,16 @@ def replace_once(text: str, pattern: str, replacement: str, label: str) -> str:
 
 def main() -> int:
     version = resolve_build_version()
+    chart_loader_src = f"./modules/chart-loader.js?v={version}"
     app_src = f"./app.js?v={version}"
 
     index = INDEX_HTML.read_text(encoding="utf-8")
+    index = replace_once(
+        index,
+        r'<script defer src="\./modules/chart-loader\.js(?:\?v=[^"]*)?"></script>',
+        f'<script defer src="{chart_loader_src}"></script>',
+        "index chart-loader.js script",
+    )
     index = replace_once(
         index,
         r'<script defer src="\./app\.js(?:\?v=[^"]*)?"></script>',
@@ -64,6 +71,12 @@ def main() -> int:
         r'const CACHE_NAME = "thinkstock-[^"]+";',
         f'const CACHE_NAME = "thinkstock-{version}";',
         "service worker cache name",
+    )
+    sw = replace_once(
+        sw,
+        r'"\./modules/chart-loader\.js(?:\?v=[^"]*)?",',
+        f'"{chart_loader_src}",',
+        "service worker chart-loader.js asset",
     )
     sw = replace_once(
         sw,

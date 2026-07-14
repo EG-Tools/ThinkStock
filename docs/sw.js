@@ -3,8 +3,8 @@ const ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
+  "./modules/chart-loader.js?v=dev",
   "./app.js?v=dev",
-  "./vendor/plotly-2.35.2.min.js",
   "./manifest.webmanifest",
   "./icon.svg",
   "./data/prices.json",
@@ -27,7 +27,7 @@ self.addEventListener("activate", (event) => {
   );
 });
 
-// 데이터와 앱 셸 모두 network-first로 갱신하고, 실패 시 캐시를 fallback으로 사용한다.
+// Keep both data and shell files network-first, with cached files as fallback.
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   const isData = url.pathname.includes("/data/");
@@ -53,7 +53,7 @@ self.addEventListener("fetch", (event) => {
   }
 });
 
-// 앱에서 REFRESH_DATA 메시지를 받으면 데이터 캐시만 삭제
+// Delete cached data when the app requests REFRESH_DATA.
 self.addEventListener("message", (event) => {
   if (event.data === "REFRESH_DATA") {
     const replyPort = event.ports && event.ports[0];

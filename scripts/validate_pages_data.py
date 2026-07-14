@@ -19,6 +19,7 @@ DATASETS = {
 }
 
 CREDIT_COLUMNS = ("kospi_credit", "kosdaq_credit")
+ADR_COLUMNS = ("adr_kospi", "adr_kosdaq")
 CREDIT_LIMITS = {
     "kospi_credit": (1.0, 80.0),
     "kosdaq_credit": (1.0, 50.0),
@@ -181,6 +182,13 @@ def validate_credit(rows: list[dict]) -> None:
                 )
 
 
+def validate_macro_columns(payload: dict, rows: list[dict]) -> None:
+    columns = set(numeric_columns_from_payload(payload, rows))
+    forbidden = columns.intersection((*CREDIT_COLUMNS, *ADR_COLUMNS))
+    if forbidden:
+        fail(f"macro: duplicated series should live in dedicated payloads: {sorted(forbidden)}")
+
+
 def validate_disclosures(payload: dict) -> list[dict]:
     rows = payload.get("records")
     if not isinstance(rows, list):
@@ -236,6 +244,7 @@ def main() -> int:
         if name == "prices":
             validate_freshness(name, rows, numeric_columns_from_payload(payload, rows), PRICE_MAX_FRESH_DAYS)
         elif name == "macro":
+            validate_macro_columns(payload, rows)
             validate_freshness(name, rows, ("leading_cycle",), LEADING_MAX_FRESH_DAYS)
         elif name == "adr":
             validate_freshness(name, rows, ("adr_kospi", "adr_kosdaq"), ADR_MAX_FRESH_DAYS)

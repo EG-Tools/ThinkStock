@@ -4,8 +4,9 @@
   "private": true,
   "description": "ThinkStock iOS shell powered by Capacitor",
   "scripts": {
+    "ios:sync": "node scripts/sync_ios_public.mjs",
     "cap:sync": "npx cap sync",
-    "cap:sync:ios": "npx cap sync ios",
+    "cap:sync:ios": "node scripts/sync_ios_public.mjs",
     "cap:add:ios": "npx cap add ios",
     "cap:open:ios": "npx cap open ios"
   },

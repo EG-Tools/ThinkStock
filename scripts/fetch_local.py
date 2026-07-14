@@ -57,6 +57,8 @@ DISPLAY_NAMES = {
 }
 
 YFINANCE_TICKERS = ["^KS11", "^KQ11", "005930.KS", "218410.KQ"]
+MACRO_SERIES = ["leading_cycle"]
+CREDIT_SERIES = ["kospi_credit", "kosdaq_credit"]
 
 # KRX 설정: (endpoint, IDX_NM or ISU_CD filter, value column)
 KRX_CONFIG = {
@@ -380,7 +382,8 @@ def load_macro(price_index: pd.DatetimeIndex) -> pd.DataFrame:
 def build_payload(df: pd.DataFrame, series: list[str]) -> dict:
     records: list[dict] = []
     if not df.empty:
-        clean = df.reset_index().copy()
+        keep = [column for column in series if column in df.columns]
+        clean = df[keep].reset_index().copy()
         clean["date"] = pd.to_datetime(clean["date"]).dt.strftime("%Y-%m-%d")
         for col in clean.columns:
             if col == "date":
@@ -523,16 +526,49 @@ def fetch_kofia_credit(key: str) -> list[dict]:
     return records
 
 
+def normalize_credit_records(records: list[dict]) -> list[dict]:
+    by_date: dict[str, dict] = {}
+    for row in records:
+        date_key = str(row.get("date", ""))[:10]
+        if not date_key:
+            continue
+        out = {"date": date_key}
+        has_value = False
+        for column in CREDIT_SERIES:
+            value = pd.to_numeric(row.get(column), errors="coerce")
+            if pd.notna(value):
+                out[column] = round(float(value), 6)
+                has_value = True
+            else:
+                out[column] = None
+        if has_value:
+            by_date[date_key] = out
+    return [by_date[key] for key in sorted(by_date)]
+
+
+def load_existing_credit_records() -> list[dict]:
+    path = DATA_DIR / "credit_data.json"
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    rows = payload.get("records", []) if isinstance(payload, dict) else []
+    return rows if isinstance(rows, list) else []
+
+
 def save_credit_data(records: list[dict]) -> None:
     if not records:
         print("  신용 데이터 없음 — 저장 건너뜀")
         return
+    records = normalize_credit_records(load_existing_credit_records() + records)
     payload = {
         "generated_at": pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
         "description": "코스피·코스닥 신용융자 잔고",
         "source": "금융투자협회 종합통계정보 API (data.go.kr)",
         "unit": "조원 (10^12 KRW)",
-        "series": ["kospi_credit", "kosdaq_credit"],
+        "series": CREDIT_SERIES,
         "records": records,
     }
     out = DATA_DIR / "credit_data.json"
@@ -606,7 +642,7 @@ def main():
 
     # ── 저장 ──────────────────────────────────────────────────────────────
     price_payload = build_payload(prices, list(prices.columns))
-    macro_payload = build_payload(macro, list(macro.columns))
+    macro_payload = build_payload(macro, MACRO_SERIES)
 
     out_p = DATA_DIR / "prices.json"
     out_m = DATA_DIR / "macro_data.json"
