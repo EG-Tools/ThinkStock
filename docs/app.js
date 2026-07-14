@@ -44,6 +44,7 @@ const DATA_CACHE_RECORD_KEY = "latest";
 const DATA_CACHE_LOCAL_KEY = "thinkstock-runtime-cache-v1";
 const DATA_CACHE_SCHEMA_VERSION = 1;
 const DATA_CACHE_MAX_AGE_DAYS = 7;
+const APP_VERSION = "0.29";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -448,7 +449,8 @@ function buildRuntimeDataSnapshot() {
 
   return {
     version: DATA_CACHE_SCHEMA_VERSION,
-    app_version: APP_BUILD_VERSION,
+    app_version: APP_VERSION,
+    build_version: APP_BUILD_VERSION,
     saved_at: new Date().toISOString(),
     pricePayload: safePricePayload,
     macroRows: safeMacroRows,
@@ -653,7 +655,10 @@ function syncApiOptionsButton() {
 
 function renderAppVersionLabel() {
   const el = document.getElementById("appVersionText");
-  if (el) el.textContent = APP_BUILD_VERSION;
+  if (el) {
+    el.textContent = APP_VERSION;
+    el.title = `Build ${APP_BUILD_VERSION}`;
+  }
 }
 
 function setMessage(msgEl, lines, isError = false) {
