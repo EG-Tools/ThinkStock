@@ -930,7 +930,7 @@ def load_existing_disclosure_seed() -> list[dict]:
         return []
     out: list[dict] = []
     for rel_path in files.values():
-        path = ROOT / str(rel_path).lstrip("./").replace("/", os.sep)
+        path = ROOT / "docs" / str(rel_path).lstrip("./").replace("/", os.sep)
         if not path.exists():
             continue
         try:

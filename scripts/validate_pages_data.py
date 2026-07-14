@@ -219,7 +219,7 @@ def validate_disclosures(payload: dict) -> list[dict]:
         if not isinstance(files, dict) or not files:
             fail("disclosures: by-ticker manifest must include files")
         for rel_path in files.values():
-            path = ROOT / str(rel_path).lstrip("./").replace("/", os.sep)
+            path = ROOT / "docs" / str(rel_path).lstrip("./").replace("/", os.sep)
             if not path.exists():
                 fail(f"disclosures: missing ticker file {path}")
             try:
