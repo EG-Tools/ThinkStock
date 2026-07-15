@@ -61,7 +61,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.65";
+const APP_VERSION = "0.66";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -217,14 +217,9 @@ const INTERACTION_RENDER_DELAY_MS = 260;
 const PERF_DEBUG_KEY = "thinkstock-perf-debug";
 const PERF_SAMPLE_LIMIT = 80;
 const DISCLOSURE_TRACE_NAME = "공시";
+const DISCLOSURE_ICON_TEXT = "◆";
 const DISCLOSURE_MARKER_COLOR = "#fde047";
-const DISCLOSURE_MARKER_LINE_COLOR = "rgba(10,10,10,0.96)";
-const DISCLOSURE_MARKER_SIZE = 15;
-const DISCLOSURE_MARKER_LINE_WIDTH = 2.25;
-const DISCLOSURE_MARKER_HOVER_COLOR = "#111827";
 const DISCLOSURE_MARKER_HOVER_LINE_COLOR = "#fef3c7";
-const DISCLOSURE_MARKER_HOVER_SIZE = 22;
-const DISCLOSURE_MARKER_HOVER_LINE_WIDTH = 3.5;
 const DISCLOSURE_TEXT_SIZE = 16;
 const DISCLOSURE_TEXT_HOVER_SIZE = 21;
 const DISCLOSURE_MOUSE_HIT_RADIUS_PX = 22;
@@ -321,8 +316,17 @@ let appliedLineHighlightTraceIndex = null;
 let isViewportDragging = false;
 let lastLineHitTestAt = 0;
 let runtimeSnapshotIdleTimer = 0;
+let runtimeSnapshotSavedSignature = "";
+let runtimeSnapshotWritePromise = null;
+let runtimeSnapshotWriteSignature = "";
+let runtimeSnapshotBuildCount = 0;
+let runtimeSnapshotWriteCount = 0;
+let runtimeSnapshotSkipCount = 0;
 let perfSamples = [];
 let perfDebugEnabled = false;
+let perfFrameRafId = 0;
+let perfLastFrameAt = 0;
+let perfFrameStats = { frames: 0, longFrames: 0, maxFrameGap: 0 };
 let startupLoaderHideTimer = null;
 let startupLoaderRafId = 0;
 let startupLoaderDisplayProgress = 100;
@@ -335,11 +339,13 @@ function initPerfDebugAccess() {
     window.ThinkStockPerf = {
       enable() {
         perfDebugEnabled = true;
+        startPerfFrameMonitor();
         try { localStorage.setItem(PERF_DEBUG_KEY, "1"); } catch (_) {}
         return true;
       },
       disable() {
         perfDebugEnabled = false;
+        stopPerfFrameMonitor();
         try { localStorage.removeItem(PERF_DEBUG_KEY); } catch (_) {}
         return true;
       },
@@ -348,11 +354,45 @@ function initPerfDebugAccess() {
       },
       clear() {
         perfSamples = [];
+        perfLastFrameAt = 0;
+        perfFrameStats = { frames: 0, longFrames: 0, maxFrameGap: 0 };
+      },
+      summary() {
+        const pointerSamples = perfSamples.filter((sample) => sample.label === "pointerMove");
+        return {
+          ...perfFrameStats,
+          pointerMoves: pointerSamples.length,
+          maxPointerMove: pointerSamples.reduce((max, sample) => Math.max(max, sample.duration || 0), 0),
+        };
       },
     };
+    if (perfDebugEnabled) startPerfFrameMonitor();
   } catch (_) {
     perfDebugEnabled = false;
   }
+}
+
+function stopPerfFrameMonitor() {
+  if (perfFrameRafId && typeof cancelAnimationFrame === "function") cancelAnimationFrame(perfFrameRafId);
+  perfFrameRafId = 0;
+  perfLastFrameAt = 0;
+}
+
+function startPerfFrameMonitor() {
+  if (!perfDebugEnabled || perfFrameRafId || typeof requestAnimationFrame !== "function") return;
+  const tick = (timestamp) => {
+    perfFrameRafId = 0;
+    if (!perfDebugEnabled) return;
+    if (perfLastFrameAt > 0 && document.visibilityState === "visible") {
+      const gap = timestamp - perfLastFrameAt;
+      perfFrameStats.frames += 1;
+      perfFrameStats.maxFrameGap = Math.max(perfFrameStats.maxFrameGap, Math.round(gap * 10) / 10);
+      if (gap >= 50 && gap < 1000) perfFrameStats.longFrames += 1;
+    }
+    perfLastFrameAt = timestamp;
+    perfFrameRafId = requestAnimationFrame(tick);
+  };
+  perfFrameRafId = requestAnimationFrame(tick);
 }
 
 function initE2eDebugAccess() {
@@ -373,6 +413,19 @@ function initE2eDebugAccess() {
           superseded: chartModelWorkerSupersededCount,
           partialDisclosureUpdates: partialDisclosureUpdateCount,
         };
+      },
+      getRuntimeSnapshotStats() {
+        return {
+          builds: runtimeSnapshotBuildCount,
+          writes: runtimeSnapshotWriteCount,
+          skips: runtimeSnapshotSkipCount,
+        };
+      },
+      saveRuntimeSnapshotNow() {
+        return saveLastRuntimeSnapshot();
+      },
+      getMainHoverMode() {
+        return document.getElementById("chart")?._fullLayout?.hovermode;
       },
       openFirstDisclosure(offsetX = 0, offsetY = 0) {
         const chart = document.getElementById("chart");
@@ -700,6 +753,18 @@ function buildRuntimeDataSnapshot() {
   };
 }
 
+function getRuntimeDataSignature() {
+  return [
+    historicalDataLoaded ? "history" : "recent",
+    Array.isArray(pricePayload?.series) ? pricePayload.series.join(",") : "",
+    rowsSignature(pricePayload?.records),
+    rowsSignature(macroRows),
+    rowsSignature(creditRows),
+    rowsSignature(adrRows),
+    hashStringFast(JSON.stringify(disclosureRows || [])),
+  ].join("::");
+}
+
 function isRuntimeSnapshotUsable(snapshot) {
   if (!snapshot || typeof snapshot !== "object") return false;
   if (snapshot.version !== DATA_CACHE_SCHEMA_VERSION) return false;
@@ -731,6 +796,7 @@ function applyRuntimeDataSnapshot(snapshot) {
   if (safeAdrRows.length) adrRows = safeAdrRows;
   if (safeDisclosureRows.length) disclosureRows = safeDisclosureRows;
   historicalDataLoaded = snapshot.historical_data_loaded === true || hasHistoricalDataCoverage();
+  runtimeSnapshotSavedSignature = getRuntimeDataSignature();
   return true;
 }
 
@@ -939,22 +1005,55 @@ async function readLastRuntimeSnapshot() {
 async function clearLastRuntimeSnapshot() {
   try { await deleteRuntimeSnapshotFromIndexedDb(); } catch (_) {}
   try { deleteRuntimeSnapshotFromLocalStorage(); } catch (_) {}
+  runtimeSnapshotSavedSignature = "";
 }
 
 async function saveLastRuntimeSnapshot() {
+  const signature = getRuntimeDataSignature();
+  if (signature === runtimeSnapshotSavedSignature) {
+    runtimeSnapshotSkipCount += 1;
+    return false;
+  }
+  if (runtimeSnapshotWritePromise) {
+    if (signature === runtimeSnapshotWriteSignature) {
+      runtimeSnapshotSkipCount += 1;
+      return runtimeSnapshotWritePromise;
+    }
+    await runtimeSnapshotWritePromise.catch(() => false);
+    return saveLastRuntimeSnapshot();
+  }
+
+  runtimeSnapshotBuildCount += 1;
   const snapshot = buildRuntimeDataSnapshot();
   if (!snapshot) return false;
 
-  try {
-    await writeRuntimeSnapshotToIndexedDb(snapshot);
-    return true;
-  } catch (idbErr) {
+  const writeTask = (async () => {
     try {
-      writeRuntimeSnapshotToLocalStorage(snapshot);
+      await writeRuntimeSnapshotToIndexedDb(snapshot);
       return true;
-    } catch (storageErr) {
-      const message = storageErr?.message || idbErr?.message || "runtime cache write failed";
-      throw new Error(message);
+    } catch (idbErr) {
+      try {
+        writeRuntimeSnapshotToLocalStorage(snapshot);
+        return true;
+      } catch (storageErr) {
+        const message = storageErr?.message || idbErr?.message || "runtime cache write failed";
+        throw new Error(message);
+      }
+    }
+  })();
+  runtimeSnapshotWritePromise = writeTask;
+  runtimeSnapshotWriteSignature = signature;
+  try {
+    const saved = await writeTask;
+    if (saved) {
+      runtimeSnapshotSavedSignature = signature;
+      runtimeSnapshotWriteCount += 1;
+    }
+    return saved;
+  } finally {
+    if (runtimeSnapshotWritePromise === writeTask) {
+      runtimeSnapshotWritePromise = null;
+      runtimeSnapshotWriteSignature = "";
     }
   }
 }
@@ -1926,10 +2025,15 @@ function getDisclosureMarkerPixelIndex(el) {
     Array.isArray(trace.x) ? trace.x.length : 0,
     Array.isArray(trace.y) ? trace.y.length : 0,
   );
+  const chartRect = el.getBoundingClientRect();
+  const textNodes = [...el.querySelectorAll(".textpoint text")]
+    .filter((node) => node.textContent?.trim() === DISCLOSURE_ICON_TEXT);
   const points = [];
   for (let pointIndex = 0; pointIndex < pointCount; pointIndex += 1) {
     const x = Number(xAxis._offset || 0) + xAxis.d2p(trace.x[pointIndex]);
-    const y = Number(yAxis._offset || 0) + yAxis.d2p(trace.y[pointIndex]);
+    let y = Number(yAxis._offset || 0) + yAxis.d2p(trace.y[pointIndex]);
+    const textRect = textNodes[pointIndex]?.getBoundingClientRect?.();
+    if (textRect?.height) y = textRect.top + textRect.height * 0.5 - chartRect.top;
     if (Number.isFinite(x) && Number.isFinite(y)) points.push({ x, y, pointIndex });
   }
   points.sort((a, b) => a.x - b.x);
@@ -2102,12 +2206,28 @@ function bindCursorMoveSync() {
     };
 
     const processPointerMove = (sourceEl, clientX, clientY, findLineTarget) => {
+      const perfStartedAt = perfDebugEnabled ? performance.now() : 0;
       if (findLineTarget) {
         const now = performance.now();
         if (!isViewportDragging && now - lastLineHitTestAt >= LINE_HIT_TEST_INTERVAL_MS) {
           lastLineHitTestAt = now;
           const disclosureTarget = findDisclosureMarkerAtClientPoint(sourceEl, clientX, clientY, false);
           sourceEl.classList.toggle("is-disclosure-hovering", Boolean(disclosureTarget));
+          if (!hoverShowPopup) {
+            if (disclosureTarget) {
+              const trace = sourceEl.data?.[disclosureTarget.traceIndex];
+              scheduleDisclosureHoverHighlight({
+                points: [{
+                  curveNumber: disclosureTarget.traceIndex,
+                  pointIndex: disclosureTarget.pointIndex,
+                  pointNumber: disclosureTarget.pointIndex,
+                  data: trace,
+                }],
+              });
+            } else {
+              resetDisclosureHoverHighlight(sourceEl);
+            }
+          }
           const lineTarget = disclosureTarget
             ? null
             : findNearestLineDragTarget(sourceEl, clientX, clientY, false);
@@ -2115,6 +2235,7 @@ function bindCursorMoveSync() {
         }
       }
       moveAt(sourceEl, clientX);
+      if (perfStartedAt) recordPerfSample("pointerMove", perfStartedAt, { chart: sourceEl.id || "unknown" });
     };
 
     const schedulePointerMove = (sourceEl, clientX, clientY, findLineTarget) => {
@@ -2142,6 +2263,7 @@ function bindCursorMoveSync() {
       pendingPointerMove = null;
       setHoveredLineTarget(null);
       mainEl.classList.remove("is-disclosure-hovering");
+      resetDisclosureHoverHighlight(mainEl);
       scheduleSyncedCursor(null);
       clearHoverOnChart(mainEl);
       clearHoverOnChart(adrEl);
@@ -2159,8 +2281,12 @@ function bindCursorMoveSync() {
         && disclosurePointerDown.pointIndex === hit.pointIndex
       );
       disclosurePointerDown = null;
+      if (!hit) {
+        hideDisclosurePopover();
+        return;
+      }
       if (now < suppressPlotlyClickUntil && !directPress) return;
-      if (!hit || !openDisclosureMarkerHit(mainEl, hit, event)) return;
+      if (!openDisclosureMarkerHit(mainEl, hit, event)) return;
       event.preventDefault();
       event.stopPropagation();
     };
@@ -2183,6 +2309,7 @@ function bindCursorMoveSync() {
         clearTouchDoubleTapZoomState();
         return;
       }
+      hideDisclosurePopover();
       event.preventDefault();
       const lineTarget = findNearestLineDragTarget(event.currentTarget, touch.clientX, touch.clientY, true);
       if (lineTarget && beginLineOffsetDrag(event.currentTarget, lineTarget, touch.clientY)) {
@@ -4296,10 +4423,10 @@ function buildDisclosureTrace(selected, seriesModels, start, end) {
   return {
     x: groups.map((group) => group.plotDate),
     y: groups.map((group) => group.y),
-    text: groups.map(() => "v"),
+    text: groups.map(() => DISCLOSURE_ICON_TEXT),
     customdata: groupIds.map((id) => [id]),
     type: "scatter",
-    mode: "markers+text",
+    mode: "text",
     name: DISCLOSURE_TRACE_NAME,
     showlegend: false,
     cliponaxis: false,
@@ -4311,12 +4438,6 @@ function buildDisclosureTrace(selected, seriesModels, start, end) {
     meta: { isDisclosureTrace: true },
     textposition: "top center",
     textfont: { color: DISCLOSURE_MARKER_COLOR, size: DISCLOSURE_TEXT_SIZE, family: "Arial Black, sans-serif" },
-    marker: {
-      symbol: "triangle-down",
-      size: DISCLOSURE_MARKER_SIZE,
-      color: DISCLOSURE_MARKER_COLOR,
-      line: { color: DISCLOSURE_MARKER_LINE_COLOR, width: DISCLOSURE_MARKER_LINE_WIDTH },
-    },
   };
 }
 
@@ -4363,10 +4484,6 @@ function refreshDisclosureTraceFast(seriesKey = "") {
       text: [nextTrace.text],
       customdata: [nextTrace.customdata],
       hovertemplate: [nextTrace.hovertemplate],
-      "marker.size": [DISCLOSURE_MARKER_SIZE],
-      "marker.color": [DISCLOSURE_MARKER_COLOR],
-      "marker.line.width": [DISCLOSURE_MARKER_LINE_WIDTH],
-      "marker.line.color": [DISCLOSURE_MARKER_LINE_COLOR],
       "textfont.size": [DISCLOSURE_TEXT_SIZE],
       "textfont.color": [DISCLOSURE_MARKER_COLOR],
       visible: true,
@@ -4403,6 +4520,10 @@ function ensureDisclosurePopover() {
       node.addEventListener(eventName, (event) => event.stopPropagation());
     });
     chart.appendChild(node);
+    document.addEventListener("pointerdown", (event) => {
+      if (node.hidden || node.contains(event.target)) return;
+      hideDisclosurePopover();
+    }, true);
   }
   return node;
 }
@@ -4506,10 +4627,6 @@ function resetDisclosureHoverHighlight(chartEl = document.getElementById("chart"
   const traceIndex = currentDisclosureHighlight.traceIndex;
   currentDisclosureHighlight = null;
   Plotly.restyle(chartEl, {
-    "marker.size": [DISCLOSURE_MARKER_SIZE],
-    "marker.color": [DISCLOSURE_MARKER_COLOR],
-    "marker.line.width": [DISCLOSURE_MARKER_LINE_WIDTH],
-    "marker.line.color": [DISCLOSURE_MARKER_LINE_COLOR],
     "textfont.size": [DISCLOSURE_TEXT_SIZE],
     "textfont.color": [DISCLOSURE_MARKER_COLOR],
   }, [traceIndex]).catch(() => {});
@@ -4567,26 +4684,14 @@ function highlightDisclosureHoverPoint(evtData) {
 
   resetDisclosureHoverHighlight(chartEl);
 
-  const sizes = Array(count).fill(DISCLOSURE_MARKER_SIZE);
-  const colors = Array(count).fill(DISCLOSURE_MARKER_COLOR);
-  const lineWidths = Array(count).fill(DISCLOSURE_MARKER_LINE_WIDTH);
-  const lineColors = Array(count).fill(DISCLOSURE_MARKER_LINE_COLOR);
   const textSizes = Array(count).fill(DISCLOSURE_TEXT_SIZE);
   const textColors = Array(count).fill(DISCLOSURE_MARKER_COLOR);
 
-  sizes[pointIndex] = DISCLOSURE_MARKER_HOVER_SIZE;
-  colors[pointIndex] = DISCLOSURE_MARKER_HOVER_COLOR;
-  lineWidths[pointIndex] = DISCLOSURE_MARKER_HOVER_LINE_WIDTH;
-  lineColors[pointIndex] = DISCLOSURE_MARKER_HOVER_LINE_COLOR;
   textSizes[pointIndex] = DISCLOSURE_TEXT_HOVER_SIZE;
   textColors[pointIndex] = DISCLOSURE_MARKER_HOVER_LINE_COLOR;
 
   currentDisclosureHighlight = { traceIndex, pointIndex };
   Plotly.restyle(chartEl, {
-    "marker.size": [sizes],
-    "marker.color": [colors],
-    "marker.line.width": [lineWidths],
-    "marker.line.color": [lineColors],
     "textfont.size": [textSizes],
     "textfont.color": [textColors],
   }, [traceIndex]).catch(() => {});
@@ -5378,7 +5483,7 @@ async function renderChart(preserveZoom = true) {
     paper_bgcolor: "transparent",
     plot_bgcolor: "#111111",
     margin: { l: 42, r: 42, t: 28, b: 32 },
-    hovermode: hoverShowPopup ? "x unified" : "closest",
+    hovermode: hoverShowPopup ? "x unified" : false,
     showlegend: false,
     legend: { orientation: "h", x: 0, y: 1.08, font: { color: "rgba(255,255,255,0.7)", size: 11 } },
     xaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, color: "#666", tickfont: { size: 10 }, fixedrange: false, showspikes: false, hoverformat: "%Y.%-m.%-d", ...(savedXRange ? { range: savedXRange } : { range: defaultXRange, autorange: false }) },

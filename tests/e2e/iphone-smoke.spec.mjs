@@ -127,7 +127,7 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   await stubExternalRefreshes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.65");
+  await expect(page.locator("#appVersionText")).toHaveText("0.66");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
@@ -147,15 +147,17 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
     }));
   });
   const getHistoryRequests = await installDataRoutes(page);
-  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await page.goto("/?e2e=1&perf=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.65");
+  await expect(page.locator("#appVersionText")).toHaveText("0.66");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   await expect(page.locator('[data-series="customer_deposit"]')).toBeVisible();
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
   expect(getHistoryRequests()).toBe(0);
   await expect(page.locator(".hero h1")).not.toHaveClass(/is-loading/);
+  expect(await page.evaluate(() => window.ThinkStockE2E?.getMainHoverMode?.())).toBe(false);
+  await page.evaluate(() => window.ThinkStockPerf?.clear?.());
 
   const togglePerfBefore = await page.evaluate(() => ({
     generation: window.ThinkStockE2E.getChartRenderGeneration(),
@@ -248,17 +250,16 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
     }).toBe("default");
   }
 
-  const disclosureText = page.locator("#chart .textpoint text").filter({ hasText: "v" }).first();
+  const disclosureText = page.locator("#chart .textpoint text").filter({ hasText: "◆" }).first();
   await expect(disclosureText).toBeVisible();
   const getDisclosurePoint = () => page.locator("#chart").evaluate((element) => {
-    const trace = element.data?.find((item) => item?.meta?.isDisclosureTrace);
-    const xAxis = element._fullLayout?.xaxis;
-    const yAxis = element._fullLayout?.yaxis;
-    const rect = element.getBoundingClientRect();
-    if (!trace || !xAxis || !yAxis) return null;
+    const icon = [...element.querySelectorAll(".textpoint text")]
+      .find((node) => node.textContent?.trim() === "◆");
+    const textRect = icon?.getBoundingClientRect();
+    if (!textRect?.width || !textRect?.height) return null;
     return {
-      x: rect.left + xAxis._offset + xAxis.d2p(trace.x[0]),
-      y: rect.top + yAxis._offset + yAxis.d2p(trace.y[0]),
+      x: textRect.left + textRect.width * 0.5,
+      y: textRect.top + textRect.height * 0.5,
     };
   });
   let disclosurePoint = await getDisclosurePoint();
@@ -295,8 +296,48 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   }
   await expect(popover).toBeVisible();
   await expect(popover.locator(".disclosure-title-link")).toHaveAttribute("href", "https://dart.fss.or.kr/example");
+  const chartBox = await page.locator("#chart").boundingBox();
+  const popoverBox = await popover.boundingBox();
+  expect(chartBox).not.toBeNull();
+  expect(popoverBox).not.toBeNull();
+  const marginCandidates = [
+    { x: chartBox.x + 6, y: chartBox.y + 6 },
+    { x: chartBox.x + chartBox.width - 6, y: chartBox.y + 6 },
+    { x: chartBox.x + 6, y: chartBox.y + chartBox.height - 6 },
+    { x: chartBox.x + chartBox.width - 6, y: chartBox.y + chartBox.height - 6 },
+  ];
+  const outsidePoint = marginCandidates.find((point) => (
+    point.x < popoverBox.x
+    || point.x > popoverBox.x + popoverBox.width
+    || point.y < popoverBox.y
+    || point.y > popoverBox.y + popoverBox.height
+  ));
+  expect(outsidePoint).toBeTruthy();
+  if (isMobile) {
+    await page.touchscreen.tap(outsidePoint.x, outsidePoint.y);
+  } else {
+    await page.mouse.click(outsidePoint.x, outsidePoint.y);
+  }
+  await expect(popover).toBeHidden();
+
+  expect(await page.evaluate(() => window.ThinkStockE2E?.openFirstDisclosure?.())).toBe(true);
+  await expect(popover).toBeVisible();
   await popover.getByRole("button", { name: "공시 닫기" }).click();
   await expect(popover).toBeHidden();
+
+  await page.evaluate(() => window.ThinkStockE2E.saveRuntimeSnapshotNow());
+  const snapshotStatsBefore = await page.evaluate(() => window.ThinkStockE2E.getRuntimeSnapshotStats());
+  await page.evaluate(() => window.ThinkStockE2E.saveRuntimeSnapshotNow());
+  const snapshotStatsAfter = await page.evaluate(() => window.ThinkStockE2E.getRuntimeSnapshotStats());
+  expect(snapshotStatsAfter.builds).toBe(snapshotStatsBefore.builds);
+  expect(snapshotStatsAfter.writes).toBe(snapshotStatsBefore.writes);
+  expect(snapshotStatsAfter.skips).toBeGreaterThan(snapshotStatsBefore.skips);
+
+  if (!isMobile) {
+    const perfSummary = await page.evaluate(() => window.ThinkStockPerf.summary());
+    expect(perfSummary.pointerMoves).toBeGreaterThan(0);
+    expect(perfSummary.maxPointerMove).toBeLessThan(150);
+  }
 
   await page.locator('.range-btn[data-months="360"]').click();
   await expect.poll(getHistoryRequests).toBe(4);

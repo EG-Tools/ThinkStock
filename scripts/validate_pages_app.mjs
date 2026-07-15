@@ -60,6 +60,10 @@ assert.ok(plotlyBundle.size < 1_500_000, `Plotly bundle is too large: ${plotlyBu
 assert.ok(app.includes('const MAIN_LINE_TRACE_TYPE = "scatter";'), "main chart is not using the SVG scatter path");
 assert.ok(app.includes("MAIN_CHART_TOTAL_VISIBLE_POINT_TARGET_MOBILE"), "adaptive mobile chart budget is missing");
 assert.ok(app.includes("const plotlyReadyTask = ensurePlotlyReady()"), "Plotly is not prepared in parallel during boot");
+assert.ok(app.includes('hovermode: hoverShowPopup ? "x unified" : false'), "disabled hover still runs Plotly hit testing");
+assert.ok(app.includes("function getRuntimeDataSignature()"), "runtime snapshot deduplication is missing");
+assert.ok(app.includes("function startPerfFrameMonitor()"), "performance frame diagnostics are missing");
+assert.ok(app.includes('const DISCLOSURE_ICON_TEXT = "◆";'), "disclosure icon is not configured");
 assert.ok(app.includes("fetchSegmentedSeedText"), "segmented data loading is missing");
 assert.ok(app.includes("ensureHistoricalDataLoaded"), "historical lazy loading is missing");
 assert.ok(app.includes("requestChartModelFromWorker"), "chart model worker client is missing");
