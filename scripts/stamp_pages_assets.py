@@ -48,6 +48,7 @@ def replace_once(text: str, pattern: str, replacement: str, label: str) -> str:
 def main() -> int:
     version = resolve_build_version()
     chart_loader_src = f"./modules/chart-loader.js?v={version}"
+    disclosure_policy_src = f"./modules/disclosure-policy.js?v={version}"
     data_worker_src = f"./modules/data-worker.js?v={version}"
     chart_model_worker_src = f"./modules/chart-model-worker.js?v={version}"
     app_src = f"./app.js?v={version}"
@@ -58,6 +59,12 @@ def main() -> int:
         r'<script defer src="\./modules/chart-loader\.js(?:\?v=[^"]*)?"></script>',
         f'<script defer src="{chart_loader_src}"></script>',
         "index chart-loader.js script",
+    )
+    index = replace_once(
+        index,
+        r'<script defer src="\./modules/disclosure-policy\.js(?:\?v=[^"]*)?"></script>',
+        f'<script defer src="{disclosure_policy_src}"></script>',
+        "index disclosure-policy.js script",
     )
     index = replace_once(
         index,
@@ -79,6 +86,12 @@ def main() -> int:
         r'"\./modules/chart-loader\.js(?:\?v=[^"]*)?",',
         f'"{chart_loader_src}",',
         "service worker chart-loader.js asset",
+    )
+    sw = replace_once(
+        sw,
+        r'"\./modules/disclosure-policy\.js(?:\?v=[^"]*)?",',
+        f'"{disclosure_policy_src}",',
+        "service worker disclosure-policy.js asset",
     )
     sw = replace_once(
         sw,

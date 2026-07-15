@@ -1,5 +1,6 @@
 import io
 from datetime import date, datetime
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -8,6 +9,8 @@ import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 
+from thinkstock_data import bundled_data_revision, load_bundled_market_data
+
 st.set_page_config(
     page_title="ThinkStock",
     layout="wide",
@@ -15,10 +18,12 @@ st.set_page_config(
 )
 
 APP_TITLE = "ThinkStock"
+ROOT_DIR = Path(__file__).resolve().parent
+BUNDLED_DATA_DIR = ROOT_DIR / "docs" / "data"
 DEFAULT_TICKERS = "^KS11,^KQ11,005930.KS,218410.KQ"
 DEFAULT_SELECTED_SERIES = ["leading_cycle", "^KS11"]
 DATE_PRESET_YEARS = [1, 5, 10, 20, 30]
-SERIES_PRIORITY = ["leading_cycle", "^KS11", "kospi_credit", "^KQ11", "kosdaq_credit", "005930.KS", "218410.KQ"]
+SERIES_PRIORITY = ["leading_cycle", "^KS11", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit", "005930.KS", "218410.KQ"]
 DEFAULT_CSV = """date,leading_cycle,kospi_credit,kosdaq_credit
 2000-01-01,100.5,5.5,3.2
 2000-07-01,99.5,5.7,3.3
@@ -78,6 +83,7 @@ DEFAULT_CSV = """date,leading_cycle,kospi_credit,kosdaq_credit
 """
 DISPLAY_NAMES = {
     "leading_cycle": "선행지수 순환변동치",
+    "customer_deposit": "고객예탁금",
     "kospi_credit": "코스피 신용잔고",
     "kosdaq_credit": "코스닥 신용잔고",
     "^KS11": "코스피",
@@ -89,6 +95,7 @@ PRESET_OPTIONS = {
     "기본 보기": ["^KS11", "leading_cycle"],
     "시장 + 거시 밸런스": [
         "leading_cycle",
+        "customer_deposit",
         "kospi_credit",
         "kosdaq_credit",
         "^KS11",
@@ -109,7 +116,8 @@ COLORWAY = [
 ]
 HELP_TEXT = """
 - 가격 데이터는 Yahoo Finance에서 자동 조회합니다.
-- 선행지수, 신용잔고 같은 매크로 데이터는 샘플 CSV, 업로드, 붙여넣기, 원격 CSV URL 중 하나로 넣을 수 있습니다.
+- 선행지수, 고객예탁금, 신용잔고는 기본적으로 Pages와 같은 검증된 저장 데이터를 사용합니다.
+- 필요하면 샘플 CSV, 업로드, 붙여넣기, 원격 CSV URL로 매크로 데이터를 교체할 수 있습니다.
 - 월별 매크로 데이터는 가격 날짜 축에 맞춰 시간 보간해서, 더 촘촘한 흐름으로 비교할 수 있습니다.
 - 아이폰에서 볼 때는 설정을 접고 차트 중심으로 보는 흐름을 기본으로 잡았습니다.
 """
@@ -309,6 +317,15 @@ def fetch_remote_text(url: str) -> str:
     request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urlopen(request, timeout=20) as response:
         return decode_text_bytes(response.read())
+
+
+@st.cache_data(show_spinner=False)
+def load_cached_bundled_market_data(
+    data_dir: str,
+    revision: tuple[tuple[str, int, int], ...],
+) -> pd.DataFrame:
+    _ = revision
+    return load_bundled_market_data(Path(data_dir))
 
 
 def extract_close_series(data: pd.DataFrame, ticker: str) -> pd.Series | None:
@@ -669,7 +686,7 @@ with st.expander("빠른 설정", expanded=True):
 
     source_mode = st.selectbox(
         "매크로 데이터 소스",
-        ["샘플 CSV", "CSV 업로드", "직접 붙여넣기", "원격 CSV URL"],
+        ["저장 데이터", "샘플 CSV", "CSV 업로드", "직접 붙여넣기", "원격 CSV URL"],
     )
     uploaded = None
     pasted_text = DEFAULT_CSV
@@ -698,10 +715,15 @@ manual_source_label = "미사용"
 manual_preview_text = ""
 manual_error = None
 try:
-    manual_preview_text, manual_source_label = resolve_manual_text(
-        source_mode, pasted_text, uploaded, remote_url
-    )
-    manual_df = parse_user_csv(manual_preview_text)
+    if source_mode == "저장 데이터":
+        revision = bundled_data_revision(BUNDLED_DATA_DIR)
+        manual_df = load_cached_bundled_market_data(str(BUNDLED_DATA_DIR), revision)
+        manual_source_label = "Pages 저장 데이터"
+    else:
+        manual_preview_text, manual_source_label = resolve_manual_text(
+            source_mode, pasted_text, uploaded, remote_url
+        )
+        manual_df = parse_user_csv(manual_preview_text)
 except (HTTPError, URLError, ValueError, OSError) as exc:
     manual_df = pd.DataFrame()
     manual_error = str(exc)

@@ -4,6 +4,7 @@ const PRECACHE_ASSETS = [
   "./index.html",
   "./styles.css",
   "./modules/chart-loader.js?v=dev",
+  "./modules/disclosure-policy.js?v=dev",
   "./modules/data-worker.js?v=dev",
   "./modules/chart-model-worker.js?v=dev",
   "./app.js?v=dev",
@@ -32,6 +33,7 @@ const CORE_ASSET_PATHS = [
   "/manifest.webmanifest",
   "/icon.svg",
   "/modules/chart-loader.js",
+  "/modules/disclosure-policy.js",
   "/modules/data-worker.js",
   "/modules/chart-model-worker.js",
 ];

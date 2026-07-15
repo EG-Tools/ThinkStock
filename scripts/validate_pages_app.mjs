@@ -5,11 +5,12 @@ import path from "node:path";
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [app, html, sw, chartLoader, plotlyBundle] = await Promise.all([
+const [app, html, sw, chartLoader, disclosurePolicy, plotlyBundle] = await Promise.all([
   readFile(path.join(root, "docs", "app.js"), "utf8"),
   readFile(path.join(root, "docs", "index.html"), "utf8"),
   readFile(path.join(root, "docs", "sw.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "chart-loader.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "disclosure-policy.js"), "utf8"),
   stat(path.join(root, "docs", "vendor", "plotly-basic-2.35.2.min.js")),
 ]);
 
@@ -38,6 +39,7 @@ requiredIds.forEach((id) => assert.ok(ids.includes(id), `required UI element is 
   "./index.html",
   "./styles.css",
   "./modules/chart-loader.js?v=dev",
+  "./modules/disclosure-policy.js?v=dev",
   "./modules/data-worker.js?v=dev",
   "./modules/chart-model-worker.js?v=dev",
   "./app.js?v=dev",
@@ -45,6 +47,8 @@ requiredIds.forEach((id) => assert.ok(ids.includes(id), `required UI element is 
 ].forEach((asset) => assert.ok(sw.includes(`"${asset}"`), `service worker precache is missing: ${asset}`));
 
 assert.ok(app.includes("function isDirectDisclosureTap"), "iPhone disclosure tap guard is missing");
+assert.ok(app.includes("ThinkStockDisclosurePolicy"), "disclosure policy module is not wired into the app");
+assert.ok(disclosurePolicy.includes("shouldDisplayDisclosure"), "disclosure policy filter is missing");
 assert.ok(app.includes("disclosure-title-link"), "disclosure title links are missing");
 assert.ok(html.includes('data-series="customer_deposit"'), "customer deposit toggle is missing");
 assert.ok(app.includes("getSecuritiesMarketTotalCapitalInfo"), "customer deposit API endpoint is missing");
