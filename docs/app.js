@@ -68,7 +68,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.71";
+const APP_VERSION = "0.72";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -5825,7 +5825,7 @@ function renderAdrChart(xRange) {
       },
       {
         type: "line", xref: "paper", yref: "paper",
-        x0: 0, x1: 1, y0: 0.46, y1: 0.46,
+        x0: 0, x1: 1, y0: 0.54, y1: 0.54,
         line: { color: "rgba(255,255,255,0.24)", width: 1 },
       },
       {
@@ -5855,7 +5855,7 @@ function renderAdrChart(xRange) {
       },
       {
         type: "line", xref: "paper", yref: "paper",
-        x0: 0, x1: 1, y0: 0.22, y1: 0.22,
+        x0: 0, x1: 1, y0: 0.25, y1: 0.25,
         line: { color: "rgba(255,255,255,0.24)", width: 1 },
       },
       {
@@ -5932,7 +5932,7 @@ function renderAdrChart(xRange) {
       tickformat: ".0f",
       autorange: false,
       range: [adrYMin, adrYMax],
-      domain: [0.50, 1],
+      domain: [0.58, 1],
     },
     yaxis2: {
       showgrid: false,
@@ -5942,7 +5942,7 @@ function renderAdrChart(xRange) {
       tickvals: [0, FEAR_GREED_LOW_THRESH, 50, FEAR_GREED_HIGH_THRESH, 100],
       fixedrange: true,
       range: [0, 100],
-      domain: [0.26, 0.42],
+      domain: [0.29, 0.50],
     },
     yaxis3: {
       showgrid: false,
@@ -5952,7 +5952,7 @@ function renderAdrChart(xRange) {
       tickvals: [NEWS_SENTIMENT_LOW_THRESH, 100, NEWS_SENTIMENT_HIGH_THRESH],
       fixedrange: true,
       range: [newsYMin, newsYMax],
-      domain: [0, 0.18],
+      domain: [0, 0.21],
     },
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
     hoverlabel: plotlyHoverLabel(11),

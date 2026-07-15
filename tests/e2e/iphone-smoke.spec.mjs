@@ -144,7 +144,7 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   await stubExternalRefreshes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.71");
+  await expect(page.locator("#appVersionText")).toHaveText("0.72");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
@@ -166,7 +166,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   const getHistoryRequests = await installDataRoutes(page);
   await page.goto("/?e2e=1&perf=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.71");
+  await expect(page.locator("#appVersionText")).toHaveText("0.72");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   await expect(page.locator('[data-series="customer_deposit"]')).toBeVisible();
@@ -192,8 +192,11 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
       && labels.includes("비관")
       && labels.includes("낙관")
       && newsBoundaryLines.length === 2
-      && separators.includes(0.46)
-      && separators.includes(0.22);
+      && separators.includes(0.54)
+      && separators.includes(0.25)
+      && element.layout?.yaxis?.domain?.[0] === 0.58
+      && Math.abs(element.layout?.yaxis2?.domain?.[1] - element.layout?.yaxis2?.domain?.[0] - 0.21) < 0.001
+      && Math.abs(element.layout?.yaxis3?.domain?.[1] - element.layout?.yaxis3?.domain?.[0] - 0.21) < 0.001;
   })).toBe(true);
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
   expect(getHistoryRequests()).toBe(0);
