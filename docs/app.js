@@ -67,7 +67,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.68";
+const APP_VERSION = "0.69";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -5599,6 +5599,8 @@ const ADR_ZONE_HIGH_COLOR  = "#e6adad";   // > 120
 const ADR_BAND_COLOR       = "rgba(100,100,100,0.06)";
 const ADR_LOW_THRESH  = 80;
 const ADR_HIGH_THRESH = 120;
+const FEAR_GREED_LOW_THRESH = 25;
+const FEAR_GREED_HIGH_THRESH = 75;
 
 /**
  * Build ADR overlay traces with segmented zones.
@@ -5793,19 +5795,29 @@ function renderAdrChart(xRange) {
       },
       {
         type: "rect", xref: "paper", yref: "y2",
-        x0: 0, x1: 1, y0: 0, y1: 25,
-        fillcolor: "rgba(248,113,113,0.08)", line: { width: 0 }, layer: "below",
+        x0: 0, x1: 1, y0: 0, y1: FEAR_GREED_LOW_THRESH,
+        fillcolor: "rgba(176,198,237,0.12)", line: { width: 0 }, layer: "below",
       },
       {
         type: "rect", xref: "paper", yref: "y2",
-        x0: 0, x1: 1, y0: 75, y1: 100,
-        fillcolor: "rgba(74,222,128,0.07)", line: { width: 0 }, layer: "below",
+        x0: 0, x1: 1, y0: FEAR_GREED_HIGH_THRESH, y1: 100,
+        fillcolor: "rgba(230,173,173,0.12)", line: { width: 0 }, layer: "below",
       },
-      ...[25, 50, 75].map((value) => ({
+      {
         type: "line", xref: "paper", yref: "y2",
-        x0: 0, x1: 1, y0: value, y1: value,
-        line: { color: "rgba(255,255,255,0.12)", width: 0.7, dash: value === 50 ? "dot" : "dash" },
-      })),
+        x0: 0, x1: 1, y0: FEAR_GREED_LOW_THRESH, y1: FEAR_GREED_LOW_THRESH,
+        line: { color: ADR_ZONE_LOW_COLOR, width: 0.9, dash: "dash" },
+      },
+      {
+        type: "line", xref: "paper", yref: "y2",
+        x0: 0, x1: 1, y0: 50, y1: 50,
+        line: { color: "rgba(255,255,255,0.15)", width: 0.8, dash: "dot" },
+      },
+      {
+        type: "line", xref: "paper", yref: "y2",
+        x0: 0, x1: 1, y0: FEAR_GREED_HIGH_THRESH, y1: FEAR_GREED_HIGH_THRESH,
+        line: { color: ADR_ZONE_HIGH_COLOR, width: 0.9, dash: "dash" },
+      },
     ],
     annotations: [
       {
@@ -5816,6 +5828,16 @@ function renderAdrChart(xRange) {
       {
         xref: "paper", yref: "y", x: 1.01, y: ADR_HIGH_THRESH,
         text: "120%", showarrow: false, xanchor: "left",
+        font: { color: ADR_ZONE_HIGH_COLOR, size: 9 },
+      },
+      {
+        xref: "paper", yref: "y2", x: 1.01, y: FEAR_GREED_LOW_THRESH,
+        text: "25 침체", showarrow: false, xanchor: "left",
+        font: { color: ADR_ZONE_LOW_COLOR, size: 9 },
+      },
+      {
+        xref: "paper", yref: "y2", x: 1.01, y: FEAR_GREED_HIGH_THRESH,
+        text: "75 과열", showarrow: false, xanchor: "left",
         font: { color: ADR_ZONE_HIGH_COLOR, size: 9 },
       },
     ],
@@ -5842,7 +5864,7 @@ function renderAdrChart(xRange) {
       zeroline: false,
       color: "#777",
       tickfont: { size: 9 },
-      tickvals: [0, 25, 50, 75, 100],
+      tickvals: [0, FEAR_GREED_LOW_THRESH, 50, FEAR_GREED_HIGH_THRESH, 100],
       fixedrange: true,
       range: [0, 100],
       domain: [0, 0.23],

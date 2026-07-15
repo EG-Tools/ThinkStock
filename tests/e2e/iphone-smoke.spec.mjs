@@ -144,7 +144,7 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   await stubExternalRefreshes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.68");
+  await expect(page.locator("#appVersionText")).toHaveText("0.69");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
@@ -166,7 +166,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   const getHistoryRequests = await installDataRoutes(page);
   await page.goto("/?e2e=1&perf=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.68");
+  await expect(page.locator("#appVersionText")).toHaveText("0.69");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   await expect(page.locator('[data-series="customer_deposit"]')).toBeVisible();
@@ -174,6 +174,13 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   expect(await page.locator("#chart-adr").evaluate((element) => (
     element.data?.some((trace) => trace.name === "공포탐욕" && trace.yaxis === "y2")
   ))).toBe(true);
+  expect(await page.locator("#chart-adr").evaluate((element) => {
+    const labels = (element.layout?.annotations || []).map((item) => item.text);
+    const boundaryLines = (element.layout?.shapes || []).filter((item) => (
+      item.type === "line" && item.yref === "y2" && item.line?.dash === "dash"
+    ));
+    return labels.includes("25 침체") && labels.includes("75 과열") && boundaryLines.length === 2;
+  })).toBe(true);
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
   expect(getHistoryRequests()).toBe(0);
   await expect(page.locator(".hero h1")).not.toHaveClass(/is-loading/);
