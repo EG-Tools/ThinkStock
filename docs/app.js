@@ -57,8 +57,18 @@ const DATA_CACHE_DB_VERSION = 2;
 const DATA_CACHE_STORE_NAME = "snapshots";
 const DATA_CACHE_RECORD_KEY = "latest";
 const DATA_CACHE_LOCAL_KEY = "thinkstock-runtime-cache-v1";
-const DATA_CACHE_SCHEMA_VERSION = 7;
+const DATA_CACHE_SCHEMA_VERSION = 8;
 const DATA_CACHE_MAX_AGE_DAYS = 7;
+const RUNTIME_SNAPSHOT_FORMAT = "component-v1";
+const RUNTIME_SNAPSHOT_COMPONENT_KEYS = Object.freeze({
+  price: "component:price",
+  macro: "component:macro",
+  credit: "component:credit",
+  adr: "component:adr",
+  disclosure: "component:disclosure",
+});
+const LOCAL_SNAPSHOT_MAX_ROWS = 900;
+const LOCAL_SNAPSHOT_MAX_DISCLOSURES = 80;
 const TICKER_PRICE_CACHE_STORE_NAME = "tickerPrices";
 const TICKER_DISCLOSURE_CACHE_STORE_NAME = "tickerDisclosures";
 const GRANULAR_CACHE_SCHEMA_VERSION = 1;
@@ -68,7 +78,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.72";
+const APP_VERSION = "0.73";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -333,6 +343,13 @@ let runtimeSnapshotWriteSignature = "";
 let runtimeSnapshotBuildCount = 0;
 let runtimeSnapshotWriteCount = 0;
 let runtimeSnapshotSkipCount = 0;
+let runtimeSnapshotComponentWriteCount = 0;
+let runtimeSnapshotComponentCache = new Map();
+let runtimeSnapshotPersistedRevisions = {};
+let dataRevisions = { price: 0, macro: 0, credit: 0, adr: 0, disclosure: 0 };
+let granularCacheCleanupStats = { runs: 0, transactions: 0, deleted: 0 };
+let lineHighlightDomUpdateCount = 0;
+let disclosureHighlightDomUpdateCount = 0;
 let perfSamples = [];
 let perfDebugEnabled = false;
 let perfFrameRafId = 0;
@@ -430,7 +447,30 @@ function initE2eDebugAccess() {
           builds: runtimeSnapshotBuildCount,
           writes: runtimeSnapshotWriteCount,
           skips: runtimeSnapshotSkipCount,
+          componentWrites: runtimeSnapshotComponentWriteCount,
+          revisions: getDataRevisions(),
         };
+      },
+      getCacheCleanupStats() {
+        return { ...granularCacheCleanupStats };
+      },
+      getHighlightStats() {
+        return {
+          lineDomUpdates: lineHighlightDomUpdateCount,
+          disclosureDomUpdates: disclosureHighlightDomUpdateCount,
+        };
+      },
+      applyNewsSentimentForTest(rows) {
+        const result = applyNewsSentimentLiveRows(rows);
+        if (result.updated > 0) {
+          mainChartCalcCache = null;
+          lastAdrRenderKey = "";
+          requestChartRender(false);
+        }
+        return result;
+      },
+      pruneGranularCacheForTest(storeName, maxRecords) {
+        return pruneGranularCacheStore(storeName, maxRecords);
       },
       saveRuntimeSnapshotNow() {
         return saveLastRuntimeSnapshot();
@@ -741,38 +781,92 @@ async function ensureDartCorpCodeMapLoaded(forceNetwork = false) {
   return dartCorpCodeMapPromise;
 }
 
+function getDataRevisions() {
+  return { ...dataRevisions };
+}
+
+function markDataChanged(...names) {
+  names.forEach((name) => {
+    if (!Object.prototype.hasOwnProperty.call(dataRevisions, name)) return;
+    dataRevisions[name] = (Number(dataRevisions[name]) || 0) + 1;
+    runtimeSnapshotComponentCache.delete(name);
+  });
+}
+
+function applySnapshotRevisions(revisions, loadedNames) {
+  const source = revisions && typeof revisions === "object" ? revisions : {};
+  loadedNames.forEach((name) => {
+    const incoming = Number(source[name]);
+    dataRevisions[name] = Number.isFinite(incoming) && incoming > 0
+      ? incoming
+      : (Number(dataRevisions[name]) || 0) + 1;
+    runtimeSnapshotComponentCache.delete(name);
+  });
+}
+
+function getSnapshotComponent(name) {
+  const revision = Number(dataRevisions[name]) || 0;
+  const cached = runtimeSnapshotComponentCache.get(name);
+  if (cached?.revision === revision) return cached.value;
+
+  let value = null;
+  if (name === "price") value = sanitizePricePayloadForSnapshot(pricePayload);
+  else if (name === "macro") value = normalizePayloadRecords(macroRows);
+  else if (name === "credit") value = normalizeCreditRows(creditRows);
+  else if (name === "adr") value = normalizePayloadRecords(adrRows);
+  else if (name === "disclosure") value = sanitizeDisclosureRows(disclosureRows);
+  runtimeSnapshotComponentCache.set(name, { revision, value });
+  return value;
+}
+
 function buildRuntimeDataSnapshot() {
-  const safePricePayload = sanitizePricePayloadForSnapshot(pricePayload);
-  const safeMacroRows = normalizePayloadRecords(macroRows);
-  const safeCreditRows = normalizeCreditRows(creditRows);
-  const safeAdrRows = normalizePayloadRecords(adrRows);
-  const safeDisclosureRows = sanitizeDisclosureRows(disclosureRows);
+  if (!hasRuntimeDataLoaded() && !disclosureRows.length) return null;
+  const revisions = getDataRevisions();
+  const components = {};
+  Object.keys(RUNTIME_SNAPSHOT_COMPONENT_KEYS).forEach((name) => {
+    if (Number(runtimeSnapshotPersistedRevisions[name]) === Number(revisions[name])) return;
+    components[name] = getSnapshotComponent(name);
+  });
+  return {
+    manifest: {
+      version: DATA_CACHE_SCHEMA_VERSION,
+      format: RUNTIME_SNAPSHOT_FORMAT,
+      app_version: APP_VERSION,
+      build_version: APP_BUILD_VERSION,
+      saved_at: new Date().toISOString(),
+      historical_data_loaded: historicalDataLoaded,
+      revisions,
+    },
+    components,
+  };
+}
 
-  if (!safePricePayload && !safeMacroRows.length && !safeCreditRows.length && !safeAdrRows.length && !safeDisclosureRows.length) return null;
-
+function buildCompactLocalSnapshot() {
+  const safePricePayload = getSnapshotComponent("price");
   return {
     version: DATA_CACHE_SCHEMA_VERSION,
+    format: "compact-v1",
     app_version: APP_VERSION,
     build_version: APP_BUILD_VERSION,
     saved_at: new Date().toISOString(),
-    historical_data_loaded: historicalDataLoaded,
-    pricePayload: safePricePayload,
-    macroRows: safeMacroRows,
-    creditRows: safeCreditRows,
-    adrRows: safeAdrRows,
-    disclosureRows: safeDisclosureRows,
+    historical_data_loaded: false,
+    revisions: getDataRevisions(),
+    pricePayload: safePricePayload ? {
+      ...safePricePayload,
+      records: safePricePayload.records.slice(-LOCAL_SNAPSHOT_MAX_ROWS),
+    } : null,
+    macroRows: getSnapshotComponent("macro").slice(-LOCAL_SNAPSHOT_MAX_ROWS),
+    creditRows: getSnapshotComponent("credit").slice(-LOCAL_SNAPSHOT_MAX_ROWS),
+    adrRows: getSnapshotComponent("adr").slice(-LOCAL_SNAPSHOT_MAX_ROWS),
+    disclosureRows: getSnapshotComponent("disclosure").slice(-LOCAL_SNAPSHOT_MAX_DISCLOSURES),
   };
 }
 
 function getRuntimeDataSignature() {
+  const revisions = getDataRevisions();
   return [
     historicalDataLoaded ? "history" : "recent",
-    Array.isArray(pricePayload?.series) ? pricePayload.series.join(",") : "",
-    rowsSignature(pricePayload?.records),
-    rowsSignature(macroRows),
-    rowsSignature(creditRows),
-    rowsSignature(adrRows),
-    hashStringFast(JSON.stringify(disclosureRows || [])),
+    ...Object.keys(RUNTIME_SNAPSHOT_COMPONENT_KEYS).map((name) => `${name}:${revisions[name] || 0}`),
   ].join("::");
 }
 
@@ -798,14 +892,42 @@ function applyRuntimeDataSnapshot(snapshot) {
 
   if (!safePricePayload && !safeMacroRows.length && !safeCreditRows.length && !safeAdrRows.length && !safeDisclosureRows.length) return false;
 
+  const loadedNames = [];
   if (safePricePayload) {
     pricePayload = safePricePayload;
     Object.assign(DISPLAY_NAMES, safePricePayload.display_names || {});
+    loadedNames.push("price");
   }
-  if (safeMacroRows.length) macroRows = safeMacroRows;
-  if (safeCreditRows.length) creditRows = safeCreditRows;
-  if (safeAdrRows.length) adrRows = safeAdrRows;
-  if (safeDisclosureRows.length) disclosureRows = safeDisclosureRows;
+  if (Array.isArray(snapshot.macroRows)) {
+    macroRows = safeMacroRows;
+    loadedNames.push("macro");
+  }
+  if (Array.isArray(snapshot.creditRows)) {
+    creditRows = safeCreditRows;
+    loadedNames.push("credit");
+  }
+  if (Array.isArray(snapshot.adrRows)) {
+    adrRows = safeAdrRows;
+    loadedNames.push("adr");
+  }
+  if (Array.isArray(snapshot.disclosureRows)) {
+    disclosureRows = safeDisclosureRows;
+    loadedNames.push("disclosure");
+  }
+  applySnapshotRevisions(snapshot.revisions, loadedNames);
+  loadedNames.forEach((name) => {
+    runtimeSnapshotComponentCache.set(name, {
+      revision: dataRevisions[name],
+      value: name === "price" ? safePricePayload
+        : name === "macro" ? safeMacroRows
+          : name === "credit" ? safeCreditRows
+            : name === "adr" ? safeAdrRows
+              : safeDisclosureRows,
+    });
+  });
+  runtimeSnapshotPersistedRevisions = snapshot._persistedRevisions
+    ? { ...snapshot._persistedRevisions }
+    : {};
   historicalDataLoaded = snapshot.historical_data_loaded === true || hasHistoricalDataCoverage();
   runtimeSnapshotSavedSignature = getRuntimeDataSignature();
   return true;
@@ -850,19 +972,45 @@ async function readRuntimeSnapshotFromIndexedDb() {
   let db = null;
   try {
     db = await openRuntimeCacheDb();
-    return await new Promise((resolve, reject) => {
+    const manifest = await new Promise((resolve, reject) => {
       const tx = db.transaction(DATA_CACHE_STORE_NAME, "readonly");
       const store = tx.objectStore(DATA_CACHE_STORE_NAME);
       const req = store.get(DATA_CACHE_RECORD_KEY);
       req.onsuccess = () => resolve(req.result || null);
       req.onerror = () => reject(req.error || new Error("IndexedDB read failed"));
     });
+    if (!manifest || manifest.format !== RUNTIME_SNAPSHOT_FORMAT) return manifest;
+    const components = await new Promise((resolve, reject) => {
+      const tx = db.transaction(DATA_CACHE_STORE_NAME, "readonly");
+      const store = tx.objectStore(DATA_CACHE_STORE_NAME);
+      const output = {};
+      let remaining = Object.keys(RUNTIME_SNAPSHOT_COMPONENT_KEYS).length;
+      tx.onerror = () => reject(tx.error || new Error("IndexedDB component read failed"));
+      Object.entries(RUNTIME_SNAPSHOT_COMPONENT_KEYS).forEach(([name, key]) => {
+        const req = store.get(key);
+        req.onsuccess = () => {
+          output[name] = req.result ?? null;
+          remaining -= 1;
+          if (remaining === 0) resolve(output);
+        };
+        req.onerror = () => reject(req.error || new Error("IndexedDB component read failed"));
+      });
+    });
+    return {
+      ...manifest,
+      pricePayload: components.price,
+      macroRows: components.macro,
+      creditRows: components.credit,
+      adrRows: components.adr,
+      disclosureRows: components.disclosure,
+      _persistedRevisions: manifest.revisions || {},
+    };
   } finally {
     try { db?.close(); } catch (_) {}
   }
 }
 
-async function writeRuntimeSnapshotToIndexedDb(snapshot) {
+async function writeRuntimeSnapshotToIndexedDb(snapshotBundle) {
   let db = null;
   try {
     db = await openRuntimeCacheDb();
@@ -871,7 +1019,12 @@ async function writeRuntimeSnapshotToIndexedDb(snapshot) {
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error || new Error("IndexedDB write failed"));
       tx.onabort = () => reject(tx.error || new Error("IndexedDB write aborted"));
-      tx.objectStore(DATA_CACHE_STORE_NAME).put(snapshot, DATA_CACHE_RECORD_KEY);
+      const store = tx.objectStore(DATA_CACHE_STORE_NAME);
+      Object.entries(snapshotBundle?.components || {}).forEach(([name, value]) => {
+        const key = RUNTIME_SNAPSHOT_COMPONENT_KEYS[name];
+        if (key) store.put(value, key);
+      });
+      store.put(snapshotBundle.manifest, DATA_CACHE_RECORD_KEY);
     });
   } finally {
     try { db?.close(); } catch (_) {}
@@ -887,7 +1040,9 @@ async function deleteRuntimeSnapshotFromIndexedDb() {
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error || new Error("IndexedDB delete failed"));
       tx.onabort = () => reject(tx.error || new Error("IndexedDB delete aborted"));
-      tx.objectStore(DATA_CACHE_STORE_NAME).delete(DATA_CACHE_RECORD_KEY);
+      const store = tx.objectStore(DATA_CACHE_STORE_NAME);
+      store.delete(DATA_CACHE_RECORD_KEY);
+      Object.values(RUNTIME_SNAPSHOT_COMPONENT_KEYS).forEach((key) => store.delete(key));
     });
   } finally {
     try { db?.close(); } catch (_) {}
@@ -942,40 +1097,46 @@ async function deleteIndexedDbRecord(storeName, key) {
   }
 }
 
-async function readAllIndexedDbRecords(storeName) {
+async function pruneGranularCacheStore(storeName, maxRecords = GRANULAR_CACHE_MAX_TICKERS) {
   let db = null;
   try {
     db = await openRuntimeCacheDb();
-    return await new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, "readonly");
-      const req = tx.objectStore(storeName).getAll();
-      req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
-      req.onerror = () => reject(req.error || new Error("IndexedDB records read failed"));
+    const deletedCount = await new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, "readwrite");
+      const store = tx.objectStore(storeName);
+      const request = store.getAll();
+      let deleteKeys = [];
+      request.onsuccess = () => {
+        const records = Array.isArray(request.result) ? request.result : [];
+        const now = Date.now();
+        const expiredTickers = new Set(records.filter((record) => {
+          const lastAccessed = Number(record?.lastAccessed || record?.savedAt || 0);
+          return !Number.isFinite(lastAccessed) || now - lastAccessed > GRANULAR_CACHE_MAX_IDLE_DAYS * DAY_MS;
+        }).map((record) => String(record?.ticker || "").toUpperCase()).filter(Boolean));
+        const survivors = records
+          .filter((record) => !expiredTickers.has(String(record?.ticker || "").toUpperCase()))
+          .sort((a, b) => Number(b?.lastAccessed || b?.savedAt || 0) - Number(a?.lastAccessed || a?.savedAt || 0));
+        const overflowTickers = survivors
+          .slice(Math.max(0, maxRecords))
+          .map((record) => String(record?.ticker || "").toUpperCase())
+          .filter(Boolean);
+        deleteKeys = [...new Set([...expiredTickers, ...overflowTickers])];
+        deleteKeys.forEach((key) => store.delete(key));
+      };
+      request.onerror = () => reject(request.error || new Error("IndexedDB records read failed"));
+      tx.oncomplete = () => resolve(deleteKeys.length);
+      tx.onerror = () => reject(tx.error || new Error("IndexedDB cache cleanup failed"));
+      tx.onabort = () => reject(tx.error || new Error("IndexedDB cache cleanup aborted"));
     });
-  } finally {
-    try { db?.close(); } catch (_) {}
-  }
-}
-
-async function pruneGranularCacheStore(storeName, maxRecords = GRANULAR_CACHE_MAX_TICKERS) {
-  try {
-    const records = await readAllIndexedDbRecords(storeName);
-    if (!records.length) return;
-    const now = Date.now();
-    const expired = records.filter((record) => {
-      const lastAccessed = Number(record?.lastAccessed || record?.savedAt || 0);
-      return !Number.isFinite(lastAccessed) || now - lastAccessed > GRANULAR_CACHE_MAX_IDLE_DAYS * DAY_MS;
-    });
-    const survivors = records
-      .filter((record) => !expired.includes(record))
-      .sort((a, b) => Number(b?.lastAccessed || b?.savedAt || 0) - Number(a?.lastAccessed || a?.savedAt || 0));
-    const overflow = survivors.slice(Math.max(0, maxRecords));
-    await Promise.all([...expired, ...overflow].map((record) => {
-      const ticker = String(record?.ticker || "").toUpperCase();
-      return ticker ? deleteIndexedDbRecord(storeName, ticker) : Promise.resolve();
-    }));
+    if (deletedCount > 0) {
+      granularCacheCleanupStats.transactions += 1;
+      granularCacheCleanupStats.deleted += deletedCount;
+    }
   } catch (_) {
     // Cache cleanup should never block the app.
+  } finally {
+    try { db?.close(); } catch (_) {}
+    granularCacheCleanupStats.runs += 1;
   }
 }
 
@@ -1017,6 +1178,7 @@ async function clearLastRuntimeSnapshot() {
   try { await deleteRuntimeSnapshotFromIndexedDb(); } catch (_) {}
   try { deleteRuntimeSnapshotFromLocalStorage(); } catch (_) {}
   runtimeSnapshotSavedSignature = "";
+  runtimeSnapshotPersistedRevisions = {};
 }
 
 async function saveLastRuntimeSnapshot() {
@@ -1035,16 +1197,19 @@ async function saveLastRuntimeSnapshot() {
   }
 
   runtimeSnapshotBuildCount += 1;
-  const snapshot = buildRuntimeDataSnapshot();
-  if (!snapshot) return false;
+  const snapshotBundle = buildRuntimeDataSnapshot();
+  if (!snapshotBundle) return false;
 
   const writeTask = (async () => {
     try {
-      await writeRuntimeSnapshotToIndexedDb(snapshot);
+      await writeRuntimeSnapshotToIndexedDb(snapshotBundle);
+      runtimeSnapshotPersistedRevisions = { ...snapshotBundle.manifest.revisions };
+      runtimeSnapshotComponentWriteCount += Object.keys(snapshotBundle.components).length;
+      try { deleteRuntimeSnapshotFromLocalStorage(); } catch (_) {}
       return true;
     } catch (idbErr) {
       try {
-        writeRuntimeSnapshotToLocalStorage(snapshot);
+        writeRuntimeSnapshotToLocalStorage(buildCompactLocalSnapshot());
         return true;
       } catch (storageErr) {
         const message = storageErr?.message || idbErr?.message || "runtime cache write failed";
@@ -2109,13 +2274,28 @@ function getTraceBaseLineWidth(trace) {
   return lineWidth !== null ? lineWidth : 2;
 }
 
+function getTraceLinePaths(el, traceIndex) {
+  if (!el || !Number.isInteger(traceIndex)) return [];
+  const groups = [...el.querySelectorAll(".scatterlayer .trace.scatter")];
+  const uid = String(el._fullData?.[traceIndex]?.uid || el.data?.[traceIndex]?.uid || "");
+  const group = (uid ? groups.find((node) => node.classList.contains(`trace${uid}`)) : null)
+    || groups[traceIndex]
+    || null;
+  return group ? [...group.querySelectorAll(".js-line")] : [];
+}
+
 function setTraceLineHighlighted(el, traceIndex, highlighted) {
   if (!el?.data || traceIndex == null || traceIndex < 0 || traceIndex >= el.data.length) return;
   const trace = el.data[traceIndex];
   if (!trace || trace.visible === "legendonly") return;
   const baseWidth = getTraceBaseLineWidth(trace);
   const nextWidth = highlighted ? baseWidth + LINE_HIGHLIGHT_EXTRA_WIDTH : baseWidth;
-  Plotly.restyle(el, { "line.width": [nextWidth] }, [traceIndex]);
+  const paths = getTraceLinePaths(el, traceIndex);
+  paths.forEach((path) => {
+    path.style.strokeWidth = `${nextWidth}px`;
+    path.setAttribute("stroke-width", String(nextWidth));
+  });
+  if (paths.length) lineHighlightDomUpdateCount += 1;
 }
 
 function refreshLineHighlight() {
@@ -2744,6 +2924,7 @@ function clearTickerSeriesFromPricePayload(ticker) {
   if (pricePayload.display_names && typeof pricePayload.display_names === "object") {
     delete pricePayload.display_names[ticker];
   }
+  markDataChanged("price");
 }
 
 function toYyyymmdd(dateObj) {
@@ -3012,6 +3193,7 @@ function mergeTickerSeriesIntoPricePayload(ticker, points) {
     pricePayload.display_names = {};
   }
   if (DISPLAY_NAMES[ticker]) pricePayload.display_names[ticker] = DISPLAY_NAMES[ticker];
+  markDataChanged("price");
 }
 
 function getLatestTickerDateFromPricePayload(ticker) {
@@ -3770,27 +3952,8 @@ function autoFitScales(rows, selected, normBases) {
   return Object.fromEntries(info.map(([s, r]) => [s, Math.max(5, Math.min(5000, Math.round((target / r) * 100)))]));
 }
 
-function hashStringFast(text) {
-  let hash = 0;
-  const str = String(text || "");
-  for (let i = 0; i < str.length; i += 1) {
-    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
-  }
-  return hash.toString(36);
-}
-
-function rowsSignature(rows) {
-  if (!Array.isArray(rows) || !rows.length) return "0";
-  const first = rows[0] || {};
-  const mid = rows[Math.floor(rows.length / 2)] || {};
-  const last = rows[rows.length - 1] || {};
-  return [
-    rows.length,
-    first.date || "",
-    mid.date || "",
-    last.date || "",
-    hashStringFast(`${JSON.stringify(first)}|${JSON.stringify(mid)}|${JSON.stringify(last)}`),
-  ].join(":");
+function dataRevisionSignature(...names) {
+  return names.map((name) => `${name}:${Number(dataRevisions[name]) || 0}`).join("|");
 }
 
 function sortedObjectSignature(obj) {
@@ -3920,9 +4083,7 @@ function getMainChartCalcCacheKey(priceRows, start, end, displayBudget) {
     end,
     activeMonths,
     CREDIT_OFFSET_DAYS,
-    rowsSignature(priceRows),
-    rowsSignature(macroRows),
-    rowsSignature(creditRows),
+    dataRevisionSignature("price", "macro", "credit"),
     customStocks.map((item) => item.ticker).join(","),
     [...hiddenSeries].sort().join(","),
     sortedObjectSignature(seriesOffsets),
@@ -3932,11 +4093,7 @@ function getMainChartCalcCacheKey(priceRows, start, end, displayBudget) {
 }
 
 function getChartModelDataKey(priceRows) {
-  return [
-    rowsSignature(priceRows),
-    rowsSignature(macroRows),
-    rowsSignature(creditRows),
-  ].join("::");
+  return dataRevisionSignature("price", "macro", "credit");
 }
 
 function buildMainChartModel(priceRows, start, end, allowedSeries) {
@@ -4634,15 +4791,31 @@ function clearDisclosureHoverTimer() {
   pendingDisclosureHoverData = null;
 }
 
+function getDisclosureTextNodes(chartEl) {
+  if (!chartEl) return [];
+  return [...chartEl.querySelectorAll(".textpoint text")]
+    .filter((node) => node.textContent?.trim() === DISCLOSURE_ICON_TEXT);
+}
+
+function setDisclosureTextHighlighted(chartEl, pointIndex, highlighted) {
+  const node = getDisclosureTextNodes(chartEl)[pointIndex];
+  if (!node) return false;
+  const size = highlighted ? DISCLOSURE_TEXT_HOVER_SIZE : DISCLOSURE_TEXT_SIZE;
+  const color = highlighted ? DISCLOSURE_MARKER_HOVER_LINE_COLOR : DISCLOSURE_MARKER_COLOR;
+  node.style.fontSize = `${size}px`;
+  node.style.fill = color;
+  node.setAttribute("font-size", String(size));
+  node.setAttribute("fill", color);
+  disclosureHighlightDomUpdateCount += 1;
+  return true;
+}
+
 function resetDisclosureHoverHighlight(chartEl = document.getElementById("chart")) {
   clearDisclosureHoverTimer();
   if (!chartEl || !currentDisclosureHighlight) return;
-  const traceIndex = currentDisclosureHighlight.traceIndex;
+  const pointIndex = currentDisclosureHighlight.pointIndex;
   currentDisclosureHighlight = null;
-  Plotly.restyle(chartEl, {
-    "textfont.size": [DISCLOSURE_TEXT_SIZE],
-    "textfont.color": [DISCLOSURE_MARKER_COLOR],
-  }, [traceIndex]).catch(() => {});
+  setDisclosureTextHighlighted(chartEl, pointIndex, false);
 }
 
 function scheduleDisclosureHoverHighlight(evtData) {
@@ -4697,17 +4870,8 @@ function highlightDisclosureHoverPoint(evtData) {
 
   resetDisclosureHoverHighlight(chartEl);
 
-  const textSizes = Array(count).fill(DISCLOSURE_TEXT_SIZE);
-  const textColors = Array(count).fill(DISCLOSURE_MARKER_COLOR);
-
-  textSizes[pointIndex] = DISCLOSURE_TEXT_HOVER_SIZE;
-  textColors[pointIndex] = DISCLOSURE_MARKER_HOVER_LINE_COLOR;
-
   currentDisclosureHighlight = { traceIndex, pointIndex };
-  Plotly.restyle(chartEl, {
-    "textfont.size": [textSizes],
-    "textfont.color": [textColors],
-  }, [traceIndex]).catch(() => {});
+  setDisclosureTextHighlighted(chartEl, pointIndex, true);
 }
 
 function yyyymmddFromDate(dateStr) {
@@ -5022,6 +5186,7 @@ async function applyTickerDisclosureCache(ticker) {
   if (!record) return { applied: false, added: 0, latestDate: "" };
   const beforeCount = disclosureRows.length;
   disclosureRows = mergeDisclosureRows(disclosureRows, record.rows);
+  if (record.rows.length) markDataChanged("disclosure");
   return {
     applied: true,
     added: Math.max(0, disclosureRows.length - beforeCount),
@@ -5067,6 +5232,7 @@ async function ensureDisclosureSeedForTicker(ticker, forceNetwork = false) {
     const payload = parsePayloadText(text);
     const rows = sanitizeDisclosureRows(normalizeDisclosureSeedRows(payload?.records || []));
     disclosureRows = mergeDisclosureRows(disclosureRows, rows);
+    if (rows.length) markDataChanged("disclosure");
     disclosureSeedLoadedTickers.add(target);
     writeTickerDisclosureCache(target, disclosureRowsForTicker(target)).catch(() => {});
     return { ticker: target, added: Math.max(0, disclosureRows.length - beforeCount) };
@@ -5100,6 +5266,7 @@ async function refreshDartDisclosuresFromApi(apiKey, ticker = "", options = {}) 
     : await fetchDartDisclosuresLive(apiKey);
   const beforeCount = disclosureRows.length;
   disclosureRows = mergeDisclosureRows(disclosureRows, liveRows);
+  if (liveRows.length) markDataChanged("disclosure");
   const latestDate = disclosureRows.length ? disclosureRows[disclosureRows.length - 1].date : "";
   const info = {
     fetched: liveRows.length,
@@ -5171,6 +5338,7 @@ async function refreshDartDisclosuresForVisibleTickersFromApi(apiKey, options = 
   });
 
   disclosureRows = mergeDisclosureRows(disclosureRows, incomingRows);
+  if (incomingRows.length) markDataChanged("disclosure");
   uniqueTickers.forEach((ticker) => {
     writeTickerDisclosureCache(ticker, disclosureRowsForTicker(ticker)).catch(() => {});
   });
@@ -5491,6 +5659,11 @@ async function renderChart(preserveZoom = true) {
   const savedYRange = preserveZoom ? (el._fullLayout?.yaxis?.range?.slice() || null) : null;
   const defaultXRange = [start, end];
 
+  clearDisclosureHoverTimer();
+  currentDisclosureHighlight = null;
+  hoveredLineTraceIndex = null;
+  activeLineTraceIndex = null;
+  appliedLineHighlightTraceIndex = null;
   Plotly.react(el, traces, {
     paper_bgcolor: "transparent",
     plot_bgcolor: "#111111",
@@ -5689,8 +5862,7 @@ function renderAdrChart(xRange) {
   const renderKey = [
     activeMonths,
     hoverShowPopup ? 1 : 0,
-    rowsSignature(adrRows),
-    rowsSignature(newsSentimentRows),
+    dataRevisionSignature("adr", "macro"),
   ].join("::");
   if (lastAdrRenderKey === renderKey && el.data?.length) {
     if (Array.isArray(xRange) && xRange.length === 2 && !xRangeMatches(el, xRange[0], xRange[1])) {
@@ -6383,6 +6555,7 @@ function applyLeadingCycleLiveRows(monthlyRows) {
   });
 
   macroRows = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+  if (updated > 0) markDataChanged("macro");
   return { updated, latestDate: normalized[normalized.length - 1].date };
 }
 
@@ -6398,6 +6571,7 @@ function applyNewsSentimentLiveRows(liveRows) {
     byDate.set(row.date, prev);
   });
   macroRows = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+  if (updated > 0) markDataChanged("macro");
   return { updated, latestDate: normalized[normalized.length - 1].date };
 }
 
@@ -6427,6 +6601,7 @@ function applyCreditLiveRows(liveRows) {
   });
 
   creditRows = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+  if (updated > 0) markDataChanged("credit");
   const latestDate = creditRows.length
     ? String(creditRows[creditRows.length - 1].date || "").slice(0, 10)
     : normalized[normalized.length - 1].date;
@@ -6599,6 +6774,7 @@ async function refreshAdrFromWeb() {
       byDate.set(row.date, prev);
     });
     adrRows = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+    markDataChanged("adr");
   }
 
   return {
@@ -6639,6 +6815,7 @@ async function refreshFearGreedFromWeb() {
   prev.fear_greed = score;
   byDate.set(date, prev);
   adrRows = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+  if (changed) markDataChanged("adr");
   return { added: changed ? 1 : 0, latestDate: date };
 }
 
@@ -6707,30 +6884,35 @@ async function loadData(forceNetwork = false, options = {}) {
       ? mergePricePayloadPreservingExisting(pricePayload, parsed.pricePayload)
       : parsed.pricePayload;
     Object.assign(DISPLAY_NAMES, pricePayload.display_names || {});
+    markDataChanged("price");
   }
 
   if (parsed.macroRows?.length) {
     macroRows = mergeWithExisting
       ? mergeRowsPreservingExisting(macroRows, parsed.macroRows)
       : parsed.macroRows;
+    markDataChanged("macro");
   }
 
   if (parsed.creditRows?.length) {
     creditRows = mergeWithExisting
       ? normalizeCreditRows(mergeRowsPreservingExisting(creditRows, parsed.creditRows))
       : normalizeCreditRows(parsed.creditRows);
+    markDataChanged("credit");
   }
 
   if (parsed.adrRows?.length) {
     adrRows = mergeWithExisting
       ? mergeRowsPreservingExisting(adrRows, parsed.adrRows)
       : parsed.adrRows;
+    markDataChanged("adr");
   }
 
   if (parsed.disclosurePayload?.format === "by-ticker-v1") {
     disclosureManifest = parsed.disclosurePayload;
     if (!mergeWithExisting) {
       disclosureRows = [];
+      markDataChanged("disclosure");
       disclosureSeedLoadedTickers = new Set();
     }
     await ensureDisclosureSeedsForTickers(getDisclosureSeedTickers(), forceNetwork);
@@ -6739,6 +6921,7 @@ async function loadData(forceNetwork = false, options = {}) {
     disclosureRows = mergeWithExisting
       ? mergeDisclosureRows(disclosureRows, seededDisclosureRows)
       : seededDisclosureRows;
+    markDataChanged("disclosure");
   }
 
   const loadedAny = Boolean(

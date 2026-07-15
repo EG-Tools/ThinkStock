@@ -68,6 +68,13 @@ assert.ok(app.includes("MAIN_CHART_TOTAL_VISIBLE_POINT_TARGET_MOBILE"), "adaptiv
 assert.ok(app.includes("const plotlyReadyTask = ensurePlotlyReady()"), "Plotly is not prepared in parallel during boot");
 assert.ok(app.includes('hovermode: hoverShowPopup ? "x unified" : false'), "disabled hover still runs Plotly hit testing");
 assert.ok(app.includes("function getRuntimeDataSignature()"), "runtime snapshot deduplication is missing");
+assert.ok(app.includes('const RUNTIME_SNAPSHOT_FORMAT = "component-v1";'), "component snapshot format is missing");
+assert.ok(app.includes('const tx = db.transaction(storeName, "readwrite");')
+  && app.includes("deleteKeys.forEach((key) => store.delete(key))"), "single-transaction IndexedDB cleanup is missing");
+assert.ok(!app.includes("function rowsSignature("), "sampled row signatures can leave stale chart data");
+assert.ok(app.includes("function dataRevisionSignature("), "explicit data revisions are missing");
+assert.ok(app.includes("function getTraceLinePaths("), "DOM-only line highlighting is missing");
+assert.ok(!app.includes('Plotly.restyle(el, { "line.width"'), "line hover still triggers Plotly restyle");
 assert.ok(app.includes("function startPerfFrameMonitor()"), "performance frame diagnostics are missing");
 assert.ok(app.includes('const DISCLOSURE_ICON_TEXT = "◆";'), "disclosure icon is not configured");
 assert.ok(app.includes("fetchSegmentedSeedText"), "segmented data loading is missing");

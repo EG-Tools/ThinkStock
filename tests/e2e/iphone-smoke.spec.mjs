@@ -144,12 +144,40 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   await stubExternalRefreshes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.72");
+  await expect(page.locator("#appVersionText")).toHaveText("0.73");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
   const firstChartDate = await page.locator("#chart").evaluate((element) => element.data?.[0]?.x?.[0]);
   expect(firstChartDate).toMatch(/^2016-/);
+  expect(pageErrors).toEqual([]);
+});
+
+test("component snapshot restores the latest auxiliary data after reload", async ({ page }) => {
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  const getHistoryRequests = await installDataRoutes(page);
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
+
+  await page.evaluate(() => window.ThinkStockE2E.applyNewsSentimentForTest([
+    { date: "2026-01-14", news_sentiment: 106.75 },
+  ]));
+  await expect.poll(() => page.locator("#chart-adr").evaluate((element) => {
+    const trace = element.data?.find((item) => item.name === "뉴스심리");
+    const index = trace?.x?.indexOf("2026-01-14") ?? -1;
+    return index >= 0 ? trace.y[index] : null;
+  })).toBe(106.75);
+  await page.evaluate(() => window.ThinkStockE2E.saveRuntimeSnapshotNow());
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
+  await expect.poll(() => page.locator("#chart-adr").evaluate((element) => {
+    const trace = element.data?.find((item) => item.name === "뉴스심리");
+    const index = trace?.x?.indexOf("2026-01-14") ?? -1;
+    return index >= 0 ? trace.y[index] : null;
+  })).toBe(106.75);
+  expect(getHistoryRequests()).toBe(0);
   expect(pageErrors).toEqual([]);
 });
 
@@ -166,7 +194,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   const getHistoryRequests = await installDataRoutes(page);
   await page.goto("/?e2e=1&perf=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.72");
+  await expect(page.locator("#appVersionText")).toHaveText("0.73");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   await expect(page.locator('[data-series="customer_deposit"]')).toBeVisible();
@@ -203,6 +231,25 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await expect(page.locator(".hero h1")).not.toHaveClass(/is-loading/);
   expect(await page.evaluate(() => window.ThinkStockE2E?.getMainHoverMode?.())).toBe(false);
   await page.evaluate(() => window.ThinkStockPerf?.clear?.());
+
+  const middleUpdateBefore = await page.evaluate(() => ({
+    revisions: window.ThinkStockE2E.getRuntimeSnapshotStats().revisions,
+    worker: window.ThinkStockE2E.getChartWorkerStats(),
+  }));
+  expect(await page.evaluate(() => window.ThinkStockE2E.applyNewsSentimentForTest([
+    { date: "2026-01-14", news_sentiment: 107.25 },
+  ]))).toMatchObject({ updated: 1, latestDate: "2026-01-14" });
+  await expect.poll(() => page.locator("#chart-adr").evaluate((element) => {
+    const trace = element.data?.find((item) => item.name === "뉴스심리");
+    const index = trace?.x?.indexOf("2026-01-14") ?? -1;
+    return index >= 0 ? trace.y[index] : null;
+  })).toBe(107.25);
+  const middleUpdateAfter = await page.evaluate(() => ({
+    revisions: window.ThinkStockE2E.getRuntimeSnapshotStats().revisions,
+    worker: window.ThinkStockE2E.getChartWorkerStats(),
+  }));
+  expect(middleUpdateAfter.revisions.macro).toBeGreaterThan(middleUpdateBefore.revisions.macro);
+  expect(middleUpdateAfter.worker.sourceTransfers).toBeGreaterThan(middleUpdateBefore.worker.sourceTransfers);
 
   const togglePerfBefore = await page.evaluate(() => ({
     generation: window.ThinkStockE2E.getChartRenderGeneration(),
@@ -268,6 +315,8 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   const dragPerfAfter = await page.evaluate(() => window.ThinkStockE2E.getChartWorkerStats());
   expect(dragPerfAfter.dispatched).toBe(dragPerfBefore.dispatched);
   expect(dragPerfAfter.sourceTransfers).toBe(dragPerfBefore.sourceTransfers);
+  expect((await page.evaluate(() => window.ThinkStockE2E.getHighlightStats())).lineDomUpdates)
+    .toBeGreaterThan(0);
   if (!isMobile) {
     const linePath = page.locator("#chart .scatterlayer .js-line").first();
     await expect(linePath).toBeVisible();
@@ -314,6 +363,9 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
     await page.mouse.move(disclosurePoint.x, disclosurePoint.y);
     await expect(page.locator("#chart")).toHaveClass(/is-disclosure-hovering/);
     await expect.poll(() => page.locator("#chart").evaluate((element) => getComputedStyle(element).cursor)).toBe("pointer");
+    await expect.poll(() => page.evaluate(() => (
+      window.ThinkStockE2E.getHighlightStats().disclosureDomUpdates
+    ))).toBeGreaterThan(0);
   }
   if (isMobile) {
     await page.touchscreen.tap(disclosurePoint.x, disclosurePoint.y + 80);
@@ -372,11 +424,68 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
 
   await page.evaluate(() => window.ThinkStockE2E.saveRuntimeSnapshotNow());
   const snapshotStatsBefore = await page.evaluate(() => window.ThinkStockE2E.getRuntimeSnapshotStats());
+  const runtimeCacheKeys = await page.evaluate(() => new Promise((resolve, reject) => {
+    const request = indexedDB.open("thinkstock-runtime-cache-v1", 2);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      const tx = db.transaction("snapshots", "readonly");
+      const keysRequest = tx.objectStore("snapshots").getAllKeys();
+      keysRequest.onsuccess = () => {
+        resolve(keysRequest.result.map(String).sort());
+        db.close();
+      };
+      keysRequest.onerror = () => reject(keysRequest.error);
+    };
+  }));
+  expect(runtimeCacheKeys).toEqual([
+    "component:adr",
+    "component:credit",
+    "component:disclosure",
+    "component:macro",
+    "component:price",
+    "latest",
+  ]);
   await page.evaluate(() => window.ThinkStockE2E.saveRuntimeSnapshotNow());
   const snapshotStatsAfter = await page.evaluate(() => window.ThinkStockE2E.getRuntimeSnapshotStats());
   expect(snapshotStatsAfter.builds).toBe(snapshotStatsBefore.builds);
   expect(snapshotStatsAfter.writes).toBe(snapshotStatsBefore.writes);
+  expect(snapshotStatsAfter.componentWrites).toBe(snapshotStatsBefore.componentWrites);
   expect(snapshotStatsAfter.skips).toBeGreaterThan(snapshotStatsBefore.skips);
+
+  await page.evaluate(() => new Promise((resolve, reject) => {
+    const request = indexedDB.open("thinkstock-runtime-cache-v1", 2);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      const tx = db.transaction("tickerPrices", "readwrite");
+      const store = tx.objectStore("tickerPrices");
+      const now = Date.now();
+      for (let index = 1; index <= 5; index += 1) {
+        const ticker = `${String(index).padStart(6, "0")}.KS`;
+        store.put({ ticker, savedAt: now - index, lastAccessed: now - index }, ticker);
+      }
+      tx.oncomplete = () => { db.close(); resolve(); };
+      tx.onerror = () => reject(tx.error);
+    };
+  }));
+  const cleanupBefore = await page.evaluate(() => window.ThinkStockE2E.getCacheCleanupStats());
+  await page.evaluate(() => window.ThinkStockE2E.pruneGranularCacheForTest("tickerPrices", 2));
+  const remainingTickerCacheKeys = await page.evaluate(() => new Promise((resolve, reject) => {
+    const request = indexedDB.open("thinkstock-runtime-cache-v1", 2);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      const tx = db.transaction("tickerPrices", "readonly");
+      const keysRequest = tx.objectStore("tickerPrices").getAllKeys();
+      keysRequest.onsuccess = () => { resolve(keysRequest.result.map(String).sort()); db.close(); };
+      keysRequest.onerror = () => reject(keysRequest.error);
+    };
+  }));
+  const cleanupAfter = await page.evaluate(() => window.ThinkStockE2E.getCacheCleanupStats());
+  expect(remainingTickerCacheKeys).toEqual(["000001.KS", "000002.KS"]);
+  expect(cleanupAfter.transactions - cleanupBefore.transactions).toBe(1);
+  expect(cleanupAfter.deleted - cleanupBefore.deleted).toBe(3);
 
   if (!isMobile) {
     const perfSummary = await page.evaluate(() => window.ThinkStockPerf.summary());
@@ -384,9 +493,19 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
     expect(perfSummary.maxPointerMove).toBeLessThan(150);
   }
 
+  const revisionsBeforeHistory = snapshotStatsAfter.revisions;
+  const workerStatsBeforeHistory = await page.evaluate(() => window.ThinkStockE2E.getChartWorkerStats());
   await page.locator('.range-btn[data-months="360"]').click();
   await expect.poll(getHistoryRequests).toBe(4);
   await expect(page.locator('.range-btn[data-months="360"]')).toHaveClass(/is-active/);
   await expect.poll(() => page.locator("#chart").evaluate((element) => element.data?.[0]?.x?.[0]))
     .toBe("1998-07-14");
+  const revisionsAfterHistory = await page.evaluate(() => window.ThinkStockE2E.getRuntimeSnapshotStats().revisions);
+  expect(revisionsAfterHistory.price).toBeGreaterThan(revisionsBeforeHistory.price);
+  expect(revisionsAfterHistory.macro).toBeGreaterThan(revisionsBeforeHistory.macro);
+  expect(revisionsAfterHistory.credit).toBeGreaterThan(revisionsBeforeHistory.credit);
+  expect((await page.evaluate(() => window.ThinkStockE2E.getChartWorkerStats())).sourceTransfers)
+    .toBeGreaterThan(workerStatsBeforeHistory.sourceTransfers);
+  await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getCacheCleanupStats().runs))
+    .toBeGreaterThan(0);
 });
