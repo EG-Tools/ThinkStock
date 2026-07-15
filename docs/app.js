@@ -1,5 +1,6 @@
 const DISPLAY_NAMES = {
   leading_cycle: "\uC120\uD589\uC9C0\uC218 \uC21C\uD658\uBCC0\uB3D9\uCE58",
+  customer_deposit: "\uACE0\uAC1D\uC608\uD0C1\uAE08",
   kospi_credit: "\uCF54\uC2A4\uD53C \uC2E0\uC6A9",
   kosdaq_credit: "\uCF54\uC2A4\uB2E5 \uC2E0\uC6A9",
   "^KS11": "\uCF54\uC2A4\uD53C",
@@ -9,10 +10,11 @@ const DISPLAY_NAMES = {
 };
 
 const ADR_SERIES = ["adr_kospi", "adr_kosdaq"];
-const CORE_SERIES = ["leading_cycle", "^KS11", "kospi_credit", "^KQ11", "kosdaq_credit"];
-const BASE_SERIES_PRIORITY = ["leading_cycle", "^KS11", "kospi_credit", "^KQ11", "kosdaq_credit", "adr_kospi", "adr_kosdaq"];
+const CORE_SERIES = ["leading_cycle", "^KS11", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit"];
+const BASE_SERIES_PRIORITY = ["leading_cycle", "^KS11", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit", "adr_kospi", "adr_kosdaq"];
 const SERIES_COLORS = {
   leading_cycle: "#999999",
+  customer_deposit: "#f59e0b",
   "^KS11": "#4ade80",
   kospi_credit: "#60a5fa",
   "^KQ11": "#f87171",
@@ -54,7 +56,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.55";
+const APP_VERSION = "0.56";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -79,6 +81,7 @@ const ECOS_ITEM_CODE = "I16E";
 const ECOS_START = "199601";
 const KOSIS_START = "199601";
 const KOFIA_CREDIT_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getGrantingOfCreditBalanceInfo";
+const KOFIA_MARKET_FUNDS_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getSecuritiesMarketTotalCapitalInfo";
 const FREESIS_CREDIT_META_URL = "https://freesis.kofia.or.kr/meta/getMetaDataList.do";
 const FREESIS_CREDIT_OBJ_NM = "STATSCU0100000070BO";
 const FREESIS_CREDIT_LOOKBACK_DAYS = 120;
@@ -238,7 +241,7 @@ let dartCorpCodeMapLoaded = false;
 let dartCorpCodeMapPromise = null;
 let dartDisclosureTickerRefreshPromises = new Map();
 let activeMonths = 120;
-let hiddenSeries = new Set(["kospi_credit", "^KQ11", "kosdaq_credit"]);
+let hiddenSeries = new Set(["customer_deposit", "kospi_credit", "^KQ11", "kosdaq_credit"]);
 let customStocks = [];
 let krxUniverse = [];
 let krxUniverseLoaded = false;
@@ -1056,7 +1059,7 @@ function renderDataFreshness() {
   const items = [
     { label: "가격", ...dateSpanForRows(pricePayload?.records || [], priceKeys), staleDays: 10 },
     { label: "선행", ...dateSpanForRows(macroRows, ["leading_cycle"]), staleDays: 75 },
-    { label: "신용", ...dateSpanForRows(creditSourceRows, CREDIT_COLS), staleDays: 14 },
+    { label: "예탁·신용", ...dateSpanForRows(creditSourceRows, CREDIT_COLS), staleDays: 14 },
     { label: "ADR", ...dateSpanForRows(adrRows, ADR_SERIES), staleDays: 10 },
   ].map((item) => ({ ...item, date: item.latest }));
 
@@ -3216,8 +3219,8 @@ function buildDenseMacroRows(sourceRows, targetDates) {
   return dense.filter((r) => cols.some((c) => toNum(r[c]) !== null));
 }
 
-let CREDIT_OFFSET_DAYS = 2;  // Credit publication-lag alignment in days (UI uses negative sign for display)
-const CREDIT_COLS = ["kospi_credit", "kosdaq_credit"];
+let CREDIT_OFFSET_DAYS = 2;  // Fund-data publication-lag alignment in days (UI uses negative sign for display)
+const CREDIT_COLS = ["customer_deposit", "kospi_credit", "kosdaq_credit"];
 
 /**
  * Interpolate credit rows onto the price-date axis after applying the
@@ -3228,11 +3231,11 @@ function buildCreditInterpolator(creditRowsSrc) {
   if (!creditRowsSrc.length) return () => null;
 
   const points = [...creditRowsSrc]
-    .map((r) => ({
-      time: toUtcMs(r.date),
-      kospi_credit: toNum(r.kospi_credit),
-      kosdaq_credit: toNum(r.kosdaq_credit),
-    }))
+    .map((r) => {
+      const point = { time: toUtcMs(r.date) };
+      CREDIT_COLS.forEach((key) => { point[key] = toNum(r[key]); });
+      return point;
+    })
     .filter((r) => Number.isFinite(r.time))
     .sort((a, b) => a.time - b.time);
   if (!points.length) return () => null;
@@ -3289,10 +3292,9 @@ function mergeSources(priceRows, denseRows, creditRowsSrc, start, end) {
 
   const historicalCredit = new Map();
   denseRows.forEach((r) => {
-    historicalCredit.set(r.date, {
-      kospi_credit: toNum(r.kospi_credit),
-      kosdaq_credit: toNum(r.kosdaq_credit),
-    });
+    const values = {};
+    CREDIT_COLS.forEach((key) => { values[key] = toNum(r[key]); });
+    historicalCredit.set(r.date, values);
   });
 
   const kofiaCredit = new Map();
@@ -3300,12 +3302,9 @@ function mergeSources(priceRows, denseRows, creditRowsSrc, start, end) {
     const date = String(r.date || "").slice(0, 10);
     if (!date) return;
     const prev = kofiaCredit.get(date) || {};
-    const nextKospi = toNum(r.kospi_credit);
-    const nextKosdaq = toNum(r.kosdaq_credit);
-    kofiaCredit.set(date, {
-      kospi_credit: nextKospi ?? prev.kospi_credit ?? null,
-      kosdaq_credit: nextKosdaq ?? prev.kosdaq_credit ?? null,
-    });
+    const next = {};
+    CREDIT_COLS.forEach((key) => { next[key] = toNum(r[key]) ?? prev[key] ?? null; });
+    kofiaCredit.set(date, next);
   });
 
   const kofiaDates = [...kofiaCredit.keys()].sort();
@@ -3327,10 +3326,7 @@ function mergeSources(priceRows, denseRows, creditRowsSrc, start, end) {
     return (med > 1.15 || med < 0.85) ? med : 1;
   };
 
-  const alignFactor = {
-    kospi_credit: calcAlignFactor("kospi_credit"),
-    kosdaq_credit: calcAlignFactor("kosdaq_credit"),
-  };
+  const alignFactor = Object.fromEntries(CREDIT_COLS.map((key) => [key, calcAlignFactor(key)]));
 
   const creditByDate = new Map();
   historicalCredit.forEach((vals, date) => {
@@ -3347,10 +3343,11 @@ function mergeSources(priceRows, denseRows, creditRowsSrc, start, end) {
   // Use KOFIA values on overlapping/new dates.
   kofiaCredit.forEach((vals, date) => {
     const prev = creditByDate.get(date) || {};
-    creditByDate.set(date, {
-      kospi_credit: Number.isFinite(vals.kospi_credit) ? vals.kospi_credit : (prev.kospi_credit ?? null),
-      kosdaq_credit: Number.isFinite(vals.kosdaq_credit) ? vals.kosdaq_credit : (prev.kosdaq_credit ?? null),
+    const next = {};
+    CREDIT_COLS.forEach((key) => {
+      next[key] = Number.isFinite(vals[key]) ? vals[key] : (prev[key] ?? null);
     });
+    creditByDate.set(date, next);
   });
 
   const creditSeriesRows = [...creditByDate.entries()]
@@ -5267,18 +5264,15 @@ function normalizeCreditRows(rows) {
   (rows || []).forEach((row) => {
     const date = String(row?.date || "").slice(0, 10);
     if (!date) return;
-    const next = {
-      date,
-      kospi_credit: toNum(row?.kospi_credit),
-      kosdaq_credit: toNum(row?.kosdaq_credit),
-    };
-    if (!Number.isFinite(next.kospi_credit) && !Number.isFinite(next.kosdaq_credit)) return;
-    const prev = map.get(date) || { date, kospi_credit: null, kosdaq_credit: null };
-    map.set(date, {
-      date,
-      kospi_credit: Number.isFinite(next.kospi_credit) ? next.kospi_credit : prev.kospi_credit,
-      kosdaq_credit: Number.isFinite(next.kosdaq_credit) ? next.kosdaq_credit : prev.kosdaq_credit,
+    const next = { date };
+    CREDIT_COLS.forEach((key) => { next[key] = toNum(row?.[key]); });
+    if (!CREDIT_COLS.some((key) => Number.isFinite(next[key]))) return;
+    const prev = map.get(date) || { date };
+    const merged = { date };
+    CREDIT_COLS.forEach((key) => {
+      merged[key] = Number.isFinite(next[key]) ? next[key] : (prev[key] ?? null);
     });
+    map.set(date, merged);
   });
   return [...map.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
@@ -5366,7 +5360,7 @@ function parseKofiaAmountToTrillion(rawValue) {
   return Math.round((n / 1e12) * 10000) / 10000;
 }
 
-async function fetchKofiaCreditLive(apiKey) {
+async function fetchKofiaFundSeriesLive(apiKey, endpoint, itemMapper) {
   const clean = String(apiKey || "").trim();
   if (!clean) return [];
 
@@ -5396,7 +5390,7 @@ async function fetchKofiaCreditLive(apiKey) {
           pageNo: String(pageNo),
           resultType: "json",
         });
-        const url = appendCacheBust(`${KOFIA_CREDIT_URL}?${query.toString()}`);
+        const url = appendCacheBust(`${endpoint}?${query.toString()}`);
         const payload = await fetchJsonWithProxyFallback(url, null, { allowProxy: false });
 
         const header = payload?.response?.header || {};
@@ -5414,13 +5408,8 @@ async function fetchKofiaCreditLive(apiKey) {
         const items = Array.isArray(rawItems) ? rawItems : (rawItems ? [rawItems] : []);
 
         items.forEach((item) => {
-          const basDt = String(item?.basDt || "");
-          if (!/^\d{8}$/.test(basDt)) return;
-          const date = `${basDt.slice(0, 4)}-${basDt.slice(4, 6)}-${basDt.slice(6, 8)}`;
-          const kospi = parseKofiaAmountToTrillion(item?.crdTrFingScrs);
-          const kosdaq = parseKofiaAmountToTrillion(item?.crdTrFingKosdaq);
-          if (!Number.isFinite(kospi) && !Number.isFinite(kosdaq)) return;
-          rows.push({ date, kospi_credit: kospi, kosdaq_credit: kosdaq });
+          const mapped = itemMapper(item);
+          if (mapped) rows.push(mapped);
         });
 
         const totalCount = Number(body?.totalCount);
@@ -5494,6 +5483,31 @@ async function fetchKofiaCreditLive(apiKey) {
 
   if (lastError) throw lastError;
   return [];
+}
+
+async function fetchKofiaCreditLive(apiKey) {
+  return fetchKofiaFundSeriesLive(apiKey, KOFIA_CREDIT_URL, (item) => {
+    const basDt = String(item?.basDt || "");
+    if (!/^\d{8}$/.test(basDt)) return null;
+    const date = `${basDt.slice(0, 4)}-${basDt.slice(4, 6)}-${basDt.slice(6, 8)}`;
+    const kospi = parseKofiaAmountToTrillion(item?.crdTrFingScrs);
+    const kosdaq = parseKofiaAmountToTrillion(item?.crdTrFingKosdaq);
+    if (!Number.isFinite(kospi) && !Number.isFinite(kosdaq)) return null;
+    return { date, kospi_credit: kospi, kosdaq_credit: kosdaq };
+  });
+}
+
+async function fetchKofiaCustomerDepositLive(apiKey) {
+  return fetchKofiaFundSeriesLive(apiKey, KOFIA_MARKET_FUNDS_URL, (item) => {
+    const basDt = String(item?.basDt || "");
+    if (!/^\d{8}$/.test(basDt)) return null;
+    const customerDeposit = parseKofiaAmountToTrillion(item?.invrDpsgAmt);
+    if (!Number.isFinite(customerDeposit)) return null;
+    return {
+      date: `${basDt.slice(0, 4)}-${basDt.slice(4, 6)}-${basDt.slice(6, 8)}`,
+      customer_deposit: customerDeposit,
+    };
+  });
 }
 
 async function fetchFreesisCreditLive(startDate = "", endDate = "") {
@@ -5572,24 +5586,20 @@ function applyCreditLiveRows(liveRows) {
   (creditRows || []).forEach((row) => {
     const date = String(row?.date || "").slice(0, 10);
     if (!date) return;
-    byDate.set(date, {
-      date,
-      kospi_credit: toNum(row?.kospi_credit),
-      kosdaq_credit: toNum(row?.kosdaq_credit),
-    });
+    const next = { date };
+    CREDIT_COLS.forEach((key) => { next[key] = toNum(row?.[key]); });
+    byDate.set(date, next);
   });
 
   let updated = 0;
   normalized.forEach((row) => {
-    const prev = byDate.get(row.date) || { date: row.date, kospi_credit: null, kosdaq_credit: null };
-    const next = {
-      date: row.date,
-      kospi_credit: Number.isFinite(toNum(row.kospi_credit)) ? toNum(row.kospi_credit) : prev.kospi_credit,
-      kosdaq_credit: Number.isFinite(toNum(row.kosdaq_credit)) ? toNum(row.kosdaq_credit) : prev.kosdaq_credit,
-    };
-    if (!sameNullableNumber(prev.kospi_credit, next.kospi_credit) || !sameNullableNumber(prev.kosdaq_credit, next.kosdaq_credit)) {
-      updated += 1;
-    }
+    const prev = byDate.get(row.date) || { date: row.date };
+    const next = { date: row.date };
+    CREDIT_COLS.forEach((key) => {
+      const value = toNum(row[key]);
+      next[key] = Number.isFinite(value) ? value : (prev[key] ?? null);
+    });
+    if (CREDIT_COLS.some((key) => !sameNullableNumber(prev[key], next[key]))) updated += 1;
     byDate.set(row.date, next);
   });
 
@@ -5627,20 +5637,18 @@ function scaleCreditRowsToExisting(liveRows, existingRows) {
   const normalized = normalizeCreditRows(liveRows);
   if (!normalized.length) return normalized;
 
-  const factors = {
-    kospi_credit: medianCreditScaleFactor(existingRows, normalized, "kospi_credit"),
-    kosdaq_credit: medianCreditScaleFactor(existingRows, normalized, "kosdaq_credit"),
-  };
+  const factors = Object.fromEntries(
+    CREDIT_COLS.map((key) => [key, medianCreditScaleFactor(existingRows, normalized, key)]),
+  );
 
-  return normalized.map((row) => ({
-    date: row.date,
-    kospi_credit: Number.isFinite(toNum(row.kospi_credit))
-      ? toNum(row.kospi_credit) * factors.kospi_credit
-      : null,
-    kosdaq_credit: Number.isFinite(toNum(row.kosdaq_credit))
-      ? toNum(row.kosdaq_credit) * factors.kosdaq_credit
-      : null,
-  }));
+  return normalized.map((row) => {
+    const out = { date: row.date };
+    CREDIT_COLS.forEach((key) => {
+      const value = toNum(row[key]);
+      out[key] = Number.isFinite(value) ? value * factors[key] : null;
+    });
+    return out;
+  });
 }
 
 async function refreshLiveApiData() {
@@ -5653,7 +5661,7 @@ async function refreshLiveApiData() {
     warnings.push("선행지수 API 키(ECOS 또는 KOSIS)가 없어 선행지수를 불러오지 못했습니다.");
   }
   if (!hasCreditApi) {
-    warnings.push("KOFIA API 키가 없어 신용잔고는 저장 데이터까지만 표시됩니다.");
+    warnings.push("KOFIA API 키가 없어 고객예탁금·신용은 저장 데이터까지만 표시됩니다.");
   }
 
   // Preserve seeded macro credit history while live APIs refresh only their own series.
@@ -5684,20 +5692,27 @@ async function refreshLiveApiData() {
   }
 
   if (apiSettings.kofiaApiKey) {
-    try {
-      const kofiaRows = await fetchKofiaCreditLive(apiSettings.kofiaApiKey);
-      if (kofiaRows.length) {
-        const info = applyCreditLiveRows(kofiaRows);
-        applied.push(`신용잔고 반영(${info.updated}건, 최신일 ${info.latestDate})`);
-      } else {
-        warnings.push("KOFIA 응답에서 신용잔고 데이터를 찾지 못했습니다.");
-      }
-    } catch (err) {
-      warnings.push(`KOFIA 불러오기 오류: ${err.message}`);
+    const [depositResult, creditResult] = await Promise.allSettled([
+      fetchKofiaCustomerDepositLive(apiSettings.kofiaApiKey),
+      fetchKofiaCreditLive(apiSettings.kofiaApiKey),
+    ]);
+    const kofiaRows = normalizeCreditRows([
+      ...(depositResult.status === "fulfilled" ? depositResult.value : []),
+      ...(creditResult.status === "fulfilled" ? creditResult.value : []),
+    ]);
+    if (kofiaRows.length) {
+      const info = applyCreditLiveRows(kofiaRows);
+      applied.push(`고객예탁금·신용 반영(${info.updated}건, 최신일 ${info.latestDate})`);
+    } else {
+      warnings.push("KOFIA 응답에서 고객예탁금·신용 데이터를 찾지 못했습니다.");
+    }
+    if (depositResult.status === "rejected") {
+      warnings.push(`KOFIA 고객예탁금 오류: ${depositResult.reason?.message || depositResult.reason}`);
+    }
+    if (creditResult.status === "rejected") {
+      warnings.push(`KOFIA 신용 오류: ${creditResult.reason?.message || creditResult.reason}`);
     }
   }
-
-  warnings.push("Freesis 신용잔고 보조 데이터는 KOFIA와 값 체계가 달라 적용하지 않았습니다.");
 
   return { applied, warnings };
 }

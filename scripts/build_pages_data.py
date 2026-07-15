@@ -14,14 +14,16 @@ import yfinance as yf
 
 DEFAULT_TICKERS = ["^KS11", "^KQ11", "005930.KS", "218410.KQ"]
 MACRO_SERIES = ["leading_cycle"]
-CREDIT_SERIES = ["kospi_credit", "kosdaq_credit"]
+CREDIT_SERIES = ["customer_deposit", "kospi_credit", "kosdaq_credit"]
 CREDIT_MAX_DAILY_PCT_CHANGE = 0.12
 CREDIT_MAX_DAILY_ABS_CHANGE = {
+    "customer_deposit": 25.0,
     "kospi_credit": 3.0,
     "kosdaq_credit": 1.0,
 }
 DISPLAY_NAMES = {
     "leading_cycle": "\uC120\uD589\uC9C0\uC218 \uC21C\uD658\uBCC0\uB3D9\uCE58",
+    "customer_deposit": "\uACE0\uAC1D\uC608\uD0C1\uAE08",
     "kospi_credit": "\uCF54\uC2A4\uD53C \uC2E0\uC6A9\uC794\uACE0",
     "kosdaq_credit": "\uCF54\uC2A4\uB2E5 \uC2E0\uC6A9\uC794\uACE0",
     "^KS11": "\uCF54\uC2A4\uD53C",
@@ -49,8 +51,10 @@ OECD_FRED_SERIES_ID = "KORLOLITOAASTSAM"  # OECD CLI (AA, STSA) mirrored by FRED
 OECD_FRED_URL = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={OECD_FRED_SERIES_ID}"
 LOCAL_ENV_FILE = ROOT / ".env.local"
 KOFIA_CREDIT_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getGrantingOfCreditBalanceInfo"
+KOFIA_MARKET_FUNDS_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getSecuritiesMarketTotalCapitalInfo"
 FREESIS_CREDIT_META_URL = "https://freesis.kofia.or.kr/meta/getMetaDataList.do"
 FREESIS_CREDIT_OBJ_NM = "STATSCU0100000070BO"
+FREESIS_MARKET_FUNDS_OBJ_NM = "STATSCU0100000060BO"
 FREESIS_CREDIT_UNIT_CODE = "01"
 FREESIS_CREDIT_START = "19960101"
 ENABLE_FREESIS_CREDIT_TAIL = os.environ.get("ENABLE_FREESIS_CREDIT_TAIL", "").strip() == "1"
@@ -159,8 +163,10 @@ def merge_credit_frames(*frames: pd.DataFrame) -> pd.DataFrame:
     prepared = [pick_numeric_columns(frame, CREDIT_SERIES) for frame in frames if frame is not None and not frame.empty]
     if not prepared:
         return pd.DataFrame(columns=CREDIT_SERIES)
-    merged = pd.concat(prepared, axis=0)
-    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+    merged = prepared[0].copy()
+    for frame in prepared[1:]:
+        merged = frame.combine_first(merged)
+    merged = merged.sort_index()
     merged.index.name = "date"
     return merged[CREDIT_SERIES]
 
@@ -444,27 +450,28 @@ def parse_won_to_trillion(raw: object) -> float | None:
 
 def _credit_frame_from_records(records: list[dict]) -> pd.DataFrame:
     if not records:
-        return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
+        return pd.DataFrame(columns=CREDIT_SERIES)
 
     out = pd.DataFrame.from_records(records)
     out["date"] = pd.to_datetime(out["date"], errors="coerce")
-    out["kospi_credit"] = pd.to_numeric(out.get("kospi_credit"), errors="coerce")
-    out["kosdaq_credit"] = pd.to_numeric(out.get("kosdaq_credit"), errors="coerce")
     for column in CREDIT_SERIES:
+        if column not in out.columns:
+            out[column] = pd.NA
+        out[column] = pd.to_numeric(out[column], errors="coerce")
         out.loc[out[column] <= 0, column] = pd.NA
     out = out.dropna(subset=["date"])
     out = out.dropna(subset=CREDIT_SERIES, how="all")
     if out.empty:
-        return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
+        return pd.DataFrame(columns=CREDIT_SERIES)
     out = out.drop_duplicates(subset=["date"], keep="last").sort_values("date").set_index("date")
     out.index.name = "date"
-    return out[["kospi_credit", "kosdaq_credit"]]
+    return out[CREDIT_SERIES]
 
 
 def fetch_kofia_credit(api_key: str) -> pd.DataFrame:
     clean = str(api_key or "").strip()
     if not clean:
-        return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
+        return pd.DataFrame(columns=CREDIT_SERIES)
 
     key_candidates = [clean]
     decoded = unquote(clean)
@@ -537,7 +544,84 @@ def fetch_kofia_credit(api_key: str) -> pd.DataFrame:
 
     if last_error:
         print(f"KOFIA credit fetch failed: {last_error}")
-    return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
+    return pd.DataFrame(columns=CREDIT_SERIES)
+
+
+def fetch_kofia_customer_deposit(api_key: str) -> pd.DataFrame:
+    clean = str(api_key or "").strip()
+    if not clean:
+        return pd.DataFrame(columns=CREDIT_SERIES)
+
+    key_candidates = [clean]
+    decoded = unquote(clean)
+    if decoded and decoded != clean:
+        key_candidates.append(decoded)
+
+    last_error = ""
+    for service_key in dict.fromkeys(key_candidates):
+        records: list[dict] = []
+        try:
+            num_rows = 1000
+            page_no = 1
+            last_page = 1
+
+            while page_no <= last_page:
+                response = requests.get(
+                    KOFIA_MARKET_FUNDS_URL,
+                    params={
+                        "serviceKey": service_key,
+                        "numOfRows": str(num_rows),
+                        "pageNo": str(page_no),
+                        "resultType": "json",
+                    },
+                    timeout=30,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                header = payload.get("response", {}).get("header", {})
+                result_code = str(header.get("resultCode", ""))
+                if result_code and result_code != "00":
+                    raise RuntimeError(header.get("resultMsg") or "KOFIA market funds API error")
+
+                body = payload.get("response", {}).get("body", {})
+                raw_items = body.get("items", {}).get("item")
+                items = raw_items if isinstance(raw_items, list) else ([raw_items] if raw_items else [])
+
+                for item in items:
+                    bas_dt = str(item.get("basDt", ""))
+                    if len(bas_dt) != 8 or not bas_dt.isdigit():
+                        continue
+                    customer_deposit = parse_won_to_trillion(item.get("invrDpsgAmt"))
+                    if customer_deposit is None:
+                        continue
+                    records.append(
+                        {
+                            "date": f"{bas_dt[:4]}-{bas_dt[4:6]}-{bas_dt[6:8]}",
+                            "customer_deposit": customer_deposit,
+                        }
+                    )
+
+                total_count = pd.to_numeric(body.get("totalCount"), errors="coerce")
+                rows_per_page = pd.to_numeric(body.get("numOfRows"), errors="coerce")
+                if page_no == 1 and pd.notna(total_count) and total_count > 0:
+                    per_page = int(rows_per_page) if pd.notna(rows_per_page) and rows_per_page > 0 else num_rows
+                    last_page = max(1, int((int(total_count) + per_page - 1) / per_page))
+
+                if not items:
+                    break
+                page_no += 1
+
+        except Exception as exc:
+            last_error = str(exc)
+            continue
+
+        out = _credit_frame_from_records(records)
+        if not out.empty:
+            return out
+
+    if last_error:
+        print(f"KOFIA customer deposit fetch failed: {last_error}")
+    return pd.DataFrame(columns=CREDIT_SERIES)
 
 
 def fetch_freesis_credit() -> pd.DataFrame:
@@ -564,11 +648,11 @@ def fetch_freesis_credit() -> pd.DataFrame:
         body = response.json()
     except Exception as exc:
         print(f"Freesis credit fetch failed: {exc}")
-        return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
+        return pd.DataFrame(columns=CREDIT_SERIES)
 
     rows = body.get("ds1", [])
     if not rows:
-        return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
+        return pd.DataFrame(columns=CREDIT_SERIES)
 
     records: list[dict] = []
     for row in rows:
@@ -591,6 +675,48 @@ def fetch_freesis_credit() -> pd.DataFrame:
                 "kosdaq_credit": kosdaq,
             }
         )
+
+    return _credit_frame_from_records(records)
+
+
+def fetch_freesis_customer_deposit() -> pd.DataFrame:
+    today_ymd = pd.Timestamp.today().strftime("%Y%m%d")
+    payload = {
+        "dmSearch": {
+            "OBJ_NM": FREESIS_MARKET_FUNDS_OBJ_NM,
+            "tmpV1": "D",
+            "tmpV40": FREESIS_CREDIT_UNIT_CODE,
+            "tmpV45": FREESIS_CREDIT_START,
+            "tmpV46": today_ymd,
+        }
+    }
+    headers = {"Content-Type": "application/json; charset=UTF-8"}
+
+    try:
+        response = requests.post(
+            FREESIS_CREDIT_META_URL,
+            json=payload,
+            headers=headers,
+            timeout=30,
+        )
+        response.raise_for_status()
+        body = response.json()
+    except Exception as exc:
+        print(f"Freesis customer deposit fetch failed: {exc}")
+        return pd.DataFrame(columns=CREDIT_SERIES)
+
+    records: list[dict] = []
+    for row in body.get("ds1", []):
+        raw_date = str(row.get("TMPV1", ""))
+        if len(raw_date) != 8:
+            continue
+        dt = pd.to_datetime(f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}", errors="coerce")
+        if pd.isna(dt):
+            continue
+        customer_deposit = parse_won_to_trillion(row.get("TMPV2"))
+        if customer_deposit is None:
+            continue
+        records.append({"date": dt, "customer_deposit": customer_deposit})
 
     return _credit_frame_from_records(records)
 
@@ -1025,28 +1151,30 @@ def records_from_payload(payload: dict) -> list[dict]:
 
 def load_existing_credit_seed() -> pd.DataFrame:
     if not OUTPUT_CREDIT_JSON.exists():
-        return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
+        return pd.DataFrame(columns=CREDIT_SERIES)
     try:
         payload = json.loads(OUTPUT_CREDIT_JSON.read_text(encoding="utf-8"))
     except Exception:
-        return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
+        return pd.DataFrame(columns=CREDIT_SERIES)
 
     rows = records_from_payload(payload)
     if not isinstance(rows, list) or not rows:
-        return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
+        return pd.DataFrame(columns=CREDIT_SERIES)
 
     frame = pd.DataFrame.from_records(rows)
     if "date" not in frame.columns:
-        return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
+        return pd.DataFrame(columns=CREDIT_SERIES)
 
     frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
-    frame["kospi_credit"] = pd.to_numeric(frame.get("kospi_credit"), errors="coerce")
-    frame["kosdaq_credit"] = pd.to_numeric(frame.get("kosdaq_credit"), errors="coerce")
+    for column in CREDIT_SERIES:
+        if column not in frame.columns:
+            frame[column] = pd.NA
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
     frame = frame.dropna(subset=["date"]).drop_duplicates(subset=["date"]).sort_values("date")
     if frame.empty:
-        return pd.DataFrame(columns=["kospi_credit", "kosdaq_credit"])
+        return pd.DataFrame(columns=CREDIT_SERIES)
 
-    out = frame.set_index("date")[["kospi_credit", "kosdaq_credit"]]
+    out = frame.set_index("date")[CREDIT_SERIES]
     out.index.name = "date"
     return out
 
@@ -1102,24 +1230,26 @@ def merge_credit_seed_with_kofia(seed: pd.DataFrame, live: pd.DataFrame) -> tupl
     applied = 0
     for idx, row in live.iterrows():
         prev = merged.loc[idx] if idx in merged.index else pd.Series(dtype="float64")
-        next_kospi = row["kospi_credit"] if pd.notna(row["kospi_credit"]) else prev.get("kospi_credit", pd.NA)
-        next_kosdaq = row["kosdaq_credit"] if pd.notna(row["kosdaq_credit"]) else prev.get("kosdaq_credit", pd.NA)
-        prev_kospi = prev.get("kospi_credit", pd.NA)
-        prev_kosdaq = prev.get("kosdaq_credit", pd.NA)
-        changed = idx not in merged.index or (
-            (pd.isna(prev_kospi) and pd.notna(next_kospi))
-            or (pd.notna(prev_kospi) and pd.notna(next_kospi) and float(next_kospi) != float(prev_kospi))
-            or (pd.isna(prev_kosdaq) and pd.notna(next_kosdaq))
-            or (pd.notna(prev_kosdaq) and pd.notna(next_kosdaq) and float(next_kosdaq) != float(prev_kosdaq))
-        )
+        changed = idx not in merged.index
+        next_values: dict[str, object] = {}
+        for column in CREDIT_SERIES:
+            prev_value = prev.get(column, pd.NA)
+            live_value = row.get(column, pd.NA)
+            next_value = live_value if pd.notna(live_value) else prev_value
+            next_values[column] = next_value
+            if (
+                (pd.isna(prev_value) and pd.notna(next_value))
+                or (pd.notna(prev_value) and pd.notna(next_value) and float(next_value) != float(prev_value))
+            ):
+                changed = True
         if changed:
             applied += 1
-        merged.loc[idx, "kospi_credit"] = next_kospi
-        merged.loc[idx, "kosdaq_credit"] = next_kosdaq
+        for column, value in next_values.items():
+            merged.loc[idx, column] = value
 
     merged = merged[~merged.index.duplicated(keep="last")].sort_index()
     merged.index.name = "date"
-    return merged[["kospi_credit", "kosdaq_credit"]], applied
+    return merged[CREDIT_SERIES], applied
 
 
 def densify_macro(macro: pd.DataFrame, price_index: pd.DatetimeIndex) -> pd.DataFrame:
@@ -1289,7 +1419,10 @@ def main() -> None:
     build_report["sources"]["credit_seed"] = frame_summary(credit_seed)
     credit_merged = credit_seed
     if kofia_key:
-        credit_kofia = fetch_kofia_credit(kofia_key)
+        credit_kofia = merge_credit_frames(
+            fetch_kofia_credit(kofia_key),
+            fetch_kofia_customer_deposit(kofia_key),
+        )
         build_report["sources"]["kofia_credit"] = frame_summary(credit_kofia)
         credit_merged, applied_kofia_credit = merge_credit_seed_with_kofia(credit_merged, credit_kofia)
         if applied_kofia_credit > 0:
@@ -1304,7 +1437,10 @@ def main() -> None:
         build_report["events"].append("KOFIA_API_KEY is not configured; using existing verified credit seed.")
 
     if ENABLE_FREESIS_CREDIT_TAIL:
-        credit_live = fetch_freesis_credit()
+        credit_live = merge_credit_frames(
+            fetch_freesis_credit(),
+            fetch_freesis_customer_deposit(),
+        )
         build_report["sources"]["freesis_credit"] = frame_summary(credit_live)
         credit_merged, appended_credit = merge_credit_seed_with_freesis(credit_merged, credit_live)
     else:

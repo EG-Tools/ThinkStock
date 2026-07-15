@@ -42,5 +42,7 @@ requiredIds.forEach((id) => assert.ok(ids.includes(id), `required UI element is 
 
 assert.ok(app.includes("function isDirectDisclosureTap"), "iPhone disclosure tap guard is missing");
 assert.ok(app.includes("disclosure-title-link"), "disclosure title links are missing");
+assert.ok(html.includes('data-series="customer_deposit"'), "customer deposit toggle is missing");
+assert.ok(app.includes("getSecuritiesMarketTotalCapitalInfo"), "customer deposit API endpoint is missing");
 
 console.log(`Pages app validation passed (version ${appVersion}, ${ids.length} unique IDs).`);

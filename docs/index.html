@@ -28,8 +28,8 @@
         <div class="top-controls">
           <button id="hoverToggle" class="hover-toggle-btn" title="지수팝업 ON/OFF">지수팝업</button>
           <button id="disclosureToggle" class="hover-toggle-btn disclosure-toggle-btn" title="공시 마커 ON/OFF">공시</button>
-          <label class="credit-offset-wrap" title="신용잔고 발표 시차 보정(일)">
-            <span class="credit-offset-label">신용옵셋</span>
+          <label class="credit-offset-wrap" title="예탁금·신용 발표 시차 보정(일)">
+            <span class="credit-offset-label">자금옵셋</span>
             <input id="creditOffset" class="credit-offset-input" type="number" value="-2" step="1" min="-30" max="30">
           </label>
           <button id="resetHandles" class="reset-btn">리셋</button>
@@ -43,6 +43,7 @@
             <button class="series-toggle-btn" data-series="^KQ11">코스닥</button>
           </div>
           <div class="series-row base-row">
+            <button class="series-toggle-btn" data-series="customer_deposit">고객예탁금</button>
             <button class="series-toggle-btn" data-series="kospi_credit">코스피 신용</button>
             <button class="series-toggle-btn" data-series="kosdaq_credit">코스닥 신용</button>
           </div>
@@ -82,7 +83,7 @@
         </label>
         <label class="api-field">
           <span>KOFIA (금융투자협회)</span>
-          <input id="kofiaApiInput" type="password" autocomplete="off" spellcheck="false" placeholder="신용잔고">
+          <input id="kofiaApiInput" type="password" autocomplete="off" spellcheck="false" placeholder="고객예탁금·신용">
         </label>
         <label class="api-field">
           <span>KOSIS (국가통계포털)</span>
@@ -107,7 +108,7 @@
           <button id="dataCacheClearBtn" class="api-action-btn" type="button">마지막 화면 초기화</button>
         </div>
         <p class="api-settings-meta">
-          Version : <span id="appVersionText">0.55</span><br>
+          Version : <span id="appVersionText">0.56</span><br>
           회사명 : Life User<br>
           이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a>
         </p>

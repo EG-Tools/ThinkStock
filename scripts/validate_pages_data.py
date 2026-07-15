@@ -18,16 +18,18 @@ DATASETS = {
     "disclosures": DATA_DIR / "disclosures.json",
 }
 
-CREDIT_COLUMNS = ("kospi_credit", "kosdaq_credit")
+CREDIT_COLUMNS = ("customer_deposit", "kospi_credit", "kosdaq_credit")
 ADR_COLUMNS = ("adr_kospi", "adr_kosdaq")
 # Freesis historical KOSDAQ credit starts with very small positive values.
 # True zero or negative source values are normalized to null during build.
 CREDIT_LIMITS = {
+    "customer_deposit": (0.0001, 300.0),
     "kospi_credit": (0.0001, 80.0),
     "kosdaq_credit": (0.0001, 50.0),
 }
 CREDIT_MAX_DAILY_PCT_CHANGE = 0.12
 CREDIT_MAX_DAILY_ABS_CHANGE = {
+    "customer_deposit": 25.0,
     "kospi_credit": 3.0,
     "kosdaq_credit": 1.0,
 }
@@ -204,6 +206,10 @@ def validate_credit(rows: list[dict]) -> None:
                             f"to {row_date.isoformat()} ({prev_value} -> {value})"
                         )
             last_seen[key] = (row_date, value)
+
+    missing_columns = [key for key, latest in last_seen.items() if latest is None]
+    if missing_columns:
+        fail(f"credit: missing numeric series: {missing_columns}")
 
     has_live_credit_source = (
         os.environ.get("KOFIA_API_KEY", "").strip()
