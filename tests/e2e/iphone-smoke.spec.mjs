@@ -22,6 +22,16 @@ function columnar(series, dates, columns) {
   };
 }
 
+async function stubExternalRefreshes(page) {
+  const unavailable = (route) => route.fulfill({
+    status: 503,
+    headers: { "access-control-allow-origin": "*", "content-type": "application/json" },
+    body: "{}",
+  });
+  await page.route("https://query2.finance.yahoo.com/**", unavailable);
+  await page.route("https://corsproxy.io/**", unavailable);
+}
+
 async function installDataRoutes(page) {
   let historyRequests = 0;
   const pricesRecent = columnar(
@@ -107,14 +117,14 @@ async function installDataRoutes(page) {
     }
     await route.abort();
   });
-  await page.route("https://corsproxy.io/**", (route) => route.abort());
+  await stubExternalRefreshes(page);
   return () => historyRequests;
 }
 
 test("bundled recent data boots through the chart worker", async ({ page }) => {
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
-  await page.route("https://corsproxy.io/**", (route) => route.abort());
+  await stubExternalRefreshes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
 
   await expect(page.locator("#appVersionText")).toHaveText("0.58");
