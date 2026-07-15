@@ -49,6 +49,7 @@ def main() -> int:
     version = resolve_build_version()
     chart_loader_src = f"./modules/chart-loader.js?v={version}"
     data_worker_src = f"./modules/data-worker.js?v={version}"
+    chart_model_worker_src = f"./modules/chart-model-worker.js?v={version}"
     app_src = f"./app.js?v={version}"
 
     index = INDEX_HTML.read_text(encoding="utf-8")
@@ -84,6 +85,12 @@ def main() -> int:
         r'"\./modules/data-worker\.js(?:\?v=[^"]*)?",',
         f'"{data_worker_src}",',
         "service worker data-worker.js asset",
+    )
+    sw = replace_once(
+        sw,
+        r'"\./modules/chart-model-worker\.js(?:\?v=[^"]*)?",',
+        f'"{chart_model_worker_src}",',
+        "service worker chart-model-worker.js asset",
     )
     sw = replace_once(
         sw,

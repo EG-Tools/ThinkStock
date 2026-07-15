@@ -57,7 +57,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.57";
+const APP_VERSION = "0.58";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -98,6 +98,7 @@ const DART_DISCLOSURE_CACHE_KEY = "thinkstock-dart-disclosure-cache-v1";
 const DART_DISCLOSURE_CACHE_TTL_DAYS = 1;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NETWORK_REQUEST_TIMEOUT_MS = 12000;
+const RECENT_DATA_MONTHS = 132;
 function appendCacheBust(url) {
   const stamp = `_=${Date.now()}`;
   return url.includes("?") ? `${url}&${stamp}` : `${url}?${stamp}`;
@@ -185,16 +186,6 @@ function plotlyHoverLabel(fontSize) {
     };
 }
 
-function hasWebGlSupport() {
-  try {
-    if (typeof window === "undefined" || !window.WebGLRenderingContext || typeof document === "undefined") return false;
-    const canvas = document.createElement("canvas");
-    return Boolean(canvas.getContext("webgl") || canvas.getContext("experimental-webgl"));
-  } catch (_) {
-    return false;
-  }
-}
-
 async function ensurePlotlyReady() {
   if (window.Plotly) return window.Plotly;
   const loader = window.ThinkStockChartLoader;
@@ -211,7 +202,7 @@ const VIEWPORT_SYNC_DEBOUNCE_MS = 70;
 const HANDLE_UPDATE_DEBOUNCE_MS = 120;
 const DISCLOSURE_HOVER_DELAY_MS = 90;
 const SNAPSHOT_SAVE_IDLE_TIMEOUT_MS = 3500;
-const MAIN_LINE_TRACE_TYPE = hasWebGlSupport() ? "scattergl" : "scatter";
+const MAIN_LINE_TRACE_TYPE = "scatter";
 const MAIN_CHART_MIN_DISPLAY_POINTS = 720;
 const MAIN_CHART_MAX_DISPLAY_POINTS = 1500;
 const MAIN_CHART_POINTS_PER_PIXEL = 1.45;
@@ -267,8 +258,16 @@ let pendingHoverSync = null;
 let lastHoverSyncKey = "";
 let currentRows = [];
 let currentStart = "";
+let historicalDataLoaded = false;
+let historicalDataLoadPromise = null;
 let mainChartCalcCache = null;
+let mainChartCalcPending = null;
 let lastMainChartModelCacheHit = false;
+let lastMainChartModelSource = "none";
+let chartModelWorker = null;
+let chartModelWorkerSeq = 0;
+let chartModelWorkerRequests = new Map();
+let chartRenderGeneration = 0;
 let chartSyncing = false;   // relayout sync loop guard
 let hoverShowPopup = false;
 let showDisclosures = true;
@@ -334,6 +333,45 @@ function initPerfDebugAccess() {
     };
   } catch (_) {
     perfDebugEnabled = false;
+  }
+}
+
+function initE2eDebugAccess() {
+  try {
+    const params = new URLSearchParams(window.location.search || "");
+    if (params.get("e2e") !== "1") return;
+    window.ThinkStockE2E = {
+      getChartModelSource() {
+        return lastMainChartModelSource;
+      },
+      openFirstDisclosure() {
+        const chart = document.getElementById("chart");
+        const traceIndex = chart?.data?.findIndex((item) => item?.meta?.isDisclosureTrace) ?? -1;
+        const trace = traceIndex >= 0 ? chart.data[traceIndex] : null;
+        const xaxis = chart?._fullLayout?.xaxis;
+        const yaxis = chart?._fullLayout?.yaxis;
+        if (!trace || !xaxis || !yaxis || !trace.x?.length) return false;
+        const rect = chart.getBoundingClientRect();
+        const clientX = rect.left + Number(xaxis._offset || 0) + xaxis.d2p(trace.x[0]);
+        const clientY = rect.top + Number(yaxis._offset || 0) + yaxis.d2p(trace.y[0]);
+        return handleDisclosureClick({
+          event: { clientX, clientY },
+          points: [{
+            curveNumber: traceIndex,
+            pointIndex: 0,
+            pointNumber: 0,
+            data: trace,
+            customdata: trace.customdata?.[0],
+            x: trace.x[0],
+            y: trace.y[0],
+            xaxis,
+            yaxis,
+          }],
+        });
+      },
+    };
+  } catch (_) {
+    // Test-only diagnostics must never affect normal boot.
   }
 }
 
@@ -609,6 +647,20 @@ async function fetchSeedText(path, forceNetwork = false) {
   return null;
 }
 
+function segmentedSeedPath(path, segment) {
+  const suffix = segment === "history" ? "_history" : "_recent";
+  return String(path).replace(/\.json$/i, `${suffix}.json`);
+}
+
+async function fetchSegmentedSeedText(path, segment, forceNetwork = false) {
+  const segmentedPath = segmentedSeedPath(path, segment);
+  const segmentedText = await fetchSeedText(segmentedPath, forceNetwork);
+  if (segmentedText) return { text: segmentedText, usedFullFallback: false };
+
+  const fullText = await fetchSeedText(path, forceNetwork);
+  return { text: fullText, usedFullFallback: Boolean(fullText) };
+}
+
 async function ensureDartCorpCodeMapLoaded(forceNetwork = false) {
   if (dartCorpCodeMapLoaded && dartCorpCodeMap.size) return true;
   if (dartCorpCodeMapPromise) return dartCorpCodeMapPromise;
@@ -640,6 +692,7 @@ function buildRuntimeDataSnapshot() {
     app_version: APP_VERSION,
     build_version: APP_BUILD_VERSION,
     saved_at: new Date().toISOString(),
+    historical_data_loaded: historicalDataLoaded,
     pricePayload: safePricePayload,
     macroRows: safeMacroRows,
     creditRows: safeCreditRows,
@@ -678,6 +731,7 @@ function applyRuntimeDataSnapshot(snapshot) {
   if (safeCreditRows.length) creditRows = safeCreditRows;
   if (safeAdrRows.length) adrRows = safeAdrRows;
   if (safeDisclosureRows.length) disclosureRows = safeDisclosureRows;
+  historicalDataLoaded = snapshot.historical_data_loaded === true || hasHistoricalDataCoverage();
   return true;
 }
 
@@ -1311,6 +1365,19 @@ function shiftDays(dateStr, days) {
   if (Number.isNaN(d.getTime())) return dateStr;
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
+}
+
+function rowsCoverMoreThanRecentWindow(rows) {
+  if (!Array.isArray(rows) || rows.length < 2) return false;
+  const first = String(rows[0]?.date || "").slice(0, 10);
+  const last = String(rows[rows.length - 1]?.date || "").slice(0, 10);
+  if (!first || !last) return false;
+  return first < shiftMonths(last, RECENT_DATA_MONTHS);
+}
+
+function hasHistoricalDataCoverage() {
+  const sources = [macroRows, creditRows].filter((rows) => Array.isArray(rows) && rows.length > 1);
+  return sources.length > 0 && sources.every(rowsCoverMoreThanRecentWindow);
 }
 
 
@@ -3448,7 +3515,59 @@ function sortedObjectSignature(obj) {
     .join("|");
 }
 
-function getMainChartCalcCacheKey(priceRows, start, end) {
+function rejectChartModelWorkerRequests(error) {
+  chartModelWorkerRequests.forEach(({ reject, timer }) => {
+    clearTimeout(timer);
+    reject(error);
+  });
+  chartModelWorkerRequests = new Map();
+}
+
+function ensureChartModelWorker() {
+  if (chartModelWorker) return chartModelWorker;
+  if (typeof Worker === "undefined") throw new Error("chart worker is unavailable");
+
+  const workerUrl = `./modules/chart-model-worker.js?v=${encodeURIComponent(APP_BUILD_VERSION || "dev")}`;
+  const worker = new Worker(workerUrl);
+  worker.onmessage = (event) => {
+    const message = event.data || {};
+    const pending = chartModelWorkerRequests.get(message.id);
+    if (!pending) return;
+    chartModelWorkerRequests.delete(message.id);
+    clearTimeout(pending.timer);
+    if (message.ok) pending.resolve(message.result || {});
+    else pending.reject(new Error(message.error || "chart worker failed"));
+  };
+  worker.onerror = (event) => {
+    const error = new Error(event?.message || "chart worker failed");
+    rejectChartModelWorkerRequests(error);
+    try { worker.terminate(); } catch (_) {}
+    if (chartModelWorker === worker) chartModelWorker = null;
+  };
+  chartModelWorker = worker;
+  return worker;
+}
+
+function requestChartModelFromWorker(payload) {
+  return new Promise((resolve, reject) => {
+    let worker = null;
+    try {
+      worker = ensureChartModelWorker();
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    const id = `chart-${Date.now()}-${++chartModelWorkerSeq}`;
+    const timer = setTimeout(() => {
+      chartModelWorkerRequests.delete(id);
+      reject(new Error("chart worker timeout"));
+    }, 10000);
+    chartModelWorkerRequests.set(id, { resolve, reject, timer });
+    worker.postMessage({ id, type: "buildMainChartModel", payload });
+  });
+}
+
+function getMainChartCalcCacheKey(priceRows, start, end, displayBudget) {
   return [
     start,
     end,
@@ -3461,6 +3580,7 @@ function getMainChartCalcCacheKey(priceRows, start, end) {
     [...hiddenSeries].sort().join(","),
     sortedObjectSignature(seriesOffsets),
     sortedObjectSignature(seriesScales),
+    displayBudget,
   ].join("::");
 }
 
@@ -3527,16 +3647,77 @@ function buildMainChartModel(priceRows, start, end, allowedSeries) {
   return { rows, allSeries, selected, chartYBySeries, seriesModels };
 }
 
-function getMainChartModel(priceRows, start, end, allowedSeries) {
-  const key = getMainChartCalcCacheKey(priceRows, start, end);
+function chartYMapsFromSeriesModels(seriesModels) {
+  const maps = {};
+  (seriesModels || []).forEach((model) => {
+    maps[model.series] = new Map(
+      (model.xValues || []).map((date, index) => [date, model.values?.[index] ?? null]),
+    );
+  });
+  return maps;
+}
+
+async function buildMainChartModelOffThread(priceRows, start, end, allowedSeries, displayBudget) {
+  const { rows, macroCols, liveCols } = mergeSources(priceRows, macroRows, creditRows, start, end);
+  const result = await requestChartModelFromWorker({
+    rows,
+    macroCols,
+    liveCols,
+    allowedSeries: [...allowedSeries],
+    priorityOrder: getSeriesPriorityOrder(),
+    displayNames: { ...DISPLAY_NAMES },
+    hiddenSeries: [...hiddenSeries],
+    seriesOffsets: { ...seriesOffsets },
+    seriesScales: { ...seriesScales },
+    displayBudget,
+  });
+  const seriesModels = Array.isArray(result.seriesModels) ? result.seriesModels : [];
+  if (!rows.length || !seriesModels.length) throw new Error("chart worker returned an empty model");
+  return {
+    rows,
+    allSeries: Array.isArray(result.allSeries) ? result.allSeries : [],
+    selected: Array.isArray(result.selected) ? result.selected : [],
+    chartYBySeries: chartYMapsFromSeriesModels(seriesModels),
+    seriesModels,
+    displayIndexes: Array.isArray(result.displayIndexes) ? result.displayIndexes : null,
+  };
+}
+
+async function getMainChartModel(priceRows, start, end, allowedSeries, displayBudget) {
+  const key = getMainChartCalcCacheKey(priceRows, start, end, displayBudget);
   if (mainChartCalcCache?.key === key) {
     lastMainChartModelCacheHit = true;
     return mainChartCalcCache.model;
   }
+  if (mainChartCalcPending?.key === key) {
+    lastMainChartModelCacheHit = true;
+    return mainChartCalcPending.promise;
+  }
   lastMainChartModelCacheHit = false;
-  const model = buildMainChartModel(priceRows, start, end, allowedSeries);
-  mainChartCalcCache = { key, model };
-  return model;
+  const promise = (async () => {
+    let model = null;
+    try {
+      model = await buildMainChartModelOffThread(priceRows, start, end, allowedSeries, displayBudget);
+      lastMainChartModelSource = "worker";
+    } catch (_) {
+      model = buildMainChartModel(priceRows, start, end, allowedSeries);
+      lastMainChartModelSource = "sync";
+      model.displayIndexes = buildMainChartDisplayIndexes(
+        model.rows,
+        model.seriesModels,
+        model.selected,
+        displayBudget,
+      );
+    }
+    mainChartCalcCache = { key, model };
+    return model;
+  })();
+  mainChartCalcPending = { key, promise };
+  try {
+    return await promise;
+  } finally {
+    if (mainChartCalcPending?.promise === promise) mainChartCalcPending = null;
+  }
 }
 
 function getMainChartDisplayPointBudget(el) {
@@ -4758,7 +4939,10 @@ function requestChartRender(preserveZoom = true, options = {}) {
     const nextPreserveZoom = pendingRenderPreserveZoom;
     renderChartRafId = 0;
     pendingRenderPreserveZoom = true;
-    renderChart(nextPreserveZoom);
+    renderChart(nextPreserveZoom).catch((err) => {
+      const msgEl = document.getElementById("messageArea");
+      setMessage(msgEl, err.message || "차트 렌더링 오류", true);
+    });
   });
 }
 
@@ -4767,20 +4951,26 @@ function renderChartWhenIdleOrNow(preserveZoom = true) {
     requestChartRender(preserveZoom);
     return false;
   }
-  renderChart(preserveZoom);
+  renderChart(preserveZoom).catch((err) => {
+    const msgEl = document.getElementById("messageArea");
+    setMessage(msgEl, err.message || "차트 렌더링 오류", true);
+  });
   return true;
 }
 
-function renderChart(preserveZoom = true) {
+async function renderChart(preserveZoom = true) {
   const perfStartedAt = (typeof performance !== "undefined") ? performance.now() : 0;
   const el = document.getElementById("chart");
   const msgEl = document.getElementById("messageArea");
   if (!window.Plotly) {
-    ensurePlotlyReady()
-      .then(() => renderChart(preserveZoom))
-      .catch((err) => setMessage(msgEl, err.message || "차트 엔진을 불러오지 못했습니다.", true));
-    return;
+    try {
+      await ensurePlotlyReady();
+    } catch (err) {
+      setMessage(msgEl, err.message || "차트 엔진을 불러오지 못했습니다.", true);
+      return;
+    }
   }
+  const renderGeneration = ++chartRenderGeneration;
   const priceRows = pricePayload.records || [];
   const today = new Date().toISOString().slice(0, 10);
 
@@ -4816,7 +5006,9 @@ function renderChart(preserveZoom = true) {
     ...ADR_SERIES,
     ...customStocks.map((item) => item.ticker),
   ]);
-  const model = getMainChartModel(priceRows, start, end, allowedSeries);
+  const displayBudget = getMainChartDisplayPointBudget(el);
+  const model = await getMainChartModel(priceRows, start, end, allowedSeries, displayBudget);
+  if (renderGeneration !== chartRenderGeneration) return;
   const { rows, allSeries, selected, chartYBySeries, seriesModels } = model;
   currentRows = rows;
   currentStart = start;
@@ -4835,8 +5027,7 @@ function renderChart(preserveZoom = true) {
   }
   msgEl.innerHTML = "";
 
-  const displayBudget = getMainChartDisplayPointBudget(el);
-  const displayIndexes = buildMainChartDisplayIndexes(rows, seriesModels, selected, displayBudget);
+  const displayIndexes = model.displayIndexes;
   const displayPointCount = displayIndexes ? displayIndexes.length : rows.length;
 
   const traces = seriesModels.map(({ series, rawTexts, baseLineWidth, xValues, values, baseValues }) => {
@@ -4980,6 +5171,7 @@ function renderChart(preserveZoom = true) {
     series: selected.length,
     disclosures: lastDisclosureTraceStats.markers,
     cacheHit: lastMainChartModelCacheHit,
+    modelSource: lastMainChartModelSource,
   });
 }
 
@@ -5840,6 +6032,8 @@ function parseSeedBundleInWorker(texts) {
 
 async function loadData(forceNetwork = false, options = {}) {
   const mergeWithExisting = Boolean(options?.mergeWithExisting);
+  const segment = options?.segment === "history" ? "history" : "recent";
+  const includeDisclosures = options?.includeDisclosures !== false;
   if (!pricePayload || typeof pricePayload !== "object") {
     pricePayload = { records: [], series: [], display_names: {} };
   } else {
@@ -5851,13 +6045,20 @@ async function loadData(forceNetwork = false, options = {}) {
   }
   if (!Array.isArray(macroRows)) macroRows = [];
   if (!Array.isArray(creditRows)) creditRows = [];
-  const [priceText, macroText, creditText, adrText, disclosureText] = await Promise.all([
-    fetchSeedText("./data/prices.json", forceNetwork),
-    fetchSeedText("./data/macro_data.json", forceNetwork),
-    fetchSeedText("./data/credit_data.json", forceNetwork),
-    fetchSeedText("./data/adr_data.json", forceNetwork),
-    fetchSeedText("./data/disclosures.json", forceNetwork),
+  const [priceSeed, macroSeed, creditSeed, adrSeed, disclosureText] = await Promise.all([
+    fetchSegmentedSeedText("./data/prices.json", segment, forceNetwork),
+    fetchSegmentedSeedText("./data/macro_data.json", segment, forceNetwork),
+    fetchSegmentedSeedText("./data/credit_data.json", segment, forceNetwork),
+    fetchSegmentedSeedText("./data/adr_data.json", segment, forceNetwork),
+    includeDisclosures ? fetchSeedText("./data/disclosures.json", forceNetwork) : Promise.resolve(null),
   ]);
+  const coreSeeds = [priceSeed, macroSeed, creditSeed, adrSeed];
+  const allCoreSeedsLoaded = coreSeeds.every((seed) => Boolean(seed.text));
+  const allUsedFullFallback = coreSeeds.every((seed) => seed.usedFullFallback);
+  const priceText = priceSeed.text;
+  const macroText = macroSeed.text;
+  const creditText = creditSeed.text;
+  const adrText = adrSeed.text;
 
   const parsed = await parseSeedBundleInWorker({ priceText, macroText, creditText, adrText, disclosureText });
   if (parsed.pricePayload?.records?.length) {
@@ -5899,6 +6100,38 @@ async function loadData(forceNetwork = false, options = {}) {
       : seededDisclosureRows;
   }
 
+  const loadedAny = Boolean(
+    parsed.pricePayload?.records?.length
+    || parsed.macroRows?.length
+    || parsed.creditRows?.length
+    || parsed.adrRows?.length
+  );
+  if (loadedAny && ((segment === "history" && allCoreSeedsLoaded) || allUsedFullFallback)) {
+    historicalDataLoaded = true;
+  }
+  return { segment, loadedAny, historicalDataLoaded, usedFullFallback: allUsedFullFallback };
+}
+
+async function ensureHistoricalDataLoaded(forceNetwork = false) {
+  if (historicalDataLoaded) return true;
+  if (historicalDataLoadPromise) return historicalDataLoadPromise;
+
+  historicalDataLoadPromise = loadData(forceNetwork, {
+    mergeWithExisting: true,
+    segment: "history",
+    includeDisclosures: false,
+  }).then((result) => {
+    if (!result.loadedAny || !result.historicalDataLoaded) {
+      throw new Error("과거 데이터 묶음을 불러오지 못했습니다.");
+    }
+    mainChartCalcCache = null;
+    lastAdrRenderKey = "";
+    return true;
+  }).finally(() => {
+    historicalDataLoadPromise = null;
+  });
+
+  return historicalDataLoadPromise;
 }
 
 async function refreshRuntimeData(msgEl, options = {}) {
@@ -5995,6 +6228,7 @@ async function boot() {
   showStartupLoader();
   setStartupLoaderProgress(4, "Preparing");
   initPerfDebugAccess();
+  initE2eDebugAccess();
   loadState();
   loadApiSettings();
   renderCustomStockButtons();
@@ -6015,16 +6249,44 @@ async function boot() {
       await loadData(true);
       setStartupLoaderProgress(45, "Loading saved data");
     }
+    if (activeMonths > RECENT_DATA_MONTHS && !historicalDataLoaded) {
+      setStartupLoaderProgress(50, "Loading historical data");
+      try {
+        await ensureHistoricalDataLoaded(true);
+      } catch (_) {
+        activeMonths = 120;
+        syncButtons();
+        setMessage(msgEl, ["과거 데이터 로딩에 실패해 10년 범위로 시작합니다."], true);
+      }
+    }
     setStartupLoaderProgress(56, "Loading chart engine");
     await ensurePlotlyReady();
-    renderChart(false);
+    await renderChart(false);
     setStartupLoaderProgress(72, restoredLastSnapshot ? "Rendering last view" : "Rendering saved data");
 
     document.querySelectorAll(".range-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        activeMonths = Number(btn.dataset.months);
+      btn.addEventListener("click", async () => {
+        const previousMonths = activeMonths;
+        const nextMonths = Number(btn.dataset.months);
+        activeMonths = nextMonths;
         pinnedXRange = null;
         syncButtons();
+        if (nextMonths > RECENT_DATA_MONTHS && !historicalDataLoaded) {
+          const rangeButtons = [...document.querySelectorAll(".range-btn")];
+          rangeButtons.forEach((item) => { item.disabled = true; });
+          setMessage(msgEl, ["과거 데이터를 불러오는 중입니다."]);
+          try {
+            await ensureHistoricalDataLoaded();
+            setMessage(msgEl, []);
+          } catch (err) {
+            activeMonths = previousMonths;
+            syncButtons();
+            setMessage(msgEl, [`과거 데이터 로딩 오류: ${err.message}`], true);
+            return;
+          } finally {
+            rangeButtons.forEach((item) => { item.disabled = false; });
+          }
+        }
         saveState();
         requestChartRender(false);
       });
@@ -6091,7 +6353,7 @@ async function boot() {
             await loadData(true, { mergeWithExisting: true });
           } else {
             const restored = await loadLastRuntimeSnapshot();
-            if (restored) renderChart(false);
+            if (restored) await renderChart(false);
             else await loadData(true);
           }
           await refreshRuntimeData(msgEl, { forceNetwork: true });

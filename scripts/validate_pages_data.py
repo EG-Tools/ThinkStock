@@ -6,6 +6,8 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 
+from split_pages_data import SEGMENTED_FILES
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "docs" / "data"
@@ -42,6 +44,36 @@ STRICT_FRESHNESS = os.environ.get("PAGES_STRICT_FRESHNESS", "").strip() == "1"
 
 def fail(message: str) -> None:
     raise AssertionError(message)
+
+
+def validate_segmented_payloads() -> list[str]:
+    summaries: list[str] = []
+    for filename in SEGMENTED_FILES:
+        source_path = DATA_DIR / filename
+        stem = source_path.stem
+        recent_path = DATA_DIR / f"{stem}_recent.json"
+        history_path = DATA_DIR / f"{stem}_history.json"
+        if not recent_path.exists() or not history_path.exists():
+            fail(f"segmented payload is missing for {filename}")
+
+        full = json.loads(source_path.read_text(encoding="utf-8"))
+        recent = json.loads(recent_path.read_text(encoding="utf-8"))
+        history = json.loads(history_path.read_text(encoding="utf-8"))
+        full_dates = list(full.get("dates") or [])
+        recent_dates = list(recent.get("dates") or [])
+        history_dates = list(history.get("dates") or [])
+        if history_dates + recent_dates != full_dates:
+            fail(f"segmented dates do not reconstruct {filename}")
+
+        full_columns = full.get("columns") or {}
+        recent_columns = recent.get("columns") or {}
+        history_columns = history.get("columns") or {}
+        for series, values in full_columns.items():
+            rebuilt = list(history_columns.get(series) or []) + list(recent_columns.get(series) or [])
+            if rebuilt != list(values or []):
+                fail(f"segmented column {series} does not reconstruct {filename}")
+        summaries.append(f"{stem} segments: recent {len(recent_dates)}, history {len(history_dates)}")
+    return summaries
 
 
 def warn(message: str) -> None:
@@ -303,7 +335,7 @@ def read_committed_credit_latest() -> date | None:
 
 
 def main() -> int:
-    summaries: list[str] = []
+    summaries: list[str] = validate_segmented_payloads()
     for name in ("prices", "macro", "credit", "adr", "disclosures"):
         payload = load_payload(name)
         if name == "disclosures":

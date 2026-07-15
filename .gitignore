@@ -16,6 +16,8 @@ scripts/dart_key.txt
 !.env.example
 .claude/
 node_modules/
+playwright-report/
+test-results/
 .capacitor/
 .codex-ci-deps/
 docs/data/build_report.json

@@ -5,15 +5,21 @@ const PRECACHE_ASSETS = [
   "./styles.css",
   "./modules/chart-loader.js?v=dev",
   "./modules/data-worker.js?v=dev",
+  "./modules/chart-model-worker.js?v=dev",
   "./app.js?v=dev",
+  "./vendor/plotly-basic-2.35.2.min.js",
   "./manifest.webmanifest",
   "./icon.svg",
 ];
 const DATA_URL_PATTERNS = [
   "/data/prices.json",
+  "/data/prices_",
   "/data/macro_data.json",
+  "/data/macro_data_",
   "/data/adr_data.json",
+  "/data/adr_data_",
   "/data/credit_data.json",
+  "/data/credit_data_",
   "/data/disclosures.json",
   "/data/build_report.json",
   "/data/disclosures/",
@@ -27,6 +33,7 @@ const CORE_ASSET_PATHS = [
   "/icon.svg",
   "/modules/chart-loader.js",
   "/modules/data-worker.js",
+  "/modules/chart-model-worker.js",
 ];
 
 function isDataUrl(url) {

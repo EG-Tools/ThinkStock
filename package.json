@@ -4,7 +4,9 @@
   "private": true,
   "description": "ThinkStock iOS shell powered by Capacitor",
   "scripts": {
-    "test": "node --check docs/app.js && node --check docs/sw.js && node --check docs/modules/chart-loader.js && node --check docs/modules/data-worker.js && node scripts/validate_pages_app.mjs",
+    "vendor:sync": "node scripts/sync_plotly_vendor.mjs",
+    "test": "node --check docs/app.js && node --check docs/sw.js && node --check docs/modules/chart-loader.js && node --check docs/modules/data-worker.js && node --check docs/modules/chart-model-worker.js && node scripts/validate_pages_app.mjs",
+    "test:webkit": "playwright test --project=webkit",
     "ios:sync": "node scripts/sync_ios_public.mjs",
     "cap:sync": "npx cap sync",
     "cap:sync:ios": "node scripts/sync_ios_public.mjs",
@@ -16,6 +18,8 @@
   },
   "devDependencies": {
     "@capacitor/cli": "^7.0.0",
-    "@capacitor/ios": "^7.0.0"
+    "@capacitor/ios": "^7.0.0",
+    "@playwright/test": "^1.61.1",
+    "plotly.js-basic-dist-min": "^2.35.2"
   }
 }

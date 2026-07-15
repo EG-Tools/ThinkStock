@@ -1,0 +1,1 @@
+{"generated_at":"2026-07-14T14:05:50Z","format":"columnar-v1","series":["adr_kospi","adr_kosdaq"],"display_names":{},"description":"ADR (Advance-Decline Ratio) - KOSPI / KOSDAQ","source":"adrinfo.kr","note":"Values are percentages. 100=balanced, >120=overbought, <80=oversold","segment":"history","cutoff":"2015-07-14","dates":[],"columns":{"adr_kospi":[],"adr_kosdaq":[]}}

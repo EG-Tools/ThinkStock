@@ -12,6 +12,8 @@ import pandas as pd
 import requests
 import yfinance as yf
 
+from split_pages_data import split_all_payloads
+
 DEFAULT_TICKERS = ["^KS11", "^KQ11", "005930.KS", "218410.KQ"]
 MACRO_SERIES = ["leading_cycle"]
 CREDIT_SERIES = ["customer_deposit", "kospi_credit", "kosdaq_credit"]
@@ -1532,6 +1534,7 @@ def main() -> None:
             json.dumps(build_dart_corp_code_payload(dart_corp_map), ensure_ascii=False, indent=2, allow_nan=False),
             encoding="utf-8",
         )
+    build_report["segments"] = split_all_payloads(DATA_DIR)
     build_report["outputs"]["prices"] = payload_file_summary(OUTPUT_JSON)
     build_report["outputs"]["macro"] = payload_file_summary(OUTPUT_MACRO_JSON)
     build_report["outputs"]["credit"] = payload_file_summary(OUTPUT_CREDIT_JSON)
