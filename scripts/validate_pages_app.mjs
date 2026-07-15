@@ -51,9 +51,11 @@ assert.ok(app.includes("ThinkStockDisclosurePolicy"), "disclosure policy module 
 assert.ok(disclosurePolicy.includes("shouldDisplayDisclosure"), "disclosure policy filter is missing");
 assert.ok(app.includes("disclosure-title-link"), "disclosure title links are missing");
 assert.ok(html.includes('data-series="customer_deposit"'), "customer deposit toggle is missing");
+assert.ok(html.includes('data-series="news_sentiment"'), "news sentiment toggle is missing");
 assert.ok(app.includes("getSecuritiesMarketTotalCapitalInfo"), "customer deposit API endpoint is missing");
 assert.ok(app.includes("CUSTOM_STOCK_PRELOAD_CONCURRENCY"), "custom stock preload concurrency guard is missing");
-assert.ok(app.includes("Promise.all([adrTask, dartTask, liveTask])"), "independent runtime refreshes are not parallelized");
+assert.ok(app.includes("fearGreedTask") && app.includes("Promise.all(["), "independent runtime refreshes are not parallelized");
+assert.ok(app.includes('name: "공포탐욕"') && app.includes('yaxis: "y2"'), "fear-greed auxiliary panel is missing");
 assert.ok(app.includes("lastAdrRenderKey === renderKey"), "ADR render fast path is missing");
 assert.ok(chartLoader.includes("plotly-basic-2.35.2.min.js"), "Plotly basic bundle is not configured");
 assert.ok(plotlyBundle.size < 1_500_000, `Plotly bundle is too large: ${plotlyBundle.size} bytes`);

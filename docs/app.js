@@ -3,7 +3,8 @@ if (!disclosurePolicy) throw new Error("Disclosure policy module failed to load"
 const { classifyDisclosureType, shouldDisplayDisclosure } = disclosurePolicy;
 
 const DISPLAY_NAMES = {
-  leading_cycle: "\uC120\uD589\uC9C0\uC218 \uC21C\uD658\uBCC0\uB3D9\uCE58",
+  leading_cycle: "\uC120\uD589\uC21C\uD658\uBCC0\uB3D9",
+  news_sentiment: "\uB274\uC2A4\uC2EC\uB9AC",
   customer_deposit: "\uACE0\uAC1D\uC608\uD0C1\uAE08",
   kospi_credit: "\uCF54\uC2A4\uD53C \uC2E0\uC6A9",
   kosdaq_credit: "\uCF54\uC2A4\uB2E5 \uC2E0\uC6A9",
@@ -11,13 +12,17 @@ const DISPLAY_NAMES = {
   "^KQ11": "\uCF54\uC2A4\uB2E5",
   adr_kospi: "ADR K",
   adr_kosdaq: "ADR KQ",
+  fear_greed: "\uACF5\uD3EC\uD0D0\uC695",
 };
 
 const ADR_SERIES = ["adr_kospi", "adr_kosdaq"];
-const CORE_SERIES = ["leading_cycle", "^KS11", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit"];
-const BASE_SERIES_PRIORITY = ["leading_cycle", "^KS11", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit", "adr_kospi", "adr_kosdaq"];
+const FEAR_GREED_SERIES = ["fear_greed"];
+const SUPPLEMENTAL_SERIES = [...ADR_SERIES, ...FEAR_GREED_SERIES];
+const CORE_SERIES = ["leading_cycle", "news_sentiment", "customer_deposit", "^KS11", "^KQ11", "kospi_credit", "kosdaq_credit"];
+const BASE_SERIES_PRIORITY = [...CORE_SERIES, ...SUPPLEMENTAL_SERIES];
 const SERIES_COLORS = {
   leading_cycle: "#999999",
+  news_sentiment: "#22d3ee",
   customer_deposit: "#f59e0b",
   "^KS11": "#4ade80",
   kospi_credit: "#60a5fa",
@@ -25,6 +30,7 @@ const SERIES_COLORS = {
   kosdaq_credit: "#a78bfa",
   adr_kospi: "#facc15",
   adr_kosdaq: "#f472b6",
+  fear_greed: "#fb923c",
 };
 const CUSTOM_COLOR_PALETTE = [
   "#2dd4bf", "#fb923c", "#22d3ee", "#facc15", "#f472b6",
@@ -61,7 +67,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.67";
+const APP_VERSION = "0.68";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -84,6 +90,9 @@ const API_SETTINGS_DEFAULT = Object.freeze({
 const ECOS_STAT_CODE = "901Y067";
 const ECOS_ITEM_CODE = "I16E";
 const ECOS_START = "199601";
+const ECOS_NEWS_STAT_CODE = "521Y001";
+const ECOS_NEWS_ITEM_CODE = "A001";
+const ECOS_NEWS_START = "20050101";
 const KOSIS_START = "199601";
 const KOFIA_CREDIT_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getGrantingOfCreditBalanceInfo";
 const KOFIA_MARKET_FUNDS_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getSecuritiesMarketTotalCapitalInfo";
@@ -91,6 +100,7 @@ const FREESIS_CREDIT_META_URL = "https://freesis.kofia.or.kr/meta/getMetaDataLis
 const FREESIS_CREDIT_OBJ_NM = "STATSCU0100000070BO";
 const FREESIS_CREDIT_LOOKBACK_DAYS = 120;
 const FREESIS_CREDIT_UNIT_CODE = "01";
+const FEAR_GREED_LIVE_URL = "https://kospi.feargreedchart.com/api/?action=kospi";
 const DART_DISCLOSURE_URL = "https://opendart.fss.or.kr/api/list.json";
 const DART_RUNTIME_LOOKBACK_DAYS = 92;
 const DART_STOCK_LOOKBACK_YEARS = 3;
@@ -237,7 +247,7 @@ let dartCorpCodeMapLoaded = false;
 let dartCorpCodeMapPromise = null;
 let dartDisclosureTickerRefreshPromises = new Map();
 let activeMonths = 120;
-let hiddenSeries = new Set(["customer_deposit", "kospi_credit", "^KQ11", "kosdaq_credit"]);
+let hiddenSeries = new Set(["news_sentiment", "customer_deposit", "kospi_credit", "^KQ11", "kosdaq_credit"]);
 let customStocks = [];
 let krxUniverse = [];
 let krxUniverseLoaded = false;
@@ -1213,8 +1223,10 @@ function renderDataFreshness() {
   const items = [
     { label: "가격", ...dateSpanForRows(pricePayload?.records || [], priceKeys), staleDays: 10 },
     { label: "선행", ...dateSpanForRows(macroRows, ["leading_cycle"]), staleDays: 75 },
+    { label: "뉴스심리", ...dateSpanForRows(macroRows, ["news_sentiment"]), staleDays: 10 },
     { label: "예탁·신용", ...dateSpanForRows(creditSourceRows, CREDIT_COLS), staleDays: 14 },
     { label: "ADR", ...dateSpanForRows(adrRows, ADR_SERIES), staleDays: 10 },
+    { label: "공포탐욕", ...dateSpanForRows(adrRows, FEAR_GREED_SERIES), staleDays: 10 },
   ].map((item) => ({ ...item, date: item.latest }));
 
   el.innerHTML = items.map((item) => {
@@ -2600,7 +2612,7 @@ function getSeriesPriorityOrder() {
   return [
     ...CORE_SERIES,
     ...customOrder,
-    ...ADR_SERIES,
+    ...SUPPLEMENTAL_SERIES,
   ];
 }
 
@@ -3933,7 +3945,7 @@ function buildMainChartModel(priceRows, start, end, allowedSeries) {
       .filter((s) => allowedSeries.has(s))
       .filter((s) => rows.some((r) => toNum(r[s]) !== null))
   );
-  const selected = sortSeries(allSeries.filter((s) => !ADR_SERIES.includes(s)));
+  const selected = sortSeries(allSeries.filter((s) => !SUPPLEMENTAL_SERIES.includes(s)));
   if (!selected.length) {
     const fallback = sortSeries(allSeries);
     selected.push(...fallback.slice(0, 2));
@@ -5402,11 +5414,11 @@ async function renderChart(preserveZoom = true) {
 
   const allowedSeries = new Set([
     ...CORE_SERIES,
-    ...ADR_SERIES,
+    ...SUPPLEMENTAL_SERIES,
     ...customStocks.map((item) => item.ticker),
   ]);
   const visibleSeriesCount = [...allowedSeries]
-    .filter((key) => !ADR_SERIES.includes(key) && !hiddenSeries.has(key))
+    .filter((key) => !SUPPLEMENTAL_SERIES.includes(key) && !hiddenSeries.has(key))
     .length;
   const displayBudget = getMainChartDisplayPointBudget(el, visibleSeriesCount);
   const model = await getMainChartModel(priceRows, start, end, allowedSeries, displayBudget);
@@ -5693,6 +5705,7 @@ function renderAdrChart(xRange) {
   const dates = filtered.map((r) => r.date);
   const kospiVals  = filtered.map((r) => toNum(r.adr_kospi));
   const kosdaqVals = filtered.map((r) => toNum(r.adr_kosdaq));
+  const fearGreedVals = filtered.map((r) => toNum(r.fear_greed));
 
   const adrNums = [...kospiVals, ...kosdaqVals].filter((v) => Number.isFinite(v));
   const adrRawMin = adrNums.length ? Math.min(...adrNums) : ADR_LOW_THRESH;
@@ -5711,6 +5724,7 @@ function renderAdrChart(xRange) {
       customdata: dates.map((_, i) => [
         Number.isFinite(kospiVals[i]) ? `${kospiVals[i].toFixed(2)}%` : "N/A",
         Number.isFinite(kosdaqVals[i]) ? `${kosdaqVals[i].toFixed(2)}%` : "N/A",
+        Number.isFinite(fearGreedVals[i]) ? fearGreedVals[i].toFixed(0) : "N/A",
       ]),
       type: "scatter",
       mode: "lines",
@@ -5719,13 +5733,24 @@ function renderAdrChart(xRange) {
       connectgaps: false,
       line: { color: "rgba(0,0,0,0)", width: 1 },
       hoverinfo: hoverShowPopup ? undefined : "skip",
-      hovertemplate: hoverShowPopup ? "KOSPI. %{customdata[0]}<br>KOSDAQ. %{customdata[1]}<extra></extra>" : undefined,
+      hovertemplate: hoverShowPopup ? "KOSPI. %{customdata[0]}<br>KOSDAQ. %{customdata[1]}<br>공포탐욕. %{customdata[2]}<extra></extra>" : undefined,
     },
   ];
 
   const traces = [
     ...buildAdrZoneTraces(dates, kospiVals,  "#facc15", "ADR KOSPI"),
     ...buildAdrZoneTraces(dates, kosdaqVals, "#f472b6", "ADR KOSDAQ"),
+    {
+      x: dates,
+      y: fearGreedVals,
+      yaxis: "y2",
+      type: "scatter",
+      mode: "lines",
+      name: "공포탐욕",
+      connectgaps: false,
+      line: { color: SERIES_COLORS.fear_greed, width: 2 },
+      hoverinfo: "skip",
+    },
     ...hoverProxyTraces,
   ];
 
@@ -5766,6 +5791,21 @@ function renderAdrChart(xRange) {
         x0: 0, x1: 1, y0: 100, y1: 100,
         line: { color: "rgba(255,255,255,0.15)", width: 0.8, dash: "dot" },
       },
+      {
+        type: "rect", xref: "paper", yref: "y2",
+        x0: 0, x1: 1, y0: 0, y1: 25,
+        fillcolor: "rgba(248,113,113,0.08)", line: { width: 0 }, layer: "below",
+      },
+      {
+        type: "rect", xref: "paper", yref: "y2",
+        x0: 0, x1: 1, y0: 75, y1: 100,
+        fillcolor: "rgba(74,222,128,0.07)", line: { width: 0 }, layer: "below",
+      },
+      ...[25, 50, 75].map((value) => ({
+        type: "line", xref: "paper", yref: "y2",
+        x0: 0, x1: 1, y0: value, y1: value,
+        line: { color: "rgba(255,255,255,0.12)", width: 0.7, dash: value === 50 ? "dot" : "dash" },
+      })),
     ],
     annotations: [
       {
@@ -5783,6 +5823,7 @@ function renderAdrChart(xRange) {
       showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1,
       zeroline: false, color: "#666", tickfont: { size: 9 },
       fixedrange: false,
+      anchor: "y2",
       showspikes: false,
       hoverformat: "%Y, %-m, %-d",
       ...(xRange ? { range: xRange } : {}),
@@ -5794,6 +5835,17 @@ function renderAdrChart(xRange) {
       tickformat: ".0f",
       autorange: false,
       range: [adrYMin, adrYMax],
+      domain: [0.34, 1],
+    },
+    yaxis2: {
+      showgrid: false,
+      zeroline: false,
+      color: "#777",
+      tickfont: { size: 9 },
+      tickvals: [0, 25, 50, 75, 100],
+      fixedrange: true,
+      range: [0, 100],
+      domain: [0, 0.23],
     },
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
     hoverlabel: plotlyHoverLabel(11),
@@ -5884,6 +5936,17 @@ function normalizeLeadingRows(rows) {
   return [...map.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 
+function normalizeNewsSentimentRows(rows) {
+  const map = new Map();
+  (rows || []).forEach((row) => {
+    const date = String(row?.date || "").slice(0, 10);
+    const value = toNum(row?.news_sentiment);
+    if (!date || !Number.isFinite(value)) return;
+    map.set(date, { date, news_sentiment: value });
+  });
+  return [...map.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
+
 function normalizeCreditRows(rows) {
   const map = new Map();
   (rows || []).forEach((row) => {
@@ -5951,6 +6014,19 @@ async function fetchEcosLeadingCycleLive(apiKey) {
   return normalizeLeadingRows(rows.map((row) => ({
     date: monthCodeToDate(row?.TIME),
     leading_cycle: toNum(row?.DATA_VALUE),
+  })));
+}
+
+async function fetchEcosNewsSentimentLive(apiKey) {
+  const clean = String(apiKey || "").trim();
+  if (!clean) return [];
+  const endYmd = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  const url = `https://ecos.bok.or.kr/api/StatisticSearch/${encodeURIComponent(clean)}/json/kr/1/10000/${ECOS_NEWS_STAT_CODE}/D/${ECOS_NEWS_START}/${endYmd}/${ECOS_NEWS_ITEM_CODE}`;
+  const payload = await fetchJsonWithProxyFallback(url, null, { allowProxy: false });
+  const rows = Array.isArray(payload?.StatisticSearch?.row) ? payload.StatisticSearch.row : [];
+  return normalizeNewsSentimentRows(rows.map((row) => ({
+    date: dayCodeToDate(row?.TIME),
+    news_sentiment: toNum(row?.DATA_VALUE),
   })));
 }
 
@@ -6203,6 +6279,21 @@ function applyLeadingCycleLiveRows(monthlyRows) {
   return { updated, latestDate: normalized[normalized.length - 1].date };
 }
 
+function applyNewsSentimentLiveRows(liveRows) {
+  const normalized = normalizeNewsSentimentRows(liveRows);
+  if (!normalized.length) return { updated: 0, latestDate: "" };
+  const byDate = new Map((macroRows || []).map((row) => [row.date, { ...row }]));
+  let updated = 0;
+  normalized.forEach((row) => {
+    const prev = byDate.get(row.date) || { date: row.date };
+    if (!sameNullableNumber(prev.news_sentiment, row.news_sentiment)) updated += 1;
+    prev.news_sentiment = row.news_sentiment;
+    byDate.set(row.date, prev);
+  });
+  macroRows = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+  return { updated, latestDate: normalized[normalized.length - 1].date };
+}
+
 function applyCreditLiveRows(liveRows) {
   const normalized = normalizeCreditRows(liveRows);
   if (!normalized.length) return { updated: 0, latestDate: "" };
@@ -6281,9 +6372,13 @@ async function refreshLiveApiData() {
   const warnings = [];
 
   const hasLeadingApi = Boolean(apiSettings.ecosApiKey || apiSettings.kosisApiKey);
+  const hasNewsSentimentApi = Boolean(apiSettings.ecosApiKey);
   const hasCreditApi = Boolean(apiSettings.kofiaApiKey);
   if (!hasLeadingApi) {
-    warnings.push("선행지수 API 키(ECOS 또는 KOSIS)가 없어 선행지수를 불러오지 못했습니다.");
+    warnings.push("ECOS 또는 KOSIS API 키가 없어 선행순환변동을 갱신하지 못했습니다.");
+  }
+  if (!hasNewsSentimentApi) {
+    warnings.push("ECOS API 키가 없어 뉴스심리를 갱신하지 못했습니다.");
   }
   if (!hasCreditApi) {
     warnings.push("KOFIA API 키가 없어 고객예탁금·신용은 저장 데이터까지만 표시됩니다.");
@@ -6292,14 +6387,18 @@ async function refreshLiveApiData() {
   // Preserve seeded macro credit history while live APIs refresh only their own series.
   // Clearing macroRows here would remove pre-KOFIA credit data before 2021-11-09.
   let ecosRows = [];
+  let newsSentimentRows = [];
   let kosisRows = [];
 
   if (apiSettings.ecosApiKey) {
-    try {
-      ecosRows = await fetchEcosLeadingCycleLive(apiSettings.ecosApiKey);
-    } catch (err) {
-      warnings.push(`ECOS 불러오기 오류: ${err.message}`);
-    }
+    const [leadingResult, newsResult] = await Promise.allSettled([
+      fetchEcosLeadingCycleLive(apiSettings.ecosApiKey),
+      fetchEcosNewsSentimentLive(apiSettings.ecosApiKey),
+    ]);
+    if (leadingResult.status === "fulfilled") ecosRows = leadingResult.value;
+    else warnings.push(`ECOS 선행순환변동 오류: ${leadingResult.reason?.message || leadingResult.reason}`);
+    if (newsResult.status === "fulfilled") newsSentimentRows = newsResult.value;
+    else warnings.push(`ECOS 뉴스심리 오류: ${newsResult.reason?.message || newsResult.reason}`);
   }
 
   if (apiSettings.kosisApiKey) {
@@ -6313,7 +6412,11 @@ async function refreshLiveApiData() {
   const leadingRows = mergeLeadingSources(ecosRows, kosisRows);
   if (leadingRows.length) {
     const info = applyLeadingCycleLiveRows(leadingRows);
-    applied.push(`선행지수 순환변동치 반영(${info.updated}건, 최신일 ${info.latestDate})`);
+    applied.push(`선행순환변동 반영(${info.updated}건, 최신일 ${info.latestDate})`);
+  }
+  if (newsSentimentRows.length) {
+    const info = applyNewsSentimentLiveRows(newsSentimentRows);
+    applied.push(`뉴스심리 반영(${info.updated}건, 최신일 ${info.latestDate})`);
   }
 
   if (apiSettings.kofiaApiKey) {
@@ -6369,7 +6472,11 @@ async function refreshAdrFromWeb() {
   const kosdaqMap = new Map(kosdaqRaw.map(([ts, v]) => [tsToDate(ts), v]));
 
   // Append only dates newer than the last known ADR date.
-  const lastKnown = adrRows.length ? adrRows[adrRows.length - 1].date : "";
+  const lastKnown = (adrRows || []).reduce((latest, row) => (
+    (toNum(row?.adr_kospi) !== null || toNum(row?.adr_kosdaq) !== null) && row.date > latest
+      ? row.date
+      : latest
+  ), "");
   const allDates  = [...new Set([...kospiMap.keys(), ...kosdaqMap.keys()])].sort();
   const newRows   = allDates
     .filter((d) => d > lastKnown)
@@ -6377,7 +6484,14 @@ async function refreshAdrFromWeb() {
     .filter((r) => r.adr_kospi !== null || r.adr_kosdaq !== null);
 
   if (newRows.length > 0) {
-    adrRows = [...adrRows, ...newRows];
+    const byDate = new Map((adrRows || []).map((row) => [row.date, { ...row }]));
+    newRows.forEach((row) => {
+      const prev = byDate.get(row.date) || { date: row.date };
+      prev.adr_kospi = row.adr_kospi;
+      prev.adr_kosdaq = row.adr_kosdaq;
+      byDate.set(row.date, prev);
+    });
+    adrRows = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
   }
 
   return {
@@ -6403,6 +6517,22 @@ function parseSeedBundleSync(texts) {
     disclosurePayload,
     disclosureRows: normalizeDisclosureSeedRows(disclosurePayload?.records || []),
   };
+}
+
+async function refreshFearGreedFromWeb() {
+  const payload = await fetchJsonWithProxyFallback(appendCacheBust(FEAR_GREED_LIVE_URL), null, { allowProxy: false });
+  const date = String(payload?.updated || "").slice(0, 10);
+  const score = toNum(payload?.score);
+  if (!date || !Number.isFinite(score) || score < 0 || score > 100) {
+    throw new Error("공포탐욕 응답 형식이 올바르지 않습니다.");
+  }
+  const byDate = new Map((adrRows || []).map((row) => [row.date, { ...row }]));
+  const prev = byDate.get(date) || { date };
+  const changed = !sameNullableNumber(prev.fear_greed, score);
+  prev.fear_greed = score;
+  byDate.set(date, prev);
+  adrRows = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+  return { added: changed ? 1 : 0, latestDate: date };
 }
 
 function parseSeedBundleInWorker(texts) {
@@ -6560,6 +6690,13 @@ async function refreshRuntimeData(msgEl, options = {}) {
     }))
     .catch((adrErr) => ({ info: [], warnings: [`ADR 불러오기 오류: ${adrErr.message}`] }));
 
+  const fearGreedTask = refreshFearGreedFromWeb()
+    .then(({ added, latestDate }) => ({
+      info: added > 0 ? [`공포탐욕 최신값 반영(~ ${latestDate})`] : [],
+      warnings: [],
+    }))
+    .catch((error) => ({ info: [], warnings: [`공포탐욕 불러오기 오류: ${error.message}`] }));
+
   const dartTask = apiSettings.dartApiKey
     ? (async () => {
       try {
@@ -6592,8 +6729,13 @@ async function refreshRuntimeData(msgEl, options = {}) {
     .then((result) => ({ info: result.applied || [], warnings: result.warnings || [] }))
     .catch((liveErr) => ({ info: [], warnings: [`최신 지표 불러오기 오류: ${liveErr.message}`] }));
 
-  const [adrResult, dartResult, liveResult] = await Promise.all([adrTask, dartTask, liveTask]);
-  [adrResult, dartResult, liveResult].forEach((result) => {
+  const [adrResult, fearGreedResult, dartResult, liveResult] = await Promise.all([
+    adrTask,
+    fearGreedTask,
+    dartTask,
+    liveTask,
+  ]);
+  [adrResult, fearGreedResult, dartResult, liveResult].forEach((result) => {
     infoLines.push(...(result.info || []));
     warnLines.push(...(result.warnings || []));
   });

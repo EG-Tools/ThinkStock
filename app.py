@@ -26,7 +26,7 @@ BUNDLED_DATA_DIR = ROOT_DIR / "docs" / "data"
 DEFAULT_TICKERS = "^KS11,^KQ11,005930.KS,218410.KQ"
 DEFAULT_SELECTED_SERIES = ["leading_cycle", "^KS11"]
 DATE_PRESET_YEARS = [1, 5, 10, 20, 30]
-SERIES_PRIORITY = ["leading_cycle", "^KS11", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit", "005930.KS", "218410.KQ"]
+SERIES_PRIORITY = ["leading_cycle", "news_sentiment", "customer_deposit", "^KS11", "^KQ11", "kospi_credit", "kosdaq_credit", "005930.KS", "218410.KQ"]
 DEFAULT_CSV = """date,leading_cycle,kospi_credit,kosdaq_credit
 2000-01-01,100.5,5.5,3.2
 2000-07-01,99.5,5.7,3.3
@@ -85,7 +85,8 @@ DEFAULT_CSV = """date,leading_cycle,kospi_credit,kosdaq_credit
 2026-03-01,101.8,20.1,11.5
 """
 DISPLAY_NAMES = {
-    "leading_cycle": "선행지수 순환변동치",
+    "leading_cycle": "선행순환변동",
+    "news_sentiment": "뉴스심리",
     "customer_deposit": "고객예탁금",
     "kospi_credit": "코스피 신용잔고",
     "kosdaq_credit": "코스닥 신용잔고",

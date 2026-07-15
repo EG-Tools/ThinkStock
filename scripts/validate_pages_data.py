@@ -21,7 +21,7 @@ DATASETS = {
 }
 
 CREDIT_COLUMNS = ("customer_deposit", "kospi_credit", "kosdaq_credit")
-ADR_COLUMNS = ("adr_kospi", "adr_kosdaq")
+ADR_COLUMNS = ("adr_kospi", "adr_kosdaq", "fear_greed")
 # Freesis historical KOSDAQ credit starts with very small positive values.
 # True zero or negative source values are normalized to null during build.
 CREDIT_LIMITS = {
@@ -270,6 +270,13 @@ def validate_macro_columns(payload: dict, rows: list[dict]) -> None:
         fail(f"macro: duplicated series should live in dedicated payloads: {sorted(forbidden)}")
 
 
+def validate_auxiliary(rows: list[dict]) -> None:
+    for row in rows:
+        value = row.get("fear_greed")
+        if value is not None and not 0 <= float(value) <= 100:
+            fail(f"adr: fear_greed out of range on {row.get('date')}: {value}")
+
+
 def validate_disclosures(payload: dict) -> list[dict]:
     rows = payload.get("records")
     if not isinstance(rows, list) and payload.get("format") == "by-ticker-v1":
@@ -351,7 +358,8 @@ def main() -> int:
             validate_macro_columns(payload, rows)
             validate_freshness(name, rows, ("leading_cycle",), LEADING_MAX_FRESH_DAYS)
         elif name == "adr":
-            validate_freshness(name, rows, ("adr_kospi", "adr_kosdaq"), ADR_MAX_FRESH_DAYS)
+            validate_auxiliary(rows)
+            validate_freshness(name, rows, ADR_COLUMNS, ADR_MAX_FRESH_DAYS)
         if name == "credit":
             validate_credit(rows)
 

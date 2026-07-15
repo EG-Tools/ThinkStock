@@ -348,7 +348,7 @@ body {
 }
 
 .series-row.base-row:nth-child(2) {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .custom-series-row {
@@ -647,8 +647,8 @@ body {
 }
 
 .chart-frame-adr {
-  min-height: 253px;
-  max-height: 283px;
+  min-height: 353px;
+  max-height: 383px;
 }
 
 .disclosure-popover {
@@ -900,7 +900,7 @@ body {
   .custom-stock-chip .series-toggle-btn { padding: 7px 32px 7px 8px; }
   .stock-remove-btn { width: 14px; height: 14px; font-size: 11px; right: 6px; }
   .chart-frame { border-radius: 22px; min-height: 350px; }
-  .chart-frame-adr { min-height: 243px; max-height: 273px; }
+  .chart-frame-adr { min-height: 333px; max-height: 363px; }
   .api-settings-panel {
     width: calc(100vw - 12px);
     margin: 6px;

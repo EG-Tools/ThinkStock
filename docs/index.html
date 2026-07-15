@@ -39,12 +39,13 @@
         </div>
         <div class="series-toggle-board" id="seriesToggleBoard">
           <div class="series-row base-row">
-            <button class="series-toggle-btn" data-series="leading_cycle">선행지수 순환변동치</button>
-            <button class="series-toggle-btn" data-series="^KS11">코스피</button>
-            <button class="series-toggle-btn" data-series="^KQ11">코스닥</button>
+            <button class="series-toggle-btn" data-series="leading_cycle">선행순환변동</button>
+            <button class="series-toggle-btn" data-series="news_sentiment">뉴스심리</button>
+            <button class="series-toggle-btn" data-series="customer_deposit">고객예탁금</button>
           </div>
           <div class="series-row base-row">
-            <button class="series-toggle-btn" data-series="customer_deposit">고객예탁금</button>
+            <button class="series-toggle-btn" data-series="^KS11">코스피</button>
+            <button class="series-toggle-btn" data-series="^KQ11">코스닥</button>
             <button class="series-toggle-btn" data-series="kospi_credit">코스피 신용</button>
             <button class="series-toggle-btn" data-series="kosdaq_credit">코스닥 신용</button>
           </div>
@@ -65,6 +66,7 @@
         <button class="range-btn" data-months="240">20Y</button>
         <button class="range-btn" data-months="360">30Y</button>
         <a class="adr-source-link" href="http://www.adrinfo.kr/chart" target="_blank" rel="noopener">ADR 출처: adrinfo.kr</a>
+        <a class="adr-source-link fear-greed-source-link" href="https://kospi.feargreedchart.com/" target="_blank" rel="noopener">공포탐욕 출처</a>
       </div>
       <div id="dataFreshness" class="data-freshness" aria-live="polite"></div>
       <div id="messageArea" class="message-area"></div>
@@ -80,7 +82,7 @@
         <p class="api-settings-help">입력한 키와 마지막 차트 화면은 이 기기의 브라우저 저장소에 보관됩니다. 전체 삭제를 누르면 API 키가 제거됩니다.</p>
         <label class="api-field">
           <span>ECOS (한국은행)</span>
-          <input id="ecosApiInput" type="password" autocomplete="off" spellcheck="false" placeholder="선행지수 순환변동치">
+          <input id="ecosApiInput" type="password" autocomplete="off" spellcheck="false" placeholder="선행순환변동·뉴스심리">
         </label>
         <label class="api-field">
           <span>KOFIA (금융투자협회)</span>
@@ -102,14 +104,14 @@
           <input id="dartProxyEnabledInput" type="checkbox">
           <span>DART 공개 프록시 사용 (추가 종목 공시를 즉시 불러올 수 있지만 API 키가 프록시 서버를 거칩니다)</span>
         </label>
-        <p class="api-settings-note">ADR 제외 지표는 실행 시 API로 불러옵니다. DART는 브라우저 직접 호출이 막힐 수 있어, 안정적인 3년 공시는 GitHub Secret DART_API_KEY로 빌드됩니다.</p>
+        <p class="api-settings-note">ADR·공포탐욕 제외 지표는 실행 시 API로 불러옵니다. DART는 브라우저 직접 호출이 막힐 수 있어, 안정적인 3년 공시는 GitHub Secret DART_API_KEY로 빌드됩니다.</p>
         <div class="api-settings-actions">
           <button id="apiSettingsSaveBtn" class="api-action-btn primary" type="button">저장</button>
           <button id="apiSettingsClearBtn" class="api-action-btn" type="button">전체 삭제</button>
           <button id="dataCacheClearBtn" class="api-action-btn" type="button">마지막 화면 초기화</button>
         </div>
         <p class="api-settings-meta">
-          Version : <span id="appVersionText">0.67</span><br>
+          Version : <span id="appVersionText">0.68</span><br>
           회사명 : Life User<br>
           이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a>
         </p>

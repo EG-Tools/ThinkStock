@@ -12,11 +12,13 @@ import pandas as pd
 import requests
 import yfinance as yf
 
+from macro_utils import densify_macro
 from split_pages_data import split_all_payloads
 
 DEFAULT_TICKERS = ["^KS11", "^KQ11", "005930.KS", "218410.KQ"]
-MACRO_SERIES = ["leading_cycle"]
+MACRO_SERIES = ["leading_cycle", "news_sentiment"]
 CREDIT_SERIES = ["customer_deposit", "kospi_credit", "kosdaq_credit"]
+AUXILIARY_SERIES = ["adr_kospi", "adr_kosdaq", "fear_greed"]
 CREDIT_MAX_DAILY_PCT_CHANGE = 0.12
 CREDIT_MAX_DAILY_ABS_CHANGE = {
     "customer_deposit": 25.0,
@@ -24,12 +26,16 @@ CREDIT_MAX_DAILY_ABS_CHANGE = {
     "kosdaq_credit": 1.0,
 }
 DISPLAY_NAMES = {
-    "leading_cycle": "\uC120\uD589\uC9C0\uC218 \uC21C\uD658\uBCC0\uB3D9\uCE58",
+    "leading_cycle": "\uC120\uD589\uC21C\uD658\uBCC0\uB3D9",
+    "news_sentiment": "\uB274\uC2A4\uC2EC\uB9AC",
     "customer_deposit": "\uACE0\uAC1D\uC608\uD0C1\uAE08",
     "kospi_credit": "\uCF54\uC2A4\uD53C \uC2E0\uC6A9\uC794\uACE0",
     "kosdaq_credit": "\uCF54\uC2A4\uB2E5 \uC2E0\uC6A9\uC794\uACE0",
     "^KS11": "\uCF54\uC2A4\uD53C",
     "^KQ11": "\uCF54\uC2A4\uB2E5",
+    "adr_kospi": "ADR K",
+    "adr_kosdaq": "ADR KQ",
+    "fear_greed": "\uACF5\uD3EC\uD0D0\uC695",
     "005930.KS": "\uC0BC\uC131\uC804\uC790",
     "218410.KQ": "RFHIC",
 }
@@ -49,6 +55,9 @@ DART_DISCLOSURE_LOOKBACK_YEARS = 3
 ECOS_STAT_CODE = "901Y067"  # Composite Leading Indicator
 ECOS_ITEM_CODE = "I16E"     # Leading index cyclical component
 ECOS_START = "199601"
+ECOS_NEWS_STAT_CODE = "521Y001"
+ECOS_NEWS_ITEM_CODE = "A001"
+ECOS_NEWS_START = "20050101"
 OECD_FRED_SERIES_ID = "KORLOLITOAASTSAM"  # OECD CLI (AA, STSA) mirrored by FRED
 OECD_FRED_URL = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={OECD_FRED_SERIES_ID}"
 LOCAL_ENV_FILE = ROOT / ".env.local"
@@ -61,6 +70,7 @@ FREESIS_CREDIT_UNIT_CODE = "01"
 FREESIS_CREDIT_START = "19960101"
 ENABLE_FREESIS_CREDIT_TAIL = os.environ.get("ENABLE_FREESIS_CREDIT_TAIL", "").strip() == "1"
 ADR_SOURCE_URL = "http://www.adrinfo.kr/chart"
+FEAR_GREED_SOURCE_URL = "https://kospi.feargreedchart.com/api/?action=kospi-history"
 DART_CORP_CODE_URL = "https://opendart.fss.or.kr/api/corpCode.xml"
 DART_DISCLOSURE_URL = "https://opendart.fss.or.kr/api/list.json"
 
@@ -356,19 +366,67 @@ def fetch_ecos_leading_cycle(api_key: str) -> pd.DataFrame:
     return out
 
 
-def merge_macro_with_leading_cycle(macro: pd.DataFrame, leading_cycle: pd.DataFrame) -> pd.DataFrame:
-    if leading_cycle.empty:
+def fetch_ecos_news_sentiment(api_key: str) -> pd.DataFrame:
+    if not api_key:
+        return pd.DataFrame(columns=["news_sentiment"])
+    end_ymd = pd.Timestamp.today().strftime("%Y%m%d")
+    url = (
+        f"https://ecos.bok.or.kr/api/StatisticSearch/{api_key}/json/kr/1/10000/"
+        f"{ECOS_NEWS_STAT_CODE}/D/{ECOS_NEWS_START}/{end_ymd}/{ECOS_NEWS_ITEM_CODE}"
+    )
+    try:
+        response = requests.get(url, timeout=25)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        print(f"ECOS news sentiment fetch failed: {exc}")
+        return pd.DataFrame(columns=["news_sentiment"])
+
+    rows = payload.get("StatisticSearch", {}).get("row", [])
+    if not rows:
+        result = payload.get("RESULT", {})
+        if result.get("CODE"):
+            print(f"ECOS news sentiment returned {result.get('CODE')}: {result.get('MESSAGE')}")
+        return pd.DataFrame(columns=["news_sentiment"])
+
+    records: list[dict] = []
+    for row in rows:
+        ymd = str(row.get("TIME", ""))
+        if len(ymd) != 8:
+            continue
+        dt = pd.to_datetime(ymd, format="%Y%m%d", errors="coerce")
+        value = pd.to_numeric(row.get("DATA_VALUE"), errors="coerce")
+        if pd.isna(dt) or pd.isna(value):
+            continue
+        records.append({"date": dt, "news_sentiment": float(value)})
+
+    if not records:
+        return pd.DataFrame(columns=["news_sentiment"])
+    out = pd.DataFrame.from_records(records).drop_duplicates(subset=["date"], keep="last")
+    out = out.sort_values("date").set_index("date")
+    out.index.name = "date"
+    return out
+
+
+def merge_macro_frame(macro: pd.DataFrame, incoming: pd.DataFrame) -> pd.DataFrame:
+    if incoming.empty:
         return macro
     if macro.empty:
-        return leading_cycle
+        return incoming.sort_index()
     merged = macro.copy()
-    if "leading_cycle" not in merged.columns:
-        merged["leading_cycle"] = pd.NA
-    for idx, row in leading_cycle.iterrows():
-        merged.loc[idx, "leading_cycle"] = row["leading_cycle"]
-    merged = merged.sort_index()
+    for column in incoming.columns:
+        if column not in merged.columns:
+            merged[column] = pd.NA
+        for idx, value in incoming[column].items():
+            if pd.notna(value):
+                merged.loc[idx, column] = value
+    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
     merged.index.name = "date"
     return merged
+
+
+def merge_macro_with_leading_cycle(macro: pd.DataFrame, leading_cycle: pd.DataFrame) -> pd.DataFrame:
+    return merge_macro_frame(macro, leading_cycle)
 
 
 def fetch_oecd_leading_cycle_from_fred() -> pd.DataFrame:
@@ -780,16 +838,35 @@ def fetch_adr_data() -> list[dict]:
     return records
 
 
-def build_adr_payload(records: list[dict]) -> dict:
-    frame = pd.DataFrame.from_records(records)
-    if not frame.empty and "date" in frame.columns:
-        frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
-        frame = frame.dropna(subset=["date"]).set_index("date").sort_index()
-    payload = build_payload(frame, DISPLAY_NAMES, ["adr_kospi", "adr_kosdaq"])
+def fetch_fear_greed_data() -> list[dict]:
+    try:
+        response = requests.get(
+            FEAR_GREED_SOURCE_URL,
+            headers={"User-Agent": "ThinkStock/1.0 (+https://eg-tools.github.io/ThinkStock/)"},
+            timeout=25,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        print(f"KOSPI fear-greed fetch failed: {exc}")
+        return []
+
+    records: list[dict] = []
+    for row in payload.get("rows", []):
+        dt = pd.to_datetime(row.get("date"), errors="coerce")
+        score = pd.to_numeric(row.get("score"), errors="coerce")
+        if pd.isna(dt) or pd.isna(score) or not 0 <= float(score) <= 100:
+            continue
+        records.append({"date": dt.strftime("%Y-%m-%d"), "fear_greed": float(score)})
+    return sorted(records, key=lambda item: item["date"])
+
+
+def build_adr_payload(frame: pd.DataFrame) -> dict:
+    payload = build_payload(frame, DISPLAY_NAMES, AUXILIARY_SERIES)
     payload.update({
-        "description": "ADR (Advance-Decline Ratio) - KOSPI / KOSDAQ",
-        "source": "adrinfo.kr",
-        "note": "Values are percentages. 100=balanced, >120=overbought, <80=oversold",
+        "description": "ADR (KOSPI/KOSDAQ) and KOSPI Fear & Greed auxiliary indicators",
+        "source": "adrinfo.kr; kospi.feargreedchart.com",
+        "note": "ADR: 100=balanced, >120=overbought, <80=oversold. Fear & Greed: 0=fear, 100=greed.",
     })
     return payload
 
@@ -1151,6 +1228,55 @@ def records_from_payload(payload: dict) -> list[dict]:
     return out
 
 
+def records_to_frame(records: list[dict], series_names: list[str]) -> pd.DataFrame:
+    frame = pd.DataFrame.from_records(records)
+    if frame.empty or "date" not in frame.columns:
+        return pd.DataFrame(columns=series_names)
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    frame = frame.dropna(subset=["date"]).set_index("date").sort_index()
+    for column in series_names:
+        if column not in frame.columns:
+            frame[column] = pd.NA
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    frame = frame[series_names]
+    frame = frame[~frame.index.duplicated(keep="last")]
+    frame.index.name = "date"
+    return frame
+
+
+def load_existing_adr_seed() -> pd.DataFrame:
+    if not OUTPUT_ADR_JSON.exists():
+        return pd.DataFrame(columns=AUXILIARY_SERIES)
+    try:
+        payload = json.loads(OUTPUT_ADR_JSON.read_text(encoding="utf-8"))
+        return records_to_frame(records_from_payload(payload), AUXILIARY_SERIES)
+    except Exception as exc:
+        print(f"Existing auxiliary data read failed: {exc}")
+        return pd.DataFrame(columns=AUXILIARY_SERIES)
+
+
+def merge_auxiliary_data(seed: pd.DataFrame, records: list[dict], columns: list[str]) -> pd.DataFrame:
+    incoming = records_to_frame(records, columns)
+    if incoming.empty:
+        return seed
+    merged = seed.copy()
+    if merged.empty:
+        merged = pd.DataFrame(index=incoming.index, columns=AUXILIARY_SERIES, dtype="float64")
+    else:
+        merged = merged.reindex(merged.index.union(incoming.index)).sort_index()
+    for column in columns:
+        if column not in merged.columns:
+            merged[column] = pd.NA
+        merged.loc[incoming.index, column] = incoming[column]
+    for column in AUXILIARY_SERIES:
+        if column not in merged.columns:
+            merged[column] = pd.NA
+    merged = merged[AUXILIARY_SERIES]
+    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+    merged.index.name = "date"
+    return merged
+
+
 def load_existing_credit_seed() -> pd.DataFrame:
     if not OUTPUT_CREDIT_JSON.exists():
         return pd.DataFrame(columns=CREDIT_SERIES)
@@ -1252,21 +1378,6 @@ def merge_credit_seed_with_kofia(seed: pd.DataFrame, live: pd.DataFrame) -> tupl
     merged = merged[~merged.index.duplicated(keep="last")].sort_index()
     merged.index.name = "date"
     return merged[CREDIT_SERIES], applied
-
-
-def densify_macro(macro: pd.DataFrame, price_index: pd.DatetimeIndex) -> pd.DataFrame:
-    if macro.empty:
-        return macro
-    target_index = pd.DatetimeIndex(price_index).sort_values().unique()
-    if target_index.empty:
-        target_index = pd.date_range(start=macro.index.min(), end=macro.index.max(), freq="B")
-    target_index = target_index[(target_index >= macro.index.min()) & (target_index <= macro.index.max())]
-    if target_index.empty:
-        return macro.iloc[0:0].copy()
-    expanded = macro.reindex(macro.index.union(target_index)).sort_index()
-    dense = expanded.interpolate(method="time", limit_area="inside").reindex(target_index)
-    dense.index.name = "date"
-    return dense
 
 
 def build_payload(df: pd.DataFrame, labels: dict[str, str], series_names: list[str]) -> dict:
@@ -1383,6 +1494,16 @@ def main() -> None:
             latest = leading_cycle.index.max().strftime("%Y-%m")
             print(f"Applied ECOS leading_cycle rows: {len(leading_cycle)} (latest={latest})")
             build_report["events"].append(f"Applied ECOS leading_cycle rows: {len(leading_cycle)} latest={latest}")
+
+        news_sentiment = fetch_ecos_news_sentiment(ecos_key)
+        build_report["sources"]["ecos_news_sentiment"] = frame_summary(news_sentiment)
+        if not news_sentiment.empty:
+            macro_source = merge_macro_frame(macro_source, news_sentiment)
+            latest_news = news_sentiment.index.max().strftime("%Y-%m-%d")
+            print(f"Applied ECOS news_sentiment rows: {len(news_sentiment)} (latest={latest_news})")
+            build_report["events"].append(
+                f"Applied ECOS news_sentiment rows: {len(news_sentiment)} latest={latest_news}"
+            )
     else:
         build_report["events"].append("ECOS_API_KEY is not configured.")
 
@@ -1463,6 +1584,22 @@ def main() -> None:
         print("ADR fetch had no rows; keeping existing adr_data.json.")
         build_report["events"].append("ADR fetch had no rows; keeping existing adr_data.json.")
 
+    fear_greed_records = fetch_fear_greed_data()
+    build_report["sources"]["fear_greed"] = record_summary(fear_greed_records)
+    if fear_greed_records:
+        latest_fear_greed = fear_greed_records[-1]["date"]
+        print(f"Applied KOSPI fear-greed rows: {len(fear_greed_records)} (latest={latest_fear_greed})")
+        build_report["events"].append(
+            f"Applied KOSPI fear-greed rows: {len(fear_greed_records)} latest={latest_fear_greed}"
+        )
+    else:
+        print("KOSPI fear-greed fetch had no rows; keeping existing auxiliary data.")
+        build_report["events"].append("KOSPI fear-greed fetch had no rows; keeping existing auxiliary data.")
+
+    auxiliary = load_existing_adr_seed()
+    auxiliary = merge_auxiliary_data(auxiliary, adr_records, ["adr_kospi", "adr_kosdaq"])
+    auxiliary = merge_auxiliary_data(auxiliary, fear_greed_records, ["fear_greed"])
+
     dart_key = resolve_dart_api_key()
     dart_corp_map = {}
     if dart_key:
@@ -1519,9 +1656,9 @@ def main() -> None:
             json.dumps(credit_payload, ensure_ascii=False, indent=2, allow_nan=False),
             encoding="utf-8",
         )
-    if adr_records:
+    if not auxiliary.empty:
         OUTPUT_ADR_JSON.write_text(
-            json.dumps(build_adr_payload(adr_records), ensure_ascii=False, indent=2, allow_nan=False),
+            json.dumps(build_adr_payload(auxiliary), ensure_ascii=False, indent=2, allow_nan=False),
             encoding="utf-8",
         )
     disclosure_manifest = write_disclosure_payloads(disclosure_records)
@@ -1551,7 +1688,7 @@ def main() -> None:
         print(f"Wrote {OUTPUT_MACRO_JSON}")
     if not credit_merged.empty:
         print(f"Wrote {OUTPUT_CREDIT_JSON}")
-    if adr_records:
+    if not auxiliary.empty:
         print(f"Wrote {OUTPUT_ADR_JSON}")
     print(f"Wrote {OUTPUT_DISCLOSURES_JSON}")
     if dart_corp_map:

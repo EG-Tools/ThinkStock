@@ -12,7 +12,8 @@ function columnar(series, dates, columns) {
       "^KS11": "코스피",
       "^KQ11": "코스닥",
       "005930.KS": "삼성전자",
-      leading_cycle: "선행지수 순환변동치",
+      leading_cycle: "선행순환변동",
+      news_sentiment: "뉴스심리",
       customer_deposit: "고객예탁금",
       kospi_credit: "코스피 신용",
       kosdaq_credit: "코스닥 신용",
@@ -52,8 +53,16 @@ async function installDataRoutes(page) {
       "005930.KS": [8000, 15000, 28000],
     },
   );
-  const macroRecent = columnar(["leading_cycle"], recentDates, { leading_cycle: [99, 99.5, 100, 100.5, 101] });
-  const macroHistory = columnar(["leading_cycle"], historyDates, { leading_cycle: [96, 97, 98] });
+  const macroRecent = columnar(
+    ["leading_cycle", "news_sentiment"],
+    recentDates,
+    { leading_cycle: [99, 99.5, 100, 100.5, 101], news_sentiment: [92, 96, 101, 105, 108] },
+  );
+  const macroHistory = columnar(
+    ["leading_cycle", "news_sentiment"],
+    historyDates,
+    { leading_cycle: [96, 97, 98], news_sentiment: [null, 88, 94] },
+  );
   const creditRecent = columnar(
     ["customer_deposit", "kospi_credit", "kosdaq_credit"],
     recentDates,
@@ -73,11 +82,19 @@ async function installDataRoutes(page) {
     },
   );
   const adrRecent = columnar(
-    ["adr_kospi", "adr_kosdaq"],
+    ["adr_kospi", "adr_kosdaq", "fear_greed"],
     recentDates,
-    { adr_kospi: [95, 100, 105, 110, 115], adr_kosdaq: [90, 95, 100, 105, 110] },
+    {
+      adr_kospi: [95, 100, 105, 110, 115],
+      adr_kosdaq: [90, 95, 100, 105, 110],
+      fear_greed: [35, 45, 55, 65, 75],
+    },
   );
-  const adrHistory = columnar(["adr_kospi", "adr_kosdaq"], [], { adr_kospi: [], adr_kosdaq: [] });
+  const adrHistory = columnar(
+    ["adr_kospi", "adr_kosdaq", "fear_greed"],
+    [],
+    { adr_kospi: [], adr_kosdaq: [], fear_greed: [] },
+  );
   const payloads = new Map([
     ["prices_recent.json", pricesRecent],
     ["prices_history.json", pricesHistory],
@@ -127,7 +144,7 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   await stubExternalRefreshes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.67");
+  await expect(page.locator("#appVersionText")).toHaveText("0.68");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
@@ -140,7 +157,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await page.addInitScript(() => {
     localStorage.setItem("thinkstock-v5", JSON.stringify({
       activeMonths: 120,
-      hiddenSeries: ["customer_deposit", "kospi_credit", "^KQ11", "kosdaq_credit"],
+      hiddenSeries: ["news_sentiment", "customer_deposit", "kospi_credit", "^KQ11", "kosdaq_credit"],
       customStocks: [{ ticker: "005930.KS", name: "삼성전자" }],
       showDisclosures: true,
       hoverShowPopup: false,
@@ -149,10 +166,14 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   const getHistoryRequests = await installDataRoutes(page);
   await page.goto("/?e2e=1&perf=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.67");
+  await expect(page.locator("#appVersionText")).toHaveText("0.68");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   await expect(page.locator('[data-series="customer_deposit"]')).toBeVisible();
+  await expect(page.locator('[data-series="news_sentiment"]')).toHaveText("뉴스심리");
+  expect(await page.locator("#chart-adr").evaluate((element) => (
+    element.data?.some((trace) => trace.name === "공포탐욕" && trace.yaxis === "y2")
+  ))).toBe(true);
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
   expect(getHistoryRequests()).toBe(0);
   await expect(page.locator(".hero h1")).not.toHaveClass(/is-loading/);
