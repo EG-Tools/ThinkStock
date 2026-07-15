@@ -68,7 +68,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.70";
+const APP_VERSION = "0.71";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -5897,22 +5897,22 @@ function renderAdrChart(xRange) {
       },
       {
         xref: "paper", yref: "y2", x: 1.01, y: FEAR_GREED_LOW_THRESH,
-        text: "25 침체", showarrow: false, xanchor: "left",
+        text: "침체", showarrow: false, xanchor: "left",
         font: { color: ADR_ZONE_LOW_COLOR, size: 9 },
       },
       {
         xref: "paper", yref: "y2", x: 1.01, y: FEAR_GREED_HIGH_THRESH,
-        text: "75 과열", showarrow: false, xanchor: "left",
+        text: "과열", showarrow: false, xanchor: "left",
         font: { color: ADR_ZONE_HIGH_COLOR, size: 9 },
       },
       {
         xref: "paper", yref: "y3", x: 1.01, y: NEWS_SENTIMENT_LOW_THRESH,
-        text: "90 비관", showarrow: false, xanchor: "left",
+        text: "비관", showarrow: false, xanchor: "left",
         font: { color: ADR_ZONE_LOW_COLOR, size: 9 },
       },
       {
         xref: "paper", yref: "y3", x: 1.01, y: NEWS_SENTIMENT_HIGH_THRESH,
-        text: "110 낙관", showarrow: false, xanchor: "left",
+        text: "낙관", showarrow: false, xanchor: "left",
         font: { color: ADR_ZONE_HIGH_COLOR, size: 9 },
       },
     ],

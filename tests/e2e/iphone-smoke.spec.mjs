@@ -144,7 +144,7 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   await stubExternalRefreshes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.70");
+  await expect(page.locator("#appVersionText")).toHaveText("0.71");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
@@ -166,7 +166,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   const getHistoryRequests = await installDataRoutes(page);
   await page.goto("/?e2e=1&perf=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.70");
+  await expect(page.locator("#appVersionText")).toHaveText("0.71");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   await expect(page.locator('[data-series="customer_deposit"]')).toBeVisible();
@@ -186,11 +186,11 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
     const separators = (element.layout?.shapes || [])
       .filter((item) => item.type === "line" && item.yref === "paper")
       .map((item) => item.y0);
-    return labels.includes("25 침체")
-      && labels.includes("75 과열")
+    return labels.includes("침체")
+      && labels.includes("과열")
       && boundaryLines.length === 2
-      && labels.includes("90 비관")
-      && labels.includes("110 낙관")
+      && labels.includes("비관")
+      && labels.includes("낙관")
       && newsBoundaryLines.length === 2
       && separators.includes(0.46)
       && separators.includes(0.22);

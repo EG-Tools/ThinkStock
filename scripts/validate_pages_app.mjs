@@ -55,8 +55,8 @@ assert.ok(!html.includes('data-series="news_sentiment"'), "news sentiment must n
 assert.ok(app.includes("getSecuritiesMarketTotalCapitalInfo"), "customer deposit API endpoint is missing");
 assert.ok(app.includes('name: "뉴스심리"'), "news sentiment auxiliary trace is missing");
 assert.ok(app.includes('yaxis: "y3"'), "news sentiment auxiliary axis is missing");
-assert.ok(app.includes('text: "90 비관"'), "news sentiment pessimism guide is missing");
-assert.ok(app.includes('text: "110 낙관"'), "news sentiment optimism guide is missing");
+assert.ok(app.includes('text: "비관"'), "news sentiment pessimism guide is missing");
+assert.ok(app.includes('text: "낙관"'), "news sentiment optimism guide is missing");
 assert.ok(app.includes("CUSTOM_STOCK_PRELOAD_CONCURRENCY"), "custom stock preload concurrency guard is missing");
 assert.ok(app.includes("fearGreedTask") && app.includes("Promise.all(["), "independent runtime refreshes are not parallelized");
 assert.ok(app.includes('name: "공포탐욕"') && app.includes('yaxis: "y2"'), "fear-greed auxiliary panel is missing");
