@@ -144,7 +144,7 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   await stubExternalRefreshes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.69");
+  await expect(page.locator("#appVersionText")).toHaveText("0.70");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
@@ -157,7 +157,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await page.addInitScript(() => {
     localStorage.setItem("thinkstock-v5", JSON.stringify({
       activeMonths: 120,
-      hiddenSeries: ["news_sentiment", "customer_deposit", "kospi_credit", "^KQ11", "kosdaq_credit"],
+      hiddenSeries: ["customer_deposit", "kospi_credit", "^KQ11", "kosdaq_credit"],
       customStocks: [{ ticker: "005930.KS", name: "삼성전자" }],
       showDisclosures: true,
       hoverShowPopup: false,
@@ -166,26 +166,34 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   const getHistoryRequests = await installDataRoutes(page);
   await page.goto("/?e2e=1&perf=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.69");
+  await expect(page.locator("#appVersionText")).toHaveText("0.70");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   await expect(page.locator('[data-series="customer_deposit"]')).toBeVisible();
-  await expect(page.locator('[data-series="news_sentiment"]')).toHaveText("뉴스심리");
+  await expect(page.locator('[data-series="news_sentiment"]')).toHaveCount(0);
   expect(await page.locator("#chart-adr").evaluate((element) => (
     element.data?.some((trace) => trace.name === "공포탐욕" && trace.yaxis === "y2")
+      && element.data?.some((trace) => trace.name === "뉴스심리" && trace.yaxis === "y3")
   ))).toBe(true);
   expect(await page.locator("#chart-adr").evaluate((element) => {
     const labels = (element.layout?.annotations || []).map((item) => item.text);
     const boundaryLines = (element.layout?.shapes || []).filter((item) => (
       item.type === "line" && item.yref === "y2" && item.line?.dash === "dash"
     ));
-    const separator = (element.layout?.shapes || []).some((item) => (
-      item.type === "line" && item.yref === "paper" && item.y0 === 0.285 && item.y1 === 0.285
+    const newsBoundaryLines = (element.layout?.shapes || []).filter((item) => (
+      item.type === "line" && item.yref === "y3" && item.line?.dash === "dash"
     ));
+    const separators = (element.layout?.shapes || [])
+      .filter((item) => item.type === "line" && item.yref === "paper")
+      .map((item) => item.y0);
     return labels.includes("25 침체")
       && labels.includes("75 과열")
       && boundaryLines.length === 2
-      && separator;
+      && labels.includes("90 비관")
+      && labels.includes("110 낙관")
+      && newsBoundaryLines.length === 2
+      && separators.includes(0.46)
+      && separators.includes(0.22);
   })).toBe(true);
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
   expect(getHistoryRequests()).toBe(0);

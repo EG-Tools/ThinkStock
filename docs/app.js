@@ -17,8 +17,9 @@ const DISPLAY_NAMES = {
 
 const ADR_SERIES = ["adr_kospi", "adr_kosdaq"];
 const FEAR_GREED_SERIES = ["fear_greed"];
-const SUPPLEMENTAL_SERIES = [...ADR_SERIES, ...FEAR_GREED_SERIES];
-const CORE_SERIES = ["leading_cycle", "news_sentiment", "customer_deposit", "^KS11", "^KQ11", "kospi_credit", "kosdaq_credit"];
+const NEWS_SENTIMENT_SERIES = ["news_sentiment"];
+const SUPPLEMENTAL_SERIES = [...ADR_SERIES, ...FEAR_GREED_SERIES, ...NEWS_SENTIMENT_SERIES];
+const CORE_SERIES = ["leading_cycle", "^KS11", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit"];
 const BASE_SERIES_PRIORITY = [...CORE_SERIES, ...SUPPLEMENTAL_SERIES];
 const SERIES_COLORS = {
   leading_cycle: "#999999",
@@ -67,7 +68,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.69";
+const APP_VERSION = "0.70";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -247,7 +248,7 @@ let dartCorpCodeMapLoaded = false;
 let dartCorpCodeMapPromise = null;
 let dartDisclosureTickerRefreshPromises = new Map();
 let activeMonths = 120;
-let hiddenSeries = new Set(["news_sentiment", "customer_deposit", "kospi_credit", "^KQ11", "kosdaq_credit"]);
+let hiddenSeries = new Set(["customer_deposit", "kospi_credit", "^KQ11", "kosdaq_credit"]);
 let customStocks = [];
 let krxUniverse = [];
 let krxUniverseLoaded = false;
@@ -5414,7 +5415,6 @@ async function renderChart(preserveZoom = true) {
 
   const allowedSeries = new Set([
     ...CORE_SERIES,
-    ...SUPPLEMENTAL_SERIES,
     ...customStocks.map((item) => item.ticker),
   ]);
   const visibleSeriesCount = [...allowedSeries]
@@ -5601,6 +5601,8 @@ const ADR_LOW_THRESH  = 80;
 const ADR_HIGH_THRESH = 120;
 const FEAR_GREED_LOW_THRESH = 25;
 const FEAR_GREED_HIGH_THRESH = 75;
+const NEWS_SENTIMENT_LOW_THRESH = 90;
+const NEWS_SENTIMENT_HIGH_THRESH = 110;
 
 /**
  * Build ADR overlay traces with segmented zones.
@@ -5681,9 +5683,15 @@ const CORS_PROXY     = "https://corsproxy.io/?url=";
 function renderAdrChart(xRange) {
   const perfStartedAt = (typeof performance !== "undefined") ? performance.now() : 0;
   const el = document.getElementById("chart-adr");
-  if (!el || !adrRows.length) return;
+  const newsSentimentRows = (macroRows || []).filter((row) => toNum(row?.news_sentiment) !== null);
+  if (!el || (!adrRows.length && !newsSentimentRows.length)) return;
 
-  const renderKey = [activeMonths, hoverShowPopup ? 1 : 0, rowsSignature(adrRows)].join("::");
+  const renderKey = [
+    activeMonths,
+    hoverShowPopup ? 1 : 0,
+    rowsSignature(adrRows),
+    rowsSignature(newsSentimentRows),
+  ].join("::");
   if (lastAdrRenderKey === renderKey && el.data?.length) {
     if (Array.isArray(xRange) && xRange.length === 2 && !xRangeMatches(el, xRange[0], xRange[1])) {
       chartSyncing = true;
@@ -5698,22 +5706,32 @@ function renderAdrChart(xRange) {
     return;
   }
 
-  // Filter ADR rows by active time range only when the trace data changed.
-  const maxDate = adrRows[adrRows.length - 1]?.date;
+  // Keep each indicator on its own dates so Korean-market holidays do not
+  // introduce artificial gaps in ADR when daily news observations differ.
+  const maxDate = [
+    adrRows[adrRows.length - 1]?.date,
+    newsSentimentRows[newsSentimentRows.length - 1]?.date,
+  ].filter(Boolean).sort().slice(-1)[0];
   const startDate = shiftMonths(maxDate, activeMonths);
   const filtered = adrRows.filter((r) => r.date >= startDate);
-  if (!filtered.length) return;
+  const filteredNews = newsSentimentRows.filter((r) => r.date >= startDate);
+  if (!filtered.length && !filteredNews.length) return;
 
   const dates = filtered.map((r) => r.date);
   const kospiVals  = filtered.map((r) => toNum(r.adr_kospi));
   const kosdaqVals = filtered.map((r) => toNum(r.adr_kosdaq));
   const fearGreedVals = filtered.map((r) => toNum(r.fear_greed));
+  const newsDates = filteredNews.map((r) => r.date);
+  const newsSentimentVals = filteredNews.map((r) => toNum(r.news_sentiment));
 
   const adrNums = [...kospiVals, ...kosdaqVals].filter((v) => Number.isFinite(v));
   const adrRawMin = adrNums.length ? Math.min(...adrNums) : ADR_LOW_THRESH;
   const adrRawMax = adrNums.length ? Math.max(...adrNums) : ADR_HIGH_THRESH;
   const adrYMin = Math.min(adrRawMin, ADR_LOW_THRESH) - 2.5;
   const adrYMax = Math.max(adrRawMax, ADR_HIGH_THRESH) + 1.2;
+  const newsNums = newsSentimentVals.filter((v) => Number.isFinite(v));
+  const newsYMin = Math.min(...newsNums, NEWS_SENTIMENT_LOW_THRESH) - 2;
+  const newsYMax = Math.max(...newsNums, NEWS_SENTIMENT_HIGH_THRESH) + 2;
 
   const hoverProxyTraces = [
     {
@@ -5752,6 +5770,18 @@ function renderAdrChart(xRange) {
       connectgaps: false,
       line: { color: SERIES_COLORS.fear_greed, width: 2 },
       hoverinfo: "skip",
+    },
+    {
+      x: newsDates,
+      y: newsSentimentVals,
+      yaxis: "y3",
+      type: "scatter",
+      mode: "lines",
+      name: "뉴스심리",
+      connectgaps: false,
+      line: { color: SERIES_COLORS.news_sentiment, width: 2 },
+      hoverinfo: hoverShowPopup ? undefined : "skip",
+      hovertemplate: hoverShowPopup ? "뉴스심리. %{y:.2f}<extra></extra>" : undefined,
     },
     ...hoverProxyTraces,
   ];
@@ -5795,7 +5825,7 @@ function renderAdrChart(xRange) {
       },
       {
         type: "line", xref: "paper", yref: "paper",
-        x0: 0, x1: 1, y0: 0.285, y1: 0.285,
+        x0: 0, x1: 1, y0: 0.46, y1: 0.46,
         line: { color: "rgba(255,255,255,0.24)", width: 1 },
       },
       {
@@ -5823,6 +5853,36 @@ function renderAdrChart(xRange) {
         x0: 0, x1: 1, y0: FEAR_GREED_HIGH_THRESH, y1: FEAR_GREED_HIGH_THRESH,
         line: { color: ADR_ZONE_HIGH_COLOR, width: 0.9, dash: "dash" },
       },
+      {
+        type: "line", xref: "paper", yref: "paper",
+        x0: 0, x1: 1, y0: 0.22, y1: 0.22,
+        line: { color: "rgba(255,255,255,0.24)", width: 1 },
+      },
+      {
+        type: "rect", xref: "paper", yref: "y3",
+        x0: 0, x1: 1, y0: newsYMin, y1: NEWS_SENTIMENT_LOW_THRESH,
+        fillcolor: "rgba(176,198,237,0.12)", line: { width: 0 }, layer: "below",
+      },
+      {
+        type: "rect", xref: "paper", yref: "y3",
+        x0: 0, x1: 1, y0: NEWS_SENTIMENT_HIGH_THRESH, y1: newsYMax,
+        fillcolor: "rgba(230,173,173,0.12)", line: { width: 0 }, layer: "below",
+      },
+      {
+        type: "line", xref: "paper", yref: "y3",
+        x0: 0, x1: 1, y0: NEWS_SENTIMENT_LOW_THRESH, y1: NEWS_SENTIMENT_LOW_THRESH,
+        line: { color: ADR_ZONE_LOW_COLOR, width: 0.9, dash: "dash" },
+      },
+      {
+        type: "line", xref: "paper", yref: "y3",
+        x0: 0, x1: 1, y0: 100, y1: 100,
+        line: { color: "rgba(255,255,255,0.15)", width: 0.8, dash: "dot" },
+      },
+      {
+        type: "line", xref: "paper", yref: "y3",
+        x0: 0, x1: 1, y0: NEWS_SENTIMENT_HIGH_THRESH, y1: NEWS_SENTIMENT_HIGH_THRESH,
+        line: { color: ADR_ZONE_HIGH_COLOR, width: 0.9, dash: "dash" },
+      },
     ],
     annotations: [
       {
@@ -5845,12 +5905,22 @@ function renderAdrChart(xRange) {
         text: "75 과열", showarrow: false, xanchor: "left",
         font: { color: ADR_ZONE_HIGH_COLOR, size: 9 },
       },
+      {
+        xref: "paper", yref: "y3", x: 1.01, y: NEWS_SENTIMENT_LOW_THRESH,
+        text: "90 비관", showarrow: false, xanchor: "left",
+        font: { color: ADR_ZONE_LOW_COLOR, size: 9 },
+      },
+      {
+        xref: "paper", yref: "y3", x: 1.01, y: NEWS_SENTIMENT_HIGH_THRESH,
+        text: "110 낙관", showarrow: false, xanchor: "left",
+        font: { color: ADR_ZONE_HIGH_COLOR, size: 9 },
+      },
     ],
     xaxis: {
       showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1,
       zeroline: false, color: "#666", tickfont: { size: 9 },
       fixedrange: false,
-      anchor: "y2",
+      anchor: "y3",
       showspikes: false,
       hoverformat: "%Y, %-m, %-d",
       ...(xRange ? { range: xRange } : {}),
@@ -5862,7 +5932,7 @@ function renderAdrChart(xRange) {
       tickformat: ".0f",
       autorange: false,
       range: [adrYMin, adrYMax],
-      domain: [0.34, 1],
+      domain: [0.50, 1],
     },
     yaxis2: {
       showgrid: false,
@@ -5872,7 +5942,17 @@ function renderAdrChart(xRange) {
       tickvals: [0, FEAR_GREED_LOW_THRESH, 50, FEAR_GREED_HIGH_THRESH, 100],
       fixedrange: true,
       range: [0, 100],
-      domain: [0, 0.23],
+      domain: [0.26, 0.42],
+    },
+    yaxis3: {
+      showgrid: false,
+      zeroline: false,
+      color: "#777",
+      tickfont: { size: 9 },
+      tickvals: [NEWS_SENTIMENT_LOW_THRESH, 100, NEWS_SENTIMENT_HIGH_THRESH],
+      fixedrange: true,
+      range: [newsYMin, newsYMax],
+      domain: [0, 0.18],
     },
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
     hoverlabel: plotlyHoverLabel(11),
