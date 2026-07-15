@@ -61,7 +61,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.60";
+const APP_VERSION = "0.61";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -1871,6 +1871,46 @@ function findNearestLineDragTarget(el, clientX, clientY, isTouch = false) {
   return best;
 }
 
+function findDisclosureMarkerAtClientPoint(el, clientX, clientY, isTouch = false) {
+  if (!el?._fullLayout || !Array.isArray(el.data)) return null;
+  const traceIndex = el.data.findIndex((trace) => trace?.meta?.isDisclosureTrace && trace.visible !== "legendonly");
+  const trace = traceIndex >= 0 ? el.data[traceIndex] : null;
+  const xAxis = el._fullLayout.xaxis;
+  const yAxis = el._fullLayout.yaxis;
+  if (!trace || !xAxis || !yAxis || typeof xAxis.d2p !== "function" || typeof yAxis.d2p !== "function") return null;
+
+  const rect = el.getBoundingClientRect();
+  const localX = clientX - rect.left;
+  const localY = clientY - rect.top;
+  const hitRadius = isTouch ? DISCLOSURE_TOUCH_HIT_RADIUS_PX : DISCLOSURE_MOUSE_HIT_RADIUS_PX;
+  let best = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (let pointIndex = 0; pointIndex < trace.x.length; pointIndex += 1) {
+    const markerX = Number(xAxis._offset || 0) + xAxis.d2p(trace.x[pointIndex]);
+    const markerY = Number(yAxis._offset || 0) + yAxis.d2p(trace.y[pointIndex]);
+    const distance = Math.hypot(localX - markerX, localY - markerY);
+    if (distance <= hitRadius && distance < bestDistance) {
+      bestDistance = distance;
+      best = { traceIndex, pointIndex };
+    }
+  }
+  return best;
+}
+
+function openDisclosureMarkerHit(el, hit, sourceEvent) {
+  const trace = el?.data?.[hit?.traceIndex];
+  const raw = trace?.customdata?.[hit?.pointIndex]?.[0];
+  if (!raw) return false;
+  try {
+    const group = disclosureGroupStore.get(raw) || JSON.parse(raw);
+    showDisclosurePopover(group, sourceEvent);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 function getTraceBaseLineWidth(trace) {
   const metaWidth = toNum(trace?.meta?.baseLineWidth);
   if (metaWidth !== null) return metaWidth;
@@ -1966,6 +2006,7 @@ function beginLineOffsetDrag(el, target, startClientY) {
 function bindCursorMoveSync() {
   const mainEl = document.getElementById("chart");
   const adrEl = document.getElementById("chart-adr");
+  let disclosurePointerDown = null;
   if (!mainEl || !adrEl) return;
   ensureCursorLine(mainEl);
   ensureCursorLine(adrEl);
@@ -1991,7 +2032,11 @@ function bindCursorMoveSync() {
         const now = performance.now();
         if (!isViewportDragging && now - lastLineHitTestAt >= LINE_HIT_TEST_INTERVAL_MS) {
           lastLineHitTestAt = now;
-          const lineTarget = findNearestLineDragTarget(sourceEl, clientX, clientY, false);
+          const disclosureTarget = findDisclosureMarkerAtClientPoint(sourceEl, clientX, clientY, false);
+          sourceEl.classList.toggle("is-disclosure-hovering", Boolean(disclosureTarget));
+          const lineTarget = disclosureTarget
+            ? null
+            : findNearestLineDragTarget(sourceEl, clientX, clientY, false);
           setHoveredLineTarget(lineTarget);
         }
       }
@@ -2022,17 +2067,49 @@ function bindCursorMoveSync() {
       }
       pendingPointerMove = null;
       setHoveredLineTarget(null);
+      mainEl.classList.remove("is-disclosure-hovering");
       scheduleSyncedCursor(null);
       clearHoverOnChart(mainEl);
       clearHoverOnChart(adrEl);
     };
 
+    const onDisclosurePriorityClick = (event) => {
+      if (event.target instanceof Element && event.target.closest(".disclosure-popover")) return;
+      const hit = findDisclosureMarkerAtClientPoint(mainEl, event.clientX, event.clientY, isTouchDevice());
+      const now = Date.now();
+      const directPress = Boolean(
+        hit
+        && disclosurePointerDown
+        && now - disclosurePointerDown.at <= 800
+        && disclosurePointerDown.traceIndex === hit.traceIndex
+        && disclosurePointerDown.pointIndex === hit.pointIndex
+      );
+      disclosurePointerDown = null;
+      if (now < suppressPlotlyClickUntil && !directPress) return;
+      if (!hit || !openDisclosureMarkerHit(mainEl, hit, event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
     const onTouchStart = (event) => {
       if (event.target instanceof Element && event.target.closest(".disclosure-popover")) return;
       if (!event.touches || event.touches.length !== 1) return;
-      event.preventDefault();
       const touch = event.touches[0];
+      disclosurePointerDown = null;
       touchStartPoint = { x: touch.clientX, y: touch.clientY };
+      const disclosureTarget = findDisclosureMarkerAtClientPoint(
+        event.currentTarget,
+        touch.clientX,
+        touch.clientY,
+        true,
+      );
+      if (disclosureTarget) {
+        disclosurePointerDown = { ...disclosureTarget, at: Date.now() };
+        setHoveredLineTarget(null);
+        clearTouchDoubleTapZoomState();
+        return;
+      }
+      event.preventDefault();
       const lineTarget = findNearestLineDragTarget(event.currentTarget, touch.clientX, touch.clientY, true);
       if (lineTarget && beginLineOffsetDrag(event.currentTarget, lineTarget, touch.clientY)) {
         setHoveredLineTarget(lineTarget);
@@ -2101,6 +2178,7 @@ function bindCursorMoveSync() {
     adrEl.addEventListener("mousemove", onMove, { passive: true });
     mainEl.addEventListener("mouseleave", onLeave);
     adrEl.addEventListener("mouseleave", onLeave);
+    mainEl.addEventListener("click", onDisclosurePriorityClick, true);
 
     mainEl.addEventListener("touchstart", onTouchStart, { passive: false });
     adrEl.addEventListener("touchstart", onTouchStart, { passive: false });
@@ -2125,6 +2203,14 @@ function bindCursorMoveSync() {
       const xa = sourceEl?._fullLayout?.xaxis;
       if (!xa) return;
 
+      disclosurePointerDown = null;
+      const disclosureTarget = findDisclosureMarkerAtClientPoint(sourceEl, event.clientX, event.clientY, false);
+      if (disclosureTarget) {
+        disclosurePointerDown = { ...disclosureTarget, at: Date.now() };
+        setHoveredLineTarget(null);
+        clearTouchDoubleTapZoomState();
+        return;
+      }
       const lineTarget = findNearestLineDragTarget(sourceEl, event.clientX, event.clientY, false);
       if (lineTarget && beginLineOffsetDrag(sourceEl, lineTarget, event.clientY)) {
         event.preventDefault();
@@ -5001,7 +5087,7 @@ async function renderChart(preserveZoom = true) {
   activeLineTraceIndex = null;
   appliedLineHighlightTraceIndex = null;
   currentDisclosureHighlight = null;
-  el.classList.remove("is-line-hovering", "is-line-dragging");
+  el.classList.remove("is-line-hovering", "is-line-dragging", "is-disclosure-hovering");
 
   if (!rows.length || !selected.length) {
     msgEl.innerHTML = '<div class="message error">표시할 데이터가 없습니다.</div>';

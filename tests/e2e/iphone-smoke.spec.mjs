@@ -127,7 +127,7 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   await stubExternalRefreshes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.60");
+  await expect(page.locator("#appVersionText")).toHaveText("0.61");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
@@ -149,7 +149,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   const getHistoryRequests = await installDataRoutes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.60");
+  await expect(page.locator("#appVersionText")).toHaveText("0.61");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   await expect(page.locator('[data-series="customer_deposit"]')).toBeVisible();
@@ -197,6 +197,27 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await expect.poll(() => page.locator("#chart").evaluate((element, drag) => (
     element.data?.[drag.traceIndex]?.y?.[drag.pointIndex]
   ), dragResult)).not.toBe(dragResult.before);
+  await page.waitForTimeout(300);
+
+  if (!isMobile) {
+    const linePath = page.locator("#chart .scatterlayer .js-line").first();
+    await expect(linePath).toBeVisible();
+    const linePointerPoint = await linePath.evaluate((path) => {
+      const point = path.getPointAtLength(path.getTotalLength() / 3);
+      const matrix = path.getScreenCTM();
+      return {
+        x: point.x * matrix.a + point.y * matrix.c + matrix.e,
+        y: point.x * matrix.b + point.y * matrix.d + matrix.f,
+      };
+    });
+    await page.mouse.move(linePointerPoint.x, linePointerPoint.y);
+    await expect(page.locator("#chart")).toHaveClass(/is-line-hovering/);
+    await expect.poll(() => page.locator("#chart").evaluate((element) => getComputedStyle(element).cursor)).toBe("pointer");
+
+    const chartBox = await page.locator("#chart").boundingBox();
+    await page.mouse.move(chartBox.x + 6, chartBox.y + 6);
+    await expect.poll(() => page.locator("#chart").evaluate((element) => getComputedStyle(element).cursor)).toBe("default");
+  }
 
   const disclosureText = page.locator("#chart .textpoint text").filter({ hasText: "v" }).first();
   await expect(disclosureText).toBeVisible();
@@ -214,6 +235,11 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   let disclosurePoint = await getDisclosurePoint();
   expect(disclosurePoint).not.toBeNull();
   const popover = page.locator("#chart .disclosure-popover");
+  if (!isMobile) {
+    await page.mouse.move(disclosurePoint.x, disclosurePoint.y);
+    await expect(page.locator("#chart")).toHaveClass(/is-disclosure-hovering/);
+    await expect.poll(() => page.locator("#chart").evaluate((element) => getComputedStyle(element).cursor)).toBe("pointer");
+  }
   if (isMobile) {
     await page.touchscreen.tap(disclosurePoint.x, disclosurePoint.y + 80);
   } else {
@@ -234,7 +260,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   } else {
     await page.mouse.click(disclosurePoint.x, disclosurePoint.y);
   }
-  if (!await popover.isVisible()) {
+  if (isMobile && !await popover.isVisible()) {
     const opened = await page.evaluate(() => window.ThinkStockE2E?.openFirstDisclosure?.());
     expect(opened).toBe(true);
   }

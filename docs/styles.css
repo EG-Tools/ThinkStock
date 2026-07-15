@@ -592,12 +592,26 @@ body {
   box-shadow: var(--shadow);
   padding: 0;
   overflow: hidden;
+  cursor: default;
+}
+
+.chart-frame .main-svg,
+.chart-frame .main-svg * {
+  cursor: default !important;
 }
 
 .chart-frame.is-line-hovering,
-.chart-frame.is-line-dragging,
+.chart-frame.is-disclosure-hovering,
 .chart-frame.is-line-hovering .main-svg,
-.chart-frame.is-line-dragging .main-svg {
+.chart-frame.is-disclosure-hovering .main-svg,
+.chart-frame.is-line-hovering .main-svg *,
+.chart-frame.is-disclosure-hovering .main-svg * {
+  cursor: pointer !important;
+}
+
+.chart-frame.is-line-dragging,
+.chart-frame.is-line-dragging .main-svg,
+.chart-frame.is-line-dragging .main-svg * {
   cursor: ns-resize !important;
 }
 
