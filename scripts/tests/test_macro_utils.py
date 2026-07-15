@@ -56,3 +56,17 @@ class MacroUtilsTests(unittest.TestCase):
         self.assertEqual(dense.loc[pd.Timestamp("2026-05-29"), "leading_cycle"], 104.8)
         self.assertTrue(pd.isna(dense.loc[pd.Timestamp("2026-06-01"), "leading_cycle"]))
         self.assertGreater(dense.loc[pd.Timestamp("2026-07-10"), "news_sentiment"], 102.9)
+        self.assertEqual(dense.loc[pd.Timestamp("2026-07-13"), "news_sentiment"], 103.0)
+
+    def test_weekend_news_sentiment_rolls_to_next_market_day_only(self) -> None:
+        macro = pd.DataFrame(
+            {"news_sentiment": [110.72, 111.32, 110.34]},
+            index=pd.to_datetime(["2026-07-10", "2026-07-11", "2026-07-12"]),
+        )
+        prices = pd.to_datetime(["2026-07-10", "2026-07-13", "2026-07-14"])
+
+        dense = densify_macro(macro, prices)
+
+        self.assertEqual(dense.index.max(), pd.Timestamp("2026-07-13"))
+        self.assertEqual(dense.loc[pd.Timestamp("2026-07-13"), "news_sentiment"], 110.34)
+        self.assertNotIn(pd.Timestamp("2026-07-14"), dense.index)

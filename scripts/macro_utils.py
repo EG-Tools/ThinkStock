@@ -24,6 +24,11 @@ def densify_macro(macro: pd.DataFrame, price_index: pd.DatetimeIndex) -> pd.Data
         effective_end = source_end
         if source_end.is_month_start:
             effective_end = (source_end + pd.offsets.MonthEnd(0)).normalize()
+        elif column == "news_sentiment" and source_end not in target_index:
+            # Weekend news sentiment becomes actionable on the next market day.
+            following_market_days = target_index[target_index > source_end]
+            if not following_market_days.empty:
+                effective_end = pd.Timestamp(following_market_days[0]).normalize()
         bounds[column] = (source_start, effective_end)
 
     if not bounds:
