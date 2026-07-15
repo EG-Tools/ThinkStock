@@ -179,7 +179,13 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
     const boundaryLines = (element.layout?.shapes || []).filter((item) => (
       item.type === "line" && item.yref === "y2" && item.line?.dash === "dash"
     ));
-    return labels.includes("25 침체") && labels.includes("75 과열") && boundaryLines.length === 2;
+    const separator = (element.layout?.shapes || []).some((item) => (
+      item.type === "line" && item.yref === "paper" && item.y0 === 0.285 && item.y1 === 0.285
+    ));
+    return labels.includes("25 침체")
+      && labels.includes("75 과열")
+      && boundaryLines.length === 2
+      && separator;
   })).toBe(true);
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
   expect(getHistoryRequests()).toBe(0);

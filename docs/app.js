@@ -5794,6 +5794,11 @@ function renderAdrChart(xRange) {
         line: { color: "rgba(255,255,255,0.15)", width: 0.8, dash: "dot" },
       },
       {
+        type: "line", xref: "paper", yref: "paper",
+        x0: 0, x1: 1, y0: 0.285, y1: 0.285,
+        line: { color: "rgba(255,255,255,0.24)", width: 1 },
+      },
+      {
         type: "rect", xref: "paper", yref: "y2",
         x0: 0, x1: 1, y0: 0, y1: FEAR_GREED_LOW_THRESH,
         fillcolor: "rgba(176,198,237,0.12)", line: { width: 0 }, layer: "below",
