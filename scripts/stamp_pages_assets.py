@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 INDEX_HTML = ROOT / "docs" / "index.html"
 SW_JS = ROOT / "docs" / "sw.js"
+DATA_WORKER_JS = ROOT / "docs" / "modules" / "data-worker.js"
 
 
 def resolve_build_version() -> str:
@@ -47,6 +48,7 @@ def replace_once(text: str, pattern: str, replacement: str, label: str) -> str:
 
 def main() -> int:
     version = resolve_build_version()
+    data_payload_src = f"./modules/data-payload.js?v={version}"
     chart_loader_src = f"./modules/chart-loader.js?v={version}"
     disclosure_policy_src = f"./modules/disclosure-policy.js?v={version}"
     data_worker_src = f"./modules/data-worker.js?v={version}"
@@ -54,6 +56,12 @@ def main() -> int:
     app_src = f"./app.js?v={version}"
 
     index = INDEX_HTML.read_text(encoding="utf-8")
+    index = replace_once(
+        index,
+        r'<script defer src="\./modules/data-payload\.js(?:\?v=[^"]*)?"></script>',
+        f'<script defer src="{data_payload_src}"></script>',
+        "index data-payload.js script",
+    )
     index = replace_once(
         index,
         r'<script defer src="\./modules/chart-loader\.js(?:\?v=[^"]*)?"></script>',
@@ -75,6 +83,12 @@ def main() -> int:
     INDEX_HTML.write_text(index, encoding="utf-8", newline="\n")
 
     sw = SW_JS.read_text(encoding="utf-8")
+    sw = replace_once(
+        sw,
+        r'"\./modules/data-payload\.js(?:\?v=[^"]*)?",',
+        f'"{data_payload_src}",',
+        "service worker data-payload.js asset",
+    )
     sw = replace_once(
         sw,
         r'const CACHE_NAME = "thinkstock-[^"]+";',
@@ -112,6 +126,15 @@ def main() -> int:
         "service worker app.js asset",
     )
     SW_JS.write_text(sw, encoding="utf-8", newline="\n")
+
+    data_worker = DATA_WORKER_JS.read_text(encoding="utf-8")
+    data_worker = replace_once(
+        data_worker,
+        r'importScripts\("\./data-payload\.js(?:\?v=[^"]*)?"\);',
+        f'importScripts("./data-payload.js?v={version}");',
+        "data worker data-payload.js import",
+    )
+    DATA_WORKER_JS.write_text(data_worker, encoding="utf-8", newline="\n")
 
     print(f"Stamped Pages assets with version {version}")
     return 0

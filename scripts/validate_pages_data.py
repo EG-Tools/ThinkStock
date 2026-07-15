@@ -11,6 +11,7 @@ from split_pages_data import SEGMENTED_FILES
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "docs" / "data"
+BUILD_REPORT_JSON = DATA_DIR / "build_report.json"
 
 DATASETS = {
     "prices": DATA_DIR / "prices.json",
@@ -39,7 +40,17 @@ CREDIT_MAX_FRESH_DAYS = 14
 PRICE_MAX_FRESH_DAYS = 10
 ADR_MAX_FRESH_DAYS = 10
 LEADING_MAX_FRESH_DAYS = 150
+NEWS_SENTIMENT_MAX_FRESH_DAYS = 14
 STRICT_FRESHNESS = os.environ.get("PAGES_STRICT_FRESHNESS", "").strip() == "1"
+
+SOURCE_OUTPUT_RULES = (
+    ("ecos_leading_cycle", "macro", ("leading_cycle",), True),
+    ("ecos_news_sentiment", "macro", ("news_sentiment",), True),
+    ("kofia_credit", "credit", CREDIT_COLUMNS, False),
+    ("freesis_credit", "credit", CREDIT_COLUMNS, False),
+    ("adr", "adr", ("adr_kospi", "adr_kosdaq"), False),
+    ("fear_greed", "adr", ("fear_greed",), False),
+)
 
 
 def fail(message: str) -> None:
@@ -104,6 +115,18 @@ def load_payload(name: str) -> dict:
         raise AssertionError(f"{name}: invalid JSON: {exc}") from exc
     if not isinstance(payload, dict):
         fail(f"{name}: payload must be an object")
+    return payload
+
+
+def load_build_report() -> dict:
+    if not BUILD_REPORT_JSON.exists():
+        return {}
+    try:
+        payload = json.loads(BUILD_REPORT_JSON.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise AssertionError(f"build report: invalid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        fail("build report: payload must be an object")
     return payload
 
 
@@ -205,6 +228,44 @@ def validate_freshness(name: str, rows: list[dict], columns: tuple[str, ...], ma
         fail(f"{name}: latest date {latest.isoformat()} is in the future")
     if age_days > max_days:
         fail_or_warn_freshness(f"{name}: latest date {latest.isoformat()} is stale ({age_days} days old)")
+
+
+def validate_source_output_alignment(build_report: dict, rows_by_dataset: dict[str, list[dict]]) -> list[str]:
+    sources = build_report.get("sources")
+    if not isinstance(sources, dict):
+        return []
+
+    price_rows = rows_by_dataset.get("prices", [])
+    price_dates = [parse_date(row.get("date"), "prices") for row in price_rows]
+    summaries: list[str] = []
+    for source_name, output_name, columns, align_to_market_day in SOURCE_OUTPUT_RULES:
+        source = sources.get(source_name)
+        if not isinstance(source, dict) or int(source.get("rows") or 0) <= 0:
+            continue
+        source_latest = parse_date(source.get("latest"), f"build report source {source_name}")
+        expected_latest = source_latest
+        if align_to_market_day:
+            market_dates = [value for value in price_dates if value >= source_latest]
+            if not market_dates:
+                summaries.append(
+                    f"source/output {source_name}: waiting for a market date after {source_latest.isoformat()}"
+                )
+                continue
+            expected_latest = market_dates[0]
+
+        output_rows = rows_by_dataset.get(output_name, [])
+        actual_latest = latest_numeric_date(output_name, output_rows, columns)
+        if actual_latest < expected_latest:
+            fail(
+                "source/output mismatch: "
+                f"{source_name} latest {source_latest.isoformat()} requires "
+                f"{output_name}/{','.join(columns)} through {expected_latest.isoformat()}, "
+                f"got {actual_latest.isoformat()}"
+            )
+        summaries.append(
+            f"source/output {source_name}: {source_latest.isoformat()} -> {actual_latest.isoformat()}"
+        )
+    return summaries
 
 
 def validate_credit(rows: list[dict]) -> None:
@@ -343,6 +404,7 @@ def read_committed_credit_latest() -> date | None:
 
 def main() -> int:
     summaries: list[str] = validate_segmented_payloads()
+    rows_by_dataset: dict[str, list[dict]] = {}
     for name in ("prices", "macro", "credit", "adr", "disclosures"):
         payload = load_payload(name)
         if name == "disclosures":
@@ -351,17 +413,25 @@ def main() -> int:
             summaries.append(f"{name}: {len(rows)} rows, latest {latest}")
             continue
         rows = validate_records(name, payload)
+        rows_by_dataset[name] = rows
         summaries.append(f"{name}: {len(rows)} rows, latest {rows[-1]['date']}")
         if name == "prices":
             validate_freshness(name, rows, numeric_columns_from_payload(payload, rows), PRICE_MAX_FRESH_DAYS)
         elif name == "macro":
             validate_macro_columns(payload, rows)
             validate_freshness(name, rows, ("leading_cycle",), LEADING_MAX_FRESH_DAYS)
+            macro_columns = set(numeric_columns_from_payload(payload, rows))
+            if "news_sentiment" in macro_columns:
+                validate_freshness(name, rows, ("news_sentiment",), NEWS_SENTIMENT_MAX_FRESH_DAYS)
+            elif os.environ.get("ECOS_API_KEY", "").strip():
+                fail("macro: news_sentiment is missing while ECOS_API_KEY is configured")
         elif name == "adr":
             validate_auxiliary(rows)
             validate_freshness(name, rows, ADR_COLUMNS, ADR_MAX_FRESH_DAYS)
         if name == "credit":
             validate_credit(rows)
+
+    summaries.extend(validate_source_output_alignment(load_build_report(), rows_by_dataset))
 
     print("Pages data validation passed:")
     for summary in summaries:

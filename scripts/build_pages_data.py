@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import re
 import zipfile
@@ -1454,7 +1455,27 @@ def payload_file_summary(path: Path) -> dict:
 
     dates = payload.get("dates")
     if isinstance(dates, list) and dates:
-        return {"rows": len(dates), "latest": str(dates[-1])[:10]}
+        summary = {"rows": len(dates), "latest": str(dates[-1])[:10]}
+        columns = payload.get("columns")
+        if isinstance(columns, dict):
+            series_latest: dict[str, str] = {}
+            series_points: dict[str, int] = {}
+            for key, values in columns.items():
+                if not isinstance(values, list):
+                    continue
+                valid_indexes = [
+                    index
+                    for index, value in enumerate(values[:len(dates)])
+                    if isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and math.isfinite(float(value))
+                ]
+                if valid_indexes:
+                    series_latest[str(key)] = str(dates[valid_indexes[-1]])[:10]
+                    series_points[str(key)] = len(valid_indexes)
+            summary["series_latest"] = series_latest
+            summary["series_points"] = series_points
+        return summary
 
     records = payload.get("records")
     if isinstance(records, list):
