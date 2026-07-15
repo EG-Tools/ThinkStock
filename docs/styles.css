@@ -646,6 +646,10 @@ body {
   box-shadow: 0 18px 34px rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(12px);
   color: rgba(255, 255, 255, 0.9);
+  pointer-events: auto;
+  touch-action: pan-y;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .disclosure-popover[hidden] { display: none !important; }
@@ -671,13 +675,19 @@ body {
 }
 
 .disclosure-popover-head button {
-  width: 24px;
-  height: 24px;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  margin: -8px -8px 0 0;
   border: 0;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.08);
   color: rgba(255, 255, 255, 0.75);
+  font-size: 24px;
+  line-height: 1;
   cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .disclosure-popover ul {
@@ -729,9 +739,13 @@ body {
 }
 
 .disclosure-popover a {
+  display: block;
+  min-height: 32px;
   color: #fbbf24;
   text-decoration: none;
   font-weight: 700;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: rgba(251, 191, 36, 0.2);
 }
 
 #y-handles {

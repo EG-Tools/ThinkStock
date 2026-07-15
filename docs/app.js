@@ -54,7 +54,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.51";
+const APP_VERSION = "0.52";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -1956,6 +1956,7 @@ function bindCursorMoveSync() {
     };
 
     const onTouchStart = (event) => {
+      if (event.target instanceof Element && event.target.closest(".disclosure-popover")) return;
       if (!event.touches || event.touches.length !== 1) return;
       event.preventDefault();
       const touch = event.touches[0];
@@ -2001,6 +2002,7 @@ function bindCursorMoveSync() {
     };
 
     const onTouchMove = (event) => {
+      if (event.target instanceof Element && event.target.closest(".disclosure-popover")) return;
       if (!event.touches || event.touches.length !== 1) return;
       if (isHandleDragging) return;
       event.preventDefault();
@@ -2009,6 +2011,7 @@ function bindCursorMoveSync() {
     };
 
     const onTouchEnd = (event) => {
+      if (event.target instanceof Element && event.target.closest(".disclosure-popover")) return;
       if (event.touches && event.touches.length > 0) return;
       setHoveredLineTarget(null);
       onLeave();
@@ -3883,6 +3886,9 @@ function ensureDisclosurePopover() {
     node = document.createElement("div");
     node.className = "disclosure-popover";
     node.hidden = true;
+    ["touchstart", "touchmove", "touchend", "pointerdown", "click"].forEach((eventName) => {
+      node.addEventListener(eventName, (event) => event.stopPropagation());
+    });
     chart.appendChild(node);
   }
   return node;
@@ -3922,7 +3928,10 @@ function showDisclosurePopover(group, sourceEvent) {
     </div>
     <ul>${items}</ul>
   `;
-  node.querySelector("button")?.addEventListener("click", hideDisclosurePopover, { once: true });
+  node.querySelector("button")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    hideDisclosurePopover();
+  }, { once: true });
 
   const rect = chart.getBoundingClientRect();
   const clientX = sourceEvent?.clientX ?? (rect.left + rect.width * 0.5);
