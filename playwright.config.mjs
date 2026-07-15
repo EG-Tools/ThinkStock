@@ -18,6 +18,10 @@ export default defineConfig({
       name: "webkit",
       use: { ...devices["iPhone 13"] },
     },
+    {
+      name: "webkit-desktop",
+      use: { ...devices["Desktop Safari"] },
+    },
   ],
   webServer: {
     command: "node scripts/serve_pages.mjs",

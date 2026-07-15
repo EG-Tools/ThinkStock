@@ -57,7 +57,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.58";
+const APP_VERSION = "0.59";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -220,6 +220,8 @@ const DISCLOSURE_MARKER_HOVER_SIZE = 22;
 const DISCLOSURE_MARKER_HOVER_LINE_WIDTH = 3.5;
 const DISCLOSURE_TEXT_SIZE = 16;
 const DISCLOSURE_TEXT_HOVER_SIZE = 21;
+const DISCLOSURE_MOUSE_HIT_RADIUS_PX = 22;
+const DISCLOSURE_TOUCH_HIT_RADIUS_PX = 30;
 
 let pricePayload = null;
 let macroRows = [];
@@ -344,7 +346,7 @@ function initE2eDebugAccess() {
       getChartModelSource() {
         return lastMainChartModelSource;
       },
-      openFirstDisclosure() {
+      openFirstDisclosure(offsetX = 0, offsetY = 0) {
         const chart = document.getElementById("chart");
         const traceIndex = chart?.data?.findIndex((item) => item?.meta?.isDisclosureTrace) ?? -1;
         const trace = traceIndex >= 0 ? chart.data[traceIndex] : null;
@@ -352,8 +354,8 @@ function initE2eDebugAccess() {
         const yaxis = chart?._fullLayout?.yaxis;
         if (!trace || !xaxis || !yaxis || !trace.x?.length) return false;
         const rect = chart.getBoundingClientRect();
-        const clientX = rect.left + Number(xaxis._offset || 0) + xaxis.d2p(trace.x[0]);
-        const clientY = rect.top + Number(yaxis._offset || 0) + yaxis.d2p(trace.y[0]);
+        const clientX = rect.left + Number(xaxis._offset || 0) + xaxis.d2p(trace.x[0]) + Number(offsetX || 0);
+        const clientY = rect.top + Number(yaxis._offset || 0) + yaxis.d2p(trace.y[0]) + Number(offsetY || 0);
         return handleDisclosureClick({
           event: { clientX, clientY },
           points: [{
@@ -2174,7 +2176,11 @@ function bindCursorMoveSync() {
       const onWindowMove = (moveEvent) => {
         if (!dragState) return;
         const delta = Math.abs(moveEvent.clientX - dragState.startClientX);
-        if (delta >= 3) dragState.moved = true;
+        if (delta >= 3 && !dragState.moved) {
+          dragState.moved = true;
+          suppressPlotlyClickUntil = Date.now() + 700;
+          resetDisclosureHoverHighlight(sourceEl);
+        }
         renderDragZoomOverlay(dragState.sourceEl, dragState.startClientX, moveEvent.clientX);
         const xValue = axisPixelToXValue(dragState.sourceEl, moveEvent.clientX, true);
         if (xValue != null) scheduleSyncedCursor(xValue, dragState.sourceEl, moveEvent.clientX);
@@ -2192,6 +2198,7 @@ function bindCursorMoveSync() {
         hideDragZoomOverlay(st.sourceEl);
 
         if (!st.moved) return;
+        suppressPlotlyClickUntil = Date.now() + 700;
 
         const xStart = axisPixelToXValue(st.sourceEl, st.startClientX, true);
         const xEnd = axisPixelToXValue(st.sourceEl, upEvent.clientX, true);
@@ -4167,7 +4174,6 @@ function showDisclosurePopover(group, sourceEvent) {
 }
 
 function isDirectDisclosureTap(evtData, point) {
-  if (!isTouchDevice()) return true;
   const sourceEvent = evtData?.event;
   const chart = document.getElementById("chart");
   const clientX = Number(sourceEvent?.clientX);
@@ -4180,7 +4186,10 @@ function isDirectDisclosureTap(evtData, point) {
   const rect = chart.getBoundingClientRect();
   const markerX = Number(xAxis._offset || 0) + xAxis.d2p(point.x);
   const markerY = Number(yAxis._offset || 0) + yAxis.d2p(point.y);
-  return Math.hypot(clientX - rect.left - markerX, clientY - rect.top - markerY) <= 28;
+  const hitRadius = isTouchDevice()
+    ? DISCLOSURE_TOUCH_HIT_RADIUS_PX
+    : DISCLOSURE_MOUSE_HIT_RADIUS_PX;
+  return Math.hypot(clientX - rect.left - markerX, clientY - rect.top - markerY) <= hitRadius;
 }
 
 function handleDisclosureClick(evtData) {

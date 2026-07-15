@@ -127,7 +127,7 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   await stubExternalRefreshes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.58");
+  await expect(page.locator("#appVersionText")).toHaveText("0.59");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
@@ -136,7 +136,7 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   expect(pageErrors).toEqual([]);
 });
 
-test("iPhone chart, disclosure popover, and lazy history remain interactive", async ({ page }) => {
+test("chart, disclosure popover, and lazy history remain interactive", async ({ page, isMobile }) => {
   await page.addInitScript(() => {
     localStorage.setItem("thinkstock-v5", JSON.stringify({
       activeMonths: 120,
@@ -149,7 +149,7 @@ test("iPhone chart, disclosure popover, and lazy history remain interactive", as
   const getHistoryRequests = await installDataRoutes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.58");
+  await expect(page.locator("#appVersionText")).toHaveText("0.59");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   await expect(page.locator('[data-series="customer_deposit"]')).toBeVisible();
@@ -200,7 +200,7 @@ test("iPhone chart, disclosure popover, and lazy history remain interactive", as
 
   const disclosureText = page.locator("#chart .textpoint text").filter({ hasText: "v" }).first();
   await expect(disclosureText).toBeVisible();
-  const disclosurePoint = await page.locator("#chart").evaluate((element) => {
+  const getDisclosurePoint = () => page.locator("#chart").evaluate((element) => {
     const trace = element.data?.find((item) => item?.meta?.isDisclosureTrace);
     const xAxis = element._fullLayout?.xaxis;
     const yAxis = element._fullLayout?.yaxis;
@@ -211,10 +211,30 @@ test("iPhone chart, disclosure popover, and lazy history remain interactive", as
       y: rect.top + yAxis._offset + yAxis.d2p(trace.y[0]),
     };
   });
+  let disclosurePoint = await getDisclosurePoint();
   expect(disclosurePoint).not.toBeNull();
-  await page.touchscreen.tap(disclosurePoint.x, disclosurePoint.y);
   const popover = page.locator("#chart .disclosure-popover");
-  if (await popover.count() === 0) {
+  if (isMobile) {
+    await page.touchscreen.tap(disclosurePoint.x, disclosurePoint.y + 80);
+  } else {
+    await page.mouse.click(disclosurePoint.x, disclosurePoint.y + 80);
+    await page.mouse.move(disclosurePoint.x - 70, disclosurePoint.y + 80);
+    await page.mouse.down();
+    await page.mouse.move(disclosurePoint.x + 70, disclosurePoint.y + 80, { steps: 5 });
+    await page.mouse.up();
+  }
+  await expect(popover).toBeHidden();
+  expect(await page.evaluate(() => window.ThinkStockE2E?.openFirstDisclosure?.(0, 80))).toBe(false);
+
+  disclosurePoint = await getDisclosurePoint();
+  expect(disclosurePoint).not.toBeNull();
+
+  if (isMobile) {
+    await page.touchscreen.tap(disclosurePoint.x, disclosurePoint.y);
+  } else {
+    await page.mouse.click(disclosurePoint.x, disclosurePoint.y);
+  }
+  if (!await popover.isVisible()) {
     const opened = await page.evaluate(() => window.ThinkStockE2E?.openFirstDisclosure?.());
     expect(opened).toBe(true);
   }
