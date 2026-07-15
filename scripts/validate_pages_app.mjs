@@ -58,9 +58,13 @@ assert.ok(app.includes("lastAdrRenderKey === renderKey"), "ADR render fast path 
 assert.ok(chartLoader.includes("plotly-basic-2.35.2.min.js"), "Plotly basic bundle is not configured");
 assert.ok(plotlyBundle.size < 1_500_000, `Plotly bundle is too large: ${plotlyBundle.size} bytes`);
 assert.ok(app.includes('const MAIN_LINE_TRACE_TYPE = "scatter";'), "main chart is not using the SVG scatter path");
+assert.ok(app.includes("MAIN_CHART_TOTAL_VISIBLE_POINT_TARGET_MOBILE"), "adaptive mobile chart budget is missing");
+assert.ok(app.includes("const plotlyReadyTask = ensurePlotlyReady()"), "Plotly is not prepared in parallel during boot");
 assert.ok(app.includes("fetchSegmentedSeedText"), "segmented data loading is missing");
 assert.ok(app.includes("ensureHistoricalDataLoaded"), "historical lazy loading is missing");
 assert.ok(app.includes("requestChartModelFromWorker"), "chart model worker client is missing");
 assert.ok(app.includes("initE2eDebugAccess"), "WebKit test diagnostics are missing");
+assert.ok(sw.includes("function cacheFirst("), "service worker cache-first strategy is missing");
+assert.ok(sw.includes("isVersionedAssetUrl(url)"), "versioned assets are not using immutable caching");
 
 console.log(`Pages app validation passed (version ${appVersion}, ${ids.length} unique IDs).`);

@@ -61,7 +61,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.64";
+const APP_VERSION = "0.65";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -208,8 +208,11 @@ const DISCLOSURE_HOVER_DELAY_MS = 90;
 const SNAPSHOT_SAVE_IDLE_TIMEOUT_MS = 3500;
 const MAIN_LINE_TRACE_TYPE = "scatter";
 const MAIN_CHART_MIN_DISPLAY_POINTS = 720;
+const MAIN_CHART_MOBILE_MIN_DISPLAY_POINTS = 420;
 const MAIN_CHART_MAX_DISPLAY_POINTS = 1500;
 const MAIN_CHART_POINTS_PER_PIXEL = 1.45;
+const MAIN_CHART_TOTAL_VISIBLE_POINT_TARGET_DESKTOP = 6500;
+const MAIN_CHART_TOTAL_VISIBLE_POINT_TARGET_MOBILE = 2800;
 const INTERACTION_RENDER_DELAY_MS = 260;
 const PERF_DEBUG_KEY = "thinkstock-perf-debug";
 const PERF_SAMPLE_LIMIT = 80;
@@ -3923,11 +3926,18 @@ async function getMainChartModel(priceRows, start, end, allowedSeries, displayBu
   }
 }
 
-function getMainChartDisplayPointBudget(el) {
+function getMainChartDisplayPointBudget(el, visibleSeriesCount = 1) {
   const width = Math.max(320, Math.round(el?.getBoundingClientRect?.().width || window.innerWidth || 390));
+  const mobile = isTouchDevice() || width < 700;
+  const minimum = mobile ? MAIN_CHART_MOBILE_MIN_DISPLAY_POINTS : MAIN_CHART_MIN_DISPLAY_POINTS;
+  const totalTarget = mobile
+    ? MAIN_CHART_TOTAL_VISIBLE_POINT_TARGET_MOBILE
+    : MAIN_CHART_TOTAL_VISIBLE_POINT_TARGET_DESKTOP;
+  const widthBudget = Math.round(width * MAIN_CHART_POINTS_PER_PIXEL);
+  const seriesBudget = Math.round(totalTarget / Math.max(1, visibleSeriesCount));
   return Math.max(
-    MAIN_CHART_MIN_DISPLAY_POINTS,
-    Math.min(MAIN_CHART_MAX_DISPLAY_POINTS, Math.round(width * MAIN_CHART_POINTS_PER_PIXEL)),
+    minimum,
+    Math.min(MAIN_CHART_MAX_DISPLAY_POINTS, widthBudget, seriesBudget),
   );
 }
 
@@ -5290,7 +5300,10 @@ async function renderChart(preserveZoom = true) {
     ...ADR_SERIES,
     ...customStocks.map((item) => item.ticker),
   ]);
-  const displayBudget = getMainChartDisplayPointBudget(el);
+  const visibleSeriesCount = [...allowedSeries]
+    .filter((key) => !ADR_SERIES.includes(key) && !hiddenSeries.has(key))
+    .length;
+  const displayBudget = getMainChartDisplayPointBudget(el, visibleSeriesCount);
   const model = await getMainChartModel(priceRows, start, end, allowedSeries, displayBudget);
   if (!model || renderGeneration !== chartRenderGeneration) return;
   const { rows, allSeries, selected, seriesModels } = model;
@@ -6527,6 +6540,9 @@ async function boot() {
   bindRuntimeSnapshotExitSave();
   scheduleGranularCacheCleanup();
   setStartupLoaderProgress(10, "Preparing");
+  const plotlyReadyTask = ensurePlotlyReady()
+    .then((plotly) => ({ plotly, error: null }))
+    .catch((error) => ({ plotly: null, error }));
   try {
     const restoredLastSnapshot = await loadLastRuntimeSnapshot();
     if (restoredLastSnapshot) {
@@ -6546,7 +6562,8 @@ async function boot() {
       }
     }
     setStartupLoaderProgress(56, "Loading chart engine");
-    await ensurePlotlyReady();
+    const plotlyResult = await plotlyReadyTask;
+    if (plotlyResult.error) throw plotlyResult.error;
     await renderChart(false);
     setStartupLoaderProgress(72, restoredLastSnapshot ? "Rendering last view" : "Rendering saved data");
 

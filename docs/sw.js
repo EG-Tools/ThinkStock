@@ -46,6 +46,10 @@ function isCoreAssetUrl(url) {
   return CORE_ASSET_PATHS.some((path) => url.pathname.endsWith(path));
 }
 
+function isVersionedAssetUrl(url) {
+  return url.searchParams.has("v") && isCoreAssetUrl(url);
+}
+
 async function putIfOk(cache, request, response) {
   if (response && response.ok) {
     await cache.put(request, response.clone());
@@ -60,6 +64,19 @@ async function networkFirst(request) {
     return response;
   } catch (_) {
     return caches.match(request, { ignoreSearch: true });
+  }
+}
+
+async function cacheFirst(request) {
+  const cache = await caches.open(CACHE_NAME);
+  const cached = await cache.match(request);
+  if (cached) return cached;
+  try {
+    const response = await fetch(request);
+    await putIfOk(cache, request, response);
+    return response;
+  } catch (_) {
+    return (await caches.match(request, { ignoreSearch: true })) || caches.match("./index.html");
   }
 }
 
@@ -99,6 +116,10 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
 
+  if (isVersionedAssetUrl(url)) {
+    event.respondWith(cacheFirst(event.request));
+    return;
+  }
   event.respondWith(
     isDataUrl(url) || isCoreAssetUrl(url)
       ? networkFirst(event.request)
