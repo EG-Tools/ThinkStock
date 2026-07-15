@@ -61,7 +61,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.62";
+const APP_VERSION = "0.63";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -3733,8 +3733,6 @@ function buildMainChartModel(priceRows, start, end, allowedSeries) {
     visibleForAuto.length ? visibleForAuto : selected,
     commonNormBases,
   );
-  const chartYBySeries = {};
-
   const seriesModels = selected.map((series) => {
     const rawValues = rows.map((r) => toNum(r[series]));
     const rawTexts = rawValues.map((v) => formatActualValue(v));
@@ -3757,29 +3755,21 @@ function buildMainChartModel(priceRows, start, end, allowedSeries) {
     const offset = seriesOffsets[series] || 0;
     if (offset) values = values.map((v) => (v !== null ? v + offset : null));
 
-    chartYBySeries[series] = new Map(xValues.map((date, valueIndex) => [date, values[valueIndex]]));
     return { series, rawTexts, baseLineWidth, xValues, values, baseValues };
   });
 
-  return { rows, allSeries, selected, chartYBySeries, seriesModels };
-}
-
-function chartYMapsFromSeriesModels(seriesModels) {
-  const maps = {};
-  (seriesModels || []).forEach((model) => {
-    maps[model.series] = new Map(
-      (model.xValues || []).map((date, index) => [date, model.values?.[index] ?? null]),
-    );
-  });
-  return maps;
+  return { rows, allSeries, selected, seriesModels };
 }
 
 async function buildMainChartModelOffThread(priceRows, start, end, allowedSeries, displayBudget) {
-  const { rows, macroCols, liveCols } = mergeSources(priceRows, macroRows, creditRows, start, end);
   const result = await requestChartModelFromWorker({
-    rows,
-    macroCols,
-    liveCols,
+    priceRows,
+    macroRows,
+    creditRows,
+    creditCols: [...CREDIT_COLS],
+    creditOffsetDays: CREDIT_OFFSET_DAYS,
+    start,
+    end,
     allowedSeries: [...allowedSeries],
     priorityOrder: getSeriesPriorityOrder(),
     displayNames: { ...DISPLAY_NAMES },
@@ -3788,13 +3778,13 @@ async function buildMainChartModelOffThread(priceRows, start, end, allowedSeries
     seriesScales: { ...seriesScales },
     displayBudget,
   });
+  const rows = Array.isArray(result.rows) ? result.rows : [];
   const seriesModels = Array.isArray(result.seriesModels) ? result.seriesModels : [];
   if (!rows.length || !seriesModels.length) throw new Error("chart worker returned an empty model");
   return {
     rows,
     allSeries: Array.isArray(result.allSeries) ? result.allSeries : [],
     selected: Array.isArray(result.selected) ? result.selected : [],
-    chartYBySeries: chartYMapsFromSeriesModels(seriesModels),
     seriesModels,
     displayIndexes: Array.isArray(result.displayIndexes) ? result.displayIndexes : null,
   };
@@ -4109,18 +4099,19 @@ function resetHandles() {
   requestChartRender(false);
 }
 
-function buildDisclosurePointIndex(rows, chartYBySeries, selected) {
+function buildDisclosurePointIndex(seriesModels, tickers) {
   const index = {};
-  (selected || []).forEach((ticker) => {
-    const yByDate = chartYBySeries?.[ticker];
-    if (!yByDate) return;
-    index[ticker] = rows
-      .map((row) => {
-        const date = String(row?.date || "").slice(0, 10);
-        const y = yByDate.get(date);
-        const ms = toUtcMs(date);
-        return date && Number.isFinite(y) && Number.isFinite(ms) ? { date, y, ms } : null;
-      })
+  const modelBySeries = new Map((seriesModels || []).map((model) => [model.series, model]));
+  (tickers || []).forEach((ticker) => {
+    const model = modelBySeries.get(ticker);
+    if (!model) return;
+    const pointCount = Math.min(model.xValues?.length || 0, model.values?.length || 0);
+    index[ticker] = Array.from({ length: pointCount }, (_, pointIndex) => {
+      const date = String(model.xValues[pointIndex] || "").slice(0, 10);
+      const y = model.values[pointIndex];
+      const ms = toUtcMs(date);
+      return date && Number.isFinite(y) && Number.isFinite(ms) ? { date, y, ms } : null;
+    })
       .filter(Boolean);
   });
   return index;
@@ -4154,17 +4145,22 @@ function findNearestDisclosurePoint(eventDate, ticker, pointIndex) {
   return best;
 }
 
-function buildDisclosureTrace(rows, selected, chartYBySeries, start, end) {
+function buildDisclosureTrace(selected, seriesModels, start, end) {
   lastDisclosureTraceStats = { total: disclosureRows.length, candidates: 0, markers: 0 };
-  if (!disclosureRows.length || !rows.length) return null;
+  if (!disclosureRows.length || !seriesModels.length) return null;
   const selectedSet = new Set(selected);
-  const pointIndex = buildDisclosurePointIndex(rows, chartYBySeries, selected);
+  const candidates = disclosureRows.filter((event) => (
+    selectedSet.has(event.ticker)
+    && !hiddenSeries.has(event.ticker)
+    && event.date >= start
+    && event.date <= end
+  ));
+  lastDisclosureTraceStats.candidates = candidates.length;
+  const candidateTickers = new Set(candidates.map((event) => event.ticker));
+  const pointIndex = buildDisclosurePointIndex(seriesModels, candidateTickers);
   const grouped = new Map();
 
-  disclosureRows.forEach((event) => {
-    if (!selectedSet.has(event.ticker) || hiddenSeries.has(event.ticker)) return;
-    if (event.date < start || event.date > end) return;
-    lastDisclosureTraceStats.candidates += 1;
+  candidates.forEach((event) => {
     const point = findNearestDisclosurePoint(event.date, event.ticker, pointIndex);
     if (!point) return;
     const key = `${event.ticker}|${point.date}`;
@@ -5128,7 +5124,7 @@ async function renderChart(preserveZoom = true) {
   const displayBudget = getMainChartDisplayPointBudget(el);
   const model = await getMainChartModel(priceRows, start, end, allowedSeries, displayBudget);
   if (renderGeneration !== chartRenderGeneration) return;
-  const { rows, allSeries, selected, chartYBySeries, seriesModels } = model;
+  const { rows, allSeries, selected, seriesModels } = model;
   currentRows = rows;
   currentStart = start;
   syncSeriesToggleBoard(allSeries);
@@ -5180,7 +5176,7 @@ async function renderChart(preserveZoom = true) {
     lastDisclosureTraceStats = { total: disclosureRows.length, candidates: 0, markers: 0 };
   }
   const disclosureTrace = showDisclosures
-    ? buildDisclosureTrace(rows, selected, chartYBySeries, start, end)
+    ? buildDisclosureTrace(selected, seriesModels, start, end)
     : null;
   if (disclosureTrace) traces.push(disclosureTrace);
   syncDisclosureToggleButton(lastDisclosureTraceStats.markers);
