@@ -5,7 +5,7 @@ import path from "node:path";
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [app, html, sw, dataPayload, dataWorker, chartLoader, disclosurePolicy, plotlyBundle] = await Promise.all([
+const [app, html, sw, dataPayload, dataWorker, chartLoader, disclosurePolicy, dartDisclosure, plotlyBundle] = await Promise.all([
   readFile(path.join(root, "docs", "app.js"), "utf8"),
   readFile(path.join(root, "docs", "index.html"), "utf8"),
   readFile(path.join(root, "docs", "sw.js"), "utf8"),
@@ -13,6 +13,7 @@ const [app, html, sw, dataPayload, dataWorker, chartLoader, disclosurePolicy, pl
   readFile(path.join(root, "docs", "modules", "data-worker.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "chart-loader.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "disclosure-policy.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "dart-disclosure.js"), "utf8"),
   stat(path.join(root, "docs", "vendor", "plotly-basic-2.35.2.min.js")),
 ]);
 
@@ -43,6 +44,7 @@ requiredIds.forEach((id) => assert.ok(ids.includes(id), `required UI element is 
   "./modules/data-payload.js?v=dev",
   "./modules/chart-loader.js?v=dev",
   "./modules/disclosure-policy.js?v=dev",
+  "./modules/dart-disclosure.js?v=dev",
   "./modules/data-worker.js?v=dev",
   "./modules/chart-model-worker.js?v=dev",
   "./app.js?v=dev",
@@ -51,6 +53,10 @@ requiredIds.forEach((id) => assert.ok(ids.includes(id), `required UI element is 
 
 assert.ok(app.includes("function isDirectDisclosureTap"), "iPhone disclosure tap guard is missing");
 assert.ok(app.includes("ThinkStockDisclosurePolicy"), "disclosure policy module is not wired into the app");
+assert.ok(app.includes("ThinkStockDartDisclosure"), "DART disclosure module is not wired into the app");
+assert.ok(dartDisclosure.includes("fetchForMarkets") && dartDisclosure.includes("fetchForTicker"), "DART disclosure fetch service is incomplete");
+assert.ok(dartDisclosure.includes("rememberRefresh") && dartDisclosure.includes("mergeRows"), "DART disclosure cache service is incomplete");
+assert.ok(!app.includes("function fetchDartDisclosurePage("), "DART page fetching still lives in app.js");
 assert.ok(app.includes("ThinkStockDataPayload"), "data payload module is not wired into the app");
 assert.ok(dataPayload.includes("rowsFromColumnarPayload"), "shared columnar payload parser is missing");
 assert.ok(dataWorker.includes('importScripts("./data-payload.js?v=dev")'), "data worker does not reuse the shared payload parser");

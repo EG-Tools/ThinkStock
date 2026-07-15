@@ -78,7 +78,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.75";
+const APP_VERSION = "0.76";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -668,40 +668,31 @@ function explainDartFetchError(err) {
   return message;
 }
 
+const dartDisclosureModule = globalThis.ThinkStockDartDisclosure;
+if (!dartDisclosureModule) throw new Error("DART disclosure module failed to load");
+const dartDisclosureService = dartDisclosureModule.createDartDisclosureService({
+  classifyType: classifyDisclosureType,
+  shouldDisplay: shouldDisplayDisclosure,
+  labelName,
+  fetchJson: (url) => fetchJsonWithProxyFallback(
+    url,
+    null,
+    { allowProxy: Boolean(apiSettings?.dartProxyEnabled) },
+  ),
+  explainError: explainDartFetchError,
+  baseUrl: DART_DISCLOSURE_URL,
+  runtimeLookbackDays: DART_RUNTIME_LOOKBACK_DAYS,
+  stockLookbackYears: DART_STOCK_LOOKBACK_YEARS,
+  runtimeMaxPages: DART_RUNTIME_MAX_PAGES_PER_MARKET,
+  runtimePageBatch: DART_RUNTIME_PAGE_BATCH,
+  stockPageBatch: DART_STOCK_PAGE_BATCH,
+  refreshCacheKey: DART_DISCLOSURE_CACHE_KEY,
+  refreshCacheTtlMs: DART_DISCLOSURE_CACHE_TTL_DAYS * DAY_MS,
+  getStorage: () => localStorage,
+});
+
 function sanitizeDisclosureRows(records) {
-  if (!Array.isArray(records)) return [];
-  const out = [];
-  const seen = new Set();
-  records.forEach((record) => {
-    if (!record || typeof record !== "object") return;
-    const ticker = String(record.ticker || "").trim().toUpperCase();
-    const code = String(record.code || ticker.split(".")[0] || "").trim();
-    const date = String(record.date || "").slice(0, 10);
-    const title = String(record.title || record.report_nm || "").trim();
-    if (!/^[0-9]{6}\.(KS|KQ)$/.test(ticker)) return;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !title) return;
-    const classifiedType = classifyDisclosureType(title);
-    const rawType = String(record.type || "").trim();
-    const type = (!rawType || rawType === "공시") ? classifiedType : rawType;
-    if (!shouldDisplayDisclosure(title, type)) return;
-    const url = String(record.url || "").trim();
-    const key = `${ticker}|${date}|${title}|${url}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push({
-      ticker,
-      code,
-      name: String(record.name || record.corp_name || labelName(ticker)).trim() || labelName(ticker),
-      date,
-      type,
-      title,
-      summary: String(record.summary || "").trim(),
-      url,
-      source: String(record.source || "DART").trim(),
-      receiptNo: String(record.receiptNo || record.rcept_no || "").trim(),
-    });
-  });
-  return out.sort((a, b) => a.date.localeCompare(b.date) || a.ticker.localeCompare(b.ticker));
+  return dartDisclosureService.sanitizeRows(records);
 }
 
 function sanitizeDartCorpCodeRows(records) {
@@ -4824,19 +4815,6 @@ function highlightDisclosureHoverPoint(evtData) {
   setDisclosureTextHighlighted(chartEl, pointIndex, true);
 }
 
-function yyyymmddFromDate(dateStr) {
-  return String(dateStr || "").slice(0, 10).replace(/-/g, "");
-}
-
-function shiftYears(dateStr, years) {
-  const d = new Date(`${String(dateStr || "").slice(0, 10)}T00:00:00Z`);
-  if (!Number.isFinite(d.getTime())) return dateStr;
-  const originalMonth = d.getUTCMonth();
-  d.setUTCFullYear(d.getUTCFullYear() + years);
-  if (d.getUTCMonth() !== originalMonth) d.setUTCDate(0);
-  return d.toISOString().slice(0, 10);
-}
-
 function disclosureTargetTickers() {
   const tickers = new Set();
   (pricePayload?.series || []).forEach((series) => {
@@ -4861,124 +4839,9 @@ function disclosureTargetMaps() {
   return { byCode, markets: [...markets] };
 }
 
-function dartItemToDisclosureRecord(item, targetByCode) {
-  const code = String(item?.stock_code || "").trim();
-  if (!/^\d{6}$/.test(code) || !targetByCode.has(code)) return null;
-  const title = String(item?.report_nm || "").trim();
-  const type = classifyDisclosureType(title);
-  if (!title) return null;
-  if (!shouldDisplayDisclosure(title, type)) return null;
-  const rawDate = String(item?.rcept_dt || "").trim();
-  if (!/^\d{8}$/.test(rawDate)) return null;
-  const receiptNo = String(item?.rcept_no || "").trim();
-  return {
-    ticker: targetByCode.get(code),
-    code,
-    name: String(item?.corp_name || labelName(targetByCode.get(code))).trim(),
-    date: `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`,
-    type,
-    title,
-    summary: "",
-    source: "OpenDART",
-    receiptNo,
-    url: receiptNo ? `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${encodeURIComponent(receiptNo)}` : "",
-  };
-}
-
-async function fetchDartDisclosurePage(apiKey, market, pageNo) {
-  const endDate = new Date().toISOString().slice(0, 10);
-  const startDate = shiftDays(endDate, -DART_RUNTIME_LOOKBACK_DAYS);
-  const query = new URLSearchParams({
-    crtfc_key: String(apiKey || "").trim(),
-    bgn_de: yyyymmddFromDate(startDate),
-    end_de: yyyymmddFromDate(endDate),
-    last_reprt_at: "Y",
-    corp_cls: market,
-    sort: "date",
-    sort_mth: "desc",
-    page_no: String(pageNo),
-    page_count: "100",
-  });
-  try {
-    return await fetchJsonWithProxyFallback(
-      `${DART_DISCLOSURE_URL}?${query.toString()}`,
-      null,
-      { allowProxy: Boolean(apiSettings?.dartProxyEnabled) },
-    );
-  } catch (err) {
-    throw new Error(explainDartFetchError(err));
-  }
-}
-
-async function fetchDartDisclosurePageForCorp(apiKey, corpCode, pageNo) {
-  const endDate = new Date().toISOString().slice(0, 10);
-  const startDate = shiftYears(endDate, -DART_STOCK_LOOKBACK_YEARS);
-  const query = new URLSearchParams({
-    crtfc_key: String(apiKey || "").trim(),
-    corp_code: String(corpCode || "").trim(),
-    bgn_de: yyyymmddFromDate(startDate),
-    end_de: yyyymmddFromDate(endDate),
-    last_reprt_at: "Y",
-    sort: "date",
-    sort_mth: "asc",
-    page_no: String(pageNo),
-    page_count: "100",
-  });
-  try {
-    return await fetchJsonWithProxyFallback(
-      `${DART_DISCLOSURE_URL}?${query.toString()}`,
-      null,
-      { allowProxy: Boolean(apiSettings?.dartProxyEnabled) },
-    );
-  } catch (err) {
-    throw new Error(explainDartFetchError(err));
-  }
-}
-
-function appendDartDisclosureRecordsFromPayload(payload, targetByCode, records) {
-  (payload?.list || []).forEach((item) => {
-    const record = dartItemToDisclosureRecord(item, targetByCode);
-    if (record) records.push(record);
-  });
-}
-
 async function fetchDartDisclosuresLive(apiKey) {
-  const clean = String(apiKey || "").trim();
-  if (!clean) return [];
   const { byCode, markets } = disclosureTargetMaps();
-  if (!byCode.size || !markets.length) return [];
-
-  const records = [];
-  for (const market of markets) {
-    const firstPayload = await fetchDartDisclosurePage(clean, market, 1);
-    const status = String(firstPayload?.status || "");
-    if (status === "013") continue;
-    if (status && status !== "000") {
-      throw new Error(firstPayload?.message || `DART status ${status}`);
-    }
-
-    appendDartDisclosureRecordsFromPayload(firstPayload, byCode, records);
-
-    const totalPage = Math.min(
-      DART_RUNTIME_MAX_PAGES_PER_MARKET,
-      Math.max(1, Number(firstPayload?.total_page) || 1),
-    );
-    for (let pageStart = 2; pageStart <= totalPage; pageStart += DART_RUNTIME_PAGE_BATCH) {
-      const pageNos = [];
-      for (let pageNo = pageStart; pageNo < pageStart + DART_RUNTIME_PAGE_BATCH && pageNo <= totalPage; pageNo += 1) {
-        pageNos.push(pageNo);
-      }
-      const pages = await Promise.allSettled(pageNos.map((pageNo) => fetchDartDisclosurePage(clean, market, pageNo)));
-      pages.forEach((result) => {
-        if (result.status !== "fulfilled") return;
-        const payload = result.value;
-        const pageStatus = String(payload?.status || "");
-        if (pageStatus && pageStatus !== "000" && pageStatus !== "013") return;
-        appendDartDisclosureRecordsFromPayload(payload, byCode, records);
-      });
-    }
-  }
-  return sanitizeDisclosureRows(records);
+  return dartDisclosureService.fetchForMarkets(apiKey, byCode, markets);
 }
 
 async function fetchDartDisclosuresForTickerLive(apiKey, ticker) {
@@ -4997,91 +4860,23 @@ async function fetchDartDisclosuresForTickerLive(apiKey, ticker) {
     throw new Error("DART corp_code 매핑을 찾지 못했습니다. 앱을 새로고침한 뒤 다시 시도해 주세요.");
   }
 
-  const targetByCode = new Map([[code, targetTicker]]);
-  const records = [];
-
-  const firstPayload = await fetchDartDisclosurePageForCorp(clean, corp.corp_code, 1);
-  const firstStatus = String(firstPayload?.status || "");
-  if (firstStatus === "013") return [];
-  if (firstStatus && firstStatus !== "000") {
-    throw new Error(firstPayload?.message || `DART status ${firstStatus}`);
-  }
-  appendDartDisclosureRecordsFromPayload(firstPayload, targetByCode, records);
-
-  const totalPage = Math.max(1, Number(firstPayload?.total_page) || 1);
-  for (let pageStart = 2; pageStart <= totalPage; pageStart += DART_STOCK_PAGE_BATCH) {
-    const pageNos = [];
-    for (let pageNo = pageStart; pageNo < pageStart + DART_STOCK_PAGE_BATCH && pageNo <= totalPage; pageNo += 1) {
-      pageNos.push(pageNo);
-    }
-    const pages = await Promise.allSettled(
-      pageNos.map((pageNo) => fetchDartDisclosurePageForCorp(clean, corp.corp_code, pageNo)),
-    );
-    pages.forEach((result) => {
-      if (result.status !== "fulfilled") return;
-      const payload = result.value;
-      const status = String(payload?.status || "");
-      if (status && status !== "000" && status !== "013") return;
-      appendDartDisclosureRecordsFromPayload(payload, targetByCode, records);
-    });
-  }
-  return sanitizeDisclosureRows(records);
+  return dartDisclosureService.fetchForTicker(clean, targetTicker, corp.corp_code);
 }
 
 function mergeDisclosureRows(existingRows, incomingRows) {
-  const map = new Map();
-  sanitizeDisclosureRows(existingRows).forEach((row) => {
-    map.set(`${row.ticker}|${row.date}|${row.title}`, row);
-  });
-  sanitizeDisclosureRows(incomingRows).forEach((row) => {
-    map.set(`${row.ticker}|${row.date}|${row.title}`, row);
-  });
-  return [...map.values()].sort((a, b) => a.date.localeCompare(b.date) || a.ticker.localeCompare(b.ticker));
-}
-
-function readDartDisclosureRefreshCache() {
-  try {
-    const raw = localStorage.getItem(DART_DISCLOSURE_CACHE_KEY);
-    const parsed = raw ? JSON.parse(raw) : {};
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch (_) {
-    return {};
-  }
-}
-
-function writeDartDisclosureRefreshCache(cache) {
-  try {
-    localStorage.setItem(DART_DISCLOSURE_CACHE_KEY, JSON.stringify(cache));
-  } catch (_) {
-    // Local storage can be full or unavailable in private browsing.
-  }
+  return dartDisclosureService.mergeRows(existingRows, incomingRows);
 }
 
 function getDartDisclosureRefreshCacheEntry(ticker) {
-  const target = String(ticker || "").trim().toUpperCase();
-  if (!target) return null;
-  const entry = readDartDisclosureRefreshCache()[target];
-  if (!entry || typeof entry !== "object") return null;
-  const savedAt = Number(entry.savedAt || 0);
-  if (!Number.isFinite(savedAt) || Date.now() - savedAt > DART_DISCLOSURE_CACHE_TTL_DAYS * DAY_MS) return null;
-  return entry;
+  return dartDisclosureService.getRefreshCacheEntry(ticker);
 }
 
 function rememberDartDisclosureRefresh(ticker, info) {
-  const target = String(ticker || "").trim().toUpperCase();
-  if (!target) return;
-  const cache = readDartDisclosureRefreshCache();
-  cache[target] = {
-    savedAt: Date.now(),
-    fetched: Number(info?.fetched || 0),
-    added: Number(info?.added || 0),
-    latestDate: String(info?.latestDate || ""),
-  };
-  writeDartDisclosureRefreshCache(cache);
+  dartDisclosureService.rememberRefresh(ticker, info);
 }
 
 function hasFreshDartDisclosureRefresh(ticker) {
-  return Boolean(getDartDisclosureRefreshCacheEntry(ticker));
+  return dartDisclosureService.hasFreshRefresh(ticker);
 }
 
 function disclosureRowsForTicker(ticker) {
