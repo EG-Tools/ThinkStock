@@ -197,26 +197,31 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await expect.poll(() => page.locator("#chart").evaluate((element, drag) => (
     element.data?.[drag.traceIndex]?.y?.[drag.pointIndex]
   ), dragResult)).not.toBe(dragResult.before);
-  await page.waitForTimeout(300);
-
   if (!isMobile) {
     const linePath = page.locator("#chart .scatterlayer .js-line").first();
     await expect(linePath).toBeVisible();
-    const linePointerPoint = await linePath.evaluate((path) => {
-      const point = path.getPointAtLength(path.getTotalLength() / 3);
-      const matrix = path.getScreenCTM();
-      return {
-        x: point.x * matrix.a + point.y * matrix.c + matrix.e,
-        y: point.x * matrix.b + point.y * matrix.d + matrix.f,
-      };
-    });
-    await page.mouse.move(linePointerPoint.x, linePointerPoint.y);
-    await expect(page.locator("#chart")).toHaveClass(/is-line-hovering/);
-    await expect.poll(() => page.locator("#chart").evaluate((element) => getComputedStyle(element).cursor)).toBe("pointer");
+    await expect.poll(async () => {
+      const linePointerPoint = await linePath.evaluate((path) => {
+        const point = path.getPointAtLength(path.getTotalLength() / 3);
+        const matrix = path.getScreenCTM();
+        return {
+          x: point.x * matrix.a + point.y * matrix.c + matrix.e,
+          y: point.x * matrix.b + point.y * matrix.d + matrix.f,
+        };
+      });
+      await page.mouse.move(linePointerPoint.x + 1, linePointerPoint.y);
+      await page.mouse.move(linePointerPoint.x, linePointerPoint.y);
+      return page.locator("#chart").evaluate((element) => ({
+        hovering: element.classList.contains("is-line-hovering"),
+        cursor: getComputedStyle(element).cursor,
+      }));
+    }).toEqual({ hovering: true, cursor: "pointer" });
 
-    const chartBox = await page.locator("#chart").boundingBox();
-    await page.mouse.move(chartBox.x + 6, chartBox.y + 6);
-    await expect.poll(() => page.locator("#chart").evaluate((element) => getComputedStyle(element).cursor)).toBe("default");
+    await expect.poll(async () => {
+      const chartBox = await page.locator("#chart").boundingBox();
+      await page.mouse.move(chartBox.x + 6, chartBox.y + 6);
+      return page.locator("#chart").evaluate((element) => getComputedStyle(element).cursor);
+    }).toBe("default");
   }
 
   const disclosureText = page.locator("#chart .textpoint text").filter({ hasText: "v" }).first();
