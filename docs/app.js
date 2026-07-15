@@ -54,7 +54,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.54";
+const APP_VERSION = "0.55";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -93,9 +93,33 @@ const DART_VISIBLE_REFRESH_CONCURRENCY = 2;
 const DART_DISCLOSURE_CACHE_KEY = "thinkstock-dart-disclosure-cache-v1";
 const DART_DISCLOSURE_CACHE_TTL_DAYS = 1;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const NETWORK_REQUEST_TIMEOUT_MS = 12000;
 function appendCacheBust(url) {
   const stamp = `_=${Date.now()}`;
   return url.includes("?") ? `${url}&${stamp}` : `${url}?${stamp}`;
+}
+
+async function fetchWithTimeout(resource, init = {}, timeoutMs = NETWORK_REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const externalSignal = init?.signal;
+  let timedOut = false;
+  const abortFromExternal = () => controller.abort(externalSignal?.reason);
+  if (externalSignal?.aborted) abortFromExternal();
+  else externalSignal?.addEventListener?.("abort", abortFromExternal, { once: true });
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, Math.max(1, timeoutMs));
+
+  try {
+    return await fetch(resource, { ...init, signal: controller.signal });
+  } catch (err) {
+    if (timedOut) throw new Error(`요청 시간 초과(${Math.round(timeoutMs / 1000)}초)`);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    externalSignal?.removeEventListener?.("abort", abortFromExternal);
+  }
 }
 function requestServiceWorkerDataRefresh(timeoutMs = 1200) {
   return new Promise((resolve) => {
@@ -565,14 +589,14 @@ async function fetchSeedText(path, forceNetwork = false) {
   const firstUrl = forceNetwork ? appendCacheBust(path) : path;
   const opt = forceNetwork ? { cache: "reload" } : {};
   try {
-    const firstRes = await fetch(firstUrl, opt);
+    const firstRes = await fetchWithTimeout(firstUrl, opt);
     if (firstRes.ok) return await firstRes.text();
   } catch (_) {
     // Try fallback below.
   }
   if (!forceNetwork) return null;
   try {
-    const fallbackRes = await fetch(path, { cache: "no-store" });
+    const fallbackRes = await fetchWithTimeout(path, { cache: "no-store" });
     if (fallbackRes.ok) return await fallbackRes.text();
   } catch (_) {
     // Ignore.
@@ -5281,7 +5305,7 @@ async function fetchJsonWithProxyFallback(url, init = null, options = {}) {
   for (const target of candidates) {
     try {
       const requestInit = { cache: "no-store", ...(init || {}) };
-      const res = await fetch(target, requestInit);
+      const res = await fetchWithTimeout(target, requestInit);
       if (!res.ok) {
         lastError = `HTTP ${res.status}`;
         continue;
@@ -5684,7 +5708,7 @@ async function refreshLiveApiData() {
 async function refreshAdrFromWeb() {
   const sourceUrl = appendCacheBust(ADR_SOURCE_URL);
   const proxyUrl = CORS_PROXY + encodeURIComponent(sourceUrl);
-  const res = await fetch(proxyUrl, { cache: "no-store" });
+  const res = await fetchWithTimeout(proxyUrl, { cache: "no-store" });
   if (!res.ok) throw new Error(`adrinfo.kr 응답 오류: ${res.status}`);
   const html = await res.text();
 
@@ -5833,16 +5857,17 @@ async function loadData(forceNetwork = false, options = {}) {
 
 }
 
-async function refreshRuntimeData(msgEl) {
+async function refreshRuntimeData(msgEl, options = {}) {
   const infoLines = [];
   const warnLines = [];
   let refreshedDart = false;
+  const forceNetwork = Boolean(options?.forceNetwork);
 
   const coreIndexResult = await refreshCoreIndexSeries();
   infoLines.push(...coreIndexResult.applied);
   warnLines.push(...coreIndexResult.warnings);
 
-  const preloadResult = await preloadCustomStocks({ forceRefresh: true });
+  const preloadResult = await preloadCustomStocks({ forceRefresh: forceNetwork });
   if (preloadResult.failedNames.length) {
     warnLines.push(`일부 선택 종목을 불러오지 못했습니다: ${preloadResult.failedNames.join(", ")}`);
   }
@@ -5864,8 +5889,8 @@ async function refreshRuntimeData(msgEl) {
         saveState();
       }
       const info = refreshCurrentTickers
-        ? await refreshDartDisclosuresForVisibleTickersFromApi(apiSettings.dartApiKey, { forceNetwork: true })
-        : await refreshDartDisclosuresFromApi(apiSettings.dartApiKey, "", { forceNetwork: true });
+        ? await refreshDartDisclosuresForVisibleTickersFromApi(apiSettings.dartApiKey, { forceNetwork })
+        : await refreshDartDisclosuresFromApi(apiSettings.dartApiKey, "", { forceNetwork });
       refreshedDart = true;
       if (info.fetched > 0) {
         infoLines.push(`DART 공시 ${info.fetched}건 확인, ${info.added}건 반영${info.latestDate ? `(~ ${info.latestDate})` : ""}`);
@@ -6016,7 +6041,7 @@ async function boot() {
             if (restored) renderChart(false);
             else await loadData(true);
           }
-          await refreshRuntimeData(msgEl);
+          await refreshRuntimeData(msgEl, { forceNetwork: true });
         } catch (err) {
           setMessage(msgEl, `데이터 갱신 중 오류: ${err.message}`, true);
         } finally {

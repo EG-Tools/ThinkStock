@@ -24,10 +24,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Restore Last Known-Good Pages Data
+        uses: actions/cache@v4
+        with:
+          path: docs/data
+          key: thinkstock-pages-data-v1-${{ github.run_id }}
+          restore-keys: |
+            thinkstock-pages-data-v1-
+
+      - name: Snapshot Data Baseline
+        run: cp -a docs/data .pages-data-baseline
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Test Data Regression Guard
+        run: python -m unittest discover -s scripts/tests -p "test_*.py"
+
+      - name: Validate Web App
+        run: npm test
 
       - name: Install Data Build Dependencies
         run: |
@@ -47,7 +64,11 @@ jobs:
         env:
           KOFIA_API_KEY: ${{ secrets.KOFIA_API_KEY }}
           ENABLE_FREESIS_CREDIT_TAIL: "1"
+          PAGES_STRICT_FRESHNESS: "1"
         run: python scripts/validate_pages_data.py
+
+      - name: Reject Data Regression
+        run: python scripts/check_pages_data_regression.py --baseline .pages-data-baseline --current docs/data
 
       - name: Stamp Pages Asset Version
         run: python scripts/stamp_pages_assets.py
