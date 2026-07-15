@@ -54,7 +54,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.52";
+const APP_VERSION = "0.53";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -1904,6 +1904,7 @@ function bindCursorMoveSync() {
   if (!cursorMoveBound) {
     let pointerMoveRafId = 0;
     let pendingPointerMove = null;
+    let touchStartPoint = null;
 
     const moveAt = (sourceEl, clientX) => {
       const xValue = axisPixelToXValue(sourceEl, clientX);
@@ -1960,6 +1961,7 @@ function bindCursorMoveSync() {
       if (!event.touches || event.touches.length !== 1) return;
       event.preventDefault();
       const touch = event.touches[0];
+      touchStartPoint = { x: touch.clientX, y: touch.clientY };
       const lineTarget = findNearestLineDragTarget(event.currentTarget, touch.clientX, touch.clientY, true);
       if (lineTarget && beginLineOffsetDrag(event.currentTarget, lineTarget, touch.clientY)) {
         setHoveredLineTarget(lineTarget);
@@ -2007,12 +2009,19 @@ function bindCursorMoveSync() {
       if (isHandleDragging) return;
       event.preventDefault();
       const touch = event.touches[0];
+      if (touchStartPoint && Math.hypot(
+        touch.clientX - touchStartPoint.x,
+        touch.clientY - touchStartPoint.y,
+      ) > 8) {
+        suppressPlotlyClickUntil = Date.now() + 500;
+      }
       schedulePointerMove(event.currentTarget, touch.clientX, touch.clientY, false);
     };
 
     const onTouchEnd = (event) => {
       if (event.target instanceof Element && event.target.closest(".disclosure-popover")) return;
       if (event.touches && event.touches.length > 0) return;
+      touchStartPoint = null;
       setHoveredLineTarget(null);
       onLeave();
     };
@@ -3909,11 +3918,9 @@ function showDisclosurePopover(group, sourceEvent) {
     const titleHtml = event.url
       ? `<a class="disclosure-title-link" href="${escapeHtml(event.url)}" target="_blank" rel="noopener">${title}</a>`
       : `<strong>${title}</strong>`;
-    const summary = event.summary ? `<p>${escapeHtml(event.summary)}</p>` : "";
     return `
       <li>
         ${titleHtml}
-        ${summary}
       </li>
     `;
   }).join("");
@@ -3936,7 +3943,7 @@ function showDisclosurePopover(group, sourceEvent) {
   const rect = chart.getBoundingClientRect();
   const clientX = sourceEvent?.clientX ?? (rect.left + rect.width * 0.5);
   const clientY = sourceEvent?.clientY ?? (rect.top + rect.height * 0.35);
-  const width = Math.min(320, Math.max(248, rect.width - 24));
+  const width = Math.min(270, Math.max(220, rect.width - 32));
   const left = Math.max(12, Math.min(rect.width - width - 12, clientX - rect.left - width * 0.5));
   const maxTop = Math.max(12, rect.height - 180);
   const top = Math.max(12, Math.min(maxTop, clientY - rect.top + 12));
@@ -3947,9 +3954,26 @@ function showDisclosurePopover(group, sourceEvent) {
   node.hidden = false;
 }
 
+function isDirectDisclosureTap(evtData, point) {
+  if (!isTouchDevice()) return true;
+  const sourceEvent = evtData?.event;
+  const chart = document.getElementById("chart");
+  const clientX = Number(sourceEvent?.clientX);
+  const clientY = Number(sourceEvent?.clientY);
+  const xAxis = point?.xaxis;
+  const yAxis = point?.yaxis;
+  if (!chart || !Number.isFinite(clientX) || !Number.isFinite(clientY)
+    || typeof xAxis?.d2p !== "function" || typeof yAxis?.d2p !== "function") return false;
+
+  const rect = chart.getBoundingClientRect();
+  const markerX = Number(xAxis._offset || 0) + xAxis.d2p(point.x);
+  const markerY = Number(yAxis._offset || 0) + yAxis.d2p(point.y);
+  return Math.hypot(clientX - rect.left - markerX, clientY - rect.top - markerY) <= 28;
+}
+
 function handleDisclosureClick(evtData) {
   const point = evtData?.points?.find((p) => p?.data?.meta?.isDisclosureTrace);
-  if (!point) return false;
+  if (!point || !isDirectDisclosureTap(evtData, point)) return false;
   try {
     const raw = point.customdata?.[0];
     const group = disclosureGroupStore.get(raw) || JSON.parse(raw);
