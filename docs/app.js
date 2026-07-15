@@ -27,6 +27,7 @@ const CUSTOM_COLOR_PALETTE = [
   "#84cc16", "#c084fc", "#38bdf8", "#f59e0b", "#10b981",
 ];
 const MAX_CUSTOM_STOCKS = 10;
+const CUSTOM_STOCK_PRELOAD_CONCURRENCY = 3;
 const KRX_LOOKBACK_DAYS = 14;
 const KRX_BASE_INFO_ENDPOINTS = {
   KOSPI: "stk_isu_base_info",
@@ -56,7 +57,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.56";
+const APP_VERSION = "0.57";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -257,6 +258,7 @@ let lastDisclosureTraceStats = { total: 0, candidates: 0, markers: 0 };
 let baseTraceValues = {};
 let legendHandlerSet = false;
 let adrHandlerSet = false;
+let lastAdrRenderKey = "";
 let dragRafId = null;
 let cursorRafId = 0;
 let pendingCursorState = null;
@@ -3164,23 +3166,31 @@ async function preloadCustomStocks(options = {}) {
   if (!customStocks.length) return { failedNames: [] };
 
   const forceRefresh = Boolean(options?.forceRefresh);
-  const failed = [];
-  const failedNames = [];
-  for (const item of customStocks) {
+  const items = [...customStocks];
+  const perfStartedAt = (typeof performance !== "undefined") ? performance.now() : 0;
+  const results = await mapWithConcurrency(items, CUSTOM_STOCK_PRELOAD_CONCURRENCY, async (item) => {
     const hadExisting = (pricePayload?.records || []).some((row) => toNum(row?.[item.ticker]) !== null);
     try {
       await ensureCustomTickerSeriesLoaded(item.ticker, { forceRefresh, displayName: item.name });
       DISPLAY_NAMES[item.ticker] = item.name;
+      return null;
     } catch (_) {
       // Keep ticker if older history exists and refresh fails.
       if (hadExisting) {
         DISPLAY_NAMES[item.ticker] = item.name;
-        continue;
+        return null;
       }
-      failed.push(item.ticker);
-      failedNames.push(item.name || item.ticker);
+      return { ticker: item.ticker, name: item.name || item.ticker };
     }
-  }
+  });
+  const failedResults = results.filter(Boolean);
+  const failed = failedResults.map((item) => item.ticker);
+  const failedNames = failedResults.map((item) => item.name);
+  recordPerfSample("preloadCustomStocks", perfStartedAt, {
+    stocks: items.length,
+    concurrency: CUSTOM_STOCK_PRELOAD_CONCURRENCY,
+    failed: failed.length,
+  });
 
   if (!failed.length) return { failedNames: [] };
 
@@ -5059,12 +5069,27 @@ const ADR_SOURCE_URL = "http://www.adrinfo.kr/chart";
 const CORS_PROXY     = "https://corsproxy.io/?url=";
 
 function renderAdrChart(xRange) {
+  const perfStartedAt = (typeof performance !== "undefined") ? performance.now() : 0;
   const el = document.getElementById("chart-adr");
   if (!el || !adrRows.length) return;
 
-  // Filter ADR rows by active time range.
-  const allDates = adrRows.map((r) => r.date);
-  const maxDate = allDates[allDates.length - 1];
+  const renderKey = [activeMonths, hoverShowPopup ? 1 : 0, rowsSignature(adrRows)].join("::");
+  if (lastAdrRenderKey === renderKey && el.data?.length) {
+    if (Array.isArray(xRange) && xRange.length === 2 && !xRangeMatches(el, xRange[0], xRange[1])) {
+      chartSyncing = true;
+      Promise.resolve(Plotly.relayout(el, {
+        "xaxis.range[0]": xRange[0],
+        "xaxis.range[1]": xRange[1],
+      })).catch(() => {}).finally(() => {
+        chartSyncing = false;
+      });
+    }
+    recordPerfSample("renderAdrChart", perfStartedAt, { rows: el.data[0]?.x?.length || 0, cacheHit: true });
+    return;
+  }
+
+  // Filter ADR rows by active time range only when the trace data changed.
+  const maxDate = adrRows[adrRows.length - 1]?.date;
   const startDate = shiftMonths(maxDate, activeMonths);
   const filtered = adrRows.filter((r) => r.date >= startDate);
   if (!filtered.length) return;
@@ -5179,7 +5204,10 @@ function renderAdrChart(xRange) {
     dragmode: false,
   };
 
-  Plotly.react(el, traces, layout, PLOTLY_CONFIG);
+  lastAdrRenderKey = renderKey;
+  Promise.resolve(Plotly.react(el, traces, layout, PLOTLY_CONFIG)).catch(() => {
+    if (lastAdrRenderKey === renderKey) lastAdrRenderKey = "";
+  });
 
   if (!adrHandlerSet) {
     el.on("plotly_relayout", (eventData) => {
@@ -5222,6 +5250,7 @@ function renderAdrChart(xRange) {
     });
     adrHandlerSet = true;
   }
+  recordPerfSample("renderAdrChart", perfStartedAt, { rows: filtered.length, cacheHit: false });
 }
 
 function syncButtons() {
@@ -5887,42 +5916,51 @@ async function refreshRuntimeData(msgEl, options = {}) {
     warnLines.push(`일부 선택 종목을 불러오지 못했습니다: ${preloadResult.failedNames.join(", ")}`);
   }
 
-  try {
-    const { added, latestDate } = await refreshAdrFromWeb();
-    if (added > 0) {
-      infoLines.push(`ADR ${added}건 추가 반영(~ ${latestDate})`);
-    }
-  } catch (adrErr) {
-    warnLines.push(`ADR 불러오기 오류: ${adrErr.message}`);
-  }
+  const adrTask = refreshAdrFromWeb()
+    .then(({ added, latestDate }) => ({
+      info: added > 0 ? [`ADR ${added}건 추가 반영(~ ${latestDate})`] : [],
+      warnings: [],
+    }))
+    .catch((adrErr) => ({ info: [], warnings: [`ADR 불러오기 오류: ${adrErr.message}`] }));
 
-  if (apiSettings.dartApiKey) {
-    try {
-      const refreshCurrentTickers = Boolean(apiSettings.dartProxyEnabled);
-      if (refreshCurrentTickers) {
-        enableDisclosureMarkers();
-        saveState();
-      }
-      const info = refreshCurrentTickers
-        ? await refreshDartDisclosuresForVisibleTickersFromApi(apiSettings.dartApiKey, { forceNetwork })
-        : await refreshDartDisclosuresFromApi(apiSettings.dartApiKey, "", { forceNetwork });
-      refreshedDart = true;
-      if (info.fetched > 0) {
-        infoLines.push(`DART 공시 ${info.fetched}건 확인, ${info.added}건 반영${info.latestDate ? `(~ ${info.latestDate})` : ""}`);
-        if (Array.isArray(info.failed) && info.failed.length) {
-          warnLines.push(`일부 DART 종목 실패: ${info.failed.slice(0, 2).join(" / ")}`);
+  const dartTask = apiSettings.dartApiKey
+    ? (async () => {
+      try {
+        const refreshCurrentTickers = Boolean(apiSettings.dartProxyEnabled);
+        if (refreshCurrentTickers) {
+          enableDisclosureMarkers();
+          saveState();
         }
-      } else {
-        warnLines.push("DART 최근 공시에서 현재 차트 종목의 주요 이벤트를 찾지 못했습니다.");
+        const info = refreshCurrentTickers
+          ? await refreshDartDisclosuresForVisibleTickersFromApi(apiSettings.dartApiKey, { forceNetwork })
+          : await refreshDartDisclosuresFromApi(apiSettings.dartApiKey, "", { forceNetwork });
+        const lines = info.fetched > 0
+          ? [`DART 공시 ${info.fetched}건 확인, ${info.added}건 반영${info.latestDate ? `(~ ${info.latestDate})` : ""}`]
+          : [];
+        const warnings = [];
+        if (Array.isArray(info.failed) && info.failed.length) {
+          warnings.push(`일부 DART 종목 실패: ${info.failed.slice(0, 2).join(" / ")}`);
+        }
+        if (info.fetched <= 0) {
+          warnings.push("DART 최근 공시에서 현재 차트 종목의 주요 이벤트를 찾지 못했습니다.");
+        }
+        return { info: lines, warnings, refreshed: true };
+      } catch (dartErr) {
+        return { info: [], warnings: [`DART 공시 불러오기 오류: ${dartErr.message}`], refreshed: false };
       }
-    } catch (dartErr) {
-      warnLines.push(`DART 공시 불러오기 오류: ${dartErr.message}`);
-    }
-  }
+    })()
+    : Promise.resolve({ info: [], warnings: [], refreshed: false });
 
-  const liveResult = await refreshLiveApiData();
-  infoLines.push(...liveResult.applied);
-  warnLines.push(...liveResult.warnings);
+  const liveTask = refreshLiveApiData()
+    .then((result) => ({ info: result.applied || [], warnings: result.warnings || [] }))
+    .catch((liveErr) => ({ info: [], warnings: [`최신 지표 불러오기 오류: ${liveErr.message}`] }));
+
+  const [adrResult, dartResult, liveResult] = await Promise.all([adrTask, dartTask, liveTask]);
+  [adrResult, dartResult, liveResult].forEach((result) => {
+    infoLines.push(...(result.info || []));
+    warnLines.push(...(result.warnings || []));
+  });
+  refreshedDart = Boolean(dartResult.refreshed);
 
   renderChartWhenIdleOrNow(false);
   if (refreshedDart) {

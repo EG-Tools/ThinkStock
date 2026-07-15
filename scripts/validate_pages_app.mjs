@@ -44,5 +44,8 @@ assert.ok(app.includes("function isDirectDisclosureTap"), "iPhone disclosure tap
 assert.ok(app.includes("disclosure-title-link"), "disclosure title links are missing");
 assert.ok(html.includes('data-series="customer_deposit"'), "customer deposit toggle is missing");
 assert.ok(app.includes("getSecuritiesMarketTotalCapitalInfo"), "customer deposit API endpoint is missing");
+assert.ok(app.includes("CUSTOM_STOCK_PRELOAD_CONCURRENCY"), "custom stock preload concurrency guard is missing");
+assert.ok(app.includes("Promise.all([adrTask, dartTask, liveTask])"), "independent runtime refreshes are not parallelized");
+assert.ok(app.includes("lastAdrRenderKey === renderKey"), "ADR render fast path is missing");
 
 console.log(`Pages app validation passed (version ${appVersion}, ${ids.length} unique IDs).`);
