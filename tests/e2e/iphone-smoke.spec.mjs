@@ -127,7 +127,7 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   await stubExternalRefreshes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.63");
+  await expect(page.locator("#appVersionText")).toHaveText("0.64");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
@@ -149,16 +149,32 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   const getHistoryRequests = await installDataRoutes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.63");
+  await expect(page.locator("#appVersionText")).toHaveText("0.64");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   await expect(page.locator('[data-series="customer_deposit"]')).toBeVisible();
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
   expect(getHistoryRequests()).toBe(0);
+  await expect(page.locator(".hero h1")).not.toHaveClass(/is-loading/);
 
+  const togglePerfBefore = await page.evaluate(() => ({
+    generation: window.ThinkStockE2E.getChartRenderGeneration(),
+    ...window.ThinkStockE2E.getChartWorkerStats(),
+  }));
   await page.locator('[data-series="customer_deposit"]').click();
   await expect(page.locator('[data-series="customer_deposit"]')).toHaveClass(/is-on/);
+  await expect.poll(() => page.evaluate(() => (
+    window.ThinkStockE2E.getChartWorkerStats().partialDisclosureUpdates
+  ))).toBeGreaterThan(togglePerfBefore.partialDisclosureUpdates);
+  expect(await page.evaluate(() => window.ThinkStockE2E.getChartRenderGeneration()))
+    .toBe(togglePerfBefore.generation);
+  expect((await page.evaluate(() => window.ThinkStockE2E.getChartWorkerStats())).dispatched)
+    .toBe(togglePerfBefore.dispatched);
 
+  const dragPerfBefore = await page.evaluate(() => ({
+    generation: window.ThinkStockE2E.getChartRenderGeneration(),
+    ...window.ThinkStockE2E.getChartWorkerStats(),
+  }));
   const dragResult = await page.locator("#chart").evaluate((element) => {
     const traceIndex = element.data.findIndex((trace) => (
       trace?.visible !== "legendonly" && !trace?.meta?.isDisclosureTrace && Array.isArray(trace?.y)
@@ -197,6 +213,14 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await expect.poll(() => page.locator("#chart").evaluate((element, drag) => (
     element.data?.[drag.traceIndex]?.y?.[drag.pointIndex]
   ), dragResult)).not.toBe(dragResult.before);
+  await expect.poll(() => page.evaluate(() => (
+    window.ThinkStockE2E.getChartWorkerStats().partialDisclosureUpdates
+  ))).toBeGreaterThan(dragPerfBefore.partialDisclosureUpdates);
+  expect(await page.evaluate(() => window.ThinkStockE2E.getChartRenderGeneration()))
+    .toBe(dragPerfBefore.generation);
+  const dragPerfAfter = await page.evaluate(() => window.ThinkStockE2E.getChartWorkerStats());
+  expect(dragPerfAfter.dispatched).toBe(dragPerfBefore.dispatched);
+  expect(dragPerfAfter.sourceTransfers).toBe(dragPerfBefore.sourceTransfers);
   if (!isMobile) {
     const linePath = page.locator("#chart .scatterlayer .js-line").first();
     await expect(linePath).toBeVisible();

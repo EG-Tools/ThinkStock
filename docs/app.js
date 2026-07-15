@@ -61,7 +61,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.63";
+const APP_VERSION = "0.64";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -264,6 +264,8 @@ let pendingHoverSync = null;
 let lastHoverSyncKey = "";
 let currentRows = [];
 let currentStart = "";
+let currentEnd = "";
+let currentMainChartModel = null;
 let historicalDataLoaded = false;
 let historicalDataLoadPromise = null;
 let mainChartCalcCache = null;
@@ -273,6 +275,13 @@ let lastMainChartModelSource = "none";
 let chartModelWorker = null;
 let chartModelWorkerSeq = 0;
 let chartModelWorkerRequests = new Map();
+let chartModelWorkerDataKey = "";
+let chartModelWorkerActiveId = "";
+let chartModelWorkerQueuedRequest = null;
+let chartModelWorkerDispatchCount = 0;
+let chartModelWorkerSourceTransferCount = 0;
+let chartModelWorkerSupersededCount = 0;
+let partialDisclosureUpdateCount = 0;
 let chartRenderGeneration = 0;
 let chartSyncing = false;   // relayout sync loop guard
 let hoverShowPopup = false;
@@ -350,6 +359,17 @@ function initE2eDebugAccess() {
     window.ThinkStockE2E = {
       getChartModelSource() {
         return lastMainChartModelSource;
+      },
+      getChartRenderGeneration() {
+        return chartRenderGeneration;
+      },
+      getChartWorkerStats() {
+        return {
+          dispatched: chartModelWorkerDispatchCount,
+          sourceTransfers: chartModelWorkerSourceTransferCount,
+          superseded: chartModelWorkerSupersededCount,
+          partialDisclosureUpdates: partialDisclosureUpdateCount,
+        };
       },
       openFirstDisclosure(offsetX = 0, offsetY = 0) {
         const chart = document.getElementById("chart");
@@ -2044,10 +2064,10 @@ function beginLineOffsetDrag(el, target, startClientY) {
     if (!moved || Math.abs(clientY - startClientY) < 3) {
       seriesOffsets[target.seriesKey] = startOffset;
       restyleLive(target.traceIndex, target.seriesKey);
-      finishTraceYEdit(false);
+      finishTraceYEdit(false, target.seriesKey);
       return;
     }
-    finishTraceYEdit(true);
+    finishTraceYEdit(true, target.seriesKey);
   }
 
   addDragListeners(startClientY, onMove, onEnd);
@@ -2481,14 +2501,20 @@ function syncSeriesToggleBoard(allSeries) {
 }
 
 function applySeriesVisibilityFast(seriesKey) {
-  if (showDisclosures) return false;
   if (!window.Plotly) return false;
   const el = document.getElementById("chart");
   const traceIndex = currentSelected.indexOf(seriesKey);
   if (!el?.data || traceIndex < 0 || traceIndex >= el.data.length) return false;
 
   Plotly.restyle(el, { visible: hiddenSeries.has(seriesKey) ? "legendonly" : true }, [traceIndex])
-    .then(() => updateHandles())
+    .then(() => {
+      if (showDisclosures && !refreshDisclosureTraceFast()) {
+        requestChartRender();
+        return;
+      }
+      updateHandles();
+      scheduleLastRuntimeSnapshotSave();
+    })
     .catch(() => requestChartRender());
   syncSeriesToggleBoard(currentSelected);
   return true;
@@ -3638,6 +3664,19 @@ function rejectChartModelWorkerRequests(error) {
     reject(error);
   });
   chartModelWorkerRequests = new Map();
+  if (chartModelWorkerQueuedRequest) {
+    chartModelWorkerQueuedRequest.reject(error);
+    chartModelWorkerQueuedRequest = null;
+  }
+  chartModelWorkerActiveId = "";
+  chartModelWorkerDataKey = "";
+}
+
+function dispatchQueuedChartModelWorkerRequest() {
+  if (chartModelWorkerActiveId || !chartModelWorkerQueuedRequest) return;
+  const queued = chartModelWorkerQueuedRequest;
+  chartModelWorkerQueuedRequest = null;
+  dispatchChartModelWorkerRequest(queued);
 }
 
 function ensureChartModelWorker() {
@@ -3652,10 +3691,16 @@ function ensureChartModelWorker() {
     if (!pending) return;
     chartModelWorkerRequests.delete(message.id);
     clearTimeout(pending.timer);
+    if (chartModelWorkerActiveId === message.id) chartModelWorkerActiveId = "";
     if (message.ok) pending.resolve(message.result || {});
-    else pending.reject(new Error(message.error || "chart worker failed"));
+    else {
+      chartModelWorkerDataKey = "";
+      pending.reject(new Error(message.error || "chart worker failed"));
+    }
+    dispatchQueuedChartModelWorkerRequest();
   };
   worker.onerror = (event) => {
+    if (chartModelWorker !== worker) return;
     const error = new Error(event?.message || "chart worker failed");
     rejectChartModelWorkerRequests(error);
     try { worker.terminate(); } catch (_) {}
@@ -3665,22 +3710,64 @@ function ensureChartModelWorker() {
   return worker;
 }
 
+function dispatchChartModelWorkerRequest(request) {
+  let worker = null;
+  try {
+    worker = ensureChartModelWorker();
+  } catch (error) {
+    request.reject(error);
+    return;
+  }
+
+  const id = `chart-${Date.now()}-${++chartModelWorkerSeq}`;
+  const { datasetKey, sources, ...config } = request.payload;
+  const includeSources = chartModelWorkerDataKey !== datasetKey;
+  const workerPayload = {
+    ...config,
+    datasetKey,
+    ...(includeSources ? { sources } : {}),
+  };
+  if (includeSources) chartModelWorkerDataKey = datasetKey;
+  chartModelWorkerDispatchCount += 1;
+  if (includeSources) chartModelWorkerSourceTransferCount += 1;
+  chartModelWorkerActiveId = id;
+
+  const timer = setTimeout(() => {
+    const pending = chartModelWorkerRequests.get(id);
+    if (!pending) return;
+    chartModelWorkerRequests.delete(id);
+    if (chartModelWorkerActiveId === id) chartModelWorkerActiveId = "";
+    chartModelWorkerDataKey = "";
+    pending.reject(new Error("chart worker timeout"));
+    try { worker.terminate(); } catch (_) {}
+    if (chartModelWorker === worker) chartModelWorker = null;
+    dispatchQueuedChartModelWorkerRequest();
+  }, 10000);
+  chartModelWorkerRequests.set(id, { resolve: request.resolve, reject: request.reject, timer });
+  try {
+    worker.postMessage({ id, type: "buildMainChartModel", payload: workerPayload });
+  } catch (error) {
+    clearTimeout(timer);
+    chartModelWorkerRequests.delete(id);
+    chartModelWorkerActiveId = "";
+    chartModelWorkerDataKey = "";
+    request.reject(error);
+    dispatchQueuedChartModelWorkerRequest();
+  }
+}
+
 function requestChartModelFromWorker(payload) {
   return new Promise((resolve, reject) => {
-    let worker = null;
-    try {
-      worker = ensureChartModelWorker();
-    } catch (error) {
-      reject(error);
+    const request = { payload, resolve, reject };
+    if (chartModelWorkerActiveId) {
+      if (chartModelWorkerQueuedRequest) {
+        chartModelWorkerSupersededCount += 1;
+        chartModelWorkerQueuedRequest.resolve(null);
+      }
+      chartModelWorkerQueuedRequest = request;
       return;
     }
-    const id = `chart-${Date.now()}-${++chartModelWorkerSeq}`;
-    const timer = setTimeout(() => {
-      chartModelWorkerRequests.delete(id);
-      reject(new Error("chart worker timeout"));
-    }, 10000);
-    chartModelWorkerRequests.set(id, { resolve, reject, timer });
-    worker.postMessage({ id, type: "buildMainChartModel", payload });
+    dispatchChartModelWorkerRequest(request);
   });
 }
 
@@ -3698,6 +3785,14 @@ function getMainChartCalcCacheKey(priceRows, start, end, displayBudget) {
     sortedObjectSignature(seriesOffsets),
     sortedObjectSignature(seriesScales),
     displayBudget,
+  ].join("::");
+}
+
+function getChartModelDataKey(priceRows) {
+  return [
+    rowsSignature(priceRows),
+    rowsSignature(macroRows),
+    rowsSignature(creditRows),
   ].join("::");
 }
 
@@ -3763,9 +3858,8 @@ function buildMainChartModel(priceRows, start, end, allowedSeries) {
 
 async function buildMainChartModelOffThread(priceRows, start, end, allowedSeries, displayBudget) {
   const result = await requestChartModelFromWorker({
-    priceRows,
-    macroRows,
-    creditRows,
+    datasetKey: getChartModelDataKey(priceRows),
+    sources: { priceRows, macroRows, creditRows },
     creditCols: [...CREDIT_COLS],
     creditOffsetDays: CREDIT_OFFSET_DAYS,
     start,
@@ -3778,6 +3872,7 @@ async function buildMainChartModelOffThread(priceRows, start, end, allowedSeries
     seriesScales: { ...seriesScales },
     displayBudget,
   });
+  if (!result) return null;
   const rows = Array.isArray(result.rows) ? result.rows : [];
   const seriesModels = Array.isArray(result.seriesModels) ? result.seriesModels : [];
   if (!rows.length || !seriesModels.length) throw new Error("chart worker returned an empty model");
@@ -3805,6 +3900,7 @@ async function getMainChartModel(priceRows, start, end, allowedSeries, displayBu
     let model = null;
     try {
       model = await buildMainChartModelOffThread(priceRows, start, end, allowedSeries, displayBudget);
+      if (!model) return null;
       lastMainChartModelSource = "worker";
     } catch (_) {
       model = buildMainChartModel(priceRows, start, end, allowedSeries);
@@ -3816,7 +3912,7 @@ async function getMainChartModel(priceRows, start, end, allowedSeries, displayBu
         displayBudget,
       );
     }
-    mainChartCalcCache = { key, model };
+    if (model) mainChartCalcCache = { key, model };
     return model;
   })();
   mainChartCalcPending = { key, promise };
@@ -3973,10 +4069,12 @@ function restyleLive(traceIndex, seriesKey) {
   });
 }
 
-function finishTraceYEdit(rebuildForDisclosures = true) {
+function finishTraceYEdit(rebuildForDisclosures = true, seriesKey = "") {
   saveState();
   if (showDisclosures && rebuildForDisclosures) {
-    requestChartRender();
+    requestAnimationFrame(() => {
+      if (!refreshDisclosureTraceFast(seriesKey)) requestChartRender();
+    });
     return;
   }
   updateHandles();
@@ -4031,7 +4129,7 @@ function setupOffsetDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
         if (!applySeriesVisibilityFast(seriesKey)) requestChartRender();
         return;
       }
-      finishTraceYEdit(true);
+      finishTraceYEdit(true, seriesKey);
     }
 
     addDragListeners(startClientY, onMove, onEnd);
@@ -4061,7 +4159,7 @@ function setupScaleDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
       handle.classList.remove("dragging");
       isHandleDragging = false;
       if (lockedXRange) pinnedXRange = [...lockedXRange];
-      finishTraceYEdit(true);
+      finishTraceYEdit(true, seriesKey);
     }
 
     addDragListeners(startClientY, onMove, onEnd);
@@ -4210,6 +4308,77 @@ function buildDisclosureTrace(selected, seriesModels, start, end) {
       line: { color: DISCLOSURE_MARKER_LINE_COLOR, width: DISCLOSURE_MARKER_LINE_WIDTH },
     },
   };
+}
+
+function updateCurrentMainChartSeriesTransform(seriesKey) {
+  if (!seriesKey || !currentMainChartModel?.seriesModels) return true;
+  const model = currentMainChartModel.seriesModels.find((item) => item.series === seriesKey);
+  if (!model || !Array.isArray(model.baseValues)) return false;
+  const scale = seriesScales[seriesKey] != null
+    ? seriesScales[seriesKey]
+    : defaultSeriesScale(seriesKey);
+  const offset = seriesOffsets[seriesKey] || 0;
+  model.values = model.baseValues.map((value) => (
+    value !== null ? 100 + (value - 100) * scale + offset : null
+  ));
+  return true;
+}
+
+function refreshDisclosureTraceFast(seriesKey = "") {
+  const el = document.getElementById("chart");
+  if (
+    !showDisclosures
+    || !window.Plotly
+    || !el?.data
+    || !currentMainChartModel?.seriesModels?.length
+    || !currentStart
+    || !currentEnd
+  ) return false;
+  if (!updateCurrentMainChartSeriesTransform(seriesKey)) return false;
+
+  const nextTrace = buildDisclosureTrace(
+    currentMainChartModel.selected,
+    currentMainChartModel.seriesModels,
+    currentStart,
+    currentEnd,
+  );
+  const traceIndex = el.data.findIndex((trace) => trace?.meta?.isDisclosureTrace);
+  clearDisclosureHoverTimer();
+  currentDisclosureHighlight = null;
+  let task = Promise.resolve();
+  if (nextTrace && traceIndex >= 0) {
+    task = Plotly.restyle(el, {
+      x: [nextTrace.x],
+      y: [nextTrace.y],
+      text: [nextTrace.text],
+      customdata: [nextTrace.customdata],
+      hovertemplate: [nextTrace.hovertemplate],
+      "marker.size": [DISCLOSURE_MARKER_SIZE],
+      "marker.color": [DISCLOSURE_MARKER_COLOR],
+      "marker.line.width": [DISCLOSURE_MARKER_LINE_WIDTH],
+      "marker.line.color": [DISCLOSURE_MARKER_LINE_COLOR],
+      "textfont.size": [DISCLOSURE_TEXT_SIZE],
+      "textfont.color": [DISCLOSURE_MARKER_COLOR],
+      visible: true,
+    }, [traceIndex]);
+  } else if (nextTrace) {
+    task = Plotly.addTraces(el, nextTrace);
+  } else if (traceIndex >= 0) {
+    task = Plotly.deleteTraces(el, traceIndex);
+  }
+
+  mainChartCalcCache = null;
+  partialDisclosureUpdateCount += 1;
+  hideDisclosurePopover();
+  disclosureMarkerPixelCache.delete(el);
+  Promise.resolve(task)
+    .then(() => {
+      syncDisclosureToggleButton(lastDisclosureTraceStats.markers);
+      updateHandles();
+      scheduleLastRuntimeSnapshotSave();
+    })
+    .catch(() => requestChartRender());
+  return true;
 }
 
 function ensureDisclosurePopover() {
@@ -5123,10 +5292,12 @@ async function renderChart(preserveZoom = true) {
   ]);
   const displayBudget = getMainChartDisplayPointBudget(el);
   const model = await getMainChartModel(priceRows, start, end, allowedSeries, displayBudget);
-  if (renderGeneration !== chartRenderGeneration) return;
+  if (!model || renderGeneration !== chartRenderGeneration) return;
   const { rows, allSeries, selected, seriesModels } = model;
+  currentMainChartModel = model;
   currentRows = rows;
   currentStart = start;
+  currentEnd = end;
   syncSeriesToggleBoard(allSeries);
   currentSelected = [...selected];
   if (!showDisclosures) hideDisclosurePopover();

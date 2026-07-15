@@ -8,7 +8,7 @@ import vm from "node:vm";
 const source = await readFile(path.resolve("docs/modules/chart-model-worker.js"), "utf8");
 
 
-function runWorker(payload) {
+function createWorkerHarness() {
   let messageHandler = null;
   const messages = [];
   const context = {
@@ -23,8 +23,17 @@ function runWorker(payload) {
   };
   vm.runInNewContext(source, context);
   assert.equal(typeof messageHandler, "function");
-  messageHandler({ data: { id: "test", type: "buildMainChartModel", payload } });
-  return messages[0];
+  return {
+    send(payload, id = `test-${messages.length + 1}`) {
+      messageHandler({ data: { id, type: "buildMainChartModel", payload } });
+      return messages[messages.length - 1];
+    },
+  };
+}
+
+
+function runWorker(payload) {
+  return createWorkerHarness().send(payload);
 }
 
 
@@ -67,4 +76,38 @@ test("chart worker merges raw price, macro, and credit sources", () => {
     Array.from(response.result.selected),
     ["AAA", "leading_cycle", "customer_deposit", "kospi_credit", "kosdaq_credit"],
   );
+});
+
+
+test("chart worker reuses cached sources for configuration-only requests", () => {
+  const harness = createWorkerHarness();
+  const dates = ["2026-01-01", "2026-01-02"];
+  const sources = {
+    priceRows: dates.map((date, index) => ({ date, AAA: 100 + index })),
+    macroRows: dates.map((date, index) => ({ date, leading_cycle: 99 + index })),
+    creditRows: [],
+  };
+  const config = {
+    datasetKey: "stable-data",
+    creditCols: [],
+    creditOffsetDays: 0,
+    start: dates[0],
+    end: dates[1],
+    allowedSeries: ["AAA", "leading_cycle"],
+    priorityOrder: ["AAA", "leading_cycle"],
+    displayNames: {},
+    hiddenSeries: [],
+    seriesOffsets: {},
+    seriesScales: {},
+    displayBudget: 100,
+  };
+
+  const first = harness.send({ ...config, sources });
+  const second = harness.send({ ...config, seriesOffsets: { AAA: 5 } });
+
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  const firstSeries = first.result.seriesModels.find((item) => item.series === "AAA");
+  const secondSeries = second.result.seriesModels.find((item) => item.series === "AAA");
+  assert.equal(secondSeries.values[0] - firstSeries.values[0], 5);
 });

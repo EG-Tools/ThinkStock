@@ -2,6 +2,37 @@ const toNum = (value) => (value != null && Number.isFinite(Number(value))) ? Num
 const numberFormat = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 4 });
 const DAY_MS = 86400000;
 const toUtcMs = (date) => Date.parse(`${date}T00:00:00Z`);
+let sourceCache = null;
+
+function resolvePayloadSources(payload) {
+  const datasetKey = String(payload.datasetKey || "inline");
+  const incoming = payload.sources || (
+    Array.isArray(payload.priceRows)
+      ? {
+          priceRows: payload.priceRows,
+          macroRows: payload.macroRows,
+          creditRows: payload.creditRows,
+        }
+      : null
+  );
+  if (incoming) {
+    sourceCache = {
+      datasetKey,
+      priceRows: Array.isArray(incoming.priceRows) ? incoming.priceRows : [],
+      macroRows: Array.isArray(incoming.macroRows) ? incoming.macroRows : [],
+      creditRows: Array.isArray(incoming.creditRows) ? incoming.creditRows : [],
+    };
+  }
+  if (!sourceCache || sourceCache.datasetKey !== datasetKey) {
+    throw new Error("chart worker source cache miss");
+  }
+  return {
+    ...payload,
+    priceRows: sourceCache.priceRows,
+    macroRows: sourceCache.macroRows,
+    creditRows: sourceCache.creditRows,
+  };
+}
 
 function getSeriesColumns(rows) {
   const columns = new Set();
@@ -259,6 +290,7 @@ function buildDisplayIndexes(rows, seriesModels, selected, hiddenSeries, budget)
 }
 
 function buildMainChartModel(payload) {
+  payload = resolvePayloadSources(payload);
   const { rows, macroCols, liveCols } = mergeSources(payload);
   const allowed = new Set(payload.allowedSeries || []);
   const hidden = new Set(payload.hiddenSeries || []);
