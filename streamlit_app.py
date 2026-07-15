@@ -7,9 +7,12 @@ from urllib.request import Request, urlopen
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-import yfinance as yf
 
-from thinkstock_data import bundled_data_revision, load_bundled_market_data
+from thinkstock_data import (
+    bundled_data_revision,
+    fetch_prices as fetch_price_data,
+    load_bundled_market_data,
+)
 
 st.set_page_config(
     page_title="ThinkStock",
@@ -328,79 +331,11 @@ def load_cached_bundled_market_data(
     return load_bundled_market_data(Path(data_dir))
 
 
-def extract_close_series(data: pd.DataFrame, ticker: str) -> pd.Series | None:
-    close_series = None
-    if isinstance(data.columns, pd.MultiIndex):
-        if ("Close", ticker) in data.columns:
-            close_series = data[("Close", ticker)]
-        elif ("Adj Close", ticker) in data.columns:
-            close_series = data[("Adj Close", ticker)]
-        else:
-            try:
-                close_series = data.xs("Close", axis=1, level=0).iloc[:, 0]
-            except Exception:
-                close_series = None
-    else:
-        if "Close" in data.columns:
-            close_series = data["Close"]
-        elif "Adj Close" in data.columns:
-            close_series = data["Adj Close"]
-    return close_series
-
-
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_prices(
     tickers: tuple[str, ...], start: date, end: date
 ) -> tuple[pd.DataFrame, list[str], dict[str, str]]:
-    frames: list[pd.DataFrame] = []
-    success: list[str] = []
-    failures: dict[str, str] = {}
-
-    for raw_ticker in tickers:
-        ticker = raw_ticker.strip()
-        if not ticker:
-            continue
-
-        try:
-            data = yf.download(
-                ticker,
-                start=start,
-                end=pd.Timestamp(end) + pd.Timedelta(days=1),
-                auto_adjust=False,
-                progress=False,
-                threads=False,
-            )
-            if data is None or data.empty:
-                failures[ticker] = "가격 데이터를 찾지 못했습니다."
-                continue
-
-            close_series = extract_close_series(data, ticker)
-            if close_series is None:
-                failures[ticker] = "종가 컬럼을 찾지 못했습니다."
-                continue
-
-            series = close_series.rename(ticker).dropna()
-            index = pd.to_datetime(series.index)
-            try:
-                index = index.tz_localize(None)
-            except Exception:
-                try:
-                    index = index.tz_convert(None)
-                except Exception:
-                    pass
-            series.index = index
-            frames.append(series.to_frame())
-            success.append(ticker)
-        except Exception as exc:
-            message = str(exc).splitlines()[0].strip()
-            failures[ticker] = message or "알 수 없는 오류가 발생했습니다."
-
-    if not frames:
-        return pd.DataFrame(), success, failures
-
-    out = pd.concat(frames, axis=1).sort_index()
-    out.index.name = "date"
-    return out, success, failures
+    return fetch_price_data(tickers, start, end)
 
 
 def parse_user_csv(text: str) -> pd.DataFrame:

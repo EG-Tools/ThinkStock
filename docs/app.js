@@ -61,7 +61,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.61";
+const APP_VERSION = "0.62";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -293,6 +293,7 @@ let disclosureHoverTimer = 0;
 let pendingDisclosureHoverData = null;
 let disclosureGroupStore = new Map();
 let disclosureGroupStoreSeq = 0;
+let disclosureMarkerPixelCache = new WeakMap();
 const CURSOR_LINE_CLASS = "synced-cursor-line";
 let apiSettings = { ...API_SETTINGS_DEFAULT };
 let lastTouchTapAt = 0;
@@ -1871,13 +1872,53 @@ function findNearestLineDragTarget(el, clientX, clientY, isTouch = false) {
   return best;
 }
 
-function findDisclosureMarkerAtClientPoint(el, clientX, clientY, isTouch = false) {
+function getDisclosureMarkerPixelIndex(el) {
   if (!el?._fullLayout || !Array.isArray(el.data)) return null;
   const traceIndex = el.data.findIndex((trace) => trace?.meta?.isDisclosureTrace && trace.visible !== "legendonly");
   const trace = traceIndex >= 0 ? el.data[traceIndex] : null;
   const xAxis = el._fullLayout.xaxis;
   const yAxis = el._fullLayout.yaxis;
   if (!trace || !xAxis || !yAxis || typeof xAxis.d2p !== "function" || typeof yAxis.d2p !== "function") return null;
+
+  const axisKey = [
+    xAxis._offset,
+    xAxis._length,
+    ...(Array.isArray(xAxis.range) ? xAxis.range : []),
+    yAxis._offset,
+    yAxis._length,
+    ...(Array.isArray(yAxis.range) ? yAxis.range : []),
+  ].map((value) => String(value ?? "")).join("|");
+  const cached = disclosureMarkerPixelCache.get(el);
+  if (
+    cached
+    && cached.trace === trace
+    && cached.xValues === trace.x
+    && cached.yValues === trace.y
+    && cached.axisKey === axisKey
+  ) {
+    return cached;
+  }
+
+  const pointCount = Math.min(
+    Array.isArray(trace.x) ? trace.x.length : 0,
+    Array.isArray(trace.y) ? trace.y.length : 0,
+  );
+  const points = [];
+  for (let pointIndex = 0; pointIndex < pointCount; pointIndex += 1) {
+    const x = Number(xAxis._offset || 0) + xAxis.d2p(trace.x[pointIndex]);
+    const y = Number(yAxis._offset || 0) + yAxis.d2p(trace.y[pointIndex]);
+    if (Number.isFinite(x) && Number.isFinite(y)) points.push({ x, y, pointIndex });
+  }
+  points.sort((a, b) => a.x - b.x);
+
+  const index = { trace, traceIndex, xValues: trace.x, yValues: trace.y, axisKey, points };
+  disclosureMarkerPixelCache.set(el, index);
+  return index;
+}
+
+function findDisclosureMarkerAtClientPoint(el, clientX, clientY, isTouch = false) {
+  const markerIndex = getDisclosureMarkerPixelIndex(el);
+  if (!markerIndex) return null;
 
   const rect = el.getBoundingClientRect();
   const localX = clientX - rect.left;
@@ -1886,13 +1927,23 @@ function findDisclosureMarkerAtClientPoint(el, clientX, clientY, isTouch = false
   let best = null;
   let bestDistance = Number.POSITIVE_INFINITY;
 
-  for (let pointIndex = 0; pointIndex < trace.x.length; pointIndex += 1) {
-    const markerX = Number(xAxis._offset || 0) + xAxis.d2p(trace.x[pointIndex]);
-    const markerY = Number(yAxis._offset || 0) + yAxis.d2p(trace.y[pointIndex]);
-    const distance = Math.hypot(localX - markerX, localY - markerY);
+  let low = 0;
+  let high = markerIndex.points.length;
+  const minX = localX - hitRadius;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (markerIndex.points[middle].x < minX) low = middle + 1;
+    else high = middle;
+  }
+
+  for (let index = low; index < markerIndex.points.length; index += 1) {
+    const point = markerIndex.points[index];
+    if (point.x > localX + hitRadius) break;
+    if (Math.abs(point.y - localY) > hitRadius) continue;
+    const distance = Math.hypot(localX - point.x, localY - point.y);
     if (distance <= hitRadius && distance < bestDistance) {
       bestDistance = distance;
-      best = { traceIndex, pointIndex };
+      best = { traceIndex: markerIndex.traceIndex, pointIndex: point.pointIndex };
     }
   }
   return best;
