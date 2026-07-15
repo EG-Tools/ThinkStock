@@ -54,7 +54,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.53";
+const APP_VERSION = "0.54";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -3943,15 +3943,15 @@ function showDisclosurePopover(group, sourceEvent) {
   const rect = chart.getBoundingClientRect();
   const clientX = sourceEvent?.clientX ?? (rect.left + rect.width * 0.5);
   const clientY = sourceEvent?.clientY ?? (rect.top + rect.height * 0.35);
-  const width = Math.min(270, Math.max(220, rect.width - 32));
+  node.style.width = "";
+  node.hidden = false;
+  const width = node.getBoundingClientRect().width;
   const left = Math.max(12, Math.min(rect.width - width - 12, clientX - rect.left - width * 0.5));
   const maxTop = Math.max(12, rect.height - 180);
   const top = Math.max(12, Math.min(maxTop, clientY - rect.top + 12));
 
-  node.style.width = `${width}px`;
   node.style.left = `${left}px`;
   node.style.top = `${top}px`;
-  node.hidden = false;
 }
 
 function isDirectDisclosureTap(evtData, point) {
