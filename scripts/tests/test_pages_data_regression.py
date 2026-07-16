@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from check_pages_data_regression import DataRegressionError, compare_core_dataset
+from check_pages_data_regression import DataRegressionError, compare_core_dataset, emit_github_error
 
 
 def write_payload(root: Path, file_name: str, dates: list[str], values: list[float | None]) -> Path:
@@ -47,6 +51,14 @@ class PagesDataRegressionTests(unittest.TestCase):
             current = write_payload(root, "current.json", ["2026-01-01", "2026-01-02"], [2, 3])
             with self.assertRaisesRegex(DataRegressionError, "history starts later"):
                 compare_core_dataset("sample", baseline, current)
+
+    def test_emits_actionable_github_annotation(self) -> None:
+        output = StringIO()
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), redirect_stdout(output):
+            emit_github_error("prices: latest regressed\n2026-07-16 -> 2026-07-15")
+
+        self.assertIn("file=scripts/check_pages_data_regression.py,line=1", output.getvalue())
+        self.assertIn("%0A", output.getvalue())
 
 
 if __name__ == "__main__":

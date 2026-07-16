@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -190,6 +191,13 @@ def check_regression(baseline_root: Path, current_root: Path) -> list[str]:
     return messages
 
 
+def emit_github_error(message: str) -> None:
+    if os.environ.get("GITHUB_ACTIONS", "").lower() != "true":
+        return
+    escaped = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::error file=scripts/check_pages_data_regression.py,line=1::{escaped}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Reject Pages data that regresses from the last known-good build.")
     parser.add_argument("--baseline", type=Path, required=True)
@@ -199,7 +207,9 @@ def main() -> int:
     try:
         messages = check_regression(args.baseline.resolve(), args.current.resolve())
     except DataRegressionError as exc:
-        print(f"Pages data regression check failed: {exc}")
+        message = f"Pages data regression check failed: {exc}"
+        print(message)
+        emit_github_error(message)
         return 1
 
     print("Pages data regression check passed:")

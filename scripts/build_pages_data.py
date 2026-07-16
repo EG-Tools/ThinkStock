@@ -1245,6 +1245,36 @@ def records_to_frame(records: list[dict], series_names: list[str]) -> pd.DataFra
     return frame
 
 
+def load_existing_price_seed() -> pd.DataFrame:
+    if not OUTPUT_JSON.exists():
+        return pd.DataFrame(columns=DEFAULT_TICKERS)
+    try:
+        payload = json.loads(OUTPUT_JSON.read_text(encoding="utf-8"))
+        return records_to_frame(records_from_payload(payload), DEFAULT_TICKERS)
+    except Exception as exc:
+        print(f"Existing price data read failed: {exc}")
+        return pd.DataFrame(columns=DEFAULT_TICKERS)
+
+
+def merge_price_seed_with_live(seed: pd.DataFrame, live: pd.DataFrame) -> pd.DataFrame:
+    seed = seed.reindex(columns=DEFAULT_TICKERS).copy()
+    live = live.reindex(columns=DEFAULT_TICKERS).copy()
+    if seed.empty:
+        merged = live
+    elif live.empty:
+        merged = seed
+    else:
+        merged = seed.reindex(seed.index.union(live.index)).sort_index()
+        for ticker in DEFAULT_TICKERS:
+            fresh = pd.to_numeric(live[ticker], errors="coerce").dropna()
+            merged.loc[fresh.index, ticker] = fresh
+    merged = merged.apply(pd.to_numeric, errors="coerce")
+    merged = merged.dropna(how="all")
+    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+    merged.index.name = "date"
+    return merged[DEFAULT_TICKERS]
+
+
 def load_existing_adr_seed() -> pd.DataFrame:
     if not OUTPUT_ADR_JSON.exists():
         return pd.DataFrame(columns=AUXILIARY_SERIES)
@@ -1499,8 +1529,20 @@ def main() -> None:
         "outputs": {},
         "events": [],
     }
-    prices = fetch_prices()
-    build_report["sources"]["prices"] = frame_summary(prices)
+    live_prices = fetch_prices()
+    existing_prices = load_existing_price_seed()
+    prices = merge_price_seed_with_live(existing_prices, live_prices)
+    build_report["sources"]["prices"] = frame_summary(live_prices)
+    build_report["sources"]["price_seed"] = frame_summary(existing_prices)
+    for ticker in DEFAULT_TICKERS:
+        live_values = live_prices[ticker].dropna() if ticker in live_prices else pd.Series(dtype="float64")
+        seed_values = existing_prices[ticker].dropna() if ticker in existing_prices else pd.Series(dtype="float64")
+        if not seed_values.empty and (live_values.empty or seed_values.index.max() > live_values.index.max()):
+            latest_seed = seed_values.index.max().strftime("%Y-%m-%d")
+            latest_live = live_values.index.max().strftime("%Y-%m-%d") if not live_values.empty else "empty"
+            event = f"Preserved newer cached price tail for {ticker}: live={latest_live}, seed={latest_seed}"
+            print(event)
+            build_report["events"].append(event)
 
     macro_source = load_macro_source()
     build_report["sources"]["sample_macro"] = frame_summary(macro_source)
