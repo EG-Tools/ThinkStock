@@ -16,11 +16,21 @@ export default defineConfig({
   projects: [
     {
       name: "webkit",
+      testMatch: /iphone-smoke\.spec\.mjs/,
       use: { ...devices["iPhone 13"] },
     },
     {
       name: "webkit-desktop",
+      testMatch: /iphone-smoke\.spec\.mjs/,
       use: { ...devices["Desktop Safari"] },
+    },
+    {
+      name: "webkit-sw",
+      testMatch: /service-worker\.spec\.mjs/,
+      use: {
+        ...devices["Desktop Safari"],
+        serviceWorkers: "allow",
+      },
     },
   ],
   webServer: {

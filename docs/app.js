@@ -78,7 +78,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.77";
+const APP_VERSION = "0.78";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -798,6 +798,15 @@ function markDataChanged(...names) {
     dataRevisions[name] = (Number(dataRevisions[name]) || 0) + 1;
     runtimeSnapshotComponentCache.delete(name);
   });
+}
+
+let serviceWorkerRegistrationScheduled = false;
+function scheduleServiceWorkerRegistration() {
+  if (serviceWorkerRegistrationScheduled || !("serviceWorker" in navigator)) return;
+  serviceWorkerRegistrationScheduled = true;
+  const register = () => navigator.serviceWorker.register("./sw.js").catch(() => null);
+  if (document.readyState === "complete") register();
+  else window.addEventListener("load", register, { once: true });
 }
 
 function applySnapshotRevisions(revisions, loadedNames) {
@@ -6536,33 +6545,41 @@ async function refreshLiveApiData(signal = null) {
     warnings.push("KOFIA API 키가 없어 고객예탁금·신용은 저장 데이터까지만 표시됩니다.");
   }
 
+  // These APIs update independent series, so start all requests together.
+  const [leadingResult, newsResult, kosisResult, depositResult, creditResult] = await Promise.allSettled([
+    apiSettings.ecosApiKey
+      ? fetchEcosLeadingCycleLive(apiSettings.ecosApiKey, signal)
+      : Promise.resolve([]),
+    apiSettings.ecosApiKey
+      ? fetchEcosNewsSentimentLive(apiSettings.ecosApiKey, signal)
+      : Promise.resolve([]),
+    apiSettings.kosisApiKey
+      ? fetchKosisLeadingCycleLive(apiSettings.kosisApiKey, signal)
+      : Promise.resolve([]),
+    apiSettings.kofiaApiKey
+      ? fetchKofiaCustomerDepositLive(apiSettings.kofiaApiKey, signal)
+      : Promise.resolve([]),
+    apiSettings.kofiaApiKey
+      ? fetchKofiaCreditLive(apiSettings.kofiaApiKey, signal)
+      : Promise.resolve([]),
+  ]);
+  throwIfAborted(signal);
+
   // Preserve seeded macro credit history while live APIs refresh only their own series.
   // Clearing macroRows here would remove pre-KOFIA credit data before 2021-11-09.
-  let ecosRows = [];
-  let newsSentimentRows = [];
-  let kosisRows = [];
-
-  if (apiSettings.ecosApiKey) {
-    const [leadingResult, newsResult] = await Promise.allSettled([
-      fetchEcosLeadingCycleLive(apiSettings.ecosApiKey, signal),
-      fetchEcosNewsSentimentLive(apiSettings.ecosApiKey, signal),
-    ]);
-    if (leadingResult.status === "fulfilled") ecosRows = leadingResult.value;
-    else warnings.push(`ECOS 선행순환변동 오류: ${leadingResult.reason?.message || leadingResult.reason}`);
-    if (newsResult.status === "fulfilled") newsSentimentRows = newsResult.value;
-    else warnings.push(`ECOS 뉴스심리 오류: ${newsResult.reason?.message || newsResult.reason}`);
+  const ecosRows = leadingResult.status === "fulfilled" ? leadingResult.value : [];
+  const newsSentimentRows = newsResult.status === "fulfilled" ? newsResult.value : [];
+  const kosisRows = kosisResult.status === "fulfilled" ? kosisResult.value : [];
+  if (apiSettings.ecosApiKey && leadingResult.status === "rejected") {
+    warnings.push(`ECOS 선행순환변동 오류: ${leadingResult.reason?.message || leadingResult.reason}`);
+  }
+  if (apiSettings.ecosApiKey && newsResult.status === "rejected") {
+    warnings.push(`ECOS 뉴스심리 오류: ${newsResult.reason?.message || newsResult.reason}`);
+  }
+  if (apiSettings.kosisApiKey && kosisResult.status === "rejected") {
+    warnings.push(`KOSIS 불러오기 오류: ${kosisResult.reason?.message || kosisResult.reason}`);
   }
 
-  if (apiSettings.kosisApiKey) {
-    try {
-      kosisRows = await fetchKosisLeadingCycleLive(apiSettings.kosisApiKey, signal);
-    } catch (err) {
-      if (isAbortError(err) || signal?.aborted) throw err;
-      warnings.push(`KOSIS 불러오기 오류: ${err.message}`);
-    }
-  }
-
-  throwIfAborted(signal);
   const leadingRows = mergeLeadingSources(ecosRows, kosisRows);
   if (leadingRows.length) {
     const info = applyLeadingCycleLiveRows(leadingRows);
@@ -6574,11 +6591,6 @@ async function refreshLiveApiData(signal = null) {
   }
 
   if (apiSettings.kofiaApiKey) {
-    const [depositResult, creditResult] = await Promise.allSettled([
-      fetchKofiaCustomerDepositLive(apiSettings.kofiaApiKey, signal),
-      fetchKofiaCreditLive(apiSettings.kofiaApiKey, signal),
-    ]);
-    throwIfAborted(signal);
     const kofiaRows = normalizeCreditRows([
       ...(depositResult.status === "fulfilled" ? depositResult.value : []),
       ...(creditResult.status === "fulfilled" ? creditResult.value : []),
@@ -6839,22 +6851,23 @@ async function ensureHistoricalDataLoaded(forceNetwork = false) {
 
 async function runRuntimeDataRefresh(msgEl, options = {}) {
   const revisionsBeforeRefresh = getDataRevisions();
+  const perfStartedAt = perfDebugEnabled && typeof performance !== "undefined" ? performance.now() : 0;
   const infoLines = [];
   const warnLines = [];
   let refreshedDart = false;
   const forceNetwork = Boolean(options?.forceNetwork);
   const signal = options?.signal || null;
 
-  const coreIndexResult = await refreshCoreIndexSeries({ signal });
-  throwIfAborted(signal);
-  infoLines.push(...coreIndexResult.applied);
-  warnLines.push(...coreIndexResult.warnings);
+  const coreIndexTask = refreshCoreIndexSeries({ signal })
+    .then((result) => ({ info: result.applied || [], warnings: result.warnings || [] }));
 
-  const preloadResult = await preloadCustomStocks({ forceRefresh: forceNetwork, signal });
-  throwIfAborted(signal);
-  if (preloadResult.failedNames.length) {
-    warnLines.push(`일부 선택 종목을 불러오지 못했습니다: ${preloadResult.failedNames.join(", ")}`);
-  }
+  const preloadTask = preloadCustomStocks({ forceRefresh: forceNetwork, signal })
+    .then((result) => ({
+      info: [],
+      warnings: result.failedNames.length
+        ? [`일부 선택 종목을 불러오지 못했습니다: ${result.failedNames.join(", ")}`]
+        : [],
+    }));
 
   const adrTask = refreshAdrFromWeb(signal)
     .then(({ added, latestDate }) => ({
@@ -6902,14 +6915,16 @@ async function runRuntimeDataRefresh(msgEl, options = {}) {
     .then((result) => ({ info: result.applied || [], warnings: result.warnings || [] }))
     .catch((liveErr) => ({ info: [], warnings: [`최신 지표 불러오기 오류: ${liveErr.message}`] }));
 
-  const [adrResult, fearGreedResult, dartResult, liveResult] = await Promise.all([
+  const [coreIndexResult, preloadResult, adrResult, fearGreedResult, dartResult, liveResult] = await Promise.all([
+    coreIndexTask,
+    preloadTask,
     adrTask,
     fearGreedTask,
     dartTask,
     liveTask,
   ]);
   throwIfAborted(signal);
-  [adrResult, fearGreedResult, dartResult, liveResult].forEach((result) => {
+  [coreIndexResult, preloadResult, adrResult, fearGreedResult, dartResult, liveResult].forEach((result) => {
     infoLines.push(...(result.info || []));
     warnLines.push(...(result.warnings || []));
   });
@@ -6938,6 +6953,13 @@ async function runRuntimeDataRefresh(msgEl, options = {}) {
     }
   }
   scheduleLastRuntimeSnapshotSave(1800);
+  if (perfStartedAt) {
+    recordPerfSample("runtimeRefresh", perfStartedAt, {
+      mainDataChanged,
+      adrDataChanged,
+      disclosureDataChanged,
+    });
+  }
 
   if (infoLines.length || warnLines.length) {
     setMessage(msgEl, [...infoLines, ...warnLines], infoLines.length === 0);
@@ -6986,6 +7008,7 @@ function waitForFirstPaint() {
 
 async function boot() {
   const msgEl = document.getElementById("messageArea");
+  scheduleServiceWorkerRegistration();
   showStartupLoader();
   setStartupLoaderProgress(4, "Preparing");
   initPerfDebugAccess();
@@ -7145,9 +7168,6 @@ async function boot() {
     setMessage(msgEl, err.message || "데이터를 가져오지 못했습니다.", true);
   } finally {
     hideStartupLoader();
-  }
-  if ("serviceWorker" in navigator) {
-    window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(() => null));
   }
 }
 

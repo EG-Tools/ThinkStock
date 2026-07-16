@@ -1,4 +1,5 @@
 const CACHE_NAME = "thinkstock-dev";
+const NETWORK_FIRST_TIMEOUT_MS = 3500;
 const PRECACHE_ASSETS = [
   "./",
   "./index.html",
@@ -13,6 +14,11 @@ const PRECACHE_ASSETS = [
   "./vendor/plotly-basic-2.35.2.min.js",
   "./manifest.webmanifest",
   "./icon.svg",
+  "./data/prices_recent.json",
+  "./data/macro_data_recent.json",
+  "./data/credit_data_recent.json",
+  "./data/adr_data_recent.json",
+  "./data/disclosures.json",
 ];
 const DATA_URL_PATTERNS = [
   "/data/prices.json",
@@ -62,12 +68,27 @@ async function putIfOk(cache, request, response) {
 
 async function networkFirst(request) {
   const cache = await caches.open(CACHE_NAME);
+  const cached = (await cache.match(request)) || (await caches.match(request, { ignoreSearch: true }));
+  if (!cached) {
+    try {
+      const response = await fetch(request);
+      await putIfOk(cache, request, response);
+      return response;
+    } catch (_) {
+      return Response.error();
+    }
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), NETWORK_FIRST_TIMEOUT_MS);
   try {
-    const response = await fetch(request);
+    const response = await fetch(request, { signal: controller.signal });
     await putIfOk(cache, request, response);
     return response;
   } catch (_) {
-    return caches.match(request, { ignoreSearch: true });
+    return cached;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -102,7 +123,7 @@ self.addEventListener("install", (event) => {
   self.skipWaiting();
   event.waitUntil(
     caches.open(CACHE_NAME)
-      .then((cache) => cache.addAll(PRECACHE_ASSETS))
+      .then((cache) => Promise.allSettled(PRECACHE_ASSETS.map((asset) => cache.add(asset))))
       .catch(() => null),
   );
 });
