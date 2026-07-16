@@ -23,6 +23,14 @@
     return String(dateText || "").slice(0, 10).replace(/-/g, "");
   }
 
+  function throwIfAborted(signal) {
+    if (!signal?.aborted) return;
+    if (signal.reason instanceof Error) throw signal.reason;
+    const error = new Error("Request was superseded by a newer refresh");
+    error.name = "AbortError";
+    throw error;
+  }
+
   function createDartDisclosureService(options = {}) {
     const classifyType = options.classifyType || (() => "");
     const shouldDisplay = options.shouldDisplay || (() => true);
@@ -124,17 +132,20 @@
       });
     }
 
-    async function requestPage(params) {
+    async function requestPage(params, requestOptions = {}) {
       if (typeof fetchJson !== "function" || !baseUrl) throw new Error("DART client is not configured");
+      const signal = requestOptions?.signal || null;
+      throwIfAborted(signal);
       const query = new URLSearchParams(params);
       try {
-        return await fetchJson(`${baseUrl}?${query.toString()}`);
+        return await fetchJson(`${baseUrl}?${query.toString()}`, { signal });
       } catch (error) {
+        if (signal?.aborted || error?.name === "AbortError") throw error;
         throw new Error(explainError(error));
       }
     }
 
-    async function fetchMarketPage(apiKey, market, pageNo) {
+    async function fetchMarketPage(apiKey, market, pageNo, requestOptions = {}) {
       const endDate = today();
       return requestPage({
         crtfc_key: String(apiKey || "").trim(),
@@ -146,10 +157,10 @@
         sort_mth: "desc",
         page_no: String(pageNo),
         page_count: "100",
-      });
+      }, requestOptions);
     }
 
-    async function fetchCorpPage(apiKey, corpCode, pageNo) {
+    async function fetchCorpPage(apiKey, corpCode, pageNo, requestOptions = {}) {
       const endDate = today();
       return requestPage({
         crtfc_key: String(apiKey || "").trim(),
@@ -161,16 +172,17 @@
         sort_mth: "asc",
         page_no: String(pageNo),
         page_count: "100",
-      });
+      }, requestOptions);
     }
 
-    async function fetchForMarkets(apiKey, targetByCode, markets) {
+    async function fetchForMarkets(apiKey, targetByCode, markets, requestOptions = {}) {
       const cleanKey = String(apiKey || "").trim();
       const marketList = Array.isArray(markets) ? markets : [];
       if (!cleanKey || !targetByCode?.size || !marketList.length) return [];
       const records = [];
       for (const market of marketList) {
-        const firstPayload = await fetchMarketPage(cleanKey, market, 1);
+        throwIfAborted(requestOptions?.signal);
+        const firstPayload = await fetchMarketPage(cleanKey, market, 1, requestOptions);
         const firstStatus = String(firstPayload?.status || "");
         if (firstStatus === "013") continue;
         if (firstStatus && firstStatus !== "000") {
@@ -180,12 +192,13 @@
 
         const totalPage = Math.min(runtimeMaxPages, Math.max(1, Number(firstPayload?.total_page) || 1));
         for (let pageStart = 2; pageStart <= totalPage; pageStart += runtimePageBatch) {
+          throwIfAborted(requestOptions?.signal);
           const pageNos = [];
           for (let pageNo = pageStart; pageNo < pageStart + runtimePageBatch && pageNo <= totalPage; pageNo += 1) {
             pageNos.push(pageNo);
           }
           const pages = await Promise.allSettled(
-            pageNos.map((pageNo) => fetchMarketPage(cleanKey, market, pageNo)),
+            pageNos.map((pageNo) => fetchMarketPage(cleanKey, market, pageNo, requestOptions)),
           );
           pages.forEach((result) => {
             if (result.status !== "fulfilled") return;
@@ -193,19 +206,22 @@
             if (status && status !== "000" && status !== "013") return;
             appendPayloadRecords(result.value, targetByCode, records);
           });
+          throwIfAborted(requestOptions?.signal);
         }
       }
+      throwIfAborted(requestOptions?.signal);
       return sanitizeRows(records);
     }
 
-    async function fetchForTicker(apiKey, ticker, corpCode) {
+    async function fetchForTicker(apiKey, ticker, corpCode, requestOptions = {}) {
       const cleanKey = String(apiKey || "").trim();
       const targetTicker = String(ticker || "").trim().toUpperCase();
       const code = targetTicker.slice(0, 6);
       if (!cleanKey || !TICKER_PATTERN.test(targetTicker) || !corpCode) return [];
       const targetByCode = new Map([[code, targetTicker]]);
       const records = [];
-      const firstPayload = await fetchCorpPage(cleanKey, corpCode, 1);
+      throwIfAborted(requestOptions?.signal);
+      const firstPayload = await fetchCorpPage(cleanKey, corpCode, 1, requestOptions);
       const firstStatus = String(firstPayload?.status || "");
       if (firstStatus === "013") return [];
       if (firstStatus && firstStatus !== "000") {
@@ -215,12 +231,13 @@
 
       const totalPage = Math.max(1, Number(firstPayload?.total_page) || 1);
       for (let pageStart = 2; pageStart <= totalPage; pageStart += stockPageBatch) {
+        throwIfAborted(requestOptions?.signal);
         const pageNos = [];
         for (let pageNo = pageStart; pageNo < pageStart + stockPageBatch && pageNo <= totalPage; pageNo += 1) {
           pageNos.push(pageNo);
         }
         const pages = await Promise.allSettled(
-          pageNos.map((pageNo) => fetchCorpPage(cleanKey, corpCode, pageNo)),
+          pageNos.map((pageNo) => fetchCorpPage(cleanKey, corpCode, pageNo, requestOptions)),
         );
         pages.forEach((result) => {
           if (result.status !== "fulfilled") return;
@@ -228,7 +245,9 @@
           if (status && status !== "000" && status !== "013") return;
           appendPayloadRecords(result.value, targetByCode, records);
         });
+        throwIfAborted(requestOptions?.signal);
       }
+      throwIfAborted(requestOptions?.signal);
       return sanitizeRows(records);
     }
 

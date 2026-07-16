@@ -88,6 +88,10 @@ assert.ok(app.includes("function dataRevisionSignature("), "explicit data revisi
 assert.ok(app.includes("function getTraceLinePaths("), "DOM-only line highlighting is missing");
 assert.ok(!app.includes('Plotly.restyle(el, { "line.width"'), "line hover still triggers Plotly restyle");
 assert.ok(app.includes("function startPerfFrameMonitor()"), "performance frame diagnostics are missing");
+assert.ok(app.includes("runtimeRefreshController.abort"), "superseded runtime refreshes are not cancelled");
+assert.ok(app.includes("function cancelStaleChartModelWorkerRequest()"), "stale chart worker cancellation is missing");
+assert.ok(app.includes("function getChartInteractionGeometry("), "pointer geometry is not shared per frame");
+assert.ok(app.includes("function applyDisclosureStateFast("), "disclosure-only updates still require a full chart render");
 assert.ok(app.includes('const DISCLOSURE_ICON_TEXT = "◆";'), "disclosure icon is not configured");
 assert.ok(app.includes("fetchSegmentedSeedText"), "segmented data loading is missing");
 assert.ok(app.includes("ensureHistoricalDataLoaded"), "historical lazy loading is missing");

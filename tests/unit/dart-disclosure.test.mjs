@@ -106,3 +106,25 @@ test("expires per-ticker refresh cache entries after the configured TTL", () => 
   clock += 1001;
   assert.equal(service.hasFreshRefresh("005930.KS"), false);
 });
+
+test("forwards cancellation to active DART page requests", async () => {
+  let requestSignal = null;
+  const service = createService({
+    fetchJson: (_url, init) => new Promise((_resolve, reject) => {
+      requestSignal = init?.signal || null;
+      requestSignal?.addEventListener("abort", () => reject(requestSignal.reason), { once: true });
+    }),
+  });
+  const controller = new AbortController();
+  const request = service.fetchForMarkets(
+    "test-key",
+    new Map([["005930", "005930.KS"]]),
+    ["Y"],
+    { signal: controller.signal },
+  );
+  await Promise.resolve();
+  controller.abort();
+
+  await assert.rejects(request, (error) => error?.name === "AbortError");
+  assert.equal(requestSignal, controller.signal);
+});
