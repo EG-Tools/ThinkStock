@@ -18,9 +18,11 @@ if str(SCRIPTS_DIR) not in sys.path:
 from data_build_support import (
     detect_price_rebases,
     disclosure_start_dates,
+    health_warnings,
     incremental_month_code,
     incremental_start_date,
     should_full_rebuild,
+    source_health_summary,
 )
 
 
@@ -74,6 +76,20 @@ class DataBuildSupportTests(unittest.TestCase):
         self.assertEqual(starts["005930"], "20260312")
         self.assertEqual(starts["218410"], "20260201")
         self.assertEqual(starts["000000"], "20230717")
+
+    def test_source_health_records_duration_and_staleness(self) -> None:
+        summary = source_health_summary(
+            {"rows": 10, "latest": "2026-06-01"},
+            started_at=10.0,
+            finished_at=10.125,
+            stale_after_days=14,
+            today=date(2026, 7, 17),
+        )
+
+        self.assertEqual(summary["duration_ms"], 125)
+        self.assertEqual(summary["age_days"], 46)
+        self.assertEqual(summary["status"], "stale")
+        self.assertEqual(health_warnings({"news": summary}), ["news: stale (2026-06-01)"])
 
 
 if __name__ == "__main__":

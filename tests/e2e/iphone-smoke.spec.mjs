@@ -152,7 +152,14 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   await stubExternalRefreshes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.85");
+  await expect(page.locator("#appVersionText")).toHaveText("0.86");
+  expect(await page.evaluate(() => window.ThinkStockE2E.applyDartCorpCodesForTest({
+    format: "stock-to-corp-v2",
+    codes: {
+      "005930": "00126380",
+      "218410": "01035674",
+    },
+  }))).toBe(2);
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
@@ -235,7 +242,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   const getHistoryRequests = await installDataRoutes(page);
   await page.goto("/?e2e=1&perf=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.85");
+  await expect(page.locator("#appVersionText")).toHaveText("0.86");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   await expect(page.locator('[data-series="customer_deposit"]')).toBeVisible();
@@ -577,6 +584,8 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   expect(revisionsAfterHistory.credit).toBeGreaterThan(revisionsBeforeHistory.credit);
   expect((await page.evaluate(() => window.ThinkStockE2E.getChartWorkerStats())).sourceTransfers)
     .toBeGreaterThan(workerStatsBeforeHistory.sourceTransfers);
+  expect((await page.evaluate(() => window.ThinkStockE2E.getChartWorkerStats())).partialChartUpdates)
+    .toBeGreaterThan(0);
   await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getCacheCleanupStats().runs))
     .toBeGreaterThan(0);
 });

@@ -73,6 +73,10 @@ jobs:
           PAGES_FULL_REBUILD: ${{ (github.event_name == 'workflow_dispatch' || github.event.schedule == '35 3 * * 0') && '1' || '0' }}
         run: python scripts/build_pages_data.py
 
+      - name: Publish Data Build Health
+        if: always()
+        run: python scripts/summarize_build_report.py >> "$GITHUB_STEP_SUMMARY"
+
       - name: Validate Pages Data
         env:
           KOFIA_API_KEY: ${{ secrets.KOFIA_API_KEY }}

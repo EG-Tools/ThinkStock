@@ -122,7 +122,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.85";
+const APP_VERSION = "0.86";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -356,6 +356,9 @@ let chartModelWorkerSourceTransferCount = 0;
 let chartModelWorkerSupersededCount = 0;
 let chartModelWorkerDispatchByType = {};
 let partialDisclosureUpdateCount = 0;
+let mainChartPartialUpdateCount = 0;
+let mainChartFullRenderCount = 0;
+let lastMainChartRenderMode = "none";
 let chartRenderGeneration = 0;
 let chartSyncing = false;   // relayout sync loop guard
 let hoverShowPopup = false;
@@ -432,6 +435,9 @@ function initE2eDebugAccess() {
           sourceTransfers: chartModelWorkerSourceTransferCount,
           superseded: chartModelWorkerSupersededCount,
           partialDisclosureUpdates: partialDisclosureUpdateCount,
+          partialChartUpdates: mainChartPartialUpdateCount,
+          fullChartRenders: mainChartFullRenderCount,
+          lastChartRenderMode: lastMainChartRenderMode,
           dispatchByType: { ...chartModelWorkerDispatchByType },
         };
       },
@@ -470,6 +476,10 @@ function initE2eDebugAccess() {
       },
       getMainHoverMode() {
         return document.getElementById("chart")?._fullLayout?.hovermode;
+      },
+      applyDartCorpCodesForTest(payload) {
+        setDartCorpCodeRows(payload?.codes || payload?.records || []);
+        return dartCorpCodeMap.size;
       },
       openFirstDisclosure(offsetX = 0, offsetY = 0) {
         const chart = document.getElementById("chart");
@@ -613,10 +623,15 @@ function sanitizeDisclosureRows(records) {
 }
 
 function sanitizeDartCorpCodeRows(records) {
-  if (!Array.isArray(records)) return [];
+  const source = Array.isArray(records)
+    ? records
+    : Object.entries(records || {}).map(([stockCode, corpCode]) => ({
+      stock_code: stockCode,
+      corp_code: corpCode,
+    }));
   const out = [];
   const seen = new Set();
-  records.forEach((record) => {
+  source.forEach((record) => {
     if (!record || typeof record !== "object") return;
     const stockCode = String(record.stock_code || record.stockCode || "").replace(/\D/g, "").slice(0, 6);
     const corpCode = String(record.corp_code || record.corpCode || "").replace(/\D/g, "");
@@ -680,7 +695,7 @@ async function ensureDartCorpCodeMapLoaded(forceNetwork = false) {
     const text = await fetchSeedText("./data/dart_corp_codes.json", forceNetwork);
     if (!text) return false;
     const payload = JSON.parse(text);
-    setDartCorpCodeRows(payload?.records || []);
+    setDartCorpCodeRows(payload?.codes || payload?.records || []);
     return dartCorpCodeMapLoaded;
   })().finally(() => {
     dartCorpCodeMapPromise = null;
@@ -4765,6 +4780,69 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
 
 /* Main chart */
 
+function mainChartTraceIdentity(trace) {
+  if (trace?.meta?.isDisclosureTrace) return "disclosure";
+  const seriesKey = String(trace?.meta?.seriesKey || "");
+  return seriesKey ? `series:${seriesKey}` : "";
+}
+
+function canApplyMainChartPartialUpdate(el, traces) {
+  if (!el?._fullLayout?.xaxis || !el?._fullLayout?.yaxis || !Array.isArray(el.data)) return false;
+  if (!Array.isArray(traces) || el.data.length !== traces.length || !traces.length) return false;
+  return traces.every((trace, index) => (
+    mainChartTraceIdentity(trace)
+    && mainChartTraceIdentity(trace) === mainChartTraceIdentity(el.data[index])
+    && trace.type === el.data[index]?.type
+    && trace.mode === el.data[index]?.mode
+  ));
+}
+
+function mainChartRestylePayload(traces) {
+  return {
+    x: traces.map((trace) => trace.x || []),
+    y: traces.map((trace) => trace.y || []),
+    text: traces.map((trace) => trace.text ?? null),
+    customdata: traces.map((trace) => trace.customdata ?? null),
+    hoverinfo: traces.map((trace) => trace.hoverinfo ?? null),
+    hovertemplate: traces.map((trace) => trace.hovertemplate ?? null),
+    visible: traces.map((trace) => trace.visible ?? true),
+  };
+}
+
+function mainChartRelayoutPayload(layout) {
+  const payload = {
+    hovermode: layout.hovermode,
+    "xaxis.autorange": false,
+    "xaxis.range": [...layout.xaxis.range],
+  };
+  if (Array.isArray(layout.yaxis.range) && layout.yaxis.range.length === 2) {
+    payload["yaxis.autorange"] = false;
+    payload["yaxis.range"] = [...layout.yaxis.range];
+  } else {
+    payload["yaxis.autorange"] = true;
+  }
+  return payload;
+}
+
+async function applyMainChartRender(el, traces, layout) {
+  if (canApplyMainChartPartialUpdate(el, traces)) {
+    try {
+      const traceIndexes = traces.map((_, index) => index);
+      await Plotly.restyle(el, mainChartRestylePayload(traces), traceIndexes);
+      await Plotly.relayout(el, mainChartRelayoutPayload(layout));
+      mainChartPartialUpdateCount += 1;
+      lastMainChartRenderMode = "partial";
+      return lastMainChartRenderMode;
+    } catch (_) {
+      // Plotly can reject a restyle when a plugin mutates trace structure.
+    }
+  }
+  await Plotly.react(el, traces, layout, PLOTLY_CONFIG);
+  mainChartFullRenderCount += 1;
+  lastMainChartRenderMode = "full";
+  return lastMainChartRenderMode;
+}
+
 function scheduleDeferredChartRender(preserveZoom = true) {
   pendingDeferredRenderPreserveZoom = pendingDeferredRenderPreserveZoom && preserveZoom;
   if (deferredRenderTimer) clearTimeout(deferredRenderTimer);
@@ -4936,7 +5014,7 @@ async function renderChart(preserveZoom = true) {
   hoveredLineTraceIndex = null;
   activeLineTraceIndex = null;
   appliedLineHighlightTraceIndex = null;
-  Plotly.react(el, traces, {
+  const layout = {
     paper_bgcolor: "transparent",
     plot_bgcolor: "#111111",
     margin: { l: 42, r: 42, t: 28, b: 32 },
@@ -4948,7 +5026,8 @@ async function renderChart(preserveZoom = true) {
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
     hoverlabel: plotlyHoverLabel(),
     dragmode: false,
-  }, PLOTLY_CONFIG);
+  };
+  const renderMode = await applyMainChartRender(el, traces, layout);
 
   if (!legendHandlerSet) {
     el.on("plotly_legendclick", (evtData) => {
@@ -5033,6 +5112,7 @@ async function renderChart(preserveZoom = true) {
     disclosures: lastDisclosureTraceStats.markers,
     cacheHit: lastMainChartModelCacheHit,
     modelSource: lastMainChartModelSource,
+    renderMode,
   });
 }
 

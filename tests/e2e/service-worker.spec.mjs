@@ -9,7 +9,7 @@ test("service worker registers and precaches the offline shell", async ({ contex
     await page.reload({ waitUntil: "domcontentloaded" });
   }
   await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
-  await expect(page.locator("#appVersionText")).toHaveText("0.85");
+  await expect(page.locator("#appVersionText")).toHaveText("0.86");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
 
   const cachedPaths = await page.evaluate(async () => {

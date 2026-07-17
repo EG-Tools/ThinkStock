@@ -9,7 +9,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from validate_pages_data import validate_source_output_alignment
+from validate_pages_data import validate_build_health, validate_source_output_alignment
 
 
 class PagesDataValidationTests(unittest.TestCase):
@@ -48,6 +48,28 @@ class PagesDataValidationTests(unittest.TestCase):
         summaries = validate_source_output_alignment(self.report, rows)
 
         self.assertEqual(summaries, ["source/output ecos_news_sentiment: 2026-07-12 -> 2026-07-13"])
+
+    def test_validates_build_health_metrics(self) -> None:
+        report = {
+            "sources": {
+                f"source_{index}": {
+                    "rows": 10,
+                    "latest": "2026-07-16",
+                    "status": "ok",
+                    "duration_ms": index,
+                }
+                for index in range(5)
+            },
+            "health": {
+                "total_duration_ms": 1250,
+                "warnings": [],
+                "http": {"requests": 7, "retries": 1, "failures": 0},
+            },
+        }
+
+        summaries = validate_build_health(report)
+
+        self.assertEqual(summaries[1], "build alerts: none")
 
 
 if __name__ == "__main__":

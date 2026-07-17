@@ -37,6 +37,7 @@ const DATA_URL_PATTERNS = [
   "/data/credit_data.json",
   "/data/credit_data_",
   "/data/disclosures.json",
+  "/data/dart_corp_codes.json",
   "/data/build_report.json",
   "/data/disclosures/",
 ];

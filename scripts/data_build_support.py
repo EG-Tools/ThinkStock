@@ -3,12 +3,14 @@ from __future__ import annotations
 import os
 from datetime import date, timedelta
 from pathlib import Path
+from time import monotonic
 from typing import Iterable
 
 import pandas as pd
 
 
 PRICE_OVERLAP_DAYS = 180
+KOFIA_OVERLAP_DAYS = 180
 ECOS_LEADING_OVERLAP_MONTHS = 18
 ECOS_NEWS_OVERLAP_DAYS = 120
 FREESIS_OVERLAP_DAYS = 180
@@ -112,3 +114,50 @@ def disclosure_start_dates(
         )
         starts[code] = start.strftime("%Y%m%d")
     return starts
+
+
+def source_health_summary(
+    summary: dict,
+    started_at: float,
+    stale_after_days: int | None = None,
+    today: date | None = None,
+    status: str = "",
+    error: str = "",
+    finished_at: float | None = None,
+) -> dict:
+    out = dict(summary or {})
+    ended_at = monotonic() if finished_at is None else float(finished_at)
+    out["duration_ms"] = max(0, int(round((ended_at - float(started_at)) * 1000)))
+    rows = int(out.get("rows") or 0)
+    latest = pd.to_datetime(out.get("latest"), errors="coerce")
+    age_days: int | None = None
+    if not pd.isna(latest):
+        age_days = ((today or date.today()) - latest.date()).days
+        out["age_days"] = age_days
+
+    resolved_status = status.strip().lower()
+    if not resolved_status:
+        if error:
+            resolved_status = "error"
+        elif rows <= 0:
+            resolved_status = "empty"
+        elif stale_after_days is not None and age_days is not None and age_days > stale_after_days:
+            resolved_status = "stale"
+        else:
+            resolved_status = "ok"
+    out["status"] = resolved_status
+    if error:
+        out["error"] = str(error).splitlines()[0].strip()
+    return out
+
+
+def health_warnings(sources: dict[str, dict]) -> list[str]:
+    warnings: list[str] = []
+    for name, summary in sources.items():
+        if not isinstance(summary, dict):
+            continue
+        status = str(summary.get("status") or "")
+        if status in {"empty", "stale", "error", "degraded"}:
+            detail = str(summary.get("error") or summary.get("latest") or "no rows")
+            warnings.append(f"{name}: {status} ({detail})")
+    return warnings

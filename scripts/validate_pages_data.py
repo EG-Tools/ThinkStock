@@ -12,6 +12,7 @@ from split_pages_data import SEGMENTED_FILES
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "docs" / "data"
 BUILD_REPORT_JSON = DATA_DIR / "build_report.json"
+DART_CORP_CODES_JSON = DATA_DIR / "dart_corp_codes.json"
 
 DATASETS = {
     "prices": DATA_DIR / "prices.json",
@@ -128,6 +129,64 @@ def load_build_report() -> dict:
     if not isinstance(payload, dict):
         fail("build report: payload must be an object")
     return payload
+
+
+def validate_dart_corp_codes() -> str:
+    if not DART_CORP_CODES_JSON.exists():
+        fail("dart corp codes: payload is missing")
+    try:
+        payload = json.loads(DART_CORP_CODES_JSON.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise AssertionError(f"dart corp codes: invalid JSON: {exc}") from exc
+    codes = payload.get("codes")
+    if payload.get("format") != "stock-to-corp-v2" or not isinstance(codes, dict):
+        fail("dart corp codes: compact stock-to-corp-v2 payload is required")
+    if len(codes) < 1000:
+        fail(f"dart corp codes: unexpectedly small mapping ({len(codes)})")
+    for stock_code, corp_code in codes.items():
+        if len(str(stock_code)) != 6 or not str(corp_code).isdigit():
+            fail(f"dart corp codes: invalid mapping {stock_code!r}")
+    return f"dart corp codes: {len(codes)} compact mappings"
+
+
+def validate_build_health(build_report: dict) -> list[str]:
+    health = build_report.get("health")
+    if not isinstance(health, dict):
+        fail("build health: summary is missing")
+    total_duration = health.get("total_duration_ms")
+    if not isinstance(total_duration, int) or total_duration < 0:
+        fail("build health: total_duration_ms is invalid")
+    http = health.get("http")
+    if not isinstance(http, dict):
+        fail("build health: HTTP metrics are missing")
+    for key in ("requests", "retries", "failures"):
+        if not isinstance(http.get(key), int) or int(http[key]) < 0:
+            fail(f"build health: HTTP metric {key} is invalid")
+
+    sources = build_report.get("sources")
+    if not isinstance(sources, dict):
+        fail("build health: source summaries are missing")
+    monitored = 0
+    alerts: list[str] = []
+    for name, summary in sources.items():
+        if not isinstance(summary, dict) or "status" not in summary:
+            continue
+        monitored += 1
+        if not isinstance(summary.get("duration_ms"), int) or int(summary["duration_ms"]) < 0:
+            fail(f"build health: {name} duration is invalid")
+        status = str(summary.get("status") or "")
+        if status in {"empty", "stale", "error", "degraded"}:
+            alerts.append(f"{name}={status}")
+    if monitored < 5:
+        fail(f"build health: too few monitored sources ({monitored})")
+    warning_values = health.get("warnings")
+    if not isinstance(warning_values, list):
+        fail("build health: warnings must be a list")
+    return [
+        f"build health: {monitored} sources, {total_duration} ms, "
+        f"HTTP {http['requests']} requests/{http['retries']} retries/{http['failures']} failures",
+        f"build alerts: {', '.join(alerts) if alerts else 'none'}",
+    ]
 
 
 def records_from_payload(payload: dict) -> list[dict]:
@@ -404,6 +463,7 @@ def read_committed_credit_latest() -> date | None:
 
 def main() -> int:
     summaries: list[str] = validate_segmented_payloads()
+    summaries.append(validate_dart_corp_codes())
     rows_by_dataset: dict[str, list[dict]] = {}
     for name in ("prices", "macro", "credit", "adr", "disclosures"):
         payload = load_payload(name)
@@ -431,7 +491,9 @@ def main() -> int:
         if name == "credit":
             validate_credit(rows)
 
-    summaries.extend(validate_source_output_alignment(load_build_report(), rows_by_dataset))
+    build_report = load_build_report()
+    summaries.extend(validate_source_output_alignment(build_report, rows_by_dataset))
+    summaries.extend(validate_build_health(build_report))
 
     print("Pages data validation passed:")
     for summary in summaries:

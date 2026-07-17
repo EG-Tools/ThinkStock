@@ -6,6 +6,7 @@ import zipfile
 from datetime import date
 from io import BytesIO, StringIO
 from pathlib import Path
+from time import monotonic
 from urllib.parse import unquote
 from xml.etree import ElementTree as ET
 
@@ -16,12 +17,15 @@ from data_build_support import (
     ECOS_LEADING_OVERLAP_MONTHS,
     ECOS_NEWS_OVERLAP_DAYS,
     FREESIS_OVERLAP_DAYS,
+    KOFIA_OVERLAP_DAYS,
     PRICE_OVERLAP_DAYS,
     detect_price_rebases,
     disclosure_start_dates,
+    health_warnings,
     incremental_month_code,
     incremental_start_date,
     should_full_rebuild,
+    source_health_summary,
 )
 from macro_utils import densify_macro
 from provider_clients import (
@@ -90,6 +94,16 @@ FEAR_GREED_SOURCE_URL = "https://kospi.feargreedchart.com/api/?action=kospi-hist
 DART_CORP_CODE_URL = "https://opendart.fss.or.kr/api/corpCode.xml"
 DART_DISCLOSURE_URL = "https://opendart.fss.or.kr/api/list.json"
 _HTTP_CLIENT: RetryingHttpClient | None = None
+SOURCE_STALE_AFTER_DAYS = {
+    "prices": 10,
+    "ecos_leading_cycle": 150,
+    "ecos_news_sentiment": 14,
+    "oecd_leading_cycle": 150,
+    "kofia_credit": 14,
+    "freesis_credit": 14,
+    "adr": 10,
+    "fear_greed": 10,
+}
 
 
 def http_client() -> RetryingHttpClient:
@@ -509,7 +523,11 @@ def _credit_frame_from_records(records: list[dict]) -> pd.DataFrame:
     return out[CREDIT_SERIES]
 
 
-def fetch_kofia_credit(api_key: str) -> pd.DataFrame:
+def fetch_kofia_credit(
+    api_key: str,
+    start_ymd: str = "",
+    request_stats: dict | None = None,
+) -> pd.DataFrame:
     clean = str(api_key or "").strip()
     if not clean:
         return pd.DataFrame(columns=CREDIT_SERIES)
@@ -523,8 +541,19 @@ def fetch_kofia_credit(api_key: str) -> pd.DataFrame:
     for service_key in dict.fromkeys(key_candidates):
         records: list[dict] = []
         try:
-            items = fetch_kofia_items(http_client(), KOFIA_CREDIT_URL, service_key)
-            for item in items:
+            result = fetch_kofia_items(
+                http_client(),
+                KOFIA_CREDIT_URL,
+                service_key,
+                begin_date=start_ymd,
+            )
+            if request_stats is not None:
+                request_stats.update({
+                    "credit_pages": result.pages,
+                    "credit_total_count": result.total_count,
+                    "credit_stopped_early": result.stopped_early,
+                })
+            for item in result.items:
                 bas_dt = str(item.get("basDt", ""))
                 if len(bas_dt) != 8 or not bas_dt.isdigit():
                     continue
@@ -552,7 +581,11 @@ def fetch_kofia_credit(api_key: str) -> pd.DataFrame:
     return pd.DataFrame(columns=CREDIT_SERIES)
 
 
-def fetch_kofia_customer_deposit(api_key: str) -> pd.DataFrame:
+def fetch_kofia_customer_deposit(
+    api_key: str,
+    start_ymd: str = "",
+    request_stats: dict | None = None,
+) -> pd.DataFrame:
     clean = str(api_key or "").strip()
     if not clean:
         return pd.DataFrame(columns=CREDIT_SERIES)
@@ -566,8 +599,19 @@ def fetch_kofia_customer_deposit(api_key: str) -> pd.DataFrame:
     for service_key in dict.fromkeys(key_candidates):
         records: list[dict] = []
         try:
-            items = fetch_kofia_items(http_client(), KOFIA_MARKET_FUNDS_URL, service_key)
-            for item in items:
+            result = fetch_kofia_items(
+                http_client(),
+                KOFIA_MARKET_FUNDS_URL,
+                service_key,
+                begin_date=start_ymd,
+            )
+            if request_stats is not None:
+                request_stats.update({
+                    "deposit_pages": result.pages,
+                    "deposit_total_count": result.total_count,
+                    "deposit_stopped_early": result.stopped_early,
+                })
+            for item in result.items:
                 bas_dt = str(item.get("basDt", ""))
                 if len(bas_dt) != 8 or not bas_dt.isdigit():
                     continue
@@ -988,7 +1032,7 @@ def normalize_disclosure_records(records: list[dict]) -> list[dict]:
 
 def build_disclosure_payload(records: list[dict]) -> dict:
     return {
-        "generated_at": pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_at": pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ"),
         "source": "OpenDART",
         "series": ["disclosures"],
         "records": normalize_disclosure_records(records),
@@ -1010,7 +1054,7 @@ def build_disclosure_manifest(records: list[dict]) -> dict:
         counts[ticker] += 1
         latest[ticker] = max(latest[ticker], record["date"])
     return {
-        "generated_at": pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_at": pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ"),
         "source": "OpenDART",
         "format": "by-ticker-v1",
         "series": ["disclosures"],
@@ -1044,19 +1088,17 @@ def write_disclosure_payloads(records: list[dict]) -> dict:
 
 
 def build_dart_corp_code_payload(corp_map: dict[str, dict[str, str]]) -> dict:
-    records = []
-    for stock_code, item in sorted(corp_map.items()):
-        records.append(
-            {
-                "stock_code": stock_code,
-                "corp_code": str(item.get("corp_code") or "").strip(),
-                "corp_name": str(item.get("corp_name") or "").strip(),
-            }
-        )
+    codes = {
+        stock_code: str(item.get("corp_code") or "").strip()
+        for stock_code, item in sorted(corp_map.items())
+        if len(stock_code) == 6 and str(item.get("corp_code") or "").strip()
+    }
     return {
-        "generated_at": pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_at": pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ"),
         "source": "OpenDART",
-        "records": records,
+        "format": "stock-to-corp-v2",
+        "total": len(codes),
+        "codes": codes,
     }
 
 
@@ -1067,6 +1109,13 @@ def load_existing_dart_corp_code_seed() -> dict[str, dict[str, str]]:
         payload = json.loads(OUTPUT_DART_CORP_CODES_JSON.read_text(encoding="utf-8"))
     except Exception:
         return {}
+    codes = payload.get("codes")
+    if isinstance(codes, dict):
+        return {
+            str(stock_code).strip(): {"corp_code": str(corp_code).strip(), "corp_name": ""}
+            for stock_code, corp_code in codes.items()
+            if len(str(stock_code).strip()) == 6 and str(corp_code).strip()
+        }
     records = payload.get("records", [])
     if not isinstance(records, list):
         return {}
@@ -1340,7 +1389,7 @@ def build_payload(df: pd.DataFrame, labels: dict[str, str], series_names: list[s
             clean[column] = pd.to_numeric(clean[column], errors="coerce").round(6)
             columns[column] = clean[column].astype(object).where(pd.notna(clean[column]), None).tolist()
     return {
-        "generated_at": pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_at": pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ"),
         "format": "columnar-v1",
         "series": series_names,
         "display_names": {key: labels[key] for key in series_names if key in labels},
@@ -1436,6 +1485,7 @@ def write_build_report(report: dict) -> None:
 
 
 def main() -> None:
+    build_started = monotonic()
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     full_rebuild = should_full_rebuild(
         [OUTPUT_JSON, OUTPUT_MACRO_JSON, OUTPUT_CREDIT_JSON, OUTPUT_DISCLOSURES_JSON]
@@ -1455,6 +1505,7 @@ def main() -> None:
         PRICE_OVERLAP_DAYS,
         full_rebuild,
     )
+    price_started = monotonic()
     live_prices = fetch_prices(price_start)
     price_rebases = detect_price_rebases(existing_prices, live_prices, DEFAULT_TICKERS)
     if price_rebases and not full_rebuild:
@@ -1470,7 +1521,11 @@ def main() -> None:
         "price_overlap_days": PRICE_OVERLAP_DAYS,
         "price_rebases": price_rebases,
     }
-    build_report["sources"]["prices"] = frame_summary(live_prices)
+    build_report["sources"]["prices"] = source_health_summary(
+        frame_summary(live_prices),
+        price_started,
+        SOURCE_STALE_AFTER_DAYS["prices"],
+    )
     build_report["sources"]["price_seed"] = frame_summary(existing_prices)
     for ticker in DEFAULT_TICKERS:
         live_values = live_prices[ticker].dropna() if ticker in live_prices else pd.Series(dtype="float64")
@@ -1521,8 +1576,13 @@ def main() -> None:
         "ecos_news_overlap_days": ECOS_NEWS_OVERLAP_DAYS,
     })
     if ecos_key:
+        ecos_leading_started = monotonic()
         leading_cycle = fetch_ecos_leading_cycle(ecos_key, ecos_leading_start)
-        build_report["sources"]["ecos_leading_cycle"] = frame_summary(leading_cycle)
+        build_report["sources"]["ecos_leading_cycle"] = source_health_summary(
+            frame_summary(leading_cycle),
+            ecos_leading_started,
+            SOURCE_STALE_AFTER_DAYS["ecos_leading_cycle"],
+        )
         if not leading_cycle.empty:
             macro_source = merge_macro_with_leading_cycle(macro_source, leading_cycle)
             latest_ecos_month = leading_cycle.index.max().normalize()
@@ -1530,8 +1590,13 @@ def main() -> None:
             print(f"Applied ECOS leading_cycle rows: {len(leading_cycle)} (latest={latest})")
             build_report["events"].append(f"Applied ECOS leading_cycle rows: {len(leading_cycle)} latest={latest}")
 
+        ecos_news_started = monotonic()
         news_sentiment = fetch_ecos_news_sentiment(ecos_key, ecos_news_start)
-        build_report["sources"]["ecos_news_sentiment"] = frame_summary(news_sentiment)
+        build_report["sources"]["ecos_news_sentiment"] = source_health_summary(
+            frame_summary(news_sentiment),
+            ecos_news_started,
+            SOURCE_STALE_AFTER_DAYS["ecos_news_sentiment"],
+        )
         if not news_sentiment.empty:
             macro_source = merge_macro_frame(macro_source, news_sentiment)
             latest_news = news_sentiment.index.max().strftime("%Y-%m-%d")
@@ -1542,8 +1607,13 @@ def main() -> None:
     else:
         build_report["events"].append("ECOS_API_KEY is not configured.")
 
+    oecd_started = monotonic()
     oecd_leading_cycle = fetch_oecd_leading_cycle_from_fred()
-    build_report["sources"]["oecd_leading_cycle"] = frame_summary(oecd_leading_cycle)
+    build_report["sources"]["oecd_leading_cycle"] = source_health_summary(
+        frame_summary(oecd_leading_cycle),
+        oecd_started,
+        SOURCE_STALE_AFTER_DAYS["oecd_leading_cycle"],
+    )
     if not oecd_leading_cycle.empty:
         macro_source, applied_months = apply_recent_oecd_tail(
             macro_source,
@@ -1576,12 +1646,29 @@ def main() -> None:
         credit_seed = merge_credit_seed_with_existing_tail(historical_credit_seed, existing_credit_seed)
     build_report["sources"]["credit_seed"] = frame_summary(credit_seed)
     credit_merged = credit_seed
+    kofia_start = incremental_start_date(
+        credit_seed.index.max() if not credit_seed.empty else None,
+        pd.to_datetime(FREESIS_CREDIT_START, format="%Y%m%d").date(),
+        KOFIA_OVERLAP_DAYS,
+        full_rebuild,
+    ).strftime("%Y%m%d")
+    build_report["policy"]["kofia_start"] = kofia_start
+    build_report["policy"]["kofia_overlap_days"] = KOFIA_OVERLAP_DAYS
     if kofia_key:
+        kofia_started = monotonic()
+        kofia_request_stats: dict = {}
         credit_kofia = merge_credit_frames(
-            fetch_kofia_credit(kofia_key),
-            fetch_kofia_customer_deposit(kofia_key),
+            fetch_kofia_credit(kofia_key, kofia_start, kofia_request_stats),
+            fetch_kofia_customer_deposit(kofia_key, kofia_start, kofia_request_stats),
         )
-        build_report["sources"]["kofia_credit"] = frame_summary(credit_kofia)
+        build_report["sources"]["kofia_credit"] = source_health_summary(
+            {
+                **frame_summary(credit_kofia),
+                **kofia_request_stats,
+            },
+            kofia_started,
+            SOURCE_STALE_AFTER_DAYS["kofia_credit"],
+        )
         credit_merged, applied_kofia_credit = merge_credit_seed_with_kofia(credit_merged, credit_kofia)
         if applied_kofia_credit > 0:
             latest_credit = credit_merged.index.max().strftime("%Y-%m-%d")
@@ -1603,11 +1690,16 @@ def main() -> None:
         ).strftime("%Y%m%d")
         build_report["policy"]["freesis_start"] = freesis_start
         build_report["policy"]["freesis_overlap_days"] = FREESIS_OVERLAP_DAYS
+        freesis_started = monotonic()
         credit_live = merge_credit_frames(
             fetch_freesis_credit(freesis_start),
             fetch_freesis_customer_deposit(freesis_start),
         )
-        build_report["sources"]["freesis_credit"] = frame_summary(credit_live)
+        build_report["sources"]["freesis_credit"] = source_health_summary(
+            frame_summary(credit_live),
+            freesis_started,
+            SOURCE_STALE_AFTER_DAYS["freesis_credit"],
+        )
         credit_merged, appended_credit = merge_credit_seed_with_freesis(credit_merged, credit_live)
     else:
         appended_credit = 0
@@ -1618,8 +1710,13 @@ def main() -> None:
         print(f"Applied Freesis credit rows: {appended_credit} (latest={latest_credit})")
         build_report["events"].append(f"Applied Freesis credit rows: {appended_credit} latest={latest_credit}")
 
+    adr_started = monotonic()
     adr_records = fetch_adr_data()
-    build_report["sources"]["adr"] = record_summary(adr_records)
+    build_report["sources"]["adr"] = source_health_summary(
+        record_summary(adr_records),
+        adr_started,
+        SOURCE_STALE_AFTER_DAYS["adr"],
+    )
     if adr_records:
         print(f"Applied ADR rows: {len(adr_records)} (latest={adr_records[-1]['date']})")
         build_report["events"].append(f"Applied ADR rows: {len(adr_records)} latest={adr_records[-1]['date']}")
@@ -1627,8 +1724,13 @@ def main() -> None:
         print("ADR fetch had no rows; keeping existing adr_data.json.")
         build_report["events"].append("ADR fetch had no rows; keeping existing adr_data.json.")
 
+    fear_greed_started = monotonic()
     fear_greed_records = fetch_fear_greed_data()
-    build_report["sources"]["fear_greed"] = record_summary(fear_greed_records)
+    build_report["sources"]["fear_greed"] = source_health_summary(
+        record_summary(fear_greed_records),
+        fear_greed_started,
+        SOURCE_STALE_AFTER_DAYS["fear_greed"],
+    )
     if fear_greed_records:
         latest_fear_greed = fear_greed_records[-1]["date"]
         print(f"Applied KOSPI fear-greed rows: {len(fear_greed_records)} (latest={latest_fear_greed})")
@@ -1645,19 +1747,33 @@ def main() -> None:
 
     dart_key = resolve_dart_api_key()
     dart_corp_map = load_existing_dart_corp_code_seed()
+    dart_corp_started = monotonic()
+    dart_corp_mode = "cached"
+    dart_corp_error = ""
     if dart_key and (full_rebuild or not dart_corp_map):
         try:
             refreshed_dart_corp_map = fetch_dart_corp_code_map(dart_key)
             if refreshed_dart_corp_map:
                 dart_corp_map = refreshed_dart_corp_map
+                dart_corp_mode = "refreshed"
         except Exception as exc:
+            dart_corp_error = str(exc)
             print(f"DART corp code map fetch failed: {exc}")
     if not dart_corp_map:
         print("DART corp code map is unavailable.")
     elif not full_rebuild:
         print(f"Keeping existing DART corp code map ({len(dart_corp_map)} rows).")
         build_report["events"].append(f"Keeping existing DART corp code map rows: {len(dart_corp_map)}")
-    build_report["sources"]["dart_corp_codes"] = {"rows": len(dart_corp_map), "latest": ""}
+    build_report["sources"]["dart_corp_codes"] = source_health_summary(
+        {"rows": len(dart_corp_map), "latest": "", "mode": dart_corp_mode},
+        dart_corp_started,
+        status=(
+            "error"
+            if dart_corp_error and not dart_corp_map
+            else ("degraded" if dart_corp_error else ("cached" if dart_corp_mode == "cached" else "ok"))
+        ),
+        error=dart_corp_error,
+    )
 
     existing_disclosure_records = load_existing_disclosure_seed()
     disclosure_stock_codes = configured_disclosure_stock_codes()
@@ -1670,6 +1786,7 @@ def main() -> None:
     )
     build_report["policy"]["dart_overlap_days"] = DART_OVERLAP_DAYS
     build_report["policy"]["dart_earliest_start"] = min(dart_starts.values(), default="")
+    disclosures_started = monotonic()
     fresh_disclosure_records = (
         fetch_dart_disclosures(
             dart_key,
@@ -1702,7 +1819,11 @@ def main() -> None:
         else:
             print("DART_API_KEY is not configured or returned no disclosure rows.")
             build_report["events"].append("DART_API_KEY is not configured or returned no disclosure rows.")
-    build_report["sources"]["disclosures"] = record_summary(disclosure_records)
+    build_report["sources"]["disclosures"] = source_health_summary(
+        record_summary(disclosure_records),
+        disclosures_started,
+        status="ok" if disclosure_records else ("skipped" if not dart_key else "empty"),
+    )
 
     credit_payload = build_payload(
         credit_merged,
@@ -1746,6 +1867,17 @@ def main() -> None:
         "tickers": len(disclosure_manifest.get("tickers", [])),
     }
     build_report["outputs"]["dart_corp_codes"] = payload_file_summary(OUTPUT_DART_CORP_CODES_JSON)
+    http_metrics = http_client().metrics()
+    warnings = health_warnings(build_report["sources"])
+    if int(http_metrics.get("failures") or 0) > 0:
+        warnings.append(f"http: {http_metrics['failures']} failed requests")
+    build_report["health"] = {
+        "total_duration_ms": int(round((monotonic() - build_started) * 1000)),
+        "warnings": warnings,
+        "http": http_metrics,
+    }
+    for warning in warnings:
+        print(f"Build health warning: {warning}")
     write_build_report(build_report)
     if wrote_prices:
         print(f"Wrote {OUTPUT_JSON}")

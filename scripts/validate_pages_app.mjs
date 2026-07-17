@@ -143,6 +143,10 @@ assert.ok(app.includes("runtimeRefreshController.abort"), "superseded runtime re
 assert.ok(app.includes("function cancelStaleChartModelWorkerRequest()"), "stale chart worker cancellation is missing");
 assert.ok(app.includes("function getChartInteractionGeometry("), "pointer geometry is not shared per frame");
 assert.ok(app.includes("function applyDisclosureStateFast("), "disclosure-only updates still require a full chart render");
+assert.ok(app.includes("function applyMainChartRender(") && app.includes("mainChartPartialUpdateCount"),
+  "main chart partial update fast path is missing");
+assert.ok(app.includes("Plotly.restyle(el, mainChartRestylePayload(traces)"),
+  "main chart data updates still require Plotly.react");
 assert.ok(app.includes('const DISCLOSURE_ICON_TEXT = "◆";'), "disclosure icon is not configured");
 assert.ok(app.includes("fetchSegmentedSeedText"), "segmented data loading is missing");
 assert.ok(app.includes("ensureHistoricalDataLoaded"), "historical lazy loading is missing");
@@ -161,11 +165,16 @@ assert.ok(playwrightConfig.includes('name: "webkit-sw"') && playwrightConfig.inc
 assert.ok(deployWorkflow.includes('cron: "35 3 * * 0"'), "weekly full Pages data rebuild is missing");
 assert.ok(deployWorkflow.includes("PAGES_FULL_REBUILD:"), "Pages full rebuild mode is not configured");
 assert.ok(deployWorkflow.includes('cache: "pip"'), "Python dependency caching is missing");
+assert.ok(deployWorkflow.includes("Publish Data Build Health"), "Pages data health summary is missing");
 assert.ok(buildPagesData.includes("detect_price_rebases") && buildPagesData.includes("disclosure_start_dates"),
   "incremental Pages data policies are not wired into the builder");
+assert.ok(buildPagesData.includes("source_health_summary") && buildPagesData.includes("build_dart_corp_code_payload"),
+  "Pages source health or compact DART payload is missing");
 assert.ok(dataBuildSupport.includes("PRICE_OVERLAP_DAYS") && dataBuildSupport.includes("DART_OVERLAP_DAYS"),
   "incremental overlap policies are incomplete");
 assert.ok(providerClients.includes("class RetryingHttpClient") && providerClients.includes("fetch_yahoo_prices"),
   "shared provider clients are incomplete");
+assert.ok(providerClients.includes('"beginBasDt"') && providerClients.includes("stopped_early"),
+  "KOFIA incremental pagination is incomplete");
 
 console.log(`Pages app validation passed (version ${appVersion}, ${ids.length} unique IDs).`);

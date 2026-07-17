@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from datetime import date
 from typing import Any, Callable, Iterable
 
@@ -11,6 +12,15 @@ import yfinance as yf
 
 RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 REQUEST_EXCEPTION = getattr(requests, "RequestException", Exception)
+
+
+@dataclass(frozen=True)
+class KofiaFetchResult:
+    items: list[dict]
+    pages: int
+    total_count: int
+    begin_date: str
+    stopped_early: bool
 
 
 class RetryingHttpClient:
@@ -25,11 +35,13 @@ class RetryingHttpClient:
         self.attempts = max(1, int(attempts))
         self.backoff_seconds = max(0.0, float(backoff_seconds))
         self.sleep_fn = sleep_fn
+        self._metrics = {"requests": 0, "retries": 0, "failures": 0}
 
     def request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
         last_error: Exception | None = None
         for attempt in range(self.attempts):
             try:
+                self._metrics["requests"] += 1
                 response = self.session.request(method, url, **kwargs)
                 if response.status_code not in RETRYABLE_STATUS_CODES:
                     response.raise_for_status()
@@ -37,10 +49,16 @@ class RetryingHttpClient:
                 response.raise_for_status()
             except REQUEST_EXCEPTION as exc:
                 last_error = exc
-                if attempt + 1 >= self.attempts:
-                    raise
-                retry_after = 0.0
                 response = getattr(exc, "response", None)
+                status_code = getattr(response, "status_code", None)
+                if status_code is not None and status_code not in RETRYABLE_STATUS_CODES:
+                    self._metrics["failures"] += 1
+                    raise
+                if attempt + 1 >= self.attempts:
+                    self._metrics["failures"] += 1
+                    raise
+                self._metrics["retries"] += 1
+                retry_after = 0.0
                 if response is not None:
                     try:
                         retry_after = float(response.headers.get("Retry-After", "0") or 0)
@@ -62,6 +80,9 @@ class RetryingHttpClient:
 
     def get_bytes(self, url: str, **kwargs: Any) -> bytes:
         return self.request("GET", url, **kwargs).content
+
+    def metrics(self) -> dict[str, int]:
+        return dict(self._metrics)
 
 
 def extract_close_series(data: pd.DataFrame, ticker: str) -> pd.Series | None:
@@ -175,22 +196,34 @@ def fetch_kofia_items(
     client: RetryingHttpClient,
     endpoint: str,
     service_key: str,
+    begin_date: str = "",
+    date_field: str = "basDt",
     timeout: int = 30,
-) -> list[dict]:
+) -> KofiaFetchResult:
     items_out: list[dict] = []
     page_no = 1
     last_page = 1
+    pages_fetched = 0
+    total_count_value = 0
+    stopped_early = False
+    descending_order = False
+    previous_page_last = ""
+    clean_begin_date = str(begin_date or "").replace("-", "")[:8]
     while page_no <= last_page:
+        params = {
+            "serviceKey": service_key,
+            "numOfRows": "1000",
+            "pageNo": str(page_no),
+            "resultType": "json",
+        }
+        if len(clean_begin_date) == 8 and clean_begin_date.isdigit():
+            params["beginBasDt"] = clean_begin_date
         payload = client.get_json(
             endpoint,
-            params={
-                "serviceKey": service_key,
-                "numOfRows": "1000",
-                "pageNo": str(page_no),
-                "resultType": "json",
-            },
+            params=params,
             timeout=timeout,
         )
+        pages_fetched += 1
         header = payload.get("response", {}).get("header", {})
         result_code = str(header.get("resultCode", ""))
         if result_code and result_code != "00":
@@ -198,13 +231,43 @@ def fetch_kofia_items(
         body = payload.get("response", {}).get("body", {})
         raw_items = body.get("items", {}).get("item")
         items = raw_items if isinstance(raw_items, list) else ([raw_items] if raw_items else [])
-        items_out.extend(item for item in items if isinstance(item, dict))
+        valid_items = [item for item in items if isinstance(item, dict)]
+        page_dates = [
+            str(item.get(date_field) or "").replace("-", "")[:8]
+            for item in valid_items
+        ]
+        page_dates = [value for value in page_dates if len(value) == 8 and value.isdigit()]
+        if len(page_dates) >= 2 and page_dates[0] > page_dates[-1]:
+            descending_order = True
+        if previous_page_last and page_dates and previous_page_last > page_dates[0]:
+            descending_order = True
+        if page_dates:
+            previous_page_last = page_dates[-1]
+
+        if clean_begin_date:
+            items_out.extend(
+                item
+                for item in valid_items
+                if str(item.get(date_field) or "").replace("-", "")[:8] >= clean_begin_date
+            )
+        else:
+            items_out.extend(valid_items)
         total_count = pd.to_numeric(body.get("totalCount"), errors="coerce")
         rows_per_page = pd.to_numeric(body.get("numOfRows"), errors="coerce")
         if page_no == 1 and pd.notna(total_count) and total_count > 0:
+            total_count_value = int(total_count)
             per_page = int(rows_per_page) if pd.notna(rows_per_page) and rows_per_page > 0 else 1000
             last_page = max(1, (int(total_count) + per_page - 1) // per_page)
+        if clean_begin_date and descending_order and page_dates and min(page_dates) < clean_begin_date:
+            stopped_early = True
+            break
         if not items:
             break
         page_no += 1
-    return items_out
+    return KofiaFetchResult(
+        items=items_out,
+        pages=pages_fetched,
+        total_count=total_count_value,
+        begin_date=clean_begin_date,
+        stopped_early=stopped_early,
+    )

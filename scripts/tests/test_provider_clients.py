@@ -33,9 +33,11 @@ class FakeSession:
     def __init__(self, responses: list[FakeResponse]) -> None:
         self.responses = list(responses)
         self.calls = 0
+        self.requests: list[dict] = []
 
     def request(self, _method: str, _url: str, **_kwargs) -> FakeResponse:
         self.calls += 1
+        self.requests.append(_kwargs)
         return self.responses.pop(0)
 
 
@@ -65,6 +67,21 @@ class ProviderClientTests(unittest.TestCase):
         self.assertEqual(client.get_json("https://example.test"), {"ok": True})
         self.assertEqual(session.calls, 2)
         self.assertEqual(delays, [0.1])
+        self.assertEqual(client.metrics(), {"requests": 2, "retries": 1, "failures": 0})
+
+    def test_retrying_client_does_not_retry_permanent_status(self) -> None:
+        session = FakeSession([FakeResponse(404)])
+        client = RetryingHttpClient(
+            session=session,
+            attempts=3,
+            sleep_fn=lambda _delay: None,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "HTTP 404"):
+            client.get_json("https://example.test/missing")
+
+        self.assertEqual(session.calls, 1)
+        self.assertEqual(client.metrics(), {"requests": 1, "retries": 0, "failures": 1})
 
     def test_kofia_client_collects_paginated_items(self) -> None:
         page_one = {
@@ -92,9 +109,52 @@ class ProviderClientTests(unittest.TestCase):
             sleep_fn=lambda _delay: None,
         )
 
-        items = fetch_kofia_items(client, "https://example.test/kofia", "key")
+        result = fetch_kofia_items(client, "https://example.test/kofia", "key")
 
-        self.assertEqual([item["basDt"] for item in items], ["20260715", "20260716"])
+        self.assertEqual([item["basDt"] for item in result.items], ["20260715", "20260716"])
+        self.assertEqual(result.pages, 2)
+
+    def test_kofia_client_passes_incremental_date_and_stops_descending_pages(self) -> None:
+        page_one = {
+            "response": {
+                "header": {"resultCode": "00"},
+                "body": {
+                    "items": {"item": [
+                        {"basDt": "20260716"},
+                        {"basDt": "20260715"},
+                    ]},
+                    "totalCount": 4,
+                    "numOfRows": 2,
+                },
+            },
+        }
+        page_two = {
+            "response": {
+                "header": {"resultCode": "00"},
+                "body": {
+                    "items": {"item": [
+                        {"basDt": "20260101"},
+                        {"basDt": "20251231"},
+                    ]},
+                    "totalCount": 4,
+                    "numOfRows": 2,
+                },
+            },
+        }
+        session = FakeSession([FakeResponse(200, page_one), FakeResponse(200, page_two)])
+        client = RetryingHttpClient(session=session, sleep_fn=lambda _delay: None)
+
+        result = fetch_kofia_items(
+            client,
+            "https://example.test/kofia",
+            "key",
+            begin_date="20260701",
+        )
+
+        self.assertEqual([item["basDt"] for item in result.items], ["20260716", "20260715"])
+        self.assertEqual(result.pages, 2)
+        self.assertTrue(result.stopped_early)
+        self.assertEqual(session.requests[0]["params"]["beginBasDt"], "20260701")
 
 
 if __name__ == "__main__":
