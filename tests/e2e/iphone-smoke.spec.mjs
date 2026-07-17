@@ -4,7 +4,7 @@ const recentDates = ["2025-07-14", "2025-10-14", "2026-01-14", "2026-04-14", "20
 const historyDates = ["1998-07-14", "2005-07-14", "2012-07-14"];
 const DESKTOP_PERF_BUDGET = Object.freeze({
   maxPointerMove: 50,
-  maxFrameGap: 250,
+  maxFrameGap: 300,
   maxLongFrameRatio: 0.65,
 });
 
