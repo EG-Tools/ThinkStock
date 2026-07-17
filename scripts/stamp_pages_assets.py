@@ -51,6 +51,7 @@ def main() -> int:
     version = resolve_build_version()
     data_payload_src = f"./modules/data-payload.js?v={version}"
     market_data_src = f"./modules/market-data.js?v={version}"
+    auxiliary_chart_model_src = f"./modules/auxiliary-chart-model.js?v={version}"
     performance_monitor_src = f"./modules/performance-monitor.js?v={version}"
     app_storage_src = f"./modules/app-storage.js?v={version}"
     startup_loader_src = f"./modules/startup-loader.js?v={version}"
@@ -75,6 +76,12 @@ def main() -> int:
         r'<script defer src="\./modules/market-data\.js(?:\?v=[^"]*)?"></script>',
         f'<script defer src="{market_data_src}"></script>',
         "index market-data.js script",
+    )
+    index = replace_once(
+        index,
+        r'<script defer src="\./modules/auxiliary-chart-model\.js(?:\?v=[^"]*)?"></script>',
+        f'<script defer src="{auxiliary_chart_model_src}"></script>',
+        "index auxiliary-chart-model.js script",
     )
     index = replace_once(
         index,
@@ -144,6 +151,12 @@ def main() -> int:
         r'"\./modules/market-data\.js(?:\?v=[^"]*)?",',
         f'"{market_data_src}",',
         "service worker market-data.js asset",
+    )
+    sw = replace_once(
+        sw,
+        r'"\./modules/auxiliary-chart-model\.js(?:\?v=[^"]*)?",',
+        f'"{auxiliary_chart_model_src}",',
+        "service worker auxiliary-chart-model.js asset",
     )
     sw = replace_once(
         sw,
@@ -234,6 +247,12 @@ def main() -> int:
         r'importScripts\("\./market-data\.js(?:\?v=[^"]*)?"\);',
         f'importScripts("./market-data.js?v={version}");',
         "chart model worker market-data.js import",
+    )
+    chart_model_worker = replace_once(
+        chart_model_worker,
+        r'importScripts\("\./auxiliary-chart-model\.js(?:\?v=[^"]*)?"\);',
+        f'importScripts("./auxiliary-chart-model.js?v={version}");',
+        "chart model worker auxiliary-chart-model.js import",
     )
     CHART_MODEL_WORKER_JS.write_text(chart_model_worker, encoding="utf-8", newline="\n")
 

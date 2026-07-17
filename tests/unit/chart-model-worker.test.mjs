@@ -7,6 +7,10 @@ import vm from "node:vm";
 
 const source = await readFile(path.resolve("docs/modules/chart-model-worker.js"), "utf8");
 const marketDataSource = await readFile(path.resolve("docs/modules/market-data.js"), "utf8");
+const auxiliaryChartModelSource = await readFile(
+  path.resolve("docs/modules/auxiliary-chart-model.js"),
+  "utf8",
+);
 
 
 function createWorkerHarness() {
@@ -23,15 +27,22 @@ function createWorkerHarness() {
     },
   };
   context.importScripts = (modulePath) => {
-    assert.match(modulePath, /market-data\.js/);
-    vm.runInContext(marketDataSource, context);
+    if (/market-data\.js/.test(modulePath)) {
+      vm.runInContext(marketDataSource, context);
+      return;
+    }
+    if (/auxiliary-chart-model\.js/.test(modulePath)) {
+      vm.runInContext(auxiliaryChartModelSource, context);
+      return;
+    }
+    assert.fail(`unexpected worker dependency: ${modulePath}`);
   };
   vm.createContext(context);
   vm.runInContext(source, context);
   assert.equal(typeof messageHandler, "function");
   return {
-    send(payload, id = `test-${messages.length + 1}`) {
-      messageHandler({ data: { id, type: "buildMainChartModel", payload } });
+    send(payload, id = `test-${messages.length + 1}`, type = "buildMainChartModel") {
+      messageHandler({ data: { id, type, payload } });
       return messages[messages.length - 1];
     },
   };
@@ -116,4 +127,43 @@ test("chart worker reuses cached sources for configuration-only requests", () =>
   const firstSeries = first.result.seriesModels.find((item) => item.series === "AAA");
   const secondSeries = second.result.seriesModels.find((item) => item.series === "AAA");
   assert.equal(secondSeries.values[0] - firstSeries.values[0], 5);
+});
+
+
+test("chart worker builds and reuses auxiliary chart sources", () => {
+  const harness = createWorkerHarness();
+  const sources = {
+    adrRows: [
+      { date: "2026-01-01", adr_kospi: 75, adr_kosdaq: 125, fear_greed: 35 },
+      { date: "2026-01-02", adr_kospi: 85, adr_kosdaq: 115, fear_greed: 45 },
+    ],
+    macroRows: [
+      { date: "2026-01-02", news_sentiment: 104 },
+    ],
+  };
+  const config = {
+    datasetKey: "aux-data",
+    startDate: "2026-01-01",
+    adrLowThreshold: 80,
+    adrHighThreshold: 120,
+    newsLowThreshold: 90,
+    newsHighThreshold: 110,
+  };
+
+  const first = harness.send(
+    { ...config, sources },
+    "aux-1",
+    "buildAuxiliaryChartModel",
+  );
+  const second = harness.send(
+    { ...config, startDate: "2026-01-02" },
+    "aux-2",
+    "buildAuxiliaryChartModel",
+  );
+
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  assert.deepEqual(Array.from(first.result.dates), ["2026-01-01", "2026-01-02"]);
+  assert.deepEqual(Array.from(second.result.dates), ["2026-01-02"]);
+  assert.deepEqual(Array.from(second.result.newsDates), ["2026-01-02"]);
 });

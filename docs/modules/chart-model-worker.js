@@ -1,11 +1,16 @@
 importScripts("./market-data.js?v=dev");
+importScripts("./auxiliary-chart-model.js?v=dev");
 const marketDataModule = self.ThinkStockMarketData;
 if (!marketDataModule) throw new Error("Market data module failed to load");
 const { mergeSources, normalizeSeries, centeredScale, autoFitScales } = marketDataModule;
+const auxiliaryChartModelModule = self.ThinkStockAuxiliaryChartModel;
+if (!auxiliaryChartModelModule) throw new Error("Auxiliary chart model module failed to load");
+const { buildAuxiliaryChartModel } = auxiliaryChartModelModule;
 
 const toNum = (value) => (value != null && Number.isFinite(Number(value))) ? Number(value) : null;
 const numberFormat = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 4 });
 let sourceCache = null;
+let auxiliarySourceCache = null;
 
 function resolvePayloadSources(payload) {
   const datasetKey = String(payload.datasetKey || "inline");
@@ -34,6 +39,30 @@ function resolvePayloadSources(payload) {
     priceRows: sourceCache.priceRows,
     macroRows: sourceCache.macroRows,
     creditRows: sourceCache.creditRows,
+  };
+}
+
+function resolveAuxiliaryPayloadSources(payload) {
+  const datasetKey = String(payload.datasetKey || "inline");
+  const incoming = payload.sources || (
+    Array.isArray(payload.adrRows)
+      ? { adrRows: payload.adrRows, macroRows: payload.macroRows }
+      : null
+  );
+  if (incoming) {
+    auxiliarySourceCache = {
+      datasetKey,
+      adrRows: Array.isArray(incoming.adrRows) ? incoming.adrRows : [],
+      macroRows: Array.isArray(incoming.macroRows) ? incoming.macroRows : [],
+    };
+  }
+  if (!auxiliarySourceCache || auxiliarySourceCache.datasetKey !== datasetKey) {
+    throw new Error("auxiliary chart worker source cache miss");
+  }
+  return {
+    ...payload,
+    adrRows: auxiliarySourceCache.adrRows,
+    macroRows: auxiliarySourceCache.macroRows,
   };
 }
 
@@ -183,9 +212,16 @@ function buildMainChartModel(payload) {
 
 self.addEventListener("message", (event) => {
   const { id, type, payload } = event.data || {};
-  if (type !== "buildMainChartModel") return;
   try {
-    self.postMessage({ id, ok: true, result: buildMainChartModel(payload || {}) });
+    let result = null;
+    if (type === "buildMainChartModel") {
+      result = buildMainChartModel(payload || {});
+    } else if (type === "buildAuxiliaryChartModel") {
+      result = buildAuxiliaryChartModel(resolveAuxiliaryPayloadSources(payload || {}));
+    } else {
+      return;
+    }
+    self.postMessage({ id, ok: true, result });
   } catch (error) {
     self.postMessage({ id, ok: false, error: error?.message || String(error) });
   }

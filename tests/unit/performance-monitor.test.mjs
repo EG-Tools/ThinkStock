@@ -70,7 +70,12 @@ test("records samples and uses percentile frame timing", () => {
     p95FrameGap: 16,
     longFrameRatio: 0.25,
     pointerMoves: 1,
+    p95PointerMove: 12.3,
     maxPointerMove: 12.3,
+    renderCharts: 0,
+    p95RenderChart: 0,
+    auxiliaryRenders: 0,
+    p95AuxiliaryRender: 0,
     runtimeRefreshes: 0,
     maxRuntimeRefresh: 0,
   });

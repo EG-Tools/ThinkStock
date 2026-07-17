@@ -5,13 +5,14 @@ import path from "node:path";
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [app, html, sw, playwrightConfig, dataPayload, marketData, performanceMonitor, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, dartDisclosure, serviceWorkerClient, runtimeRefresh, plotlyBundle] = await Promise.all([
+const [app, html, sw, playwrightConfig, dataPayload, marketData, auxiliaryChartModel, performanceMonitor, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, dartDisclosure, serviceWorkerClient, runtimeRefresh, plotlyBundle] = await Promise.all([
   readFile(path.join(root, "docs", "app.js"), "utf8"),
   readFile(path.join(root, "docs", "index.html"), "utf8"),
   readFile(path.join(root, "docs", "sw.js"), "utf8"),
   readFile(path.join(root, "playwright.config.mjs"), "utf8"),
   readFile(path.join(root, "docs", "modules", "data-payload.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "market-data.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "auxiliary-chart-model.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "performance-monitor.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "app-storage.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "startup-loader.js"), "utf8"),
@@ -51,6 +52,7 @@ requiredIds.forEach((id) => assert.ok(ids.includes(id), `required UI element is 
   "./styles.css",
   "./modules/data-payload.js?v=dev",
   "./modules/market-data.js?v=dev",
+  "./modules/auxiliary-chart-model.js?v=dev",
   "./modules/performance-monitor.js?v=dev",
   "./modules/app-storage.js?v=dev",
   "./modules/startup-loader.js?v=dev",
@@ -89,7 +91,11 @@ assert.ok(dataWorker.includes('importScripts("./data-payload.js?v=dev")'), "data
 assert.ok(app.includes("ThinkStockMarketData"), "market data module is not wired into the app");
 assert.ok(marketData.includes("mergeSources") && marketData.includes("findTickerPriceRebaseSignal"), "market data module is incomplete");
 assert.ok(chartModelWorker.includes('importScripts("./market-data.js?v=dev")'), "chart worker does not reuse the market data module");
+assert.ok(chartModelWorker.includes('importScripts("./auxiliary-chart-model.js?v=dev")'), "chart worker does not reuse the auxiliary chart model module");
 assert.ok(!app.includes("function mergeSources(") && !app.includes("function findTickerPriceRebaseSignal("), "market data logic still lives in app.js");
+assert.ok(app.includes("ThinkStockAuxiliaryChartModel"), "auxiliary chart model module is not wired into the app");
+assert.ok(auxiliaryChartModel.includes("buildAuxiliaryChartModel") && auxiliaryChartModel.includes("buildThresholdZones"), "auxiliary chart model module is incomplete");
+assert.ok(chartModelWorker.includes('type === "buildAuxiliaryChartModel"'), "auxiliary chart model is not built in the worker");
 assert.ok(disclosurePolicy.includes("shouldDisplayDisclosure"), "disclosure policy filter is missing");
 assert.ok(app.includes("disclosure-title-link"), "disclosure title links are missing");
 assert.ok(html.includes('data-series="customer_deposit"'), "customer deposit toggle is missing");

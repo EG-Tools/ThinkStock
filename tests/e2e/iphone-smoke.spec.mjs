@@ -3,8 +3,11 @@ import { expect, test } from "@playwright/test";
 const recentDates = ["2025-07-14", "2025-10-14", "2026-01-14", "2026-04-14", "2026-07-14"];
 const historyDates = ["1998-07-14", "2005-07-14", "2012-07-14"];
 const DESKTOP_PERF_BUDGET = Object.freeze({
+  minPointerMoves: 20,
+  minFrames: 20,
+  maxP95PointerMove: 20,
   maxPointerMove: 50,
-  maxP95FrameGap: 200,
+  maxP95FrameGap: 180,
   maxLongFrameRatio: 0.65,
 });
 
@@ -149,10 +152,11 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   await stubExternalRefreshes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.83");
+  await expect(page.locator("#appVersionText")).toHaveText("0.84");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
+  expect(await page.evaluate(() => window.ThinkStockE2E?.getAuxiliaryChartModelSource?.())).toBe("worker");
   const firstChartDate = await page.locator("#chart").evaluate((element) => element.data?.[0]?.x?.[0]);
   expect(firstChartDate).toMatch(/^2016-/);
   expect(pageErrors).toEqual([]);
@@ -231,7 +235,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   const getHistoryRequests = await installDataRoutes(page);
   await page.goto("/?e2e=1&perf=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.83");
+  await expect(page.locator("#appVersionText")).toHaveText("0.84");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   await expect(page.locator('[data-series="customer_deposit"]')).toBeVisible();
@@ -264,6 +268,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
       && Math.abs(element.layout?.yaxis3?.domain?.[1] - element.layout?.yaxis3?.domain?.[0] - 0.21) < 0.001;
   })).toBe(true);
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
+  expect(await page.evaluate(() => window.ThinkStockE2E?.getAuxiliaryChartModelSource?.())).toBe("worker");
   expect(getHistoryRequests()).toBe(0);
   await expect(page.locator(".hero h1")).not.toHaveClass(/is-loading/);
   expect(await page.evaluate(() => window.ThinkStockE2E?.getMainHoverMode?.())).toBe(false);
@@ -540,9 +545,20 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   expect(cleanupAfter.deleted - cleanupBefore.deleted).toBe(3);
 
   if (!isMobile) {
+    await page.evaluate(() => window.ThinkStockPerf?.clear?.());
+    await page.waitForTimeout(100);
+    for (let index = 0; index < 32; index += 1) {
+      const ratio = index % 2 === 0 ? index / 31 : (31 - index) / 31;
+      await page.mouse.move(
+        chartBox.x + 50 + ratio * Math.max(1, chartBox.width - 100),
+        chartBox.y + chartBox.height * (0.35 + (index % 3) * 0.12),
+      );
+    }
+    await page.waitForTimeout(400);
     const perfSummary = await page.evaluate(() => window.ThinkStockPerf.summary());
-    expect(perfSummary.pointerMoves).toBeGreaterThan(0);
-    expect(perfSummary.frames).toBeGreaterThan(50);
+    expect(perfSummary.pointerMoves).toBeGreaterThanOrEqual(DESKTOP_PERF_BUDGET.minPointerMoves);
+    expect(perfSummary.frames).toBeGreaterThanOrEqual(DESKTOP_PERF_BUDGET.minFrames);
+    expect(perfSummary.p95PointerMove).toBeLessThan(DESKTOP_PERF_BUDGET.maxP95PointerMove);
     expect(perfSummary.maxPointerMove).toBeLessThan(DESKTOP_PERF_BUDGET.maxPointerMove);
     expect(perfSummary.p95FrameGap).toBeLessThan(DESKTOP_PERF_BUDGET.maxP95FrameGap);
     expect(perfSummary.longFrameRatio).toBeLessThan(DESKTOP_PERF_BUDGET.maxLongFrameRatio);

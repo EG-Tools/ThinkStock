@@ -67,7 +67,16 @@
 
     function summary() {
       const pointerSamples = samples.filter((sample) => sample.label === "pointerMove");
+      const renderSamples = samples.filter((sample) => sample.label === "renderChart");
+      const auxiliaryRenderSamples = samples.filter((sample) => sample.label === "renderAdrChart");
       const refreshSamples = samples.filter((sample) => sample.label === "runtimeRefresh");
+      const percentileDuration = (source, percentile) => {
+        if (!source.length) return 0;
+        const durations = source
+          .map((sample) => Number(sample.duration) || 0)
+          .sort((left, right) => left - right);
+        return durations[Math.floor((durations.length - 1) * percentile)];
+      };
       const sortedFrameGaps = [...frameGaps].sort((left, right) => left - right);
       const p95FrameGap = sortedFrameGaps.length
         ? sortedFrameGaps[Math.floor((sortedFrameGaps.length - 1) * 0.95)]
@@ -77,10 +86,15 @@
         p95FrameGap,
         longFrameRatio: frameStats.frames > 0 ? frameStats.longFrames / frameStats.frames : 0,
         pointerMoves: pointerSamples.length,
+        p95PointerMove: percentileDuration(pointerSamples, 0.95),
         maxPointerMove: pointerSamples.reduce(
           (max, sample) => Math.max(max, sample.duration || 0),
           0,
         ),
+        renderCharts: renderSamples.length,
+        p95RenderChart: percentileDuration(renderSamples, 0.95),
+        auxiliaryRenders: auxiliaryRenderSamples.length,
+        p95AuxiliaryRender: percentileDuration(auxiliaryRenderSamples, 0.95),
         runtimeRefreshes: refreshSamples.length,
         maxRuntimeRefresh: refreshSamples.reduce(
           (max, sample) => Math.max(max, sample.duration || 0),

@@ -24,6 +24,9 @@ const {
   centeredScale,
   autoFitScales,
 } = marketDataModule;
+const auxiliaryChartModelModule = globalThis.ThinkStockAuxiliaryChartModel;
+if (!auxiliaryChartModelModule) throw new Error("Auxiliary chart model module failed to load");
+const buildAuxiliaryChartModelSync = auxiliaryChartModelModule.buildAuxiliaryChartModel;
 const performanceMonitorModule = globalThis.ThinkStockPerformanceMonitor;
 if (!performanceMonitorModule) throw new Error("Performance monitor module failed to load");
 const performanceMonitor = performanceMonitorModule.createPerformanceMonitor(globalThis);
@@ -119,7 +122,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.83";
+const APP_VERSION = "0.84";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -338,15 +341,20 @@ let mainChartCalcCache = null;
 let mainChartCalcPending = null;
 let lastMainChartModelCacheHit = false;
 let lastMainChartModelSource = "none";
+let lastAuxiliaryChartModelSource = "none";
+let auxiliaryChartRenderGeneration = 0;
+let auxiliaryChartCalcCache = null;
+let auxiliaryChartCalcPending = null;
 let chartModelWorker = null;
 let chartModelWorkerSeq = 0;
 let chartModelWorkerRequests = new Map();
-let chartModelWorkerDataKey = "";
+let chartModelWorkerDataKeys = new Map();
 let chartModelWorkerActiveId = "";
-let chartModelWorkerQueuedRequest = null;
+let chartModelWorkerQueuedRequests = new Map();
 let chartModelWorkerDispatchCount = 0;
 let chartModelWorkerSourceTransferCount = 0;
 let chartModelWorkerSupersededCount = 0;
+let chartModelWorkerDispatchByType = {};
 let partialDisclosureUpdateCount = 0;
 let chartRenderGeneration = 0;
 let chartSyncing = false;   // relayout sync loop guard
@@ -409,6 +417,9 @@ function initE2eDebugAccess() {
       getChartModelSource() {
         return lastMainChartModelSource;
       },
+      getAuxiliaryChartModelSource() {
+        return lastAuxiliaryChartModelSource;
+      },
       getChartRenderGeneration() {
         return chartRenderGeneration;
       },
@@ -421,6 +432,7 @@ function initE2eDebugAccess() {
           sourceTransfers: chartModelWorkerSourceTransferCount,
           superseded: chartModelWorkerSupersededCount,
           partialDisclosureUpdates: partialDisclosureUpdateCount,
+          dispatchByType: { ...chartModelWorkerDispatchByType },
         };
       },
       getRuntimeSnapshotStats() {
@@ -3351,18 +3363,19 @@ function rejectChartModelWorkerRequests(error) {
     reject(error);
   });
   chartModelWorkerRequests = new Map();
-  if (chartModelWorkerQueuedRequest) {
-    chartModelWorkerQueuedRequest.reject(error);
-    chartModelWorkerQueuedRequest = null;
-  }
+  chartModelWorkerQueuedRequests.forEach(({ reject }) => reject(error));
+  chartModelWorkerQueuedRequests.clear();
   chartModelWorkerActiveId = "";
-  chartModelWorkerDataKey = "";
+  chartModelWorkerDataKeys.clear();
 }
 
 function dispatchQueuedChartModelWorkerRequest() {
-  if (chartModelWorkerActiveId || !chartModelWorkerQueuedRequest) return;
-  const queued = chartModelWorkerQueuedRequest;
-  chartModelWorkerQueuedRequest = null;
+  if (chartModelWorkerActiveId || !chartModelWorkerQueuedRequests.size) return;
+  const nextType = chartModelWorkerQueuedRequests.has("buildMainChartModel")
+    ? "buildMainChartModel"
+    : chartModelWorkerQueuedRequests.keys().next().value;
+  const queued = chartModelWorkerQueuedRequests.get(nextType);
+  chartModelWorkerQueuedRequests.delete(nextType);
   dispatchChartModelWorkerRequest(queued);
 }
 
@@ -3381,7 +3394,7 @@ function ensureChartModelWorker() {
     if (chartModelWorkerActiveId === message.id) chartModelWorkerActiveId = "";
     if (message.ok) pending.resolve(message.result || {});
     else {
-      chartModelWorkerDataKey = "";
+      chartModelWorkerDataKeys.delete(pending.type);
       pending.reject(new Error(message.error || "chart worker failed"));
     }
     dispatchQueuedChartModelWorkerRequest();
@@ -3406,16 +3419,23 @@ function dispatchChartModelWorkerRequest(request) {
     return;
   }
 
-  const id = `chart-${Date.now()}-${++chartModelWorkerSeq}`;
+  const requestType = request.type || "buildMainChartModel";
+  const id = `chart-${requestType}-${Date.now()}-${++chartModelWorkerSeq}`;
   const { datasetKey, sources, ...config } = request.payload;
-  const includeSources = chartModelWorkerDataKey !== datasetKey;
-  const workerPayload = {
-    ...config,
-    datasetKey,
-    ...(includeSources ? { sources } : {}),
-  };
-  if (includeSources) chartModelWorkerDataKey = datasetKey;
+  const cacheSources = Boolean(datasetKey && sources);
+  const includeSources = cacheSources && chartModelWorkerDataKeys.get(requestType) !== datasetKey;
+  const workerPayload = cacheSources
+    ? {
+        ...config,
+        datasetKey,
+        ...(includeSources ? { sources } : {}),
+      }
+    : request.payload;
+  if (includeSources) chartModelWorkerDataKeys.set(requestType, datasetKey);
   chartModelWorkerDispatchCount += 1;
+  chartModelWorkerDispatchByType[requestType] = (
+    Number(chartModelWorkerDispatchByType[requestType]) || 0
+  ) + 1;
   if (includeSources) chartModelWorkerSourceTransferCount += 1;
   chartModelWorkerActiveId = id;
 
@@ -3424,7 +3444,7 @@ function dispatchChartModelWorkerRequest(request) {
     if (!pending) return;
     chartModelWorkerRequests.delete(id);
     if (chartModelWorkerActiveId === id) chartModelWorkerActiveId = "";
-    chartModelWorkerDataKey = "";
+    chartModelWorkerDataKeys.clear();
     pending.reject(new Error("chart worker timeout"));
     try { worker.terminate(); } catch (_) {}
     if (chartModelWorker === worker) chartModelWorker = null;
@@ -3435,14 +3455,15 @@ function dispatchChartModelWorkerRequest(request) {
     reject: request.reject,
     timer,
     startedAt: performance.now(),
+    type: requestType,
   });
   try {
-    worker.postMessage({ id, type: "buildMainChartModel", payload: workerPayload });
+    worker.postMessage({ id, type: requestType, payload: workerPayload });
   } catch (error) {
     clearTimeout(timer);
     chartModelWorkerRequests.delete(id);
     chartModelWorkerActiveId = "";
-    chartModelWorkerDataKey = "";
+    chartModelWorkerDataKeys.delete(requestType);
     request.reject(error);
     dispatchQueuedChartModelWorkerRequest();
   }
@@ -3457,7 +3478,7 @@ function cancelStaleChartModelWorkerRequest() {
   clearTimeout(pending.timer);
   chartModelWorkerRequests.delete(id);
   chartModelWorkerActiveId = "";
-  chartModelWorkerDataKey = "";
+  chartModelWorkerDataKeys.clear();
   chartModelWorkerSupersededCount += 1;
   pending.resolve(null);
   const worker = chartModelWorker;
@@ -3466,20 +3487,20 @@ function cancelStaleChartModelWorkerRequest() {
   return true;
 }
 
-function requestChartModelFromWorker(payload) {
+function requestChartModelFromWorker(payload, type = "buildMainChartModel") {
   return new Promise((resolve, reject) => {
-    const request = { payload, resolve, reject };
+    const request = { type, payload, resolve, reject };
     if (chartModelWorkerActiveId) {
-      if (chartModelWorkerQueuedRequest) {
+      const queued = chartModelWorkerQueuedRequests.get(type);
+      if (queued) {
         chartModelWorkerSupersededCount += 1;
-        chartModelWorkerQueuedRequest.resolve(null);
+        queued.resolve(null);
       }
+      chartModelWorkerQueuedRequests.set(type, request);
       if (cancelStaleChartModelWorkerRequest()) {
-        chartModelWorkerQueuedRequest = null;
+        chartModelWorkerQueuedRequests.delete(type);
         dispatchChartModelWorkerRequest(request);
-        return;
       }
-      chartModelWorkerQueuedRequest = request;
       return;
     }
     dispatchChartModelWorkerRequest(request);
@@ -5036,46 +5057,16 @@ const NEWS_SENTIMENT_HIGH_THRESH = 110;
  *
  * Uses threshold baselines with fill="tonexty" to avoid filling toward y=0.
  */
-function buildAdrZoneTraces(dates, values, mainColor, legendName) {
+function buildAdrZoneTraces(dates, zoneModel, mainColor, legendName) {
   const base = { x: dates, type: "scatter", mode: "lines", connectgaps: false };
   const noHover = { hoverinfo: "skip", hovertemplate: undefined };
-
-  // Split series into low/mid/high bands for coloring.
-  const yLow = [], yMid = [], yHigh = [];
-  const yBaseLow = [], yBaseHigh = [];   // Threshold baselines used by tonexty fills
-
-  values.forEach((v) => {
-    const isLow  = v !== null && v < ADR_LOW_THRESH;
-    const isHigh = v !== null && v > ADR_HIGH_THRESH;
-    const isMid  = v !== null && !isLow && !isHigh;
-    yLow.push(isLow   ? v : null);
-    yMid.push(isMid   ? v : null);
-    yHigh.push(isHigh ? v : null);
-    yBaseLow.push(isLow   ? ADR_LOW_THRESH  : null);
-    yBaseHigh.push(isHigh ? ADR_HIGH_THRESH : null);
-  });
-
-  // Add seam points at threshold crossings so zone transitions look continuous.
-  // Handles 4 cases:
-  //   (A) mid -> low
-  //   (B) low -> mid
-  //   (C) mid -> high
-  //   (D) high -> mid
-  // This prevents tiny gaps in area fills around crossing points.
-  for (let i = 0; i < values.length; i++) {
-    const v    = values[i];
-    if (v === null) continue;
-    const prev = i > 0 ? values[i - 1] : null;
-    if (prev === null) continue;
-    // (A) mid -> low
-    if (v < ADR_LOW_THRESH  && prev >= ADR_LOW_THRESH)  { yMid[i]  = v; yBaseLow[i]  = ADR_LOW_THRESH; }
-    // (B) low -> mid
-    if (v >= ADR_LOW_THRESH && prev <  ADR_LOW_THRESH)  { yLow[i]  = v; yBaseLow[i]  = ADR_LOW_THRESH; }
-    // (C) mid -> high
-    if (v > ADR_HIGH_THRESH && prev <= ADR_HIGH_THRESH) { yMid[i]  = v; yBaseHigh[i] = ADR_HIGH_THRESH; }
-    // (D) high -> mid
-    if (v <= ADR_HIGH_THRESH && prev > ADR_HIGH_THRESH) { yHigh[i] = v; yBaseHigh[i] = ADR_HIGH_THRESH; }
-  }
+  const {
+    low: yLow,
+    middle: yMid,
+    high: yHigh,
+    lowBaseline: yBaseLow,
+    highBaseline: yBaseHigh,
+  } = zoneModel;
 
   return [
     // Low zone fill (< 80)
@@ -5104,11 +5095,58 @@ let adrRows = [];   // ADR daily records (seed file + live append)
 const ADR_SOURCE_URL = "http://www.adrinfo.kr/chart";
 const CORS_PROXY     = "https://corsproxy.io/?url=";
 
-function renderAdrChart(xRange) {
+function findLatestAuxiliaryDate(rows, key = "") {
+  for (let index = (rows?.length || 0) - 1; index >= 0; index -= 1) {
+    const row = rows[index];
+    if (row?.date && (!key || toNum(row[key]) !== null)) return row.date;
+  }
+  return "";
+}
+
+async function getAuxiliaryChartModel(renderKey, startDate) {
+  if (auxiliaryChartCalcCache?.key === renderKey) return auxiliaryChartCalcCache.model;
+  if (auxiliaryChartCalcPending?.key === renderKey) return auxiliaryChartCalcPending.promise;
+
+  const payload = {
+    datasetKey: dataRevisionSignature("adr", "macro"),
+    sources: { adrRows, macroRows },
+    startDate,
+    adrLowThreshold: ADR_LOW_THRESH,
+    adrHighThreshold: ADR_HIGH_THRESH,
+    newsLowThreshold: NEWS_SENTIMENT_LOW_THRESH,
+    newsHighThreshold: NEWS_SENTIMENT_HIGH_THRESH,
+  };
+  const promise = (async () => {
+    let model = null;
+    try {
+      model = await requestChartModelFromWorker(payload, "buildAuxiliaryChartModel");
+      if (!model) return null;
+      lastAuxiliaryChartModelSource = "worker";
+    } catch (_) {
+      model = buildAuxiliaryChartModelSync({
+        ...payload,
+        adrRows,
+        macroRows,
+      });
+      lastAuxiliaryChartModelSource = "sync";
+    }
+    auxiliaryChartCalcCache = { key: renderKey, model };
+    return model;
+  })();
+  auxiliaryChartCalcPending = { key: renderKey, promise };
+  try {
+    return await promise;
+  } finally {
+    if (auxiliaryChartCalcPending?.promise === promise) auxiliaryChartCalcPending = null;
+  }
+}
+
+async function renderAdrChart(xRange) {
   const perfStartedAt = startPerfSample();
   const el = document.getElementById("chart-adr");
-  const newsSentimentRows = (macroRows || []).filter((row) => toNum(row?.news_sentiment) !== null);
-  if (!el || (!adrRows.length && !newsSentimentRows.length)) return;
+  const latestAdrDate = findLatestAuxiliaryDate(adrRows);
+  const latestNewsDate = findLatestAuxiliaryDate(macroRows, "news_sentiment");
+  if (!el || (!latestAdrDate && !latestNewsDate)) return;
 
   const renderKey = [
     activeMonths,
@@ -5129,32 +5167,28 @@ function renderAdrChart(xRange) {
     return;
   }
 
-  // Keep each indicator on its own dates so Korean-market holidays do not
-  // introduce artificial gaps in ADR when daily news observations differ.
-  const maxDate = [
-    adrRows[adrRows.length - 1]?.date,
-    newsSentimentRows[newsSentimentRows.length - 1]?.date,
-  ].filter(Boolean).sort().slice(-1)[0];
+  const maxDate = [latestAdrDate, latestNewsDate].filter(Boolean).sort().slice(-1)[0];
   const startDate = shiftMonths(maxDate, activeMonths);
-  const filtered = adrRows.filter((r) => r.date >= startDate);
-  const filteredNews = newsSentimentRows.filter((r) => r.date >= startDate);
-  if (!filtered.length && !filteredNews.length) return;
-
-  const dates = filtered.map((r) => r.date);
-  const kospiVals  = filtered.map((r) => toNum(r.adr_kospi));
-  const kosdaqVals = filtered.map((r) => toNum(r.adr_kosdaq));
-  const fearGreedVals = filtered.map((r) => toNum(r.fear_greed));
-  const newsDates = filteredNews.map((r) => r.date);
-  const newsSentimentVals = filteredNews.map((r) => toNum(r.news_sentiment));
-
-  const adrNums = [...kospiVals, ...kosdaqVals].filter((v) => Number.isFinite(v));
-  const adrRawMin = adrNums.length ? Math.min(...adrNums) : ADR_LOW_THRESH;
-  const adrRawMax = adrNums.length ? Math.max(...adrNums) : ADR_HIGH_THRESH;
-  const adrYMin = Math.min(adrRawMin, ADR_LOW_THRESH) - 2.5;
-  const adrYMax = Math.max(adrRawMax, ADR_HIGH_THRESH) + 1.2;
-  const newsNums = newsSentimentVals.filter((v) => Number.isFinite(v));
-  const newsYMin = Math.min(...newsNums, NEWS_SENTIMENT_LOW_THRESH) - 2;
-  const newsYMax = Math.max(...newsNums, NEWS_SENTIMENT_HIGH_THRESH) + 2;
+  const renderGeneration = ++auxiliaryChartRenderGeneration;
+  const model = await getAuxiliaryChartModel(renderKey, startDate);
+  if (!model || renderGeneration !== auxiliaryChartRenderGeneration) return;
+  const {
+    dates,
+    kospiValues: kospiVals,
+    kosdaqValues: kosdaqVals,
+    fearGreedValues: fearGreedVals,
+    newsDates,
+    newsValues: newsSentimentVals,
+    kospiZones,
+    kosdaqZones,
+    adrYMin,
+    adrYMax,
+    newsYMin,
+    newsYMax,
+    adrRowCount,
+    newsRowCount,
+  } = model;
+  if (!adrRowCount && !newsRowCount) return;
 
   const hoverProxyTraces = [
     {
@@ -5181,8 +5215,8 @@ function renderAdrChart(xRange) {
   ];
 
   const traces = [
-    ...buildAdrZoneTraces(dates, kospiVals,  "#facc15", "ADR KOSPI"),
-    ...buildAdrZoneTraces(dates, kosdaqVals, "#f472b6", "ADR KOSDAQ"),
+    ...buildAdrZoneTraces(dates, kospiZones,  "#facc15", "ADR KOSPI"),
+    ...buildAdrZoneTraces(dates, kosdaqZones, "#f472b6", "ADR KOSDAQ"),
     {
       x: dates,
       y: fearGreedVals,
@@ -5428,7 +5462,12 @@ function renderAdrChart(xRange) {
     });
     adrHandlerSet = true;
   }
-  recordPerfSample("renderAdrChart", perfStartedAt, { rows: filtered.length, cacheHit: false });
+  recordPerfSample("renderAdrChart", perfStartedAt, {
+    rows: adrRowCount,
+    newsRows: newsRowCount,
+    cacheHit: false,
+    modelSource: lastAuxiliaryChartModelSource,
+  });
 }
 
 function syncButtons() {
