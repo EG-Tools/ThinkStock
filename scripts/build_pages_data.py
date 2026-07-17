@@ -1305,6 +1305,18 @@ def load_committed_credit_seed() -> pd.DataFrame:
     return credit_frame_from_payload(payload)
 
 
+def select_credit_seed(
+    historical_credit_seed: pd.DataFrame,
+    existing_credit_seed: pd.DataFrame,
+) -> pd.DataFrame:
+    """Prefer the verified cache without reintroducing rough historical estimates."""
+    if existing_credit_seed is not None and not existing_credit_seed.empty:
+        return existing_credit_seed.copy()
+    if historical_credit_seed is not None and not historical_credit_seed.empty:
+        return historical_credit_seed.copy()
+    return pd.DataFrame(columns=CREDIT_SERIES)
+
+
 def find_credit_history_discontinuity(frame: pd.DataFrame) -> str:
     if frame is None or frame.empty:
         return ""
@@ -1633,13 +1645,11 @@ def main() -> None:
         else:
             print(f"Cached credit seed has a discontinuity: {cached_credit_issue}")
     kofia_key = resolve_kofia_api_key()
+    credit_seed = select_credit_seed(historical_credit_seed, existing_credit_seed)
     if not existing_credit_seed.empty:
-        credit_seed = merge_credit_frames(historical_credit_seed, existing_credit_seed)
         latest_existing_credit = existing_credit_seed.index.max().strftime("%Y-%m-%d")
         print(f"Keeping existing verified credit seed (latest={latest_existing_credit}).")
         build_report["events"].append(f"Keeping existing verified credit seed latest={latest_existing_credit}")
-    else:
-        credit_seed = historical_credit_seed
     build_report["sources"]["credit_seed"] = frame_summary(credit_seed)
     credit_merged = credit_seed
     kofia_start = incremental_start_date(

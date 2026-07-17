@@ -17,6 +17,7 @@ from build_pages_data import (
     find_credit_history_discontinuity,
     merge_credit_seed_with_freesis,
     merge_credit_seed_with_kofia,
+    select_credit_seed,
 )
 
 
@@ -137,6 +138,23 @@ class BuildPagesDataHelperTests(unittest.TestCase):
 
         self.assertIn("kospi_credit", issue)
         self.assertIn("2025-10-01->2025-10-02", issue)
+
+    def test_verified_credit_seed_does_not_merge_rough_historical_rows(self) -> None:
+        historical = pd.DataFrame({
+            "customer_deposit": [1.0, 1.0],
+            "kospi_credit": [0.6862, 3.75],
+            "kosdaq_credit": [0.5, 0.5],
+        }, index=pd.to_datetime(["1999-11-13", "1999-11-14"]))
+        existing = pd.DataFrame({
+            "customer_deposit": [60.0, 61.0],
+            "kospi_credit": [17.0, 17.1],
+            "kosdaq_credit": [9.0, 9.1],
+        }, index=pd.to_datetime(["2026-07-14", "2026-07-15"]))
+
+        selected = select_credit_seed(historical, existing)
+
+        pd.testing.assert_frame_equal(selected, existing)
+        self.assertNotIn(pd.Timestamp("1999-11-14"), selected.index)
 
 
 if __name__ == "__main__":
