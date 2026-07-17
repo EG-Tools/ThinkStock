@@ -115,6 +115,7 @@ assert.ok(app.includes("function getTraceLinePaths("), "DOM-only line highlighti
 assert.ok(!app.includes('Plotly.restyle(el, { "line.width"'), "line hover still triggers Plotly restyle");
 assert.ok(app.includes("function startPerfFrameMonitor()"), "performance frame diagnostics are missing");
 assert.ok(app.includes("gap < PERF_FRAME_GAP_IGNORE_MS"), "suspended tabs still pollute frame timing diagnostics");
+assert.ok(app.includes("p95FrameGap"), "frame timing diagnostics do not expose a stable percentile metric");
 assert.ok(app.includes("runtimeRefreshController.abort"), "superseded runtime refreshes are not cancelled");
 assert.ok(app.includes("function cancelStaleChartModelWorkerRequest()"), "stale chart worker cancellation is missing");
 assert.ok(app.includes("function getChartInteractionGeometry("), "pointer geometry is not shared per frame");

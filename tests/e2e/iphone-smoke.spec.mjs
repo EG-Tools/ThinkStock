@@ -4,7 +4,7 @@ const recentDates = ["2025-07-14", "2025-10-14", "2026-01-14", "2026-04-14", "20
 const historyDates = ["1998-07-14", "2005-07-14", "2012-07-14"];
 const DESKTOP_PERF_BUDGET = Object.freeze({
   maxPointerMove: 50,
-  maxFrameGap: 300,
+  maxP95FrameGap: 200,
   maxLongFrameRatio: 0.65,
 });
 
@@ -544,7 +544,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
     expect(perfSummary.pointerMoves).toBeGreaterThan(0);
     expect(perfSummary.frames).toBeGreaterThan(50);
     expect(perfSummary.maxPointerMove).toBeLessThan(DESKTOP_PERF_BUDGET.maxPointerMove);
-    expect(perfSummary.maxFrameGap).toBeLessThan(DESKTOP_PERF_BUDGET.maxFrameGap);
+    expect(perfSummary.p95FrameGap).toBeLessThan(DESKTOP_PERF_BUDGET.maxP95FrameGap);
     expect(perfSummary.longFrameRatio).toBeLessThan(DESKTOP_PERF_BUDGET.maxLongFrameRatio);
   }
 

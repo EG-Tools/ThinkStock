@@ -249,6 +249,7 @@ const INTERACTION_RENDER_DELAY_MS = 260;
 const PERF_DEBUG_KEY = "thinkstock-perf-debug";
 const PERF_SAMPLE_LIMIT = 80;
 const PERF_FRAME_GAP_IGNORE_MS = 1000;
+const PERF_FRAME_SAMPLE_LIMIT = 1200;
 const DISCLOSURE_TRACE_NAME = "공시";
 const DISCLOSURE_ICON_TEXT = "◆";
 const DISCLOSURE_MARKER_COLOR = "#fde047";
@@ -367,6 +368,7 @@ let perfDebugEnabled = false;
 let perfFrameRafId = 0;
 let perfLastFrameAt = 0;
 let perfFrameStats = { frames: 0, longFrames: 0, maxFrameGap: 0 };
+let perfFrameGaps = [];
 let runtimeRefreshController = null;
 let runtimeRefreshPromise = null;
 let runtimeRefreshGeneration = 0;
@@ -400,15 +402,21 @@ function initPerfDebugAccess() {
         perfSamples = [];
         perfLastFrameAt = 0;
         perfFrameStats = { frames: 0, longFrames: 0, maxFrameGap: 0 };
+        perfFrameGaps = [];
       },
       summary() {
         const pointerSamples = perfSamples.filter((sample) => sample.label === "pointerMove");
         const refreshSamples = perfSamples.filter((sample) => sample.label === "runtimeRefresh");
+        const sortedFrameGaps = [...perfFrameGaps].sort((left, right) => left - right);
+        const p95FrameGap = sortedFrameGaps.length
+          ? sortedFrameGaps[Math.floor((sortedFrameGaps.length - 1) * 0.95)]
+          : 0;
         const longFrameRatio = perfFrameStats.frames > 0
           ? perfFrameStats.longFrames / perfFrameStats.frames
           : 0;
         return {
           ...perfFrameStats,
+          p95FrameGap,
           longFrameRatio,
           pointerMoves: pointerSamples.length,
           maxPointerMove: pointerSamples.reduce((max, sample) => Math.max(max, sample.duration || 0), 0),
@@ -439,6 +447,8 @@ function startPerfFrameMonitor() {
       if (gap > 0 && gap < PERF_FRAME_GAP_IGNORE_MS) {
         perfFrameStats.frames += 1;
         perfFrameStats.maxFrameGap = Math.max(perfFrameStats.maxFrameGap, Math.round(gap * 10) / 10);
+        perfFrameGaps.push(Math.round(gap * 10) / 10);
+        if (perfFrameGaps.length > PERF_FRAME_SAMPLE_LIMIT) perfFrameGaps.shift();
         if (gap >= 50) perfFrameStats.longFrames += 1;
       }
     }
