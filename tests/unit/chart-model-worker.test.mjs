@@ -6,6 +6,7 @@ import vm from "node:vm";
 
 
 const source = await readFile(path.resolve("docs/modules/chart-model-worker.js"), "utf8");
+const marketDataSource = await readFile(path.resolve("docs/modules/market-data.js"), "utf8");
 
 
 function createWorkerHarness() {
@@ -21,7 +22,12 @@ function createWorkerHarness() {
       },
     },
   };
-  vm.runInNewContext(source, context);
+  context.importScripts = (modulePath) => {
+    assert.match(modulePath, /market-data\.js/);
+    vm.runInContext(marketDataSource, context);
+  };
+  vm.createContext(context);
+  vm.runInContext(source, context);
   assert.equal(typeof messageHandler, "function");
   return {
     send(payload, id = `test-${messages.length + 1}`) {

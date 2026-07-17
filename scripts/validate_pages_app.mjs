@@ -5,13 +5,15 @@ import path from "node:path";
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [app, html, sw, playwrightConfig, dataPayload, dataWorker, chartLoader, disclosurePolicy, dartDisclosure, serviceWorkerClient, runtimeRefresh, plotlyBundle] = await Promise.all([
+const [app, html, sw, playwrightConfig, dataPayload, marketData, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, dartDisclosure, serviceWorkerClient, runtimeRefresh, plotlyBundle] = await Promise.all([
   readFile(path.join(root, "docs", "app.js"), "utf8"),
   readFile(path.join(root, "docs", "index.html"), "utf8"),
   readFile(path.join(root, "docs", "sw.js"), "utf8"),
   readFile(path.join(root, "playwright.config.mjs"), "utf8"),
   readFile(path.join(root, "docs", "modules", "data-payload.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "market-data.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "data-worker.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "chart-model-worker.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "chart-loader.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "disclosure-policy.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "dart-disclosure.js"), "utf8"),
@@ -45,6 +47,7 @@ requiredIds.forEach((id) => assert.ok(ids.includes(id), `required UI element is 
   "./index.html",
   "./styles.css",
   "./modules/data-payload.js?v=dev",
+  "./modules/market-data.js?v=dev",
   "./modules/chart-loader.js?v=dev",
   "./modules/disclosure-policy.js?v=dev",
   "./modules/dart-disclosure.js?v=dev",
@@ -77,6 +80,10 @@ assert.ok(!app.includes("function fetchDartDisclosurePage("), "DART page fetchin
 assert.ok(app.includes("ThinkStockDataPayload"), "data payload module is not wired into the app");
 assert.ok(dataPayload.includes("rowsFromColumnarPayload"), "shared columnar payload parser is missing");
 assert.ok(dataWorker.includes('importScripts("./data-payload.js?v=dev")'), "data worker does not reuse the shared payload parser");
+assert.ok(app.includes("ThinkStockMarketData"), "market data module is not wired into the app");
+assert.ok(marketData.includes("mergeSources") && marketData.includes("findTickerPriceRebaseSignal"), "market data module is incomplete");
+assert.ok(chartModelWorker.includes('importScripts("./market-data.js?v=dev")'), "chart worker does not reuse the market data module");
+assert.ok(!app.includes("function mergeSources(") && !app.includes("function findTickerPriceRebaseSignal("), "market data logic still lives in app.js");
 assert.ok(disclosurePolicy.includes("shouldDisplayDisclosure"), "disclosure policy filter is missing");
 assert.ok(app.includes("disclosure-title-link"), "disclosure title links are missing");
 assert.ok(html.includes('data-series="customer_deposit"'), "customer deposit toggle is missing");

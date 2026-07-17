@@ -9,6 +9,21 @@ const scheduleServiceWorkerRegistration = serviceWorkerClient.scheduleRegistrati
 const runtimeRefreshModule = globalThis.ThinkStockRuntimeRefresh;
 if (!runtimeRefreshModule) throw new Error("Runtime refresh module failed to load");
 const { runRefreshPhases } = runtimeRefreshModule;
+const marketDataModule = globalThis.ThinkStockMarketData;
+if (!marketDataModule) throw new Error("Market data module failed to load");
+const {
+  getSeriesColumns,
+  copyDisplayNames,
+  sanitizePricePayload: sanitizePricePayloadForSnapshot,
+  mergeRowsPreservingExisting,
+  mergePricePayloadPreservingExisting,
+  normalizeTickerPricePoints,
+  findTickerPriceRebaseSignal,
+  mergeSources: mergeMarketDataSources,
+  normalizeSeries,
+  centeredScale,
+  autoFitScales,
+} = marketDataModule;
 
 const DISPLAY_NAMES = {
   leading_cycle: "\uC120\uD589\uC21C\uD658\uBCC0\uB3D9",
@@ -86,7 +101,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.80";
+const APP_VERSION = "0.81";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -644,27 +659,6 @@ function loadApiSettings() {
 
   apiSettings = loaded || { ...API_SETTINGS_DEFAULT };
   saveApiSettings();
-}
-
-function copyDisplayNames(raw) {
-  const src = raw && typeof raw === "object" ? raw : {};
-  return Object.fromEntries(
-    Object.entries(src)
-      .filter(([key, value]) => key && typeof value === "string" && value.trim())
-      .map(([key, value]) => [key, value.trim()]),
-  );
-}
-
-function sanitizePricePayloadForSnapshot(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  const records = Array.isArray(raw.records) ? normalizePayloadRecords(raw.records) : rowsFromColumnarPayload(raw);
-  if (!records.length) return null;
-  return {
-    generated_at: typeof raw.generated_at === "string" ? raw.generated_at : "",
-    records,
-    series: Array.isArray(raw.series) ? raw.series.filter(Boolean) : getSeriesColumns(records),
-    display_names: copyDisplayNames(raw.display_names),
-  };
 }
 
 function explainDartFetchError(err) {
@@ -2715,56 +2709,6 @@ const {
   normalizeDisclosureRows: normalizeDisclosureSeedRows,
 } = dataPayloadUtils;
 
-function getSeriesColumns(rows) {
-  const cols = new Set();
-  rows.forEach((r) => Object.keys(r).forEach((k) => { if (k !== "date") cols.add(k); }));
-  return [...cols];
-}
-
-function mergeRowsPreservingExisting(existingRows, incomingRows) {
-  const byDate = new Map();
-  normalizePayloadRecords(existingRows).forEach((row) => {
-    byDate.set(row.date, { ...row });
-  });
-
-  normalizePayloadRecords(incomingRows).forEach((row) => {
-    const prev = byDate.get(row.date);
-    if (!prev) {
-      byDate.set(row.date, { ...row });
-      return;
-    }
-
-    const merged = { ...prev };
-    Object.entries(row).forEach(([key, value]) => {
-      if (key === "date") return;
-      if (toNum(merged[key]) === null && toNum(value) !== null) {
-        merged[key] = toNum(value);
-      }
-    });
-    byDate.set(row.date, merged);
-  });
-
-  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
-}
-
-function mergePricePayloadPreservingExisting(existingPayload, incomingPayload) {
-  const existing = sanitizePricePayloadForSnapshot(existingPayload);
-  const incoming = sanitizePricePayloadForSnapshot(incomingPayload);
-  if (!existing) return incoming;
-  if (!incoming) return existing;
-
-  const records = mergeRowsPreservingExisting(existing.records, incoming.records);
-  return {
-    ...incoming,
-    records,
-    series: [...new Set([...(incoming.series || []), ...(existing.series || []), ...getSeriesColumns(records)])],
-    display_names: {
-      ...(incoming.display_names || {}),
-      ...(existing.display_names || {}),
-    },
-  };
-}
-
 function getSeriesPriorityOrder() {
   const customOrder = customStocks.map((item) => item.ticker);
   return [
@@ -3184,64 +3128,12 @@ function getLatestTickerDateFromPricePayload(ticker) {
   return latest;
 }
 
-function normalizeTickerPricePoints(points) {
-  const map = new Map();
-  (Array.isArray(points) ? points : []).forEach((point) => {
-    const date = String(point?.date || "").slice(0, 10);
-    const close = toNum(point?.close);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || close === null) return;
-    map.set(date, { date, close });
-  });
-  return [...map.values()].sort((a, b) => a.date.localeCompare(b.date));
-}
-
 function getTickerPricePointsFromPayload(ticker) {
   const key = String(ticker || "").trim().toUpperCase();
   return normalizeTickerPricePoints((pricePayload?.records || []).map((row) => ({
     date: row?.date,
     close: row?.[key],
   })));
-}
-
-function priceDivergenceRatio(a, b) {
-  const left = toNum(a);
-  const right = toNum(b);
-  if (left === null || right === null || left <= 0 || right <= 0) return 1;
-  const ratio = Math.max(left, right) / Math.min(left, right);
-  return Number.isFinite(ratio) ? ratio : 1;
-}
-
-function dateDistanceDays(a, b) {
-  const left = Date.parse(`${String(a || "").slice(0, 10)}T00:00:00Z`);
-  const right = Date.parse(`${String(b || "").slice(0, 10)}T00:00:00Z`);
-  if (!Number.isFinite(left) || !Number.isFinite(right)) return null;
-  return Math.abs(Math.round((right - left) / DAY_MS));
-}
-
-function findTickerPriceRebaseSignal(existingPoints, incomingPoints) {
-  const existing = normalizeTickerPricePoints(existingPoints);
-  const incoming = normalizeTickerPricePoints(incomingPoints);
-  if (!existing.length || !incoming.length) return null;
-
-  const existingByDate = new Map(existing.map((point) => [point.date, point.close]));
-  for (const point of incoming) {
-    if (!existingByDate.has(point.date)) continue;
-    const ratio = priceDivergenceRatio(existingByDate.get(point.date), point.close);
-    if (ratio >= PRICE_CACHE_REBASE_RATIO_THRESHOLD) {
-      return { type: "overlap", date: point.date, ratio };
-    }
-  }
-
-  const latestExisting = existing[existing.length - 1];
-  const firstAfterExisting = incoming.find((point) => point.date > latestExisting.date);
-  if (!firstAfterExisting) return null;
-  const gapDays = dateDistanceDays(latestExisting.date, firstAfterExisting.date);
-  if (gapDays === null || gapDays > PRICE_CACHE_REBASE_BOUNDARY_DAYS) return null;
-  const ratio = priceDivergenceRatio(latestExisting.close, firstAfterExisting.close);
-  if (ratio >= PRICE_CACHE_REBASE_RATIO_THRESHOLD) {
-    return { type: "boundary", date: firstAfterExisting.date, ratio };
-  }
-  return null;
 }
 
 function isTickerPriceCacheFresh(latestDate) {
@@ -3326,7 +3218,10 @@ async function ensureCustomTickerSeriesLoaded(ticker, options = {}) {
     let points = await fetchYahooHistorySeries(key, { sinceDate, signal });
     throwIfAborted(signal);
     if (!points.length) throw new Error(`${key} price history is empty`);
-    const rebaseSignal = sinceDate ? findTickerPriceRebaseSignal(existingPoints, points) : null;
+    const rebaseSignal = sinceDate ? findTickerPriceRebaseSignal(existingPoints, points, {
+      ratioThreshold: PRICE_CACHE_REBASE_RATIO_THRESHOLD,
+      boundaryDays: PRICE_CACHE_REBASE_BOUNDARY_DAYS,
+    }) : null;
     if (rebaseSignal) {
       points = await fetchYahooHistorySeries(key, { signal });
       throwIfAborted(signal);
@@ -3766,191 +3661,6 @@ function buildDenseMacroRows(sourceRows, targetDates) {
 let CREDIT_OFFSET_DAYS = 2;  // Fund-data publication-lag alignment in days (UI uses negative sign for display)
 const CREDIT_COLS = ["customer_deposit", "kospi_credit", "kosdaq_credit"];
 
-/**
- * Interpolate credit rows onto the price-date axis after applying the
- * publication-lag offset. This keeps credit values on trading dates instead of
- * visually spilling into weekends when the offset is enabled.
- */
-function buildCreditInterpolator(creditRowsSrc) {
-  if (!creditRowsSrc.length) return () => null;
-
-  const points = [...creditRowsSrc]
-    .map((r) => {
-      const point = { time: toUtcMs(r.date) };
-      CREDIT_COLS.forEach((key) => { point[key] = toNum(r[key]); });
-      return point;
-    })
-    .filter((r) => Number.isFinite(r.time))
-    .sort((a, b) => a.time - b.time);
-  if (!points.length) return () => null;
-
-  const byTime = new Map(points.map((p) => [p.time, p]));
-  const firstTime = points[0].time;
-  const lastTime = points[points.length - 1].time;
-
-  function interpolate(targetTime) {
-    if (targetTime < firstTime || targetTime > lastTime) return null;
-
-    const exact = byTime.get(targetTime);
-    if (exact) return exact;
-
-    let lo = 0;
-    let hi = points.length - 1;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      if (points[mid].time < targetTime) lo = mid + 1;
-      else hi = mid - 1;
-    }
-
-    const right = points[lo];
-    const left = points[lo - 1];
-    if (!left || !right) return null;
-
-    const span = right.time - left.time;
-    if (!Number.isFinite(span) || span <= 0) return null;
-    const t = (targetTime - left.time) / span;
-
-    const out = {};
-    CREDIT_COLS.forEach((k) => {
-      const lv = left[k];
-      const rv = right[k];
-      if (lv === null && rv === null) out[k] = null;
-      else if (lv === null) out[k] = rv;
-      else if (rv === null) out[k] = lv;
-      else out[k] = lv + (rv - lv) * t;
-    });
-    return out;
-  }
-
-  return function findShiftedCredit(priceDate) {
-    const baseTime = toUtcMs(priceDate);
-    if (!Number.isFinite(baseTime)) return null;
-    const shiftedTime = baseTime + CREDIT_OFFSET_DAYS * DAY_MS;
-    return interpolate(shiftedTime);
-  };
-}
-
-function mergeSources(priceRows, denseRows, creditRowsSrc, start, end) {
-  const priceMap  = new Map(priceRows.map((r) => [r.date, r]));
-  const macroMap  = new Map(denseRows.map((r) => [r.date, r]));
-
-  const historicalCredit = new Map();
-  denseRows.forEach((r) => {
-    const values = {};
-    CREDIT_COLS.forEach((key) => { values[key] = toNum(r[key]); });
-    historicalCredit.set(r.date, values);
-  });
-
-  const kofiaCredit = new Map();
-  creditRowsSrc.forEach((r) => {
-    const date = String(r.date || "").slice(0, 10);
-    if (!date) return;
-    const prev = kofiaCredit.get(date) || {};
-    const next = {};
-    CREDIT_COLS.forEach((key) => { next[key] = toNum(r[key]) ?? prev[key] ?? null; });
-    kofiaCredit.set(date, next);
-  });
-
-  const kofiaDates = [...kofiaCredit.keys()].sort();
-  const firstKofiaDate = kofiaDates.length ? kofiaDates[0] : "";
-
-  // Align old historical credit scale to the KOFIA scale to avoid boundary jumps.
-  const calcAlignFactor = (key) => {
-    const ratios = [];
-    kofiaDates.forEach((d) => {
-      const h = historicalCredit.get(d)?.[key];
-      const k = kofiaCredit.get(d)?.[key];
-      if (Number.isFinite(h) && Number.isFinite(k) && h !== 0) ratios.push(k / h);
-    });
-    if (!ratios.length) return 1;
-    ratios.sort((a, b) => a - b);
-    const m = Math.floor(ratios.length / 2);
-    const med = ratios.length % 2 ? ratios[m] : (ratios[m - 1] + ratios[m]) / 2;
-    if (!(Number.isFinite(med) && med > 0)) return 1;
-    return (med > 1.15 || med < 0.85) ? med : 1;
-  };
-
-  const alignFactor = Object.fromEntries(CREDIT_COLS.map((key) => [key, calcAlignFactor(key)]));
-
-  const creditByDate = new Map();
-  historicalCredit.forEach((vals, date) => {
-    const shouldAlign = firstKofiaDate && date < firstKofiaDate;
-    const out = {};
-    CREDIT_COLS.forEach((k) => {
-      const v = vals?.[k];
-      const f = alignFactor[k] ?? 1;
-      out[k] = shouldAlign && Number.isFinite(v) ? v * f : v;
-    });
-    creditByDate.set(date, out);
-  });
-
-  // Use KOFIA values on overlapping/new dates.
-  kofiaCredit.forEach((vals, date) => {
-    const prev = creditByDate.get(date) || {};
-    const next = {};
-    CREDIT_COLS.forEach((key) => {
-      next[key] = Number.isFinite(vals[key]) ? vals[key] : (prev[key] ?? null);
-    });
-    creditByDate.set(date, next);
-  });
-
-  const creditSeriesRows = [...creditByDate.entries()]
-    .map(([date, vals]) => ({ date, ...vals }))
-    .sort((a, b) => a.date.localeCompare(b.date));
-  const shiftedCreditAtPriceDate = buildCreditInterpolator(creditSeriesRows);
-
-  const liveCols   = getSeriesColumns(priceRows);
-  const macroCols  = getSeriesColumns(denseRows).filter((c) => !CREDIT_COLS.includes(c));
-
-  const rows = [];
-  priceRows.forEach(({ date }) => {
-    if (date < start || date > end) return;
-    const row = { date };
-    const pr = priceMap.get(date) || {};
-    const mr = macroMap.get(date) || {};
-    const exactCredit = creditByDate.get(date) || null;
-    const shiftedCredit = shiftedCreditAtPriceDate(date) || exactCredit;
-    liveCols.forEach((k) => { row[k] = toNum(pr[k]); });
-    macroCols.forEach((k) => { row[k] = toNum(mr[k]); });
-    CREDIT_COLS.forEach((k) => { row[k] = shiftedCredit ? toNum(shiftedCredit[k]) : null; });
-    rows.push(row);
-  });
-
-  const allMacroCols = [...new Set([...macroCols, ...CREDIT_COLS])];
-  return { rows, macroCols: allMacroCols, liveCols };
-}
-
-function normalizeSeries(values) {
-  const first = values.find((v) => Number.isFinite(v));
-  const base = Number.isFinite(first) && first !== 0 ? first : 1;
-  return values.map((v) => (Number.isFinite(v) ? (v / base) * 100 : null));
-}
-
-function centeredScale(values, pct, normalized) {
-  const nums = values.filter((v) => Number.isFinite(v));
-  if (!nums.length) return values;
-  const pivot = normalized ? 100 : (Math.min(...nums) + Math.max(...nums)) / 2;
-  const r = pct / 100;
-  return values.map((v) => (Number.isFinite(v) ? pivot + (v - pivot) * r : null));
-}
-
-function autoFitScales(rows, selected, normBases) {
-  const info = [];
-  selected.forEach((s) => {
-    if (s === "leading_cycle") return;
-    let vals = rows.map((r) => toNum(r[s])).filter((v) => v !== null);
-    if (!vals.length) return;
-    const base = normBases[s];
-    vals = (base && base !== 0) ? vals.map((v) => (v / base) * 100) : normalizeSeries(vals).filter((v) => Number.isFinite(v));
-    const range = Math.max(Math.max(...vals) - Math.min(...vals), 1);
-    info.push([s, range]);
-  });
-  if (!info.length) return {};
-  const sorted = info.map(([, r]) => r).sort((a, b) => a - b);
-  const target = sorted[Math.floor(sorted.length / 2)];
-  return Object.fromEntries(info.map(([s, r]) => [s, Math.max(5, Math.min(5000, Math.round((target / r) * 100)))]));
-}
-
 function dataRevisionSignature(...names) {
   return names.map((name) => `${name}:${Number(dataRevisions[name]) || 0}`).join("|");
 }
@@ -4124,7 +3834,15 @@ function getChartModelDataKey(priceRows) {
 }
 
 function buildMainChartModel(priceRows, start, end, allowedSeries) {
-  const { rows, macroCols, liveCols } = mergeSources(priceRows, macroRows, creditRows, start, end);
+  const { rows, macroCols, liveCols } = mergeMarketDataSources({
+    priceRows,
+    macroRows,
+    creditRows,
+    creditCols: CREDIT_COLS,
+    creditOffsetDays: CREDIT_OFFSET_DAYS,
+    start,
+    end,
+  });
   const allSeries = sortSeries(
     [...new Set([...liveCols, ...macroCols])]
       .filter((s) => allowedSeries.has(s))

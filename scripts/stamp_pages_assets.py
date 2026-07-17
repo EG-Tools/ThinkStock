@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 INDEX_HTML = ROOT / "docs" / "index.html"
 SW_JS = ROOT / "docs" / "sw.js"
 DATA_WORKER_JS = ROOT / "docs" / "modules" / "data-worker.js"
+CHART_MODEL_WORKER_JS = ROOT / "docs" / "modules" / "chart-model-worker.js"
 
 
 def resolve_build_version() -> str:
@@ -49,6 +50,7 @@ def replace_once(text: str, pattern: str, replacement: str, label: str) -> str:
 def main() -> int:
     version = resolve_build_version()
     data_payload_src = f"./modules/data-payload.js?v={version}"
+    market_data_src = f"./modules/market-data.js?v={version}"
     chart_loader_src = f"./modules/chart-loader.js?v={version}"
     disclosure_policy_src = f"./modules/disclosure-policy.js?v={version}"
     dart_disclosure_src = f"./modules/dart-disclosure.js?v={version}"
@@ -64,6 +66,12 @@ def main() -> int:
         r'<script defer src="\./modules/data-payload\.js(?:\?v=[^"]*)?"></script>',
         f'<script defer src="{data_payload_src}"></script>',
         "index data-payload.js script",
+    )
+    index = replace_once(
+        index,
+        r'<script defer src="\./modules/market-data\.js(?:\?v=[^"]*)?"></script>',
+        f'<script defer src="{market_data_src}"></script>',
+        "index market-data.js script",
     )
     index = replace_once(
         index,
@@ -109,6 +117,12 @@ def main() -> int:
         r'"\./modules/data-payload\.js(?:\?v=[^"]*)?",',
         f'"{data_payload_src}",',
         "service worker data-payload.js asset",
+    )
+    sw = replace_once(
+        sw,
+        r'"\./modules/market-data\.js(?:\?v=[^"]*)?",',
+        f'"{market_data_src}",',
+        "service worker market-data.js asset",
     )
     sw = replace_once(
         sw,
@@ -174,6 +188,15 @@ def main() -> int:
         "data worker data-payload.js import",
     )
     DATA_WORKER_JS.write_text(data_worker, encoding="utf-8", newline="\n")
+
+    chart_model_worker = CHART_MODEL_WORKER_JS.read_text(encoding="utf-8")
+    chart_model_worker = replace_once(
+        chart_model_worker,
+        r'importScripts\("\./market-data\.js(?:\?v=[^"]*)?"\);',
+        f'importScripts("./market-data.js?v={version}");',
+        "chart model worker market-data.js import",
+    )
+    CHART_MODEL_WORKER_JS.write_text(chart_model_worker, encoding="utf-8", newline="\n")
 
     print(f"Stamped Pages assets with version {version}")
     return 0
