@@ -5,7 +5,7 @@ import path from "node:path";
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [app, html, sw, playwrightConfig, dataPayload, marketData, auxiliaryChartModel, performanceMonitor, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, dartDisclosure, serviceWorkerClient, runtimeRefresh, plotlyBundle] = await Promise.all([
+const [app, html, sw, playwrightConfig, dataPayload, marketData, auxiliaryChartModel, performanceMonitor, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, dartDisclosure, serviceWorkerClient, runtimeRefresh, deployWorkflow, buildPagesData, dataBuildSupport, providerClients, plotlyBundle] = await Promise.all([
   readFile(path.join(root, "docs", "app.js"), "utf8"),
   readFile(path.join(root, "docs", "index.html"), "utf8"),
   readFile(path.join(root, "docs", "sw.js"), "utf8"),
@@ -23,6 +23,10 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, auxiliaryChartM
   readFile(path.join(root, "docs", "modules", "dart-disclosure.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "service-worker-client.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "runtime-refresh.js"), "utf8"),
+  readFile(path.join(root, ".github", "workflows", "deploy-pages.yml"), "utf8"),
+  readFile(path.join(root, "scripts", "build_pages_data.py"), "utf8"),
+  readFile(path.join(root, "scripts", "data_build_support.py"), "utf8"),
+  readFile(path.join(root, "scripts", "provider_clients.py"), "utf8"),
   stat(path.join(root, "docs", "vendor", "plotly-basic-2.35.2.min.js")),
 ]);
 
@@ -154,5 +158,14 @@ assert.ok(sw.includes("refreshCachedDataAtomically"), "service worker data refre
 assert.ok(!sw.includes(".map((req) => cache.delete(req))"), "service worker still deletes data before refresh");
 assert.ok(playwrightConfig.includes('name: "webkit-sw"') && playwrightConfig.includes('serviceWorkers: "allow"'),
   "service-worker-aware WebKit coverage is missing");
+assert.ok(deployWorkflow.includes('cron: "35 3 * * 0"'), "weekly full Pages data rebuild is missing");
+assert.ok(deployWorkflow.includes("PAGES_FULL_REBUILD:"), "Pages full rebuild mode is not configured");
+assert.ok(deployWorkflow.includes('cache: "pip"'), "Python dependency caching is missing");
+assert.ok(buildPagesData.includes("detect_price_rebases") && buildPagesData.includes("disclosure_start_dates"),
+  "incremental Pages data policies are not wired into the builder");
+assert.ok(dataBuildSupport.includes("PRICE_OVERLAP_DAYS") && dataBuildSupport.includes("DART_OVERLAP_DAYS"),
+  "incremental overlap policies are incomplete");
+assert.ok(providerClients.includes("class RetryingHttpClient") && providerClients.includes("fetch_yahoo_prices"),
+  "shared provider clients are incomplete");
 
 console.log(`Pages app validation passed (version ${appVersion}, ${ids.length} unique IDs).`);

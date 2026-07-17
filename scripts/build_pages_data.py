@@ -4,16 +4,31 @@ import os
 import re
 import zipfile
 from datetime import date
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from urllib.parse import unquote
 from xml.etree import ElementTree as ET
 
 import pandas as pd
-import requests
-import yfinance as yf
 
+from data_build_support import (
+    DART_OVERLAP_DAYS,
+    ECOS_LEADING_OVERLAP_MONTHS,
+    ECOS_NEWS_OVERLAP_DAYS,
+    FREESIS_OVERLAP_DAYS,
+    PRICE_OVERLAP_DAYS,
+    detect_price_rebases,
+    disclosure_start_dates,
+    incremental_month_code,
+    incremental_start_date,
+    should_full_rebuild,
+)
 from macro_utils import densify_macro
+from provider_clients import (
+    RetryingHttpClient,
+    fetch_kofia_items,
+    fetch_yahoo_prices,
+)
 from split_pages_data import split_all_payloads
 
 DEFAULT_TICKERS = ["^KS11", "^KQ11", "005930.KS", "218410.KQ"]
@@ -74,23 +89,14 @@ ADR_SOURCE_URL = "http://www.adrinfo.kr/chart"
 FEAR_GREED_SOURCE_URL = "https://kospi.feargreedchart.com/api/?action=kospi-history"
 DART_CORP_CODE_URL = "https://opendart.fss.or.kr/api/corpCode.xml"
 DART_DISCLOSURE_URL = "https://opendart.fss.or.kr/api/list.json"
+_HTTP_CLIENT: RetryingHttpClient | None = None
 
 
-def extract_close_series(data: pd.DataFrame, ticker: str) -> pd.Series | None:
-    if isinstance(data.columns, pd.MultiIndex):
-        if ("Close", ticker) in data.columns:
-            return data[("Close", ticker)]
-        if ("Adj Close", ticker) in data.columns:
-            return data[("Adj Close", ticker)]
-        try:
-            return data.xs("Close", axis=1, level=0).iloc[:, 0]
-        except Exception:
-            return None
-    if "Close" in data.columns:
-        return data["Close"]
-    if "Adj Close" in data.columns:
-        return data["Adj Close"]
-    return None
+def http_client() -> RetryingHttpClient:
+    global _HTTP_CLIENT
+    if _HTTP_CLIENT is None:
+        _HTTP_CLIENT = RetryingHttpClient()
+    return _HTTP_CLIENT
 
 
 def years_before(reference: date, years: int) -> date:
@@ -100,39 +106,17 @@ def years_before(reference: date, years: int) -> date:
         return reference.replace(year=reference.year - years, month=2, day=28)
 
 
-def fetch_prices() -> pd.DataFrame:
-    frames: list[pd.DataFrame] = []
-    start_date = years_before(date.today(), LOOKBACK_YEARS)
+def fetch_prices(start_date: date | None = None) -> pd.DataFrame:
+    start = start_date or years_before(date.today(), LOOKBACK_YEARS)
+    frame, failures = fetch_yahoo_prices(DEFAULT_TICKERS, start, date.today())
+    for ticker, message in failures.items():
+        print(f"Yahoo price fetch failed for {ticker}: {message}")
     for ticker in DEFAULT_TICKERS:
-        data = yf.download(
-            ticker,
-            start=start_date,
-            end=pd.Timestamp(date.today()) + pd.Timedelta(days=1),
-            auto_adjust=False,
-            progress=False,
-            threads=False,
-        )
-        if data is None or data.empty:
-            continue
-        series = extract_close_series(data, ticker)
-        if series is None:
-            continue
-        series = series.rename(ticker).dropna()
-        index = pd.to_datetime(series.index)
-        try:
-            index = index.tz_localize(None)
-        except Exception:
-            try:
-                index = index.tz_convert(None)
-            except Exception:
-                pass
-        series.index = index
-        frames.append(series.to_frame())
-    if not frames:
-        return pd.DataFrame(columns=DEFAULT_TICKERS)
-    out = pd.concat(frames, axis=1).sort_index()
-    out.index.name = "date"
-    return out
+        if ticker not in frame.columns:
+            frame[ticker] = pd.NA
+    frame = frame.reindex(columns=DEFAULT_TICKERS).sort_index()
+    frame.index.name = "date"
+    return frame
 
 
 def load_macro_source() -> pd.DataFrame:
@@ -322,18 +306,16 @@ def configured_disclosure_stock_codes() -> list[str]:
     return out
 
 
-def fetch_ecos_leading_cycle(api_key: str) -> pd.DataFrame:
+def fetch_ecos_leading_cycle(api_key: str, start_ym: str = ECOS_START) -> pd.DataFrame:
     if not api_key:
         return pd.DataFrame(columns=["leading_cycle"])
     end_ym = pd.Timestamp.today().strftime("%Y%m")
     url = (
         f"https://ecos.bok.or.kr/api/StatisticSearch/{api_key}/json/kr/1/5000/"
-        f"{ECOS_STAT_CODE}/M/{ECOS_START}/{end_ym}/{ECOS_ITEM_CODE}"
+        f"{ECOS_STAT_CODE}/M/{start_ym}/{end_ym}/{ECOS_ITEM_CODE}"
     )
     try:
-        response = requests.get(url, timeout=20)
-        response.raise_for_status()
-        payload = response.json()
+        payload = http_client().get_json(url, timeout=20)
     except Exception as exc:
         print(f"ECOS fetch failed: {exc}")
         return pd.DataFrame(columns=["leading_cycle"])
@@ -367,18 +349,16 @@ def fetch_ecos_leading_cycle(api_key: str) -> pd.DataFrame:
     return out
 
 
-def fetch_ecos_news_sentiment(api_key: str) -> pd.DataFrame:
+def fetch_ecos_news_sentiment(api_key: str, start_ymd: str = ECOS_NEWS_START) -> pd.DataFrame:
     if not api_key:
         return pd.DataFrame(columns=["news_sentiment"])
     end_ymd = pd.Timestamp.today().strftime("%Y%m%d")
     url = (
         f"https://ecos.bok.or.kr/api/StatisticSearch/{api_key}/json/kr/1/10000/"
-        f"{ECOS_NEWS_STAT_CODE}/D/{ECOS_NEWS_START}/{end_ymd}/{ECOS_NEWS_ITEM_CODE}"
+        f"{ECOS_NEWS_STAT_CODE}/D/{start_ymd}/{end_ymd}/{ECOS_NEWS_ITEM_CODE}"
     )
     try:
-        response = requests.get(url, timeout=25)
-        response.raise_for_status()
-        payload = response.json()
+        payload = http_client().get_json(url, timeout=25)
     except Exception as exc:
         print(f"ECOS news sentiment fetch failed: {exc}")
         return pd.DataFrame(columns=["news_sentiment"])
@@ -432,7 +412,7 @@ def merge_macro_with_leading_cycle(macro: pd.DataFrame, leading_cycle: pd.DataFr
 
 def fetch_oecd_leading_cycle_from_fred() -> pd.DataFrame:
     try:
-        frame = pd.read_csv(OECD_FRED_URL)
+        frame = pd.read_csv(StringIO(http_client().get_text(OECD_FRED_URL, timeout=25)))
     except Exception as exc:
         print(f"OECD(FRED mirror) fetch failed: {exc}")
         return pd.DataFrame(columns=["leading_cycle"])
@@ -543,58 +523,22 @@ def fetch_kofia_credit(api_key: str) -> pd.DataFrame:
     for service_key in dict.fromkeys(key_candidates):
         records: list[dict] = []
         try:
-            num_rows = 1000
-            page_no = 1
-            last_page = 1
-
-            while page_no <= last_page:
-                response = requests.get(
-                    KOFIA_CREDIT_URL,
-                    params={
-                        "serviceKey": service_key,
-                        "numOfRows": str(num_rows),
-                        "pageNo": str(page_no),
-                        "resultType": "json",
-                    },
-                    timeout=30,
+            items = fetch_kofia_items(http_client(), KOFIA_CREDIT_URL, service_key)
+            for item in items:
+                bas_dt = str(item.get("basDt", ""))
+                if len(bas_dt) != 8 or not bas_dt.isdigit():
+                    continue
+                kospi = parse_won_to_trillion(item.get("crdTrFingScrs"))
+                kosdaq = parse_won_to_trillion(item.get("crdTrFingKosdaq"))
+                if kospi is None and kosdaq is None:
+                    continue
+                records.append(
+                    {
+                        "date": f"{bas_dt[:4]}-{bas_dt[4:6]}-{bas_dt[6:8]}",
+                        "kospi_credit": kospi,
+                        "kosdaq_credit": kosdaq,
+                    }
                 )
-                response.raise_for_status()
-                payload = response.json()
-                header = payload.get("response", {}).get("header", {})
-                result_code = str(header.get("resultCode", ""))
-                if result_code and result_code != "00":
-                    raise RuntimeError(header.get("resultMsg") or "KOFIA API error")
-
-                body = payload.get("response", {}).get("body", {})
-                raw_items = body.get("items", {}).get("item")
-                items = raw_items if isinstance(raw_items, list) else ([raw_items] if raw_items else [])
-
-                for item in items:
-                    bas_dt = str(item.get("basDt", ""))
-                    if len(bas_dt) != 8 or not bas_dt.isdigit():
-                        continue
-                    kospi = parse_won_to_trillion(item.get("crdTrFingScrs"))
-                    kosdaq = parse_won_to_trillion(item.get("crdTrFingKosdaq"))
-                    if kospi is None and kosdaq is None:
-                        continue
-                    records.append(
-                        {
-                            "date": f"{bas_dt[:4]}-{bas_dt[4:6]}-{bas_dt[6:8]}",
-                            "kospi_credit": kospi,
-                            "kosdaq_credit": kosdaq,
-                        }
-                    )
-
-                total_count = pd.to_numeric(body.get("totalCount"), errors="coerce")
-                rows_per_page = pd.to_numeric(body.get("numOfRows"), errors="coerce")
-                if page_no == 1 and pd.notna(total_count) and total_count > 0:
-                    per_page = int(rows_per_page) if pd.notna(rows_per_page) and rows_per_page > 0 else num_rows
-                    last_page = max(1, int((int(total_count) + per_page - 1) / per_page))
-
-                if not items:
-                    break
-                page_no += 1
-
         except Exception as exc:
             last_error = str(exc)
             continue
@@ -622,56 +566,20 @@ def fetch_kofia_customer_deposit(api_key: str) -> pd.DataFrame:
     for service_key in dict.fromkeys(key_candidates):
         records: list[dict] = []
         try:
-            num_rows = 1000
-            page_no = 1
-            last_page = 1
-
-            while page_no <= last_page:
-                response = requests.get(
-                    KOFIA_MARKET_FUNDS_URL,
-                    params={
-                        "serviceKey": service_key,
-                        "numOfRows": str(num_rows),
-                        "pageNo": str(page_no),
-                        "resultType": "json",
-                    },
-                    timeout=30,
+            items = fetch_kofia_items(http_client(), KOFIA_MARKET_FUNDS_URL, service_key)
+            for item in items:
+                bas_dt = str(item.get("basDt", ""))
+                if len(bas_dt) != 8 or not bas_dt.isdigit():
+                    continue
+                customer_deposit = parse_won_to_trillion(item.get("invrDpsgAmt"))
+                if customer_deposit is None:
+                    continue
+                records.append(
+                    {
+                        "date": f"{bas_dt[:4]}-{bas_dt[4:6]}-{bas_dt[6:8]}",
+                        "customer_deposit": customer_deposit,
+                    }
                 )
-                response.raise_for_status()
-                payload = response.json()
-                header = payload.get("response", {}).get("header", {})
-                result_code = str(header.get("resultCode", ""))
-                if result_code and result_code != "00":
-                    raise RuntimeError(header.get("resultMsg") or "KOFIA market funds API error")
-
-                body = payload.get("response", {}).get("body", {})
-                raw_items = body.get("items", {}).get("item")
-                items = raw_items if isinstance(raw_items, list) else ([raw_items] if raw_items else [])
-
-                for item in items:
-                    bas_dt = str(item.get("basDt", ""))
-                    if len(bas_dt) != 8 or not bas_dt.isdigit():
-                        continue
-                    customer_deposit = parse_won_to_trillion(item.get("invrDpsgAmt"))
-                    if customer_deposit is None:
-                        continue
-                    records.append(
-                        {
-                            "date": f"{bas_dt[:4]}-{bas_dt[4:6]}-{bas_dt[6:8]}",
-                            "customer_deposit": customer_deposit,
-                        }
-                    )
-
-                total_count = pd.to_numeric(body.get("totalCount"), errors="coerce")
-                rows_per_page = pd.to_numeric(body.get("numOfRows"), errors="coerce")
-                if page_no == 1 and pd.notna(total_count) and total_count > 0:
-                    per_page = int(rows_per_page) if pd.notna(rows_per_page) and rows_per_page > 0 else num_rows
-                    last_page = max(1, int((int(total_count) + per_page - 1) / per_page))
-
-                if not items:
-                    break
-                page_no += 1
-
         except Exception as exc:
             last_error = str(exc)
             continue
@@ -685,28 +593,26 @@ def fetch_kofia_customer_deposit(api_key: str) -> pd.DataFrame:
     return pd.DataFrame(columns=CREDIT_SERIES)
 
 
-def fetch_freesis_credit() -> pd.DataFrame:
+def fetch_freesis_credit(start_ymd: str = FREESIS_CREDIT_START) -> pd.DataFrame:
     today_ymd = pd.Timestamp.today().strftime("%Y%m%d")
     payload = {
         "dmSearch": {
             "OBJ_NM": FREESIS_CREDIT_OBJ_NM,
             "tmpV1": "D",
             "tmpV40": FREESIS_CREDIT_UNIT_CODE,
-            "tmpV45": FREESIS_CREDIT_START,
+            "tmpV45": start_ymd,
             "tmpV46": today_ymd,
         }
     }
     headers = {"Content-Type": "application/json; charset=UTF-8"}
 
     try:
-        response = requests.post(
+        body = http_client().post_json(
             FREESIS_CREDIT_META_URL,
             json=payload,
             headers=headers,
             timeout=30,
         )
-        response.raise_for_status()
-        body = response.json()
     except Exception as exc:
         print(f"Freesis credit fetch failed: {exc}")
         return pd.DataFrame(columns=CREDIT_SERIES)
@@ -740,28 +646,26 @@ def fetch_freesis_credit() -> pd.DataFrame:
     return _credit_frame_from_records(records)
 
 
-def fetch_freesis_customer_deposit() -> pd.DataFrame:
+def fetch_freesis_customer_deposit(start_ymd: str = FREESIS_CREDIT_START) -> pd.DataFrame:
     today_ymd = pd.Timestamp.today().strftime("%Y%m%d")
     payload = {
         "dmSearch": {
             "OBJ_NM": FREESIS_MARKET_FUNDS_OBJ_NM,
             "tmpV1": "D",
             "tmpV40": FREESIS_CREDIT_UNIT_CODE,
-            "tmpV45": FREESIS_CREDIT_START,
+            "tmpV45": start_ymd,
             "tmpV46": today_ymd,
         }
     }
     headers = {"Content-Type": "application/json; charset=UTF-8"}
 
     try:
-        response = requests.post(
+        body = http_client().post_json(
             FREESIS_CREDIT_META_URL,
             json=payload,
             headers=headers,
             timeout=30,
         )
-        response.raise_for_status()
-        body = response.json()
     except Exception as exc:
         print(f"Freesis customer deposit fetch failed: {exc}")
         return pd.DataFrame(columns=CREDIT_SERIES)
@@ -797,13 +701,11 @@ def extract_adr_array(html: str, var_name: str) -> list:
 
 def fetch_adr_data() -> list[dict]:
     try:
-        response = requests.get(
+        html = http_client().get_text(
             ADR_SOURCE_URL,
             headers={"User-Agent": "Mozilla/5.0"},
             timeout=20,
         )
-        response.raise_for_status()
-        html = response.text
         kospi_raw = extract_adr_array(html, "kospi_adr")
         kosdaq_raw = extract_adr_array(html, "kosdaq_adr")
     except Exception as exc:
@@ -841,13 +743,11 @@ def fetch_adr_data() -> list[dict]:
 
 def fetch_fear_greed_data() -> list[dict]:
     try:
-        response = requests.get(
+        payload = http_client().get_json(
             FEAR_GREED_SOURCE_URL,
             headers={"User-Agent": "ThinkStock/1.0 (+https://eg-tools.github.io/ThinkStock/)"},
             timeout=25,
         )
-        response.raise_for_status()
-        payload = response.json()
     except Exception as exc:
         print(f"KOSPI fear-greed fetch failed: {exc}")
         return []
@@ -932,9 +832,12 @@ def should_display_disclosure(title: str, event_type: str = "") -> bool:
 
 
 def fetch_dart_corp_code_map(api_key: str) -> dict[str, dict[str, str]]:
-    response = requests.get(DART_CORP_CODE_URL, params={"crtfc_key": api_key}, timeout=30)
-    response.raise_for_status()
-    with zipfile.ZipFile(BytesIO(response.content)) as archive:
+    content = http_client().get_bytes(
+        DART_CORP_CODE_URL,
+        params={"crtfc_key": api_key},
+        timeout=30,
+    )
+    with zipfile.ZipFile(BytesIO(content)) as archive:
         xml_name = next((name for name in archive.namelist() if name.lower().endswith(".xml")), "")
         if not xml_name:
             return {}
@@ -963,6 +866,7 @@ def fetch_dart_disclosures(
     api_key: str,
     stock_codes: list[str],
     corp_map: dict[str, dict[str, str]] | None = None,
+    start_dates: dict[str, str] | None = None,
 ) -> list[dict]:
     if not api_key or not stock_codes:
         return []
@@ -973,11 +877,12 @@ def fetch_dart_disclosures(
             print(f"DART corp code fetch failed: {exc}")
             return []
 
-    start_date = years_before(date.today(), DART_DISCLOSURE_LOOKBACK_YEARS).strftime("%Y%m%d")
+    default_start_date = years_before(date.today(), DART_DISCLOSURE_LOOKBACK_YEARS).strftime("%Y%m%d")
     end_date = date.today().strftime("%Y%m%d")
     records: list[dict] = []
 
     for stock_code in stock_codes:
+        start_date = (start_dates or {}).get(stock_code, default_start_date)
         corp = corp_map.get(stock_code)
         if not corp:
             print(f"DART corp code not found for {stock_code}")
@@ -987,7 +892,7 @@ def fetch_dart_disclosures(
         total_page = 1
         while page_no <= total_page:
             try:
-                response = requests.get(
+                payload = http_client().get_json(
                     DART_DISCLOSURE_URL,
                     params={
                         "crtfc_key": api_key,
@@ -1002,8 +907,6 @@ def fetch_dart_disclosures(
                     },
                     timeout=30,
                 )
-                response.raise_for_status()
-                payload = response.json()
             except Exception as exc:
                 print(f"DART disclosure fetch failed for {stock_code}: {exc}")
                 break
@@ -1254,6 +1157,17 @@ def load_existing_price_seed() -> pd.DataFrame:
     except Exception as exc:
         print(f"Existing price data read failed: {exc}")
         return pd.DataFrame(columns=DEFAULT_TICKERS)
+
+
+def load_existing_macro_seed() -> pd.DataFrame:
+    if not OUTPUT_MACRO_JSON.exists():
+        return pd.DataFrame(columns=MACRO_SERIES)
+    try:
+        payload = json.loads(OUTPUT_MACRO_JSON.read_text(encoding="utf-8"))
+        return records_to_frame(records_from_payload(payload), MACRO_SERIES)
+    except Exception as exc:
+        print(f"Existing macro data read failed: {exc}")
+        return pd.DataFrame(columns=MACRO_SERIES)
 
 
 def merge_price_seed_with_live(seed: pd.DataFrame, live: pd.DataFrame) -> pd.DataFrame:
@@ -1523,15 +1437,39 @@ def write_build_report(report: dict) -> None:
 
 def main() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    full_rebuild = should_full_rebuild(
+        [OUTPUT_JSON, OUTPUT_MACRO_JSON, OUTPUT_CREDIT_JSON, OUTPUT_DISCLOSURES_JSON]
+    )
     build_report = {
         "generated_at": utc_stamp(),
+        "mode": "full" if full_rebuild else "incremental",
         "sources": {},
         "outputs": {},
         "events": [],
     }
-    live_prices = fetch_prices()
     existing_prices = load_existing_price_seed()
+    price_fallback = years_before(date.today(), LOOKBACK_YEARS)
+    price_start = incremental_start_date(
+        existing_prices.index.max() if not existing_prices.empty else None,
+        price_fallback,
+        PRICE_OVERLAP_DAYS,
+        full_rebuild,
+    )
+    live_prices = fetch_prices(price_start)
+    price_rebases = detect_price_rebases(existing_prices, live_prices, DEFAULT_TICKERS)
+    if price_rebases and not full_rebuild:
+        event = f"Price rebase detected for {', '.join(price_rebases)}; refetching full history."
+        print(event)
+        build_report["events"].append(event)
+        live_prices = fetch_prices(price_fallback)
+        price_start = price_fallback
     prices = merge_price_seed_with_live(existing_prices, live_prices)
+    build_report["policy"] = {
+        "mode": build_report["mode"],
+        "price_start": price_start.strftime("%Y-%m-%d"),
+        "price_overlap_days": PRICE_OVERLAP_DAYS,
+        "price_rebases": price_rebases,
+    }
     build_report["sources"]["prices"] = frame_summary(live_prices)
     build_report["sources"]["price_seed"] = frame_summary(existing_prices)
     for ticker in DEFAULT_TICKERS:
@@ -1544,12 +1482,46 @@ def main() -> None:
             print(event)
             build_report["events"].append(event)
 
-    macro_source = load_macro_source()
-    build_report["sources"]["sample_macro"] = frame_summary(macro_source)
+    sample_macro_source = load_macro_source()
+    existing_macro_source = load_existing_macro_seed()
+    macro_source = sample_macro_source
+    if not full_rebuild and not existing_macro_source.empty:
+        macro_source = merge_macro_frame(macro_source, existing_macro_source)
+    build_report["sources"]["sample_macro"] = frame_summary(sample_macro_source)
+    build_report["sources"]["macro_seed"] = frame_summary(existing_macro_source)
     ecos_key = resolve_ecos_api_key()
-    latest_ecos_month: pd.Timestamp | None = None
+    leading_values = (
+        pd.to_numeric(macro_source.get("leading_cycle"), errors="coerce").dropna()
+        if "leading_cycle" in macro_source
+        else pd.Series(dtype="float64")
+    )
+    news_values = (
+        pd.to_numeric(macro_source.get("news_sentiment"), errors="coerce").dropna()
+        if "news_sentiment" in macro_source
+        else pd.Series(dtype="float64")
+    )
+    latest_ecos_month = leading_values.index.max().normalize() if not leading_values.empty else None
+    ecos_leading_start = incremental_month_code(
+        latest_ecos_month,
+        ECOS_START,
+        ECOS_LEADING_OVERLAP_MONTHS,
+        full_rebuild,
+    )
+    news_fallback = pd.to_datetime(ECOS_NEWS_START, format="%Y%m%d").date()
+    ecos_news_start = incremental_start_date(
+        news_values.index.max() if not news_values.empty else None,
+        news_fallback,
+        ECOS_NEWS_OVERLAP_DAYS,
+        full_rebuild,
+    ).strftime("%Y%m%d")
+    build_report["policy"].update({
+        "ecos_leading_start": ecos_leading_start,
+        "ecos_news_start": ecos_news_start,
+        "ecos_leading_overlap_months": ECOS_LEADING_OVERLAP_MONTHS,
+        "ecos_news_overlap_days": ECOS_NEWS_OVERLAP_DAYS,
+    })
     if ecos_key:
-        leading_cycle = fetch_ecos_leading_cycle(ecos_key)
+        leading_cycle = fetch_ecos_leading_cycle(ecos_key, ecos_leading_start)
         build_report["sources"]["ecos_leading_cycle"] = frame_summary(leading_cycle)
         if not leading_cycle.empty:
             macro_source = merge_macro_with_leading_cycle(macro_source, leading_cycle)
@@ -1558,7 +1530,7 @@ def main() -> None:
             print(f"Applied ECOS leading_cycle rows: {len(leading_cycle)} (latest={latest})")
             build_report["events"].append(f"Applied ECOS leading_cycle rows: {len(leading_cycle)} latest={latest}")
 
-        news_sentiment = fetch_ecos_news_sentiment(ecos_key)
+        news_sentiment = fetch_ecos_news_sentiment(ecos_key, ecos_news_start)
         build_report["sources"]["ecos_news_sentiment"] = frame_summary(news_sentiment)
         if not news_sentiment.empty:
             macro_source = merge_macro_frame(macro_source, news_sentiment)
@@ -1623,9 +1595,17 @@ def main() -> None:
         build_report["events"].append("KOFIA_API_KEY is not configured; using existing verified credit seed.")
 
     if ENABLE_FREESIS_CREDIT_TAIL:
+        freesis_start = incremental_start_date(
+            credit_merged.index.max() if not credit_merged.empty else None,
+            pd.to_datetime(FREESIS_CREDIT_START, format="%Y%m%d").date(),
+            FREESIS_OVERLAP_DAYS,
+            full_rebuild,
+        ).strftime("%Y%m%d")
+        build_report["policy"]["freesis_start"] = freesis_start
+        build_report["policy"]["freesis_overlap_days"] = FREESIS_OVERLAP_DAYS
         credit_live = merge_credit_frames(
-            fetch_freesis_credit(),
-            fetch_freesis_customer_deposit(),
+            fetch_freesis_credit(freesis_start),
+            fetch_freesis_customer_deposit(freesis_start),
         )
         build_report["sources"]["freesis_credit"] = frame_summary(credit_live)
         credit_merged, appended_credit = merge_credit_seed_with_freesis(credit_merged, credit_live)
@@ -1664,28 +1644,50 @@ def main() -> None:
     auxiliary = merge_auxiliary_data(auxiliary, fear_greed_records, ["fear_greed"])
 
     dart_key = resolve_dart_api_key()
-    dart_corp_map = {}
-    if dart_key:
+    dart_corp_map = load_existing_dart_corp_code_seed()
+    if dart_key and (full_rebuild or not dart_corp_map):
         try:
-            dart_corp_map = fetch_dart_corp_code_map(dart_key)
+            refreshed_dart_corp_map = fetch_dart_corp_code_map(dart_key)
+            if refreshed_dart_corp_map:
+                dart_corp_map = refreshed_dart_corp_map
         except Exception as exc:
             print(f"DART corp code map fetch failed: {exc}")
     if not dart_corp_map:
-        dart_corp_map = load_existing_dart_corp_code_seed()
-        if dart_corp_map:
-            print(f"Keeping existing DART corp code map ({len(dart_corp_map)} rows).")
-            build_report["events"].append(f"Keeping existing DART corp code map rows: {len(dart_corp_map)}")
+        print("DART corp code map is unavailable.")
+    elif not full_rebuild:
+        print(f"Keeping existing DART corp code map ({len(dart_corp_map)} rows).")
+        build_report["events"].append(f"Keeping existing DART corp code map rows: {len(dart_corp_map)}")
     build_report["sources"]["dart_corp_codes"] = {"rows": len(dart_corp_map), "latest": ""}
 
     existing_disclosure_records = load_existing_disclosure_seed()
-    disclosure_records = (
-        fetch_dart_disclosures(dart_key, configured_disclosure_stock_codes(), dart_corp_map)
+    disclosure_stock_codes = configured_disclosure_stock_codes()
+    dart_starts = disclosure_start_dates(
+        existing_disclosure_records,
+        disclosure_stock_codes,
+        years_before(date.today(), DART_DISCLOSURE_LOOKBACK_YEARS),
+        DART_OVERLAP_DAYS,
+        full_rebuild,
+    )
+    build_report["policy"]["dart_overlap_days"] = DART_OVERLAP_DAYS
+    build_report["policy"]["dart_earliest_start"] = min(dart_starts.values(), default="")
+    fresh_disclosure_records = (
+        fetch_dart_disclosures(
+            dart_key,
+            disclosure_stock_codes,
+            dart_corp_map,
+            start_dates=dart_starts,
+        )
         if dart_key
         else []
     )
-    if disclosure_records:
-        print(f"Applied DART disclosure rows: {len(disclosure_records)} (latest={disclosure_records[-1]['date']})")
-        build_report["events"].append(f"Applied DART disclosure rows: {len(disclosure_records)} latest={disclosure_records[-1]['date']}")
+    if fresh_disclosure_records:
+        disclosure_records = normalize_disclosure_records(
+            fresh_disclosure_records if full_rebuild else existing_disclosure_records + fresh_disclosure_records
+        )
+        print(f"Applied DART disclosure rows: {len(fresh_disclosure_records)} (latest={fresh_disclosure_records[-1]['date']})")
+        build_report["events"].append(
+            f"Applied DART disclosure rows: {len(fresh_disclosure_records)} latest={fresh_disclosure_records[-1]['date']}"
+        )
     else:
         disclosure_records = existing_disclosure_records
         if disclosure_records:
