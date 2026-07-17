@@ -5,7 +5,7 @@ import path from "node:path";
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [app, html, sw, playwrightConfig, dataPayload, dataWorker, chartLoader, disclosurePolicy, dartDisclosure, serviceWorkerClient, plotlyBundle] = await Promise.all([
+const [app, html, sw, playwrightConfig, dataPayload, dataWorker, chartLoader, disclosurePolicy, dartDisclosure, serviceWorkerClient, runtimeRefresh, plotlyBundle] = await Promise.all([
   readFile(path.join(root, "docs", "app.js"), "utf8"),
   readFile(path.join(root, "docs", "index.html"), "utf8"),
   readFile(path.join(root, "docs", "sw.js"), "utf8"),
@@ -16,6 +16,7 @@ const [app, html, sw, playwrightConfig, dataPayload, dataWorker, chartLoader, di
   readFile(path.join(root, "docs", "modules", "disclosure-policy.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "dart-disclosure.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "service-worker-client.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "runtime-refresh.js"), "utf8"),
   stat(path.join(root, "docs", "vendor", "plotly-basic-2.35.2.min.js")),
 ]);
 
@@ -48,6 +49,7 @@ requiredIds.forEach((id) => assert.ok(ids.includes(id), `required UI element is 
   "./modules/disclosure-policy.js?v=dev",
   "./modules/dart-disclosure.js?v=dev",
   "./modules/service-worker-client.js?v=dev",
+  "./modules/runtime-refresh.js?v=dev",
   "./modules/data-worker.js?v=dev",
   "./modules/chart-model-worker.js?v=dev",
   "./app.js?v=dev",
@@ -64,6 +66,11 @@ assert.ok(app.includes("ThinkStockDisclosurePolicy"), "disclosure policy module 
 assert.ok(app.includes("ThinkStockDartDisclosure"), "DART disclosure module is not wired into the app");
 assert.ok(app.includes("ThinkStockServiceWorkerClient"), "service worker client module is not wired into the app");
 assert.ok(serviceWorkerClient.includes("createServiceWorkerClient"), "service worker client module is incomplete");
+assert.ok(app.includes("ThinkStockRuntimeRefresh"), "runtime refresh module is not wired into the app");
+assert.ok(runtimeRefresh.includes("runRefreshPhases"), "runtime refresh phase runner is incomplete");
+assert.ok(app.includes("criticalTasks: [coreIndexTask, preloadTask, liveTask]"), "critical startup refresh tasks are not grouped");
+assert.ok(app.includes("supplementalTasks: [adrTask, fearGreedTask, dartTask]"), "supplemental refresh tasks are not grouped");
+assert.ok(app.includes("awaitCriticalRender: true") && app.includes("onCriticalReady"), "startup loader does not wait for the critical render phase");
 assert.ok(dartDisclosure.includes("fetchForMarkets") && dartDisclosure.includes("fetchForTicker"), "DART disclosure fetch service is incomplete");
 assert.ok(dartDisclosure.includes("rememberRefresh") && dartDisclosure.includes("mergeRows"), "DART disclosure cache service is incomplete");
 assert.ok(!app.includes("function fetchDartDisclosurePage("), "DART page fetching still lives in app.js");
@@ -80,7 +87,7 @@ assert.ok(app.includes('yaxis: "y3"'), "news sentiment auxiliary axis is missing
 assert.ok(app.includes('text: "비관"'), "news sentiment pessimism guide is missing");
 assert.ok(app.includes('text: "낙관"'), "news sentiment optimism guide is missing");
 assert.ok(app.includes("CUSTOM_STOCK_PRELOAD_CONCURRENCY"), "custom stock preload concurrency guard is missing");
-assert.ok(app.includes("fearGreedTask") && app.includes("Promise.all(["), "independent runtime refreshes are not parallelized");
+assert.ok(runtimeRefresh.includes("const criticalPromise") && runtimeRefresh.includes("const supplementalPromise"), "refresh phases do not start in parallel");
 assert.ok(app.includes("coreIndexTask") && app.includes("preloadTask"), "price refresh tasks still run serially");
 assert.ok(app.includes("Promise.allSettled([\n    apiSettings.ecosApiKey"), "macro and credit APIs still run serially");
 assert.ok(app.includes('name: "공포탐욕"') && app.includes('yaxis: "y2"'), "fear-greed auxiliary panel is missing");

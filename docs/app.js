@@ -6,6 +6,9 @@ if (!serviceWorkerClientModule) throw new Error("Service worker client module fa
 const serviceWorkerClient = serviceWorkerClientModule.createServiceWorkerClient(globalThis);
 const requestServiceWorkerDataRefresh = serviceWorkerClient.requestDataRefresh;
 const scheduleServiceWorkerRegistration = serviceWorkerClient.scheduleRegistration;
+const runtimeRefreshModule = globalThis.ThinkStockRuntimeRefresh;
+if (!runtimeRefreshModule) throw new Error("Runtime refresh module failed to load");
+const { runRefreshPhases } = runtimeRefreshModule;
 
 const DISPLAY_NAMES = {
   leading_cycle: "\uC120\uD589\uC21C\uD658\uBCC0\uB3D9",
@@ -83,7 +86,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.79";
+const APP_VERSION = "0.80";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -351,6 +354,7 @@ let perfFrameStats = { frames: 0, longFrames: 0, maxFrameGap: 0 };
 let runtimeRefreshController = null;
 let runtimeRefreshPromise = null;
 let runtimeRefreshGeneration = 0;
+let runtimeRefreshPhaseStats = { criticalReady: 0, supplementalReady: 0 };
 let startupLoaderHideTimer = null;
 let startupLoaderRafId = 0;
 let startupLoaderDisplayProgress = 100;
@@ -436,6 +440,9 @@ function initE2eDebugAccess() {
       },
       getChartRenderGeneration() {
         return chartRenderGeneration;
+      },
+      getRefreshPhaseStats() {
+        return { ...runtimeRefreshPhaseStats };
       },
       getChartWorkerStats() {
         return {
@@ -6827,19 +6834,43 @@ async function ensureHistoricalDataLoaded(forceNetwork = false) {
   return historicalDataLoadPromise;
 }
 
+async function applyRuntimeRefreshChanges(revisionsBefore, options = {}) {
+  const revisionsAfter = getDataRevisions();
+  const mainDataChanged = ["price", "macro", "credit"]
+    .some((name) => revisionsAfter[name] !== revisionsBefore[name]);
+  const adrDataChanged = revisionsAfter.adr !== revisionsBefore.adr;
+  const disclosureDataChanged = revisionsAfter.disclosure !== revisionsBefore.disclosure;
+  if (mainDataChanged) {
+    if (options.awaitMainRender) await renderChart(false);
+    else renderChartWhenIdleOrNow(false);
+  } else {
+    if (adrDataChanged) {
+      lastAdrRenderKey = "";
+      const mainEl = document.getElementById("chart");
+      renderAdrChart(mainEl?._fullLayout?.xaxis?.range?.slice() || null);
+    }
+    if (disclosureDataChanged && !applyDisclosureStateFast()) requestChartRender(false);
+  }
+  return { revisionsAfter, mainDataChanged, adrDataChanged, disclosureDataChanged };
+}
+
 async function runRuntimeDataRefresh(msgEl, options = {}) {
   const revisionsBeforeRefresh = getDataRevisions();
   const perfStartedAt = perfDebugEnabled && typeof performance !== "undefined" ? performance.now() : 0;
   const infoLines = [];
   const warnLines = [];
   let refreshedDart = false;
+  let phaseRevisions = revisionsBeforeRefresh;
+  let mainDataChanged = false;
+  let adrDataChanged = false;
+  let disclosureDataChanged = false;
   const forceNetwork = Boolean(options?.forceNetwork);
   const signal = options?.signal || null;
 
-  const coreIndexTask = refreshCoreIndexSeries({ signal })
+  const coreIndexTask = () => refreshCoreIndexSeries({ signal })
     .then((result) => ({ info: result.applied || [], warnings: result.warnings || [] }));
 
-  const preloadTask = preloadCustomStocks({ forceRefresh: forceNetwork, signal })
+  const preloadTask = () => preloadCustomStocks({ forceRefresh: forceNetwork, signal })
     .then((result) => ({
       info: [],
       warnings: result.failedNames.length
@@ -6847,21 +6878,21 @@ async function runRuntimeDataRefresh(msgEl, options = {}) {
         : [],
     }));
 
-  const adrTask = refreshAdrFromWeb(signal)
+  const adrTask = () => refreshAdrFromWeb(signal)
     .then(({ added, latestDate }) => ({
       info: added > 0 ? [`ADR ${added}건 추가 반영(~ ${latestDate})`] : [],
       warnings: [],
     }))
     .catch((adrErr) => ({ info: [], warnings: [`ADR 불러오기 오류: ${adrErr.message}`] }));
 
-  const fearGreedTask = refreshFearGreedFromWeb(signal)
+  const fearGreedTask = () => refreshFearGreedFromWeb(signal)
     .then(({ added, latestDate }) => ({
       info: added > 0 ? [`공포탐욕 최신값 반영(~ ${latestDate})`] : [],
       warnings: [],
     }))
     .catch((error) => ({ info: [], warnings: [`공포탐욕 불러오기 오류: ${error.message}`] }));
 
-  const dartTask = apiSettings.dartApiKey
+  const dartTask = () => (apiSettings.dartApiKey
     ? (async () => {
       try {
         const refreshCurrentTickers = Boolean(apiSettings.dartProxyEnabled);
@@ -6887,42 +6918,52 @@ async function runRuntimeDataRefresh(msgEl, options = {}) {
         return { info: [], warnings: [`DART 공시 불러오기 오류: ${dartErr.message}`], refreshed: false };
       }
     })()
-    : Promise.resolve({ info: [], warnings: [], refreshed: false });
+    : Promise.resolve({ info: [], warnings: [], refreshed: false }));
 
-  const liveTask = refreshLiveApiData(signal)
+  const liveTask = () => refreshLiveApiData(signal)
     .then((result) => ({ info: result.applied || [], warnings: result.warnings || [] }))
     .catch((liveErr) => ({ info: [], warnings: [`최신 지표 불러오기 오류: ${liveErr.message}`] }));
 
-  const [coreIndexResult, preloadResult, adrResult, fearGreedResult, dartResult, liveResult] = await Promise.all([
-    coreIndexTask,
-    preloadTask,
-    adrTask,
-    fearGreedTask,
-    dartTask,
-    liveTask,
-  ]);
-  throwIfAborted(signal);
-  [coreIndexResult, preloadResult, adrResult, fearGreedResult, dartResult, liveResult].forEach((result) => {
+  const collectResults = (results) => results.forEach((result) => {
     infoLines.push(...(result.info || []));
     warnLines.push(...(result.warnings || []));
   });
-  refreshedDart = Boolean(dartResult.refreshed);
 
-  const revisionsAfterRefresh = getDataRevisions();
-  const mainDataChanged = ["price", "macro", "credit"]
-    .some((name) => revisionsAfterRefresh[name] !== revisionsBeforeRefresh[name]);
-  const adrDataChanged = revisionsAfterRefresh.adr !== revisionsBeforeRefresh.adr;
-  const disclosureDataChanged = revisionsAfterRefresh.disclosure !== revisionsBeforeRefresh.disclosure;
-  if (mainDataChanged) {
-    renderChartWhenIdleOrNow(false);
-  } else {
-    if (adrDataChanged) {
-      lastAdrRenderKey = "";
-      const mainEl = document.getElementById("chart");
-      renderAdrChart(mainEl?._fullLayout?.xaxis?.range?.slice() || null);
-    }
-    if (disclosureDataChanged && !applyDisclosureStateFast()) requestChartRender(false);
-  }
+  const applyPhaseChanges = async (awaitMainRender = false) => {
+    const changes = await applyRuntimeRefreshChanges(phaseRevisions, { awaitMainRender });
+    phaseRevisions = changes.revisionsAfter;
+    mainDataChanged = mainDataChanged || changes.mainDataChanged;
+    adrDataChanged = adrDataChanged || changes.adrDataChanged;
+    disclosureDataChanged = disclosureDataChanged || changes.disclosureDataChanged;
+    return changes;
+  };
+
+  await runRefreshPhases({
+    criticalTasks: [coreIndexTask, preloadTask, liveTask],
+    supplementalTasks: [adrTask, fearGreedTask, dartTask],
+    onCritical: async (results) => {
+      throwIfAborted(signal);
+      collectResults(results);
+      const changes = await applyPhaseChanges(Boolean(options?.awaitCriticalRender));
+      runtimeRefreshPhaseStats.criticalReady += 1;
+      if (typeof options?.onCriticalReady === "function") {
+        setMessage(msgEl, [
+          ...infoLines,
+          ...warnLines,
+          "공시·보조지표를 백그라운드에서 갱신 중입니다.",
+        ], false);
+        await options.onCriticalReady({ changes, info: [...infoLines], warnings: [...warnLines] });
+      }
+    },
+    onSupplemental: async (results) => {
+      throwIfAborted(signal);
+      collectResults(results);
+      refreshedDart = Boolean(results[2]?.refreshed);
+      await applyPhaseChanges(false);
+      runtimeRefreshPhaseStats.supplementalReady += 1;
+    },
+  });
+
   if (refreshedDart) {
     if (lastDisclosureTraceStats.markers > 0) {
       infoLines.push(`현재 차트에 공시 마커 ${lastDisclosureTraceStats.markers}개 표시됨`);
@@ -7137,7 +7178,20 @@ async function boot() {
       if (restoredLastSnapshot) {
         await loadData(true, { mergeWithExisting: true });
       }
-      await refreshRuntimeData(msgEl);
+      let releaseStartupLoader = null;
+      const criticalReady = new Promise((resolve) => { releaseStartupLoader = resolve; });
+      refreshRuntimeData(msgEl, {
+        awaitCriticalRender: true,
+        onCriticalReady: () => releaseStartupLoader({ ok: true }),
+      })
+        .then((result) => {
+          if (result?.cancelled) releaseStartupLoader({ ok: false });
+        })
+        .catch((refreshErr) => {
+          setMessage(msgEl, `최신 데이터 갱신 오류: ${refreshErr.message}`, true);
+          releaseStartupLoader({ ok: false });
+        });
+      await criticalReady;
     } catch (refreshErr) {
       setMessage(msgEl, `최신 데이터 갱신 오류: ${refreshErr.message}`, true);
     }

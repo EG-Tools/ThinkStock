@@ -149,13 +149,45 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   await stubExternalRefreshes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.79");
+  await expect(page.locator("#appVersionText")).toHaveText("0.80");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
   const firstChartDate = await page.locator("#chart").evaluate((element) => element.data?.[0]?.x?.[0]);
   expect(firstChartDate).toMatch(/^2016-/);
   expect(pageErrors).toEqual([]);
+});
+
+test("startup loader releases before supplemental refresh finishes", async ({ page }) => {
+  let releaseFearGreed;
+  const fearGreedGate = new Promise((resolve) => { releaseFearGreed = resolve; });
+  await page.route("https://kospi.feargreedchart.com/**", async (route) => {
+    await fearGreedGate;
+    await route.fulfill({
+      status: 503,
+      headers: { "access-control-allow-origin": "*", "content-type": "application/json" },
+      body: "{}",
+    });
+  });
+  await stubExternalRefreshes(page);
+
+  try {
+    await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+    await expect.poll(() => page.evaluate(() => (
+      window.ThinkStockE2E?.getRefreshPhaseStats?.().criticalReady || 0
+    ))).toBeGreaterThan(0);
+    await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+    await expect(page.locator(".hero h1")).not.toHaveClass(/is-loading/);
+    expect(await page.evaluate(() => (
+      window.ThinkStockE2E?.getRefreshPhaseStats?.().supplementalReady || 0
+    ))).toBe(0);
+  } finally {
+    releaseFearGreed();
+  }
+
+  await expect.poll(() => page.evaluate(() => (
+    window.ThinkStockE2E?.getRefreshPhaseStats?.().supplementalReady || 0
+  ))).toBeGreaterThan(0);
 });
 
 test("component snapshot restores the latest auxiliary data after reload", async ({ page }) => {
@@ -199,7 +231,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   const getHistoryRequests = await installDataRoutes(page);
   await page.goto("/?e2e=1&perf=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.79");
+  await expect(page.locator("#appVersionText")).toHaveText("0.80");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   await expect(page.locator('[data-series="customer_deposit"]')).toBeVisible();

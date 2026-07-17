@@ -53,6 +53,7 @@ def main() -> int:
     disclosure_policy_src = f"./modules/disclosure-policy.js?v={version}"
     dart_disclosure_src = f"./modules/dart-disclosure.js?v={version}"
     service_worker_client_src = f"./modules/service-worker-client.js?v={version}"
+    runtime_refresh_src = f"./modules/runtime-refresh.js?v={version}"
     data_worker_src = f"./modules/data-worker.js?v={version}"
     chart_model_worker_src = f"./modules/chart-model-worker.js?v={version}"
     app_src = f"./app.js?v={version}"
@@ -87,6 +88,12 @@ def main() -> int:
         r'<script defer src="\./modules/service-worker-client\.js(?:\?v=[^"]*)?"></script>',
         f'<script defer src="{service_worker_client_src}"></script>',
         "index service-worker-client.js script",
+    )
+    index = replace_once(
+        index,
+        r'<script defer src="\./modules/runtime-refresh\.js(?:\?v=[^"]*)?"></script>',
+        f'<script defer src="{runtime_refresh_src}"></script>',
+        "index runtime-refresh.js script",
     )
     index = replace_once(
         index,
@@ -132,6 +139,12 @@ def main() -> int:
         r'"\./modules/service-worker-client\.js(?:\?v=[^"]*)?",',
         f'"{service_worker_client_src}",',
         "service worker service-worker-client.js asset",
+    )
+    sw = replace_once(
+        sw,
+        r'"\./modules/runtime-refresh\.js(?:\?v=[^"]*)?",',
+        f'"{runtime_refresh_src}",',
+        "service worker runtime-refresh.js asset",
     )
     sw = replace_once(
         sw,

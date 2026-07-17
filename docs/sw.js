@@ -9,6 +9,7 @@ const PRECACHE_ASSETS = [
   "./modules/disclosure-policy.js?v=dev",
   "./modules/dart-disclosure.js?v=dev",
   "./modules/service-worker-client.js?v=dev",
+  "./modules/runtime-refresh.js?v=dev",
   "./modules/data-worker.js?v=dev",
   "./modules/chart-model-worker.js?v=dev",
   "./app.js?v=dev",
@@ -46,6 +47,7 @@ const CORE_ASSET_PATHS = [
   "/modules/disclosure-policy.js",
   "/modules/dart-disclosure.js",
   "/modules/service-worker-client.js",
+  "/modules/runtime-refresh.js",
   "/modules/data-worker.js",
   "/modules/chart-model-worker.js",
 ];
