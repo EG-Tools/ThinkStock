@@ -239,28 +239,6 @@ def merge_credit_seed_with_existing_tail(seed: pd.DataFrame, existing: pd.DataFr
     return merge_credit_frames(seed, tail.loc[keep])
 
 
-def align_historical_credit_seed(historical: pd.DataFrame, reference: pd.DataFrame) -> pd.DataFrame:
-    historical = pick_numeric_columns(historical, CREDIT_SERIES)
-    reference = pick_numeric_columns(reference, CREDIT_SERIES)
-    if historical.empty or reference.empty:
-        return historical
-
-    aligned = historical.copy()
-    first_reference_date = reference.index.min()
-    before_reference = aligned.index < first_reference_date
-    if not before_reference.any():
-        return aligned
-
-    for column in CREDIT_SERIES:
-        factor = median_scale_factor(reference[column], historical[column])
-        if factor > 1.15 or factor < 0.85:
-            aligned.loc[before_reference, column] = aligned.loc[before_reference, column] * factor
-
-    aligned.index.name = "date"
-    return aligned[CREDIT_SERIES]
-
-
-
 def _read_env_key(path: Path, key: str) -> str:
     if not path.exists():
         return ""
@@ -1352,33 +1330,56 @@ def merge_credit_seed_with_kofia(seed: pd.DataFrame, live: pd.DataFrame) -> tupl
     if seed.empty:
         return live.sort_index(), len(live)
 
-    live = live.sort_index()
-    first_live_date = live.index.min()
-    merged = align_historical_credit_seed(seed, live).copy()
-    merged = merged[merged.index < first_live_date]
-    applied = 0
-    for idx, row in live.iterrows():
-        prev = merged.loc[idx] if idx in merged.index else pd.Series(dtype="float64")
-        changed = idx not in merged.index
-        next_values: dict[str, object] = {}
-        for column in CREDIT_SERIES:
-            prev_value = prev.get(column, pd.NA)
-            live_value = row.get(column, pd.NA)
-            next_value = live_value if pd.notna(live_value) else prev_value
-            next_values[column] = next_value
-            if (
-                (pd.isna(prev_value) and pd.notna(next_value))
-                or (pd.notna(prev_value) and pd.notna(next_value) and float(next_value) != float(prev_value))
-            ):
-                changed = True
-        if changed:
-            applied += 1
-        for column, value in next_values.items():
-            merged.loc[idx, column] = value
+    seed = pick_numeric_columns(seed, CREDIT_SERIES)
+    live = pick_numeric_columns(live, CREDIT_SERIES).sort_index()
 
-    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+    # KOFIA and Freesis occasionally expose the same series with different
+    # units. Align the incoming source on a real overlap, then preserve the
+    # already validated overlap instead of replacing it.
+    aligned_live = live.copy()
+    for column in CREDIT_SERIES:
+        overlap = pd.concat(
+            [
+                pd.to_numeric(seed[column], errors="coerce").rename("seed"),
+                pd.to_numeric(live[column], errors="coerce").rename("live"),
+            ],
+            axis=1,
+            join="inner",
+        ).dropna()
+        overlap = overlap[(overlap["seed"] > 0) & (overlap["live"] > 0)]
+        if len(overlap) < 5:
+            continue
+        factor = median_scale_factor(overlap["seed"], overlap["live"])
+        if 0.2 <= factor <= 5.0 and (factor > 1.15 or factor < 0.85):
+            aligned_live[column] = aligned_live[column] * factor
+
+    tail = aligned_live[aligned_live.index > seed.index.max()]
+    if tail.empty:
+        return seed, 0
+
+    accepted: list[pd.Series] = []
+    prev_date = seed.index.max()
+    prev_row = seed.loc[prev_date].copy()
+    for idx, row in tail.iterrows():
+        next_row = prev_row.copy()
+        for column in CREDIT_SERIES:
+            live_value = row.get(column, pd.NA)
+            if pd.notna(live_value):
+                next_row[column] = live_value
+        if not is_plausible_credit_transition(prev_date, prev_row, idx, next_row):
+            print(f"Dropped KOFIA credit tail from {idx.strftime('%Y-%m-%d')} due to discontinuity.")
+            break
+        next_row.name = idx
+        accepted.append(next_row)
+        prev_date = idx
+        prev_row = next_row
+
+    if not accepted:
+        return seed, 0
+    tail_frame = pd.DataFrame(accepted)
+    merged = merge_credit_frames(seed, tail_frame)
     merged.index.name = "date"
-    return merged[CREDIT_SERIES], applied
+    return merged[CREDIT_SERIES], len(accepted)
 
 
 def build_payload(df: pd.DataFrame, labels: dict[str, str], series_names: list[str]) -> dict:
