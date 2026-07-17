@@ -14,6 +14,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 from build_pages_data import (
     CREDIT_SERIES,
     build_dart_corp_code_payload,
+    find_credit_history_discontinuity,
     merge_credit_seed_with_kofia,
 )
 
@@ -91,6 +92,18 @@ class BuildPagesDataHelperTests(unittest.TestCase):
             seed[CREDIT_SERIES],
             check_names=False,
         )
+
+    def test_detects_poisoned_cached_credit_history(self) -> None:
+        frame = pd.DataFrame({
+            "customer_deposit": [60.0, 60.5],
+            "kospi_credit": [17.72, 14.079],
+            "kosdaq_credit": [10.0, 10.1],
+        }, index=pd.to_datetime(["2025-10-01", "2025-10-02"]))
+
+        issue = find_credit_history_discontinuity(frame)
+
+        self.assertIn("kospi_credit", issue)
+        self.assertIn("2025-10-01->2025-10-02", issue)
 
 
 if __name__ == "__main__":

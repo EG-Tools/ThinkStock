@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import subprocess
 import zipfile
 from datetime import date
 from io import BytesIO, StringIO
@@ -1256,14 +1257,7 @@ def merge_auxiliary_data(seed: pd.DataFrame, records: list[dict], columns: list[
     return merged
 
 
-def load_existing_credit_seed() -> pd.DataFrame:
-    if not OUTPUT_CREDIT_JSON.exists():
-        return pd.DataFrame(columns=CREDIT_SERIES)
-    try:
-        payload = json.loads(OUTPUT_CREDIT_JSON.read_text(encoding="utf-8"))
-    except Exception:
-        return pd.DataFrame(columns=CREDIT_SERIES)
-
+def credit_frame_from_payload(payload: dict) -> pd.DataFrame:
     rows = records_from_payload(payload)
     if not isinstance(rows, list) or not rows:
         return pd.DataFrame(columns=CREDIT_SERIES)
@@ -1284,6 +1278,60 @@ def load_existing_credit_seed() -> pd.DataFrame:
     out = frame.set_index("date")[CREDIT_SERIES]
     out.index.name = "date"
     return out
+
+
+def load_existing_credit_seed() -> pd.DataFrame:
+    if not OUTPUT_CREDIT_JSON.exists():
+        return pd.DataFrame(columns=CREDIT_SERIES)
+    try:
+        payload = json.loads(OUTPUT_CREDIT_JSON.read_text(encoding="utf-8"))
+    except Exception:
+        return pd.DataFrame(columns=CREDIT_SERIES)
+    return credit_frame_from_payload(payload)
+
+
+def load_committed_credit_seed() -> pd.DataFrame:
+    try:
+        raw = subprocess.check_output(
+            ["git", "show", "HEAD:docs/data/credit_data.json"],
+            cwd=ROOT,
+            text=True,
+            encoding="utf-8",
+            stderr=subprocess.DEVNULL,
+        )
+        payload = json.loads(raw)
+    except Exception:
+        return pd.DataFrame(columns=CREDIT_SERIES)
+    return credit_frame_from_payload(payload)
+
+
+def find_credit_history_discontinuity(frame: pd.DataFrame) -> str:
+    if frame is None or frame.empty:
+        return ""
+    last_seen: dict[str, tuple[pd.Timestamp, float] | None] = {
+        column: None for column in CREDIT_SERIES
+    }
+    for row_date, row in frame.sort_index().iterrows():
+        for column in CREDIT_SERIES:
+            value = pd.to_numeric(row.get(column), errors="coerce")
+            if pd.isna(value):
+                continue
+            previous = last_seen[column]
+            if previous is not None:
+                prev_date, prev_value = previous
+                day_span = max(1, (row_date.normalize() - prev_date.normalize()).days)
+                daily_pct_change = abs(float(value) / prev_value - 1.0) / day_span if prev_value > 0 else 0.0
+                daily_abs_change = abs(float(value) - prev_value) / day_span
+                if (
+                    daily_pct_change > CREDIT_MAX_DAILY_PCT_CHANGE
+                    and daily_abs_change > CREDIT_MAX_DAILY_ABS_CHANGE[column]
+                ):
+                    return (
+                        f"{column} {prev_date.strftime('%Y-%m-%d')}->{row_date.strftime('%Y-%m-%d')} "
+                        f"({prev_value:g}->{float(value):g})"
+                    )
+            last_seen[column] = (row_date, float(value))
+    return ""
 
 
 def median_scale_factor(seed: pd.Series, live: pd.Series) -> float:
@@ -1563,6 +1611,17 @@ def main() -> None:
     macro = densify_macro(public_macro_source, prices.index if not prices.empty else pd.DatetimeIndex([]))
 
     existing_credit_seed = load_existing_credit_seed()
+    cached_credit_issue = find_credit_history_discontinuity(existing_credit_seed)
+    if cached_credit_issue:
+        committed_credit_seed = load_committed_credit_seed()
+        committed_credit_issue = find_credit_history_discontinuity(committed_credit_seed)
+        if not committed_credit_seed.empty and not committed_credit_issue:
+            existing_credit_seed = committed_credit_seed
+            event = f"Discarded invalid cached credit seed: {cached_credit_issue}"
+            print(event)
+            build_report["events"].append(event)
+        else:
+            print(f"Cached credit seed has a discontinuity: {cached_credit_issue}")
     kofia_key = resolve_kofia_api_key()
     existing_credit_is_newer = (
         not existing_credit_seed.empty
