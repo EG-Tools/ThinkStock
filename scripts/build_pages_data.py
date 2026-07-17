@@ -1389,10 +1389,19 @@ def merge_credit_seed_with_incremental_tail(
             join="inner",
         ).dropna()
         overlap = overlap[(overlap["seed"] > 0) & (overlap["live"] > 0)]
-        if len(overlap) < 5:
-            continue
-        factor = median_scale_factor(overlap["seed"], overlap["live"])
-        if 0.2 <= factor <= 5.0 and (factor > 1.02 or factor < 0.98):
+        factor = 1.0
+        if len(overlap) >= 5:
+            recent_overlap = overlap.sort_index().tail(20)
+            factor = median_scale_factor(recent_overlap["seed"], recent_overlap["live"])
+        else:
+            seed_values = pd.to_numeric(seed[column], errors="coerce").dropna()
+            tail_values = pd.to_numeric(
+                live.loc[live.index > seed.index.max(), column],
+                errors="coerce",
+            ).dropna()
+            if not seed_values.empty and not tail_values.empty and float(tail_values.iloc[0]) > 0:
+                factor = float(seed_values.iloc[-1]) / float(tail_values.iloc[0])
+        if 0.5 <= factor <= 2.0 and (factor > 1.02 or factor < 0.98):
             aligned_live[column] = aligned_live[column] * factor
 
     tail = aligned_live[aligned_live.index > seed.index.max()]
@@ -1624,18 +1633,13 @@ def main() -> None:
         else:
             print(f"Cached credit seed has a discontinuity: {cached_credit_issue}")
     kofia_key = resolve_kofia_api_key()
-    existing_credit_is_newer = (
-        not existing_credit_seed.empty
-        and not historical_credit_seed.empty
-        and existing_credit_seed.index.max() > historical_credit_seed.index.max()
-    )
-    if not kofia_key and existing_credit_is_newer:
-        credit_seed = existing_credit_seed
+    if not existing_credit_seed.empty:
+        credit_seed = merge_credit_frames(historical_credit_seed, existing_credit_seed)
         latest_existing_credit = existing_credit_seed.index.max().strftime("%Y-%m-%d")
         print(f"Keeping existing verified credit seed (latest={latest_existing_credit}).")
         build_report["events"].append(f"Keeping existing verified credit seed latest={latest_existing_credit}")
     else:
-        credit_seed = merge_credit_seed_with_existing_tail(historical_credit_seed, existing_credit_seed)
+        credit_seed = historical_credit_seed
     build_report["sources"]["credit_seed"] = frame_summary(credit_seed)
     credit_merged = credit_seed
     kofia_start = incremental_start_date(
