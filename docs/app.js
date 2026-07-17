@@ -248,6 +248,7 @@ const MAIN_CHART_TOTAL_VISIBLE_POINT_TARGET_MOBILE = 2800;
 const INTERACTION_RENDER_DELAY_MS = 260;
 const PERF_DEBUG_KEY = "thinkstock-perf-debug";
 const PERF_SAMPLE_LIMIT = 80;
+const PERF_FRAME_GAP_IGNORE_MS = 1000;
 const DISCLOSURE_TRACE_NAME = "공시";
 const DISCLOSURE_ICON_TEXT = "◆";
 const DISCLOSURE_MARKER_COLOR = "#fde047";
@@ -435,9 +436,11 @@ function startPerfFrameMonitor() {
     if (!perfDebugEnabled) return;
     if (perfLastFrameAt > 0 && document.visibilityState === "visible") {
       const gap = timestamp - perfLastFrameAt;
-      perfFrameStats.frames += 1;
-      perfFrameStats.maxFrameGap = Math.max(perfFrameStats.maxFrameGap, Math.round(gap * 10) / 10);
-      if (gap >= 50 && gap < 1000) perfFrameStats.longFrames += 1;
+      if (gap > 0 && gap < PERF_FRAME_GAP_IGNORE_MS) {
+        perfFrameStats.frames += 1;
+        perfFrameStats.maxFrameGap = Math.max(perfFrameStats.maxFrameGap, Math.round(gap * 10) / 10);
+        if (gap >= 50) perfFrameStats.longFrames += 1;
+      }
     }
     perfLastFrameAt = timestamp;
     perfFrameRafId = requestAnimationFrame(tick);
