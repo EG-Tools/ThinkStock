@@ -15,7 +15,12 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from check_pages_data_regression import DataRegressionError, compare_core_dataset, emit_github_error
+from check_pages_data_regression import (
+    DataRegressionError,
+    compare_core_dataset,
+    compare_corp_codes,
+    emit_github_error,
+)
 
 
 def write_payload(root: Path, file_name: str, dates: list[str], values: list[float | None]) -> Path:
@@ -59,6 +64,35 @@ class PagesDataRegressionTests(unittest.TestCase):
 
         self.assertIn("file=scripts/check_pages_data_regression.py,line=1", output.getvalue())
         self.assertIn("%0A", output.getvalue())
+
+    def test_compares_legacy_and_compact_dart_code_formats(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            baseline = root / "baseline"
+            current = root / "current"
+            baseline.mkdir()
+            current.mkdir()
+            (baseline / "dart_corp_codes.json").write_text(
+                json.dumps({
+                    "records": [
+                        {"stock_code": "005930", "corp_code": "00126380", "corp_name": "Samsung"},
+                        {"stock_code": "218410", "corp_code": "01035674", "corp_name": "RFHIC"},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+            (current / "dart_corp_codes.json").write_text(
+                json.dumps({
+                    "format": "stock-to-corp-v2",
+                    "codes": {
+                        "005930": "00126380",
+                        "218410": "01035674",
+                    },
+                }),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(compare_corp_codes(baseline, current), "dart_corp_codes: 2 mappings")
 
 
 if __name__ == "__main__":

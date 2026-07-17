@@ -166,18 +166,35 @@ def compare_disclosures(baseline_root: Path, current_root: Path) -> list[str]:
     return messages
 
 
+def corp_code_map(payload: dict) -> dict[str, str]:
+    codes = payload.get("codes")
+    if isinstance(codes, dict):
+        return {
+            str(stock_code): str(corp_code)
+            for stock_code, corp_code in codes.items()
+            if len(str(stock_code)) == 6 and str(corp_code)
+        }
+    out: dict[str, str] = {}
+    for row in records_from_payload(payload):
+        stock_code = str(row.get("stock_code") or "")
+        corp_code = str(row.get("corp_code") or "")
+        if len(stock_code) == 6 and corp_code:
+            out[stock_code] = corp_code
+    return out
+
+
 def compare_corp_codes(baseline_root: Path, current_root: Path) -> str:
     file_name = "dart_corp_codes.json"
-    baseline_rows = records_from_payload(load_json(baseline_root / file_name))
-    current_rows = records_from_payload(load_json(current_root / file_name))
-    if not baseline_rows:
+    baseline_codes = corp_code_map(load_json(baseline_root / file_name))
+    current_codes = corp_code_map(load_json(current_root / file_name))
+    if not baseline_codes:
         return "dart_corp_codes: baseline is empty; comparison skipped"
-    minimum_rows = max(1, math.floor(len(baseline_rows) * MIN_CORP_CODE_RETENTION))
-    if len(current_rows) < minimum_rows:
+    minimum_rows = max(1, math.floor(len(baseline_codes) * MIN_CORP_CODE_RETENTION))
+    if len(current_codes) < minimum_rows:
         raise DataRegressionError(
-            f"dart_corp_codes: map shrank too much ({len(baseline_rows)} -> {len(current_rows)})"
+            f"dart_corp_codes: map shrank too much ({len(baseline_codes)} -> {len(current_codes)})"
         )
-    return f"dart_corp_codes: {len(current_rows)} records"
+    return f"dart_corp_codes: {len(current_codes)} mappings"
 
 
 def check_regression(baseline_root: Path, current_root: Path) -> list[str]:
