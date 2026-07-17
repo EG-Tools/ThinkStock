@@ -2,6 +2,11 @@ import { expect, test } from "@playwright/test";
 
 const recentDates = ["2025-07-14", "2025-10-14", "2026-01-14", "2026-04-14", "2026-07-14"];
 const historyDates = ["1998-07-14", "2005-07-14", "2012-07-14"];
+const DESKTOP_PERF_BUDGET = Object.freeze({
+  maxPointerMove: 50,
+  maxFrameGap: 250,
+  maxLongFrameRatio: 0.65,
+});
 
 function columnar(series, dates, columns) {
   return {
@@ -144,7 +149,7 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   await stubExternalRefreshes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.78");
+  await expect(page.locator("#appVersionText")).toHaveText("0.79");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
@@ -194,7 +199,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   const getHistoryRequests = await installDataRoutes(page);
   await page.goto("/?e2e=1&perf=1", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator("#appVersionText")).toHaveText("0.78");
+  await expect(page.locator("#appVersionText")).toHaveText("0.79");
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   await expect(page.locator('[data-series="customer_deposit"]')).toBeVisible();
@@ -505,7 +510,10 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   if (!isMobile) {
     const perfSummary = await page.evaluate(() => window.ThinkStockPerf.summary());
     expect(perfSummary.pointerMoves).toBeGreaterThan(0);
-    expect(perfSummary.maxPointerMove).toBeLessThan(150);
+    expect(perfSummary.frames).toBeGreaterThan(50);
+    expect(perfSummary.maxPointerMove).toBeLessThan(DESKTOP_PERF_BUDGET.maxPointerMove);
+    expect(perfSummary.maxFrameGap).toBeLessThan(DESKTOP_PERF_BUDGET.maxFrameGap);
+    expect(perfSummary.longFrameRatio).toBeLessThan(DESKTOP_PERF_BUDGET.maxLongFrameRatio);
   }
 
   const revisionsBeforeHistory = snapshotStatsAfter.revisions;

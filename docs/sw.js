@@ -8,6 +8,7 @@ const PRECACHE_ASSETS = [
   "./modules/chart-loader.js?v=dev",
   "./modules/disclosure-policy.js?v=dev",
   "./modules/dart-disclosure.js?v=dev",
+  "./modules/service-worker-client.js?v=dev",
   "./modules/data-worker.js?v=dev",
   "./modules/chart-model-worker.js?v=dev",
   "./app.js?v=dev",
@@ -44,12 +45,21 @@ const CORE_ASSET_PATHS = [
   "/modules/chart-loader.js",
   "/modules/disclosure-policy.js",
   "/modules/dart-disclosure.js",
+  "/modules/service-worker-client.js",
   "/modules/data-worker.js",
   "/modules/chart-model-worker.js",
 ];
 
 function isDataUrl(url) {
   return DATA_URL_PATTERNS.some((pattern) => url.pathname.includes(pattern));
+}
+
+function cacheKeyForRequest(request) {
+  const url = new URL(request.url);
+  if (!isDataUrl(url)) return request;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
 }
 
 function isCoreAssetUrl(url) {
@@ -68,11 +78,12 @@ async function putIfOk(cache, request, response) {
 
 async function networkFirst(request) {
   const cache = await caches.open(CACHE_NAME);
-  const cached = (await cache.match(request)) || (await caches.match(request, { ignoreSearch: true }));
+  const cacheKey = cacheKeyForRequest(request);
+  const cached = (await cache.match(cacheKey)) || (await cache.match(request, { ignoreSearch: true }));
   if (!cached) {
     try {
       const response = await fetch(request);
-      await putIfOk(cache, request, response);
+      await putIfOk(cache, cacheKey, response);
       return response;
     } catch (_) {
       return Response.error();
@@ -83,7 +94,7 @@ async function networkFirst(request) {
   const timeout = setTimeout(() => controller.abort(), NETWORK_FIRST_TIMEOUT_MS);
   try {
     const response = await fetch(request, { signal: controller.signal });
-    await putIfOk(cache, request, response);
+    await putIfOk(cache, cacheKey, response);
     return response;
   } catch (_) {
     return cached;
@@ -152,25 +163,40 @@ self.addEventListener("fetch", (event) => {
   );
 });
 
+async function refreshCachedDataAtomically() {
+  const cache = await caches.open(CACHE_NAME);
+  const requests = await cache.keys();
+  const byCacheKey = new Map();
+  requests.forEach((request) => {
+    try {
+      const url = new URL(request.url);
+      if (isDataUrl(url)) byCacheKey.set(String(cacheKeyForRequest(request)), request);
+    } catch (_) {
+      // Ignore malformed cache entries.
+    }
+  });
+
+  const results = await Promise.allSettled([...byCacheKey.entries()].map(async ([cacheKey, request]) => {
+    const response = await fetch(request, { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    await putIfOk(cache, cacheKey, response);
+    if (request.url !== cacheKey) await cache.delete(request);
+    return cacheKey;
+  }));
+  const refreshed = results.filter((result) => result.status === "fulfilled").length;
+  const failed = results.length - refreshed;
+  return { ok: failed === 0, refreshed, failed };
+}
+
 self.addEventListener("message", (event) => {
   if (event.data === "REFRESH_DATA") {
     const replyPort = event.ports && event.ports[0];
-    caches.open(CACHE_NAME).then(async (cache) => {
-      const requests = await cache.keys();
-      await Promise.all(
-        requests
-          .filter((req) => {
-            try {
-              return isDataUrl(new URL(req.url));
-            } catch (_) {
-              return false;
-            }
-          })
-          .map((req) => cache.delete(req)),
-      );
-      if (replyPort) replyPort.postMessage({ ok: true });
+    const refreshTask = refreshCachedDataAtomically().then((result) => {
+      if (replyPort) replyPort.postMessage(result);
+      return result;
     }).catch(() => {
       if (replyPort) replyPort.postMessage({ ok: false });
     });
+    if (typeof event.waitUntil === "function") event.waitUntil(refreshTask);
   }
 });

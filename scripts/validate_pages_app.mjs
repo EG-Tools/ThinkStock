@@ -5,7 +5,7 @@ import path from "node:path";
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [app, html, sw, playwrightConfig, dataPayload, dataWorker, chartLoader, disclosurePolicy, dartDisclosure, plotlyBundle] = await Promise.all([
+const [app, html, sw, playwrightConfig, dataPayload, dataWorker, chartLoader, disclosurePolicy, dartDisclosure, serviceWorkerClient, plotlyBundle] = await Promise.all([
   readFile(path.join(root, "docs", "app.js"), "utf8"),
   readFile(path.join(root, "docs", "index.html"), "utf8"),
   readFile(path.join(root, "docs", "sw.js"), "utf8"),
@@ -15,6 +15,7 @@ const [app, html, sw, playwrightConfig, dataPayload, dataWorker, chartLoader, di
   readFile(path.join(root, "docs", "modules", "chart-loader.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "disclosure-policy.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "dart-disclosure.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "service-worker-client.js"), "utf8"),
   stat(path.join(root, "docs", "vendor", "plotly-basic-2.35.2.min.js")),
 ]);
 
@@ -46,6 +47,7 @@ requiredIds.forEach((id) => assert.ok(ids.includes(id), `required UI element is 
   "./modules/chart-loader.js?v=dev",
   "./modules/disclosure-policy.js?v=dev",
   "./modules/dart-disclosure.js?v=dev",
+  "./modules/service-worker-client.js?v=dev",
   "./modules/data-worker.js?v=dev",
   "./modules/chart-model-worker.js?v=dev",
   "./app.js?v=dev",
@@ -60,6 +62,8 @@ requiredIds.forEach((id) => assert.ok(ids.includes(id), `required UI element is 
 assert.ok(app.includes("function isDirectDisclosureTap"), "iPhone disclosure tap guard is missing");
 assert.ok(app.includes("ThinkStockDisclosurePolicy"), "disclosure policy module is not wired into the app");
 assert.ok(app.includes("ThinkStockDartDisclosure"), "DART disclosure module is not wired into the app");
+assert.ok(app.includes("ThinkStockServiceWorkerClient"), "service worker client module is not wired into the app");
+assert.ok(serviceWorkerClient.includes("createServiceWorkerClient"), "service worker client module is incomplete");
 assert.ok(dartDisclosure.includes("fetchForMarkets") && dartDisclosure.includes("fetchForTicker"), "DART disclosure fetch service is incomplete");
 assert.ok(dartDisclosure.includes("rememberRefresh") && dartDisclosure.includes("mergeRows"), "DART disclosure cache service is incomplete");
 assert.ok(!app.includes("function fetchDartDisclosurePage("), "DART page fetching still lives in app.js");
@@ -106,10 +110,13 @@ assert.ok(app.includes("ensureHistoricalDataLoaded"), "historical lazy loading i
 assert.ok(app.includes("requestChartModelFromWorker"), "chart model worker client is missing");
 assert.ok(app.includes("initE2eDebugAccess"), "WebKit test diagnostics are missing");
 assert.ok(app.includes("scheduleServiceWorkerRegistration();"), "service worker registration is not started during boot");
+assert.ok(!app.includes("function requestServiceWorkerDataRefresh("), "service worker messaging still lives in app.js");
 assert.ok(sw.includes("function cacheFirst("), "service worker cache-first strategy is missing");
 assert.ok(sw.includes("isVersionedAssetUrl(url)"), "versioned assets are not using immutable caching");
 assert.ok(sw.includes("NETWORK_FIRST_TIMEOUT_MS = 3500"), "service worker network fallback deadline is missing");
 assert.ok(sw.includes("Promise.allSettled(PRECACHE_ASSETS"), "service worker precache is not failure-isolated");
+assert.ok(sw.includes("refreshCachedDataAtomically"), "service worker data refresh is not atomic");
+assert.ok(!sw.includes(".map((req) => cache.delete(req))"), "service worker still deletes data before refresh");
 assert.ok(playwrightConfig.includes('name: "webkit-sw"') && playwrightConfig.includes('serviceWorkers: "allow"'),
   "service-worker-aware WebKit coverage is missing");
 

@@ -1,6 +1,11 @@
 const disclosurePolicy = globalThis.ThinkStockDisclosurePolicy;
 if (!disclosurePolicy) throw new Error("Disclosure policy module failed to load");
 const { classifyDisclosureType, shouldDisplayDisclosure } = disclosurePolicy;
+const serviceWorkerClientModule = globalThis.ThinkStockServiceWorkerClient;
+if (!serviceWorkerClientModule) throw new Error("Service worker client module failed to load");
+const serviceWorkerClient = serviceWorkerClientModule.createServiceWorkerClient(globalThis);
+const requestServiceWorkerDataRefresh = serviceWorkerClient.requestDataRefresh;
+const scheduleServiceWorkerRegistration = serviceWorkerClient.scheduleRegistration;
 
 const DISPLAY_NAMES = {
   leading_cycle: "\uC120\uD589\uC21C\uD658\uBCC0\uB3D9",
@@ -78,7 +83,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.78";
+const APP_VERSION = "0.79";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -164,31 +169,6 @@ function throwIfAborted(signal) {
   error.name = "AbortError";
   throw error;
 }
-function requestServiceWorkerDataRefresh(timeoutMs = 1200) {
-  return new Promise((resolve) => {
-    try {
-      const controller = navigator?.serviceWorker?.controller;
-      if (!controller || typeof MessageChannel === "undefined") {
-        resolve(false);
-        return;
-      }
-      const channel = new MessageChannel();
-      let settled = false;
-      const done = (ok) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve(ok);
-      };
-      channel.port1.onmessage = () => done(true);
-      const timer = setTimeout(() => done(false), timeoutMs);
-      controller.postMessage("REFRESH_DATA", [channel.port2]);
-    } catch (_) {
-      resolve(false);
-    }
-  });
-}
-
 const toNum = (v) => (v != null && Number.isFinite(Number(v))) ? Number(v) : null;
 const POPUP_NUMBER_FORMAT = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 4 });
 const formatActualValue = (v) => (Number.isFinite(v) ? POPUP_NUMBER_FORMAT.format(v) : "N/A");
@@ -403,10 +383,17 @@ function initPerfDebugAccess() {
       },
       summary() {
         const pointerSamples = perfSamples.filter((sample) => sample.label === "pointerMove");
+        const refreshSamples = perfSamples.filter((sample) => sample.label === "runtimeRefresh");
+        const longFrameRatio = perfFrameStats.frames > 0
+          ? perfFrameStats.longFrames / perfFrameStats.frames
+          : 0;
         return {
           ...perfFrameStats,
+          longFrameRatio,
           pointerMoves: pointerSamples.length,
           maxPointerMove: pointerSamples.reduce((max, sample) => Math.max(max, sample.duration || 0), 0),
+          runtimeRefreshes: refreshSamples.length,
+          maxRuntimeRefresh: refreshSamples.reduce((max, sample) => Math.max(max, sample.duration || 0), 0),
         };
       },
     };
@@ -798,15 +785,6 @@ function markDataChanged(...names) {
     dataRevisions[name] = (Number(dataRevisions[name]) || 0) + 1;
     runtimeSnapshotComponentCache.delete(name);
   });
-}
-
-let serviceWorkerRegistrationScheduled = false;
-function scheduleServiceWorkerRegistration() {
-  if (serviceWorkerRegistrationScheduled || !("serviceWorker" in navigator)) return;
-  serviceWorkerRegistrationScheduled = true;
-  const register = () => navigator.serviceWorker.register("./sw.js").catch(() => null);
-  if (document.readyState === "complete") register();
-  else window.addEventListener("load", register, { once: true });
 }
 
 function applySnapshotRevisions(revisions, loadedNames) {
