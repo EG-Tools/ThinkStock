@@ -5,7 +5,7 @@ import path from "node:path";
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [app, html, sw, playwrightConfig, dataPayload, marketData, performanceMonitor, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, dartDisclosure, serviceWorkerClient, runtimeRefresh, plotlyBundle] = await Promise.all([
+const [app, html, sw, playwrightConfig, dataPayload, marketData, performanceMonitor, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, dartDisclosure, serviceWorkerClient, runtimeRefresh, plotlyBundle] = await Promise.all([
   readFile(path.join(root, "docs", "app.js"), "utf8"),
   readFile(path.join(root, "docs", "index.html"), "utf8"),
   readFile(path.join(root, "docs", "sw.js"), "utf8"),
@@ -13,6 +13,8 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, performanceMoni
   readFile(path.join(root, "docs", "modules", "data-payload.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "market-data.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "performance-monitor.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "app-storage.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "startup-loader.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "data-worker.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "chart-model-worker.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "chart-loader.js"), "utf8"),
@@ -50,6 +52,8 @@ requiredIds.forEach((id) => assert.ok(ids.includes(id), `required UI element is 
   "./modules/data-payload.js?v=dev",
   "./modules/market-data.js?v=dev",
   "./modules/performance-monitor.js?v=dev",
+  "./modules/app-storage.js?v=dev",
+  "./modules/startup-loader.js?v=dev",
   "./modules/chart-loader.js?v=dev",
   "./modules/disclosure-policy.js?v=dev",
   "./modules/dart-disclosure.js?v=dev",
@@ -109,8 +113,8 @@ assert.ok(app.includes("const plotlyReadyTask = ensurePlotlyReady()"), "Plotly i
 assert.ok(app.includes('hovermode: hoverShowPopup ? "x unified" : false'), "disabled hover still runs Plotly hit testing");
 assert.ok(app.includes("function getRuntimeDataSignature()"), "runtime snapshot deduplication is missing");
 assert.ok(app.includes('const RUNTIME_SNAPSHOT_FORMAT = "component-v1";'), "component snapshot format is missing");
-assert.ok(app.includes('const tx = db.transaction(storeName, "readwrite");')
-  && app.includes("deleteKeys.forEach((key) => store.delete(key))"), "single-transaction IndexedDB cleanup is missing");
+assert.ok(appStorage.includes('const transaction = db.transaction(storeName, "readwrite");')
+  && appStorage.includes("deleteKeys.forEach((key) => store.delete(key))"), "single-transaction IndexedDB cleanup is missing");
 assert.ok(!app.includes("function rowsSignature("), "sampled row signatures can leave stale chart data");
 assert.ok(app.includes("function dataRevisionSignature("), "explicit data revisions are missing");
 assert.ok(app.includes("function getTraceLinePaths("), "DOM-only line highlighting is missing");
@@ -119,6 +123,12 @@ assert.ok(app.includes("ThinkStockPerformanceMonitor"), "performance monitor mod
 assert.ok(performanceMonitor.includes("createPerformanceMonitor") && performanceMonitor.includes("p95FrameGap"), "performance monitor module is incomplete");
 assert.ok(performanceMonitor.includes("gap < frameGapIgnoreMs"), "suspended tabs still pollute frame timing diagnostics");
 assert.ok(!app.includes("let perfSamples") && !app.includes("function startPerfFrameMonitor("), "performance diagnostics still live in app.js");
+assert.ok(app.includes("ThinkStockAppStorage"), "app storage module is not wired into the app");
+assert.ok(appStorage.includes("createApiSettingsStore") && appStorage.includes("createIndexedCacheStore"), "app storage module is incomplete");
+assert.ok(!app.includes("function openRuntimeCacheDb(") && !app.includes("function sanitizeApiSettings("), "storage implementation still lives in app.js");
+assert.ok(app.includes("ThinkStockStartupLoader"), "startup loader module is not wired into the app");
+assert.ok(startupLoader.includes("createStartupLoader") && startupLoader.includes("requestAnimationFrame"), "startup loader module is incomplete");
+assert.ok(!app.includes("function ensureStartupLoader(") && !app.includes("startupLoaderDisplayProgress"), "startup loader implementation still lives in app.js");
 assert.ok(app.includes("runtimeRefreshController.abort"), "superseded runtime refreshes are not cancelled");
 assert.ok(app.includes("function cancelStaleChartModelWorkerRequest()"), "stale chart worker cancellation is missing");
 assert.ok(app.includes("function getChartInteractionGeometry("), "pointer geometry is not shared per frame");

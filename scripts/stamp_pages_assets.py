@@ -52,6 +52,8 @@ def main() -> int:
     data_payload_src = f"./modules/data-payload.js?v={version}"
     market_data_src = f"./modules/market-data.js?v={version}"
     performance_monitor_src = f"./modules/performance-monitor.js?v={version}"
+    app_storage_src = f"./modules/app-storage.js?v={version}"
+    startup_loader_src = f"./modules/startup-loader.js?v={version}"
     chart_loader_src = f"./modules/chart-loader.js?v={version}"
     disclosure_policy_src = f"./modules/disclosure-policy.js?v={version}"
     dart_disclosure_src = f"./modules/dart-disclosure.js?v={version}"
@@ -79,6 +81,18 @@ def main() -> int:
         r'<script defer src="\./modules/performance-monitor\.js(?:\?v=[^"]*)?"></script>',
         f'<script defer src="{performance_monitor_src}"></script>',
         "index performance-monitor.js script",
+    )
+    index = replace_once(
+        index,
+        r'<script defer src="\./modules/app-storage\.js(?:\?v=[^"]*)?"></script>',
+        f'<script defer src="{app_storage_src}"></script>',
+        "index app-storage.js script",
+    )
+    index = replace_once(
+        index,
+        r'<script defer src="\./modules/startup-loader\.js(?:\?v=[^"]*)?"></script>',
+        f'<script defer src="{startup_loader_src}"></script>',
+        "index startup-loader.js script",
     )
     index = replace_once(
         index,
@@ -136,6 +150,18 @@ def main() -> int:
         r'"\./modules/performance-monitor\.js(?:\?v=[^"]*)?",',
         f'"{performance_monitor_src}",',
         "service worker performance-monitor.js asset",
+    )
+    sw = replace_once(
+        sw,
+        r'"\./modules/app-storage\.js(?:\?v=[^"]*)?",',
+        f'"{app_storage_src}",',
+        "service worker app-storage.js asset",
+    )
+    sw = replace_once(
+        sw,
+        r'"\./modules/startup-loader\.js(?:\?v=[^"]*)?",',
+        f'"{startup_loader_src}",',
+        "service worker startup-loader.js asset",
     )
     sw = replace_once(
         sw,

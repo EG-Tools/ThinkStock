@@ -32,6 +32,16 @@ const startPerfSample = () => performanceMonitor.startSample();
 const recordPerfSample = (label, startedAt, meta = {}) => (
   performanceMonitor.recordSample(label, startedAt, meta)
 );
+const appStorageModule = globalThis.ThinkStockAppStorage;
+if (!appStorageModule) throw new Error("App storage module failed to load");
+const startupLoaderModule = globalThis.ThinkStockStartupLoader;
+if (!startupLoaderModule) throw new Error("Startup loader module failed to load");
+const startupLoader = startupLoaderModule.createStartupLoader(globalThis);
+const setStartupLoaderProgress = (percent, label = "") => (
+  startupLoader.setProgress(percent, label)
+);
+const showStartupLoader = () => startupLoader.show();
+const hideStartupLoader = () => startupLoader.hide();
 
 const DISPLAY_NAMES = {
   leading_cycle: "\uC120\uD589\uC21C\uD658\uBCC0\uB3D9",
@@ -109,7 +119,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.82";
+const APP_VERSION = "0.83";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -128,6 +138,26 @@ const API_SETTINGS_DEFAULT = Object.freeze({
   krxApiKey: "",
   dartApiKey: "",
   dartProxyEnabled: false,
+});
+const apiSettingsStore = appStorageModule.createApiSettingsStore(globalThis, {
+  defaults: API_SETTINGS_DEFAULT,
+  localKey: API_SETTINGS_KEY,
+  sessionKey: API_SETTINGS_SESSION_KEY,
+});
+const indexedCacheStore = appStorageModule.createIndexedCacheStore(globalThis, {
+  dbName: DATA_CACHE_DB_NAME,
+  dbVersion: DATA_CACHE_DB_VERSION,
+  storeNames: [
+    DATA_CACHE_STORE_NAME,
+    TICKER_PRICE_CACHE_STORE_NAME,
+    TICKER_DISCLOSURE_CACHE_STORE_NAME,
+  ],
+});
+const runtimeSnapshotCacheConfig = Object.freeze({
+  storeName: DATA_CACHE_STORE_NAME,
+  manifestKey: DATA_CACHE_RECORD_KEY,
+  format: RUNTIME_SNAPSHOT_FORMAT,
+  componentKeys: RUNTIME_SNAPSHOT_COMPONENT_KEYS,
 });
 const ECOS_STAT_CODE = "901Y067";
 const ECOS_ITEM_CODE = "I16E";
@@ -371,11 +401,6 @@ let runtimeRefreshController = null;
 let runtimeRefreshPromise = null;
 let runtimeRefreshGeneration = 0;
 let runtimeRefreshPhaseStats = { criticalReady: 0, supplementalReady: 0 };
-let startupLoaderHideTimer = null;
-let startupLoaderRafId = 0;
-let startupLoaderDisplayProgress = 100;
-let startupLoaderTargetProgress = 100;
-
 function initE2eDebugAccess() {
   try {
     const params = new URLSearchParams(window.location.search || "");
@@ -523,57 +548,18 @@ function loadState() {
   } catch (_) {}
 }
 
-function sanitizeApiSettings(raw) {
-  const src = raw && typeof raw === "object" ? raw : {};
-  const out = {};
-  Object.keys(API_SETTINGS_DEFAULT).forEach((key) => {
-    const value = src[key];
-    if (typeof API_SETTINGS_DEFAULT[key] === "boolean") {
-      out[key] = value === true;
-    } else {
-      out[key] = typeof value === "string" ? value.trim() : "";
-    }
-  });
-  return out;
-}
+const sanitizeApiSettings = (raw) => apiSettingsStore.sanitize(raw);
 
 function saveApiSettings() {
-  const sanitized = sanitizeApiSettings(apiSettings);
-  try {
-    sessionStorage.setItem(API_SETTINGS_SESSION_KEY, JSON.stringify(sanitized));
-  } catch (_) {}
-  try {
-    localStorage.setItem(API_SETTINGS_KEY, JSON.stringify(sanitized));
-  } catch (_) {}
+  apiSettings = apiSettingsStore.save(apiSettings);
 }
 
 function clearApiSettingsStorage() {
-  try { sessionStorage.removeItem(API_SETTINGS_SESSION_KEY); } catch (_) {}
-  try { localStorage.removeItem(API_SETTINGS_KEY); } catch (_) {}
+  apiSettingsStore.clear();
 }
 
 function loadApiSettings() {
-  let loaded = null;
-  try {
-    const raw = localStorage.getItem(API_SETTINGS_KEY);
-    if (raw) {
-      loaded = sanitizeApiSettings(JSON.parse(raw));
-    }
-  } catch (_) {}
-
-  if (!loaded) {
-    try {
-      const raw = sessionStorage.getItem(API_SETTINGS_SESSION_KEY);
-      if (raw) {
-        loaded = sanitizeApiSettings(JSON.parse(raw));
-      }
-    } catch (_) {
-      loaded = null;
-    }
-  }
-
-  apiSettings = loaded || { ...API_SETTINGS_DEFAULT };
-  saveApiSettings();
+  apiSettings = apiSettingsStore.load();
 }
 
 function explainDartFetchError(err) {
@@ -852,191 +838,44 @@ function hasRuntimeDataLoaded() {
   );
 }
 
-function openRuntimeCacheDb() {
-  return new Promise((resolve, reject) => {
-    if (typeof indexedDB === "undefined") {
-      reject(new Error("IndexedDB unavailable"));
-      return;
-    }
-
-    const req = indexedDB.open(DATA_CACHE_DB_NAME, DATA_CACHE_DB_VERSION);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(DATA_CACHE_STORE_NAME)) {
-        db.createObjectStore(DATA_CACHE_STORE_NAME);
-      }
-      if (!db.objectStoreNames.contains(TICKER_PRICE_CACHE_STORE_NAME)) {
-        db.createObjectStore(TICKER_PRICE_CACHE_STORE_NAME);
-      }
-      if (!db.objectStoreNames.contains(TICKER_DISCLOSURE_CACHE_STORE_NAME)) {
-        db.createObjectStore(TICKER_DISCLOSURE_CACHE_STORE_NAME);
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error || new Error("IndexedDB open failed"));
-    req.onblocked = () => reject(new Error("IndexedDB blocked"));
-  });
-}
-
 async function readRuntimeSnapshotFromIndexedDb() {
-  let db = null;
-  try {
-    db = await openRuntimeCacheDb();
-    const manifest = await new Promise((resolve, reject) => {
-      const tx = db.transaction(DATA_CACHE_STORE_NAME, "readonly");
-      const store = tx.objectStore(DATA_CACHE_STORE_NAME);
-      const req = store.get(DATA_CACHE_RECORD_KEY);
-      req.onsuccess = () => resolve(req.result || null);
-      req.onerror = () => reject(req.error || new Error("IndexedDB read failed"));
-    });
-    if (!manifest || manifest.format !== RUNTIME_SNAPSHOT_FORMAT) return manifest;
-    const components = await new Promise((resolve, reject) => {
-      const tx = db.transaction(DATA_CACHE_STORE_NAME, "readonly");
-      const store = tx.objectStore(DATA_CACHE_STORE_NAME);
-      const output = {};
-      let remaining = Object.keys(RUNTIME_SNAPSHOT_COMPONENT_KEYS).length;
-      tx.onerror = () => reject(tx.error || new Error("IndexedDB component read failed"));
-      Object.entries(RUNTIME_SNAPSHOT_COMPONENT_KEYS).forEach(([name, key]) => {
-        const req = store.get(key);
-        req.onsuccess = () => {
-          output[name] = req.result ?? null;
-          remaining -= 1;
-          if (remaining === 0) resolve(output);
-        };
-        req.onerror = () => reject(req.error || new Error("IndexedDB component read failed"));
-      });
-    });
-    return {
-      ...manifest,
-      pricePayload: components.price,
-      macroRows: components.macro,
-      creditRows: components.credit,
-      adrRows: components.adr,
-      disclosureRows: components.disclosure,
-      _persistedRevisions: manifest.revisions || {},
-    };
-  } finally {
-    try { db?.close(); } catch (_) {}
-  }
+  const snapshot = await indexedCacheStore.readSnapshot(runtimeSnapshotCacheConfig);
+  if (!snapshot || snapshot.format !== RUNTIME_SNAPSHOT_FORMAT) return snapshot;
+  return {
+    ...snapshot,
+    pricePayload: snapshot.price,
+    macroRows: snapshot.macro,
+    creditRows: snapshot.credit,
+    adrRows: snapshot.adr,
+    disclosureRows: snapshot.disclosure,
+  };
 }
 
-async function writeRuntimeSnapshotToIndexedDb(snapshotBundle) {
-  let db = null;
-  try {
-    db = await openRuntimeCacheDb();
-    await new Promise((resolve, reject) => {
-      const tx = db.transaction(DATA_CACHE_STORE_NAME, "readwrite");
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error || new Error("IndexedDB write failed"));
-      tx.onabort = () => reject(tx.error || new Error("IndexedDB write aborted"));
-      const store = tx.objectStore(DATA_CACHE_STORE_NAME);
-      Object.entries(snapshotBundle?.components || {}).forEach(([name, value]) => {
-        const key = RUNTIME_SNAPSHOT_COMPONENT_KEYS[name];
-        if (key) store.put(value, key);
-      });
-      store.put(snapshotBundle.manifest, DATA_CACHE_RECORD_KEY);
-    });
-  } finally {
-    try { db?.close(); } catch (_) {}
-  }
-}
+const writeRuntimeSnapshotToIndexedDb = (snapshotBundle) => (
+  indexedCacheStore.writeSnapshot(snapshotBundle, runtimeSnapshotCacheConfig)
+);
 
-async function deleteRuntimeSnapshotFromIndexedDb() {
-  let db = null;
-  try {
-    db = await openRuntimeCacheDb();
-    await new Promise((resolve, reject) => {
-      const tx = db.transaction(DATA_CACHE_STORE_NAME, "readwrite");
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error || new Error("IndexedDB delete failed"));
-      tx.onabort = () => reject(tx.error || new Error("IndexedDB delete aborted"));
-      const store = tx.objectStore(DATA_CACHE_STORE_NAME);
-      store.delete(DATA_CACHE_RECORD_KEY);
-      Object.values(RUNTIME_SNAPSHOT_COMPONENT_KEYS).forEach((key) => store.delete(key));
-    });
-  } finally {
-    try { db?.close(); } catch (_) {}
-  }
-}
+const deleteRuntimeSnapshotFromIndexedDb = () => (
+  indexedCacheStore.deleteSnapshot(runtimeSnapshotCacheConfig)
+);
 
-async function readIndexedDbRecord(storeName, key) {
-  let db = null;
-  try {
-    db = await openRuntimeCacheDb();
-    return await new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, "readonly");
-      const req = tx.objectStore(storeName).get(key);
-      req.onsuccess = () => resolve(req.result || null);
-      req.onerror = () => reject(req.error || new Error("IndexedDB record read failed"));
-    });
-  } finally {
-    try { db?.close(); } catch (_) {}
-  }
-}
+const readIndexedDbRecord = (storeName, key) => (
+  indexedCacheStore.readRecord(storeName, key)
+);
 
-async function writeIndexedDbRecord(storeName, key, value) {
-  let db = null;
-  try {
-    db = await openRuntimeCacheDb();
-    await new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, "readwrite");
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error || new Error("IndexedDB record write failed"));
-      tx.onabort = () => reject(tx.error || new Error("IndexedDB record write aborted"));
-      tx.objectStore(storeName).put(value, key);
-    });
-    return true;
-  } finally {
-    try { db?.close(); } catch (_) {}
-  }
-}
+const writeIndexedDbRecord = (storeName, key, value) => (
+  indexedCacheStore.writeRecord(storeName, key, value)
+);
 
-async function deleteIndexedDbRecord(storeName, key) {
-  let db = null;
-  try {
-    db = await openRuntimeCacheDb();
-    await new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, "readwrite");
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error || new Error("IndexedDB record delete failed"));
-      tx.onabort = () => reject(tx.error || new Error("IndexedDB record delete aborted"));
-      tx.objectStore(storeName).delete(key);
-    });
-  } finally {
-    try { db?.close(); } catch (_) {}
-  }
-}
+const deleteIndexedDbRecord = (storeName, key) => (
+  indexedCacheStore.deleteRecord(storeName, key)
+);
 
 async function pruneGranularCacheStore(storeName, maxRecords = GRANULAR_CACHE_MAX_TICKERS) {
-  let db = null;
   try {
-    db = await openRuntimeCacheDb();
-    const deletedCount = await new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, "readwrite");
-      const store = tx.objectStore(storeName);
-      const request = store.getAll();
-      let deleteKeys = [];
-      request.onsuccess = () => {
-        const records = Array.isArray(request.result) ? request.result : [];
-        const now = Date.now();
-        const expiredTickers = new Set(records.filter((record) => {
-          const lastAccessed = Number(record?.lastAccessed || record?.savedAt || 0);
-          return !Number.isFinite(lastAccessed) || now - lastAccessed > GRANULAR_CACHE_MAX_IDLE_DAYS * DAY_MS;
-        }).map((record) => String(record?.ticker || "").toUpperCase()).filter(Boolean));
-        const survivors = records
-          .filter((record) => !expiredTickers.has(String(record?.ticker || "").toUpperCase()))
-          .sort((a, b) => Number(b?.lastAccessed || b?.savedAt || 0) - Number(a?.lastAccessed || a?.savedAt || 0));
-        const overflowTickers = survivors
-          .slice(Math.max(0, maxRecords))
-          .map((record) => String(record?.ticker || "").toUpperCase())
-          .filter(Boolean);
-        deleteKeys = [...new Set([...expiredTickers, ...overflowTickers])];
-        deleteKeys.forEach((key) => store.delete(key));
-      };
-      request.onerror = () => reject(request.error || new Error("IndexedDB records read failed"));
-      tx.oncomplete = () => resolve(deleteKeys.length);
-      tx.onerror = () => reject(tx.error || new Error("IndexedDB cache cleanup failed"));
-      tx.onabort = () => reject(tx.error || new Error("IndexedDB cache cleanup aborted"));
+    const deletedCount = await indexedCacheStore.pruneStore(storeName, {
+      maxRecords,
+      maxIdleMs: GRANULAR_CACHE_MAX_IDLE_DAYS * DAY_MS,
     });
     if (deletedCount > 0) {
       granularCacheCleanupStats.transactions += 1;
@@ -1045,7 +884,6 @@ async function pruneGranularCacheStore(storeName, maxRecords = GRANULAR_CACHE_MA
   } catch (_) {
     // Cache cleanup should never block the app.
   } finally {
-    try { db?.close(); } catch (_) {}
     granularCacheCleanupStats.runs += 1;
   }
 }
@@ -1319,87 +1157,6 @@ function renderDataFreshness() {
     const title = [rangeTitle, staleTitle].filter(Boolean).join(" / ");
     return `<span class="${classes}" title="${escapeHtml(title)}"><strong>${escapeHtml(item.label)}</strong>${escapeHtml(item.date || "없음")}</span>`;
   }).join("");
-}
-
-function ensureStartupLoader() {
-  const titleEl = document.querySelector(".hero h1");
-  if (!titleEl) return null;
-
-  if (!titleEl.dataset.title) {
-    const titleText = String(titleEl.textContent || "Think Stock").trim() || "Think Stock";
-    titleEl.dataset.title = titleText;
-  }
-
-  return titleEl;
-}
-
-function renderStartupLoaderProgress(value) {
-  const titleEl = ensureStartupLoader();
-  if (!titleEl) return;
-
-  const clamped = Math.max(0, Math.min(100, value));
-  titleEl.style.setProperty("--title-load", `${clamped.toFixed(2)}%`);
-  titleEl.setAttribute("aria-valuemin", "0");
-  titleEl.setAttribute("aria-valuemax", "100");
-  titleEl.setAttribute("aria-valuenow", String(Math.round(clamped)));
-}
-
-function runStartupLoaderTween() {
-  const diff = startupLoaderTargetProgress - startupLoaderDisplayProgress;
-  if (Math.abs(diff) < 0.28) {
-    startupLoaderDisplayProgress = startupLoaderTargetProgress;
-    renderStartupLoaderProgress(startupLoaderDisplayProgress);
-    startupLoaderRafId = 0;
-    return;
-  }
-
-  startupLoaderDisplayProgress += diff * 0.16;
-  renderStartupLoaderProgress(startupLoaderDisplayProgress);
-  startupLoaderRafId = requestAnimationFrame(runStartupLoaderTween);
-}
-
-function setStartupLoaderProgress(percent, _label = "") {
-  const titleEl = ensureStartupLoader();
-  if (!titleEl) return;
-
-  const value = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
-  startupLoaderTargetProgress = value;
-
-  if (!startupLoaderRafId) {
-    startupLoaderRafId = requestAnimationFrame(runStartupLoaderTween);
-  }
-}
-
-function showStartupLoader() {
-  if (startupLoaderHideTimer) {
-    clearTimeout(startupLoaderHideTimer);
-    startupLoaderHideTimer = null;
-  }
-
-  if (startupLoaderRafId) {
-    cancelAnimationFrame(startupLoaderRafId);
-    startupLoaderRafId = 0;
-  }
-
-  const titleEl = ensureStartupLoader();
-  if (!titleEl) return;
-
-  titleEl.classList.add("is-loading");
-  startupLoaderDisplayProgress = 0;
-  startupLoaderTargetProgress = 0;
-  renderStartupLoaderProgress(0);
-}
-
-function hideStartupLoader() {
-  const titleEl = ensureStartupLoader();
-  if (!titleEl) return;
-
-  setStartupLoaderProgress(100);
-  if (startupLoaderHideTimer) clearTimeout(startupLoaderHideTimer);
-  startupLoaderHideTimer = setTimeout(() => {
-    titleEl.classList.remove("is-loading");
-    startupLoaderHideTimer = null;
-  }, 460);
 }
 
 function setupApiSettingsPanel(msgEl) {
