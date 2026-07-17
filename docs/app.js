@@ -24,6 +24,20 @@ const {
   centeredScale,
   autoFitScales,
 } = marketDataModule;
+const chartInteractionMath = globalThis.ThinkStockChartInteractionMath;
+if (!chartInteractionMath) throw new Error("Chart interaction math module failed to load");
+const {
+  toMsSafe,
+  getTraceTimeMsArray,
+  findNearestHoverPoint,
+  getChartInteractionGeometry,
+  axisPixelToXValue,
+  xRangeMatches,
+  yValueToLocalPixel,
+  interpolateTraceYAtMs,
+} = chartInteractionMath;
+const browserMarketClientModule = globalThis.ThinkStockBrowserMarketClient;
+if (!browserMarketClientModule) throw new Error("Browser market client module failed to load");
 const auxiliaryChartModelModule = globalThis.ThinkStockAuxiliaryChartModel;
 if (!auxiliaryChartModelModule) throw new Error("Auxiliary chart model module failed to load");
 const buildAuxiliaryChartModelSync = auxiliaryChartModelModule.buildAuxiliaryChartModel;
@@ -122,7 +136,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.86";
+const APP_VERSION = "0.87";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -229,6 +243,22 @@ function throwIfAborted(signal) {
   throw error;
 }
 const toNum = (v) => (v != null && Number.isFinite(Number(v))) ? Number(v) : null;
+const browserMarketClient = browserMarketClientModule.createBrowserMarketClient({
+  fetchJson: (...args) => fetchJsonWithProxyFallback(...args),
+  appendCacheBust,
+  shiftDays,
+  toNumber: toNum,
+  dayMs: DAY_MS,
+  baseInfoEndpoints: KRX_BASE_INFO_ENDPOINTS,
+  indexEndpoints: KRX_INDEX_ENDPOINTS,
+});
+const {
+  getRecentKrxBaseDates,
+  normalizeKrxUniverseRows,
+  fetchKrxUniverseRows,
+  fetchYahooHistorySeries,
+  fetchLatestKrxCoreIndexRows,
+} = browserMarketClient;
 const POPUP_NUMBER_FORMAT = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 4 });
 const formatActualValue = (v) => (Number.isFinite(v) ? POPUP_NUMBER_FORMAT.format(v) : "N/A");
 const escapeHtml = (v) => String(v ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
@@ -1351,88 +1381,6 @@ function hasHistoricalDataCoverage() {
 }
 
 
-function toMsSafe(v) {
-  if (v == null) return null;
-  const n = Date.parse(String(v));
-  return Number.isFinite(n) ? n : null;
-}
-
-function getTraceTimeMsArray(trace) {
-  const xs = trace?.x;
-  if (!Array.isArray(xs) || !xs.length) return [];
-  const cached = trace._thinkStockTimeMs;
-  if (
-    Array.isArray(cached)
-    && cached.length === xs.length
-    && cached._firstX === xs[0]
-    && cached._lastX === xs[xs.length - 1]
-  ) {
-    return cached;
-  }
-  const times = xs.map((x) => toMsSafe(x));
-  times._firstX = xs[0];
-  times._lastX = xs[xs.length - 1];
-  try {
-    trace._thinkStockTimeMs = times;
-  } catch (_) {
-    // Plotly traces are normally mutable, but the cache is optional.
-  }
-  return times;
-}
-
-function findNearestHoverPoint(el, xValue) {
-  if (!el?.data?.length) return null;
-  const targetMs = toMsSafe(xValue);
-  if (targetMs === null) return null;
-
-  const nearestInTrace = (trace) => {
-    if (!trace || trace.visible === "legendonly" || trace.hoverinfo === "skip" || !Array.isArray(trace.x) || !trace.x.length) return null;
-    const times = getTraceTimeMsArray(trace);
-    if (!times.length) return null;
-
-    let lo = 0;
-    let hi = times.length - 1;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      const ms = times[mid];
-      if (!Number.isFinite(ms)) return null;
-      if (ms < targetMs) lo = mid + 1;
-      else hi = mid - 1;
-    }
-
-    const cand = [];
-    if (lo >= 0 && lo < times.length) cand.push(lo);
-    if (lo - 1 >= 0 && lo - 1 < times.length) cand.push(lo - 1);
-    if (!cand.length) return null;
-
-    let bestIdx = cand[0];
-    if (!Number.isFinite(times[bestIdx])) return null;
-    let bestDiff = Math.abs(times[bestIdx] - targetMs);
-    for (let i = 1; i < cand.length; i += 1) {
-      const idx = cand[i];
-      if (!Number.isFinite(times[idx])) continue;
-      const diff = Math.abs(times[idx] - targetMs);
-      if (diff < bestDiff) {
-        bestDiff = diff;
-        bestIdx = idx;
-      }
-    }
-    return { pointNumber: bestIdx, diff: bestDiff };
-  };
-
-  let best = null;
-  let bestDiff = Number.POSITIVE_INFINITY;
-  el.data.forEach((trace, curveNumber) => {
-    const near = nearestInTrace(trace);
-    if (!near) return;
-    if (near.diff < bestDiff) {
-      bestDiff = near.diff;
-      best = { curveNumber, pointNumber: near.pointNumber };
-    }
-  });
-  return best;
-}
-
 function syncHoverToChartNow(targetEl, xValue) {
   if (!targetEl || !window.Plotly?.Fx?.hover || xValue == null) return;
   hoverSyncing = true;
@@ -1569,46 +1517,6 @@ function scheduleSyncedCursor(xValue, sourceEl, sourceClientX, sourceLocalX = nu
   });
 }
 
-function getChartInteractionGeometry(el) {
-  const xa = el?._fullLayout?.xaxis;
-  const ya = el?._fullLayout?.yaxis;
-  if (!el || !xa) return null;
-  return { rect: el.getBoundingClientRect(), xa, ya };
-}
-
-function axisPixelToXValue(el, clientX, clampToAxis = false, geometry = null) {
-  const xa = geometry?.xa || el?._fullLayout?.xaxis;
-  if (!xa || !Number.isFinite(clientX)) return null;
-  const rect = geometry?.rect || el.getBoundingClientRect();
-  const localX = clientX - rect.left;
-  let px = localX - xa._offset;
-  if (!Number.isFinite(px)) return null;
-  if (px < 0 || px > xa._length) {
-    if (!clampToAxis) return null;
-    px = Math.max(0, Math.min(xa._length, px));
-  }
-
-  try {
-    if (typeof xa.p2d === "function") {
-      const d = xa.p2d(px);
-      if (d != null) return d;
-    }
-  } catch (_) {
-    // no-op
-  }
-
-  let linear = null;
-  try {
-    if (typeof xa.p2l === "function") linear = xa.p2l(px);
-    else if (typeof xa.p2c === "function") linear = xa.p2c(px);
-  } catch (_) {
-    linear = null;
-  }
-  if (!Number.isFinite(linear)) return null;
-  if (xa.type === "date") return linear;
-  return linear;
-}
-
 function clearTouchDoubleTapZoomState() {
   touchDoubleTapZoomActive = false;
   touchDoubleTapPrevRange = null;
@@ -1653,17 +1561,6 @@ function scheduleHandleUpdate(delay = HANDLE_UPDATE_DEBOUNCE_MS) {
     handleUpdateTimer = 0;
     updateHandles();
   }, delay);
-}
-
-function xRangeMatches(el, r0, r1) {
-  const current = el?._fullLayout?.xaxis?.range;
-  if (!Array.isArray(current) || current.length < 2) return false;
-  const a0 = toMsSafe(current[0]);
-  const a1 = toMsSafe(current[1]);
-  const b0 = toMsSafe(r0);
-  const b1 = toMsSafe(r1);
-  if (![a0, a1, b0, b1].every(Number.isFinite)) return false;
-  return Math.abs(a0 - b0) < 2 && Math.abs(a1 - b1) < 2;
 }
 
 function scheduleViewportRangeSync(targetEl, payload) {
@@ -1772,67 +1669,6 @@ function renderDragZoomOverlay(el, startClientX, currentClientX) {
   ui.overlay.style.display = 'block';
   ui.box.style.left = `${left}px`;
   ui.box.style.width = `${width}px`;
-}
-
-function yValueToLocalPixel(el, value) {
-  const ya = el?._fullLayout?.yaxis;
-  const range = ya?.range;
-  if (!ya || !Array.isArray(range) || range.length < 2 || !Number.isFinite(value)) return null;
-  const [minY, maxY] = range;
-  const span = maxY - minY;
-  if (!Number.isFinite(span) || span === 0) return null;
-  const frac = (value - minY) / span;
-  return ya._offset + ya._length * (1 - frac);
-}
-
-function interpolateTraceYAtMs(trace, targetMs) {
-  if (!trace || !Array.isArray(trace.x) || !Array.isArray(trace.y) || !Number.isFinite(targetMs)) return null;
-
-  const xs = trace.x;
-  const ys = trace.y;
-  const times = getTraceTimeMsArray(trace);
-  if (!times.length || times.length !== xs.length) return null;
-  let lo = 0;
-  let hi = xs.length - 1;
-  let rightIndex = xs.length;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    const time = times[mid];
-    if (!Number.isFinite(time) || time < targetMs) {
-      lo = mid + 1;
-    } else {
-      rightIndex = mid;
-      hi = mid - 1;
-    }
-  }
-
-  let left = null;
-  for (let i = Math.min(rightIndex, xs.length - 1); i >= 0; i -= 1) {
-    const y = toNum(ys[i]);
-    if (y === null) continue;
-    const time = times[i];
-    if (!Number.isFinite(time) || time > targetMs) continue;
-    if (time === targetMs) return y;
-    left = { time, y };
-    break;
-  }
-
-  let right = null;
-  for (let i = Math.max(0, rightIndex); i < xs.length; i += 1) {
-    const y = toNum(ys[i]);
-    if (y === null) continue;
-    const time = times[i];
-    if (!Number.isFinite(time) || time < targetMs) continue;
-    if (time === targetMs) return y;
-    right = { time, y };
-    break;
-  }
-
-  if (!left || !right) return null;
-  const span = right.time - left.time;
-  if (!Number.isFinite(span) || span <= 0) return null;
-  const t = (targetMs - left.time) / span;
-  return left.y + (right.y - left.y) * t;
 }
 
 function findNearestLineDragTarget(el, clientX, clientY, isTouch = false, geometry = null) {
@@ -2547,73 +2383,6 @@ function clearTickerSeriesFromPricePayload(ticker) {
   markDataChanged("price");
 }
 
-function toYyyymmdd(dateObj) {
-  const y = dateObj.getUTCFullYear();
-  const m = `${dateObj.getUTCMonth() + 1}`.padStart(2, "0");
-  const d = `${dateObj.getUTCDate()}`.padStart(2, "0");
-  return `${y}${m}${d}`;
-}
-
-function getRecentKrxBaseDates(daysBack = KRX_LOOKBACK_DAYS) {
-  const out = [];
-  for (let i = 0; i <= daysBack; i += 1) {
-    const d = new Date();
-    d.setUTCDate(d.getUTCDate() - i);
-    out.push(toYyyymmdd(d));
-  }
-  return out;
-}
-
-function normalizeKrxUniverseRows(rows, fallbackMarket) {
-  const normalized = [];
-  const seen = new Set();
-  rows.forEach((row) => {
-    const codeRaw = String(row?.ISU_SRT_CD || "").replace(/\D/g, "");
-    if (!codeRaw) return;
-    const code = codeRaw.padStart(6, "0").slice(-6);
-    const marketRaw = String(row?.MKT_TP_NM || fallbackMarket || "").toUpperCase();
-    const isKosdaq = marketRaw.includes("KOSDAQ");
-    const isKospi = marketRaw.includes("KOSPI") || (!isKosdaq && String(fallbackMarket || "").toUpperCase() === "KOSPI");
-    if (!isKospi && !isKosdaq) return;
-    const market = isKosdaq ? "KOSDAQ" : "KOSPI";
-    const suffix = isKosdaq ? "KQ" : "KS";
-    const ticker = `${code}.${suffix}`;
-    if (seen.has(ticker)) return;
-    seen.add(ticker);
-    const name = String(row?.ISU_ABBRV || row?.ISU_NM || "").trim();
-    if (!name) return;
-    normalized.push({
-      ticker,
-      code,
-      name,
-      market,
-    });
-  });
-  return normalized;
-}
-
-async function fetchKrxUniverseRows(apiKey, baseDate, market) {
-  const endpoint = KRX_BASE_INFO_ENDPOINTS[market];
-  if (!endpoint) return [];
-  const key = String(apiKey || "").trim();
-  if (!key) return [];
-  const roots = [
-    `https://data-dbg.krx.co.kr/svc/apis/sto/${endpoint}`,
-    `https://data-dbg.krx.co.kr/svc/sample/apis/sto/${endpoint}`,
-  ];
-  for (const root of roots) {
-    const url = `${root}?basDd=${encodeURIComponent(baseDate)}&AUTH_KEY=${encodeURIComponent(key)}`;
-    try {
-      const payload = await fetchJsonWithProxyFallback(url, null, { allowProxy: false });
-      const rows = Array.isArray(payload?.OutBlock_1) ? payload.OutBlock_1 : [];
-      if (rows.length) return rows;
-    } catch (_) {
-      // try next endpoint
-    }
-  }
-  return [];
-}
-
 let krxUniversePromise = null;
 
 function resetKrxUniverseCache() {
@@ -2745,46 +2514,6 @@ function renderStockSuggestList(items) {
     </button>
   `).join("");
   listEl.hidden = false;
-}
-
-function buildYahooHistoryUrl(ticker, sinceDate = "") {
-  const baseUrl = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d`;
-  const safeSinceDate = String(sinceDate || "").slice(0, 10);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(safeSinceDate)) {
-    const startDate = shiftDays(safeSinceDate, -7);
-    const period1 = Math.floor(Date.parse(`${startDate}T00:00:00Z`) / 1000);
-    const period2 = Math.floor((Date.now() + DAY_MS) / 1000);
-    if (Number.isFinite(period1) && Number.isFinite(period2) && period2 > period1) {
-      return `${baseUrl}&period1=${period1}&period2=${period2}`;
-    }
-  }
-  return `${baseUrl}&range=30y`;
-}
-
-async function fetchYahooHistorySeries(ticker, options = {}) {
-  const baseUrl = buildYahooHistoryUrl(ticker, options?.sinceDate || "");
-  const url = appendCacheBust(baseUrl);
-  const payload = await fetchJsonWithProxyFallback(url, { signal: options?.signal });
-  const result = payload?.chart?.result?.[0];
-  if (!result) throw new Error(`${ticker} 가격 이력을 불러오지 못했습니다.`);
-
-  const timestamps = Array.isArray(result.timestamp) ? result.timestamp : [];
-  const quote = result?.indicators?.quote?.[0] || {};
-  const closes = Array.isArray(quote.close) ? quote.close : [];
-  const offsetSec = Number(result?.meta?.gmtoffset || 0);
-  const byDate = new Map();
-
-  for (let i = 0; i < timestamps.length; i += 1) {
-    const ts = Number(timestamps[i]);
-    const close = toNum(closes[i]);
-    if (!Number.isFinite(ts) || close === null) continue;
-    const date = new Date((ts + offsetSec) * 1000).toISOString().slice(0, 10);
-    byDate.set(date, close);
-  }
-
-  return [...byDate.entries()]
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([date, close]) => ({ date, close }));
 }
 
 function mergeTickerSeriesIntoPricePayload(ticker, points) {
@@ -2937,120 +2666,6 @@ async function ensureCustomTickerSeriesLoaded(ticker, options = {}) {
   }
 }
 
-function parseLooseNumber(raw) {
-  const cleaned = String(raw ?? "").replace(/,/g, "").trim();
-  if (!cleaned) return null;
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : null;
-}
-
-function normalizeKrxDate(raw) {
-  const text = String(raw ?? "").trim();
-  if (!/^\d{8}$/.test(text)) return "";
-  return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
-}
-
-function scoreKrxIndexName(name, market) {
-  const text = String(name || "").toUpperCase().replace(/\s+/g, "");
-  if (!text) return 0;
-  if (market === "KOSPI") {
-    if (text === "코스피" || text === "KOSPI") return 100;
-    if (text.includes("코스피")) return 70;
-    if (text.includes("KOSPI")) return 50;
-    return 0;
-  }
-  if (market === "KOSDAQ") {
-    if (text === "코스닥" || text === "KOSDAQ") return 100;
-    if (text.includes("코스닥")) return 70;
-    if (text.includes("KOSDAQ")) return 50;
-    return 0;
-  }
-  return 0;
-}
-
-function pickKrxIndexSeriesPoint(rows, market) {
-  const list = Array.isArray(rows)
-    ? rows
-    : ((rows && typeof rows === "object") ? [rows] : []);
-  let best = null;
-
-  list.forEach((row) => {
-    const date = normalizeKrxDate(row?.BAS_DD ?? row?.basDd ?? row?.BASDD);
-    const close = parseLooseNumber(
-      row?.CLSPRC_IDX ?? row?.TDD_CLSPRC ?? row?.CLSPRC ?? row?.closePrice,
-    );
-    if (!date || !Number.isFinite(close)) return;
-
-    const score = scoreKrxIndexName(
-      row?.IDX_NM ?? row?.IDX_NM_KOR ?? row?.IDX_NM_ENG ?? row?.IDX_NM_EN ?? "",
-      market,
-    );
-
-    if (!best || score > best.score) {
-      best = { date, close, score };
-    }
-  });
-
-  return best ? { date: best.date, close: best.close } : null;
-}
-
-async function fetchKrxIndexPoint(apiKey, market, baseDate, signal = null) {
-  const endpoint = KRX_INDEX_ENDPOINTS[market];
-  const key = String(apiKey || "").trim();
-  if (!endpoint || !key || !/^\d{8}$/.test(String(baseDate || ""))) return null;
-
-  const roots = [
-    `https://data-dbg.krx.co.kr/svc/apis/idx/${endpoint}`,
-    `https://data-dbg.krx.co.kr/svc/sample/apis/idx/${endpoint}`,
-  ];
-
-  for (const root of roots) {
-    const url = `${root}?basDd=${encodeURIComponent(baseDate)}&AUTH_KEY=${encodeURIComponent(key)}`;
-    try {
-      const payload = await fetchJsonWithProxyFallback(url, { signal }, { allowProxy: false });
-      const rows = payload?.OutBlock_1 ?? payload?.output ?? payload?.data ?? [];
-      const point = pickKrxIndexSeriesPoint(rows, market);
-      if (point) return point;
-    } catch (error) {
-      if (isAbortError(error) || signal?.aborted) throw error;
-      // try next endpoint root/date
-    }
-  }
-  return null;
-}
-
-async function fetchLatestKrxCoreIndexRows(apiKey, daysBack = 20, signal = null) {
-  const key = String(apiKey || "").trim();
-  if (!key) return [];
-  const dates = getRecentKrxBaseDates(daysBack);
-  const targets = [
-    { market: "KOSPI", ticker: "^KS11" },
-    { market: "KOSDAQ", ticker: "^KQ11" },
-  ];
-
-  const found = await Promise.all(targets.map(async (target) => {
-    let best = null;
-
-    for (const baseDate of dates) {
-      throwIfAborted(signal);
-      const point = await fetchKrxIndexPoint(key, target.market, baseDate, signal);
-      if (!point) continue;
-
-      if (!best || point.date > best.date) {
-        best = { ticker: target.ticker, date: point.date, close: point.close };
-      }
-
-      const baseDateIso = normalizeKrxDate(baseDate);
-      if (best && baseDateIso && baseDateIso <= best.date) {
-        break;
-      }
-    }
-
-    return best;
-  }));
-
-  return found.filter(Boolean);
-}
 async function refreshCoreIndexSeries(options = {}) {
   const signal = options?.signal || null;
   throwIfAborted(signal);

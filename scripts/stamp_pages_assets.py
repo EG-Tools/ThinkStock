@@ -51,6 +51,8 @@ def main() -> int:
     version = resolve_build_version()
     data_payload_src = f"./modules/data-payload.js?v={version}"
     market_data_src = f"./modules/market-data.js?v={version}"
+    chart_interaction_math_src = f"./modules/chart-interaction-math.js?v={version}"
+    browser_market_client_src = f"./modules/browser-market-client.js?v={version}"
     auxiliary_chart_model_src = f"./modules/auxiliary-chart-model.js?v={version}"
     performance_monitor_src = f"./modules/performance-monitor.js?v={version}"
     app_storage_src = f"./modules/app-storage.js?v={version}"
@@ -76,6 +78,18 @@ def main() -> int:
         r'<script defer src="\./modules/market-data\.js(?:\?v=[^"]*)?"></script>',
         f'<script defer src="{market_data_src}"></script>',
         "index market-data.js script",
+    )
+    index = replace_once(
+        index,
+        r'<script defer src="\./modules/chart-interaction-math\.js(?:\?v=[^"]*)?"></script>',
+        f'<script defer src="{chart_interaction_math_src}"></script>',
+        "index chart-interaction-math.js script",
+    )
+    index = replace_once(
+        index,
+        r'<script defer src="\./modules/browser-market-client\.js(?:\?v=[^"]*)?"></script>',
+        f'<script defer src="{browser_market_client_src}"></script>',
+        "index browser-market-client.js script",
     )
     index = replace_once(
         index,
@@ -151,6 +165,18 @@ def main() -> int:
         r'"\./modules/market-data\.js(?:\?v=[^"]*)?",',
         f'"{market_data_src}",',
         "service worker market-data.js asset",
+    )
+    sw = replace_once(
+        sw,
+        r'"\./modules/chart-interaction-math\.js(?:\?v=[^"]*)?",',
+        f'"{chart_interaction_math_src}",',
+        "service worker chart-interaction-math.js asset",
+    )
+    sw = replace_once(
+        sw,
+        r'"\./modules/browser-market-client\.js(?:\?v=[^"]*)?",',
+        f'"{browser_market_client_src}",',
+        "service worker browser-market-client.js asset",
     )
     sw = replace_once(
         sw,

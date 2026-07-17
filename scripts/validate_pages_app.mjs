@@ -5,13 +5,15 @@ import path from "node:path";
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [app, html, sw, playwrightConfig, dataPayload, marketData, auxiliaryChartModel, performanceMonitor, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, dartDisclosure, serviceWorkerClient, runtimeRefresh, deployWorkflow, buildPagesData, dataBuildSupport, providerClients, plotlyBundle] = await Promise.all([
+const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractionMath, browserMarketClient, auxiliaryChartModel, performanceMonitor, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, dartDisclosure, serviceWorkerClient, runtimeRefresh, deployWorkflow, buildPagesData, dataBuildSupport, providerClients, sourcePipeline, buildReporting, plotlyBundle] = await Promise.all([
   readFile(path.join(root, "docs", "app.js"), "utf8"),
   readFile(path.join(root, "docs", "index.html"), "utf8"),
   readFile(path.join(root, "docs", "sw.js"), "utf8"),
   readFile(path.join(root, "playwright.config.mjs"), "utf8"),
   readFile(path.join(root, "docs", "modules", "data-payload.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "market-data.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "chart-interaction-math.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "browser-market-client.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "auxiliary-chart-model.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "performance-monitor.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "app-storage.js"), "utf8"),
@@ -27,6 +29,8 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, auxiliaryChartM
   readFile(path.join(root, "scripts", "build_pages_data.py"), "utf8"),
   readFile(path.join(root, "scripts", "data_build_support.py"), "utf8"),
   readFile(path.join(root, "scripts", "provider_clients.py"), "utf8"),
+  readFile(path.join(root, "scripts", "source_pipeline.py"), "utf8"),
+  readFile(path.join(root, "scripts", "build_reporting.py"), "utf8"),
   stat(path.join(root, "docs", "vendor", "plotly-basic-2.35.2.min.js")),
 ]);
 
@@ -56,6 +60,8 @@ requiredIds.forEach((id) => assert.ok(ids.includes(id), `required UI element is 
   "./styles.css",
   "./modules/data-payload.js?v=dev",
   "./modules/market-data.js?v=dev",
+  "./modules/chart-interaction-math.js?v=dev",
+  "./modules/browser-market-client.js?v=dev",
   "./modules/auxiliary-chart-model.js?v=dev",
   "./modules/performance-monitor.js?v=dev",
   "./modules/app-storage.js?v=dev",
@@ -97,6 +103,15 @@ assert.ok(marketData.includes("mergeSources") && marketData.includes("findTicker
 assert.ok(chartModelWorker.includes('importScripts("./market-data.js?v=dev")'), "chart worker does not reuse the market data module");
 assert.ok(chartModelWorker.includes('importScripts("./auxiliary-chart-model.js?v=dev")'), "chart worker does not reuse the auxiliary chart model module");
 assert.ok(!app.includes("function mergeSources(") && !app.includes("function findTickerPriceRebaseSignal("), "market data logic still lives in app.js");
+assert.ok(app.includes("ThinkStockChartInteractionMath"), "chart interaction math module is not wired into the app");
+assert.ok(chartInteractionMath.includes("axisPixelToXValue") && chartInteractionMath.includes("interpolateTraceYAtMs"),
+  "chart interaction math module is incomplete");
+assert.ok(!app.includes("function getChartInteractionGeometry("), "chart interaction geometry still lives in app.js");
+assert.ok(app.includes("ThinkStockBrowserMarketClient"), "browser market client is not wired into the app");
+assert.ok(browserMarketClient.includes("fetchYahooHistorySeries") && browserMarketClient.includes("fetchLatestKrxCoreIndexRows"),
+  "browser market client is incomplete");
+assert.ok(!app.includes("function fetchYahooHistorySeries(") && !app.includes("function fetchKrxIndexPoint("),
+  "browser market requests still live in app.js");
 assert.ok(app.includes("ThinkStockAuxiliaryChartModel"), "auxiliary chart model module is not wired into the app");
 assert.ok(auxiliaryChartModel.includes("buildAuxiliaryChartModel") && auxiliaryChartModel.includes("buildThresholdZones"), "auxiliary chart model module is incomplete");
 assert.ok(chartModelWorker.includes('type === "buildAuxiliaryChartModel"'), "auxiliary chart model is not built in the worker");
@@ -141,7 +156,7 @@ assert.ok(startupLoader.includes("createStartupLoader") && startupLoader.include
 assert.ok(!app.includes("function ensureStartupLoader(") && !app.includes("startupLoaderDisplayProgress"), "startup loader implementation still lives in app.js");
 assert.ok(app.includes("runtimeRefreshController.abort"), "superseded runtime refreshes are not cancelled");
 assert.ok(app.includes("function cancelStaleChartModelWorkerRequest()"), "stale chart worker cancellation is missing");
-assert.ok(app.includes("function getChartInteractionGeometry("), "pointer geometry is not shared per frame");
+assert.ok(app.includes("getChartInteractionGeometry(sourceEl)"), "pointer geometry is not shared per frame");
 assert.ok(app.includes("function applyDisclosureStateFast("), "disclosure-only updates still require a full chart render");
 assert.ok(app.includes("function applyMainChartRender(") && app.includes("mainChartPartialUpdateCount"),
   "main chart partial update fast path is missing");
@@ -168,7 +183,7 @@ assert.ok(deployWorkflow.includes('cache: "pip"'), "Python dependency caching is
 assert.ok(deployWorkflow.includes("Publish Data Build Health"), "Pages data health summary is missing");
 assert.ok(buildPagesData.includes("detect_price_rebases") && buildPagesData.includes("disclosure_start_dates"),
   "incremental Pages data policies are not wired into the builder");
-assert.ok(buildPagesData.includes("source_health_summary") && buildPagesData.includes("build_dart_corp_code_payload"),
+assert.ok(buildPagesData.includes("SourcePipeline") && buildPagesData.includes("build_dart_corp_code_payload"),
   "Pages source health or compact DART payload is missing");
 assert.ok(dataBuildSupport.includes("PRICE_OVERLAP_DAYS") && dataBuildSupport.includes("DART_OVERLAP_DAYS"),
   "incremental overlap policies are incomplete");
@@ -176,5 +191,9 @@ assert.ok(providerClients.includes("class RetryingHttpClient") && providerClient
   "shared provider clients are incomplete");
 assert.ok(providerClients.includes('"beginBasDt"') && providerClients.includes("stopped_early"),
   "KOFIA incremental pagination is incomplete");
+assert.ok(sourcePipeline.includes("class SourcePipeline") && buildPagesData.includes("pipeline.run("),
+  "provider source pipeline is not wired into the builder");
+assert.ok(buildReporting.includes("BUILD_HISTORY_LIMIT = 20") && buildReporting.includes("summarize_build_trend"),
+  "build health history is incomplete");
 
 console.log(`Pages app validation passed (version ${appVersion}, ${ids.length} unique IDs).`);

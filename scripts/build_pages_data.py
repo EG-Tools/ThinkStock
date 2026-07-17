@@ -1,5 +1,4 @@
 import json
-import math
 import os
 import re
 import zipfile
@@ -25,7 +24,13 @@ from data_build_support import (
     incremental_month_code,
     incremental_start_date,
     should_full_rebuild,
-    source_health_summary,
+)
+from build_reporting import (
+    frame_summary,
+    payload_file_summary,
+    record_summary,
+    utc_stamp,
+    write_report_with_history,
 )
 from macro_utils import densify_macro
 from provider_clients import (
@@ -34,6 +39,7 @@ from provider_clients import (
     fetch_yahoo_prices,
 )
 from split_pages_data import split_all_payloads
+from source_pipeline import SourcePipeline
 
 DEFAULT_TICKERS = ["^KS11", "^KQ11", "005930.KS", "218410.KQ"]
 MACRO_SERIES = ["leading_cycle", "news_sentiment"]
@@ -70,6 +76,7 @@ OUTPUT_DISCLOSURES_JSON = DATA_DIR / "disclosures.json"
 DISCLOSURE_DATA_DIR = DATA_DIR / "disclosures"
 OUTPUT_DART_CORP_CODES_JSON = DATA_DIR / "dart_corp_codes.json"
 OUTPUT_BUILD_REPORT_JSON = DATA_DIR / "build_report.json"
+OUTPUT_BUILD_HISTORY_JSON = DATA_DIR / "build_history.json"
 LOOKBACK_YEARS = 30
 DART_DISCLOSURE_LOOKBACK_YEARS = 3
 ECOS_STAT_CODE = "901Y067"  # Composite Leading Indicator
@@ -1417,73 +1424,6 @@ def write_columnar_payload_or_keep(path: Path, payload: dict, label: str) -> boo
     return True
 
 
-def utc_stamp() -> str:
-    return pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def frame_summary(frame: pd.DataFrame) -> dict:
-    if frame is None or frame.empty:
-        return {"rows": 0, "latest": ""}
-    try:
-        latest = pd.to_datetime(frame.index.max()).strftime("%Y-%m-%d")
-    except Exception:
-        latest = ""
-    return {"rows": int(len(frame)), "latest": latest}
-
-
-def record_summary(records: list[dict]) -> dict:
-    if not records:
-        return {"rows": 0, "latest": ""}
-    latest = max(str(record.get("date") or "")[:10] for record in records)
-    return {"rows": len(records), "latest": latest}
-
-
-def payload_file_summary(path: Path) -> dict:
-    if not path.exists():
-        return {"rows": 0, "latest": ""}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {"rows": 0, "latest": ""}
-
-    dates = payload.get("dates")
-    if isinstance(dates, list) and dates:
-        summary = {"rows": len(dates), "latest": str(dates[-1])[:10]}
-        columns = payload.get("columns")
-        if isinstance(columns, dict):
-            series_latest: dict[str, str] = {}
-            series_points: dict[str, int] = {}
-            for key, values in columns.items():
-                if not isinstance(values, list):
-                    continue
-                valid_indexes = [
-                    index
-                    for index, value in enumerate(values[:len(dates)])
-                    if isinstance(value, (int, float))
-                    and not isinstance(value, bool)
-                    and math.isfinite(float(value))
-                ]
-                if valid_indexes:
-                    series_latest[str(key)] = str(dates[valid_indexes[-1]])[:10]
-                    series_points[str(key)] = len(valid_indexes)
-            summary["series_latest"] = series_latest
-            summary["series_points"] = series_points
-        return summary
-
-    records = payload.get("records")
-    if isinstance(records, list):
-        return record_summary(records)
-
-    return {"rows": int(payload.get("total") or 0), "latest": max(payload.get("latest", {}).values(), default="")}
-
-
-def write_build_report(report: dict) -> None:
-    OUTPUT_BUILD_REPORT_JSON.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False),
-        encoding="utf-8",
-    )
-
-
 def main() -> None:
     build_started = monotonic()
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -1497,6 +1437,7 @@ def main() -> None:
         "outputs": {},
         "events": [],
     }
+    pipeline = SourcePipeline(build_report, SOURCE_STALE_AFTER_DAYS)
     existing_prices = load_existing_price_seed()
     price_fallback = years_before(date.today(), LOOKBACK_YEARS)
     price_start = incremental_start_date(
@@ -1521,11 +1462,7 @@ def main() -> None:
         "price_overlap_days": PRICE_OVERLAP_DAYS,
         "price_rebases": price_rebases,
     }
-    build_report["sources"]["prices"] = source_health_summary(
-        frame_summary(live_prices),
-        price_started,
-        SOURCE_STALE_AFTER_DAYS["prices"],
-    )
+    pipeline.record("prices", frame_summary(live_prices), price_started)
     build_report["sources"]["price_seed"] = frame_summary(existing_prices)
     for ticker in DEFAULT_TICKERS:
         live_values = live_prices[ticker].dropna() if ticker in live_prices else pd.Series(dtype="float64")
@@ -1576,12 +1513,10 @@ def main() -> None:
         "ecos_news_overlap_days": ECOS_NEWS_OVERLAP_DAYS,
     })
     if ecos_key:
-        ecos_leading_started = monotonic()
-        leading_cycle = fetch_ecos_leading_cycle(ecos_key, ecos_leading_start)
-        build_report["sources"]["ecos_leading_cycle"] = source_health_summary(
-            frame_summary(leading_cycle),
-            ecos_leading_started,
-            SOURCE_STALE_AFTER_DAYS["ecos_leading_cycle"],
+        leading_cycle = pipeline.run(
+            "ecos_leading_cycle",
+            lambda: fetch_ecos_leading_cycle(ecos_key, ecos_leading_start),
+            frame_summary,
         )
         if not leading_cycle.empty:
             macro_source = merge_macro_with_leading_cycle(macro_source, leading_cycle)
@@ -1590,12 +1525,10 @@ def main() -> None:
             print(f"Applied ECOS leading_cycle rows: {len(leading_cycle)} (latest={latest})")
             build_report["events"].append(f"Applied ECOS leading_cycle rows: {len(leading_cycle)} latest={latest}")
 
-        ecos_news_started = monotonic()
-        news_sentiment = fetch_ecos_news_sentiment(ecos_key, ecos_news_start)
-        build_report["sources"]["ecos_news_sentiment"] = source_health_summary(
-            frame_summary(news_sentiment),
-            ecos_news_started,
-            SOURCE_STALE_AFTER_DAYS["ecos_news_sentiment"],
+        news_sentiment = pipeline.run(
+            "ecos_news_sentiment",
+            lambda: fetch_ecos_news_sentiment(ecos_key, ecos_news_start),
+            frame_summary,
         )
         if not news_sentiment.empty:
             macro_source = merge_macro_frame(macro_source, news_sentiment)
@@ -1607,12 +1540,10 @@ def main() -> None:
     else:
         build_report["events"].append("ECOS_API_KEY is not configured.")
 
-    oecd_started = monotonic()
-    oecd_leading_cycle = fetch_oecd_leading_cycle_from_fred()
-    build_report["sources"]["oecd_leading_cycle"] = source_health_summary(
-        frame_summary(oecd_leading_cycle),
-        oecd_started,
-        SOURCE_STALE_AFTER_DAYS["oecd_leading_cycle"],
+    oecd_leading_cycle = pipeline.run(
+        "oecd_leading_cycle",
+        fetch_oecd_leading_cycle_from_fred,
+        frame_summary,
     )
     if not oecd_leading_cycle.empty:
         macro_source, applied_months = apply_recent_oecd_tail(
@@ -1655,19 +1586,21 @@ def main() -> None:
     build_report["policy"]["kofia_start"] = kofia_start
     build_report["policy"]["kofia_overlap_days"] = KOFIA_OVERLAP_DAYS
     if kofia_key:
-        kofia_started = monotonic()
-        kofia_request_stats: dict = {}
-        credit_kofia = merge_credit_frames(
-            fetch_kofia_credit(kofia_key, kofia_start, kofia_request_stats),
-            fetch_kofia_customer_deposit(kofia_key, kofia_start, kofia_request_stats),
-        )
-        build_report["sources"]["kofia_credit"] = source_health_summary(
-            {
-                **frame_summary(credit_kofia),
-                **kofia_request_stats,
+        def load_kofia_credit() -> tuple[pd.DataFrame, dict]:
+            request_stats: dict = {}
+            frame = merge_credit_frames(
+                fetch_kofia_credit(kofia_key, kofia_start, request_stats),
+                fetch_kofia_customer_deposit(kofia_key, kofia_start, request_stats),
+            )
+            return frame, request_stats
+
+        credit_kofia, _ = pipeline.run(
+            "kofia_credit",
+            load_kofia_credit,
+            lambda result: {
+                **frame_summary(result[0]),
+                **result[1],
             },
-            kofia_started,
-            SOURCE_STALE_AFTER_DAYS["kofia_credit"],
         )
         credit_merged, applied_kofia_credit = merge_credit_seed_with_kofia(credit_merged, credit_kofia)
         if applied_kofia_credit > 0:
@@ -1690,15 +1623,13 @@ def main() -> None:
         ).strftime("%Y%m%d")
         build_report["policy"]["freesis_start"] = freesis_start
         build_report["policy"]["freesis_overlap_days"] = FREESIS_OVERLAP_DAYS
-        freesis_started = monotonic()
-        credit_live = merge_credit_frames(
-            fetch_freesis_credit(freesis_start),
-            fetch_freesis_customer_deposit(freesis_start),
-        )
-        build_report["sources"]["freesis_credit"] = source_health_summary(
-            frame_summary(credit_live),
-            freesis_started,
-            SOURCE_STALE_AFTER_DAYS["freesis_credit"],
+        credit_live = pipeline.run(
+            "freesis_credit",
+            lambda: merge_credit_frames(
+                fetch_freesis_credit(freesis_start),
+                fetch_freesis_customer_deposit(freesis_start),
+            ),
+            frame_summary,
         )
         credit_merged, appended_credit = merge_credit_seed_with_freesis(credit_merged, credit_live)
     else:
@@ -1710,12 +1641,12 @@ def main() -> None:
         print(f"Applied Freesis credit rows: {appended_credit} (latest={latest_credit})")
         build_report["events"].append(f"Applied Freesis credit rows: {appended_credit} latest={latest_credit}")
 
-    adr_started = monotonic()
-    adr_records = fetch_adr_data()
-    build_report["sources"]["adr"] = source_health_summary(
-        record_summary(adr_records),
-        adr_started,
-        SOURCE_STALE_AFTER_DAYS["adr"],
+    adr_records = pipeline.run(
+        "adr",
+        fetch_adr_data,
+        record_summary,
+        allow_failure=True,
+        default=[],
     )
     if adr_records:
         print(f"Applied ADR rows: {len(adr_records)} (latest={adr_records[-1]['date']})")
@@ -1724,12 +1655,12 @@ def main() -> None:
         print("ADR fetch had no rows; keeping existing adr_data.json.")
         build_report["events"].append("ADR fetch had no rows; keeping existing adr_data.json.")
 
-    fear_greed_started = monotonic()
-    fear_greed_records = fetch_fear_greed_data()
-    build_report["sources"]["fear_greed"] = source_health_summary(
-        record_summary(fear_greed_records),
-        fear_greed_started,
-        SOURCE_STALE_AFTER_DAYS["fear_greed"],
+    fear_greed_records = pipeline.run(
+        "fear_greed",
+        fetch_fear_greed_data,
+        record_summary,
+        allow_failure=True,
+        default=[],
     )
     if fear_greed_records:
         latest_fear_greed = fear_greed_records[-1]["date"]
@@ -1764,7 +1695,8 @@ def main() -> None:
     elif not full_rebuild:
         print(f"Keeping existing DART corp code map ({len(dart_corp_map)} rows).")
         build_report["events"].append(f"Keeping existing DART corp code map rows: {len(dart_corp_map)}")
-    build_report["sources"]["dart_corp_codes"] = source_health_summary(
+    pipeline.record(
+        "dart_corp_codes",
         {"rows": len(dart_corp_map), "latest": "", "mode": dart_corp_mode},
         dart_corp_started,
         status=(
@@ -1819,7 +1751,8 @@ def main() -> None:
         else:
             print("DART_API_KEY is not configured or returned no disclosure rows.")
             build_report["events"].append("DART_API_KEY is not configured or returned no disclosure rows.")
-    build_report["sources"]["disclosures"] = source_health_summary(
+    pipeline.record(
+        "disclosures",
         record_summary(disclosure_records),
         disclosures_started,
         status="ok" if disclosure_records else ("skipped" if not dart_key else "empty"),
@@ -1878,7 +1811,11 @@ def main() -> None:
     }
     for warning in warnings:
         print(f"Build health warning: {warning}")
-    write_build_report(build_report)
+    write_report_with_history(
+        build_report,
+        OUTPUT_BUILD_REPORT_JSON,
+        OUTPUT_BUILD_HISTORY_JSON,
+    )
     if wrote_prices:
         print(f"Wrote {OUTPUT_JSON}")
     if wrote_macro:
@@ -1891,6 +1828,7 @@ def main() -> None:
     if dart_corp_map:
         print(f"Wrote {OUTPUT_DART_CORP_CODES_JSON}")
     print(f"Wrote {OUTPUT_BUILD_REPORT_JSON}")
+    print(f"Wrote {OUTPUT_BUILD_HISTORY_JSON}")
 
 if __name__ == "__main__":
     main()

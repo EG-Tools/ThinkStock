@@ -31,6 +31,15 @@ def main() -> int:
         f"`{int(http.get('retries') or 0)} retries`, "
         f"`{int(http.get('failures') or 0)} failures`"
     )
+    trend = health.get("trend") if isinstance(health.get("trend"), dict) else {}
+    if trend:
+        direction = float(trend.get("duration_vs_median_pct") or 0)
+        print(
+            "- Recent trend: "
+            f"`{int(trend.get('healthy_runs') or 0)}/{int(trend.get('window') or 0)} healthy`, "
+            f"`median {int(trend.get('median_duration_ms') or 0)} ms`, "
+            f"`latest {direction:+.1f}% vs median`"
+        )
     print()
     print("| Source | Status | Rows | Latest | Age | Duration |")
     print("|---|---:|---:|---:|---:|---:|")

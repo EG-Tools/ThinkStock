@@ -6,6 +6,8 @@ const PRECACHE_ASSETS = [
   "./styles.css",
   "./modules/data-payload.js?v=dev",
   "./modules/market-data.js?v=dev",
+  "./modules/chart-interaction-math.js?v=dev",
+  "./modules/browser-market-client.js?v=dev",
   "./modules/auxiliary-chart-model.js?v=dev",
   "./modules/performance-monitor.js?v=dev",
   "./modules/app-storage.js?v=dev",
@@ -39,6 +41,7 @@ const DATA_URL_PATTERNS = [
   "/data/disclosures.json",
   "/data/dart_corp_codes.json",
   "/data/build_report.json",
+  "/data/build_history.json",
   "/data/disclosures/",
 ];
 const CORE_ASSET_PATHS = [
@@ -50,6 +53,8 @@ const CORE_ASSET_PATHS = [
   "/icon.svg",
   "/modules/data-payload.js",
   "/modules/market-data.js",
+  "/modules/chart-interaction-math.js",
+  "/modules/browser-market-client.js",
   "/modules/auxiliary-chart-model.js",
   "/modules/performance-monitor.js",
   "/modules/app-storage.js",

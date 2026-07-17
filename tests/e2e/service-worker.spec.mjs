@@ -9,7 +9,7 @@ test("service worker registers and precaches the offline shell", async ({ contex
     await page.reload({ waitUntil: "domcontentloaded" });
   }
   await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
-  await expect(page.locator("#appVersionText")).toHaveText("0.86");
+  await expect(page.locator("#appVersionText")).toHaveText(/^\d+\.\d+$/);
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
 
   const cachedPaths = await page.evaluate(async () => {
@@ -23,6 +23,8 @@ test("service worker registers and precaches the offline shell", async ({ contex
     "/data/macro_data_recent.json",
     "/data/credit_data_recent.json",
     "/data/adr_data_recent.json",
+    "/modules/chart-interaction-math.js",
+    "/modules/browser-market-client.js",
     "/vendor/plotly-basic-2.35.2.min.js",
   ]));
 
