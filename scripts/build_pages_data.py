@@ -1357,22 +1357,16 @@ def merge_credit_seed_with_freesis(seed: pd.DataFrame, live: pd.DataFrame) -> tu
     live = live.sort_index()
     if len(live) >= 1000:
         merged = live.copy()
-    else:
-        merged = merge_credit_frames(seed, live)
-    merged.index.name = "date"
-    changed = 0
-    for idx, row in live.iterrows():
-        prev = seed.loc[idx] if idx in seed.index else pd.Series(dtype="float64")
-        for column in CREDIT_SERIES:
-            prev_value = pd.to_numeric(prev.get(column), errors="coerce")
-            next_value = pd.to_numeric(row.get(column), errors="coerce")
-            if pd.notna(next_value) and (pd.isna(prev_value) or float(prev_value) != float(next_value)):
-                changed += 1
-                break
-    return merged, changed
+        merged.index.name = "date"
+        return merged[CREDIT_SERIES], len(live)
+    return merge_credit_seed_with_incremental_tail(seed, live, "Freesis")
 
 
-def merge_credit_seed_with_kofia(seed: pd.DataFrame, live: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+def merge_credit_seed_with_incremental_tail(
+    seed: pd.DataFrame,
+    live: pd.DataFrame,
+    source_name: str,
+) -> tuple[pd.DataFrame, int]:
     if live.empty:
         return seed, 0
     if seed.empty:
@@ -1398,7 +1392,7 @@ def merge_credit_seed_with_kofia(seed: pd.DataFrame, live: pd.DataFrame) -> tupl
         if len(overlap) < 5:
             continue
         factor = median_scale_factor(overlap["seed"], overlap["live"])
-        if 0.2 <= factor <= 5.0 and (factor > 1.15 or factor < 0.85):
+        if 0.2 <= factor <= 5.0 and (factor > 1.02 or factor < 0.98):
             aligned_live[column] = aligned_live[column] * factor
 
     tail = aligned_live[aligned_live.index > seed.index.max()]
@@ -1415,7 +1409,10 @@ def merge_credit_seed_with_kofia(seed: pd.DataFrame, live: pd.DataFrame) -> tupl
             if pd.notna(live_value):
                 next_row[column] = live_value
         if not is_plausible_credit_transition(prev_date, prev_row, idx, next_row):
-            print(f"Dropped KOFIA credit tail from {idx.strftime('%Y-%m-%d')} due to discontinuity.")
+            print(
+                f"Dropped {source_name} credit tail from "
+                f"{idx.strftime('%Y-%m-%d')} due to discontinuity."
+            )
             break
         next_row.name = idx
         accepted.append(next_row)
@@ -1428,6 +1425,10 @@ def merge_credit_seed_with_kofia(seed: pd.DataFrame, live: pd.DataFrame) -> tupl
     merged = merge_credit_frames(seed, tail_frame)
     merged.index.name = "date"
     return merged[CREDIT_SERIES], len(accepted)
+
+
+def merge_credit_seed_with_kofia(seed: pd.DataFrame, live: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    return merge_credit_seed_with_incremental_tail(seed, live, "KOFIA")
 
 
 def build_payload(df: pd.DataFrame, labels: dict[str, str], series_names: list[str]) -> dict:

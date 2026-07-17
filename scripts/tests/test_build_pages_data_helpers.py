@@ -15,6 +15,7 @@ from build_pages_data import (
     CREDIT_SERIES,
     build_dart_corp_code_payload,
     find_credit_history_discontinuity,
+    merge_credit_seed_with_freesis,
     merge_credit_seed_with_kofia,
 )
 
@@ -92,6 +93,38 @@ class BuildPagesDataHelperTests(unittest.TestCase):
             seed[CREDIT_SERIES],
             check_names=False,
         )
+
+    def test_incremental_freesis_merge_never_overwrites_verified_overlap(self) -> None:
+        seed = pd.DataFrame({
+            "customer_deposit": [60.0, 61.0, 62.0, 63.0, 64.0, 65.0],
+            "kospi_credit": [17.72, 17.8, 17.9, 18.0, 18.1, 18.2],
+            "kosdaq_credit": [9.0, 9.1, 9.2, 9.3, 9.4, 9.5],
+        }, index=pd.to_datetime([
+            "2025-10-01",
+            "2025-10-02",
+            "2025-10-03",
+            "2025-10-04",
+            "2025-10-05",
+            "2025-10-06",
+        ]))
+        live = pd.DataFrame({
+            "customer_deposit": [48.8, 49.6, 50.4, 51.2, 52.0, 52.8],
+            "kospi_credit": [14.24, 14.32, 14.4, 14.48, 14.56, 14.64],
+            "kosdaq_credit": [7.28, 7.36, 7.44, 7.52, 7.6, 7.68],
+        }, index=pd.to_datetime([
+            "2025-10-02",
+            "2025-10-03",
+            "2025-10-04",
+            "2025-10-05",
+            "2025-10-06",
+            "2025-10-07",
+        ]))
+
+        merged, applied = merge_credit_seed_with_freesis(seed, live)
+
+        self.assertEqual(applied, 1)
+        self.assertAlmostEqual(float(merged.loc[pd.Timestamp("2025-10-02"), "kospi_credit"]), 17.8)
+        self.assertGreater(float(merged.loc[pd.Timestamp("2025-10-07"), "kospi_credit"]), 18.0)
 
     def test_detects_poisoned_cached_credit_history(self) -> None:
         frame = pd.DataFrame({
