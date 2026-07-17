@@ -9,6 +9,8 @@ const scheduleServiceWorkerRegistration = serviceWorkerClient.scheduleRegistrati
 const runtimeRefreshModule = globalThis.ThinkStockRuntimeRefresh;
 if (!runtimeRefreshModule) throw new Error("Runtime refresh module failed to load");
 const { runRefreshPhases } = runtimeRefreshModule;
+const dataSeedLoaderModule = globalThis.ThinkStockDataSeedLoader;
+if (!dataSeedLoaderModule) throw new Error("Data seed loader module failed to load");
 const marketDataModule = globalThis.ThinkStockMarketData;
 if (!marketDataModule) throw new Error("Market data module failed to load");
 const {
@@ -33,9 +35,13 @@ const {
   getChartInteractionGeometry,
   axisPixelToXValue,
   xRangeMatches,
-  yValueToLocalPixel,
-  interpolateTraceYAtMs,
+  buildLineHitIndex,
+  lineHitIndexMatches,
+  findNearestLineTarget,
 } = chartInteractionMath;
+const chartInteractionControllerModule = globalThis.ThinkStockChartInteractionController;
+if (!chartInteractionControllerModule) throw new Error("Chart interaction controller module failed to load");
+const { createPointerFrameController } = chartInteractionControllerModule;
 const browserMarketClientModule = globalThis.ThinkStockBrowserMarketClient;
 if (!browserMarketClientModule) throw new Error("Browser market client module failed to load");
 const auxiliaryChartModelModule = globalThis.ThinkStockAuxiliaryChartModel;
@@ -136,7 +142,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.87";
+const APP_VERSION = "0.88";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -230,6 +236,14 @@ async function fetchWithTimeout(resource, init = {}, timeoutMs = NETWORK_REQUEST
     externalSignal?.removeEventListener?.("abort", abortFromExternal);
   }
 }
+const dataSeedLoader = dataSeedLoaderModule.createDataSeedLoader({
+  fetchWithTimeout,
+  appendCacheBust,
+});
+const {
+  fetchSeedText,
+  fetchSegmentedSeedText,
+} = dataSeedLoader;
 
 function isAbortError(error) {
   return error?.name === "AbortError" || /aborted|aborterror/i.test(String(error?.message || ""));
@@ -304,7 +318,8 @@ async function ensurePlotlyReady() {
 const LINE_DRAG_TOLERANCE_PX = 14;
 const LINE_DRAG_TOUCH_TOLERANCE_PX = 24;
 const LINE_HIGHLIGHT_EXTRA_WIDTH = 2;
-const LINE_HIT_TEST_INTERVAL_MS = 45;
+const LINE_HIT_TEST_INTERVAL_MS = 50;
+const CHART_GEOMETRY_CACHE_MS = 240;
 const VIEWPORT_SYNC_DEBOUNCE_MS = 70;
 const HANDLE_UPDATE_DEBOUNCE_MS = 120;
 const DISCLOSURE_HOVER_DELAY_MS = 90;
@@ -410,6 +425,8 @@ let pendingDisclosureHoverData = null;
 let disclosureGroupStore = new Map();
 let disclosureGroupStoreSeq = 0;
 let disclosureMarkerPixelCache = new WeakMap();
+let lineHitIndexCache = new WeakMap();
+let pointerMoveController = null;
 const CURSOR_LINE_CLASS = "synced-cursor-line";
 let apiSettings = { ...API_SETTINGS_DEFAULT };
 let lastTouchTapAt = 0;
@@ -423,7 +440,6 @@ let hoveredLineTraceIndex = null;
 let activeLineTraceIndex = null;
 let appliedLineHighlightTraceIndex = null;
 let isViewportDragging = false;
-let lastLineHitTestAt = 0;
 let runtimeSnapshotIdleTimer = 0;
 let runtimeSnapshotSavedSignature = "";
 let runtimeSnapshotWritePromise = null;
@@ -682,39 +698,6 @@ function setDartCorpCodeRows(records) {
     dartCorpCodeMap.set(record.stock_code, record);
   });
   dartCorpCodeMapLoaded = dartCorpCodeMap.size > 0;
-}
-
-async function fetchSeedText(path, forceNetwork = false) {
-  const firstUrl = forceNetwork ? appendCacheBust(path) : path;
-  const opt = forceNetwork ? { cache: "reload" } : {};
-  try {
-    const firstRes = await fetchWithTimeout(firstUrl, opt);
-    if (firstRes.ok) return await firstRes.text();
-  } catch (_) {
-    // Try fallback below.
-  }
-  if (!forceNetwork) return null;
-  try {
-    const fallbackRes = await fetchWithTimeout(path, { cache: "no-store" });
-    if (fallbackRes.ok) return await fallbackRes.text();
-  } catch (_) {
-    // Ignore.
-  }
-  return null;
-}
-
-function segmentedSeedPath(path, segment) {
-  const suffix = segment === "history" ? "_history" : "_recent";
-  return String(path).replace(/\.json$/i, `${suffix}.json`);
-}
-
-async function fetchSegmentedSeedText(path, segment, forceNetwork = false) {
-  const segmentedPath = segmentedSeedPath(path, segment);
-  const segmentedText = await fetchSeedText(segmentedPath, forceNetwork);
-  if (segmentedText) return { text: segmentedText, usedFullFallback: false };
-
-  const fullText = await fetchSeedText(path, forceNetwork);
-  return { text: fullText, usedFullFallback: Boolean(fullText) };
 }
 
 async function ensureDartCorpCodeMapLoaded(forceNetwork = false) {
@@ -1693,24 +1676,12 @@ function findNearestLineDragTarget(el, clientX, clientY, isTouch = false, geomet
   if (!Number.isFinite(targetMs)) return null;
 
   const tolerance = isTouch ? LINE_DRAG_TOUCH_TOLERANCE_PX : LINE_DRAG_TOLERANCE_PX;
-  let best = null;
-  let bestDistance = Number.POSITIVE_INFINITY;
-
-  el.data.forEach((trace, traceIndex) => {
-    if (!trace || trace.visible === "legendonly") return;
-    const seriesKey = currentSelected[traceIndex];
-    if (!seriesKey) return;
-    const y = interpolateTraceYAtMs(trace, targetMs);
-    const pixelY = yValueToLocalPixel(el, y);
-    if (!Number.isFinite(pixelY)) return;
-    const distance = Math.abs(pixelY - localY);
-    if (distance <= tolerance && distance < bestDistance) {
-      bestDistance = distance;
-      best = { traceIndex, seriesKey };
-    }
-  });
-
-  return best;
+  let index = lineHitIndexCache.get(el);
+  if (!lineHitIndexMatches(index, el.data, currentSelected)) {
+    index = buildLineHitIndex(el.data, currentSelected);
+    lineHitIndexCache.set(el, index);
+  }
+  return findNearestLineTarget(index, targetMs, localY, ya, tolerance);
 }
 
 function getDisclosureMarkerPixelIndex(el, geometry = null) {
@@ -1926,8 +1897,6 @@ function bindCursorMoveSync() {
   ensureDragZoomOverlay(adrEl);
 
   if (!cursorMoveBound) {
-    let pointerMoveRafId = 0;
-    let pendingPointerMove = null;
     let touchStartPoint = null;
 
     const moveAt = (sourceEl, clientX, geometry = null) => {
@@ -1940,56 +1909,56 @@ function bindCursorMoveSync() {
       scheduleSyncedCursor(xValue, sourceEl, clientX, sourceLocalX);
     };
 
-    const processPointerMove = (sourceEl, clientX, clientY, findLineTarget) => {
+    const processPointerMove = ({
+      sourceEl,
+      clientX,
+      clientY,
+      geometry,
+      runHitTest,
+    }) => {
       const perfStartedAt = startPerfSample();
-      const geometry = getChartInteractionGeometry(sourceEl);
-      if (findLineTarget) {
-        const now = performance.now();
-        if (!isViewportDragging && now - lastLineHitTestAt >= LINE_HIT_TEST_INTERVAL_MS) {
-          lastLineHitTestAt = now;
-          const disclosureTarget = findDisclosureMarkerAtClientPoint(
-            sourceEl,
-            clientX,
-            clientY,
-            false,
-            geometry,
-          );
-          sourceEl.classList.toggle("is-disclosure-hovering", Boolean(disclosureTarget));
-          if (!hoverShowPopup) {
-            if (disclosureTarget) {
-              const trace = sourceEl.data?.[disclosureTarget.traceIndex];
-              scheduleDisclosureHoverHighlight({
-                points: [{
-                  curveNumber: disclosureTarget.traceIndex,
-                  pointIndex: disclosureTarget.pointIndex,
-                  pointNumber: disclosureTarget.pointIndex,
-                  data: trace,
-                }],
-              });
-            } else {
-              resetDisclosureHoverHighlight(sourceEl);
-            }
+      if (runHitTest && !isViewportDragging) {
+        const disclosureTarget = findDisclosureMarkerAtClientPoint(
+          sourceEl,
+          clientX,
+          clientY,
+          false,
+          geometry,
+        );
+        sourceEl.classList.toggle("is-disclosure-hovering", Boolean(disclosureTarget));
+        if (!hoverShowPopup) {
+          if (disclosureTarget) {
+            const trace = sourceEl.data?.[disclosureTarget.traceIndex];
+            scheduleDisclosureHoverHighlight({
+              points: [{
+                curveNumber: disclosureTarget.traceIndex,
+                pointIndex: disclosureTarget.pointIndex,
+                pointNumber: disclosureTarget.pointIndex,
+                data: trace,
+              }],
+            });
+          } else {
+            resetDisclosureHoverHighlight(sourceEl);
           }
-          const lineTarget = disclosureTarget
-            ? null
-            : findNearestLineDragTarget(sourceEl, clientX, clientY, false, geometry);
-          setHoveredLineTarget(lineTarget);
         }
+        const lineTarget = disclosureTarget
+          ? null
+          : findNearestLineDragTarget(sourceEl, clientX, clientY, false, geometry);
+        setHoveredLineTarget(lineTarget);
       }
       moveAt(sourceEl, clientX, geometry);
       if (perfStartedAt) recordPerfSample("pointerMove", perfStartedAt, { chart: sourceEl.id || "unknown" });
     };
 
+    pointerMoveController = createPointerFrameController(window, {
+      geometryTtlMs: CHART_GEOMETRY_CACHE_MS,
+      hitTestIntervalMs: LINE_HIT_TEST_INTERVAL_MS,
+      readGeometry: getChartInteractionGeometry,
+      processFrame: processPointerMove,
+    });
+
     const schedulePointerMove = (sourceEl, clientX, clientY, findLineTarget) => {
-      pendingPointerMove = { sourceEl, clientX, clientY, findLineTarget };
-      if (pointerMoveRafId) return;
-      pointerMoveRafId = requestAnimationFrame(() => {
-        const pending = pendingPointerMove;
-        pendingPointerMove = null;
-        pointerMoveRafId = 0;
-        if (!pending) return;
-        processPointerMove(pending.sourceEl, pending.clientX, pending.clientY, pending.findLineTarget);
-      });
+      pointerMoveController.schedule({ sourceEl, clientX, clientY, findLineTarget });
     };
 
     const onMove = (event) => {
@@ -1998,11 +1967,7 @@ function bindCursorMoveSync() {
     };
 
     const onLeave = () => {
-      if (pointerMoveRafId) {
-        cancelAnimationFrame(pointerMoveRafId);
-        pointerMoveRafId = 0;
-      }
-      pendingPointerMove = null;
+      pointerMoveController.cancel();
       setHoveredLineTarget(null);
       mainEl.classList.remove("is-disclosure-hovering");
       resetDisclosureHoverHighlight(mainEl);
@@ -2010,6 +1975,10 @@ function bindCursorMoveSync() {
       clearHoverOnChart(mainEl);
       clearHoverOnChart(adrEl);
     };
+
+    const invalidatePointerGeometry = () => pointerMoveController?.invalidate();
+    window.addEventListener("resize", invalidatePointerGeometry, { passive: true });
+    window.addEventListener("scroll", invalidatePointerGeometry, { passive: true });
 
     const onDisclosurePriorityClick = (event) => {
       if (event.target instanceof Element && event.target.closest(".disclosure-popover")) return;
@@ -3440,7 +3409,10 @@ function restyleLive(traceIndex, seriesKey) {
     dragRafId = null;
     const el = document.getElementById("chart");
     const newY = computeFinalValues(seriesKey);
-    if (newY) Plotly.restyle(el, { y: [newY] }, [traceIndex]);
+    if (newY) {
+      lineHitIndexCache.delete(el);
+      Plotly.restyle(el, { y: [newY] }, [traceIndex]);
+    }
   });
 }
 

@@ -1,5 +1,10 @@
+importScripts("./modules/cache-refresh-policy.js?v=dev");
+
 const CACHE_NAME = "thinkstock-dev";
 const NETWORK_FIRST_TIMEOUT_MS = 3500;
+const DATA_REFRESH_CONCURRENCY = 3;
+const cacheRefreshPolicy = self.ThinkStockCacheRefreshPolicy;
+if (!cacheRefreshPolicy) throw new Error("Cache refresh policy failed to load");
 const PRECACHE_ASSETS = [
   "./",
   "./index.html",
@@ -7,6 +12,8 @@ const PRECACHE_ASSETS = [
   "./modules/data-payload.js?v=dev",
   "./modules/market-data.js?v=dev",
   "./modules/chart-interaction-math.js?v=dev",
+  "./modules/chart-interaction-controller.js?v=dev",
+  "./modules/cache-refresh-policy.js?v=dev",
   "./modules/browser-market-client.js?v=dev",
   "./modules/auxiliary-chart-model.js?v=dev",
   "./modules/performance-monitor.js?v=dev",
@@ -17,6 +24,7 @@ const PRECACHE_ASSETS = [
   "./modules/dart-disclosure.js?v=dev",
   "./modules/service-worker-client.js?v=dev",
   "./modules/runtime-refresh.js?v=dev",
+  "./modules/data-seed-loader.js?v=dev",
   "./modules/data-worker.js?v=dev",
   "./modules/chart-model-worker.js?v=dev",
   "./app.js?v=dev",
@@ -54,6 +62,8 @@ const CORE_ASSET_PATHS = [
   "/modules/data-payload.js",
   "/modules/market-data.js",
   "/modules/chart-interaction-math.js",
+  "/modules/chart-interaction-controller.js",
+  "/modules/cache-refresh-policy.js",
   "/modules/browser-market-client.js",
   "/modules/auxiliary-chart-model.js",
   "/modules/performance-monitor.js",
@@ -64,6 +74,7 @@ const CORE_ASSET_PATHS = [
   "/modules/dart-disclosure.js",
   "/modules/service-worker-client.js",
   "/modules/runtime-refresh.js",
+  "/modules/data-seed-loader.js",
   "/modules/data-worker.js",
   "/modules/chart-model-worker.js",
 ];
@@ -194,13 +205,16 @@ async function refreshCachedDataAtomically() {
     }
   });
 
-  const results = await Promise.allSettled([...byCacheKey.entries()].map(async ([cacheKey, request]) => {
+  const planned = cacheRefreshPolicy.planDataRefreshRequests(
+    [...byCacheKey.entries()].map(([cacheKey, request]) => ({ cacheKey, request })),
+  );
+  const results = await cacheRefreshPolicy.runWithConcurrency(planned, async ({ cacheKey, request }) => {
     const response = await fetch(request, { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     await putIfOk(cache, cacheKey, response);
     if (request.url !== cacheKey) await cache.delete(request);
     return cacheKey;
-  }));
+  }, DATA_REFRESH_CONCURRENCY);
   const refreshed = results.filter((result) => result.status === "fulfilled").length;
   const failed = results.length - refreshed;
   return { ok: failed === 0, refreshed, failed };

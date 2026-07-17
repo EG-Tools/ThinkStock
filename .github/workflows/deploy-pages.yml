@@ -23,10 +23,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Restore Last Known-Good Pages Data
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: docs/data
           key: thinkstock-pages-data-v1-${{ github.run_id }}
@@ -37,28 +37,28 @@ jobs:
         run: cp -a docs/data .pages-data-baseline
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: "pip"
+          cache-dependency-path: requirements-pages.txt
+
+      - name: Install Node Dependencies
+        run: npm ci
 
       - name: Validate Web App
         run: npm test
 
       - name: Install WebKit Test Dependencies
         if: github.event_name != 'schedule'
-        run: |
-          npm ci
-          npx playwright install --with-deps webkit
+        run: npx playwright install --with-deps webkit
 
       - name: Test Desktop WebKit Interactions
         if: github.event_name != 'schedule'
         run: npm run test:webkit:desktop
 
       - name: Install Data Build Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pandas yfinance requests
+        run: python -m pip install --disable-pip-version-check --requirement requirements-pages.txt
 
       - name: Test Data Regression Guard
         run: python -m unittest discover -s scripts/tests -p "test_*.py"
@@ -91,10 +91,10 @@ jobs:
         run: python scripts/stamp_pages_assets.py
 
       - name: Setup Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: ./docs
 
@@ -110,4 +110,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

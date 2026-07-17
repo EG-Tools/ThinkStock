@@ -43,3 +43,32 @@ test("converts chart pixels and interpolates line values", () => {
     y: [10, null, 30],
   }, Date.parse("2026-01-02")), 20);
 });
+
+
+test("builds and reuses a numeric line hit index", () => {
+  const traces = [
+    {
+      x: ["2026-01-01", "2026-01-03"],
+      y: ["10", "30"],
+    },
+    {
+      x: ["2026-01-01", "2026-01-03"],
+      y: [80, 90],
+      visible: "legendonly",
+    },
+  ];
+  const seriesKeys = ["first", "hidden"];
+  const index = chartMath.buildLineHitIndex(traces, seriesKeys);
+
+  assert.equal(chartMath.lineHitIndexMatches(index, traces, seriesKeys), true);
+  assert.deepEqual(chartMath.findNearestLineTarget(
+    index,
+    Date.parse("2026-01-02"),
+    170,
+    { _offset: 10, _length: 200, range: [0, 100] },
+    2,
+  ), { traceIndex: 0, seriesKey: "first" });
+
+  traces[0].y = [20, 40];
+  assert.equal(chartMath.lineHitIndexMatches(index, traces, seriesKeys), false);
+});

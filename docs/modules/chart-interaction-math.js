@@ -128,7 +128,10 @@
   }
 
   function yValueToLocalPixel(element, value) {
-    const yAxis = element?._fullLayout?.yaxis;
+    return yValueToLocalPixelFromAxis(element?._fullLayout?.yaxis, value);
+  }
+
+  function yValueToLocalPixelFromAxis(yAxis, value) {
     const range = yAxis?.range;
     if (!yAxis || !Array.isArray(range) || range.length < 2 || !Number.isFinite(value)) return null;
     const [minimum, maximum] = range;
@@ -179,6 +182,91 @@
     return left.y + ((right.y - left.y) * ratio);
   }
 
+  function buildLineHitIndex(traces, seriesKeys) {
+    return (Array.isArray(traces) ? traces : []).map((trace, traceIndex) => {
+      const seriesKey = seriesKeys?.[traceIndex] || "";
+      if (!trace || !seriesKey || !Array.isArray(trace.x) || !Array.isArray(trace.y)) return null;
+      return {
+        trace,
+        traceIndex,
+        seriesKey,
+        xValues: trace.x,
+        yValues: trace.y,
+        times: getTraceTimeMsArray(trace),
+        numericY: trace.y.map((value) => toFiniteNumber(value)),
+      };
+    }).filter(Boolean);
+  }
+
+  function lineHitIndexMatches(index, traces, seriesKeys) {
+    if (!Array.isArray(index)) return false;
+    const expected = (Array.isArray(traces) ? traces : []).reduce((count, trace, traceIndex) => (
+      trace && seriesKeys?.[traceIndex] && Array.isArray(trace.x) && Array.isArray(trace.y)
+        ? count + 1
+        : count
+    ), 0);
+    if (index.length !== expected) return false;
+    return index.every((entry) => (
+      entry.trace === traces?.[entry.traceIndex]
+      && entry.seriesKey === seriesKeys?.[entry.traceIndex]
+      && entry.xValues === entry.trace.x
+      && entry.yValues === entry.trace.y
+    ));
+  }
+
+  function interpolateLineHitEntry(entry, targetMs) {
+    const times = entry?.times;
+    const ys = entry?.numericY;
+    if (!Array.isArray(times) || !Array.isArray(ys) || !Number.isFinite(targetMs)) return null;
+    let low = 0;
+    let high = times.length - 1;
+    let rightIndex = times.length;
+    while (low <= high) {
+      const middle = (low + high) >> 1;
+      if (!Number.isFinite(times[middle]) || times[middle] < targetMs) low = middle + 1;
+      else {
+        rightIndex = middle;
+        high = middle - 1;
+      }
+    }
+
+    let leftIndex = Math.min(rightIndex, times.length - 1);
+    while (
+      leftIndex >= 0
+      && (!Number.isFinite(times[leftIndex]) || ys[leftIndex] === null || times[leftIndex] > targetMs)
+    ) leftIndex -= 1;
+
+    let nextIndex = Math.max(0, rightIndex);
+    while (
+      nextIndex < times.length
+      && (!Number.isFinite(times[nextIndex]) || ys[nextIndex] === null || times[nextIndex] < targetMs)
+    ) nextIndex += 1;
+
+    if (leftIndex >= 0 && times[leftIndex] === targetMs) return ys[leftIndex];
+    if (nextIndex < times.length && times[nextIndex] === targetMs) return ys[nextIndex];
+    if (leftIndex < 0 || nextIndex >= times.length || times[nextIndex] <= times[leftIndex]) return null;
+    const ratio = (targetMs - times[leftIndex]) / (times[nextIndex] - times[leftIndex]);
+    return ys[leftIndex] + ((ys[nextIndex] - ys[leftIndex]) * ratio);
+  }
+
+  function findNearestLineTarget(index, targetMs, localY, yAxis, tolerance) {
+    if (!Array.isArray(index) || !Number.isFinite(targetMs) || !Number.isFinite(localY)) return null;
+    let best = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    index.forEach((entry) => {
+      if (entry.trace?.visible === "legendonly") return;
+      const y = interpolateLineHitEntry(entry, targetMs);
+      const pixelY = yValueToLocalPixelFromAxis(yAxis, y);
+      if (!Number.isFinite(pixelY)) return;
+      const distance = Math.abs(pixelY - localY);
+      if (distance <= tolerance && distance < bestDistance) {
+        bestDistance = distance;
+        best = { traceIndex: entry.traceIndex, seriesKey: entry.seriesKey };
+      }
+    });
+    return best;
+  }
+
   globalScope.ThinkStockChartInteractionMath = Object.freeze({
     toMsSafe,
     getTraceTimeMsArray,
@@ -187,6 +275,10 @@
     axisPixelToXValue,
     xRangeMatches,
     yValueToLocalPixel,
+    yValueToLocalPixelFromAxis,
     interpolateTraceYAtMs,
+    buildLineHitIndex,
+    lineHitIndexMatches,
+    findNearestLineTarget,
   });
 }(typeof self !== "undefined" ? self : globalThis));

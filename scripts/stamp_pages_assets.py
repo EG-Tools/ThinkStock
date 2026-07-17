@@ -52,6 +52,8 @@ def main() -> int:
     data_payload_src = f"./modules/data-payload.js?v={version}"
     market_data_src = f"./modules/market-data.js?v={version}"
     chart_interaction_math_src = f"./modules/chart-interaction-math.js?v={version}"
+    chart_interaction_controller_src = f"./modules/chart-interaction-controller.js?v={version}"
+    cache_refresh_policy_src = f"./modules/cache-refresh-policy.js?v={version}"
     browser_market_client_src = f"./modules/browser-market-client.js?v={version}"
     auxiliary_chart_model_src = f"./modules/auxiliary-chart-model.js?v={version}"
     performance_monitor_src = f"./modules/performance-monitor.js?v={version}"
@@ -62,6 +64,7 @@ def main() -> int:
     dart_disclosure_src = f"./modules/dart-disclosure.js?v={version}"
     service_worker_client_src = f"./modules/service-worker-client.js?v={version}"
     runtime_refresh_src = f"./modules/runtime-refresh.js?v={version}"
+    data_seed_loader_src = f"./modules/data-seed-loader.js?v={version}"
     data_worker_src = f"./modules/data-worker.js?v={version}"
     chart_model_worker_src = f"./modules/chart-model-worker.js?v={version}"
     app_src = f"./app.js?v={version}"
@@ -84,6 +87,12 @@ def main() -> int:
         r'<script defer src="\./modules/chart-interaction-math\.js(?:\?v=[^"]*)?"></script>',
         f'<script defer src="{chart_interaction_math_src}"></script>',
         "index chart-interaction-math.js script",
+    )
+    index = replace_once(
+        index,
+        r'<script defer src="\./modules/chart-interaction-controller\.js(?:\?v=[^"]*)?"></script>',
+        f'<script defer src="{chart_interaction_controller_src}"></script>',
+        "index chart-interaction-controller.js script",
     )
     index = replace_once(
         index,
@@ -147,6 +156,12 @@ def main() -> int:
     )
     index = replace_once(
         index,
+        r'<script defer src="\./modules/data-seed-loader\.js(?:\?v=[^"]*)?"></script>',
+        f'<script defer src="{data_seed_loader_src}"></script>',
+        "index data-seed-loader.js script",
+    )
+    index = replace_once(
+        index,
         r'<script defer src="\./app\.js(?:\?v=[^"]*)?"></script>',
         f'<script defer src="{app_src}"></script>',
         "index app.js script",
@@ -171,6 +186,24 @@ def main() -> int:
         r'"\./modules/chart-interaction-math\.js(?:\?v=[^"]*)?",',
         f'"{chart_interaction_math_src}",',
         "service worker chart-interaction-math.js asset",
+    )
+    sw = replace_once(
+        sw,
+        r'"\./modules/chart-interaction-controller\.js(?:\?v=[^"]*)?",',
+        f'"{chart_interaction_controller_src}",',
+        "service worker chart-interaction-controller.js asset",
+    )
+    sw = replace_once(
+        sw,
+        r'"\./modules/cache-refresh-policy\.js(?:\?v=[^"]*)?",',
+        f'"{cache_refresh_policy_src}",',
+        "service worker cache-refresh-policy.js asset",
+    )
+    sw = replace_once(
+        sw,
+        r'importScripts\("\./modules/cache-refresh-policy\.js(?:\?v=[^"]*)?"\);',
+        f'importScripts("{cache_refresh_policy_src}");',
+        "service worker cache-refresh-policy.js import",
     )
     sw = replace_once(
         sw,
@@ -237,6 +270,12 @@ def main() -> int:
         r'"\./modules/runtime-refresh\.js(?:\?v=[^"]*)?",',
         f'"{runtime_refresh_src}",',
         "service worker runtime-refresh.js asset",
+    )
+    sw = replace_once(
+        sw,
+        r'"\./modules/data-seed-loader\.js(?:\?v=[^"]*)?",',
+        f'"{data_seed_loader_src}",',
+        "service worker data-seed-loader.js asset",
     )
     sw = replace_once(
         sw,

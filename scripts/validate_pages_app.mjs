@@ -5,7 +5,7 @@ import path from "node:path";
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractionMath, browserMarketClient, auxiliaryChartModel, performanceMonitor, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, dartDisclosure, serviceWorkerClient, runtimeRefresh, deployWorkflow, buildPagesData, dataBuildSupport, providerClients, sourcePipeline, buildReporting, plotlyBundle] = await Promise.all([
+const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractionMath, chartInteractionController, cacheRefreshPolicy, browserMarketClient, auxiliaryChartModel, performanceMonitor, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, dartDisclosure, serviceWorkerClient, runtimeRefresh, dataSeedLoader, deployWorkflow, buildPagesData, dataBuildSupport, providerClients, sourcePipeline, buildReporting, plotlyBundle] = await Promise.all([
   readFile(path.join(root, "docs", "app.js"), "utf8"),
   readFile(path.join(root, "docs", "index.html"), "utf8"),
   readFile(path.join(root, "docs", "sw.js"), "utf8"),
@@ -13,6 +13,8 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractio
   readFile(path.join(root, "docs", "modules", "data-payload.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "market-data.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "chart-interaction-math.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "chart-interaction-controller.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "cache-refresh-policy.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "browser-market-client.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "auxiliary-chart-model.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "performance-monitor.js"), "utf8"),
@@ -25,6 +27,7 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractio
   readFile(path.join(root, "docs", "modules", "dart-disclosure.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "service-worker-client.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "runtime-refresh.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "data-seed-loader.js"), "utf8"),
   readFile(path.join(root, ".github", "workflows", "deploy-pages.yml"), "utf8"),
   readFile(path.join(root, "scripts", "build_pages_data.py"), "utf8"),
   readFile(path.join(root, "scripts", "data_build_support.py"), "utf8"),
@@ -61,6 +64,8 @@ requiredIds.forEach((id) => assert.ok(ids.includes(id), `required UI element is 
   "./modules/data-payload.js?v=dev",
   "./modules/market-data.js?v=dev",
   "./modules/chart-interaction-math.js?v=dev",
+  "./modules/chart-interaction-controller.js?v=dev",
+  "./modules/cache-refresh-policy.js?v=dev",
   "./modules/browser-market-client.js?v=dev",
   "./modules/auxiliary-chart-model.js?v=dev",
   "./modules/performance-monitor.js?v=dev",
@@ -71,6 +76,7 @@ requiredIds.forEach((id) => assert.ok(ids.includes(id), `required UI element is 
   "./modules/dart-disclosure.js?v=dev",
   "./modules/service-worker-client.js?v=dev",
   "./modules/runtime-refresh.js?v=dev",
+  "./modules/data-seed-loader.js?v=dev",
   "./modules/data-worker.js?v=dev",
   "./modules/chart-model-worker.js?v=dev",
   "./app.js?v=dev",
@@ -89,6 +95,9 @@ assert.ok(app.includes("ThinkStockServiceWorkerClient"), "service worker client 
 assert.ok(serviceWorkerClient.includes("createServiceWorkerClient"), "service worker client module is incomplete");
 assert.ok(app.includes("ThinkStockRuntimeRefresh"), "runtime refresh module is not wired into the app");
 assert.ok(runtimeRefresh.includes("runRefreshPhases"), "runtime refresh phase runner is incomplete");
+assert.ok(app.includes("ThinkStockDataSeedLoader"), "data seed loader module is not wired into the app");
+assert.ok(dataSeedLoader.includes("fetchSegmentedSeedText"), "data seed loader module is incomplete");
+assert.ok(!app.includes("async function fetchSeedText("), "seed network loading still lives in app.js");
 assert.ok(app.includes("criticalTasks: [coreIndexTask, preloadTask, liveTask]"), "critical startup refresh tasks are not grouped");
 assert.ok(app.includes("supplementalTasks: [adrTask, fearGreedTask, dartTask]"), "supplemental refresh tasks are not grouped");
 assert.ok(app.includes("awaitCriticalRender: true") && app.includes("onCriticalReady"), "startup loader does not wait for the critical render phase");
@@ -106,6 +115,13 @@ assert.ok(!app.includes("function mergeSources(") && !app.includes("function fin
 assert.ok(app.includes("ThinkStockChartInteractionMath"), "chart interaction math module is not wired into the app");
 assert.ok(chartInteractionMath.includes("axisPixelToXValue") && chartInteractionMath.includes("interpolateTraceYAtMs"),
   "chart interaction math module is incomplete");
+assert.ok(app.includes("ThinkStockChartInteractionController"), "chart interaction controller module is not wired into the app");
+assert.ok(chartInteractionController.includes("createPointerFrameController"), "chart interaction controller module is incomplete");
+assert.ok(app.includes("buildLineHitIndex") && app.includes("lineHitIndexMatches"),
+  "cached line hit index is not wired into the app");
+assert.ok(sw.includes("ThinkStockCacheRefreshPolicy"), "service worker cache refresh policy is not wired");
+assert.ok(cacheRefreshPolicy.includes("runWithConcurrency") && cacheRefreshPolicy.includes("planDataRefreshRequests"),
+  "service worker cache refresh policy is incomplete");
 assert.ok(!app.includes("function getChartInteractionGeometry("), "chart interaction geometry still lives in app.js");
 assert.ok(app.includes("ThinkStockBrowserMarketClient"), "browser market client is not wired into the app");
 assert.ok(browserMarketClient.includes("fetchYahooHistorySeries") && browserMarketClient.includes("fetchLatestKrxCoreIndexRows"),
@@ -177,6 +193,17 @@ assert.ok(sw.includes("refreshCachedDataAtomically"), "service worker data refre
 assert.ok(!sw.includes(".map((req) => cache.delete(req))"), "service worker still deletes data before refresh");
 assert.ok(playwrightConfig.includes('name: "webkit-sw"') && playwrightConfig.includes('serviceWorkers: "allow"'),
   "service-worker-aware WebKit coverage is missing");
+assert.ok(deployWorkflow.indexOf("npm ci") < deployWorkflow.indexOf("npm test"),
+  "Node dependencies must be installed before web validation");
+assert.ok(deployWorkflow.includes("actions/checkout@v6")
+  && deployWorkflow.includes("actions/cache@v5")
+  && deployWorkflow.includes("actions/setup-python@v6")
+  && deployWorkflow.includes("actions/configure-pages@v6")
+  && deployWorkflow.includes("actions/upload-pages-artifact@v5")
+  && deployWorkflow.includes("actions/deploy-pages@v5"),
+  "GitHub Actions are not on the Node 24 compatible majors");
+assert.ok(deployWorkflow.includes("--requirement requirements-pages.txt"),
+  "Pages build dependencies are not installed from the lock file");
 assert.ok(deployWorkflow.includes('cron: "35 3 * * 0"'), "weekly full Pages data rebuild is missing");
 assert.ok(deployWorkflow.includes("PAGES_FULL_REBUILD:"), "Pages full rebuild mode is not configured");
 assert.ok(deployWorkflow.includes('cache: "pip"'), "Python dependency caching is missing");
