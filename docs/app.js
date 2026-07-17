@@ -24,6 +24,14 @@ const {
   centeredScale,
   autoFitScales,
 } = marketDataModule;
+const performanceMonitorModule = globalThis.ThinkStockPerformanceMonitor;
+if (!performanceMonitorModule) throw new Error("Performance monitor module failed to load");
+const performanceMonitor = performanceMonitorModule.createPerformanceMonitor(globalThis);
+const initPerfDebugAccess = () => performanceMonitor.init();
+const startPerfSample = () => performanceMonitor.startSample();
+const recordPerfSample = (label, startedAt, meta = {}) => (
+  performanceMonitor.recordSample(label, startedAt, meta)
+);
 
 const DISPLAY_NAMES = {
   leading_cycle: "\uC120\uD589\uC21C\uD658\uBCC0\uB3D9",
@@ -101,7 +109,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.81";
+const APP_VERSION = "0.82";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -246,10 +254,6 @@ const MAIN_CHART_POINTS_PER_PIXEL = 1.45;
 const MAIN_CHART_TOTAL_VISIBLE_POINT_TARGET_DESKTOP = 6500;
 const MAIN_CHART_TOTAL_VISIBLE_POINT_TARGET_MOBILE = 2800;
 const INTERACTION_RENDER_DELAY_MS = 260;
-const PERF_DEBUG_KEY = "thinkstock-perf-debug";
-const PERF_SAMPLE_LIMIT = 80;
-const PERF_FRAME_GAP_IGNORE_MS = 1000;
-const PERF_FRAME_SAMPLE_LIMIT = 1200;
 const DISCLOSURE_TRACE_NAME = "공시";
 const DISCLOSURE_ICON_TEXT = "◆";
 const DISCLOSURE_MARKER_COLOR = "#fde047";
@@ -363,12 +367,6 @@ let dataRevisions = { price: 0, macro: 0, credit: 0, adr: 0, disclosure: 0 };
 let granularCacheCleanupStats = { runs: 0, transactions: 0, deleted: 0 };
 let lineHighlightDomUpdateCount = 0;
 let disclosureHighlightDomUpdateCount = 0;
-let perfSamples = [];
-let perfDebugEnabled = false;
-let perfFrameRafId = 0;
-let perfLastFrameAt = 0;
-let perfFrameStats = { frames: 0, longFrames: 0, maxFrameGap: 0 };
-let perfFrameGaps = [];
 let runtimeRefreshController = null;
 let runtimeRefreshPromise = null;
 let runtimeRefreshGeneration = 0;
@@ -377,86 +375,6 @@ let startupLoaderHideTimer = null;
 let startupLoaderRafId = 0;
 let startupLoaderDisplayProgress = 100;
 let startupLoaderTargetProgress = 100;
-
-function initPerfDebugAccess() {
-  try {
-    const params = new URLSearchParams(window.location.search || "");
-    perfDebugEnabled = params.get("perf") === "1" || localStorage.getItem(PERF_DEBUG_KEY) === "1";
-    window.ThinkStockPerf = {
-      enable() {
-        perfDebugEnabled = true;
-        startPerfFrameMonitor();
-        try { localStorage.setItem(PERF_DEBUG_KEY, "1"); } catch (_) {}
-        return true;
-      },
-      disable() {
-        perfDebugEnabled = false;
-        stopPerfFrameMonitor();
-        try { localStorage.removeItem(PERF_DEBUG_KEY); } catch (_) {}
-        return true;
-      },
-      get() {
-        return [...perfSamples];
-      },
-      clear() {
-        perfSamples = [];
-        perfLastFrameAt = 0;
-        perfFrameStats = { frames: 0, longFrames: 0, maxFrameGap: 0 };
-        perfFrameGaps = [];
-      },
-      summary() {
-        const pointerSamples = perfSamples.filter((sample) => sample.label === "pointerMove");
-        const refreshSamples = perfSamples.filter((sample) => sample.label === "runtimeRefresh");
-        const sortedFrameGaps = [...perfFrameGaps].sort((left, right) => left - right);
-        const p95FrameGap = sortedFrameGaps.length
-          ? sortedFrameGaps[Math.floor((sortedFrameGaps.length - 1) * 0.95)]
-          : 0;
-        const longFrameRatio = perfFrameStats.frames > 0
-          ? perfFrameStats.longFrames / perfFrameStats.frames
-          : 0;
-        return {
-          ...perfFrameStats,
-          p95FrameGap,
-          longFrameRatio,
-          pointerMoves: pointerSamples.length,
-          maxPointerMove: pointerSamples.reduce((max, sample) => Math.max(max, sample.duration || 0), 0),
-          runtimeRefreshes: refreshSamples.length,
-          maxRuntimeRefresh: refreshSamples.reduce((max, sample) => Math.max(max, sample.duration || 0), 0),
-        };
-      },
-    };
-    if (perfDebugEnabled) startPerfFrameMonitor();
-  } catch (_) {
-    perfDebugEnabled = false;
-  }
-}
-
-function stopPerfFrameMonitor() {
-  if (perfFrameRafId && typeof cancelAnimationFrame === "function") cancelAnimationFrame(perfFrameRafId);
-  perfFrameRafId = 0;
-  perfLastFrameAt = 0;
-}
-
-function startPerfFrameMonitor() {
-  if (!perfDebugEnabled || perfFrameRafId || typeof requestAnimationFrame !== "function") return;
-  const tick = (timestamp) => {
-    perfFrameRafId = 0;
-    if (!perfDebugEnabled) return;
-    if (perfLastFrameAt > 0 && document.visibilityState === "visible") {
-      const gap = timestamp - perfLastFrameAt;
-      if (gap > 0 && gap < PERF_FRAME_GAP_IGNORE_MS) {
-        perfFrameStats.frames += 1;
-        perfFrameStats.maxFrameGap = Math.max(perfFrameStats.maxFrameGap, Math.round(gap * 10) / 10);
-        perfFrameGaps.push(Math.round(gap * 10) / 10);
-        if (perfFrameGaps.length > PERF_FRAME_SAMPLE_LIMIT) perfFrameGaps.shift();
-        if (gap >= 50) perfFrameStats.longFrames += 1;
-      }
-    }
-    perfLastFrameAt = timestamp;
-    perfFrameRafId = requestAnimationFrame(tick);
-  };
-  perfFrameRafId = requestAnimationFrame(tick);
-}
 
 function initE2eDebugAccess() {
   try {
@@ -544,22 +462,6 @@ function initE2eDebugAccess() {
     };
   } catch (_) {
     // Test-only diagnostics must never affect normal boot.
-  }
-}
-
-function recordPerfSample(label, startedAt, meta = {}) {
-  if (!perfDebugEnabled || typeof performance === "undefined") return;
-  const duration = performance.now() - startedAt;
-  const sample = {
-    label,
-    duration: Math.round(duration * 10) / 10,
-    at: new Date().toISOString(),
-    ...meta,
-  };
-  perfSamples.push(sample);
-  if (perfSamples.length > PERF_SAMPLE_LIMIT) perfSamples.splice(0, perfSamples.length - PERF_SAMPLE_LIMIT);
-  if (duration >= 50) {
-    try { console.debug("[ThinkStockPerf]", sample); } catch (_) {}
   }
 }
 
@@ -2419,7 +2321,7 @@ function bindCursorMoveSync() {
     };
 
     const processPointerMove = (sourceEl, clientX, clientY, findLineTarget) => {
-      const perfStartedAt = perfDebugEnabled ? performance.now() : 0;
+      const perfStartedAt = startPerfSample();
       const geometry = getChartInteractionGeometry(sourceEl);
       if (findLineTarget) {
         const now = performance.now();
@@ -3603,7 +3505,7 @@ async function preloadCustomStocks(options = {}) {
   const signal = options?.signal || null;
   throwIfAborted(signal);
   const items = [...customStocks];
-  const perfStartedAt = (typeof performance !== "undefined") ? performance.now() : 0;
+  const perfStartedAt = startPerfSample();
   const results = await mapWithConcurrency(items, CUSTOM_STOCK_PRELOAD_CONCURRENCY, async (item) => {
     const hadExisting = (pricePayload?.records || []).some((row) => toNum(row?.[item.ticker]) !== null);
     try {
@@ -5131,7 +5033,7 @@ function renderChartWhenIdleOrNow(preserveZoom = true) {
 }
 
 async function renderChart(preserveZoom = true) {
-  const perfStartedAt = (typeof performance !== "undefined") ? performance.now() : 0;
+  const perfStartedAt = startPerfSample();
   const el = document.getElementById("chart");
   const msgEl = document.getElementById("messageArea");
   if (!window.Plotly) {
@@ -5446,7 +5348,7 @@ const ADR_SOURCE_URL = "http://www.adrinfo.kr/chart";
 const CORS_PROXY     = "https://corsproxy.io/?url=";
 
 function renderAdrChart(xRange) {
-  const perfStartedAt = (typeof performance !== "undefined") ? performance.now() : 0;
+  const perfStartedAt = startPerfSample();
   const el = document.getElementById("chart-adr");
   const newsSentimentRows = (macroRows || []).filter((row) => toNum(row?.news_sentiment) !== null);
   if (!el || (!adrRows.length && !newsSentimentRows.length)) return;
@@ -6587,7 +6489,7 @@ async function applyRuntimeRefreshChanges(revisionsBefore, options = {}) {
 
 async function runRuntimeDataRefresh(msgEl, options = {}) {
   const revisionsBeforeRefresh = getDataRevisions();
-  const perfStartedAt = perfDebugEnabled && typeof performance !== "undefined" ? performance.now() : 0;
+  const perfStartedAt = startPerfSample();
   const infoLines = [];
   const warnLines = [];
   let refreshedDart = false;

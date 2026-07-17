@@ -51,6 +51,7 @@ def main() -> int:
     version = resolve_build_version()
     data_payload_src = f"./modules/data-payload.js?v={version}"
     market_data_src = f"./modules/market-data.js?v={version}"
+    performance_monitor_src = f"./modules/performance-monitor.js?v={version}"
     chart_loader_src = f"./modules/chart-loader.js?v={version}"
     disclosure_policy_src = f"./modules/disclosure-policy.js?v={version}"
     dart_disclosure_src = f"./modules/dart-disclosure.js?v={version}"
@@ -72,6 +73,12 @@ def main() -> int:
         r'<script defer src="\./modules/market-data\.js(?:\?v=[^"]*)?"></script>',
         f'<script defer src="{market_data_src}"></script>',
         "index market-data.js script",
+    )
+    index = replace_once(
+        index,
+        r'<script defer src="\./modules/performance-monitor\.js(?:\?v=[^"]*)?"></script>',
+        f'<script defer src="{performance_monitor_src}"></script>',
+        "index performance-monitor.js script",
     )
     index = replace_once(
         index,
@@ -123,6 +130,12 @@ def main() -> int:
         r'"\./modules/market-data\.js(?:\?v=[^"]*)?",',
         f'"{market_data_src}",',
         "service worker market-data.js asset",
+    )
+    sw = replace_once(
+        sw,
+        r'"\./modules/performance-monitor\.js(?:\?v=[^"]*)?",',
+        f'"{performance_monitor_src}",',
+        "service worker performance-monitor.js asset",
     )
     sw = replace_once(
         sw,

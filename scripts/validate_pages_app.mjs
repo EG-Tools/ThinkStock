@@ -5,13 +5,14 @@ import path from "node:path";
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [app, html, sw, playwrightConfig, dataPayload, marketData, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, dartDisclosure, serviceWorkerClient, runtimeRefresh, plotlyBundle] = await Promise.all([
+const [app, html, sw, playwrightConfig, dataPayload, marketData, performanceMonitor, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, dartDisclosure, serviceWorkerClient, runtimeRefresh, plotlyBundle] = await Promise.all([
   readFile(path.join(root, "docs", "app.js"), "utf8"),
   readFile(path.join(root, "docs", "index.html"), "utf8"),
   readFile(path.join(root, "docs", "sw.js"), "utf8"),
   readFile(path.join(root, "playwright.config.mjs"), "utf8"),
   readFile(path.join(root, "docs", "modules", "data-payload.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "market-data.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "performance-monitor.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "data-worker.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "chart-model-worker.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "chart-loader.js"), "utf8"),
@@ -48,6 +49,7 @@ requiredIds.forEach((id) => assert.ok(ids.includes(id), `required UI element is 
   "./styles.css",
   "./modules/data-payload.js?v=dev",
   "./modules/market-data.js?v=dev",
+  "./modules/performance-monitor.js?v=dev",
   "./modules/chart-loader.js?v=dev",
   "./modules/disclosure-policy.js?v=dev",
   "./modules/dart-disclosure.js?v=dev",
@@ -113,9 +115,10 @@ assert.ok(!app.includes("function rowsSignature("), "sampled row signatures can 
 assert.ok(app.includes("function dataRevisionSignature("), "explicit data revisions are missing");
 assert.ok(app.includes("function getTraceLinePaths("), "DOM-only line highlighting is missing");
 assert.ok(!app.includes('Plotly.restyle(el, { "line.width"'), "line hover still triggers Plotly restyle");
-assert.ok(app.includes("function startPerfFrameMonitor()"), "performance frame diagnostics are missing");
-assert.ok(app.includes("gap < PERF_FRAME_GAP_IGNORE_MS"), "suspended tabs still pollute frame timing diagnostics");
-assert.ok(app.includes("p95FrameGap"), "frame timing diagnostics do not expose a stable percentile metric");
+assert.ok(app.includes("ThinkStockPerformanceMonitor"), "performance monitor module is not wired into the app");
+assert.ok(performanceMonitor.includes("createPerformanceMonitor") && performanceMonitor.includes("p95FrameGap"), "performance monitor module is incomplete");
+assert.ok(performanceMonitor.includes("gap < frameGapIgnoreMs"), "suspended tabs still pollute frame timing diagnostics");
+assert.ok(!app.includes("let perfSamples") && !app.includes("function startPerfFrameMonitor("), "performance diagnostics still live in app.js");
 assert.ok(app.includes("runtimeRefreshController.abort"), "superseded runtime refreshes are not cancelled");
 assert.ok(app.includes("function cancelStaleChartModelWorkerRequest()"), "stale chart worker cancellation is missing");
 assert.ok(app.includes("function getChartInteractionGeometry("), "pointer geometry is not shared per frame");
