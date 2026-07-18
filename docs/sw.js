@@ -21,6 +21,7 @@ const PRECACHE_ASSETS = [
   "./modules/startup-loader.js?v=dev",
   "./modules/chart-loader.js?v=dev",
   "./modules/disclosure-policy.js?v=dev",
+  "./modules/disclosure-popover.js?v=dev",
   "./modules/dart-disclosure.js?v=dev",
   "./modules/service-worker-client.js?v=dev",
   "./modules/runtime-refresh.js?v=dev",
@@ -35,6 +36,7 @@ const PRECACHE_ASSETS = [
   "./data/macro_data_recent.json",
   "./data/credit_data_recent.json",
   "./data/adr_data_recent.json",
+  "./data/data_manifest.json",
   "./data/disclosures.json",
 ];
 const DATA_URL_PATTERNS = [
@@ -47,6 +49,7 @@ const DATA_URL_PATTERNS = [
   "/data/credit_data.json",
   "/data/credit_data_",
   "/data/disclosures.json",
+  "/data/data_manifest.json",
   "/data/dart_corp_codes.json",
   "/data/build_report.json",
   "/data/build_history.json",
@@ -71,6 +74,7 @@ const CORE_ASSET_PATHS = [
   "/modules/startup-loader.js",
   "/modules/chart-loader.js",
   "/modules/disclosure-policy.js",
+  "/modules/disclosure-popover.js",
   "/modules/dart-disclosure.js",
   "/modules/service-worker-client.js",
   "/modules/runtime-refresh.js",

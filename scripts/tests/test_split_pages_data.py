@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sys
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -9,7 +11,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from split_pages_data import split_columnar_payload
+from split_pages_data import MANIFEST_FILE, SEGMENTED_FILES, split_all_payloads, split_columnar_payload
 
 
 class SplitPagesDataTests(unittest.TestCase):
@@ -33,6 +35,25 @@ class SplitPagesDataTests(unittest.TestCase):
         recent, history = split_columnar_payload({"series": ["value"], "dates": [], "columns": {"value": []}})
         self.assertEqual(recent["dates"], [])
         self.assertEqual(history["columns"]["value"], [])
+
+    def test_split_writes_hashed_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            for filename in SEGMENTED_FILES:
+                (data_dir / filename).write_text(
+                    json.dumps({
+                        "dates": ["2014-01-01", "2026-01-01"],
+                        "columns": {"value": [1, 2]},
+                    }),
+                    encoding="utf-8",
+                )
+
+            split_all_payloads(data_dir)
+
+            manifest = json.loads((data_dir / MANIFEST_FILE).read_text(encoding="utf-8"))
+            self.assertEqual(manifest["format"], "segmented-data-v1")
+            self.assertEqual(manifest["datasets"]["prices"]["recent"]["rows"], 1)
+            self.assertEqual(len(manifest["datasets"]["prices"]["recent"]["sha256"]), 64)
 
 
 if __name__ == "__main__":

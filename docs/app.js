@@ -142,7 +142,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.88";
+const APP_VERSION = "0.89";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -3739,75 +3739,20 @@ function applyDisclosureStateFast(seriesKey = "") {
   return true;
 }
 
-function ensureDisclosurePopover() {
-  const chart = document.getElementById("chart");
-  if (!chart) return null;
-  let node = chart.querySelector(".disclosure-popover");
-  if (!node) {
-    node = document.createElement("div");
-    node.className = "disclosure-popover";
-    node.hidden = true;
-    ["touchstart", "touchmove", "touchend", "pointerdown", "click"].forEach((eventName) => {
-      node.addEventListener(eventName, (event) => event.stopPropagation());
-    });
-    chart.appendChild(node);
-    document.addEventListener("pointerdown", (event) => {
-      if (node.hidden || node.contains(event.target)) return;
-      hideDisclosurePopover();
-    }, true);
-  }
-  return node;
-}
+const disclosurePopoverModule = globalThis.ThinkStockDisclosurePopover;
+if (!disclosurePopoverModule) throw new Error("Disclosure popover module failed to load");
+const disclosurePopover = disclosurePopoverModule.createDisclosurePopover(globalThis, {
+  chartId: "chart",
+  escapeHtml,
+  fallbackName: (group) => labelName(group?.ticker),
+});
 
 function hideDisclosurePopover() {
-  const node = document.querySelector(".disclosure-popover");
-  if (node) node.hidden = true;
+  disclosurePopover.hide();
 }
 
 function showDisclosurePopover(group, sourceEvent) {
-  const node = ensureDisclosurePopover();
-  const chart = document.getElementById("chart");
-  if (!node || !chart || !group?.events?.length) return;
-
-  const items = group.events.map((event) => {
-    const title = escapeHtml(event.title);
-    const titleHtml = event.url
-      ? `<a class="disclosure-title-link" href="${escapeHtml(event.url)}" target="_blank" rel="noopener">${title}</a>`
-      : `<strong>${title}</strong>`;
-    return `
-      <li>
-        ${titleHtml}
-      </li>
-    `;
-  }).join("");
-
-  node.innerHTML = `
-    <div class="disclosure-popover-head">
-      <div>
-        <b>${escapeHtml(group.name || labelName(group.ticker))}</b>
-        <span>${escapeHtml(group.plotDate || "")}</span>
-      </div>
-      <button type="button" aria-label="공시 닫기">×</button>
-    </div>
-    <ul>${items}</ul>
-  `;
-  node.querySelector("button")?.addEventListener("click", (event) => {
-    event.stopPropagation();
-    hideDisclosurePopover();
-  }, { once: true });
-
-  const rect = chart.getBoundingClientRect();
-  const clientX = sourceEvent?.clientX ?? (rect.left + rect.width * 0.5);
-  const clientY = sourceEvent?.clientY ?? (rect.top + rect.height * 0.35);
-  node.style.width = "";
-  node.hidden = false;
-  const width = node.getBoundingClientRect().width;
-  const left = Math.max(12, Math.min(rect.width - width - 12, clientX - rect.left - width * 0.5));
-  const maxTop = Math.max(12, rect.height - 180);
-  const top = Math.max(12, Math.min(maxTop, clientY - rect.top + 12));
-
-  node.style.left = `${left}px`;
-  node.style.top = `${top}px`;
+  disclosurePopover.show(group, sourceEvent);
 }
 
 function isDirectDisclosureTap(evtData, point) {

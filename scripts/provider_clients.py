@@ -9,6 +9,8 @@ import pandas as pd
 import requests
 import yfinance as yf
 
+from provider_contracts import kofia_page
+
 
 RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 REQUEST_EXCEPTION = getattr(requests, "RequestException", Exception)
@@ -224,14 +226,13 @@ def fetch_kofia_items(
             timeout=timeout,
         )
         pages_fetched += 1
-        header = payload.get("response", {}).get("header", {})
+        page = kofia_page(payload)
+        header = page.header
         result_code = str(header.get("resultCode", ""))
         if result_code and result_code != "00":
             raise RuntimeError(header.get("resultMsg") or "KOFIA API error")
-        body = payload.get("response", {}).get("body", {})
-        raw_items = body.get("items", {}).get("item")
-        items = raw_items if isinstance(raw_items, list) else ([raw_items] if raw_items else [])
-        valid_items = [item for item in items if isinstance(item, dict)]
+        body = page.body
+        valid_items = page.items
         page_dates = [
             str(item.get(date_field) or "").replace("-", "")[:8]
             for item in valid_items
@@ -261,7 +262,7 @@ def fetch_kofia_items(
         if clean_begin_date and descending_order and page_dates and min(page_dates) < clean_begin_date:
             stopped_early = True
             break
-        if not items:
+        if not valid_items:
             break
         page_no += 1
     return KofiaFetchResult(

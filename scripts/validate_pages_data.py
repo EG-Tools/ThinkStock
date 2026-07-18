@@ -3,10 +3,11 @@ import math
 import os
 import subprocess
 import sys
+from hashlib import sha256
 from datetime import date, datetime
 from pathlib import Path
 
-from split_pages_data import SEGMENTED_FILES
+from split_pages_data import MANIFEST_FILE, SEGMENTED_FILES
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,6 +61,13 @@ def fail(message: str) -> None:
 
 def validate_segmented_payloads() -> list[str]:
     summaries: list[str] = []
+    manifest_path = DATA_DIR / MANIFEST_FILE
+    if not manifest_path.exists():
+        fail("segmented data manifest is missing")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    datasets = manifest.get("datasets")
+    if manifest.get("format") != "segmented-data-v1" or not isinstance(datasets, dict):
+        fail("segmented data manifest is invalid")
     for filename in SEGMENTED_FILES:
         source_path = DATA_DIR / filename
         stem = source_path.stem
@@ -67,6 +75,9 @@ def validate_segmented_payloads() -> list[str]:
         history_path = DATA_DIR / f"{stem}_history.json"
         if not recent_path.exists() or not history_path.exists():
             fail(f"segmented payload is missing for {filename}")
+        dataset = datasets.get(stem)
+        if not isinstance(dataset, dict):
+            fail(f"segmented data manifest is missing {stem}")
 
         full = json.loads(source_path.read_text(encoding="utf-8"))
         recent = json.loads(recent_path.read_text(encoding="utf-8"))
@@ -76,6 +87,20 @@ def validate_segmented_payloads() -> list[str]:
         history_dates = list(history.get("dates") or [])
         if history_dates + recent_dates != full_dates:
             fail(f"segmented dates do not reconstruct {filename}")
+        for segment_name, segment_path, segment_dates in (
+            ("recent", recent_path, recent_dates),
+            ("history", history_path, history_dates),
+        ):
+            segment = dataset.get(segment_name)
+            if not isinstance(segment, dict):
+                fail(f"manifest is missing {stem}.{segment_name}")
+            if segment.get("file") != segment_path.name:
+                fail(f"manifest filename mismatch for {stem}.{segment_name}")
+            if segment.get("rows") != len(segment_dates):
+                fail(f"manifest row count mismatch for {stem}.{segment_name}")
+            digest = sha256(segment_path.read_bytes()).hexdigest()
+            if segment.get("sha256") != digest:
+                fail(f"manifest digest mismatch for {stem}.{segment_name}")
 
         full_columns = full.get("columns") or {}
         recent_columns = recent.get("columns") or {}

@@ -61,6 +61,7 @@ def main() -> int:
     startup_loader_src = f"./modules/startup-loader.js?v={version}"
     chart_loader_src = f"./modules/chart-loader.js?v={version}"
     disclosure_policy_src = f"./modules/disclosure-policy.js?v={version}"
+    disclosure_popover_src = f"./modules/disclosure-popover.js?v={version}"
     dart_disclosure_src = f"./modules/dart-disclosure.js?v={version}"
     service_worker_client_src = f"./modules/service-worker-client.js?v={version}"
     runtime_refresh_src = f"./modules/runtime-refresh.js?v={version}"
@@ -135,6 +136,12 @@ def main() -> int:
         r'<script defer src="\./modules/disclosure-policy\.js(?:\?v=[^"]*)?"></script>',
         f'<script defer src="{disclosure_policy_src}"></script>',
         "index disclosure-policy.js script",
+    )
+    index = replace_once(
+        index,
+        r'<script defer src="\./modules/disclosure-popover\.js(?:\?v=[^"]*)?"></script>',
+        f'<script defer src="{disclosure_popover_src}"></script>',
+        "index disclosure-popover.js script",
     )
     index = replace_once(
         index,
@@ -252,6 +259,12 @@ def main() -> int:
         r'"\./modules/disclosure-policy\.js(?:\?v=[^"]*)?",',
         f'"{disclosure_policy_src}",',
         "service worker disclosure-policy.js asset",
+    )
+    sw = replace_once(
+        sw,
+        r'"\./modules/disclosure-popover\.js(?:\?v=[^"]*)?",',
+        f'"{disclosure_popover_src}",',
+        "service worker disclosure-popover.js asset",
     )
     sw = replace_once(
         sw,

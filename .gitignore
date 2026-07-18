@@ -18,6 +18,7 @@ scripts/dart_key.txt
 node_modules/
 playwright-report/
 test-results/
+.pages-artifact/
 .capacitor/
 .codex-ci-deps/
 docs/data/build_report.json

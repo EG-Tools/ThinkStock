@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -13,15 +14,26 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 from build_pages_data import (
     CREDIT_SERIES,
+    accepted_credit_series_tail,
     build_dart_corp_code_payload,
     find_credit_history_discontinuity,
     merge_credit_seed_with_freesis,
     merge_credit_seed_with_kofia,
     select_credit_seed,
 )
+import build_pages_data
 
 
 class BuildPagesDataHelperTests(unittest.TestCase):
+    def test_ecos_contract_failure_preserves_expected_series(self) -> None:
+        client = type("Client", (), {"get_json": lambda *_args, **_kwargs: {"unexpected": {}}})()
+        with patch.object(build_pages_data, "http_client", return_value=client):
+            leading = build_pages_data.fetch_ecos_leading_cycle("key")
+            news = build_pages_data.fetch_ecos_news_sentiment("key")
+
+        self.assertEqual(list(leading.columns), ["leading_cycle"])
+        self.assertEqual(list(news.columns), ["news_sentiment"])
+
     def test_dart_corp_payload_contains_only_compact_code_mapping(self) -> None:
         payload = build_dart_corp_code_payload({
             "005930": {"corp_code": "00126380", "corp_name": "Samsung Electronics"},
@@ -126,6 +138,38 @@ class BuildPagesDataHelperTests(unittest.TestCase):
         self.assertEqual(applied, 1)
         self.assertAlmostEqual(float(merged.loc[pd.Timestamp("2025-10-02"), "kospi_credit"]), 17.8)
         self.assertGreater(float(merged.loc[pd.Timestamp("2025-10-07"), "kospi_credit"]), 18.0)
+
+    def test_credit_quarantine_is_per_series_and_keeps_healthy_columns(self) -> None:
+        seed = pd.DataFrame({
+            "customer_deposit": [60.0],
+            "kospi_credit": [18.0],
+            "kosdaq_credit": [10.0],
+        }, index=pd.to_datetime(["2026-07-14"]))
+        live = pd.DataFrame({
+            "customer_deposit": [61.0, 62.0],
+            "kospi_credit": [4.0, 4.1],
+            "kosdaq_credit": [10.1, 10.2],
+        }, index=pd.to_datetime(["2026-07-15", "2026-07-16"]))
+        events: list[str] = []
+
+        merged, applied = merge_credit_seed_with_kofia(seed, live, events)
+
+        self.assertEqual(applied, 2)
+        self.assertTrue(pd.isna(merged.loc[pd.Timestamp("2026-07-16"), "kospi_credit"]))
+        self.assertEqual(float(merged.loc[pd.Timestamp("2026-07-16"), "customer_deposit"]), 62.0)
+        self.assertEqual(float(merged.loc[pd.Timestamp("2026-07-16"), "kosdaq_credit"]), 10.2)
+        self.assertTrue(any("kospi_credit tail" in event for event in events))
+
+    def test_credit_quarantine_skips_an_isolated_spike(self) -> None:
+        accepted = accepted_credit_series_tail(
+            "kospi_credit",
+            pd.Series([18.0], index=pd.to_datetime(["2026-07-14"])),
+            pd.Series([50.0, 18.2], index=pd.to_datetime(["2026-07-15", "2026-07-16"])),
+            "fixture",
+        )
+
+        self.assertNotIn(pd.Timestamp("2026-07-15"), accepted.index)
+        self.assertEqual(float(accepted.loc[pd.Timestamp("2026-07-16")]), 18.2)
 
     def test_detects_poisoned_cached_credit_history(self) -> None:
         frame = pd.DataFrame({

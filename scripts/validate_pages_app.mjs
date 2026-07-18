@@ -5,7 +5,7 @@ import path from "node:path";
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractionMath, chartInteractionController, cacheRefreshPolicy, browserMarketClient, auxiliaryChartModel, performanceMonitor, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, dartDisclosure, serviceWorkerClient, runtimeRefresh, dataSeedLoader, deployWorkflow, buildPagesData, dataBuildSupport, providerClients, sourcePipeline, buildReporting, plotlyBundle] = await Promise.all([
+const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractionMath, chartInteractionController, cacheRefreshPolicy, browserMarketClient, auxiliaryChartModel, performanceMonitor, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, disclosurePopover, dartDisclosure, serviceWorkerClient, runtimeRefresh, dataSeedLoader, deployWorkflow, buildPagesData, dataBuildSupport, providerClients, sourcePipeline, buildReporting, plotlyBundle] = await Promise.all([
   readFile(path.join(root, "docs", "app.js"), "utf8"),
   readFile(path.join(root, "docs", "index.html"), "utf8"),
   readFile(path.join(root, "docs", "sw.js"), "utf8"),
@@ -24,6 +24,7 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractio
   readFile(path.join(root, "docs", "modules", "chart-model-worker.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "chart-loader.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "disclosure-policy.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "disclosure-popover.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "dart-disclosure.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "service-worker-client.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "runtime-refresh.js"), "utf8"),
@@ -73,6 +74,7 @@ requiredIds.forEach((id) => assert.ok(ids.includes(id), `required UI element is 
   "./modules/startup-loader.js?v=dev",
   "./modules/chart-loader.js?v=dev",
   "./modules/disclosure-policy.js?v=dev",
+  "./modules/disclosure-popover.js?v=dev",
   "./modules/dart-disclosure.js?v=dev",
   "./modules/service-worker-client.js?v=dev",
   "./modules/runtime-refresh.js?v=dev",
@@ -85,11 +87,15 @@ requiredIds.forEach((id) => assert.ok(ids.includes(id), `required UI element is 
   "./data/macro_data_recent.json",
   "./data/credit_data_recent.json",
   "./data/adr_data_recent.json",
+  "./data/data_manifest.json",
   "./data/disclosures.json",
 ].forEach((asset) => assert.ok(sw.includes(`"${asset}"`), `service worker precache is missing: ${asset}`));
 
 assert.ok(app.includes("function isDirectDisclosureTap"), "iPhone disclosure tap guard is missing");
 assert.ok(app.includes("ThinkStockDisclosurePolicy"), "disclosure policy module is not wired into the app");
+assert.ok(app.includes("ThinkStockDisclosurePopover"), "disclosure popover module is not wired into the app");
+assert.ok(disclosurePopover.includes("createDisclosurePopover"), "disclosure popover module is incomplete");
+assert.ok(!app.includes("function ensureDisclosurePopover("), "disclosure popover implementation still lives in app.js");
 assert.ok(app.includes("ThinkStockDartDisclosure"), "DART disclosure module is not wired into the app");
 assert.ok(app.includes("ThinkStockServiceWorkerClient"), "service worker client module is not wired into the app");
 assert.ok(serviceWorkerClient.includes("createServiceWorkerClient"), "service worker client module is incomplete");
@@ -132,7 +138,7 @@ assert.ok(app.includes("ThinkStockAuxiliaryChartModel"), "auxiliary chart model 
 assert.ok(auxiliaryChartModel.includes("buildAuxiliaryChartModel") && auxiliaryChartModel.includes("buildThresholdZones"), "auxiliary chart model module is incomplete");
 assert.ok(chartModelWorker.includes('type === "buildAuxiliaryChartModel"'), "auxiliary chart model is not built in the worker");
 assert.ok(disclosurePolicy.includes("shouldDisplayDisclosure"), "disclosure policy filter is missing");
-assert.ok(app.includes("disclosure-title-link"), "disclosure title links are missing");
+assert.ok(disclosurePopover.includes("disclosure-title-link"), "disclosure title links are missing");
 assert.ok(html.includes('data-series="customer_deposit"'), "customer deposit toggle is missing");
 assert.ok(!html.includes('data-series="news_sentiment"'), "news sentiment must not remain in the main-chart toggles");
 assert.ok(app.includes("getSecuritiesMarketTotalCapitalInfo"), "customer deposit API endpoint is missing");
@@ -208,6 +214,12 @@ assert.ok(deployWorkflow.includes('cron: "35 3 * * 0"'), "weekly full Pages data
 assert.ok(deployWorkflow.includes("PAGES_FULL_REBUILD:"), "Pages full rebuild mode is not configured");
 assert.ok(deployWorkflow.includes('cache: "pip"'), "Python dependency caching is missing");
 assert.ok(deployWorkflow.includes("Publish Data Build Health"), "Pages data health summary is missing");
+assert.ok(deployWorkflow.includes("validate-web:")
+  && deployWorkflow.includes("- validate-web"),
+  "web validation and data build must complete before deployment");
+assert.ok(deployWorkflow.includes("Prepare Slim Pages Artifact")
+  && deployWorkflow.includes("path: ./.pages-artifact"),
+  "slim Pages artifact staging is missing");
 assert.ok(buildPagesData.includes("detect_price_rebases") && buildPagesData.includes("disclosure_start_dates"),
   "incremental Pages data policies are not wired into the builder");
 assert.ok(buildPagesData.includes("SourcePipeline") && buildPagesData.includes("build_dart_corp_code_payload"),

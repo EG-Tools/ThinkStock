@@ -39,6 +39,7 @@ from provider_clients import (
     fetch_kofia_items,
     fetch_yahoo_prices,
 )
+from provider_contracts import dart_disclosure_page, ecos_statistic_rows
 from split_pages_data import split_all_payloads
 from source_pipeline import SourcePipeline
 
@@ -212,6 +213,110 @@ def is_plausible_credit_transition(
     return True
 
 
+def is_plausible_credit_value_transition(
+    column: str,
+    prev_date: pd.Timestamp,
+    prev_value: float,
+    row_date: pd.Timestamp,
+    value: float,
+) -> bool:
+    day_span = max(1, (row_date.normalize() - prev_date.normalize()).days)
+    daily_pct_change = abs(float(value) / float(prev_value) - 1.0) / day_span if prev_value > 0 else 0.0
+    daily_abs_change = abs(float(value) - float(prev_value)) / day_span
+    return not (
+        daily_pct_change > CREDIT_MAX_DAILY_PCT_CHANGE
+        and daily_abs_change > CREDIT_MAX_DAILY_ABS_CHANGE[column]
+    )
+
+
+def accepted_credit_series_tail(
+    column: str,
+    seed_series: pd.Series,
+    live_series: pd.Series,
+    source_name: str,
+    events: list[str] | None = None,
+) -> pd.Series:
+    seed_values = pd.to_numeric(seed_series, errors="coerce").dropna().sort_index()
+    live_values = pd.to_numeric(live_series, errors="coerce").dropna().sort_index()
+    live_values = live_values[live_values > 0]
+    if live_values.empty:
+        return pd.Series(dtype="float64", name=column)
+
+    if seed_values.empty:
+        previous_date = live_values.index[0]
+        previous_value = float(live_values.iloc[0])
+        accepted: dict[pd.Timestamp, float] = {previous_date: previous_value}
+        candidates = live_values.iloc[1:]
+    else:
+        previous_date = seed_values.index[-1]
+        previous_value = float(seed_values.iloc[-1])
+        accepted = {}
+        candidates = live_values[live_values.index > previous_date]
+
+    candidate_items = list(candidates.items())
+    for index, (row_date, raw_value) in enumerate(candidate_items):
+        value = float(raw_value)
+        if is_plausible_credit_value_transition(
+            column,
+            previous_date,
+            previous_value,
+            row_date,
+            value,
+        ):
+            accepted[row_date] = value
+            previous_date = row_date
+            previous_value = value
+            continue
+
+        next_item = candidate_items[index + 1] if index + 1 < len(candidate_items) else None
+        isolated_spike = bool(
+            next_item
+            and is_plausible_credit_value_transition(
+                column,
+                previous_date,
+                previous_value,
+                next_item[0],
+                float(next_item[1]),
+            )
+        )
+        action = "point" if isolated_spike else "tail"
+        event = (
+            f"Quarantined {source_name} {column} {action} from "
+            f"{row_date.strftime('%Y-%m-%d')} due to discontinuity."
+        )
+        print(event)
+        if events is not None:
+            events.append(event)
+        if not isolated_spike:
+            break
+
+    return pd.Series(accepted, dtype="float64", name=column).sort_index()
+
+
+def quarantine_credit_frame(
+    live: pd.DataFrame,
+    fallback: pd.DataFrame,
+    source_name: str,
+    events: list[str] | None = None,
+) -> pd.DataFrame:
+    live = pick_numeric_columns(live, CREDIT_SERIES)
+    fallback = pick_numeric_columns(fallback, CREDIT_SERIES)
+    output = pd.DataFrame(index=live.index.union(fallback.index).sort_values(), columns=CREDIT_SERIES)
+    for column in CREDIT_SERIES:
+        accepted = accepted_credit_series_tail(
+            column,
+            pd.Series(dtype="float64"),
+            live[column],
+            source_name,
+            events,
+        )
+        fallback_values = pd.to_numeric(fallback[column], errors="coerce")
+        output[column] = accepted.combine_first(fallback_values)
+    output = output.dropna(how="all").sort_index()
+    output.index.name = "date"
+    return output[CREDIT_SERIES]
+
+
 def merge_credit_seed_with_existing_tail(seed: pd.DataFrame, existing: pd.DataFrame) -> pd.DataFrame:
     seed = pick_numeric_columns(seed, CREDIT_SERIES)
     existing = pick_numeric_columns(existing, CREDIT_SERIES)
@@ -320,7 +425,11 @@ def fetch_ecos_leading_cycle(api_key: str, start_ym: str = ECOS_START) -> pd.Dat
         print(f"ECOS fetch failed: {exc}")
         return pd.DataFrame(columns=["leading_cycle"])
 
-    rows = payload.get("StatisticSearch", {}).get("row", [])
+    try:
+        rows = ecos_statistic_rows(payload)
+    except ValueError as exc:
+        print(f"ECOS response contract failed: {exc}")
+        return pd.DataFrame(columns=["leading_cycle"])
     if not rows:
         result = payload.get("RESULT", {})
         code = result.get("CODE")
@@ -363,7 +472,11 @@ def fetch_ecos_news_sentiment(api_key: str, start_ymd: str = ECOS_NEWS_START) ->
         print(f"ECOS news sentiment fetch failed: {exc}")
         return pd.DataFrame(columns=["news_sentiment"])
 
-    rows = payload.get("StatisticSearch", {}).get("row", [])
+    try:
+        rows = ecos_statistic_rows(payload)
+    except ValueError as exc:
+        print(f"ECOS news sentiment response contract failed: {exc}")
+        return pd.DataFrame(columns=["news_sentiment"])
     if not rows:
         result = payload.get("RESULT", {})
         if result.get("CODE"):
@@ -941,15 +1054,22 @@ def fetch_dart_disclosures(
                 print(f"DART disclosure fetch failed for {stock_code}: {exc}")
                 break
 
-            status = str(payload.get("status", ""))
-            if status == "013":
+            try:
+                dart_page = dart_disclosure_page(payload)
+            except ValueError as exc:
+                print(f"DART response contract failed for {stock_code}: {exc}")
                 break
-            if status and status != "000":
-                print(f"DART returned {status} for {stock_code}: {payload.get('message')}")
+            if dart_page.status == "013":
+                break
+            if dart_page.status and dart_page.status != "000":
+                print(
+                    f"DART returned {dart_page.status} for {stock_code}: "
+                    f"{dart_page.message}"
+                )
                 break
 
-            total_page = int(payload.get("total_page") or 1)
-            for item in payload.get("list", []) or []:
+            total_page = dart_page.total_page
+            for item in dart_page.items:
                 title = str(item.get("report_nm") or "").strip()
                 event_type = disclosure_type_from_title(title)
                 if not event_type:
@@ -1357,7 +1477,11 @@ def median_scale_factor(seed: pd.Series, live: pd.Series) -> float:
     return float(ratios.median())
 
 
-def merge_credit_seed_with_freesis(seed: pd.DataFrame, live: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+def merge_credit_seed_with_freesis(
+    seed: pd.DataFrame,
+    live: pd.DataFrame,
+    events: list[str] | None = None,
+) -> tuple[pd.DataFrame, int]:
     if live.empty:
         return seed, 0
     if seed.empty:
@@ -1368,16 +1492,17 @@ def merge_credit_seed_with_freesis(seed: pd.DataFrame, live: pd.DataFrame) -> tu
     # outright so rough pre-2021 seed rows do not create validation jumps.
     live = live.sort_index()
     if len(live) >= 1000:
-        merged = live.copy()
+        merged = quarantine_credit_frame(live, seed, "Freesis", events)
         merged.index.name = "date"
-        return merged[CREDIT_SERIES], len(live)
-    return merge_credit_seed_with_incremental_tail(seed, live, "Freesis")
+        return merged[CREDIT_SERIES], len(merged)
+    return merge_credit_seed_with_incremental_tail(seed, live, "Freesis", events)
 
 
 def merge_credit_seed_with_incremental_tail(
     seed: pd.DataFrame,
     live: pd.DataFrame,
     source_name: str,
+    events: list[str] | None = None,
 ) -> tuple[pd.DataFrame, int]:
     if live.empty:
         return seed, 0
@@ -1407,49 +1532,40 @@ def merge_credit_seed_with_incremental_tail(
             factor = median_scale_factor(recent_overlap["seed"], recent_overlap["live"])
         else:
             seed_values = pd.to_numeric(seed[column], errors="coerce").dropna()
-            tail_values = pd.to_numeric(
-                live.loc[live.index > seed.index.max(), column],
-                errors="coerce",
-            ).dropna()
+            latest_seed_date = seed_values.index[-1] if not seed_values.empty else seed.index.max()
+            tail_values = pd.to_numeric(live.loc[live.index > latest_seed_date, column], errors="coerce").dropna()
             if not seed_values.empty and not tail_values.empty and float(tail_values.iloc[0]) > 0:
                 factor = float(seed_values.iloc[-1]) / float(tail_values.iloc[0])
         if 0.5 <= factor <= 2.0 and (factor > 1.02 or factor < 0.98):
             aligned_live[column] = aligned_live[column] * factor
 
-    tail = aligned_live[aligned_live.index > seed.index.max()]
-    if tail.empty:
-        return seed, 0
+    merged = seed.copy()
+    accepted_dates: set[pd.Timestamp] = set()
+    for column in CREDIT_SERIES:
+        accepted = accepted_credit_series_tail(
+            column,
+            seed[column],
+            aligned_live[column],
+            source_name,
+            events,
+        )
+        for row_date, value in accepted.items():
+            merged.loc[row_date, column] = value
+            accepted_dates.add(row_date)
 
-    accepted: list[pd.Series] = []
-    prev_date = seed.index.max()
-    prev_row = seed.loc[prev_date].copy()
-    for idx, row in tail.iterrows():
-        next_row = prev_row.copy()
-        for column in CREDIT_SERIES:
-            live_value = row.get(column, pd.NA)
-            if pd.notna(live_value):
-                next_row[column] = live_value
-        if not is_plausible_credit_transition(prev_date, prev_row, idx, next_row):
-            print(
-                f"Dropped {source_name} credit tail from "
-                f"{idx.strftime('%Y-%m-%d')} due to discontinuity."
-            )
-            break
-        next_row.name = idx
-        accepted.append(next_row)
-        prev_date = idx
-        prev_row = next_row
-
-    if not accepted:
+    if not accepted_dates:
         return seed, 0
-    tail_frame = pd.DataFrame(accepted)
-    merged = merge_credit_frames(seed, tail_frame)
+    merged = pick_numeric_columns(merged, CREDIT_SERIES)
     merged.index.name = "date"
-    return merged[CREDIT_SERIES], len(accepted)
+    return merged[CREDIT_SERIES], len(accepted_dates)
 
 
-def merge_credit_seed_with_kofia(seed: pd.DataFrame, live: pd.DataFrame) -> tuple[pd.DataFrame, int]:
-    return merge_credit_seed_with_incremental_tail(seed, live, "KOFIA")
+def merge_credit_seed_with_kofia(
+    seed: pd.DataFrame,
+    live: pd.DataFrame,
+    events: list[str] | None = None,
+) -> tuple[pd.DataFrame, int]:
+    return merge_credit_seed_with_incremental_tail(seed, live, "KOFIA", events)
 
 
 def build_payload(df: pd.DataFrame, labels: dict[str, str], series_names: list[str]) -> dict:
@@ -1677,7 +1793,11 @@ def main() -> None:
                 **result[1],
             },
         )
-        credit_merged, applied_kofia_credit = merge_credit_seed_with_kofia(credit_merged, credit_kofia)
+        credit_merged, applied_kofia_credit = merge_credit_seed_with_kofia(
+            credit_merged,
+            credit_kofia,
+            build_report["events"],
+        )
         if applied_kofia_credit > 0:
             latest_credit = credit_merged.index.max().strftime("%Y-%m-%d")
             print(f"Applied KOFIA credit rows: {applied_kofia_credit} (latest={latest_credit})")
@@ -1706,7 +1826,11 @@ def main() -> None:
             ),
             frame_summary,
         )
-        credit_merged, appended_credit = merge_credit_seed_with_freesis(credit_merged, credit_live)
+        credit_merged, appended_credit = merge_credit_seed_with_freesis(
+            credit_merged,
+            credit_live,
+            build_report["events"],
+        )
     else:
         appended_credit = 0
         print("Skipped Freesis credit history; using existing verified credit seed only.")

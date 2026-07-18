@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from datetime import date
 from pathlib import Path
 
@@ -12,6 +13,7 @@ SEGMENTED_FILES = (
     "credit_data.json",
     "adr_data.json",
 )
+MANIFEST_FILE = "data_manifest.json"
 
 
 def shift_years(value: date, years: int) -> date:
@@ -62,8 +64,16 @@ def write_payload(path: Path, payload: dict) -> None:
     )
 
 
+def file_digest(path: Path) -> str:
+    return sha256(path.read_bytes()).hexdigest()
+
+
 def split_all_payloads(data_dir: Path, recent_years: int = RECENT_DATA_YEARS) -> dict[str, dict[str, int]]:
     summary: dict[str, dict[str, int]] = {}
+    manifest: dict[str, object] = {
+        "format": "segmented-data-v1",
+        "datasets": {},
+    }
     for filename in SEGMENTED_FILES:
         source = data_dir / filename
         if not source.exists():
@@ -71,12 +81,29 @@ def split_all_payloads(data_dir: Path, recent_years: int = RECENT_DATA_YEARS) ->
         payload = json.loads(source.read_text(encoding="utf-8"))
         recent, history = split_columnar_payload(payload, recent_years)
         stem = source.stem
-        write_payload(data_dir / f"{stem}_recent.json", recent)
-        write_payload(data_dir / f"{stem}_history.json", history)
+        recent_name = f"{stem}_recent.json"
+        history_name = f"{stem}_history.json"
+        recent_path = data_dir / recent_name
+        history_path = data_dir / history_name
+        write_payload(recent_path, recent)
+        write_payload(history_path, history)
         summary[stem] = {
             "recent": len(recent.get("dates") or []),
             "history": len(history.get("dates") or []),
         }
+        manifest["datasets"][stem] = {
+            "recent": {
+                "file": recent_name,
+                "rows": summary[stem]["recent"],
+                "sha256": file_digest(recent_path),
+            },
+            "history": {
+                "file": history_name,
+                "rows": summary[stem]["history"],
+                "sha256": file_digest(history_path),
+            },
+        }
+    write_payload(data_dir / MANIFEST_FILE, manifest)
     return summary
 
 
