@@ -3,7 +3,7 @@ import os
 import re
 import subprocess
 import zipfile
-from datetime import date
+from datetime import date, timedelta
 from io import BytesIO, StringIO
 from pathlib import Path
 from time import monotonic
@@ -85,11 +85,15 @@ OUTPUT_DISCLOSURES_JSON = DATA_DIR / "disclosures.json"
 DISCLOSURE_DATA_DIR = DATA_DIR / "disclosures"
 OUTPUT_DART_CORP_CODES_JSON = DATA_DIR / "dart_corp_codes.json"
 DART_CORP_CODE_DATA_DIR = DATA_DIR / "dart_corp_codes"
+OUTPUT_KRX_UNIVERSE_JSON = DATA_DIR / "krx_universe.json"
 OUTPUT_BUILD_REPORT_JSON = DATA_DIR / "build_report.json"
 OUTPUT_BUILD_HISTORY_JSON = DATA_DIR / "build_history.json"
 LOOKBACK_YEARS = 30
 DART_DISCLOSURE_LOOKBACK_YEARS = 3
+DART_MARKET_LOOKBACK_DAYS = 90
+DART_MARKET_MAX_PAGES = 60
 DART_CORP_CODE_PREFIX_LENGTH = 2
+KRX_LOOKBACK_DAYS = 14
 ECOS_STAT_CODE = "901Y067"  # Composite Leading Indicator
 ECOS_ITEM_CODE = "I16E"     # Leading index cyclical component
 ECOS_START = "199601"
@@ -113,6 +117,10 @@ ADR_SOURCE_URL = "http://www.adrinfo.kr/chart"
 FEAR_GREED_SOURCE_URL = "https://kospi.feargreedchart.com/api/?action=kospi-history"
 DART_CORP_CODE_URL = "https://opendart.fss.or.kr/api/corpCode.xml"
 DART_DISCLOSURE_URL = "https://opendart.fss.or.kr/api/list.json"
+KRX_BASE_INFO_ENDPOINTS = {
+    "KOSPI": "stk_isu_base_info",
+    "KOSDAQ": "ksq_isu_base_info",
+}
 _HTTP_CLIENT: RetryingHttpClient | None = None
 SOURCE_STALE_AFTER_DAYS = {
     "prices": 10,
@@ -419,6 +427,17 @@ def resolve_dart_api_key() -> str:
     return ""
 
 
+def resolve_krx_api_key() -> str:
+    for name in ("KRX_API_KEY", "KRX_AUTH_KEY"):
+        env_key = os.environ.get(name, "").strip()
+        if env_key:
+            return env_key
+        file_key = _read_env_key(LOCAL_ENV_FILE, name)
+        if file_key:
+            return file_key
+    return ""
+
+
 def configured_disclosure_stock_codes() -> list[str]:
     raw = os.environ.get("DART_DISCLOSURE_STOCK_CODES", "")
     extras = [part.strip() for part in raw.split(",") if part.strip()]
@@ -432,6 +451,71 @@ def configured_disclosure_stock_codes() -> list[str]:
         seen.add(clean)
         out.append(clean)
     return out
+
+
+def normalize_krx_universe_rows(rows: list[dict], market: str) -> list[dict]:
+    clean_market = str(market or "").strip().upper()
+    if clean_market not in KRX_BASE_INFO_ENDPOINTS:
+        return []
+    suffix = "KQ" if clean_market == "KOSDAQ" else "KS"
+    normalized: dict[str, dict] = {}
+    for row in rows if isinstance(rows, list) else []:
+        raw_code = re.sub(r"\D", "", str(row.get("ISU_SRT_CD") or ""))
+        code = raw_code.zfill(6)[-6:]
+        name = str(row.get("ISU_ABBRV") or row.get("ISU_NM") or "").strip()
+        if len(code) != 6 or not name:
+            continue
+        ticker = f"{code}.{suffix}"
+        normalized[ticker] = {
+            "ticker": ticker,
+            "code": code,
+            "name": name,
+            "market": clean_market,
+        }
+    return sorted(normalized.values(), key=lambda item: (item["name"], item["ticker"]))
+
+
+def fetch_krx_universe(api_key: str, lookback_days: int = KRX_LOOKBACK_DAYS) -> dict:
+    key = str(api_key or "").strip()
+    if not key:
+        return {}
+    for offset in range(max(0, int(lookback_days)) + 1):
+        base_date = (date.today() - timedelta(days=offset)).strftime("%Y%m%d")
+        market_rows: dict[str, list[dict]] = {}
+        for market, endpoint in KRX_BASE_INFO_ENDPOINTS.items():
+            rows: list[dict] = []
+            for root in (
+                f"https://data-dbg.krx.co.kr/svc/apis/sto/{endpoint}",
+                f"https://data-dbg.krx.co.kr/svc/sample/apis/sto/{endpoint}",
+            ):
+                try:
+                    payload = http_client().get_json(
+                        root,
+                        params={"basDd": base_date, "AUTH_KEY": key},
+                        timeout=30,
+                    )
+                    candidate = payload.get("OutBlock_1") if isinstance(payload, dict) else []
+                    if isinstance(candidate, list) and candidate:
+                        rows = candidate
+                        break
+                except Exception:
+                    continue
+            market_rows[market] = rows
+        if not all(market_rows.get(market) for market in KRX_BASE_INFO_ENDPOINTS):
+            continue
+        records = []
+        for market, rows in market_rows.items():
+            records.extend(normalize_krx_universe_rows(rows, market))
+        records.sort(key=lambda item: (item["name"], item["ticker"]))
+        return {
+            "generated_at": utc_stamp(),
+            "source": "KRX Open API",
+            "format": "krx-universe-v1",
+            "base_date": f"{base_date[:4]}-{base_date[4:6]}-{base_date[6:8]}",
+            "total": len(records),
+            "records": records,
+        }
+    return {}
 
 
 def fetch_ecos_leading_cycle(api_key: str, start_ym: str = ECOS_START) -> pd.DataFrame:
@@ -1179,6 +1263,80 @@ def fetch_dart_disclosures(
     for record in records:
         dedup[(record["ticker"], record["date"], record["title"])] = record
     return sorted(dedup.values(), key=lambda row: (row["date"], row["ticker"], row["title"]))
+
+
+def fetch_dart_market_disclosures(
+    api_key: str,
+    lookback_days: int = DART_MARKET_LOOKBACK_DAYS,
+    max_pages: int = DART_MARKET_MAX_PAGES,
+) -> list[dict]:
+    clean_key = str(api_key or "").strip()
+    if not clean_key:
+        return []
+    end = date.today()
+    start = end - timedelta(days=max(1, int(lookback_days)))
+    records: list[dict] = []
+
+    for corp_cls in ("Y", "K"):
+        page_no = 1
+        total_page = 1
+        while page_no <= min(total_page, max(1, int(max_pages))):
+            try:
+                payload = http_client().get_json(
+                    DART_DISCLOSURE_URL,
+                    params={
+                        "crtfc_key": clean_key,
+                        "bgn_de": start.strftime("%Y%m%d"),
+                        "end_de": end.strftime("%Y%m%d"),
+                        "last_reprt_at": "Y",
+                        "corp_cls": corp_cls,
+                        "sort": "date",
+                        "sort_mth": "desc",
+                        "page_no": str(page_no),
+                        "page_count": "100",
+                    },
+                    timeout=30,
+                )
+                dart_page = dart_disclosure_page(payload)
+            except Exception as exc:
+                print(f"DART market disclosure fetch failed for {corp_cls} page {page_no}: {exc}")
+                break
+            if dart_page.status == "013":
+                break
+            if dart_page.status and dart_page.status != "000":
+                print(f"DART market returned {dart_page.status} for {corp_cls}: {dart_page.message}")
+                break
+
+            total_page = min(dart_page.total_page, max(1, int(max_pages)))
+            for item in dart_page.items:
+                stock_code = re.sub(r"\D", "", str(item.get("stock_code") or ""))[:6]
+                title = str(item.get("report_nm") or "").strip()
+                event_type = disclosure_type_from_title(title)
+                raw_date = str(item.get("rcept_dt") or "").strip()
+                if (
+                    len(stock_code) != 6
+                    or len(raw_date) != 8
+                    or not event_type
+                    or not should_display_disclosure(title, event_type)
+                ):
+                    continue
+                receipt_no = str(item.get("rcept_no") or "").strip()
+                ticker = stock_code_to_ticker(stock_code, corp_cls)
+                records.append({
+                    "ticker": ticker,
+                    "code": stock_code,
+                    "name": str(item.get("corp_name") or stock_code).strip(),
+                    "date": f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}",
+                    "type": event_type,
+                    "title": title,
+                    "summary": "",
+                    "source": "OpenDART",
+                    "receiptNo": receipt_no,
+                    "url": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={receipt_no}" if receipt_no else "",
+                })
+            page_no += 1
+
+    return normalize_disclosure_records(records)
 
 
 def normalize_disclosure_records(records: list[dict]) -> list[dict]:
@@ -2058,6 +2216,24 @@ def main() -> None:
     auxiliary = merge_auxiliary_data(auxiliary, adr_records, ["adr_kospi", "adr_kosdaq"])
     auxiliary = merge_auxiliary_data(auxiliary, fear_greed_records, ["fear_greed"])
 
+    krx_key = resolve_krx_api_key()
+    krx_universe_started = monotonic()
+    krx_universe = fetch_krx_universe(krx_key) if krx_key else {}
+    if not krx_universe and OUTPUT_KRX_UNIVERSE_JSON.exists():
+        try:
+            krx_universe = json.loads(OUTPUT_KRX_UNIVERSE_JSON.read_text(encoding="utf-8"))
+        except Exception:
+            krx_universe = {}
+    pipeline.record(
+        "krx_universe",
+        {
+            "rows": int(krx_universe.get("total") or 0),
+            "latest": str(krx_universe.get("base_date") or ""),
+        },
+        krx_universe_started,
+        status="ok" if krx_universe.get("records") else ("skipped" if not krx_key else "empty"),
+    )
+
     dart_key = resolve_dart_api_key()
     dart_corp_map = load_existing_dart_corp_code_seed()
     dart_corp_started = monotonic()
@@ -2101,7 +2277,7 @@ def main() -> None:
     build_report["policy"]["dart_overlap_days"] = DART_OVERLAP_DAYS
     build_report["policy"]["dart_earliest_start"] = min(dart_starts.values(), default="")
     disclosures_started = monotonic()
-    fresh_disclosure_records = (
+    configured_disclosure_records = (
         fetch_dart_disclosures(
             dart_key,
             disclosure_stock_codes,
@@ -2110,6 +2286,10 @@ def main() -> None:
         )
         if dart_key
         else []
+    )
+    market_disclosure_records = fetch_dart_market_disclosures(dart_key) if dart_key else []
+    fresh_disclosure_records = normalize_disclosure_records(
+        configured_disclosure_records + market_disclosure_records
     )
     if fresh_disclosure_records:
         disclosure_records = normalize_disclosure_records(
@@ -2169,6 +2349,16 @@ def main() -> None:
     )
     if dart_corp_map:
         write_dart_corp_code_payloads(dart_corp_map)
+    if krx_universe.get("records"):
+        OUTPUT_KRX_UNIVERSE_JSON.write_text(
+            json.dumps(
+                krx_universe,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            ),
+            encoding="utf-8",
+        )
     build_report["segments"] = split_all_payloads(DATA_DIR)
     build_report["outputs"]["prices"] = payload_file_summary(OUTPUT_JSON)
     build_report["outputs"]["macro"] = payload_file_summary(OUTPUT_MACRO_JSON)
@@ -2179,6 +2369,7 @@ def main() -> None:
         "tickers": len(disclosure_manifest.get("tickers", [])),
     }
     build_report["outputs"]["dart_corp_codes"] = payload_file_summary(OUTPUT_DART_CORP_CODES_JSON)
+    build_report["outputs"]["krx_universe"] = payload_file_summary(OUTPUT_KRX_UNIVERSE_JSON)
     http_metrics = http_client().metrics()
     warnings = health_warnings(build_report["sources"])
     if int(http_metrics.get("failures") or 0) > 0:

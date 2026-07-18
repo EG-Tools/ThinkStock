@@ -5,7 +5,7 @@ import path from "node:path";
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractionMath, chartInteractionController, cacheRefreshPolicy, browserMarketClient, auxiliaryChartModel, performanceMonitor, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, disclosurePopover, dartDisclosure, serviceWorkerClient, runtimeRefresh, dataSeedLoader, deployWorkflow, buildPagesData, dataBuildSupport, providerClients, providerContracts, sourcePipeline, buildReporting, plotlyBundle] = await Promise.all([
+const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractionMath, chartInteractionController, cacheRefreshPolicy, browserMarketClient, auxiliaryChartModel, performanceMonitor, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, disclosurePopover, dartDisclosure, serviceWorkerClient, runtimeRefresh, dataSeedLoader, deployWorkflow, buildPagesData, dataBuildSupport, providerClients, providerContracts, sourcePipeline, buildReporting, plotlyBundle, appBundle] = await Promise.all([
   readFile(path.join(root, "docs", "app.js"), "utf8"),
   readFile(path.join(root, "docs", "index.html"), "utf8"),
   readFile(path.join(root, "docs", "sw.js"), "utf8"),
@@ -37,6 +37,7 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractio
   readFile(path.join(root, "scripts", "source_pipeline.py"), "utf8"),
   readFile(path.join(root, "scripts", "build_reporting.py"), "utf8"),
   stat(path.join(root, "docs", "vendor", "plotly-basic-2.35.2.min.js")),
+  stat(path.join(root, "docs", "assets", "app.bundle.min.js")),
 ]);
 
 const appVersion = app.match(/const APP_VERSION = "([0-9]+\.[0-9]+)";/)?.[1];
@@ -56,34 +57,20 @@ const requiredIds = [
   "disclosureToggle",
   "refreshData",
   "apiSettingsModal",
-  "dartApiInput",
 ];
 requiredIds.forEach((id) => assert.ok(ids.includes(id), `required UI element is missing: ${id}`));
 
 [
   "./index.html",
   "./styles.css",
+  "./assets/app.bundle.min.js?v=dev",
   "./modules/data-payload.js?v=dev",
   "./modules/market-data.js?v=dev",
-  "./modules/chart-interaction-math.js?v=dev",
-  "./modules/chart-interaction-controller.js?v=dev",
   "./modules/cache-refresh-policy.js?v=dev",
-  "./modules/browser-market-client.js?v=dev",
   "./modules/auxiliary-chart-model.js?v=dev",
-  "./modules/performance-monitor.js?v=dev",
-  "./modules/app-storage.js?v=dev",
-  "./modules/startup-loader.js?v=dev",
-  "./modules/chart-loader.js?v=dev",
-  "./modules/disclosure-policy.js?v=dev",
-  "./modules/disclosure-popover.js?v=dev",
-  "./modules/dart-disclosure.js?v=dev",
-  "./modules/service-worker-client.js?v=dev",
-  "./modules/runtime-refresh.js?v=dev",
-  "./modules/data-seed-loader.js?v=dev",
   "./modules/data-worker.js?v=dev",
   "./modules/chart-model-worker.js?v=dev",
-  "./app.js?v=dev",
-  "./vendor/plotly-basic-2.35.2.min.js",
+  "./vendor/plotly-basic-2.35.2.min.js?v=dev",
   "./data/prices_recent.json",
   "./data/macro_data_recent.json",
   "./data/credit_data_recent.json",
@@ -144,7 +131,7 @@ assert.ok(disclosurePolicy.includes("shouldDisplayDisclosure"), "disclosure poli
 assert.ok(disclosurePopover.includes("disclosure-title-link"), "disclosure title links are missing");
 assert.ok(html.includes('data-series="customer_deposit"'), "customer deposit toggle is missing");
 assert.ok(!html.includes('data-series="news_sentiment"'), "news sentiment must not remain in the main-chart toggles");
-assert.ok(app.includes("getSecuritiesMarketTotalCapitalInfo"), "customer deposit API endpoint is missing");
+assert.ok(buildPagesData.includes("getSecuritiesMarketTotalCapitalInfo"), "server customer deposit endpoint is missing");
 assert.ok(app.includes('name: "뉴스심리"'), "news sentiment auxiliary trace is missing");
 assert.ok(app.includes('yaxis: "y3"'), "news sentiment auxiliary axis is missing");
 assert.ok(app.includes('text: "비관"'), "news sentiment pessimism guide is missing");
@@ -152,21 +139,31 @@ assert.ok(app.includes('text: "낙관"'), "news sentiment optimism guide is miss
 assert.ok(app.includes("CUSTOM_STOCK_PRELOAD_CONCURRENCY"), "custom stock preload concurrency guard is missing");
 assert.ok(runtimeRefresh.includes("const criticalPromise") && runtimeRefresh.includes("const supplementalPromise"), "refresh phases do not start in parallel");
 assert.ok(app.includes("coreIndexTask") && app.includes("preloadTask"), "price refresh tasks still run serially");
-assert.ok(app.includes("Promise.allSettled([\n    apiSettings.kofiaApiKey"), "credit APIs still run serially");
 assert.ok(!app.includes("ecos.bok.or.kr/api/") && !app.includes("kosis.kr/openapi/"),
   "ECOS or KOSIS is still called directly from the browser");
-assert.ok(!app.includes("ecosApiKey") && !app.includes("kosisApiKey"),
+assert.ok(!app.includes("ecosApiKey") && !app.includes("kosisApiKey") && !app.includes("apiSettings."),
   "server-refreshed API keys must not remain in browser storage");
-assert.ok(!html.includes('id="ecosApiInput"') && !html.includes('id="kosisApiInput"'),
+assert.ok(!html.includes('type="password"') && !html.includes("dartProxyEnabledInput"),
   "server-refreshed API keys must not be requested in the browser");
 assert.ok(deployWorkflow.includes("KOSIS_API_KEY: ${{ secrets.KOSIS_API_KEY }}")
   && buildPagesData.includes("fetch_kosis_leading_cycle")
   && providerContracts.includes("def kosis_rows("),
   "KOSIS server-side fallback is incomplete");
+assert.ok(deployWorkflow.includes("KRX_API_KEY: ${{ secrets.KRX_API_KEY }}")
+  && buildPagesData.includes("def fetch_krx_universe(")
+  && app.includes("./data/krx_universe.json"),
+  "KRX server-side universe is incomplete");
+assert.ok(buildPagesData.includes("def fetch_dart_market_disclosures(")
+  && app.includes("clearLegacyBrowserApiSettings()")
+  && !app.includes("opendart.fss.or.kr/api/"),
+  "DART browser secret removal or market seed is incomplete");
 assert.ok(app.includes('name: "공포탐욕"') && app.includes('yaxis: "y2"'), "fear-greed auxiliary panel is missing");
 assert.ok(app.includes("lastAdrRenderKey === renderKey"), "ADR render fast path is missing");
 assert.ok(chartLoader.includes("plotly-basic-2.35.2.min.js"), "Plotly basic bundle is not configured");
 assert.ok(plotlyBundle.size < 1_500_000, `Plotly bundle is too large: ${plotlyBundle.size} bytes`);
+assert.ok(html.includes("./assets/app.bundle.min.js?v=dev"), "optimized app bundle is not loaded");
+assert.equal([...html.matchAll(/<script\b/g)].length, 1, "runtime scripts are not bundled");
+assert.ok(appBundle.size < 260_000, `app bundle is too large: ${appBundle.size} bytes`);
 assert.ok(app.includes('const MAIN_LINE_TRACE_TYPE = "scatter";'), "main chart is not using the SVG scatter path");
 assert.ok(app.includes("MAIN_CHART_TOTAL_VISIBLE_POINT_TARGET_MOBILE"), "adaptive mobile chart budget is missing");
 assert.ok(app.includes("const plotlyReadyTask = ensurePlotlyReady()"), "Plotly is not prepared in parallel during boot");
@@ -182,6 +179,8 @@ assert.ok(!app.includes('Plotly.restyle(el, { "line.width"'), "line hover still 
 assert.ok(app.includes("ThinkStockPerformanceMonitor"), "performance monitor module is not wired into the app");
 assert.ok(performanceMonitor.includes("createPerformanceMonitor") && performanceMonitor.includes("p95FrameGap"), "performance monitor module is incomplete");
 assert.ok(performanceMonitor.includes("gap < frameGapIgnoreMs"), "suspended tabs still pollute frame timing diagnostics");
+assert.ok(performanceMonitor.includes('observe({ type: "longtask", buffered: true })'),
+  "browser long-task diagnostics are missing");
 assert.ok(!app.includes("let perfSamples") && !app.includes("function startPerfFrameMonitor("), "performance diagnostics still live in app.js");
 assert.ok(app.includes("ThinkStockAppStorage"), "app storage module is not wired into the app");
 assert.ok(appStorage.includes("createApiSettingsStore") && appStorage.includes("createIndexedCacheStore"), "app storage module is incomplete");
@@ -192,6 +191,10 @@ assert.ok(!app.includes("function ensureStartupLoader(") && !app.includes("start
 assert.ok(app.includes("runtimeRefreshController.abort"), "superseded runtime refreshes are not cancelled");
 assert.ok(app.includes("function cancelStaleChartModelWorkerRequest()"), "stale chart worker cancellation is missing");
 assert.ok(app.includes("getChartInteractionGeometry(sourceEl)"), "pointer geometry is not shared per frame");
+assert.ok(app.includes('addEventListener("pointermove"') && app.includes("getCoalescedEvents"),
+  "chart input is not using the unified pointer pipeline");
+assert.ok(!app.includes('addEventListener("touchmove"') && !app.includes('addEventListener("mousedown"'),
+  "legacy chart input listeners remain");
 assert.ok(app.includes("function applyDisclosureStateFast("), "disclosure-only updates still require a full chart render");
 assert.ok(app.includes("function applyMainChartRender(") && app.includes("mainChartPartialUpdateCount"),
   "main chart partial update fast path is missing");

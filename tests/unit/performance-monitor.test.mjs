@@ -11,10 +11,25 @@ function createScope(search = "") {
   let rafSequence = 0;
   const rafCallbacks = new Map();
   const stored = new Map();
+  const observerInstances = [];
+  class PerformanceObserver {
+    constructor(callback) {
+      this.callback = callback;
+      this.disconnected = false;
+      observerInstances.push(this);
+    }
+    observe(options) {
+      this.options = options;
+    }
+    disconnect() {
+      this.disconnected = true;
+    }
+  }
   const scope = {
     location: { search },
     document: { visibilityState: "visible" },
     performance: { now: () => now },
+    PerformanceObserver,
     localStorage: {
       getItem: (key) => stored.get(key) || null,
       setItem: (key, value) => stored.set(key, String(value)),
@@ -41,6 +56,10 @@ function createScope(search = "") {
       callback(timestamp);
     },
     pendingFrames: () => rafCallbacks.size,
+    emitLongTasks(entries) {
+      observerInstances.at(-1)?.callback?.({ getEntries: () => entries });
+    },
+    observers: observerInstances,
   };
 }
 
@@ -69,6 +88,10 @@ test("records samples and uses percentile frame timing", () => {
     maxFrameGap: 568,
     p95FrameGap: 16,
     longFrameRatio: 0.25,
+    longTasks: 0,
+    p95LongTask: 0,
+    maxLongTask: 0,
+    latestLongTaskSource: "",
     pointerMoves: 1,
     p95PointerMove: 12.3,
     maxPointerMove: 12.3,
@@ -95,6 +118,7 @@ test("persists enable state and stops frame monitoring when disabled", () => {
   assert.equal(api.disable(), false);
   assert.equal(harness.stored.has("thinkstock-perf-debug"), false);
   assert.equal(harness.pendingFrames(), 0);
+  assert.equal(harness.observers[0].disconnected, true);
 });
 
 
@@ -107,4 +131,47 @@ test("caps retained operation samples", () => {
     monitor.recordSample(`sample-${value}`, 100);
   });
   assert.deepEqual(api.get().map((sample) => sample.label), ["sample-2", "sample-3"]);
+});
+
+
+test("records bounded browser long tasks with attribution", () => {
+  const harness = createScope("?perf=1");
+  const monitor = createPerformanceMonitor(harness.scope, { longTaskSampleLimit: 2 });
+  const api = monitor.init();
+
+  harness.emitLongTasks([
+    { duration: 55.54, startTime: 10, name: "self", attribution: [] },
+    {
+      duration: 81.25,
+      startTime: 20,
+      name: "self",
+      attribution: [{ containerId: "chart" }],
+    },
+    { duration: 120.04, startTime: 30, name: "self", attribution: [] },
+  ]);
+
+  assert.deepEqual(api.getLongTasks(), [
+    { duration: 81.3, startTime: 20, source: "chart" },
+    { duration: 120, startTime: 30, source: "self" },
+  ]);
+  assert.deepEqual(api.summary(), {
+    frames: 0,
+    longFrames: 0,
+    maxFrameGap: 0,
+    p95FrameGap: 0,
+    longFrameRatio: 0,
+    longTasks: 2,
+    p95LongTask: 81.3,
+    maxLongTask: 120,
+    latestLongTaskSource: "self",
+    pointerMoves: 0,
+    p95PointerMove: 0,
+    maxPointerMove: 0,
+    renderCharts: 0,
+    p95RenderChart: 0,
+    auxiliaryRenders: 0,
+    p95AuxiliaryRender: 0,
+    runtimeRefreshes: 0,
+    maxRuntimeRefresh: 0,
+  });
 });

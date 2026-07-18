@@ -103,16 +103,6 @@ const CUSTOM_COLOR_PALETTE = [
 ];
 const MAX_CUSTOM_STOCKS = 10;
 const CUSTOM_STOCK_PRELOAD_CONCURRENCY = 3;
-const KRX_LOOKBACK_DAYS = 14;
-const KRX_BASE_INFO_ENDPOINTS = {
-  KOSPI: "stk_isu_base_info",
-  KOSDAQ: "ksq_isu_base_info",
-};
-const KRX_INDEX_ENDPOINTS = {
-  KOSPI: "kospi_dd_trd",
-  KOSDAQ: "kosdaq_dd_trd",
-};
-
 const STATE_KEY = "thinkstock-v5";
 const API_SETTINGS_KEY = "thinkstock-api-v1";
 const API_SETTINGS_SESSION_KEY = "thinkstock-api-session-v1";
@@ -142,11 +132,11 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.91";
+const APP_VERSION = "0.92";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
-      || [...document.scripts].find((node) => String(node?.src || "").includes("/app.js"));
+      || [...document.scripts].find((node) => String(node?.src || "").includes("/app.bundle.min.js"));
     const src = String(script?.src || "");
     return src ? (new URL(src, window.location.href).searchParams.get("v") || "dev") : "dev";
   } catch (_) {
@@ -154,17 +144,6 @@ function getAppBuildVersion() {
   }
 }
 const APP_BUILD_VERSION = getAppBuildVersion();
-const API_SETTINGS_DEFAULT = Object.freeze({
-  kofiaApiKey: "",
-  krxApiKey: "",
-  dartApiKey: "",
-  dartProxyEnabled: false,
-});
-const apiSettingsStore = appStorageModule.createApiSettingsStore(globalThis, {
-  defaults: API_SETTINGS_DEFAULT,
-  localKey: API_SETTINGS_KEY,
-  sessionKey: API_SETTINGS_SESSION_KEY,
-});
 const indexedCacheStore = appStorageModule.createIndexedCacheStore(globalThis, {
   dbName: DATA_CACHE_DB_NAME,
   dbVersion: DATA_CACHE_DB_VERSION,
@@ -180,20 +159,11 @@ const runtimeSnapshotCacheConfig = Object.freeze({
   format: RUNTIME_SNAPSHOT_FORMAT,
   componentKeys: RUNTIME_SNAPSHOT_COMPONENT_KEYS,
 });
-const KOFIA_CREDIT_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getGrantingOfCreditBalanceInfo";
-const KOFIA_MARKET_FUNDS_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getSecuritiesMarketTotalCapitalInfo";
 const FREESIS_CREDIT_META_URL = "https://freesis.kofia.or.kr/meta/getMetaDataList.do";
 const FREESIS_CREDIT_OBJ_NM = "STATSCU0100000070BO";
 const FREESIS_CREDIT_LOOKBACK_DAYS = 120;
 const FREESIS_CREDIT_UNIT_CODE = "01";
 const FEAR_GREED_LIVE_URL = "https://kospi.feargreedchart.com/api/?action=kospi";
-const DART_DISCLOSURE_URL = "https://opendart.fss.or.kr/api/list.json";
-const DART_RUNTIME_LOOKBACK_DAYS = 92;
-const DART_STOCK_LOOKBACK_YEARS = 3;
-const DART_RUNTIME_MAX_PAGES_PER_MARKET = 60;
-const DART_RUNTIME_PAGE_BATCH = 6;
-const DART_STOCK_PAGE_BATCH = 4;
-const DART_VISIBLE_REFRESH_CONCURRENCY = 2;
 const DART_DISCLOSURE_CACHE_KEY = "thinkstock-dart-disclosure-cache-v1";
 const DART_DISCLOSURE_CACHE_TTL_DAYS = 1;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -254,15 +224,9 @@ const browserMarketClient = browserMarketClientModule.createBrowserMarketClient(
   shiftDays,
   toNumber: toNum,
   dayMs: DAY_MS,
-  baseInfoEndpoints: KRX_BASE_INFO_ENDPOINTS,
-  indexEndpoints: KRX_INDEX_ENDPOINTS,
 });
 const {
-  getRecentKrxBaseDates,
-  normalizeKrxUniverseRows,
-  fetchKrxUniverseRows,
   fetchYahooHistorySeries,
-  fetchLatestKrxCoreIndexRows,
 } = browserMarketClient;
 const POPUP_NUMBER_FORMAT = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 4 });
 const formatActualValue = (v) => (Number.isFinite(v) ? POPUP_NUMBER_FORMAT.format(v) : "N/A");
@@ -422,7 +386,6 @@ let disclosureMarkerPixelCache = new WeakMap();
 let lineHitIndexCache = new WeakMap();
 let pointerMoveController = null;
 const CURSOR_LINE_CLASS = "synced-cursor-line";
-let apiSettings = { ...API_SETTINGS_DEFAULT };
 let lastTouchTapAt = 0;
 let lastTouchTapX = null;
 let lastTouchTapEl = null;
@@ -618,29 +581,9 @@ function loadState() {
   } catch (_) {}
 }
 
-const sanitizeApiSettings = (raw) => apiSettingsStore.sanitize(raw);
-
-function saveApiSettings() {
-  apiSettings = apiSettingsStore.save(apiSettings);
-}
-
-function clearApiSettingsStorage() {
-  apiSettingsStore.clear();
-}
-
-function loadApiSettings() {
-  apiSettings = apiSettingsStore.load();
-}
-
-function explainDartFetchError(err) {
-  const message = String(err?.message || err || "unknown error");
-  if (/Failed to fetch|NetworkError|Load failed|CORS|fetch/i.test(message)) {
-    if (!apiSettings?.dartProxyEnabled) {
-      return "OpenDART가 브라우저 직접 호출(CORS)을 허용하지 않습니다. 추가 종목 공시를 바로 받으려면 API 설정에서 DART 공개 프록시 사용을 켜야 합니다.";
-    }
-    return "OpenDART 공시를 불러오지 못했습니다. 공개 프록시가 일시적으로 막혔거나 DART API 응답이 지연됐을 수 있습니다.";
-  }
-  return message;
+function clearLegacyBrowserApiSettings() {
+  try { localStorage.removeItem(API_SETTINGS_KEY); } catch (_) {}
+  try { sessionStorage.removeItem(API_SETTINGS_SESSION_KEY); } catch (_) {}
 }
 
 const dartDisclosureModule = globalThis.ThinkStockDartDisclosure;
@@ -649,18 +592,6 @@ const dartDisclosureService = dartDisclosureModule.createDartDisclosureService({
   classifyType: classifyDisclosureType,
   shouldDisplay: shouldDisplayDisclosure,
   labelName,
-  fetchJson: (url, init) => fetchJsonWithProxyFallback(
-    url,
-    init,
-    { allowProxy: Boolean(apiSettings?.dartProxyEnabled) },
-  ),
-  explainError: explainDartFetchError,
-  baseUrl: DART_DISCLOSURE_URL,
-  runtimeLookbackDays: DART_RUNTIME_LOOKBACK_DAYS,
-  stockLookbackYears: DART_STOCK_LOOKBACK_YEARS,
-  runtimeMaxPages: DART_RUNTIME_MAX_PAGES_PER_MARKET,
-  runtimePageBatch: DART_RUNTIME_PAGE_BATCH,
-  stockPageBatch: DART_STOCK_PAGE_BATCH,
   refreshCacheKey: DART_DISCLOSURE_CACHE_KEY,
   refreshCacheTtlMs: DART_DISCLOSURE_CACHE_TTL_DAYS * DAY_MS,
   getStorage: () => localStorage,
@@ -1131,19 +1062,10 @@ function bindRuntimeSnapshotExitSave() {
   });
 }
 
-function hasAnyApiKey() {
-  const browserApiKeys = ["kofiaApiKey", "krxApiKey", "dartApiKey", "dartProxyEnabled"];
-  return browserApiKeys.some((key) => {
-    const value = apiSettings?.[key];
-    if (typeof API_SETTINGS_DEFAULT[key] === "boolean") return value === true;
-    return String(value || "").trim().length > 0;
-  });
-}
-
 function syncApiOptionsButton() {
   const btn = document.getElementById("apiOptionsBtn");
   if (!btn) return;
-  btn.classList.toggle("is-configured", hasAnyApiKey());
+  btn.classList.remove("is-configured");
 }
 
 function renderAppVersionLabel() {
@@ -1251,39 +1173,10 @@ function setupApiSettingsPanel(msgEl) {
   if (!modal || !openBtn) return;
 
   const closeBtn = document.getElementById("apiSettingsCloseBtn");
-  const saveBtn = document.getElementById("apiSettingsSaveBtn");
-  const clearBtn = document.getElementById("apiSettingsClearBtn");
   const dataCacheClearBtn = document.getElementById("dataCacheClearBtn");
-  const inputs = {
-    kofiaApiKey: document.getElementById("kofiaApiInput"),
-    krxApiKey: document.getElementById("krxApiInput"),
-    dartApiKey: document.getElementById("dartApiInput"),
-    dartProxyEnabled: document.getElementById("dartProxyEnabledInput"),
-  };
-
-  const fillInputs = () => {
-    Object.entries(inputs).forEach(([key, el]) => {
-      if (!el) return;
-      if (el.type === "checkbox") {
-        el.checked = Boolean(apiSettings[key]);
-      } else {
-        el.value = apiSettings[key] || "";
-      }
-    });
-  };
-
-  const readInputs = () => sanitizeApiSettings({
-    kofiaApiKey: inputs.kofiaApiKey?.value || "",
-    krxApiKey: inputs.krxApiKey?.value || "",
-    dartApiKey: inputs.dartApiKey?.value || "",
-    dartProxyEnabled: Boolean(inputs.dartProxyEnabled?.checked),
-  });
 
   const close = () => { modal.hidden = true; };
-  const open = () => {
-    fillInputs();
-    modal.hidden = false;
-  };
+  const open = () => { modal.hidden = false; };
 
   if (openBtn.dataset.bound === "1") {
     syncApiOptionsButton();
@@ -1298,70 +1191,6 @@ function setupApiSettingsPanel(msgEl) {
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !modal.hidden) close();
-  });
-
-  saveBtn?.addEventListener("click", () => {
-    const prevKrxKey = String(apiSettings?.krxApiKey || "").trim();
-    const prevDartKey = String(apiSettings?.dartApiKey || "").trim();
-    const prevDartProxyEnabled = Boolean(apiSettings?.dartProxyEnabled);
-    apiSettings = readInputs();
-    saveApiSettings();
-    const nextKrxKey = String(apiSettings?.krxApiKey || "").trim();
-    const nextDartKey = String(apiSettings?.dartApiKey || "").trim();
-    const nextDartProxyEnabled = Boolean(apiSettings?.dartProxyEnabled);
-    if (prevKrxKey !== nextKrxKey) {
-      resetKrxUniverseCache();
-      hideStockSuggestList();
-    }
-    syncApiOptionsButton();
-    close();
-    setMessage(msgEl, ["API keys saved on this device."]);
-    const dartSettingChanged = prevDartKey !== nextDartKey || prevDartProxyEnabled !== nextDartProxyEnabled;
-    const shouldRefreshDart = Boolean(nextDartKey) && (dartSettingChanged || nextDartProxyEnabled);
-    if (shouldRefreshDart) {
-      const refreshCurrentTickers = nextDartProxyEnabled;
-      enableDisclosureMarkers();
-      saveState();
-      setMessage(msgEl, [
-        refreshCurrentTickers
-          ? "DART 공개 프록시 설정이 저장됐습니다. 현재 차트 종목의 3년 공시를 다시 갱신하는 중입니다..."
-          : "DART API 저장됨. 최근 공시를 불러오는 중입니다...",
-      ]);
-      const refreshTask = refreshCurrentTickers
-          ? refreshDartDisclosuresForVisibleTickersFromApi(nextDartKey, { forceNetwork: true })
-          : refreshDartDisclosuresFromApi(nextDartKey, "", { forceNetwork: true });
-      refreshTask
-        .then((info) => {
-          if (!applyDisclosureStateFast()) requestChartRender(false);
-          scheduleLastRuntimeSnapshotSave();
-          const lines = [`DART 공시 ${info.fetched}건 확인, ${info.added}건 반영${info.latestDate ? `(~ ${info.latestDate})` : ""}`];
-          lines.push(
-            lastDisclosureTraceStats.markers > 0
-              ? `현재 차트에 공시 마커 ${lastDisclosureTraceStats.markers}개 표시됨`
-              : "공시 데이터는 확인했지만 현재 차트 범위/종목에는 표시할 마커가 없습니다. 기간을 넓히거나 종목선이 켜져 있는지 확인해 주세요.",
-          );
-          if (Array.isArray(info.failed) && info.failed.length) {
-            lines.push(`일부 종목 실패: ${info.failed.slice(0, 2).join(" / ")}`);
-          }
-          setMessage(msgEl, lines, Array.isArray(info.failed) && info.failed.length > 0);
-        })
-        .catch((err) => {
-          setMessage(msgEl, `DART 공시 불러오기 오류: ${err.message}`, true);
-        });
-    }
-  });
-
-  clearBtn?.addEventListener("click", () => {
-    const hadKrxKey = String(apiSettings?.krxApiKey || "").trim().length > 0;
-    apiSettings = { ...API_SETTINGS_DEFAULT };
-    clearApiSettingsStorage();
-    if (hadKrxKey) {
-      resetKrxUniverseCache();
-      hideStockSuggestList();
-    }
-    fillInputs();
-    syncApiOptionsButton();
-    setMessage(msgEl, ["Saved API keys were cleared."]);
   });
 
   dataCacheClearBtn?.addEventListener("click", async () => {
@@ -1886,7 +1715,7 @@ function setActiveLineTarget(target) {
   refreshLineHighlight();
 }
 
-function beginLineOffsetDrag(el, target, startClientY) {
+function beginLineOffsetDrag(el, target, startClientY, pointerId) {
   const ya = el?._fullLayout?.yaxis;
   const range = ya?.range;
   if (!target || !ya || !Array.isArray(range) || range.length < 2 || !ya._length) return false;
@@ -1924,7 +1753,7 @@ function beginLineOffsetDrag(el, target, startClientY) {
     finishTraceYEdit(true, target.seriesKey);
   }
 
-  addDragListeners(startClientY, onMove, onEnd);
+  addDragListeners(pointerId, onMove, onEnd);
   return true;
 }
 
@@ -1937,150 +1766,210 @@ function bindCursorMoveSync() {
   ensureCursorLine(adrEl);
   ensureDragZoomOverlay(mainEl);
   ensureDragZoomOverlay(adrEl);
+  if (cursorMoveBound && dragZoomBound) return;
 
-  if (!cursorMoveBound) {
-    let touchStartPoint = null;
+  let touchStartPoint = null;
+  let dragState = null;
 
-    const moveAt = (sourceEl, clientX, geometry = null) => {
-      const xValue = axisPixelToXValue(sourceEl, clientX, false, geometry);
-      if (xValue == null) {
-        scheduleSyncedCursor(null);
-        return;
-      }
-      const sourceLocalX = geometry?.rect ? clientX - geometry.rect.left : null;
-      scheduleSyncedCursor(xValue, sourceEl, clientX, sourceLocalX);
-    };
+  const latestPointerSample = (event) => {
+    const samples = typeof event.getCoalescedEvents === "function"
+      ? event.getCoalescedEvents()
+      : null;
+    return samples?.length ? samples[samples.length - 1] : event;
+  };
 
-    const processPointerMove = ({
-      sourceEl,
-      clientX,
-      clientY,
-      geometry,
-      runHitTest,
-    }) => {
-      const perfStartedAt = startPerfSample();
-      if (runHitTest && !isViewportDragging) {
-        const disclosureTarget = findDisclosureMarkerAtClientPoint(
-          sourceEl,
-          clientX,
-          clientY,
-          false,
-          geometry,
-        );
-        sourceEl.classList.toggle("is-disclosure-hovering", Boolean(disclosureTarget));
-        if (!hoverShowPopup) {
-          if (disclosureTarget) {
-            const trace = sourceEl.data?.[disclosureTarget.traceIndex];
-            scheduleDisclosureHoverHighlight({
-              points: [{
-                curveNumber: disclosureTarget.traceIndex,
-                pointIndex: disclosureTarget.pointIndex,
-                pointNumber: disclosureTarget.pointIndex,
-                data: trace,
-              }],
-            });
-          } else {
-            resetDisclosureHoverHighlight(sourceEl);
-          }
-        }
-        const lineTarget = disclosureTarget
-          ? null
-          : findNearestLineDragTarget(sourceEl, clientX, clientY, false, geometry);
-        setHoveredLineTarget(lineTarget);
-      }
-      moveAt(sourceEl, clientX, geometry);
-      if (perfStartedAt) recordPerfSample("pointerMove", perfStartedAt, { chart: sourceEl.id || "unknown" });
-    };
-
-    pointerMoveController = createPointerFrameController(window, {
-      geometryTtlMs: CHART_GEOMETRY_CACHE_MS,
-      hitTestIntervalMs: LINE_HIT_TEST_INTERVAL_MS,
-      readGeometry: getChartInteractionGeometry,
-      processFrame: processPointerMove,
-    });
-
-    const schedulePointerMove = (sourceEl, clientX, clientY, findLineTarget) => {
-      pointerMoveController.schedule({ sourceEl, clientX, clientY, findLineTarget });
-    };
-
-    const onMove = (event) => {
-      if (isHandleDragging || isViewportDragging) return;
-      schedulePointerMove(event.currentTarget, event.clientX, event.clientY, event.currentTarget === mainEl);
-    };
-
-    const onLeave = () => {
-      pointerMoveController.cancel();
-      setHoveredLineTarget(null);
-      mainEl.classList.remove("is-disclosure-hovering");
-      resetDisclosureHoverHighlight(mainEl);
+  const moveAt = (sourceEl, clientX, geometry = null) => {
+    const xValue = axisPixelToXValue(sourceEl, clientX, false, geometry);
+    if (xValue == null) {
       scheduleSyncedCursor(null);
-      clearHoverOnChart(mainEl);
-      clearHoverOnChart(adrEl);
-    };
+      return;
+    }
+    const sourceLocalX = geometry?.rect ? clientX - geometry.rect.left : null;
+    scheduleSyncedCursor(xValue, sourceEl, clientX, sourceLocalX);
+  };
 
-    const invalidatePointerGeometry = () => pointerMoveController?.invalidate();
-    window.addEventListener("resize", invalidatePointerGeometry, { passive: true });
-    window.addEventListener("scroll", invalidatePointerGeometry, { passive: true });
-
-    const onDisclosurePriorityClick = (event) => {
-      if (event.target instanceof Element && event.target.closest(".disclosure-popover")) return;
-      const hit = findDisclosureMarkerAtClientPoint(mainEl, event.clientX, event.clientY, isTouchDevice());
-      const now = Date.now();
-      const directPress = Boolean(
-        hit
-        && disclosurePointerDown
-        && now - disclosurePointerDown.at <= 800
-        && disclosurePointerDown.traceIndex === hit.traceIndex
-        && disclosurePointerDown.pointIndex === hit.pointIndex
+  const processPointerMove = ({
+    sourceEl,
+    clientX,
+    clientY,
+    geometry,
+    runHitTest,
+  }) => {
+    const perfStartedAt = startPerfSample();
+    if (runHitTest && !isViewportDragging) {
+      const disclosureTarget = findDisclosureMarkerAtClientPoint(
+        sourceEl,
+        clientX,
+        clientY,
+        false,
+        geometry,
       );
-      disclosurePointerDown = null;
-      if (!hit) {
-        hideDisclosurePopover();
-        return;
+      sourceEl.classList.toggle("is-disclosure-hovering", Boolean(disclosureTarget));
+      if (!hoverShowPopup) {
+        if (disclosureTarget) {
+          const trace = sourceEl.data?.[disclosureTarget.traceIndex];
+          scheduleDisclosureHoverHighlight({
+            points: [{
+              curveNumber: disclosureTarget.traceIndex,
+              pointIndex: disclosureTarget.pointIndex,
+              pointNumber: disclosureTarget.pointIndex,
+              data: trace,
+            }],
+          });
+        } else {
+          resetDisclosureHoverHighlight(sourceEl);
+        }
       }
-      if (now < suppressPlotlyClickUntil && !directPress) return;
-      if (!openDisclosureMarkerHit(mainEl, hit, event)) return;
+      const lineTarget = disclosureTarget
+        ? null
+        : findNearestLineDragTarget(sourceEl, clientX, clientY, false, geometry);
+      setHoveredLineTarget(lineTarget);
+    }
+    moveAt(sourceEl, clientX, geometry);
+    if (perfStartedAt) recordPerfSample("pointerMove", perfStartedAt, { chart: sourceEl.id || "unknown" });
+  };
+
+  pointerMoveController = createPointerFrameController(window, {
+    geometryTtlMs: CHART_GEOMETRY_CACHE_MS,
+    hitTestIntervalMs: LINE_HIT_TEST_INTERVAL_MS,
+    readGeometry: getChartInteractionGeometry,
+    processFrame: processPointerMove,
+  });
+
+  const schedulePointerMove = (sourceEl, clientX, clientY, findLineTarget) => {
+    pointerMoveController.schedule({ sourceEl, clientX, clientY, findLineTarget });
+  };
+
+  const onLeave = () => {
+    if (isHandleDragging || isViewportDragging) return;
+    pointerMoveController.cancel();
+    setHoveredLineTarget(null);
+    mainEl.classList.remove("is-disclosure-hovering");
+    resetDisclosureHoverHighlight(mainEl);
+    scheduleSyncedCursor(null);
+    clearHoverOnChart(mainEl);
+    clearHoverOnChart(adrEl);
+  };
+
+  const invalidatePointerGeometry = () => pointerMoveController?.invalidate();
+  window.addEventListener("resize", invalidatePointerGeometry, { passive: true });
+  window.addEventListener("scroll", invalidatePointerGeometry, { passive: true });
+
+  const onDisclosurePriorityClick = (event) => {
+    if (event.target instanceof Element && event.target.closest(".disclosure-popover")) return;
+    const hit = findDisclosureMarkerAtClientPoint(mainEl, event.clientX, event.clientY, isTouchDevice());
+    const now = Date.now();
+    const directPress = Boolean(
+      hit
+      && disclosurePointerDown
+      && now - disclosurePointerDown.at <= 800
+      && disclosurePointerDown.traceIndex === hit.traceIndex
+      && disclosurePointerDown.pointIndex === hit.pointIndex
+    );
+    disclosurePointerDown = null;
+    if (!hit) {
+      hideDisclosurePopover();
+      return;
+    }
+    if (now < suppressPlotlyClickUntil && !directPress) return;
+    if (!openDisclosureMarkerHit(mainEl, hit, event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const stopViewportDrag = (upEvent, cancelled = false) => {
+    const st = dragState;
+    if (!st || upEvent.pointerId !== st.pointerId) return;
+    dragState = null;
+    isViewportDragging = false;
+    window.removeEventListener("pointermove", onWindowPointerMove);
+    window.removeEventListener("pointerup", onWindowPointerUp);
+    window.removeEventListener("pointercancel", onWindowPointerCancel);
+    try { st.sourceEl.releasePointerCapture?.(st.pointerId); } catch (_) {}
+    hideDragZoomOverlay(st.sourceEl);
+    if (cancelled || !st.moved) return;
+    suppressPlotlyClickUntil = Date.now() + 700;
+
+    const xStart = axisPixelToXValue(st.sourceEl, st.startClientX, true);
+    const xEnd = axisPixelToXValue(st.sourceEl, upEvent.clientX, true);
+    const ms0 = toMsSafe(xStart);
+    const ms1 = toMsSafe(xEnd);
+    if (!Number.isFinite(ms0) || !Number.isFinite(ms1)) return;
+    const startMs = Math.min(ms0, ms1);
+    const endMs = Math.max(ms0, ms1);
+    if ((endMs - startMs) < DAY_MS) return;
+    applySyncedXRangeMs(startMs, endMs);
+    clearTouchDoubleTapZoomState();
+  };
+
+  const onWindowPointerMove = (event) => {
+    if (!dragState || event.pointerId !== dragState.pointerId) return;
+    const sample = latestPointerSample(event);
+    const delta = Math.abs(sample.clientX - dragState.startClientX);
+    if (delta >= 3 && !dragState.moved) {
+      dragState.moved = true;
+      suppressPlotlyClickUntil = Date.now() + 700;
+      resetDisclosureHoverHighlight(dragState.sourceEl);
+    }
+    renderDragZoomOverlay(dragState.sourceEl, dragState.startClientX, sample.clientX);
+    const xValue = axisPixelToXValue(dragState.sourceEl, sample.clientX, true);
+    if (xValue != null) scheduleSyncedCursor(xValue, dragState.sourceEl, sample.clientX);
+  };
+  const onWindowPointerUp = (event) => stopViewportDrag(event, false);
+  const onWindowPointerCancel = (event) => stopViewportDrag(event, true);
+
+  const onPointerDown = (event) => {
+    if (!event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) return;
+    if (event.target instanceof Element && event.target.closest(".disclosure-popover, .y-handle")) return;
+    const sourceEl = event.currentTarget;
+    const xa = sourceEl?._fullLayout?.xaxis;
+    if (!xa) return;
+    const isTouch = event.pointerType === "touch";
+    const geometry = getChartInteractionGeometry(sourceEl);
+    disclosurePointerDown = null;
+    if (isTouch) touchStartPoint = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
+
+    const disclosureTarget = findDisclosureMarkerAtClientPoint(
+      sourceEl,
+      event.clientX,
+      event.clientY,
+      isTouch,
+      geometry,
+    );
+    if (disclosureTarget) {
+      disclosurePointerDown = { ...disclosureTarget, at: Date.now() };
+      setHoveredLineTarget(null);
+      clearTouchDoubleTapZoomState();
+      return;
+    }
+
+    const lineTarget = findNearestLineDragTarget(
+      sourceEl,
+      event.clientX,
+      event.clientY,
+      isTouch,
+      geometry,
+    );
+    if (lineTarget && beginLineOffsetDrag(sourceEl, lineTarget, event.clientY, event.pointerId)) {
       event.preventDefault();
       event.stopPropagation();
-    };
+      setHoveredLineTarget(lineTarget);
+      lastTouchTapAt = 0;
+      lastTouchTapX = null;
+      lastTouchTapEl = null;
+      clearTouchDoubleTapZoomState();
+      return;
+    }
 
-    const onTouchStart = (event) => {
-      if (event.target instanceof Element && event.target.closest(".disclosure-popover")) return;
-      if (!event.touches || event.touches.length !== 1) return;
-      const touch = event.touches[0];
-      disclosurePointerDown = null;
-      touchStartPoint = { x: touch.clientX, y: touch.clientY };
-      const disclosureTarget = findDisclosureMarkerAtClientPoint(
-        event.currentTarget,
-        touch.clientX,
-        touch.clientY,
-        true,
-      );
-      if (disclosureTarget) {
-        disclosurePointerDown = { ...disclosureTarget, at: Date.now() };
-        setHoveredLineTarget(null);
-        clearTouchDoubleTapZoomState();
-        return;
-      }
+    setHoveredLineTarget(null);
+    if (isTouch) {
       hideDisclosurePopover();
       event.preventDefault();
-      const lineTarget = findNearestLineDragTarget(event.currentTarget, touch.clientX, touch.clientY, true);
-      if (lineTarget && beginLineOffsetDrag(event.currentTarget, lineTarget, touch.clientY)) {
-        setHoveredLineTarget(lineTarget);
-        lastTouchTapAt = 0;
-        lastTouchTapX = null;
-        lastTouchTapEl = null;
-        clearTouchDoubleTapZoomState();
-        return;
-      }
-      setHoveredLineTarget(null);
-      moveAt(event.currentTarget, touch.clientX);
-
+      moveAt(sourceEl, event.clientX, geometry);
       const now = Date.now();
-      const sameTarget = lastTouchTapEl === event.currentTarget;
-      const nearX = Number.isFinite(lastTouchTapX) ? Math.abs(lastTouchTapX - touch.clientX) <= 28 : false;
+      const sameTarget = lastTouchTapEl === sourceEl;
+      const nearX = Number.isFinite(lastTouchTapX) ? Math.abs(lastTouchTapX - event.clientX) <= 28 : false;
       const isDoubleTap = sameTarget && nearX && (now - lastTouchTapAt) <= 320;
-
       if (isDoubleTap) {
         if (touchDoubleTapZoomActive
           && Array.isArray(touchDoubleTapPrevRange)
@@ -2088,11 +1977,10 @@ function bindCursorMoveSync() {
           applySyncedXRangeMs(touchDoubleTapPrevRange[0], touchDoubleTapPrevRange[1]);
           clearTouchDoubleTapZoomState();
         } else {
-          const currentRange = getCurrentXRangeMs(event.currentTarget);
+          const currentRange = getCurrentXRangeMs(sourceEl);
           if (Array.isArray(currentRange) && currentRange.length === 2) {
             touchDoubleTapPrevRange = [currentRange[0], currentRange[1]];
-            const zoomed = zoomAroundClientX(event.currentTarget, touch.clientX, 0.5);
-            if (zoomed) touchDoubleTapZoomActive = true;
+            if (zoomAroundClientX(sourceEl, event.clientX, 0.5)) touchDoubleTapZoomActive = true;
           }
         }
         lastTouchTapAt = 0;
@@ -2101,147 +1989,67 @@ function bindCursorMoveSync() {
         return;
       }
       lastTouchTapAt = now;
-      lastTouchTapX = touch.clientX;
-      lastTouchTapEl = event.currentTarget;
-    };
+      lastTouchTapX = event.clientX;
+      lastTouchTapEl = sourceEl;
+      return;
+    }
 
-    const onTouchMove = (event) => {
-      if (event.target instanceof Element && event.target.closest(".disclosure-popover")) return;
-      if (!event.touches || event.touches.length !== 1) return;
-      if (isHandleDragging) return;
+    if (event.pointerType !== "mouse") return;
+    dragState = {
+      sourceEl,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      moved: false,
+    };
+    isViewportDragging = true;
+    renderDragZoomOverlay(sourceEl, event.clientX, event.clientX);
+    try { sourceEl.setPointerCapture?.(event.pointerId); } catch (_) {}
+    event.preventDefault();
+    window.addEventListener("pointermove", onWindowPointerMove, { passive: true });
+    window.addEventListener("pointerup", onWindowPointerUp);
+    window.addEventListener("pointercancel", onWindowPointerCancel);
+  };
+
+  const onPointerMove = (event) => {
+    if (!event.isPrimary || isHandleDragging || isViewportDragging) return;
+    if (event.target instanceof Element && event.target.closest(".disclosure-popover")) return;
+    const sample = latestPointerSample(event);
+    if (event.pointerType === "touch") {
       event.preventDefault();
-      const touch = event.touches[0];
-      if (touchStartPoint && Math.hypot(
-        touch.clientX - touchStartPoint.x,
-        touch.clientY - touchStartPoint.y,
+      if (touchStartPoint?.pointerId === event.pointerId && Math.hypot(
+        sample.clientX - touchStartPoint.x,
+        sample.clientY - touchStartPoint.y,
       ) > 8) {
         suppressPlotlyClickUntil = Date.now() + 500;
       }
-      schedulePointerMove(event.currentTarget, touch.clientX, touch.clientY, false);
-    };
+      schedulePointerMove(event.currentTarget, sample.clientX, sample.clientY, false);
+      return;
+    }
+    schedulePointerMove(
+      event.currentTarget,
+      sample.clientX,
+      sample.clientY,
+      event.currentTarget === mainEl,
+    );
+  };
 
-    const onTouchEnd = (event) => {
-      if (event.target instanceof Element && event.target.closest(".disclosure-popover")) return;
-      if (event.touches && event.touches.length > 0) return;
-      touchStartPoint = null;
-      setHoveredLineTarget(null);
-      onLeave();
-    };
+  const onPointerEnd = (event) => {
+    if (event.pointerType !== "touch" || touchStartPoint?.pointerId !== event.pointerId) return;
+    touchStartPoint = null;
+    setHoveredLineTarget(null);
+    onLeave();
+  };
 
-    mainEl.addEventListener("mousemove", onMove, { passive: true });
-    adrEl.addEventListener("mousemove", onMove, { passive: true });
-    mainEl.addEventListener("mouseleave", onLeave);
-    adrEl.addEventListener("mouseleave", onLeave);
-    mainEl.addEventListener("click", onDisclosurePriorityClick, true);
-
-    mainEl.addEventListener("touchstart", onTouchStart, { passive: false });
-    adrEl.addEventListener("touchstart", onTouchStart, { passive: false });
-    mainEl.addEventListener("touchmove", onTouchMove, { passive: false });
-    adrEl.addEventListener("touchmove", onTouchMove, { passive: false });
-    mainEl.addEventListener("touchend", onTouchEnd);
-    adrEl.addEventListener("touchend", onTouchEnd);
-    mainEl.addEventListener("touchcancel", onTouchEnd);
-    adrEl.addEventListener("touchcancel", onTouchEnd);
-
-    cursorMoveBound = true;
-  }
-
-  if (!dragZoomBound) {
-    let dragState = null;
-
-    const onMouseDown = (event) => {
-      if (event.button !== 0) return;
-      if (event.target?.closest('.y-handle')) return;
-
-      const sourceEl = event.currentTarget;
-      const xa = sourceEl?._fullLayout?.xaxis;
-      if (!xa) return;
-      const geometry = getChartInteractionGeometry(sourceEl);
-
-      disclosurePointerDown = null;
-      const disclosureTarget = findDisclosureMarkerAtClientPoint(
-        sourceEl,
-        event.clientX,
-        event.clientY,
-        false,
-        geometry,
-      );
-      if (disclosureTarget) {
-        disclosurePointerDown = { ...disclosureTarget, at: Date.now() };
-        setHoveredLineTarget(null);
-        clearTouchDoubleTapZoomState();
-        return;
-      }
-      const lineTarget = findNearestLineDragTarget(sourceEl, event.clientX, event.clientY, false, geometry);
-      if (lineTarget && beginLineOffsetDrag(sourceEl, lineTarget, event.clientY)) {
-        event.preventDefault();
-        event.stopPropagation();
-        clearTouchDoubleTapZoomState();
-        return;
-      }
-
-      if (isTouchDevice()) return;
-
-      dragState = {
-        sourceEl,
-        startClientX: event.clientX,
-        moved: false,
-      };
-      isViewportDragging = true;
-      setHoveredLineTarget(null);
-
-      renderDragZoomOverlay(sourceEl, dragState.startClientX, dragState.startClientX);
-      event.preventDefault();
-
-      const onWindowMove = (moveEvent) => {
-        if (!dragState) return;
-        const delta = Math.abs(moveEvent.clientX - dragState.startClientX);
-        if (delta >= 3 && !dragState.moved) {
-          dragState.moved = true;
-          suppressPlotlyClickUntil = Date.now() + 700;
-          resetDisclosureHoverHighlight(sourceEl);
-        }
-        renderDragZoomOverlay(dragState.sourceEl, dragState.startClientX, moveEvent.clientX);
-        const xValue = axisPixelToXValue(dragState.sourceEl, moveEvent.clientX, true);
-        if (xValue != null) scheduleSyncedCursor(xValue, dragState.sourceEl, moveEvent.clientX);
-      };
-
-      const onWindowUp = (upEvent) => {
-        const st = dragState;
-        dragState = null;
-        isViewportDragging = false;
-
-        window.removeEventListener('mousemove', onWindowMove);
-        window.removeEventListener('mouseup', onWindowUp);
-
-        if (!st) return;
-        hideDragZoomOverlay(st.sourceEl);
-
-        if (!st.moved) return;
-        suppressPlotlyClickUntil = Date.now() + 700;
-
-        const xStart = axisPixelToXValue(st.sourceEl, st.startClientX, true);
-        const xEnd = axisPixelToXValue(st.sourceEl, upEvent.clientX, true);
-        const ms0 = toMsSafe(xStart);
-        const ms1 = toMsSafe(xEnd);
-        if (!Number.isFinite(ms0) || !Number.isFinite(ms1)) return;
-
-        const startMs = Math.min(ms0, ms1);
-        const endMs = Math.max(ms0, ms1);
-        if ((endMs - startMs) < DAY_MS) return;
-
-        applySyncedXRangeMs(startMs, endMs);
-        clearTouchDoubleTapZoomState();
-      };
-
-      window.addEventListener('mousemove', onWindowMove);
-      window.addEventListener('mouseup', onWindowUp);
-    };
-
-    mainEl.addEventListener('mousedown', onMouseDown);
-    adrEl.addEventListener('mousedown', onMouseDown);
-    dragZoomBound = true;
-  }
+  [mainEl, adrEl].forEach((chartEl) => {
+    chartEl.addEventListener("pointerdown", onPointerDown, { passive: false });
+    chartEl.addEventListener("pointermove", onPointerMove, { passive: false });
+    chartEl.addEventListener("pointerleave", onLeave);
+    chartEl.addEventListener("pointerup", onPointerEnd);
+    chartEl.addEventListener("pointercancel", onPointerEnd);
+  });
+  mainEl.addEventListener("click", onDisclosurePriorityClick, true);
+  cursorMoveBound = true;
+  dragZoomBound = true;
 }
 
 
@@ -2410,33 +2218,19 @@ async function ensureKrxUniverseLoaded() {
     return;
   }
 
-  const key = String(apiSettings?.krxApiKey || "").trim();
-  if (!key) throw new Error("KRX AUTH_KEY가 설정되지 않았습니다. API 키 설정에서 먼저 입력해 주세요.");
-
   krxUniverseLoading = true;
   krxUniversePromise = (async () => {
-    let universe = [];
-    const dates = getRecentKrxBaseDates();
-    for (const baseDate of dates) {
-      const [kospiRows, kosdaqRows] = await Promise.all([
-        fetchKrxUniverseRows(key, baseDate, "KOSPI"),
-        fetchKrxUniverseRows(key, baseDate, "KOSDAQ"),
-      ]);
-      const merged = [
-        ...normalizeKrxUniverseRows(kospiRows, "KOSPI"),
-        ...normalizeKrxUniverseRows(kosdaqRows, "KOSDAQ"),
-      ];
-      if (merged.length) {
-        universe = merged;
-        break;
-      }
-    }
-
-    if (!universe.length) {
-      throw new Error("KRX 종목 목록을 불러오지 못했습니다. AUTH_KEY 또는 기준일을 확인해 주세요.");
-    }
-
-    krxUniverse = universe.sort((a, b) => a.name.localeCompare(b.name, "ko"));
+    const payload = await fetchJsonWithProxyFallback(
+      appendCacheBust("./data/krx_universe.json"),
+      { cache: "no-store" },
+      { allowProxy: false },
+    );
+    const records = Array.isArray(payload?.records) ? payload.records : [];
+    krxUniverse = records.filter((item) => (
+      /^[0-9]{6}\.(KS|KQ)$/.test(String(item?.ticker || ""))
+      && String(item?.name || "").trim()
+    )).sort((a, b) => String(a.name).localeCompare(String(b.name), "ko"));
+    if (!krxUniverse.length) throw new Error("서버 종목 목록이 아직 준비되지 않았습니다.");
     krxUniverseLoaded = true;
   })().finally(() => {
     krxUniverseLoading = false;
@@ -2724,30 +2518,6 @@ async function refreshCoreIndexSeries(options = {}) {
     warnings.push(`${labelName(ticker)} 갱신 오류: ${reason}`);
   });
 
-  const krxKey = String(apiSettings?.krxApiKey || "").trim();
-  if (krxKey) {
-    try {
-      const latestRows = await fetchLatestKrxCoreIndexRows(krxKey, 25, signal);
-      throwIfAborted(signal);
-      const found = new Set();
-      latestRows.forEach((row) => {
-        if (!row?.ticker || !row?.date || !Number.isFinite(row?.close)) return;
-        found.add(row.ticker);
-        const yahooLatest = getLatestTickerDateFromPricePayload(row.ticker);
-        if (yahooLatest && row.date <= yahooLatest) return;
-        mergeTickerSeriesIntoPricePayload(row.ticker, [{ date: row.date, close: row.close }]);
-        applied.push(`${labelName(row.ticker)} KRX 반영(${row.date})`);
-      });
-
-      tickers.forEach((ticker) => {
-        if (!found.has(ticker)) warnings.push(`${labelName(ticker)} KRX 최신값을 찾지 못했습니다.`);
-      });
-    } catch (err) {
-      if (isAbortError(err) || signal?.aborted) throw err;
-      warnings.push(`KRX 지수 불러오기 오류: ${err.message}`);
-    }
-  }
-
   return { applied, warnings };
 }
 
@@ -2803,12 +2573,6 @@ function setupStockAddPanel(msgEl) {
     const keyword = inputEl.value.trim();
     if (!keyword) {
       hideStockSuggestList();
-      return;
-    }
-
-    if (!String(apiSettings?.krxApiKey || "").trim()) {
-      hideStockSuggestList();
-      setMessage(msgEl, ["API 키 설정에서 KRX AUTH_KEY를 먼저 입력해 주세요."], true);
       return;
     }
 
@@ -3489,7 +3253,7 @@ function getCurrentMainXRange() {
 }
 
 function setupOffsetDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
-  function onStart(startClientY) {
+  function onStart(startClientY, pointerId) {
     const startOffset = seriesOffsets[seriesKey] || 0;
     const lockedXRange = getCurrentMainXRange();
     isHandleDragging = true;
@@ -3521,15 +3285,19 @@ function setupOffsetDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
       finishTraceYEdit(true, seriesKey);
     }
 
-    addDragListeners(startClientY, onMove, onEnd);
+    addDragListeners(pointerId, onMove, onEnd);
   }
 
-  handle.addEventListener("mousedown", (e) => { e.preventDefault(); onStart(e.clientY); });
-  handle.addEventListener("touchstart", (e) => { e.preventDefault(); onStart(e.touches[0].clientY); }, { passive: false });
+  handle.addEventListener("pointerdown", (event) => {
+    if (!event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onStart(event.clientY, event.pointerId);
+  }, { passive: false });
 }
 
 function setupScaleDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
-  function onStart(startClientY) {
+  function onStart(startClientY, pointerId) {
     const startScale = seriesScales[seriesKey] != null ? seriesScales[seriesKey] : defaultSeriesScale(seriesKey);
     const lockedXRange = getCurrentMainXRange();
     isHandleDragging = true;
@@ -3551,31 +3319,45 @@ function setupScaleDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
       finishTraceYEdit(true, seriesKey);
     }
 
-    addDragListeners(startClientY, onMove, onEnd);
+    addDragListeners(pointerId, onMove, onEnd);
   }
 
-  handle.addEventListener("mousedown", (e) => { e.preventDefault(); onStart(e.clientY); });
-  handle.addEventListener("touchstart", (e) => { e.preventDefault(); onStart(e.touches[0].clientY); }, { passive: false });
+  handle.addEventListener("pointerdown", (event) => {
+    if (!event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onStart(event.clientY, event.pointerId);
+  }, { passive: false });
 }
 
-function addDragListeners(startClientY, onMove, onEnd) {
-  const mouseMove = (e) => onMove(e.clientY);
-  const mouseUp = (e) => {
-    document.removeEventListener("mousemove", mouseMove);
-    document.removeEventListener("mouseup", mouseUp);
-    onEnd(e.clientY);
+function addDragListeners(pointerId, onMove, onEnd) {
+  let lastClientY = Number.NaN;
+  const cleanup = () => {
+    document.removeEventListener("pointermove", pointerMove);
+    document.removeEventListener("pointerup", pointerEnd);
+    document.removeEventListener("pointercancel", pointerCancel);
   };
-  document.addEventListener("mousemove", mouseMove);
-  document.addEventListener("mouseup", mouseUp);
-
-  const touchMove = (e) => { e.preventDefault(); onMove(e.touches[0].clientY); };
-  const touchEnd = (e) => {
-    document.removeEventListener("touchmove", touchMove);
-    document.removeEventListener("touchend", touchEnd);
-    onEnd(e.changedTouches[0].clientY);
+  const pointerMove = (event) => {
+    if (event.pointerId !== pointerId) return;
+    event.preventDefault();
+    const samples = typeof event.getCoalescedEvents === "function" ? event.getCoalescedEvents() : null;
+    const sample = samples?.length ? samples[samples.length - 1] : event;
+    lastClientY = sample.clientY;
+    onMove(lastClientY);
   };
-  document.addEventListener("touchmove", touchMove, { passive: false });
-  document.addEventListener("touchend", touchEnd);
+  const pointerEnd = (event) => {
+    if (event.pointerId !== pointerId) return;
+    cleanup();
+    onEnd(event.clientY);
+  };
+  const pointerCancel = (event) => {
+    if (event.pointerId !== pointerId) return;
+    cleanup();
+    onEnd(Number.isFinite(lastClientY) ? lastClientY : event.clientY);
+  };
+  document.addEventListener("pointermove", pointerMove, { passive: false });
+  document.addEventListener("pointerup", pointerEnd);
+  document.addEventListener("pointercancel", pointerCancel);
 }
 
 function resetHandles() {
@@ -4214,136 +3996,31 @@ async function refreshDartDisclosuresForVisibleTickersFromApi(apiKey, options = 
   };
 }
 
-let dartDisclosureRefreshPromise = null;
-
-function requestDartDisclosureRefreshForTickerLegacy(ticker, msgEl) {
-  const apiKey = String(apiSettings?.dartApiKey || "").trim();
-  if (dartDisclosureRefreshPromise) return;
-
-  const name = labelName(ticker);
-  enableDisclosureMarkers();
-  saveState();
-  setMessage(msgEl, [`${name} 종목을 추가했습니다. DART 공시를 백그라운드로 확인하는 중입니다...`]);
-  const seedTask = ensureDisclosureSeedForTicker(ticker).then((seedInfo) => {
-    if (seedInfo?.added > 0) {
-      if (!applyDisclosureStateFast()) requestChartRender(false);
-      scheduleLastRuntimeSnapshotSave();
-    }
-  });
-
-  if (!apiKey) {
-    dartDisclosureRefreshPromise = seedTask.finally(() => {
-      dartDisclosureRefreshPromise = null;
-    });
-    return;
-  }
-
-  dartDisclosureRefreshPromise = seedTask
-    .then(() => refreshDartDisclosuresFromApi(apiKey, ticker))
-    .then((info) => {
-      if (!applyDisclosureStateFast()) requestChartRender(false);
-      scheduleLastRuntimeSnapshotSave();
-      if (info.fetched > 0) {
-        setMessage(msgEl, [
-          `${name} 종목을 추가했습니다.`,
-          `DART 공시 ${info.fetched}건 확인, ${info.added}건 반영${info.latestDate ? `(~ ${info.latestDate})` : ""}`,
-          lastDisclosureTraceStats.markers > 0
-            ? `현재 차트에 공시 마커 ${lastDisclosureTraceStats.markers}개 표시됨`
-            : "공시 데이터는 확인했지만 현재 차트 범위에는 표시할 마커가 없습니다.",
-        ]);
-      } else {
-        setMessage(msgEl, [
-          `${name} 종목을 추가했습니다.`,
-          "DART 최근 공시에서 현재 차트 종목의 이벤트를 찾지 못했습니다.",
-        ]);
-      }
-    })
-    .catch((err) => {
-      setMessage(msgEl, [
-        `${name} 종목은 추가됐지만 DART 공시 백그라운드 갱신은 실패했습니다.`,
-        err.message,
-      ], true);
-    })
-    .finally(() => {
-      dartDisclosureRefreshPromise = null;
-    });
-}
-
 function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
-  const apiKey = String(apiSettings?.dartApiKey || "").trim();
   const target = String(ticker || "").trim().toUpperCase();
   if (!/^[0-9]{6}\.(KS|KQ)$/.test(target)) return;
-
   if (dartDisclosureTickerRefreshPromises.has(target)) {
-    setMessage(msgEl, [
-      `${labelName(target)} 공시 갱신이 이미 진행 중입니다.`,
-      `대기/진행 중인 공시 작업: ${dartDisclosureTickerRefreshPromises.size}개`,
-    ]);
     return;
   }
 
   const name = labelName(target);
   enableDisclosureMarkers();
   saveState();
-  setMessage(msgEl, [
-    `${name} 종목을 추가했습니다.`,
-    `공시 백그라운드 갱신 대기/진행: ${dartDisclosureTickerRefreshPromises.size + 1}개`,
-  ]);
-
-  const seedTask = ensureDisclosureSeedForTicker(target).then((seedInfo) => {
-    if (seedInfo?.added > 0) {
-      if (!applyDisclosureStateFast()) requestChartRender(false);
-      scheduleLastRuntimeSnapshotSave();
-    }
-  });
-
-  if (!apiKey) {
-    const task = seedTask.finally(() => {
-      dartDisclosureTickerRefreshPromises.delete(target);
-    });
-    dartDisclosureTickerRefreshPromises.set(target, task);
-    return;
-  }
-
-  const cacheEntry = getDartDisclosureRefreshCacheEntry(target);
-  if (cacheEntry) {
-    const task = seedTask.then(() => {
-      if (!applyDisclosureStateFast()) requestChartRender(false);
-      scheduleLastRuntimeSnapshotSave();
-      setMessage(msgEl, [
-        `${name} 종목을 추가했습니다.`,
-        `DART 공시는 오늘 이미 확인했습니다${cacheEntry.latestDate ? `(~ ${cacheEntry.latestDate})` : ""}.`,
-      ]);
-    }).finally(() => {
-      dartDisclosureTickerRefreshPromises.delete(target);
-    });
-    dartDisclosureTickerRefreshPromises.set(target, task);
-    return;
-  }
-
-  const task = seedTask.then(() => refreshDartDisclosuresFromApi(apiKey, target))
-    .then((info) => {
-      if (!applyDisclosureStateFast()) requestChartRender(false);
-      scheduleLastRuntimeSnapshotSave();
-      if (info.fetched > 0) {
-        setMessage(msgEl, [
-          `${name} 종목을 추가했습니다.`,
-          `DART 공시 ${info.fetched}건 확인, ${info.added}건 반영${info.latestDate ? `(~ ${info.latestDate})` : ""}`,
-          lastDisclosureTraceStats.markers > 0
-            ? `현재 차트에 공시 마커 ${lastDisclosureTraceStats.markers}개 표시됨`
-            : "공시 데이터는 확인했지만 현재 차트 범위에는 표시할 마커가 없습니다.",
-        ]);
-      } else {
-        setMessage(msgEl, [
-          `${name} 종목을 추가했습니다.`,
-          "DART 최근 공시에서 현재 차트 종목의 주요 이벤트를 찾지 못했습니다.",
-        ]);
+  const task = ensureDisclosureSeedForTicker(target)
+    .then((seedInfo) => {
+      if (seedInfo?.added > 0) {
+        if (!applyDisclosureStateFast()) requestChartRender(false);
+        scheduleLastRuntimeSnapshotSave();
       }
+      const rows = disclosureRowsForTicker(target);
+      setMessage(msgEl, rows.length
+        ? [`${name} 종목을 추가했습니다.`, `서버 공시 ${rows.length}건을 반영했습니다.`]
+        : [`${name} 종목을 추가했습니다.`, "현재 서버 데이터에는 표시할 주요 공시가 없습니다."]);
     })
-    .catch((err) => {
+    .catch((error) => {
       setMessage(msgEl, [
-        `${name} 종목은 추가됐지만 DART 공시 백그라운드 갱신은 실패했습니다.`,
-        err.message,
+        `${name} 종목은 추가됐지만 서버 공시를 확인하지 못했습니다.`,
+        error.message,
       ], true);
     })
     .finally(() => {
@@ -5354,28 +5031,13 @@ async function fetchKofiaFundSeriesLive(apiKey, endpoint, itemMapper, signal = n
 }
 
 async function fetchKofiaCreditLive(apiKey, signal = null) {
-  return fetchKofiaFundSeriesLive(apiKey, KOFIA_CREDIT_URL, (item) => {
-    const basDt = String(item?.basDt || "");
-    if (!/^\d{8}$/.test(basDt)) return null;
-    const date = `${basDt.slice(0, 4)}-${basDt.slice(4, 6)}-${basDt.slice(6, 8)}`;
-    const kospi = parseKofiaAmountToTrillion(item?.crdTrFingScrs);
-    const kosdaq = parseKofiaAmountToTrillion(item?.crdTrFingKosdaq);
-    if (!Number.isFinite(kospi) && !Number.isFinite(kosdaq)) return null;
-    return { date, kospi_credit: kospi, kosdaq_credit: kosdaq };
-  }, signal);
+  throwIfAborted(signal);
+  return [];
 }
 
 async function fetchKofiaCustomerDepositLive(apiKey, signal = null) {
-  return fetchKofiaFundSeriesLive(apiKey, KOFIA_MARKET_FUNDS_URL, (item) => {
-    const basDt = String(item?.basDt || "");
-    if (!/^\d{8}$/.test(basDt)) return null;
-    const customerDeposit = parseKofiaAmountToTrillion(item?.invrDpsgAmt);
-    if (!Number.isFinite(customerDeposit)) return null;
-    return {
-      date: `${basDt.slice(0, 4)}-${basDt.slice(4, 6)}-${basDt.slice(6, 8)}`,
-      customer_deposit: customerDeposit,
-    };
-  }, signal);
+  throwIfAborted(signal);
+  return [];
 }
 
 async function fetchFreesisCreditLive(startDate = "", endDate = "") {
@@ -5539,45 +5201,7 @@ function scaleCreditRowsToExisting(liveRows, existingRows) {
 
 async function refreshLiveApiData(signal = null) {
   throwIfAborted(signal);
-  const applied = [];
-  const warnings = [];
-
-  const hasCreditApi = Boolean(apiSettings.kofiaApiKey);
-  if (!hasCreditApi) {
-    warnings.push("KOFIA API 키가 없어 고객예탁금·신용은 저장 데이터까지만 표시됩니다.");
-  }
-
-  // ECOS and KOSIS are refreshed server-side because their responses do not allow browser CORS.
-  const [depositResult, creditResult] = await Promise.allSettled([
-    apiSettings.kofiaApiKey
-      ? fetchKofiaCustomerDepositLive(apiSettings.kofiaApiKey, signal)
-      : Promise.resolve([]),
-    apiSettings.kofiaApiKey
-      ? fetchKofiaCreditLive(apiSettings.kofiaApiKey, signal)
-      : Promise.resolve([]),
-  ]);
-  throwIfAborted(signal);
-
-  if (apiSettings.kofiaApiKey) {
-    const kofiaRows = normalizeCreditRows([
-      ...(depositResult.status === "fulfilled" ? depositResult.value : []),
-      ...(creditResult.status === "fulfilled" ? creditResult.value : []),
-    ]);
-    if (kofiaRows.length) {
-      const info = applyCreditLiveRows(kofiaRows);
-      applied.push(`고객예탁금·신용 반영(${info.updated}건, 최신일 ${info.latestDate})`);
-    } else {
-      warnings.push("KOFIA 응답에서 고객예탁금·신용 데이터를 찾지 못했습니다.");
-    }
-    if (depositResult.status === "rejected") {
-      warnings.push(`KOFIA 고객예탁금 오류: ${depositResult.reason?.message || depositResult.reason}`);
-    }
-    if (creditResult.status === "rejected") {
-      warnings.push(`KOFIA 신용 오류: ${creditResult.reason?.message || creditResult.reason}`);
-    }
-  }
-
-  return { applied, warnings };
+  return { applied: [], warnings: [] };
 }
 /**
  * Fetch adrinfo.kr/chart via CORS proxy, parse arrays, and append only new rows to adrRows.
@@ -5875,33 +5499,7 @@ async function runRuntimeDataRefresh(msgEl, options = {}) {
     }))
     .catch((error) => ({ info: [], warnings: [`공포탐욕 불러오기 오류: ${error.message}`] }));
 
-  const dartTask = () => (apiSettings.dartApiKey
-    ? (async () => {
-      try {
-        const refreshCurrentTickers = Boolean(apiSettings.dartProxyEnabled);
-        if (refreshCurrentTickers) {
-          enableDisclosureMarkers();
-          saveState();
-        }
-        const info = refreshCurrentTickers
-          ? await refreshDartDisclosuresForVisibleTickersFromApi(apiSettings.dartApiKey, { forceNetwork, signal })
-          : await refreshDartDisclosuresFromApi(apiSettings.dartApiKey, "", { forceNetwork, signal });
-        const lines = info.fetched > 0
-          ? [`DART 공시 ${info.fetched}건 확인, ${info.added}건 반영${info.latestDate ? `(~ ${info.latestDate})` : ""}`]
-          : [];
-        const warnings = [];
-        if (Array.isArray(info.failed) && info.failed.length) {
-          warnings.push(`일부 DART 종목 실패: ${info.failed.slice(0, 2).join(" / ")}`);
-        }
-        if (info.fetched <= 0) {
-          warnings.push("DART 최근 공시에서 현재 차트 종목의 주요 이벤트를 찾지 못했습니다.");
-        }
-        return { info: lines, warnings, refreshed: true };
-      } catch (dartErr) {
-        return { info: [], warnings: [`DART 공시 불러오기 오류: ${dartErr.message}`], refreshed: false };
-      }
-    })()
-    : Promise.resolve({ info: [], warnings: [], refreshed: false }));
+  const dartTask = () => Promise.resolve({ info: [], warnings: [], refreshed: false });
 
   const liveTask = () => refreshLiveApiData(signal)
     .then((result) => ({ info: result.applied || [], warnings: result.warnings || [] }))
@@ -6016,7 +5614,7 @@ async function boot() {
   initPerfDebugAccess();
   initE2eDebugAccess();
   loadState();
-  loadApiSettings();
+  clearLegacyBrowserApiSettings();
   renderCustomStockButtons();
   bindSeriesToggleBoard();
   setupStockAddPanel(msgEl);

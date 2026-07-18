@@ -58,6 +58,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Build Optimized Web Bundle
+        run: npm ci && npm run build:web
+
       - name: Restore Last Known-Good Pages Data
         uses: actions/cache@v5
         with:
@@ -87,6 +96,7 @@ jobs:
           ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}
           KOSIS_API_KEY: ${{ secrets.KOSIS_API_KEY }}
           KOFIA_API_KEY: ${{ secrets.KOFIA_API_KEY }}
+          KRX_API_KEY: ${{ secrets.KRX_API_KEY }}
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
           DART_DISCLOSURE_STOCK_CODES: ${{ vars.DART_DISCLOSURE_STOCK_CODES }}
           ENABLE_FREESIS_CREDIT_TAIL: "1"

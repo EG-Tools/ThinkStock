@@ -1,0 +1,17 @@
+import "../docs/modules/data-payload.js";
+import "../docs/modules/market-data.js";
+import "../docs/modules/chart-interaction-math.js";
+import "../docs/modules/chart-interaction-controller.js";
+import "../docs/modules/browser-market-client.js";
+import "../docs/modules/auxiliary-chart-model.js";
+import "../docs/modules/performance-monitor.js";
+import "../docs/modules/app-storage.js";
+import "../docs/modules/startup-loader.js";
+import "../docs/modules/chart-loader.js";
+import "../docs/modules/disclosure-policy.js";
+import "../docs/modules/disclosure-popover.js";
+import "../docs/modules/dart-disclosure.js";
+import "../docs/modules/service-worker-client.js";
+import "../docs/modules/runtime-refresh.js";
+import "../docs/modules/data-seed-loader.js";
+import "../docs/app.js";

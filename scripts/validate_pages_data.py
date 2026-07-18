@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 from hashlib import sha256
@@ -14,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "docs" / "data"
 BUILD_REPORT_JSON = DATA_DIR / "build_report.json"
 DART_CORP_CODES_JSON = DATA_DIR / "dart_corp_codes.json"
+KRX_UNIVERSE_JSON = DATA_DIR / "krx_universe.json"
 
 DATASETS = {
     "prices": DATA_DIR / "prices.json",
@@ -195,6 +197,30 @@ def validate_dart_corp_codes() -> str:
     if len(codes) < 1000 or int(payload.get("total") or 0) != len(codes):
         fail(f"dart corp codes: unexpectedly small or incomplete mapping ({len(codes)})")
     return f"dart corp codes: {len(codes)} mappings in {len(files)} shards"
+
+
+def validate_krx_universe() -> str:
+    if not KRX_UNIVERSE_JSON.exists():
+        fail("krx universe: payload is missing")
+    try:
+        payload = json.loads(KRX_UNIVERSE_JSON.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise AssertionError(f"krx universe: invalid JSON: {exc}") from exc
+    records = payload.get("records")
+    if payload.get("format") != "krx-universe-v1" or not isinstance(records, list):
+        fail("krx universe: krx-universe-v1 payload is required")
+    tickers = {
+        str(record.get("ticker") or "")
+        for record in records
+        if isinstance(record, dict)
+        and re.fullmatch(r"\d{6}\.(?:KS|KQ)", str(record.get("ticker") or ""))
+        and str(record.get("name") or "").strip()
+    }
+    if len(tickers) != len(records) or len(tickers) < 2_000:
+        fail(f"krx universe: invalid or incomplete records ({len(tickers)})")
+    if int(payload.get("total") or 0) != len(records):
+        fail("krx universe: total does not match records")
+    return f"krx universe: {len(records)} stocks ({payload.get('base_date') or 'unknown'})"
 
 
 def validate_build_health(build_report: dict) -> list[str]:
@@ -512,6 +538,7 @@ def read_committed_credit_latest() -> date | None:
 def main() -> int:
     summaries: list[str] = validate_segmented_payloads()
     summaries.append(validate_dart_corp_codes())
+    summaries.append(validate_krx_universe())
     rows_by_dataset: dict[str, list[dict]] = {}
     for name in ("prices", "macro", "credit", "adr", "disclosures"):
         payload = load_payload(name)

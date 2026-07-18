@@ -10,23 +10,7 @@
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" href="./icon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./styles.css">
-    <script defer src="./modules/data-payload.js?v=dev"></script>
-    <script defer src="./modules/market-data.js?v=dev"></script>
-    <script defer src="./modules/chart-interaction-math.js?v=dev"></script>
-    <script defer src="./modules/chart-interaction-controller.js?v=dev"></script>
-    <script defer src="./modules/browser-market-client.js?v=dev"></script>
-    <script defer src="./modules/auxiliary-chart-model.js?v=dev"></script>
-    <script defer src="./modules/performance-monitor.js?v=dev"></script>
-    <script defer src="./modules/app-storage.js?v=dev"></script>
-    <script defer src="./modules/startup-loader.js?v=dev"></script>
-    <script defer src="./modules/chart-loader.js?v=dev"></script>
-    <script defer src="./modules/disclosure-policy.js?v=dev"></script>
-    <script defer src="./modules/disclosure-popover.js?v=dev"></script>
-    <script defer src="./modules/dart-disclosure.js?v=dev"></script>
-    <script defer src="./modules/service-worker-client.js?v=dev"></script>
-    <script defer src="./modules/runtime-refresh.js?v=dev"></script>
-    <script defer src="./modules/data-seed-loader.js?v=dev"></script>
-    <script defer src="./app.js?v=dev"></script>
+    <script defer src="./assets/app.bundle.min.js?v=dev"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -92,32 +76,13 @@
           <h2 id="apiSettingsTitle">API 설정</h2>
           <button id="apiSettingsCloseBtn" class="api-close-btn" type="button" aria-label="닫기">×</button>
         </header>
-        <p class="api-settings-help">입력한 키와 마지막 차트 화면은 이 기기의 브라우저 저장소에 보관됩니다. 전체 삭제를 누르면 API 키가 제거됩니다.</p>
-        <p class="api-settings-note">ECOS 지표는 GitHub Actions에서 6시간마다 갱신하며, KOSIS는 서버 보조 공급자로만 사용합니다.</p>
-        <label class="api-field">
-          <span>KOFIA (금융투자협회)</span>
-          <input id="kofiaApiInput" type="password" autocomplete="off" spellcheck="false" placeholder="고객예탁금·신용">
-        </label>
-        <label class="api-field">
-          <span>KRX AUTH_KEY (종목검색)</span>
-          <input id="krxApiInput" type="password" autocomplete="off" spellcheck="false" placeholder="검색 기능 활성화">
-        </label>
-        <label class="api-field">
-          <span>DART (전자공시)</span>
-          <input id="dartApiInput" type="password" autocomplete="off" spellcheck="false" placeholder="공시 마커 데이터">
-        </label>
-        <label class="api-check-field">
-          <input id="dartProxyEnabledInput" type="checkbox">
-          <span>DART 공개 프록시 사용 (추가 종목 공시를 즉시 불러올 수 있지만 API 키가 프록시 서버를 거칩니다)</span>
-        </label>
-        <p class="api-settings-note">KOFIA·KRX는 이 기기에서 직접 사용합니다. DART는 브라우저 직접 호출이 막힐 수 있어, 안정적인 3년 공시는 GitHub Secret DART_API_KEY로 빌드됩니다.</p>
+        <p class="api-settings-help">ECOS·KOSIS·KOFIA·KRX·DART 데이터는 GitHub Actions가 서버에서 갱신합니다.</p>
+        <p class="api-settings-note">API 키는 브라우저에 저장하거나 외부 공개 프록시로 보내지 않습니다. 종목 목록과 최근 주요 공시는 예약 빌드 후 자동 반영됩니다.</p>
         <div class="api-settings-actions">
-          <button id="apiSettingsSaveBtn" class="api-action-btn primary" type="button">저장</button>
-          <button id="apiSettingsClearBtn" class="api-action-btn" type="button">전체 삭제</button>
           <button id="dataCacheClearBtn" class="api-action-btn" type="button">마지막 화면 초기화</button>
         </div>
         <p class="api-settings-meta">
-          Version : <span id="appVersionText">0.91</span><br>
+          Version : <span id="appVersionText">0.92</span><br>
           회사명 : Life User<br>
           이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a>
         </p>

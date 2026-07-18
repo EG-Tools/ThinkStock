@@ -23,11 +23,10 @@ test("service worker registers and precaches the offline shell", async ({ contex
     "/data/macro_data_recent.json",
     "/data/credit_data_recent.json",
     "/data/adr_data_recent.json",
-    "/modules/chart-interaction-math.js",
-    "/modules/chart-interaction-controller.js",
+    "/assets/app.bundle.min.js",
     "/modules/cache-refresh-policy.js",
-    "/modules/data-seed-loader.js",
-    "/modules/browser-market-client.js",
+    "/modules/data-worker.js",
+    "/modules/chart-model-worker.js",
     "/vendor/plotly-basic-2.35.2.min.js",
   ]));
 

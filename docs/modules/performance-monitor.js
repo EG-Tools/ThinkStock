@@ -5,12 +5,15 @@
     const frameGapIgnoreMs = Number(options.frameGapIgnoreMs) || 1000;
     const frameSampleLimit = Number(options.frameSampleLimit) || 1200;
     const longFrameMs = Number(options.longFrameMs) || 50;
+    const longTaskSampleLimit = Number(options.longTaskSampleLimit) || 40;
     let samples = [];
     let enabled = false;
     let frameRafId = 0;
     let lastFrameAt = 0;
     let frameStats = { frames: 0, longFrames: 0, maxFrameGap: 0 };
     let frameGaps = [];
+    let longTasks = [];
+    let longTaskObserver = null;
 
     const getPerformance = () => scope.performance;
     const getStorage = () => scope.localStorage;
@@ -45,10 +48,48 @@
       frameRafId = scope.requestAnimationFrame(tick);
     }
 
+    function stopLongTaskMonitor() {
+      try { longTaskObserver?.disconnect?.(); } catch (_) {}
+      longTaskObserver = null;
+    }
+
+    function startLongTaskMonitor() {
+      if (!enabled || longTaskObserver || typeof scope.PerformanceObserver !== "function") return;
+      try {
+        longTaskObserver = new scope.PerformanceObserver((list) => {
+          list.getEntries().forEach((entry) => {
+            const attribution = Array.isArray(entry.attribution) ? entry.attribution[0] : null;
+            longTasks.push({
+              duration: Math.round((Number(entry.duration) || 0) * 10) / 10,
+              startTime: Math.round((Number(entry.startTime) || 0) * 10) / 10,
+              source: String(
+                attribution?.containerId
+                || attribution?.containerName
+                || attribution?.name
+                || entry.name
+                || "main-thread",
+              ),
+            });
+          });
+          if (longTasks.length > longTaskSampleLimit) {
+            longTasks.splice(0, longTasks.length - longTaskSampleLimit);
+          }
+        });
+        longTaskObserver.observe({ type: "longtask", buffered: true });
+      } catch (_) {
+        stopLongTaskMonitor();
+      }
+    }
+
     function setEnabled(nextEnabled, persist = true) {
       enabled = Boolean(nextEnabled);
-      if (enabled) startFrameMonitor();
-      else stopFrameMonitor();
+      if (enabled) {
+        startFrameMonitor();
+        startLongTaskMonitor();
+      } else {
+        stopFrameMonitor();
+        stopLongTaskMonitor();
+      }
       if (persist) {
         try {
           if (enabled) getStorage()?.setItem(storageKey, "1");
@@ -63,6 +104,7 @@
       lastFrameAt = 0;
       frameStats = { frames: 0, longFrames: 0, maxFrameGap: 0 };
       frameGaps = [];
+      longTasks = [];
     }
 
     function summary() {
@@ -81,10 +123,17 @@
       const p95FrameGap = sortedFrameGaps.length
         ? sortedFrameGaps[Math.floor((sortedFrameGaps.length - 1) * 0.95)]
         : 0;
+      const sortedLongTasks = [...longTasks].sort((left, right) => left.duration - right.duration);
       return {
         ...frameStats,
         p95FrameGap,
         longFrameRatio: frameStats.frames > 0 ? frameStats.longFrames / frameStats.frames : 0,
+        longTasks: longTasks.length,
+        p95LongTask: sortedLongTasks.length
+          ? sortedLongTasks[Math.floor((sortedLongTasks.length - 1) * 0.95)].duration
+          : 0,
+        maxLongTask: sortedLongTasks.length ? sortedLongTasks[sortedLongTasks.length - 1].duration : 0,
+        latestLongTaskSource: longTasks[longTasks.length - 1]?.source || "",
         pointerMoves: pointerSamples.length,
         p95PointerMove: percentileDuration(pointerSamples, 0.95),
         maxPointerMove: pointerSamples.reduce(
@@ -107,6 +156,7 @@
       enable: () => setEnabled(true),
       disable: () => setEnabled(false),
       get: () => [...samples],
+      getLongTasks: () => [...longTasks],
       clear,
       summary,
     });
@@ -153,6 +203,8 @@
       recordSample,
       startFrameMonitor,
       stopFrameMonitor,
+      startLongTaskMonitor,
+      stopLongTaskMonitor,
       api,
     });
   }

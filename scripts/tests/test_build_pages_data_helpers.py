@@ -18,6 +18,7 @@ from build_pages_data import (
     build_dart_corp_code_payload,
     build_dart_corp_code_payloads,
     find_credit_history_discontinuity,
+    normalize_krx_universe_rows,
     merge_credit_seed_with_freesis,
     merge_credit_seed_with_kofia,
     select_credit_seed,
@@ -68,6 +69,49 @@ class BuildPagesDataHelperTests(unittest.TestCase):
         self.assertEqual(manifest["files"]["00"], "data/dart_corp_codes/00.json")
         self.assertEqual(shards["00"]["codes"], {"005930": "00126380"})
         self.assertEqual(shards["21"]["codes"], {"218410": "01035674"})
+
+    def test_krx_universe_rows_are_normalized_for_server_seed(self) -> None:
+        records = normalize_krx_universe_rows([
+            {"ISU_SRT_CD": "5930", "ISU_ABBRV": "삼성전자"},
+            {"ISU_SRT_CD": "000660", "ISU_NM": "SK하이닉스"},
+        ], "KOSPI")
+
+        self.assertEqual(records, [
+            {"ticker": "000660.KS", "code": "000660", "name": "SK하이닉스", "market": "KOSPI"},
+            {"ticker": "005930.KS", "code": "005930", "name": "삼성전자", "market": "KOSPI"},
+        ])
+
+    def test_dart_market_disclosures_keep_only_important_stock_events(self) -> None:
+        payload = {
+            "status": "000",
+            "message": "정상",
+            "total_page": 1,
+            "list": [
+                {
+                    "stock_code": "005930",
+                    "corp_cls": "Y",
+                    "corp_name": "삼성전자",
+                    "report_nm": "현금ㆍ현물배당결정",
+                    "rcept_dt": "20260718",
+                    "rcept_no": "202607180001",
+                },
+                {
+                    "stock_code": "005930",
+                    "corp_cls": "Y",
+                    "corp_name": "삼성전자",
+                    "report_nm": "기업설명회(IR) 개최",
+                    "rcept_dt": "20260718",
+                    "rcept_no": "202607180002",
+                },
+            ],
+        }
+        client = type("Client", (), {"get_json": lambda *_args, **_kwargs: payload})()
+        with patch.object(build_pages_data, "http_client", return_value=client):
+            records = build_pages_data.fetch_dart_market_disclosures("key")
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["ticker"], "005930.KS")
+        self.assertEqual(records[0]["title"], "현금ㆍ현물배당결정")
 
     def test_kofia_merge_preserves_overlap_and_scales_only_new_tail(self) -> None:
         seed_dates = pd.to_datetime([

@@ -140,6 +140,17 @@ async function installDataRoutes(page) {
       } });
       return;
     }
+    if (name === "krx_universe.json") {
+      await route.fulfill({ json: {
+        format: "krx-universe-v1",
+        total: 2,
+        records: [
+          { ticker: "000660.KS", code: "000660", name: "SK하이닉스", market: "KOSPI" },
+          { ticker: "005930.KS", code: "005930", name: "삼성전자", market: "KOSPI" },
+        ],
+      } });
+      return;
+    }
     if (name === "build_report.json") {
       await route.fulfill({ json: { records: [] } });
       return;
@@ -179,6 +190,9 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   }))).toBe(2);
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
+  await page.locator("#stockSearchInput").fill("SK하이닉스");
+  await expect(page.locator(".stock-suggest-item")).toContainText("SK하이닉스");
+  await page.locator("#stockSearchInput").press("Escape");
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
   expect(await page.evaluate(() => window.ThinkStockE2E?.getAuxiliaryChartModelSource?.())).toBe("worker");
   const firstChartDate = await page.locator("#chart").evaluate((element) => element.data?.[0]?.x?.[0]);
@@ -206,6 +220,7 @@ test("macro refresh uses deployed data instead of browser ECOS or KOSIS requests
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
 
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem("thinkstock-api-v1"))).toBeNull();
   await page.locator("#refreshData").click();
   await expect(page.locator("#refreshData")).not.toHaveClass(/spinning/);
 
@@ -380,26 +395,38 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
     const clientX = rect.left + xaxis._offset + xaxis.d2p(trace.x[pointIndex]);
     const clientY = rect.top + yaxis._offset + yaxis.d2p(trace.y[pointIndex]);
     const before = trace.y[pointIndex];
-    element.dispatchEvent(new MouseEvent("mousedown", {
+    element.dispatchEvent(new PointerEvent("pointerdown", {
       bubbles: true,
       cancelable: true,
       clientX,
       clientY,
       button: 0,
+      buttons: 1,
+      pointerId: 1,
+      pointerType: "mouse",
+      isPrimary: true,
     }));
-    document.dispatchEvent(new MouseEvent("mousemove", {
+    document.dispatchEvent(new PointerEvent("pointermove", {
       bubbles: true,
       cancelable: true,
       clientX,
       clientY: clientY + 36,
       button: 0,
+      buttons: 1,
+      pointerId: 1,
+      pointerType: "mouse",
+      isPrimary: true,
     }));
-    document.dispatchEvent(new MouseEvent("mouseup", {
+    document.dispatchEvent(new PointerEvent("pointerup", {
       bubbles: true,
       cancelable: true,
       clientX,
       clientY: clientY + 36,
       button: 0,
+      buttons: 0,
+      pointerId: 1,
+      pointerType: "mouse",
+      isPrimary: true,
     }));
     return { before, traceIndex, pointIndex };
   });
