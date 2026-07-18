@@ -1530,12 +1530,6 @@ def merge_credit_seed_with_incremental_tail(
         if len(overlap) >= 5:
             recent_overlap = overlap.sort_index().tail(20)
             factor = median_scale_factor(recent_overlap["seed"], recent_overlap["live"])
-        else:
-            seed_values = pd.to_numeric(seed[column], errors="coerce").dropna()
-            latest_seed_date = seed_values.index[-1] if not seed_values.empty else seed.index.max()
-            tail_values = pd.to_numeric(live.loc[live.index > latest_seed_date, column], errors="coerce").dropna()
-            if not seed_values.empty and not tail_values.empty and float(tail_values.iloc[0]) > 0:
-                factor = float(seed_values.iloc[-1]) / float(tail_values.iloc[0])
         if 0.5 <= factor <= 2.0 and (factor > 1.02 or factor < 0.98):
             aligned_live[column] = aligned_live[column] * factor
 
