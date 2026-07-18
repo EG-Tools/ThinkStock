@@ -47,6 +47,7 @@ STRICT_FRESHNESS = os.environ.get("PAGES_STRICT_FRESHNESS", "").strip() == "1"
 
 SOURCE_OUTPUT_RULES = (
     ("ecos_leading_cycle", "macro", ("leading_cycle",), True),
+    ("kosis_leading_cycle", "macro", ("leading_cycle",), True),
     ("ecos_news_sentiment", "macro", ("news_sentiment",), True),
     ("kofia_credit", "credit", CREDIT_COLUMNS, False),
     ("freesis_credit", "credit", CREDIT_COLUMNS, False),

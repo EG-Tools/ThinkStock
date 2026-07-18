@@ -186,6 +186,33 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   expect(pageErrors).toEqual([]);
 });
 
+test("macro refresh uses deployed data instead of browser ECOS or KOSIS requests", async ({ page }) => {
+  let directMacroRequests = 0;
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-api-v1", JSON.stringify({
+      ecosApiKey: "saved-ecos-key",
+      kosisApiKey: "saved-kosis-key",
+    }));
+  });
+  await page.route("https://ecos.bok.or.kr/**", async (route) => {
+    directMacroRequests += 1;
+    await route.abort();
+  });
+  await page.route("https://kosis.kr/**", async (route) => {
+    directMacroRequests += 1;
+    await route.abort();
+  });
+  await installDataRoutes(page);
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await page.locator("#refreshData").click();
+  await expect(page.locator("#refreshData")).not.toHaveClass(/spinning/);
+
+  expect(directMacroRequests).toBe(0);
+  await expect(page.locator("#messageArea")).not.toContainText(/ECOS|KOSIS|Failed to fetch/);
+});
+
 test("startup loader releases before supplemental refresh finishes", async ({ page }) => {
   let releaseFearGreed;
   const fearGreedGate = new Promise((resolve) => { releaseFearGreed = resolve; });

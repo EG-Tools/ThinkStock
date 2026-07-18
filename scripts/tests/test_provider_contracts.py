@@ -10,6 +10,7 @@ from provider_contracts import (
     fear_greed_rows,
     freesis_rows,
     kofia_page,
+    kosis_rows,
     yahoo_close_columns,
 )
 
@@ -30,6 +31,10 @@ class ProviderContractTests(unittest.TestCase):
         page = kofia_page(load_fixture("kofia_credit_response.json"))
         self.assertEqual(page.header["resultCode"], "00")
         self.assertEqual(page.items[0]["basDt"], "20260715")
+
+    def test_kosis_fixture_exposes_leading_cycle_rows(self):
+        rows = kosis_rows(load_fixture("kosis_leading_response.json"))
+        self.assertEqual(rows[-1]["DT"], "104.8")
 
     def test_dart_fixture_validates_page(self):
         page = dart_disclosure_page(load_fixture("dart_list_response.json"))
@@ -67,6 +72,8 @@ class ProviderContractTests(unittest.TestCase):
             freesis_rows({})
         with self.assertRaises(ProviderContractError):
             fear_greed_rows({})
+        with self.assertRaises(ProviderContractError):
+            kosis_rows({})
 
 
 if __name__ == "__main__":

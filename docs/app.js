@@ -142,7 +142,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.90";
+const APP_VERSION = "0.91";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -155,9 +155,7 @@ function getAppBuildVersion() {
 }
 const APP_BUILD_VERSION = getAppBuildVersion();
 const API_SETTINGS_DEFAULT = Object.freeze({
-  ecosApiKey: "",
   kofiaApiKey: "",
-  kosisApiKey: "",
   krxApiKey: "",
   dartApiKey: "",
   dartProxyEnabled: false,
@@ -182,13 +180,6 @@ const runtimeSnapshotCacheConfig = Object.freeze({
   format: RUNTIME_SNAPSHOT_FORMAT,
   componentKeys: RUNTIME_SNAPSHOT_COMPONENT_KEYS,
 });
-const ECOS_STAT_CODE = "901Y067";
-const ECOS_ITEM_CODE = "I16E";
-const ECOS_START = "199601";
-const ECOS_NEWS_STAT_CODE = "521Y001";
-const ECOS_NEWS_ITEM_CODE = "A001";
-const ECOS_NEWS_START = "20050101";
-const KOSIS_START = "199601";
 const KOFIA_CREDIT_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getGrantingOfCreditBalanceInfo";
 const KOFIA_MARKET_FUNDS_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getSecuritiesMarketTotalCapitalInfo";
 const FREESIS_CREDIT_META_URL = "https://freesis.kofia.or.kr/meta/getMetaDataList.do";
@@ -1141,7 +1132,9 @@ function bindRuntimeSnapshotExitSave() {
 }
 
 function hasAnyApiKey() {
-  return Object.entries(apiSettings || {}).some(([key, value]) => {
+  const browserApiKeys = ["kofiaApiKey", "krxApiKey", "dartApiKey", "dartProxyEnabled"];
+  return browserApiKeys.some((key) => {
+    const value = apiSettings?.[key];
     if (typeof API_SETTINGS_DEFAULT[key] === "boolean") return value === true;
     return String(value || "").trim().length > 0;
   });
@@ -1262,9 +1255,7 @@ function setupApiSettingsPanel(msgEl) {
   const clearBtn = document.getElementById("apiSettingsClearBtn");
   const dataCacheClearBtn = document.getElementById("dataCacheClearBtn");
   const inputs = {
-    ecosApiKey: document.getElementById("ecosApiInput"),
     kofiaApiKey: document.getElementById("kofiaApiInput"),
-    kosisApiKey: document.getElementById("kosisApiInput"),
     krxApiKey: document.getElementById("krxApiInput"),
     dartApiKey: document.getElementById("dartApiInput"),
     dartProxyEnabled: document.getElementById("dartProxyEnabledInput"),
@@ -1282,9 +1273,7 @@ function setupApiSettingsPanel(msgEl) {
   };
 
   const readInputs = () => sanitizeApiSettings({
-    ecosApiKey: inputs.ecosApiKey?.value || "",
     kofiaApiKey: inputs.kofiaApiKey?.value || "",
-    kosisApiKey: inputs.kosisApiKey?.value || "",
     krxApiKey: inputs.krxApiKey?.value || "",
     dartApiKey: inputs.dartApiKey?.value || "",
     dartProxyEnabled: Boolean(inputs.dartProxyEnabled?.checked),
@@ -5199,13 +5188,6 @@ function normalizeCreditRows(rows) {
   return [...map.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 
-function mergeLeadingSources(ecosRows, kosisRows) {
-  const out = new Map();
-  normalizeLeadingRows(kosisRows).forEach((row) => out.set(row.date, row));
-  normalizeLeadingRows(ecosRows).forEach((row) => out.set(row.date, row));
-  return [...out.values()].sort((a, b) => a.date.localeCompare(b.date));
-}
-
 function sameNullableNumber(a, b) {
   const na = toNum(a);
   const nb = toNum(b);
@@ -5239,57 +5221,6 @@ async function fetchJsonWithProxyFallback(url, init = null, options = {}) {
   }
   throw new Error(lastError);
 }
-async function fetchEcosLeadingCycleLive(apiKey, signal = null) {
-  const clean = String(apiKey || "").trim();
-  if (!clean) return [];
-  const endYm = toYyyymm(new Date());
-  const url = `https://ecos.bok.or.kr/api/StatisticSearch/${encodeURIComponent(clean)}/json/kr/1/5000/${ECOS_STAT_CODE}/M/${ECOS_START}/${endYm}/${ECOS_ITEM_CODE}`;
-  const payload = await fetchJsonWithProxyFallback(url, { signal }, { allowProxy: false });
-  const rows = Array.isArray(payload?.StatisticSearch?.row) ? payload.StatisticSearch.row : [];
-  return normalizeLeadingRows(rows.map((row) => ({
-    date: monthCodeToDate(row?.TIME),
-    leading_cycle: toNum(row?.DATA_VALUE),
-  })));
-}
-
-async function fetchEcosNewsSentimentLive(apiKey, signal = null) {
-  const clean = String(apiKey || "").trim();
-  if (!clean) return [];
-  const endYmd = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-  const url = `https://ecos.bok.or.kr/api/StatisticSearch/${encodeURIComponent(clean)}/json/kr/1/10000/${ECOS_NEWS_STAT_CODE}/D/${ECOS_NEWS_START}/${endYmd}/${ECOS_NEWS_ITEM_CODE}`;
-  const payload = await fetchJsonWithProxyFallback(url, { signal }, { allowProxy: false });
-  const rows = Array.isArray(payload?.StatisticSearch?.row) ? payload.StatisticSearch.row : [];
-  return normalizeNewsSentimentRows(rows.map((row) => ({
-    date: dayCodeToDate(row?.TIME),
-    news_sentiment: toNum(row?.DATA_VALUE),
-  })));
-}
-
-async function fetchKosisLeadingCycleLive(apiKey, signal = null) {
-  const clean = String(apiKey || "").trim();
-  if (!clean) return [];
-  const query = new URLSearchParams({
-    method: "getList",
-    apiKey: clean,
-    format: "json",
-    jsonVD: "Y",
-    orgId: "101",
-    tblId: "DT_1C8015",
-    itmId: "T1",
-    objL1: "A03",
-    prdSe: "M",
-    startPrdDe: KOSIS_START,
-    endPrdDe: "209912",
-  });
-  const url = `https://kosis.kr/openapi/Param/statisticsParameterData.do?${query.toString()}`;
-  const payload = await fetchJsonWithProxyFallback(url, { signal }, { allowProxy: false });
-  const rows = Array.isArray(payload) ? payload : [];
-  return normalizeLeadingRows(rows.map((row) => ({
-    date: monthCodeToDate(row?.PRD_DE),
-    leading_cycle: toNum(row?.DT),
-  })));
-}
-
 function parseKofiaAmountToTrillion(rawValue) {
   const n = Number(String(rawValue ?? "").replace(/,/g, ""));
   if (!Number.isFinite(n)) return null;
@@ -5611,30 +5542,13 @@ async function refreshLiveApiData(signal = null) {
   const applied = [];
   const warnings = [];
 
-  const hasLeadingApi = Boolean(apiSettings.ecosApiKey || apiSettings.kosisApiKey);
-  const hasNewsSentimentApi = Boolean(apiSettings.ecosApiKey);
   const hasCreditApi = Boolean(apiSettings.kofiaApiKey);
-  if (!hasLeadingApi) {
-    warnings.push("ECOS 또는 KOSIS API 키가 없어 선행순환변동을 갱신하지 못했습니다.");
-  }
-  if (!hasNewsSentimentApi) {
-    warnings.push("ECOS API 키가 없어 뉴스심리를 갱신하지 못했습니다.");
-  }
   if (!hasCreditApi) {
     warnings.push("KOFIA API 키가 없어 고객예탁금·신용은 저장 데이터까지만 표시됩니다.");
   }
 
-  // These APIs update independent series, so start all requests together.
-  const [leadingResult, newsResult, kosisResult, depositResult, creditResult] = await Promise.allSettled([
-    apiSettings.ecosApiKey
-      ? fetchEcosLeadingCycleLive(apiSettings.ecosApiKey, signal)
-      : Promise.resolve([]),
-    apiSettings.ecosApiKey
-      ? fetchEcosNewsSentimentLive(apiSettings.ecosApiKey, signal)
-      : Promise.resolve([]),
-    apiSettings.kosisApiKey
-      ? fetchKosisLeadingCycleLive(apiSettings.kosisApiKey, signal)
-      : Promise.resolve([]),
+  // ECOS and KOSIS are refreshed server-side because their responses do not allow browser CORS.
+  const [depositResult, creditResult] = await Promise.allSettled([
     apiSettings.kofiaApiKey
       ? fetchKofiaCustomerDepositLive(apiSettings.kofiaApiKey, signal)
       : Promise.resolve([]),
@@ -5643,31 +5557,6 @@ async function refreshLiveApiData(signal = null) {
       : Promise.resolve([]),
   ]);
   throwIfAborted(signal);
-
-  // Preserve seeded macro credit history while live APIs refresh only their own series.
-  // Clearing macroRows here would remove pre-KOFIA credit data before 2021-11-09.
-  const ecosRows = leadingResult.status === "fulfilled" ? leadingResult.value : [];
-  const newsSentimentRows = newsResult.status === "fulfilled" ? newsResult.value : [];
-  const kosisRows = kosisResult.status === "fulfilled" ? kosisResult.value : [];
-  if (apiSettings.ecosApiKey && leadingResult.status === "rejected") {
-    warnings.push(`ECOS 선행순환변동 오류: ${leadingResult.reason?.message || leadingResult.reason}`);
-  }
-  if (apiSettings.ecosApiKey && newsResult.status === "rejected") {
-    warnings.push(`ECOS 뉴스심리 오류: ${newsResult.reason?.message || newsResult.reason}`);
-  }
-  if (apiSettings.kosisApiKey && kosisResult.status === "rejected") {
-    warnings.push(`KOSIS 불러오기 오류: ${kosisResult.reason?.message || kosisResult.reason}`);
-  }
-
-  const leadingRows = mergeLeadingSources(ecosRows, kosisRows);
-  if (leadingRows.length) {
-    const info = applyLeadingCycleLiveRows(leadingRows);
-    applied.push(`선행순환변동 반영(${info.updated}건, 최신일 ${info.latestDate})`);
-  }
-  if (newsSentimentRows.length) {
-    const info = applyNewsSentimentLiveRows(newsSentimentRows);
-    applied.push(`뉴스심리 반영(${info.updated}건, 최신일 ${info.latestDate})`);
-  }
 
   if (apiSettings.kofiaApiKey) {
     const kofiaRows = normalizeCreditRows([

@@ -7,7 +7,7 @@ from datetime import date
 from io import BytesIO, StringIO
 from pathlib import Path
 from time import monotonic
-from urllib.parse import unquote
+from urllib.parse import unquote, urlencode
 from xml.etree import ElementTree as ET
 
 import pandas as pd
@@ -45,6 +45,7 @@ from provider_contracts import (
     ecos_statistic_rows,
     fear_greed_rows,
     freesis_rows,
+    kosis_rows,
 )
 from split_pages_data import split_all_payloads
 from source_pipeline import SourcePipeline
@@ -95,6 +96,8 @@ ECOS_START = "199601"
 ECOS_NEWS_STAT_CODE = "521Y001"
 ECOS_NEWS_ITEM_CODE = "A001"
 ECOS_NEWS_START = "20050101"
+KOSIS_LEADING_URL = "https://kosis.kr/openapi/Param/statisticsParameterData.do"
+KOSIS_START = "199601"
 OECD_FRED_SERIES_ID = "KORLOLITOAASTSAM"  # OECD CLI (AA, STSA) mirrored by FRED
 OECD_FRED_URL = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={OECD_FRED_SERIES_ID}"
 LOCAL_ENV_FILE = ROOT / ".env.local"
@@ -115,6 +118,7 @@ SOURCE_STALE_AFTER_DAYS = {
     "prices": 10,
     "ecos_leading_cycle": 150,
     "ecos_news_sentiment": 14,
+    "kosis_leading_cycle": 150,
     "oecd_leading_cycle": 150,
     "kofia_credit": 14,
     "freesis_credit": 14,
@@ -382,6 +386,17 @@ def resolve_ecos_api_key() -> str:
     return ""
 
 
+def resolve_kosis_api_key() -> str:
+    env_key = os.environ.get("KOSIS_API_KEY", "").strip()
+    if env_key:
+        return env_key
+
+    file_key = _read_env_key(LOCAL_ENV_FILE, "KOSIS_API_KEY")
+    if file_key:
+        return file_key
+    return ""
+
+
 def resolve_kofia_api_key() -> str:
     env_key = os.environ.get("KOFIA_API_KEY", "").strip()
     if env_key:
@@ -504,6 +519,54 @@ def fetch_ecos_news_sentiment(api_key: str, start_ymd: str = ECOS_NEWS_START) ->
 
     if not records:
         return pd.DataFrame(columns=["news_sentiment"])
+    out = pd.DataFrame.from_records(records).drop_duplicates(subset=["date"], keep="last")
+    out = out.sort_values("date").set_index("date")
+    out.index.name = "date"
+    return out
+
+
+def fetch_kosis_leading_cycle(api_key: str, start_ym: str = KOSIS_START) -> pd.DataFrame:
+    if not api_key:
+        return pd.DataFrame(columns=["leading_cycle"])
+    end_ym = pd.Timestamp.today().strftime("%Y%m")
+    query = urlencode({
+        "method": "getList",
+        "apiKey": api_key,
+        "format": "json",
+        "jsonVD": "Y",
+        "orgId": "101",
+        "tblId": "DT_1C8015",
+        "itmId": "T1",
+        "objL1": "A03",
+        "prdSe": "M",
+        "startPrdDe": start_ym,
+        "endPrdDe": end_ym,
+    })
+    try:
+        payload = http_client().get_json(f"{KOSIS_LEADING_URL}?{query}", timeout=20)
+    except Exception as exc:
+        print(f"KOSIS fetch failed: {exc}")
+        return pd.DataFrame(columns=["leading_cycle"])
+
+    try:
+        rows = kosis_rows(payload)
+    except ValueError as exc:
+        print(f"KOSIS response contract failed: {exc}")
+        return pd.DataFrame(columns=["leading_cycle"])
+
+    records: list[dict] = []
+    for row in rows:
+        ym = str(row.get("PRD_DE", ""))
+        value = pd.to_numeric(str(row.get("DT", "")).replace(",", ""), errors="coerce")
+        if len(ym) != 6 or pd.isna(value):
+            continue
+        dt = pd.to_datetime(ym, format="%Y%m", errors="coerce")
+        if pd.isna(dt):
+            continue
+        records.append({"date": dt, "leading_cycle": float(value)})
+
+    if not records:
+        return pd.DataFrame(columns=["leading_cycle"])
     out = pd.DataFrame.from_records(records).drop_duplicates(subset=["date"], keep="last")
     out = out.sort_values("date").set_index("date")
     out.index.name = "date"
@@ -1765,6 +1828,7 @@ def main() -> None:
     build_report["sources"]["sample_macro"] = frame_summary(sample_macro_source)
     build_report["sources"]["macro_seed"] = frame_summary(existing_macro_source)
     ecos_key = resolve_ecos_api_key()
+    kosis_key = resolve_kosis_api_key()
     leading_values = (
         pd.to_numeric(macro_source.get("leading_cycle"), errors="coerce").dropna()
         if "leading_cycle" in macro_source
@@ -1775,9 +1839,9 @@ def main() -> None:
         if "news_sentiment" in macro_source
         else pd.Series(dtype="float64")
     )
-    latest_ecos_month = leading_values.index.max().normalize() if not leading_values.empty else None
+    latest_official_month = leading_values.index.max().normalize() if not leading_values.empty else None
     ecos_leading_start = incremental_month_code(
-        latest_ecos_month,
+        latest_official_month,
         ECOS_START,
         ECOS_LEADING_OVERLAP_MONTHS,
         full_rebuild,
@@ -1795,6 +1859,26 @@ def main() -> None:
         "ecos_leading_overlap_months": ECOS_LEADING_OVERLAP_MONTHS,
         "ecos_news_overlap_days": ECOS_NEWS_OVERLAP_DAYS,
     })
+    if kosis_key:
+        kosis_leading_cycle = pipeline.run(
+            "kosis_leading_cycle",
+            lambda: fetch_kosis_leading_cycle(kosis_key, ecos_leading_start),
+            frame_summary,
+        )
+        if not kosis_leading_cycle.empty:
+            macro_source = merge_macro_with_leading_cycle(macro_source, kosis_leading_cycle)
+            kosis_latest_month = kosis_leading_cycle.index.max().normalize()
+            latest_official_month = max(
+                month for month in (latest_official_month, kosis_latest_month) if month is not None
+            )
+            latest = kosis_leading_cycle.index.max().strftime("%Y-%m")
+            print(f"Applied KOSIS leading_cycle rows: {len(kosis_leading_cycle)} (latest={latest})")
+            build_report["events"].append(
+                f"Applied KOSIS leading_cycle rows: {len(kosis_leading_cycle)} latest={latest}"
+            )
+    else:
+        build_report["events"].append("KOSIS_API_KEY is not configured.")
+
     if ecos_key:
         leading_cycle = pipeline.run(
             "ecos_leading_cycle",
@@ -1803,7 +1887,10 @@ def main() -> None:
         )
         if not leading_cycle.empty:
             macro_source = merge_macro_with_leading_cycle(macro_source, leading_cycle)
-            latest_ecos_month = leading_cycle.index.max().normalize()
+            ecos_latest_month = leading_cycle.index.max().normalize()
+            latest_official_month = max(
+                month for month in (latest_official_month, ecos_latest_month) if month is not None
+            )
             latest = leading_cycle.index.max().strftime("%Y-%m")
             print(f"Applied ECOS leading_cycle rows: {len(leading_cycle)} (latest={latest})")
             build_report["events"].append(f"Applied ECOS leading_cycle rows: {len(leading_cycle)} latest={latest}")
@@ -1833,7 +1920,7 @@ def main() -> None:
             macro_source,
             oecd_leading_cycle,
             months=2,
-            after_month=latest_ecos_month,
+            after_month=latest_official_month,
         )
         if applied_months:
             latest = oecd_leading_cycle.index.max().strftime("%Y-%m")

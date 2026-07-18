@@ -52,6 +52,34 @@ test("returns the atomic refresh result from the active controller", async () =>
   assert.equal(await createServiceWorkerClient(scope).requestDataRefresh(50), true);
 });
 
+test("allows atomic data refresh enough time to validate and swap all segments", async () => {
+  let timeoutDelay = 0;
+  class FakeMessageChannel {
+    constructor() {
+      this.port1 = { onmessage: null };
+      this.port2 = { reply: (data) => this.port1.onmessage?.({ data }) };
+    }
+  }
+  const scope = {
+    navigator: {
+      serviceWorker: {
+        controller: {
+          postMessage: (_message, ports) => ports[0].reply({ ok: true }),
+        },
+      },
+    },
+    MessageChannel: FakeMessageChannel,
+    setTimeout: (_handler, delay) => {
+      timeoutDelay = delay;
+      return 1;
+    },
+    clearTimeout: () => {},
+  };
+
+  assert.equal(await createServiceWorkerClient(scope).requestDataRefresh(), true);
+  assert.equal(timeoutDelay, 15000);
+});
+
 
 test("fails fast when no service worker controls the page", async () => {
   const scope = {

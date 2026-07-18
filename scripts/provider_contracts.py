@@ -26,6 +26,12 @@ def ecos_statistic_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def kosis_rows(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, list) or any(not isinstance(row, dict) for row in payload):
+        raise ProviderContractError("KOSIS response must be an array")
+    return payload
+
+
 @dataclass(frozen=True)
 class KofiaPage:
     header: dict[str, Any]

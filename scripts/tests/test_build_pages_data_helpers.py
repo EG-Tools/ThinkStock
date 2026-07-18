@@ -35,6 +35,17 @@ class BuildPagesDataHelperTests(unittest.TestCase):
         self.assertEqual(list(leading.columns), ["leading_cycle"])
         self.assertEqual(list(news.columns), ["news_sentiment"])
 
+    def test_kosis_leading_cycle_normalizes_monthly_rows(self) -> None:
+        client = type("Client", (), {"get_json": lambda *_args, **_kwargs: [
+            {"PRD_DE": "202604", "DT": "102.8"},
+            {"PRD_DE": "202605", "DT": "104.8"},
+        ]})()
+        with patch.object(build_pages_data, "http_client", return_value=client):
+            leading = build_pages_data.fetch_kosis_leading_cycle("key", "202604")
+
+        self.assertEqual(list(leading.columns), ["leading_cycle"])
+        self.assertEqual(float(leading.loc[pd.Timestamp("2026-05-01"), "leading_cycle"]), 104.8)
+
     def test_dart_corp_payload_contains_only_compact_code_mapping(self) -> None:
         payload = build_dart_corp_code_payload({
             "005930": {"corp_code": "00126380", "corp_name": "Samsung Electronics"},

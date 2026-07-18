@@ -152,7 +152,17 @@ assert.ok(app.includes('text: "낙관"'), "news sentiment optimism guide is miss
 assert.ok(app.includes("CUSTOM_STOCK_PRELOAD_CONCURRENCY"), "custom stock preload concurrency guard is missing");
 assert.ok(runtimeRefresh.includes("const criticalPromise") && runtimeRefresh.includes("const supplementalPromise"), "refresh phases do not start in parallel");
 assert.ok(app.includes("coreIndexTask") && app.includes("preloadTask"), "price refresh tasks still run serially");
-assert.ok(app.includes("Promise.allSettled([\n    apiSettings.ecosApiKey"), "macro and credit APIs still run serially");
+assert.ok(app.includes("Promise.allSettled([\n    apiSettings.kofiaApiKey"), "credit APIs still run serially");
+assert.ok(!app.includes("ecos.bok.or.kr/api/") && !app.includes("kosis.kr/openapi/"),
+  "ECOS or KOSIS is still called directly from the browser");
+assert.ok(!app.includes("ecosApiKey") && !app.includes("kosisApiKey"),
+  "server-refreshed API keys must not remain in browser storage");
+assert.ok(!html.includes('id="ecosApiInput"') && !html.includes('id="kosisApiInput"'),
+  "server-refreshed API keys must not be requested in the browser");
+assert.ok(deployWorkflow.includes("KOSIS_API_KEY: ${{ secrets.KOSIS_API_KEY }}")
+  && buildPagesData.includes("fetch_kosis_leading_cycle")
+  && providerContracts.includes("def kosis_rows("),
+  "KOSIS server-side fallback is incomplete");
 assert.ok(app.includes('name: "공포탐욕"') && app.includes('yaxis: "y2"'), "fear-greed auxiliary panel is missing");
 assert.ok(app.includes("lastAdrRenderKey === renderKey"), "ADR render fast path is missing");
 assert.ok(chartLoader.includes("plotly-basic-2.35.2.min.js"), "Plotly basic bundle is not configured");

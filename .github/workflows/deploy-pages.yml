@@ -85,6 +85,7 @@ jobs:
       - name: Build Pages Data
         env:
           ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}
+          KOSIS_API_KEY: ${{ secrets.KOSIS_API_KEY }}
           KOFIA_API_KEY: ${{ secrets.KOFIA_API_KEY }}
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
           DART_DISCLOSURE_STOCK_CODES: ${{ vars.DART_DISCLOSURE_STOCK_CODES }}

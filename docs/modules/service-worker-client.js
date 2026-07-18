@@ -2,7 +2,7 @@
   function createServiceWorkerClient(scope = global) {
     let registrationScheduled = false;
 
-    function requestDataRefresh(timeoutMs = 1200) {
+    function requestDataRefresh(timeoutMs = 15000) {
       return new Promise((resolve) => {
         try {
           const controller = scope.navigator?.serviceWorker?.controller;
