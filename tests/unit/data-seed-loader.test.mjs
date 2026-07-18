@@ -12,6 +12,18 @@ test("loads a recent segment before considering the full payload", async () => {
     appendCacheBust: (path) => `${path}?fresh=1`,
     fetchWithTimeout: async (path) => {
       requests.push(path);
+      if (path.startsWith("./data/data_manifest.json")) {
+        return {
+          ok: true,
+          text: async () => JSON.stringify({
+            format: "segmented-data-v1",
+            revision: "fixture",
+            datasets: {
+              prices: { recent: { file: "prices-r1.json" } },
+            },
+          }),
+        };
+      }
       return { ok: true, text: async () => "recent" };
     },
   });
@@ -19,7 +31,10 @@ test("loads a recent segment before considering the full payload", async () => {
   const result = await loader.fetchSegmentedSeedText("./data/prices.json", "recent", true);
 
   assert.deepEqual(result, { text: "recent", usedFullFallback: false });
-  assert.deepEqual(requests, ["./data/prices_recent.json?fresh=1"]);
+  assert.deepEqual(requests, [
+    "./data/data_manifest.json?fresh=1",
+    "./data/prices-r1.json?fresh=1",
+  ]);
 });
 
 
@@ -38,6 +53,8 @@ test("falls back to the stable full payload after refresh failures", async () =>
 
   assert.deepEqual(result, { text: "full", usedFullFallback: true });
   assert.deepEqual(requests, [
+    "./data/data_manifest.json?fresh=1",
+    "./data/data_manifest.json",
     "./data/prices_history.json?fresh=1",
     "./data/prices_history.json",
     "./data/prices.json?fresh=1",

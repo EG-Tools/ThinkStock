@@ -130,7 +130,17 @@ async function installDataRoutes(page) {
       } });
       return;
     }
-    if (name === "dart_corp_codes.json" || name === "build_report.json") {
+    if (name === "dart_corp_codes.json") {
+      await route.fulfill({ json: {
+        format: "stock-to-corp-shards-v1",
+        prefix_length: 2,
+        total: 1,
+        files: { "00": "data/dart_corp_codes/00.json" },
+        counts: { "00": 1 },
+      } });
+      return;
+    }
+    if (name === "build_report.json") {
       await route.fulfill({ json: { records: [] } });
       return;
     }
@@ -141,6 +151,13 @@ async function installDataRoutes(page) {
       return;
     }
     await route.abort();
+  });
+  await page.route("**/data/dart_corp_codes/*.json*", async (route) => {
+    await route.fulfill({ json: {
+      format: "stock-to-corp-shard-v1",
+      prefix: "00",
+      codes: { "005930": "00126380" },
+    } });
   });
   await stubExternalRefreshes(page);
   return () => historyRequests;
@@ -280,6 +297,12 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await expect(page.locator(".hero h1")).not.toHaveClass(/is-loading/);
   expect(await page.evaluate(() => window.ThinkStockE2E?.getMainHoverMode?.())).toBe(false);
   await page.evaluate(() => window.ThinkStockPerf?.clear?.());
+  const dartCode = await page.evaluate(() => window.ThinkStockE2E.loadDartCorpCodeForTest("005930"));
+  expect(dartCode).toEqual({
+    loaded: true,
+    corpCode: "00126380",
+    shards: ["00"],
+  });
 
   const middleUpdateBefore = await page.evaluate(() => ({
     revisions: window.ThinkStockE2E.getRuntimeSnapshotStats().revisions,

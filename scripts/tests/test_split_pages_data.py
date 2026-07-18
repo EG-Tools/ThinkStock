@@ -54,6 +54,7 @@ class SplitPagesDataTests(unittest.TestCase):
             self.assertEqual(manifest["format"], "segmented-data-v1")
             self.assertEqual(manifest["datasets"]["prices"]["recent"]["rows"], 1)
             self.assertEqual(len(manifest["datasets"]["prices"]["recent"]["sha256"]), 64)
+            self.assertEqual(len(manifest["revision"]), 24)
 
 
 if __name__ == "__main__":

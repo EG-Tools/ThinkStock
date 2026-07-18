@@ -68,6 +68,9 @@ def validate_segmented_payloads() -> list[str]:
     datasets = manifest.get("datasets")
     if manifest.get("format") != "segmented-data-v1" or not isinstance(datasets, dict):
         fail("segmented data manifest is invalid")
+    revision = str(manifest.get("revision") or "")
+    if len(revision) != 24 or any(character not in "0123456789abcdef" for character in revision):
+        fail("segmented data manifest revision is invalid")
     for filename in SEGMENTED_FILES:
         source_path = DATA_DIR / filename
         stem = source_path.stem
@@ -163,15 +166,34 @@ def validate_dart_corp_codes() -> str:
         payload = json.loads(DART_CORP_CODES_JSON.read_text(encoding="utf-8"))
     except Exception as exc:
         raise AssertionError(f"dart corp codes: invalid JSON: {exc}") from exc
-    codes = payload.get("codes")
-    if payload.get("format") != "stock-to-corp-v2" or not isinstance(codes, dict):
-        fail("dart corp codes: compact stock-to-corp-v2 payload is required")
-    if len(codes) < 1000:
-        fail(f"dart corp codes: unexpectedly small mapping ({len(codes)})")
-    for stock_code, corp_code in codes.items():
-        if len(str(stock_code)) != 6 or not str(corp_code).isdigit():
-            fail(f"dart corp codes: invalid mapping {stock_code!r}")
-    return f"dart corp codes: {len(codes)} compact mappings"
+    files = payload.get("files")
+    counts = payload.get("counts")
+    if (
+        payload.get("format") != "stock-to-corp-shards-v1"
+        or not isinstance(files, dict)
+        or not isinstance(counts, dict)
+    ):
+        fail("dart corp codes: stock-to-corp-shards-v1 manifest is required")
+    codes: dict[str, str] = {}
+    for prefix, relative_path in files.items():
+        path = ROOT / "docs" / str(relative_path).lstrip("./").replace("/", os.sep)
+        if not path.exists():
+            fail(f"dart corp codes: missing shard {relative_path}")
+        shard = json.loads(path.read_text(encoding="utf-8"))
+        shard_codes = shard.get("codes")
+        if shard.get("format") != "stock-to-corp-shard-v1" or not isinstance(shard_codes, dict):
+            fail(f"dart corp codes: invalid shard {relative_path}")
+        if int(counts.get(prefix) or 0) != len(shard_codes):
+            fail(f"dart corp codes: count mismatch for shard {prefix}")
+        for stock_code, corp_code in shard_codes.items():
+            if not str(stock_code).startswith(str(prefix)):
+                fail(f"dart corp codes: misplaced mapping {stock_code!r}")
+            if len(str(stock_code)) != 6 or not str(corp_code).isdigit():
+                fail(f"dart corp codes: invalid mapping {stock_code!r}")
+            codes[str(stock_code)] = str(corp_code)
+    if len(codes) < 1000 or int(payload.get("total") or 0) != len(codes):
+        fail(f"dart corp codes: unexpectedly small or incomplete mapping ({len(codes)})")
+    return f"dart corp codes: {len(codes)} mappings in {len(files)} shards"
 
 
 def validate_build_health(build_report: dict) -> list[str]:

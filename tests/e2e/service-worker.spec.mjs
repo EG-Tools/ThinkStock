@@ -38,5 +38,13 @@ test("service worker registers and precaches the offline shell", async ({ contex
   }));
   expect(refreshResult).toMatchObject({ ok: true, failed: 0 });
   expect(refreshResult.refreshed).toBeGreaterThan(0);
+  expect(refreshResult.revision).toMatch(/^[a-f0-9]{24}$/);
+
+  const revisionCaches = await page.evaluate(async () => {
+    const keys = await caches.keys();
+    return keys.filter((key) => key.includes("-data-"));
+  });
+  expect(revisionCaches).toContainEqual(expect.stringContaining(refreshResult.revision));
+  expect(revisionCaches.some((key) => key.endsWith("-staging"))).toBe(false);
 
 });

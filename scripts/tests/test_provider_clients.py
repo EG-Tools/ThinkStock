@@ -10,7 +10,12 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from provider_clients import RetryingHttpClient, extract_close_series, fetch_kofia_items
+from provider_clients import (
+    RetryingHttpClient,
+    extract_close_series,
+    fetch_kofia_items,
+    fetch_yahoo_prices,
+)
 
 
 class FakeResponse:
@@ -42,6 +47,20 @@ class FakeSession:
 
 
 class ProviderClientTests(unittest.TestCase):
+    def test_yahoo_prices_quarantine_non_positive_values(self) -> None:
+        dates = pd.to_datetime(["2026-07-15", "2026-07-16"])
+        frame = pd.DataFrame({"Close": [70000.0, -1.0]}, index=dates)
+
+        prices, failures = fetch_yahoo_prices(
+            ["005930.KS"],
+            dates[0].date(),
+            dates[-1].date(),
+            download_fn=lambda *_args, **_kwargs: frame,
+        )
+
+        self.assertEqual(prices["005930.KS"].tolist(), [70000.0])
+        self.assertEqual(failures, {})
+
     def test_close_extraction_rejects_ambiguous_duplicate_columns(self) -> None:
         columns = pd.MultiIndex.from_tuples([
             ("Close", "005930.KS"),

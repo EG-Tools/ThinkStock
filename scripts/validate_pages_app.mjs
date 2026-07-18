@@ -5,7 +5,7 @@ import path from "node:path";
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractionMath, chartInteractionController, cacheRefreshPolicy, browserMarketClient, auxiliaryChartModel, performanceMonitor, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, disclosurePopover, dartDisclosure, serviceWorkerClient, runtimeRefresh, dataSeedLoader, deployWorkflow, buildPagesData, dataBuildSupport, providerClients, sourcePipeline, buildReporting, plotlyBundle] = await Promise.all([
+const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractionMath, chartInteractionController, cacheRefreshPolicy, browserMarketClient, auxiliaryChartModel, performanceMonitor, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, disclosurePopover, dartDisclosure, serviceWorkerClient, runtimeRefresh, dataSeedLoader, deployWorkflow, buildPagesData, dataBuildSupport, providerClients, providerContracts, sourcePipeline, buildReporting, plotlyBundle] = await Promise.all([
   readFile(path.join(root, "docs", "app.js"), "utf8"),
   readFile(path.join(root, "docs", "index.html"), "utf8"),
   readFile(path.join(root, "docs", "sw.js"), "utf8"),
@@ -33,6 +33,7 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractio
   readFile(path.join(root, "scripts", "build_pages_data.py"), "utf8"),
   readFile(path.join(root, "scripts", "data_build_support.py"), "utf8"),
   readFile(path.join(root, "scripts", "provider_clients.py"), "utf8"),
+  readFile(path.join(root, "scripts", "provider_contracts.py"), "utf8"),
   readFile(path.join(root, "scripts", "source_pipeline.py"), "utf8"),
   readFile(path.join(root, "scripts", "build_reporting.py"), "utf8"),
   stat(path.join(root, "docs", "vendor", "plotly-basic-2.35.2.min.js")),
@@ -103,6 +104,8 @@ assert.ok(app.includes("ThinkStockRuntimeRefresh"), "runtime refresh module is n
 assert.ok(runtimeRefresh.includes("runRefreshPhases"), "runtime refresh phase runner is incomplete");
 assert.ok(app.includes("ThinkStockDataSeedLoader"), "data seed loader module is not wired into the app");
 assert.ok(dataSeedLoader.includes("fetchSegmentedSeedText"), "data seed loader module is incomplete");
+assert.ok(dataSeedLoader.includes("fetchDataManifest") && dataSeedLoader.includes("manifestSegmentPath"),
+  "segmented data manifest is not consumed by the app");
 assert.ok(!app.includes("async function fetchSeedText("), "seed network loading still lives in app.js");
 assert.ok(app.includes("criticalTasks: [coreIndexTask, preloadTask, liveTask]"), "critical startup refresh tasks are not grouped");
 assert.ok(app.includes("supplementalTasks: [adrTask, fearGreedTask, dartTask]"), "supplemental refresh tasks are not grouped");
@@ -196,6 +199,8 @@ assert.ok(sw.includes("isVersionedAssetUrl(url)"), "versioned assets are not usi
 assert.ok(sw.includes("NETWORK_FIRST_TIMEOUT_MS = 3500"), "service worker network fallback deadline is missing");
 assert.ok(sw.includes("Promise.allSettled(PRECACHE_ASSETS"), "service worker precache is not failure-isolated");
 assert.ok(sw.includes("refreshCachedDataAtomically"), "service worker data refresh is not atomic");
+assert.ok(sw.includes("DATA_CACHE_PREFIX") && sw.includes('digest("SHA-256"') && sw.includes("-staging"),
+  "service worker does not stage and verify manifest revisions");
 assert.ok(!sw.includes(".map((req) => cache.delete(req))"), "service worker still deletes data before refresh");
 assert.ok(playwrightConfig.includes('name: "webkit-sw"') && playwrightConfig.includes('serviceWorkers: "allow"'),
   "service-worker-aware WebKit coverage is missing");
@@ -222,8 +227,15 @@ assert.ok(deployWorkflow.includes("Prepare Slim Pages Artifact")
   "slim Pages artifact staging is missing");
 assert.ok(buildPagesData.includes("detect_price_rebases") && buildPagesData.includes("disclosure_start_dates"),
   "incremental Pages data policies are not wired into the builder");
-assert.ok(buildPagesData.includes("SourcePipeline") && buildPagesData.includes("build_dart_corp_code_payload"),
-  "Pages source health or compact DART payload is missing");
+assert.ok(buildPagesData.includes("SourcePipeline") && buildPagesData.includes("build_dart_corp_code_payloads"),
+  "Pages source health or sharded DART payload is missing");
+assert.ok(app.includes('stock-to-corp-shards-v1') && app.includes("dartCorpCodeLoadedShards"),
+  "DART corp code shards are not loaded lazily");
+assert.ok(providerContracts.includes("freesis_rows")
+  && providerContracts.includes("fear_greed_rows")
+  && providerContracts.includes("adr_series_points")
+  && providerContracts.includes("yahoo_close_columns"),
+  "remaining provider response contracts are incomplete");
 assert.ok(dataBuildSupport.includes("PRICE_OVERLAP_DAYS") && dataBuildSupport.includes("DART_OVERLAP_DAYS"),
   "incremental overlap policies are incomplete");
 assert.ok(providerClients.includes("class RetryingHttpClient") && providerClients.includes("fetch_yahoo_prices"),

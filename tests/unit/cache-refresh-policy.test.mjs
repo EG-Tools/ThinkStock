@@ -47,3 +47,23 @@ test("limits background refresh concurrency without losing result order", async 
   assert.equal(peak, 2);
   assert.deepEqual(results.map((result) => result.value), [0, 2, 4, 6, 8]);
 });
+
+
+test("builds hashed refresh entries from a segmented manifest", () => {
+  const digest = "a".repeat(64);
+  const entries = policy.manifestDataEntries({
+    format: "segmented-data-v1",
+    datasets: {
+      prices: {
+        recent: { file: "prices_recent.json", sha256: digest },
+        history: { file: "prices_history.json", sha256: digest },
+      },
+    },
+  }, "https://example.test/data/");
+
+  assert.deepEqual(entries.map((item) => item.cacheKey), [
+    "https://example.test/data/prices_recent.json",
+    "https://example.test/data/prices_history.json",
+  ]);
+  assert.equal(policy.normalizeManifestRevision("AB-CD" + "1".repeat(20)), `abcd${"1".repeat(20)}`);
+});

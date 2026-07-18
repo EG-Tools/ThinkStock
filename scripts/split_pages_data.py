@@ -74,11 +74,16 @@ def split_all_payloads(data_dir: Path, recent_years: int = RECENT_DATA_YEARS) ->
         "format": "segmented-data-v1",
         "datasets": {},
     }
+    generated_at_values: list[str] = []
+    revision_parts: list[str] = []
     for filename in SEGMENTED_FILES:
         source = data_dir / filename
         if not source.exists():
             continue
         payload = json.loads(source.read_text(encoding="utf-8"))
+        generated_at = str(payload.get("generated_at") or "").strip()
+        if generated_at:
+            generated_at_values.append(generated_at)
         recent, history = split_columnar_payload(payload, recent_years)
         stem = source.stem
         recent_name = f"{stem}_recent.json"
@@ -103,6 +108,12 @@ def split_all_payloads(data_dir: Path, recent_years: int = RECENT_DATA_YEARS) ->
                 "sha256": file_digest(history_path),
             },
         }
+        revision_parts.extend([
+            f"{stem}:recent:{manifest['datasets'][stem]['recent']['sha256']}",
+            f"{stem}:history:{manifest['datasets'][stem]['history']['sha256']}",
+        ])
+    manifest["generated_at"] = max(generated_at_values, default="")
+    manifest["revision"] = sha256("|".join(revision_parts).encode("utf-8")).hexdigest()[:24]
     write_payload(data_dir / MANIFEST_FILE, manifest)
     return summary
 

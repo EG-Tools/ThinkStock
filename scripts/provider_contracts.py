@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -86,3 +88,52 @@ def dart_disclosure_page(payload: dict[str, Any]) -> DartPage:
         total_page=total_page,
         items=items,
     )
+
+
+def freesis_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    if "ds1" not in payload:
+        raise ProviderContractError("Freesis response is missing ds1")
+    rows = payload.get("ds1")
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ProviderContractError("Freesis ds1 must be an array")
+    return rows
+
+
+def fear_greed_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    if "rows" not in payload:
+        raise ProviderContractError("Fear-greed response is missing rows")
+    rows = payload.get("rows")
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ProviderContractError("Fear-greed rows must be an array")
+    return rows
+
+
+def adr_series_points(html: str, variable_name: str) -> list[list[Any]]:
+    pattern = rf"const\s+{re.escape(variable_name)}\s*=\s*(\[[\s\S]*?\]);"
+    match = re.search(pattern, str(html or ""))
+    if not match:
+        raise ProviderContractError(f"ADR response is missing {variable_name}")
+    try:
+        points = json.loads(re.sub(r",\s*\]", "]", match.group(1)))
+    except json.JSONDecodeError as exc:
+        raise ProviderContractError(f"ADR {variable_name} is invalid JSON") from exc
+    if not isinstance(points, list) or any(
+        not isinstance(point, list) or len(point) < 2
+        for point in points
+    ):
+        raise ProviderContractError(f"ADR {variable_name} points are invalid")
+    return points
+
+
+def yahoo_close_columns(columns: list[Any], tickers: list[str]) -> bool:
+    clean_tickers = {str(ticker) for ticker in tickers}
+    for column in columns:
+        if isinstance(column, tuple):
+            parts = tuple(str(part) for part in column)
+            if any(part in {"Close", "Adj Close"} for part in parts) and (
+                not clean_tickers or any(part in clean_tickers for part in parts)
+            ):
+                return True
+        elif str(column) in {"Close", "Adj Close"}:
+            return True
+    return False

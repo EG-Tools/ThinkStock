@@ -3,6 +3,8 @@ importScripts("./modules/cache-refresh-policy.js?v=dev");
 const CACHE_NAME = "thinkstock-dev";
 const NETWORK_FIRST_TIMEOUT_MS = 3500;
 const DATA_REFRESH_CONCURRENCY = 3;
+const DATA_MANIFEST_PATH = "./data/data_manifest.json";
+const DATA_CACHE_PREFIX = `${CACHE_NAME}-data-`;
 const cacheRefreshPolicy = self.ThinkStockCacheRefreshPolicy;
 if (!cacheRefreshPolicy) throw new Error("Cache refresh policy failed to load");
 const PRECACHE_ASSETS = [
@@ -51,6 +53,7 @@ const DATA_URL_PATTERNS = [
   "/data/disclosures.json",
   "/data/data_manifest.json",
   "/data/dart_corp_codes.json",
+  "/data/dart_corp_codes/",
   "/data/build_report.json",
   "/data/build_history.json",
   "/data/disclosures/",
@@ -87,6 +90,10 @@ function isDataUrl(url) {
   return DATA_URL_PATTERNS.some((pattern) => url.pathname.includes(pattern));
 }
 
+function isDataManifestUrl(url) {
+  return url.pathname.endsWith("/data/data_manifest.json");
+}
+
 function cacheKeyForRequest(request) {
   const url = new URL(request.url);
   if (!isDataUrl(url)) return request;
@@ -109,10 +116,39 @@ async function putIfOk(cache, request, response) {
   }
 }
 
+async function cachedDataManifest(shellCache) {
+  const manifestUrl = new URL(DATA_MANIFEST_PATH, self.registration.scope).toString();
+  const response = await shellCache.match(manifestUrl, { ignoreSearch: true });
+  if (!response) return null;
+  try {
+    const payload = await response.clone().json();
+    return payload?.format === "segmented-data-v1" ? payload : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function activeDataCacheInfo(shellCache) {
+  const manifest = await cachedDataManifest(shellCache);
+  const revision = cacheRefreshPolicy.normalizeManifestRevision(manifest?.revision);
+  return {
+    manifest,
+    revision,
+    name: revision ? `${DATA_CACHE_PREFIX}${revision}` : CACHE_NAME,
+  };
+}
+
 async function networkFirst(request) {
-  const cache = await caches.open(CACHE_NAME);
+  const shellCache = await caches.open(CACHE_NAME);
+  const requestUrl = new URL(request.url);
+  const active = isDataUrl(requestUrl) && !isDataManifestUrl(requestUrl)
+    ? await activeDataCacheInfo(shellCache)
+    : { name: CACHE_NAME };
+  const cache = active.name === CACHE_NAME ? shellCache : await caches.open(active.name);
   const cacheKey = cacheKeyForRequest(request);
-  const cached = (await cache.match(cacheKey)) || (await cache.match(request, { ignoreSearch: true }));
+  const cached = (await cache.match(cacheKey))
+    || (await cache.match(request, { ignoreSearch: true }))
+    || (cache !== shellCache ? await shellCache.match(cacheKey, { ignoreSearch: true }) : null);
   if (!cached) {
     try {
       const response = await fetch(request);
@@ -146,6 +182,20 @@ async function cacheFirst(request) {
     return response;
   } catch (_) {
     return (await caches.match(request, { ignoreSearch: true })) || caches.match("./index.html");
+  }
+}
+
+async function manifestCacheFirst(request) {
+  const cache = await caches.open(CACHE_NAME);
+  const cacheKey = cacheKeyForRequest(request);
+  const cached = await cache.match(cacheKey, { ignoreSearch: true });
+  if (cached) return cached;
+  try {
+    const response = await fetch(request);
+    await putIfOk(cache, cacheKey, response);
+    return response;
+  } catch (_) {
+    return Response.error();
   }
 }
 
@@ -189,6 +239,10 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(cacheFirst(event.request));
     return;
   }
+  if (isDataManifestUrl(url)) {
+    event.respondWith(manifestCacheFirst(event.request));
+    return;
+  }
   event.respondWith(
     isDataUrl(url) || isCoreAssetUrl(url)
       ? networkFirst(event.request)
@@ -197,8 +251,23 @@ self.addEventListener("fetch", (event) => {
 });
 
 async function refreshCachedDataAtomically() {
-  const cache = await caches.open(CACHE_NAME);
-  const requests = await cache.keys();
+  const shellCache = await caches.open(CACHE_NAME);
+  const active = await activeDataCacheInfo(shellCache);
+  const manifestUrl = new URL(DATA_MANIFEST_PATH, self.registration.scope).toString();
+  const manifestResponse = await fetch(manifestUrl, { cache: "no-store" });
+  if (!manifestResponse.ok) throw new Error(`Manifest HTTP ${manifestResponse.status}`);
+  const manifest = await manifestResponse.clone().json();
+  const revision = cacheRefreshPolicy.normalizeManifestRevision(manifest?.revision);
+  if (!revision) throw new Error("Invalid data manifest revision");
+  const targetName = `${DATA_CACHE_PREFIX}${revision}`;
+  const stagingName = `${targetName}-staging`;
+  await caches.delete(stagingName);
+  const stagingCache = await caches.open(stagingName);
+
+  const requests = [
+    ...await shellCache.keys(),
+    ...(active.name !== CACHE_NAME ? await (await caches.open(active.name)).keys() : []),
+  ];
   const byCacheKey = new Map();
   requests.forEach((request) => {
     try {
@@ -208,20 +277,61 @@ async function refreshCachedDataAtomically() {
       // Ignore malformed cache entries.
     }
   });
+  cacheRefreshPolicy.manifestDataEntries(
+    manifest,
+    new URL("./data/", self.registration.scope).toString(),
+  ).forEach((entry) => {
+    byCacheKey.set(entry.cacheKey, {
+      request: new Request(entry.request.url),
+      sha256: entry.sha256,
+    });
+  });
 
   const planned = cacheRefreshPolicy.planDataRefreshRequests(
-    [...byCacheKey.entries()].map(([cacheKey, request]) => ({ cacheKey, request })),
+    [...byCacheKey.entries()]
+      .filter(([cacheKey]) => cacheKey !== manifestUrl)
+      .map(([cacheKey, value]) => ({
+        cacheKey,
+        request: value.request || value,
+        sha256: value.sha256 || "",
+      })),
   );
-  const results = await cacheRefreshPolicy.runWithConcurrency(planned, async ({ cacheKey, request }) => {
+  const results = await cacheRefreshPolicy.runWithConcurrency(planned, async ({ cacheKey, request, sha256 }) => {
     const response = await fetch(request, { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    await putIfOk(cache, cacheKey, response);
-    if (request.url !== cacheKey) await cache.delete(request);
+    if (sha256) {
+      const digestBuffer = await self.crypto.subtle.digest("SHA-256", await response.clone().arrayBuffer());
+      const digest = [...new Uint8Array(digestBuffer)]
+        .map((value) => value.toString(16).padStart(2, "0"))
+        .join("");
+      if (digest !== sha256) throw new Error(`Digest mismatch for ${cacheKey}`);
+    }
+    await putIfOk(stagingCache, cacheKey, response);
     return cacheKey;
   }, DATA_REFRESH_CONCURRENCY);
   const refreshed = results.filter((result) => result.status === "fulfilled").length;
   const failed = results.length - refreshed;
-  return { ok: failed === 0, refreshed, failed };
+  if (failed > 0) {
+    await caches.delete(stagingName);
+    return { ok: false, refreshed, failed, revision: active.revision || "" };
+  }
+
+  if (targetName !== active.name) await caches.delete(targetName);
+  const readyTargetCache = await caches.open(targetName);
+  const stagedRequests = await stagingCache.keys();
+  for (const request of stagedRequests) {
+    const response = await stagingCache.match(request);
+    if (response) await readyTargetCache.put(request, response);
+  }
+  await shellCache.put(manifestUrl, manifestResponse.clone());
+  await caches.delete(stagingName);
+  const cacheNames = await caches.keys();
+  await Promise.all(
+    cacheNames
+      .filter((name) => name.startsWith(DATA_CACHE_PREFIX) && name !== targetName)
+      .map((name) => caches.delete(name)),
+  );
+  return { ok: true, refreshed, failed: 0, revision };
 }
 
 self.addEventListener("message", (event) => {

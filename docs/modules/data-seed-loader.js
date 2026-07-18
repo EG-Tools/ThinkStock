@@ -4,6 +4,9 @@
   function createDataSeedLoader(options = {}) {
     const fetchWithTimeout = options.fetchWithTimeout;
     const appendCacheBust = options.appendCacheBust;
+    const manifestPath = String(options.manifestPath || "./data/data_manifest.json");
+    let manifest = null;
+    let manifestPromise = null;
     if (typeof fetchWithTimeout !== "function" || typeof appendCacheBust !== "function") {
       throw new Error("fetchWithTimeout and appendCacheBust are required");
     }
@@ -32,8 +35,38 @@
       return String(path).replace(/\.json$/i, `${suffix}.json`);
     }
 
+    async function fetchDataManifest(forceNetwork = false) {
+      if (manifest && !forceNetwork) return manifest;
+      if (manifestPromise) return manifestPromise;
+      manifestPromise = (async () => {
+        const text = await fetchSeedText(manifestPath, forceNetwork);
+        if (!text) return null;
+        try {
+          const payload = JSON.parse(text);
+          if (payload?.format !== "segmented-data-v1" || !payload?.datasets) return null;
+          manifest = payload;
+          return payload;
+        } catch (_) {
+          return null;
+        }
+      })().finally(() => {
+        manifestPromise = null;
+      });
+      return manifestPromise;
+    }
+
+    function manifestSegmentPath(path, segment, payload) {
+      const filename = String(path).split("/").pop() || "";
+      const stem = filename.replace(/\.json$/i, "");
+      const segmentFile = payload?.datasets?.[stem]?.[segment]?.file;
+      if (!segmentFile) return segmentedSeedPath(path, segment);
+      return `./data/${String(segmentFile).replace(/^\.?\//, "")}`;
+    }
+
     async function fetchSegmentedSeedText(path, segment, forceNetwork = false) {
-      const segmentedText = await fetchSeedText(segmentedSeedPath(path, segment), forceNetwork);
+      const dataManifest = await fetchDataManifest(forceNetwork);
+      const segmentPath = manifestSegmentPath(path, segment, dataManifest);
+      const segmentedText = await fetchSeedText(segmentPath, forceNetwork);
       if (segmentedText) return { text: segmentedText, usedFullFallback: false };
       const fullText = await fetchSeedText(path, forceNetwork);
       return { text: fullText, usedFullFallback: Boolean(fullText) };
@@ -41,7 +74,9 @@
 
     return Object.freeze({
       fetchSeedText,
+      fetchDataManifest,
       segmentedSeedPath,
+      manifestSegmentPath,
       fetchSegmentedSeedText,
     });
   }

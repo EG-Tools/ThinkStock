@@ -142,7 +142,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.89";
+const APP_VERSION = "0.90";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -350,7 +350,10 @@ let disclosureSeedLoadPromises = new Map();
 let disclosureSeedLoadedTickers = new Set();
 let dartCorpCodeMap = new Map();
 let dartCorpCodeMapLoaded = false;
-let dartCorpCodeMapPromise = null;
+let dartCorpCodeManifest = null;
+let dartCorpCodeManifestPromise = null;
+let dartCorpCodeLoadedShards = new Set();
+let dartCorpCodeMapPromises = new Map();
 let dartDisclosureTickerRefreshPromises = new Map();
 let activeMonths = 120;
 let hiddenSeries = new Set(["customer_deposit", "kospi_credit", "^KQ11", "kosdaq_credit"]);
@@ -527,6 +530,14 @@ function initE2eDebugAccess() {
         setDartCorpCodeRows(payload?.codes || payload?.records || []);
         return dartCorpCodeMap.size;
       },
+      async loadDartCorpCodeForTest(stockCode) {
+        const loaded = await ensureDartCorpCodeMapLoaded(stockCode);
+        return {
+          loaded,
+          corpCode: dartCorpCodeMap.get(String(stockCode || ""))?.corp_code || "",
+          shards: [...dartCorpCodeLoadedShards],
+        };
+      },
       openFirstDisclosure(offsetX = 0, offsetY = 0) {
         const chart = document.getElementById("chart");
         const traceIndex = chart?.data?.findIndex((item) => item?.meta?.isDisclosureTrace) ?? -1;
@@ -694,27 +705,69 @@ function sanitizeDartCorpCodeRows(records) {
 
 function setDartCorpCodeRows(records) {
   dartCorpCodeMap = new Map();
+  dartCorpCodeLoadedShards = new Set();
   sanitizeDartCorpCodeRows(records).forEach((record) => {
     dartCorpCodeMap.set(record.stock_code, record);
   });
   dartCorpCodeMapLoaded = dartCorpCodeMap.size > 0;
 }
 
-async function ensureDartCorpCodeMapLoaded(forceNetwork = false) {
-  if (dartCorpCodeMapLoaded && dartCorpCodeMap.size) return true;
-  if (dartCorpCodeMapPromise) return dartCorpCodeMapPromise;
+function mergeDartCorpCodeRows(records) {
+  sanitizeDartCorpCodeRows(records).forEach((record) => {
+    dartCorpCodeMap.set(record.stock_code, record);
+  });
+  dartCorpCodeMapLoaded = dartCorpCodeMap.size > 0;
+}
 
-  dartCorpCodeMapPromise = (async () => {
+async function ensureDartCorpCodeManifest(forceNetwork = false) {
+  if (dartCorpCodeManifest && !forceNetwork) return dartCorpCodeManifest;
+  if (dartCorpCodeManifestPromise) return dartCorpCodeManifestPromise;
+  dartCorpCodeManifestPromise = (async () => {
     const text = await fetchSeedText("./data/dart_corp_codes.json", forceNetwork);
+    if (!text) return null;
+    const payload = JSON.parse(text);
+    if (payload?.format === "stock-to-corp-shards-v1" && payload?.files) {
+      dartCorpCodeManifest = payload;
+      return payload;
+    }
+    setDartCorpCodeRows(payload?.codes || payload?.records || []);
+    dartCorpCodeManifest = payload;
+    return payload;
+  })().finally(() => {
+    dartCorpCodeManifestPromise = null;
+  });
+  return dartCorpCodeManifestPromise;
+}
+
+async function ensureDartCorpCodeMapLoaded(stockCode = "", forceNetwork = false) {
+  const code = String(stockCode || "").replace(/\D/g, "").slice(0, 6);
+  if (code.length === 6 && dartCorpCodeMap.has(code)) return true;
+  const manifest = await ensureDartCorpCodeManifest(forceNetwork);
+  if (!manifest) return false;
+  if (manifest.format !== "stock-to-corp-shards-v1") {
+    return code.length === 6 ? dartCorpCodeMap.has(code) : dartCorpCodeMapLoaded;
+  }
+  const prefixLength = Math.max(1, Math.min(4, Number(manifest.prefix_length) || 2));
+  const prefix = code.slice(0, prefixLength);
+  const relativePath = manifest.files?.[prefix];
+  if (!relativePath) return false;
+  if (dartCorpCodeLoadedShards.has(prefix)) return dartCorpCodeMap.has(code);
+  if (dartCorpCodeMapPromises.has(prefix)) return dartCorpCodeMapPromises.get(prefix);
+
+  const task = (async () => {
+    const path = `./${String(relativePath).replace(/^\.?\//, "")}`;
+    const text = await fetchSeedText(path, forceNetwork);
     if (!text) return false;
     const payload = JSON.parse(text);
-    setDartCorpCodeRows(payload?.codes || payload?.records || []);
-    return dartCorpCodeMapLoaded;
+    if (payload?.format !== "stock-to-corp-shard-v1" || !payload?.codes) return false;
+    mergeDartCorpCodeRows(payload.codes);
+    dartCorpCodeLoadedShards.add(prefix);
+    return dartCorpCodeMap.has(code);
   })().finally(() => {
-    dartCorpCodeMapPromise = null;
+    dartCorpCodeMapPromises.delete(prefix);
   });
-
-  return dartCorpCodeMapPromise;
+  dartCorpCodeMapPromises.set(prefix, task);
+  return task;
 }
 
 function getDataRevisions() {
@@ -3915,7 +3968,7 @@ async function fetchDartDisclosuresForTickerLive(apiKey, ticker, options = {}) {
   const code = targetTicker.slice(0, 6);
   if (!clean || !/^[0-9]{6}\.(KS|KQ)$/.test(targetTicker)) return [];
 
-  const mapLoaded = await ensureDartCorpCodeMapLoaded();
+  const mapLoaded = await ensureDartCorpCodeMapLoaded(code);
   throwIfAborted(options?.signal);
   if (!mapLoaded) {
     throw new Error("DART corp_code 매핑을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.");

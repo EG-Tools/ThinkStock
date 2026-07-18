@@ -39,7 +39,13 @@ from provider_clients import (
     fetch_kofia_items,
     fetch_yahoo_prices,
 )
-from provider_contracts import dart_disclosure_page, ecos_statistic_rows
+from provider_contracts import (
+    adr_series_points,
+    dart_disclosure_page,
+    ecos_statistic_rows,
+    fear_greed_rows,
+    freesis_rows,
+)
 from split_pages_data import split_all_payloads
 from source_pipeline import SourcePipeline
 
@@ -77,10 +83,12 @@ OUTPUT_ADR_JSON = DATA_DIR / "adr_data.json"
 OUTPUT_DISCLOSURES_JSON = DATA_DIR / "disclosures.json"
 DISCLOSURE_DATA_DIR = DATA_DIR / "disclosures"
 OUTPUT_DART_CORP_CODES_JSON = DATA_DIR / "dart_corp_codes.json"
+DART_CORP_CODE_DATA_DIR = DATA_DIR / "dart_corp_codes"
 OUTPUT_BUILD_REPORT_JSON = DATA_DIR / "build_report.json"
 OUTPUT_BUILD_HISTORY_JSON = DATA_DIR / "build_history.json"
 LOOKBACK_YEARS = 30
 DART_DISCLOSURE_LOOKBACK_YEARS = 3
+DART_CORP_CODE_PREFIX_LENGTH = 2
 ECOS_STAT_CODE = "901Y067"  # Composite Leading Indicator
 ECOS_ITEM_CODE = "I16E"     # Leading index cyclical component
 ECOS_START = "199601"
@@ -760,7 +768,11 @@ def fetch_freesis_credit(start_ymd: str = FREESIS_CREDIT_START) -> pd.DataFrame:
         print(f"Freesis credit fetch failed: {exc}")
         return pd.DataFrame(columns=CREDIT_SERIES)
 
-    rows = body.get("ds1", [])
+    try:
+        rows = freesis_rows(body)
+    except ValueError as exc:
+        print(f"Freesis credit response contract failed: {exc}")
+        return pd.DataFrame(columns=CREDIT_SERIES)
     if not rows:
         return pd.DataFrame(columns=CREDIT_SERIES)
 
@@ -813,8 +825,14 @@ def fetch_freesis_customer_deposit(start_ymd: str = FREESIS_CREDIT_START) -> pd.
         print(f"Freesis customer deposit fetch failed: {exc}")
         return pd.DataFrame(columns=CREDIT_SERIES)
 
+    try:
+        rows = freesis_rows(body)
+    except ValueError as exc:
+        print(f"Freesis customer deposit response contract failed: {exc}")
+        return pd.DataFrame(columns=CREDIT_SERIES)
+
     records: list[dict] = []
-    for row in body.get("ds1", []):
+    for row in rows:
         raw_date = str(row.get("TMPV1", ""))
         if len(raw_date) != 8:
             continue
@@ -830,16 +848,7 @@ def fetch_freesis_customer_deposit(start_ymd: str = FREESIS_CREDIT_START) -> pd.
 
 
 def extract_adr_array(html: str, var_name: str) -> list:
-    token = f"const {var_name}="
-    start = html.find(token)
-    if start < 0:
-        return []
-    start += len(token)
-    end = html.find("];", start)
-    if end < 0:
-        return []
-    raw = re.sub(r",\s*\]", "]", html[start:end + 1])
-    return json.loads(raw)
+    return adr_series_points(html, var_name)
 
 
 def fetch_adr_data() -> list[dict]:
@@ -865,8 +874,8 @@ def fetch_adr_data() -> list[dict]:
         except Exception:
             return ""
 
-    kospi_map = {ts_to_date(item[0]): item[1] for item in kospi_raw if isinstance(item, list) and len(item) >= 2}
-    kosdaq_map = {ts_to_date(item[0]): item[1] for item in kosdaq_raw if isinstance(item, list) and len(item) >= 2}
+    kospi_map = {ts_to_date(item[0]): item[1] for item in kospi_raw}
+    kosdaq_map = {ts_to_date(item[0]): item[1] for item in kosdaq_raw}
     all_dates = sorted(date_key for date_key in set(kospi_map) | set(kosdaq_map) if date_key)
 
     records: list[dict] = []
@@ -875,8 +884,8 @@ def fetch_adr_data() -> list[dict]:
         kosdaq = pd.to_numeric(kosdaq_map.get(date_key), errors="coerce")
         record = {
             "date": date_key,
-            "adr_kospi": None if pd.isna(kospi) else round(float(kospi), 6),
-            "adr_kosdaq": None if pd.isna(kosdaq) else round(float(kosdaq), 6),
+            "adr_kospi": None if pd.isna(kospi) or not 0 <= float(kospi) <= 1000 else round(float(kospi), 6),
+            "adr_kosdaq": None if pd.isna(kosdaq) or not 0 <= float(kosdaq) <= 1000 else round(float(kosdaq), 6),
         }
         if record["adr_kospi"] is not None or record["adr_kosdaq"] is not None:
             records.append(record)
@@ -895,8 +904,14 @@ def fetch_fear_greed_data() -> list[dict]:
         print(f"KOSPI fear-greed fetch failed: {exc}")
         return []
 
+    try:
+        rows = fear_greed_rows(payload)
+    except ValueError as exc:
+        print(f"KOSPI fear-greed response contract failed: {exc}")
+        return []
+
     records: list[dict] = []
-    for row in payload.get("rows", []):
+    for row in rows:
         dt = pd.to_datetime(row.get("date"), errors="coerce")
         score = pd.to_numeric(row.get("score"), errors="coerce")
         if pd.isna(dt) or pd.isna(score) or not 0 <= float(score) <= 100:
@@ -1193,7 +1208,55 @@ def write_disclosure_payloads(records: list[dict]) -> dict:
     return build_disclosure_manifest(normalized)
 
 
+def compact_dart_corp_codes(corp_map: dict[str, dict[str, str]]) -> dict[str, str]:
+    return {
+        stock_code: str(item.get("corp_code") or "").strip()
+        for stock_code, item in sorted(corp_map.items())
+        if len(stock_code) == 6 and str(item.get("corp_code") or "").strip()
+    }
+
+
+def build_dart_corp_code_payloads(
+    corp_map: dict[str, dict[str, str]],
+    prefix_length: int = DART_CORP_CODE_PREFIX_LENGTH,
+) -> tuple[dict, dict[str, dict]]:
+    clean_prefix_length = max(1, min(4, int(prefix_length)))
+    codes = compact_dart_corp_codes(corp_map)
+    by_prefix: dict[str, dict[str, str]] = {}
+    for stock_code, corp_code in codes.items():
+        by_prefix.setdefault(stock_code[:clean_prefix_length], {})[stock_code] = corp_code
+
+    generated_at = pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ")
+    shards = {
+        prefix: {
+            "generated_at": generated_at,
+            "source": "OpenDART",
+            "format": "stock-to-corp-shard-v1",
+            "prefix": prefix,
+            "codes": prefix_codes,
+        }
+        for prefix, prefix_codes in sorted(by_prefix.items())
+    }
+    manifest = {
+        "generated_at": generated_at,
+        "source": "OpenDART",
+        "format": "stock-to-corp-shards-v1",
+        "prefix_length": clean_prefix_length,
+        "total": len(codes),
+        "files": {
+            prefix: f"data/dart_corp_codes/{prefix}.json"
+            for prefix in shards
+        },
+        "counts": {
+            prefix: len(payload["codes"])
+            for prefix, payload in shards.items()
+        },
+    }
+    return manifest, shards
+
+
 def build_dart_corp_code_payload(corp_map: dict[str, dict[str, str]]) -> dict:
+    """Return the legacy compact payload for cached-data migration."""
     codes = {
         stock_code: str(item.get("corp_code") or "").strip()
         for stock_code, item in sorted(corp_map.items())
@@ -1206,6 +1269,24 @@ def build_dart_corp_code_payload(corp_map: dict[str, dict[str, str]]) -> dict:
         "total": len(codes),
         "codes": codes,
     }
+
+
+def write_dart_corp_code_payloads(corp_map: dict[str, dict[str, str]]) -> dict:
+    manifest, shards = build_dart_corp_code_payloads(corp_map)
+    DART_CORP_CODE_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    for stale in DART_CORP_CODE_DATA_DIR.glob("*.json"):
+        if stale.stem not in shards:
+            stale.unlink()
+    for prefix, payload in shards.items():
+        (DART_CORP_CODE_DATA_DIR / f"{prefix}.json").write_text(
+            json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+    OUTPUT_DART_CORP_CODES_JSON.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, allow_nan=False),
+        encoding="utf-8",
+    )
+    return manifest
 
 
 def load_existing_dart_corp_code_seed() -> dict[str, dict[str, str]]:
@@ -1222,6 +1303,27 @@ def load_existing_dart_corp_code_seed() -> dict[str, dict[str, str]]:
             for stock_code, corp_code in codes.items()
             if len(str(stock_code).strip()) == 6 and str(corp_code).strip()
         }
+    files = payload.get("files")
+    if payload.get("format") == "stock-to-corp-shards-v1" and isinstance(files, dict):
+        out: dict[str, dict[str, str]] = {}
+        for relative_path in files.values():
+            path = ROOT / "docs" / str(relative_path).lstrip("./").replace("/", os.sep)
+            try:
+                shard_payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            shard_codes = shard_payload.get("codes")
+            if not isinstance(shard_codes, dict):
+                continue
+            for stock_code, corp_code in shard_codes.items():
+                clean_stock_code = str(stock_code).strip()
+                clean_corp_code = str(corp_code).strip()
+                if len(clean_stock_code) == 6 and clean_corp_code:
+                    out[clean_stock_code] = {
+                        "corp_code": clean_corp_code,
+                        "corp_name": "",
+                    }
+        return out
     records = payload.get("records", [])
     if not isinstance(records, list):
         return {}
@@ -1979,10 +2081,7 @@ def main() -> None:
         encoding="utf-8",
     )
     if dart_corp_map:
-        OUTPUT_DART_CORP_CODES_JSON.write_text(
-            json.dumps(build_dart_corp_code_payload(dart_corp_map), ensure_ascii=False, indent=2, allow_nan=False),
-            encoding="utf-8",
-        )
+        write_dart_corp_code_payloads(dart_corp_map)
     build_report["segments"] = split_all_payloads(DATA_DIR)
     build_report["outputs"]["prices"] = payload_file_summary(OUTPUT_JSON)
     build_report["outputs"]["macro"] = payload_file_summary(OUTPUT_MACRO_JSON)

@@ -9,7 +9,7 @@ import pandas as pd
 import requests
 import yfinance as yf
 
-from provider_contracts import kofia_page
+from provider_contracts import ProviderContractError, kofia_page, yahoo_close_columns
 
 
 RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
@@ -112,6 +112,7 @@ def extract_close_series(data: pd.DataFrame, ticker: str) -> pd.Series | None:
 
 def _normalize_price_series(series: pd.Series, ticker: str) -> pd.Series:
     clean = pd.to_numeric(series, errors="coerce").rename(ticker).dropna()
+    clean = clean[clean > 0]
     index = pd.to_datetime(clean.index)
     try:
         index = index.tz_localize(None)
@@ -148,6 +149,8 @@ def fetch_yahoo_prices(
             threads=True,
             group_by="column",
         )
+        if not isinstance(batch, pd.DataFrame) or not yahoo_close_columns(list(batch.columns), cleaned):
+            raise ProviderContractError("Yahoo response is missing close columns")
         for ticker in cleaned:
             if len(cleaned) > 1 and not isinstance(getattr(batch, "columns", None), pd.MultiIndex):
                 break
@@ -172,6 +175,8 @@ def fetch_yahoo_prices(
                 progress=False,
                 threads=False,
             )
+            if not isinstance(data, pd.DataFrame) or not yahoo_close_columns(list(data.columns), [ticker]):
+                raise ProviderContractError("Yahoo response is missing close columns")
             series = extract_close_series(data, ticker)
             if series is None:
                 failures[ticker] = "close series unavailable"

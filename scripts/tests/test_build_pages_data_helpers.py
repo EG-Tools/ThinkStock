@@ -16,6 +16,7 @@ from build_pages_data import (
     CREDIT_SERIES,
     accepted_credit_series_tail,
     build_dart_corp_code_payload,
+    build_dart_corp_code_payloads,
     find_credit_history_discontinuity,
     merge_credit_seed_with_freesis,
     merge_credit_seed_with_kofia,
@@ -45,6 +46,17 @@ class BuildPagesDataHelperTests(unittest.TestCase):
         self.assertEqual(payload["codes"]["005930"], "00126380")
         self.assertNotIn("records", payload)
         self.assertNotIn("Samsung Electronics", str(payload))
+
+    def test_dart_corp_payloads_are_sharded_by_stock_prefix(self) -> None:
+        manifest, shards = build_dart_corp_code_payloads({
+            "005930": {"corp_code": "00126380", "corp_name": "Samsung Electronics"},
+            "218410": {"corp_code": "01035674", "corp_name": "RFHIC"},
+        })
+
+        self.assertEqual(manifest["format"], "stock-to-corp-shards-v1")
+        self.assertEqual(manifest["files"]["00"], "data/dart_corp_codes/00.json")
+        self.assertEqual(shards["00"]["codes"], {"005930": "00126380"})
+        self.assertEqual(shards["21"]["codes"], {"218410": "01035674"})
 
     def test_kofia_merge_preserves_overlap_and_scales_only_new_tail(self) -> None:
         seed_dates = pd.to_datetime([

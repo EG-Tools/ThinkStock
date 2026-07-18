@@ -26,6 +26,32 @@
     });
   }
 
+  function normalizeManifestRevision(value) {
+    const revision = String(value || "").toLowerCase().replace(/[^a-f0-9]/g, "");
+    return revision.length >= 12 ? revision.slice(0, 24) : "";
+  }
+
+  function manifestDataEntries(manifest, baseUrl) {
+    if (manifest?.format !== "segmented-data-v1" || !manifest?.datasets) return [];
+    const entries = [];
+    Object.values(manifest.datasets).forEach((dataset) => {
+      ["recent", "history"].forEach((segment) => {
+        const descriptor = dataset?.[segment];
+        const filename = String(descriptor?.file || "");
+        const digest = String(descriptor?.sha256 || "").toLowerCase();
+        if (!filename || !/^[a-f0-9]{64}$/.test(digest)) return;
+        const url = new URL(filename, baseUrl).toString();
+        entries.push({
+          cacheKey: url,
+          request: { url },
+          sha256: digest,
+          segment,
+        });
+      });
+    });
+    return entries;
+  }
+
   async function runWithConcurrency(items, worker, concurrency = DEFAULT_CONCURRENCY) {
     const source = Array.isArray(items) ? items : [];
     if (!source.length) return [];
@@ -51,6 +77,8 @@
 
   globalScope.ThinkStockCacheRefreshPolicy = Object.freeze({
     DEFAULT_CONCURRENCY,
+    manifestDataEntries,
+    normalizeManifestRevision,
     refreshPriority,
     planDataRefreshRequests,
     runWithConcurrency,
