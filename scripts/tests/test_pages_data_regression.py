@@ -94,6 +94,42 @@ class PagesDataRegressionTests(unittest.TestCase):
 
             self.assertEqual(compare_corp_codes(baseline, current), "dart_corp_codes: 2 mappings")
 
+    def test_compares_legacy_and_sharded_dart_code_formats(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            baseline = root / "baseline"
+            current = root / "current"
+            baseline.mkdir()
+            (current / "dart_corp_codes").mkdir(parents=True)
+            codes = {
+                "005930": "00126380",
+                "218410": "01035674",
+            }
+            (baseline / "dart_corp_codes.json").write_text(
+                json.dumps({"format": "stock-to-corp-v2", "codes": codes}),
+                encoding="utf-8",
+            )
+            (current / "dart_corp_codes.json").write_text(
+                json.dumps({
+                    "format": "stock-to-corp-shards-v1",
+                    "files": {
+                        "00": "data/dart_corp_codes/00.json",
+                        "21": "data/dart_corp_codes/21.json",
+                    },
+                }),
+                encoding="utf-8",
+            )
+            (current / "dart_corp_codes" / "00.json").write_text(
+                json.dumps({"format": "stock-to-corp-shard-v1", "codes": {"005930": "00126380"}}),
+                encoding="utf-8",
+            )
+            (current / "dart_corp_codes" / "21.json").write_text(
+                json.dumps({"format": "stock-to-corp-shard-v1", "codes": {"218410": "01035674"}}),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(compare_corp_codes(baseline, current), "dart_corp_codes: 2 mappings")
+
 
 if __name__ == "__main__":
     unittest.main()

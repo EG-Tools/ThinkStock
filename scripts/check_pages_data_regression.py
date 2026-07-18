@@ -183,10 +183,25 @@ def corp_code_map(payload: dict) -> dict[str, str]:
     return out
 
 
+def load_corp_code_map(data_root: Path) -> dict[str, str]:
+    payload = load_json(data_root / "dart_corp_codes.json")
+    if payload.get("format") != "stock-to-corp-shards-v1":
+        return corp_code_map(payload)
+
+    files = payload.get("files")
+    if not isinstance(files, dict) or not files:
+        raise DataRegressionError("dart_corp_codes: shard manifest has no files")
+
+    codes: dict[str, str] = {}
+    for relative_path in files.values():
+        clean_path = str(relative_path).removeprefix("./data/").removeprefix("data/")
+        codes.update(corp_code_map(load_json(data_root / clean_path)))
+    return codes
+
+
 def compare_corp_codes(baseline_root: Path, current_root: Path) -> str:
-    file_name = "dart_corp_codes.json"
-    baseline_codes = corp_code_map(load_json(baseline_root / file_name))
-    current_codes = corp_code_map(load_json(current_root / file_name))
+    baseline_codes = load_corp_code_map(baseline_root)
+    current_codes = load_corp_code_map(current_root)
     if not baseline_codes:
         return "dart_corp_codes: baseline is empty; comparison skipped"
     minimum_rows = max(1, math.floor(len(baseline_codes) * MIN_CORP_CODE_RETENTION))
