@@ -64,8 +64,14 @@ jobs:
           node-version: "24"
           cache: "npm"
 
+      - name: Install Node Dependencies
+        run: npm ci
+
+      - name: Build Plotly Vendor Bundle
+        run: npm run vendor:sync
+
       - name: Build Optimized Web Bundle
-        run: npm ci && npm run build:web
+        run: npm run build:web
 
       - name: Restore Last Known-Good Pages Data
         uses: actions/cache@v5

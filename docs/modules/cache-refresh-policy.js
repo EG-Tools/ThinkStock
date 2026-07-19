@@ -63,6 +63,18 @@
     }));
   }
 
+  function isPersistentDataCacheName(name, prefix = "thinkstock-data-v1-") {
+    const cacheName = String(name || "");
+    return cacheName.startsWith(prefix) && !cacheName.endsWith("-staging");
+  }
+
+  function planActivationCacheCleanup(cacheNames, shellCacheName, dataPrefix) {
+    return (Array.isArray(cacheNames) ? cacheNames : []).filter((name) => (
+      name !== shellCacheName
+      && !isPersistentDataCacheName(name, dataPrefix)
+    ));
+  }
+
   async function runWithConcurrency(items, worker, concurrency = DEFAULT_CONCURRENCY) {
     const source = Array.isArray(items) ? items : [];
     if (!source.length) return [];
@@ -90,6 +102,8 @@
     DEFAULT_CONCURRENCY,
     manifestDataEntries,
     normalizeManifestRevision,
+    isPersistentDataCacheName,
+    planActivationCacheCleanup,
     planManifestRefreshEntries,
     refreshPriority,
     planDataRefreshRequests,

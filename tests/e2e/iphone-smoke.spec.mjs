@@ -9,9 +9,9 @@ const DESKTOP_PERF_BUDGET = Object.freeze({
   maxPointerMove: 50,
   maxP95FrameGap: 180,
   maxLongFrameRatio: 0.65,
-  maxP95RenderChart: 2500,
-  maxP95AuxiliaryRender: 1500,
-  maxAppStartup: 5000,
+  maxP95RenderChart: 2000,
+  maxP95AuxiliaryRender: 1200,
+  maxAppStartup: 4500,
 });
 
 function columnar(series, dates, columns) {
@@ -665,10 +665,11 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   expect(revisionsAfterHistory.price).toBeGreaterThan(revisionsBeforeHistory.price);
   expect(revisionsAfterHistory.macro).toBeGreaterThan(revisionsBeforeHistory.macro);
   expect(revisionsAfterHistory.credit).toBeGreaterThan(revisionsBeforeHistory.credit);
-  expect((await page.evaluate(() => window.ThinkStockE2E.getChartWorkerStats())).sourceTransfers)
-    .toBeGreaterThan(workerStatsBeforeHistory.sourceTransfers);
-  expect((await page.evaluate(() => window.ThinkStockE2E.getChartWorkerStats())).partialChartUpdates)
-    .toBeGreaterThan(0);
+  const workerStatsAfterHistory = await page.evaluate(() => window.ThinkStockE2E.getChartWorkerStats());
+  expect(workerStatsAfterHistory.sourceTransfers).toBeGreaterThan(workerStatsBeforeHistory.sourceTransfers);
+  expect(workerStatsAfterHistory.partialChartUpdates)
+    .toBeGreaterThan(workerStatsBeforeHistory.partialChartUpdates);
+  expect(workerStatsAfterHistory.fullChartRenders).toBe(workerStatsBeforeHistory.fullChartRenders);
   const renderPerf = await page.evaluate(() => window.ThinkStockPerf.summary());
   expect(renderPerf.renderCharts).toBeGreaterThan(0);
   expect(renderPerf.p95RenderChart).toBeLessThan(DESKTOP_PERF_BUDGET.maxP95RenderChart);

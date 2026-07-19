@@ -97,3 +97,21 @@ test("reuses only manifest segments whose SHA-256 is unchanged", () => {
     { name: "prices_history.json", reuse: false },
   ]);
 });
+
+
+test("keeps completed data revisions while replacing shell and staging caches", () => {
+  const prefix = "thinkstock-data-v1-";
+  assert.equal(policy.isPersistentDataCacheName(`${prefix}abc123`, prefix), true);
+  assert.equal(policy.isPersistentDataCacheName(`${prefix}abc123-staging`, prefix), false);
+  assert.deepEqual(policy.planActivationCacheCleanup([
+    "thinkstock-old-shell",
+    "thinkstock-new-shell",
+    `${prefix}abc123`,
+    `${prefix}def456-staging`,
+    "unrelated-cache",
+  ], "thinkstock-new-shell", prefix), [
+    "thinkstock-old-shell",
+    `${prefix}def456-staging`,
+    "unrelated-cache",
+  ]);
+});

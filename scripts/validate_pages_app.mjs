@@ -5,7 +5,7 @@ import path from "node:path";
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractionMath, chartInteractionController, cacheRefreshPolicy, browserMarketClient, auxiliaryChartModel, mainChartRenderer, performanceMonitor, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, disclosurePopover, dartDisclosure, serviceWorkerClient, runtimeRefresh, dataSeedLoader, deployWorkflow, buildPagesData, dataBuildSupport, providerClients, providerContracts, sourcePipeline, buildReporting, plotlyBundle, appBundle] = await Promise.all([
+const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractionMath, chartInteractionController, cacheRefreshPolicy, browserMarketClient, auxiliaryChartModel, mainChartRenderer, performanceMonitor, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, disclosurePopover, dartDisclosure, serviceWorkerClient, runtimeRefresh, dataSeedLoader, deployWorkflow, plotlyBuilder, buildPagesData, dataBuildSupport, providerClients, providerContracts, sourcePipeline, buildReporting, plotlyBundle, appBundle] = await Promise.all([
   readFile(path.join(root, "docs", "app.js"), "utf8"),
   readFile(path.join(root, "docs", "index.html"), "utf8"),
   readFile(path.join(root, "docs", "sw.js"), "utf8"),
@@ -31,6 +31,7 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractio
   readFile(path.join(root, "docs", "modules", "runtime-refresh.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "data-seed-loader.js"), "utf8"),
   readFile(path.join(root, ".github", "workflows", "deploy-pages.yml"), "utf8"),
+  readFile(path.join(root, "scripts", "build_plotly_bundle.cjs"), "utf8"),
   readFile(path.join(root, "scripts", "build_pages_data.py"), "utf8"),
   readFile(path.join(root, "scripts", "data_build_support.py"), "utf8"),
   readFile(path.join(root, "scripts", "provider_clients.py"), "utf8"),
@@ -162,6 +163,10 @@ assert.ok(app.includes('name: "공포탐욕"') && app.includes('yaxis: "y2"'), "
 assert.ok(app.includes("lastAdrRenderKey === renderKey"), "ADR render fast path is missing");
 assert.ok(chartLoader.includes("plotly-thinkstock-2.35.2.min.js"), "ThinkStock Plotly bundle is not configured");
 assert.ok(plotlyBundle.size < 950_000, `ThinkStock Plotly bundle is too large: ${plotlyBundle.size} bytes`);
+assert.ok(plotlyBuilder.includes("stats.hasErrors()") && plotlyBuilder.includes("process.exitCode = 1"),
+  "Plotly vendor build does not fail closed");
+assert.ok(deployWorkflow.includes("npm run vendor:sync"),
+  "deployment does not rebuild the custom Plotly bundle");
 assert.ok(html.includes("./assets/app.bundle.min.js?v=dev"), "optimized app bundle is not loaded");
 assert.equal([...html.matchAll(/<script\b/g)].length, 1, "runtime scripts are not bundled");
 assert.ok(appBundle.size < 260_000, `app bundle is too large: ${appBundle.size} bytes`);
@@ -222,6 +227,9 @@ assert.ok(sw.includes("DATA_CACHE_PREFIX") && sw.includes('digest("SHA-256"') &&
   "service worker does not stage and verify manifest revisions");
 assert.ok(sw.includes("planManifestRefreshEntries") && sw.includes("reusableKeys"),
   "service worker does not reuse unchanged manifest segments");
+assert.ok(sw.includes('const DATA_CACHE_PREFIX = "thinkstock-data-v1-"')
+  && sw.includes("planActivationCacheCleanup"),
+  "service worker data cache does not survive shell deployments");
 assert.ok(sw.includes("function dataCacheFirst("),
   "validated data cache is not preferred after an atomic refresh");
 assert.ok(!sw.includes(".map((req) => cache.delete(req))"), "service worker still deletes data before refresh");

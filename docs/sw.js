@@ -4,7 +4,7 @@ const CACHE_NAME = "thinkstock-dev";
 const NETWORK_FIRST_TIMEOUT_MS = 3500;
 const DATA_REFRESH_CONCURRENCY = 3;
 const DATA_MANIFEST_PATH = "./data/data_manifest.json";
-const DATA_CACHE_PREFIX = `${CACHE_NAME}-data-`;
+const DATA_CACHE_PREFIX = "thinkstock-data-v1-";
 const cacheRefreshPolicy = self.ThinkStockCacheRefreshPolicy;
 if (!cacheRefreshPolicy) throw new Error("Cache refresh policy failed to load");
 const PRECACHE_ASSETS = [
@@ -105,12 +105,30 @@ async function cachedDataManifest(shellCache) {
 }
 
 async function activeDataCacheInfo(shellCache) {
-  const manifest = await cachedDataManifest(shellCache);
-  const revision = cacheRefreshPolicy.normalizeManifestRevision(manifest?.revision);
-  return {
-    manifest,
-    revision,
-    name: revision ? `${DATA_CACHE_PREFIX}${revision}` : CACHE_NAME,
+  const shellManifest = await cachedDataManifest(shellCache);
+  const shellRevision = cacheRefreshPolicy.normalizeManifestRevision(shellManifest?.revision);
+  const shellTargetName = shellRevision ? `${DATA_CACHE_PREFIX}${shellRevision}` : "";
+  const cacheNames = await caches.keys();
+  if (shellTargetName && cacheNames.includes(shellTargetName)) {
+    return { manifest: shellManifest, revision: shellRevision, name: shellTargetName };
+  }
+
+  const candidates = await Promise.all(cacheNames
+    .filter((name) => cacheRefreshPolicy.isPersistentDataCacheName(name, DATA_CACHE_PREFIX))
+    .map(async (name) => {
+      const cache = await caches.open(name);
+      const manifest = await cachedDataManifest(cache);
+      const revision = cacheRefreshPolicy.normalizeManifestRevision(manifest?.revision);
+      return revision ? { manifest, revision, name } : null;
+    }));
+  const previous = candidates
+    .filter(Boolean)
+    .sort((left, right) => String(right.manifest?.generated_at || "")
+      .localeCompare(String(left.manifest?.generated_at || "")))[0];
+  return previous || {
+    manifest: shellManifest,
+    revision: shellRevision,
+    name: CACHE_NAME,
   };
 }
 
@@ -218,7 +236,10 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))))
+      .then((keys) => Promise.all(
+        cacheRefreshPolicy.planActivationCacheCleanup(keys, CACHE_NAME, DATA_CACHE_PREFIX)
+          .map((key) => caches.delete(key)),
+      ))
       .then(() => self.clients.claim()),
   );
 });
@@ -345,6 +366,7 @@ async function refreshCachedDataAtomically() {
     const response = await stagingCache.match(request);
     if (response) await readyTargetCache.put(request, response);
   }
+  await readyTargetCache.put(manifestUrl, manifestResponse.clone());
   await shellCache.put(manifestUrl, manifestResponse.clone());
   await caches.delete(stagingName);
   const cacheNames = await caches.keys();
