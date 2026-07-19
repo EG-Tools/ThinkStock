@@ -27,7 +27,7 @@ test("service worker registers and precaches the offline shell", async ({ contex
     "/modules/cache-refresh-policy.js",
     "/modules/data-worker.js",
     "/modules/chart-model-worker.js",
-    "/vendor/plotly-basic-2.35.2.min.js",
+    "/vendor/plotly-thinkstock-2.35.2.min.js",
   ]));
 
   const refreshResult = await page.evaluate(() => new Promise((resolve) => {
@@ -37,6 +37,7 @@ test("service worker registers and precaches the offline shell", async ({ contex
   }));
   expect(refreshResult).toMatchObject({ ok: true, failed: 0 });
   expect(refreshResult.refreshed).toBeGreaterThan(0);
+  expect(refreshResult.reused).toBeGreaterThan(0);
   expect(refreshResult.revision).toMatch(/^[a-f0-9]{24}$/);
 
   const revisionCaches = await page.evaluate(async () => {

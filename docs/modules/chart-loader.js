@@ -7,7 +7,7 @@
       return "";
     }
   })();
-  const PLOTLY_SCRIPT_URL = `./vendor/plotly-basic-2.35.2.min.js${cacheBuster}`;
+  const PLOTLY_SCRIPT_URL = `./vendor/plotly-thinkstock-2.35.2.min.js${cacheBuster}`;
   let plotlyLoadPromise = null;
 
   function ensurePlotlyLoaded() {
@@ -16,7 +16,7 @@
 
     plotlyLoadPromise = new Promise((resolve, reject) => {
       const existingScript = document.querySelector(
-        'script[data-thinkstock-plotly="true"], script[src*="plotly-basic-2.35.2.min.js"]'
+        'script[data-thinkstock-plotly="true"], script[src*="plotly-thinkstock-2.35.2.min.js"]'
       );
       const complete = () => {
         if (window.Plotly) {

@@ -59,7 +59,7 @@ def main() -> int:
     auxiliary_model_src = versioned("./modules/auxiliary-chart-model.js", version)
     data_worker_src = versioned("./modules/data-worker.js", version)
     chart_worker_src = versioned("./modules/chart-model-worker.js", version)
-    plotly_src = versioned("./vendor/plotly-basic-2.35.2.min.js", version)
+    plotly_src = versioned("./vendor/plotly-thinkstock-2.35.2.min.js", version)
 
     index = INDEX_HTML.read_text(encoding="utf-8")
     index = replace_once(

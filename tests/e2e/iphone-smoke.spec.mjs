@@ -9,6 +9,9 @@ const DESKTOP_PERF_BUDGET = Object.freeze({
   maxPointerMove: 50,
   maxP95FrameGap: 180,
   maxLongFrameRatio: 0.65,
+  maxP95RenderChart: 2500,
+  maxP95AuxiliaryRender: 1500,
+  maxAppStartup: 5000,
 });
 
 function columnar(series, dates, columns) {
@@ -242,7 +245,7 @@ test("startup loader releases before supplemental refresh finishes", async ({ pa
   await stubExternalRefreshes(page);
 
   try {
-    await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+    await page.goto("/?e2e=1&perf=1", { waitUntil: "domcontentloaded" });
     await expect.poll(() => page.evaluate(() => (
       window.ThinkStockE2E?.getRefreshPhaseStats?.().criticalReady || 0
     ))).toBeGreaterThan(0);
@@ -251,6 +254,9 @@ test("startup loader releases before supplemental refresh finishes", async ({ pa
     expect(await page.evaluate(() => (
       window.ThinkStockE2E?.getRefreshPhaseStats?.().supplementalReady || 0
     ))).toBe(0);
+    const startupPerf = await page.evaluate(() => window.ThinkStockPerf.summary());
+    expect(startupPerf.appStarts).toBeGreaterThanOrEqual(1);
+    expect(startupPerf.p95AppStartup).toBeLessThan(DESKTOP_PERF_BUDGET.maxAppStartup);
   } finally {
     releaseFearGreed();
   }
@@ -663,6 +669,10 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
     .toBeGreaterThan(workerStatsBeforeHistory.sourceTransfers);
   expect((await page.evaluate(() => window.ThinkStockE2E.getChartWorkerStats())).partialChartUpdates)
     .toBeGreaterThan(0);
+  const renderPerf = await page.evaluate(() => window.ThinkStockPerf.summary());
+  expect(renderPerf.renderCharts).toBeGreaterThan(0);
+  expect(renderPerf.p95RenderChart).toBeLessThan(DESKTOP_PERF_BUDGET.maxP95RenderChart);
+  expect(renderPerf.p95AuxiliaryRender).toBeLessThan(DESKTOP_PERF_BUDGET.maxP95AuxiliaryRender);
   await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getCacheCleanupStats().runs))
     .toBeGreaterThan(0);
 });

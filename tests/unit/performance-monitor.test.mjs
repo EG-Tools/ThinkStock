@@ -101,6 +101,10 @@ test("records samples and uses percentile frame timing", () => {
     p95AuxiliaryRender: 0,
     runtimeRefreshes: 0,
     maxRuntimeRefresh: 0,
+    appStarts: 0,
+    p95AppStartup: 0,
+    slowOperations: 0,
+    latestSlowOperation: "",
   });
 });
 
@@ -110,7 +114,7 @@ test("persists enable state and stops frame monitoring when disabled", () => {
   const monitor = createPerformanceMonitor(harness.scope);
   const api = monitor.init();
   assert.equal(monitor.isEnabled(), false);
-  assert.equal(monitor.startSample(), 0);
+  assert.equal(monitor.startSample(), 100);
 
   assert.equal(api.enable(), true);
   assert.equal(harness.stored.get("thinkstock-perf-debug"), "1");
@@ -118,7 +122,7 @@ test("persists enable state and stops frame monitoring when disabled", () => {
   assert.equal(api.disable(), false);
   assert.equal(harness.stored.has("thinkstock-perf-debug"), false);
   assert.equal(harness.pendingFrames(), 0);
-  assert.equal(harness.observers[0].disconnected, true);
+  assert.equal(harness.observers[0].disconnected, false);
 });
 
 
@@ -173,5 +177,34 @@ test("records bounded browser long tasks with attribution", () => {
     p95AuxiliaryRender: 0,
     runtimeRefreshes: 0,
     maxRuntimeRefresh: 0,
+    appStarts: 0,
+    p95AppStartup: 0,
+    slowOperations: 0,
+    latestSlowOperation: "",
   });
+});
+
+
+test("keeps a bounded slow-operation trail without debug mode", () => {
+  const harness = createScope();
+  const monitor = createPerformanceMonitor(harness.scope, {
+    slowOperationMs: 20,
+    slowSampleLimit: 2,
+  });
+  const api = monitor.init();
+
+  [10, 30, 40].forEach((duration, index) => {
+    harness.setNow(100);
+    const startedAt = monitor.startSample();
+    harness.setNow(100 + duration);
+    monitor.recordSample(`operation-${index}`, startedAt);
+  });
+
+  assert.deepEqual(api.get(), []);
+  assert.deepEqual(
+    api.getSlowOperations().map((sample) => sample.label),
+    ["operation-1", "operation-2"],
+  );
+  assert.equal(api.summary().slowOperations, 2);
+  assert.equal(api.summary().latestSlowOperation, "operation-2");
 });

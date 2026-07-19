@@ -67,3 +67,33 @@ test("builds hashed refresh entries from a segmented manifest", () => {
   ]);
   assert.equal(policy.normalizeManifestRevision("AB-CD" + "1".repeat(20)), `abcd${"1".repeat(20)}`);
 });
+
+
+test("reuses only manifest segments whose SHA-256 is unchanged", () => {
+  const sameDigest = "a".repeat(64);
+  const oldDigest = "b".repeat(64);
+  const newDigest = "c".repeat(64);
+  const manifest = (recentDigest, historyDigest) => ({
+    format: "segmented-data-v1",
+    datasets: {
+      prices: {
+        recent: { file: "prices_recent.json", sha256: recentDigest },
+        history: { file: "prices_history.json", sha256: historyDigest },
+      },
+    },
+  });
+
+  const planned = policy.planManifestRefreshEntries(
+    manifest(sameDigest, oldDigest),
+    manifest(sameDigest, newDigest),
+    "https://example.test/data/",
+  );
+
+  assert.deepEqual(planned.map((entry) => ({
+    name: new URL(entry.cacheKey).pathname.split("/").pop(),
+    reuse: entry.reuse,
+  })), [
+    { name: "prices_recent.json", reuse: true },
+    { name: "prices_history.json", reuse: false },
+  ]);
+});

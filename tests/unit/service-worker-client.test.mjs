@@ -49,7 +49,10 @@ test("returns the atomic refresh result from the active controller", async () =>
     clearTimeout,
   };
 
-  assert.equal(await createServiceWorkerClient(scope).requestDataRefresh(50), true);
+  assert.deepEqual(
+    await createServiceWorkerClient(scope).requestDataRefresh(50),
+    { ok: true, refreshed: 5, failed: 0 },
+  );
 });
 
 test("allows atomic data refresh enough time to validate and swap all segments", async () => {
@@ -76,7 +79,7 @@ test("allows atomic data refresh enough time to validate and swap all segments",
     clearTimeout: () => {},
   };
 
-  assert.equal(await createServiceWorkerClient(scope).requestDataRefresh(), true);
+  assert.deepEqual(await createServiceWorkerClient(scope).requestDataRefresh(), { ok: true });
   assert.equal(timeoutDelay, 15000);
 });
 
@@ -89,5 +92,7 @@ test("fails fast when no service worker controls the page", async () => {
     clearTimeout,
   };
 
-  assert.equal(await createServiceWorkerClient(scope).requestDataRefresh(50), false);
+  const result = await createServiceWorkerClient(scope).requestDataRefresh(50);
+  assert.equal(result.ok, false);
+  assert.equal(result.unavailable, true);
 });

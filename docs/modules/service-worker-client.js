@@ -8,23 +8,25 @@
           const controller = scope.navigator?.serviceWorker?.controller;
           const MessageChannelClass = scope.MessageChannel;
           if (!controller || typeof MessageChannelClass !== "function") {
-            resolve(false);
+            resolve({ ok: false, unavailable: true });
             return;
           }
 
           const channel = new MessageChannelClass();
           let settled = false;
-          const done = (ok) => {
+          const done = (result) => {
             if (settled) return;
             settled = true;
             scope.clearTimeout(timer);
-            resolve(Boolean(ok));
+            resolve(result && typeof result === "object"
+              ? result
+              : { ok: Boolean(result), refreshed: 0, reused: 0, failed: 0 });
           };
-          channel.port1.onmessage = (event) => done(event?.data?.ok !== false);
-          const timer = scope.setTimeout(() => done(false), timeoutMs);
+          channel.port1.onmessage = (event) => done(event?.data || { ok: false });
+          const timer = scope.setTimeout(() => done({ ok: false, timeout: true }), timeoutMs);
           controller.postMessage("REFRESH_DATA", [channel.port2]);
         } catch (_) {
-          resolve(false);
+          resolve({ ok: false, unavailable: true });
         }
       });
     }

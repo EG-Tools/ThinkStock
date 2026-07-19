@@ -47,6 +47,8 @@ if (!browserMarketClientModule) throw new Error("Browser market client module fa
 const auxiliaryChartModelModule = globalThis.ThinkStockAuxiliaryChartModel;
 if (!auxiliaryChartModelModule) throw new Error("Auxiliary chart model module failed to load");
 const buildAuxiliaryChartModelSync = auxiliaryChartModelModule.buildAuxiliaryChartModel;
+const mainChartRenderer = globalThis.ThinkStockMainChartRenderer;
+if (!mainChartRenderer) throw new Error("Main chart renderer module failed to load");
 const performanceMonitorModule = globalThis.ThinkStockPerformanceMonitor;
 if (!performanceMonitorModule) throw new Error("Performance monitor module failed to load");
 const performanceMonitor = performanceMonitorModule.createPerformanceMonitor(globalThis);
@@ -132,7 +134,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.93";
+const APP_VERSION = "0.94";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -4031,76 +4033,18 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
 
 /* Main chart */
 
-function mainChartTraceIdentity(trace) {
-  if (trace?.meta?.isDisclosureTrace) return "disclosure";
-  const seriesKey = String(trace?.meta?.seriesKey || "");
-  return seriesKey ? `series:${seriesKey}` : "";
-}
-
-function canApplyMainChartPartialUpdate(el, traces) {
-  if (!el?._fullLayout?.xaxis || !el?._fullLayout?.yaxis || !Array.isArray(el.data)) return false;
-  if (!Array.isArray(traces) || el.data.length !== traces.length || !traces.length) return false;
-  return traces.every((trace, index) => (
-    mainChartTraceIdentity(trace)
-    && mainChartTraceIdentity(trace) === mainChartTraceIdentity(el.data[index])
-    && trace.type === el.data[index]?.type
-    && trace.mode === el.data[index]?.mode
-  ));
-}
-
-function mainChartRestylePayload(traces) {
-  return {
-    x: traces.map((trace) => trace.x || []),
-    y: traces.map((trace) => trace.y || []),
-    text: traces.map((trace) => trace.text ?? null),
-    customdata: traces.map((trace) => trace.customdata ?? null),
-    hoverinfo: traces.map((trace) => trace.hoverinfo ?? null),
-    hovertemplate: traces.map((trace) => trace.hovertemplate ?? null),
-    visible: traces.map((trace) => trace.visible ?? true),
-  };
-}
-
-function mainChartRelayoutPayload(layout) {
-  const payload = {
-    hovermode: layout.hovermode,
-    "xaxis.autorange": false,
-    "xaxis.range": [...layout.xaxis.range],
-  };
-  if (Array.isArray(layout.yaxis.range) && layout.yaxis.range.length === 2) {
-    payload["yaxis.autorange"] = false;
-    payload["yaxis.range"] = [...layout.yaxis.range];
-  } else {
-    payload["yaxis.autorange"] = true;
-  }
-  return payload;
-}
-
 async function applyMainChartRender(el, traces, layout) {
-  if (canApplyMainChartPartialUpdate(el, traces)) {
-    chartSyncing = true;
-    try {
-      const traceIndexes = traces.map((_, index) => index);
-      // Combine trace and viewport changes so Plotly performs one SVG/layout
-      // pass. chartSyncing prevents the emitted relayout event from bouncing
-      // the same range into the auxiliary chart during this atomic update.
-      await Plotly.update(
-        el,
-        mainChartRestylePayload(traces),
-        mainChartRelayoutPayload(layout),
-        traceIndexes,
-      );
-      mainChartPartialUpdateCount += 1;
-      lastMainChartRenderMode = "partial";
-      return lastMainChartRenderMode;
-    } catch (_) {
-      // Plotly can reject a partial update when a plugin mutates trace structure.
-    } finally {
-      chartSyncing = false;
-    }
+  const partialCandidate = mainChartRenderer.canApplyPartialUpdate(el, traces);
+  if (partialCandidate) chartSyncing = true;
+  let result;
+  try {
+    result = await mainChartRenderer.render(Plotly, el, traces, layout, PLOTLY_CONFIG);
+  } finally {
+    if (partialCandidate) chartSyncing = false;
   }
-  await Plotly.react(el, traces, layout, PLOTLY_CONFIG);
-  mainChartFullRenderCount += 1;
-  lastMainChartRenderMode = "full";
+  if (result.mode === "partial") mainChartPartialUpdateCount += 1;
+  else mainChartFullRenderCount += 1;
+  lastMainChartRenderMode = result.mode;
   return lastMainChartRenderMode;
 }
 
@@ -5617,6 +5561,7 @@ function waitForFirstPaint() {
 }
 
 async function boot() {
+  const startupPerfStartedAt = startPerfSample();
   const msgEl = document.getElementById("messageArea");
   scheduleServiceWorkerRegistration();
   showStartupLoader();
@@ -5744,15 +5689,17 @@ async function boot() {
         refreshBtn.classList.add("spinning");
         setMessage(msgEl, []);
         try {
+          let serviceWorkerRefresh = null;
           if (navigator.serviceWorker.controller) {
-            await requestServiceWorkerDataRefresh();
+            serviceWorkerRefresh = await requestServiceWorkerDataRefresh();
           }
+          const forceSeedNetwork = serviceWorkerRefresh?.ok !== true;
           if (hasRuntimeDataLoaded()) {
-            await loadData(true, { mergeWithExisting: true });
+            await loadData(forceSeedNetwork, { mergeWithExisting: true });
           } else {
             const restored = await loadLastRuntimeSnapshot();
             if (restored) await renderChart(false);
-            else await loadData(true);
+            else await loadData(forceSeedNetwork);
           }
           await refreshRuntimeData(msgEl, { forceNetwork: true });
         } catch (err) {
@@ -5791,6 +5738,10 @@ async function boot() {
     setMessage(msgEl, err.message || "데이터를 가져오지 못했습니다.", true);
   } finally {
     hideStartupLoader();
+    recordPerfSample("appStartup", startupPerfStartedAt, {
+      historicalDataLoaded,
+      restoredSnapshot: hasRuntimeDataLoaded(),
+    });
   }
 }
 

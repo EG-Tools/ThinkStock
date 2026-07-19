@@ -6,7 +6,11 @@
     const frameSampleLimit = Number(options.frameSampleLimit) || 1200;
     const longFrameMs = Number(options.longFrameMs) || 50;
     const longTaskSampleLimit = Number(options.longTaskSampleLimit) || 40;
+    const slowOperationMs = Number(options.slowOperationMs) || 80;
+    const slowSampleLimit = Number(options.slowSampleLimit) || 30;
+    const autoObserveLongTasks = options.autoObserveLongTasks !== false;
     let samples = [];
+    let slowSamples = [];
     let enabled = false;
     let frameRafId = 0;
     let lastFrameAt = 0;
@@ -54,7 +58,9 @@
     }
 
     function startLongTaskMonitor() {
-      if (!enabled || longTaskObserver || typeof scope.PerformanceObserver !== "function") return;
+      if ((!enabled && !autoObserveLongTasks)
+        || longTaskObserver
+        || typeof scope.PerformanceObserver !== "function") return;
       try {
         longTaskObserver = new scope.PerformanceObserver((list) => {
           list.getEntries().forEach((entry) => {
@@ -88,7 +94,7 @@
         startLongTaskMonitor();
       } else {
         stopFrameMonitor();
-        stopLongTaskMonitor();
+        if (!autoObserveLongTasks) stopLongTaskMonitor();
       }
       if (persist) {
         try {
@@ -101,6 +107,7 @@
 
     function clear() {
       samples = [];
+      slowSamples = [];
       lastFrameAt = 0;
       frameStats = { frames: 0, longFrames: 0, maxFrameGap: 0 };
       frameGaps = [];
@@ -112,6 +119,7 @@
       const renderSamples = samples.filter((sample) => sample.label === "renderChart");
       const auxiliaryRenderSamples = samples.filter((sample) => sample.label === "renderAdrChart");
       const refreshSamples = samples.filter((sample) => sample.label === "runtimeRefresh");
+      const startupSamples = samples.filter((sample) => sample.label === "appStartup");
       const percentileDuration = (source, percentile) => {
         if (!source.length) return 0;
         const durations = source
@@ -149,6 +157,10 @@
           (max, sample) => Math.max(max, sample.duration || 0),
           0,
         ),
+        appStarts: startupSamples.length,
+        p95AppStartup: percentileDuration(startupSamples, 0.95),
+        slowOperations: slowSamples.length,
+        latestSlowOperation: slowSamples[slowSamples.length - 1]?.label || "",
       };
     }
 
@@ -156,6 +168,7 @@
       enable: () => setEnabled(true),
       disable: () => setEnabled(false),
       get: () => [...samples],
+      getSlowOperations: () => [...slowSamples],
       getLongTasks: () => [...longTasks],
       clear,
       summary,
@@ -169,18 +182,19 @@
       } catch (_) {
         setEnabled(false, false);
       }
+      startLongTaskMonitor();
       scope.ThinkStockPerf = api;
       return api;
     }
 
     function startSample() {
       const perf = getPerformance();
-      return enabled && typeof perf?.now === "function" ? perf.now() : 0;
+      return typeof perf?.now === "function" ? perf.now() : 0;
     }
 
     function recordSample(label, startedAt, meta = {}) {
       const perf = getPerformance();
-      if (!enabled || typeof perf?.now !== "function" || !Number.isFinite(startedAt)) return null;
+      if (typeof perf?.now !== "function" || !Number.isFinite(startedAt) || startedAt <= 0) return null;
       const duration = perf.now() - startedAt;
       const sample = {
         label,
@@ -188,9 +202,17 @@
         at: new Date().toISOString(),
         ...meta,
       };
-      samples.push(sample);
-      if (samples.length > sampleLimit) samples.splice(0, samples.length - sampleLimit);
-      if (duration >= longFrameMs) {
+      if (enabled) {
+        samples.push(sample);
+        if (samples.length > sampleLimit) samples.splice(0, samples.length - sampleLimit);
+      }
+      if (duration >= slowOperationMs) {
+        slowSamples.push(sample);
+        if (slowSamples.length > slowSampleLimit) {
+          slowSamples.splice(0, slowSamples.length - slowSampleLimit);
+        }
+      }
+      if (enabled && duration >= longFrameMs) {
         try { scope.console?.debug?.("[ThinkStockPerf]", sample); } catch (_) {}
       }
       return sample;

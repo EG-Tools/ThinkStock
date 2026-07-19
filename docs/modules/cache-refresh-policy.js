@@ -52,6 +52,17 @@
     return entries;
   }
 
+  function planManifestRefreshEntries(previousManifest, nextManifest, baseUrl) {
+    const previousByKey = new Map(
+      manifestDataEntries(previousManifest, baseUrl)
+        .map((entry) => [entry.cacheKey, entry.sha256]),
+    );
+    return manifestDataEntries(nextManifest, baseUrl).map((entry) => ({
+      ...entry,
+      reuse: previousByKey.get(entry.cacheKey) === entry.sha256,
+    }));
+  }
+
   async function runWithConcurrency(items, worker, concurrency = DEFAULT_CONCURRENCY) {
     const source = Array.isArray(items) ? items : [];
     if (!source.length) return [];
@@ -79,6 +90,7 @@
     DEFAULT_CONCURRENCY,
     manifestDataEntries,
     normalizeManifestRevision,
+    planManifestRefreshEntries,
     refreshPriority,
     planDataRefreshRequests,
     runWithConcurrency,

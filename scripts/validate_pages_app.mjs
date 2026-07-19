@@ -5,7 +5,7 @@ import path from "node:path";
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractionMath, chartInteractionController, cacheRefreshPolicy, browserMarketClient, auxiliaryChartModel, performanceMonitor, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, disclosurePopover, dartDisclosure, serviceWorkerClient, runtimeRefresh, dataSeedLoader, deployWorkflow, buildPagesData, dataBuildSupport, providerClients, providerContracts, sourcePipeline, buildReporting, plotlyBundle, appBundle] = await Promise.all([
+const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractionMath, chartInteractionController, cacheRefreshPolicy, browserMarketClient, auxiliaryChartModel, mainChartRenderer, performanceMonitor, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, disclosurePopover, dartDisclosure, serviceWorkerClient, runtimeRefresh, dataSeedLoader, deployWorkflow, buildPagesData, dataBuildSupport, providerClients, providerContracts, sourcePipeline, buildReporting, plotlyBundle, appBundle] = await Promise.all([
   readFile(path.join(root, "docs", "app.js"), "utf8"),
   readFile(path.join(root, "docs", "index.html"), "utf8"),
   readFile(path.join(root, "docs", "sw.js"), "utf8"),
@@ -17,6 +17,7 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractio
   readFile(path.join(root, "docs", "modules", "cache-refresh-policy.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "browser-market-client.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "auxiliary-chart-model.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "main-chart-renderer.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "performance-monitor.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "app-storage.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "startup-loader.js"), "utf8"),
@@ -36,7 +37,7 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractio
   readFile(path.join(root, "scripts", "provider_contracts.py"), "utf8"),
   readFile(path.join(root, "scripts", "source_pipeline.py"), "utf8"),
   readFile(path.join(root, "scripts", "build_reporting.py"), "utf8"),
-  stat(path.join(root, "docs", "vendor", "plotly-basic-2.35.2.min.js")),
+  stat(path.join(root, "docs", "vendor", "plotly-thinkstock-2.35.2.min.js")),
   stat(path.join(root, "docs", "assets", "app.bundle.min.js")),
 ]);
 
@@ -70,7 +71,7 @@ requiredIds.forEach((id) => assert.ok(ids.includes(id), `required UI element is 
   "./modules/auxiliary-chart-model.js?v=dev",
   "./modules/data-worker.js?v=dev",
   "./modules/chart-model-worker.js?v=dev",
-  "./vendor/plotly-basic-2.35.2.min.js?v=dev",
+  "./vendor/plotly-thinkstock-2.35.2.min.js?v=dev",
   "./data/prices_recent.json",
   "./data/macro_data_recent.json",
   "./data/credit_data_recent.json",
@@ -159,8 +160,8 @@ assert.ok(buildPagesData.includes("def fetch_dart_market_disclosures(")
   "DART browser secret removal or market seed is incomplete");
 assert.ok(app.includes('name: "공포탐욕"') && app.includes('yaxis: "y2"'), "fear-greed auxiliary panel is missing");
 assert.ok(app.includes("lastAdrRenderKey === renderKey"), "ADR render fast path is missing");
-assert.ok(chartLoader.includes("plotly-basic-2.35.2.min.js"), "Plotly basic bundle is not configured");
-assert.ok(plotlyBundle.size < 1_500_000, `Plotly bundle is too large: ${plotlyBundle.size} bytes`);
+assert.ok(chartLoader.includes("plotly-thinkstock-2.35.2.min.js"), "ThinkStock Plotly bundle is not configured");
+assert.ok(plotlyBundle.size < 950_000, `ThinkStock Plotly bundle is too large: ${plotlyBundle.size} bytes`);
 assert.ok(html.includes("./assets/app.bundle.min.js?v=dev"), "optimized app bundle is not loaded");
 assert.equal([...html.matchAll(/<script\b/g)].length, 1, "runtime scripts are not bundled");
 assert.ok(appBundle.size < 260_000, `app bundle is too large: ${appBundle.size} bytes`);
@@ -198,13 +199,13 @@ assert.ok(!app.includes('addEventListener("touchmove"') && !app.includes('addEve
 assert.ok(app.includes("function applyDisclosureStateFast("), "disclosure-only updates still require a full chart render");
 assert.ok(app.includes("function applyMainChartRender(") && app.includes("mainChartPartialUpdateCount"),
   "main chart partial update fast path is missing");
-assert.ok(app.includes("await Plotly.update(")
-  && app.includes("mainChartRestylePayload(traces)")
-  && app.includes("mainChartRelayoutPayload(layout)"),
-  "main chart trace and viewport updates are not applied atomically");
-assert.ok(!app.includes("await Plotly.restyle(el, mainChartRestylePayload(traces)")
-  && !app.includes("await Plotly.relayout(el, mainChartRelayoutPayload(layout))"),
-  "main chart partial updates still perform separate SVG/layout passes");
+assert.ok(app.includes("ThinkStockMainChartRenderer")
+  && mainChartRenderer.includes("await plotly.update(")
+  && mainChartRenderer.includes("relayoutPayload(layout)"),
+  "main chart renderer module is incomplete");
+assert.ok(!app.includes("function mainChartRestylePayload(")
+  && !app.includes("function canApplyMainChartPartialUpdate("),
+  "main chart rendering implementation still lives in app.js");
 assert.ok(app.includes('const DISCLOSURE_ICON_TEXT = "◆";'), "disclosure icon is not configured");
 assert.ok(app.includes("fetchSegmentedSeedText"), "segmented data loading is missing");
 assert.ok(app.includes("ensureHistoricalDataLoaded"), "historical lazy loading is missing");
@@ -219,6 +220,10 @@ assert.ok(sw.includes("Promise.allSettled(PRECACHE_ASSETS"), "service worker pre
 assert.ok(sw.includes("refreshCachedDataAtomically"), "service worker data refresh is not atomic");
 assert.ok(sw.includes("DATA_CACHE_PREFIX") && sw.includes('digest("SHA-256"') && sw.includes("-staging"),
   "service worker does not stage and verify manifest revisions");
+assert.ok(sw.includes("planManifestRefreshEntries") && sw.includes("reusableKeys"),
+  "service worker does not reuse unchanged manifest segments");
+assert.ok(sw.includes("function dataCacheFirst("),
+  "validated data cache is not preferred after an atomic refresh");
 assert.ok(!sw.includes(".map((req) => cache.delete(req))"), "service worker still deletes data before refresh");
 assert.ok(playwrightConfig.includes('name: "webkit-sw"') && playwrightConfig.includes('serviceWorkers: "allow"'),
   "service-worker-aware WebKit coverage is missing");
