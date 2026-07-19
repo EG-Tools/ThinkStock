@@ -310,6 +310,12 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await expect(page.locator("#appVersionText")).toHaveText(/^\d+\.\d+$/);
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
+  await page.locator("#apiOptionsBtn").click();
+  await page.locator("#performanceDiagnosticsBtn").click();
+  await expect(page.locator("#performanceDiagnosticsPanel")).toBeVisible();
+  await expect(page.locator("#performanceDiagnosticsSummary")).toContainText("현재");
+  await page.locator("#apiSettingsCloseBtn").click();
+  await expect(page.locator("#apiSettingsModal")).toBeHidden();
   await expect(page.locator('[data-series="customer_deposit"]')).toBeVisible();
   await expect(page.locator('[data-series="news_sentiment"]')).toHaveCount(0);
   expect(await page.locator("#chart-adr").evaluate((element) => (

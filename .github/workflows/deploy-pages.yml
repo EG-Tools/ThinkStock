@@ -38,19 +38,19 @@ jobs:
         run: npm test
 
       - name: Cache WebKit Browser
-        if: github.event_name != 'schedule'
+        if: github.event_name != 'schedule' || github.event.schedule == '35 3 * * 0'
         uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
           key: playwright-webkit-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
 
       - name: Install WebKit Test Dependencies
-        if: github.event_name != 'schedule'
+        if: github.event_name != 'schedule' || github.event.schedule == '35 3 * * 0'
         run: npx playwright install --with-deps webkit
 
-      - name: Test Desktop WebKit Interactions
-        if: github.event_name != 'schedule'
-        run: npm run test:webkit:desktop
+      - name: Test Safari and iPhone WebKit Interactions
+        if: github.event_name != 'schedule' || github.event.schedule == '35 3 * * 0'
+        run: npm run test:webkit
 
   build:
     runs-on: ubuntu-latest

@@ -287,8 +287,49 @@ body {
 .api-settings-actions {
   margin-top: 14px;
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.performance-diagnostics {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, rgba(74, 222, 128, 0.07), rgba(34, 211, 238, 0.025)),
+    rgba(255, 255, 255, 0.025);
+}
+
+.performance-diagnostics[hidden] { display: none !important; }
+
+.performance-diagnostics-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.performance-diagnostics-summary {
+  margin: 10px 0 0;
+  color: #c9d3d0;
+  font-size: 11px;
+  line-height: 1.65;
+  white-space: pre-line;
+}
+
+.diagnostics-clear-btn {
+  margin-top: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 .api-settings-meta {

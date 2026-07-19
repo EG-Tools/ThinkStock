@@ -5,7 +5,7 @@ import path from "node:path";
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractionMath, chartInteractionController, cacheRefreshPolicy, browserMarketClient, auxiliaryChartModel, mainChartRenderer, performanceMonitor, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, disclosurePopover, dartDisclosure, serviceWorkerClient, runtimeRefresh, dataSeedLoader, deployWorkflow, plotlyBuilder, buildPagesData, dataBuildSupport, providerClients, providerContracts, sourcePipeline, buildReporting, plotlyBundle, appBundle] = await Promise.all([
+const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractionMath, chartInteractionController, cacheRefreshPolicy, browserMarketClient, auxiliaryChartModel, mainChartRenderer, performanceMonitor, performanceDiagnostics, runtimeSnapshotPolicy, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, disclosurePopover, dartDisclosure, serviceWorkerClient, runtimeRefresh, dataSeedLoader, deployWorkflow, plotlyBuilder, buildPagesData, dataBuildSupport, providerClients, providerContracts, providerSources, sourcePipeline, buildReporting, plotlyBundle, appBundle] = await Promise.all([
   readFile(path.join(root, "docs", "app.js"), "utf8"),
   readFile(path.join(root, "docs", "index.html"), "utf8"),
   readFile(path.join(root, "docs", "sw.js"), "utf8"),
@@ -19,6 +19,8 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractio
   readFile(path.join(root, "docs", "modules", "auxiliary-chart-model.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "main-chart-renderer.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "performance-monitor.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "performance-diagnostics.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "runtime-snapshot-policy.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "app-storage.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "startup-loader.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "data-worker.js"), "utf8"),
@@ -36,6 +38,7 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractio
   readFile(path.join(root, "scripts", "data_build_support.py"), "utf8"),
   readFile(path.join(root, "scripts", "provider_clients.py"), "utf8"),
   readFile(path.join(root, "scripts", "provider_contracts.py"), "utf8"),
+  readFile(path.join(root, "scripts", "provider_sources.py"), "utf8"),
   readFile(path.join(root, "scripts", "source_pipeline.py"), "utf8"),
   readFile(path.join(root, "scripts", "build_reporting.py"), "utf8"),
   stat(path.join(root, "docs", "vendor", "plotly-thinkstock-2.35.2.min.js")),
@@ -59,6 +62,9 @@ const requiredIds = [
   "disclosureToggle",
   "refreshData",
   "apiSettingsModal",
+  "performanceDiagnosticsBtn",
+  "performanceDiagnosticsPanel",
+  "performanceDiagnosticsSummary",
 ];
 requiredIds.forEach((id) => assert.ok(ids.includes(id), `required UI element is missing: ${id}`));
 
@@ -184,6 +190,14 @@ assert.ok(app.includes("function getTraceLinePaths("), "DOM-only line highlighti
 assert.ok(!app.includes('Plotly.restyle(el, { "line.width"'), "line hover still triggers Plotly restyle");
 assert.ok(app.includes("ThinkStockPerformanceMonitor"), "performance monitor module is not wired into the app");
 assert.ok(performanceMonitor.includes("createPerformanceMonitor") && performanceMonitor.includes("p95FrameGap"), "performance monitor module is incomplete");
+assert.ok(app.includes("ThinkStockPerformanceDiagnostics")
+  && performanceDiagnostics.includes("createPerformanceDiagnostics")
+  && performanceDiagnostics.includes("readStorageState"),
+  "persistent performance diagnostics are incomplete");
+assert.ok(app.includes("ThinkStockRuntimeSnapshotPolicy")
+  && runtimeSnapshotPolicy.includes("createRevisionTracker")
+  && runtimeSnapshotPolicy.includes("isSnapshotUsable"),
+  "runtime snapshot policy module is incomplete");
 assert.ok(performanceMonitor.includes("gap < frameGapIgnoreMs"), "suspended tabs still pollute frame timing diagnostics");
 assert.ok(performanceMonitor.includes('observe({ type: "longtask", buffered: true })'),
   "browser long-task diagnostics are missing");
@@ -235,6 +249,10 @@ assert.ok(sw.includes("function dataCacheFirst("),
 assert.ok(!sw.includes(".map((req) => cache.delete(req))"), "service worker still deletes data before refresh");
 assert.ok(playwrightConfig.includes('name: "webkit-sw"') && playwrightConfig.includes('serviceWorkers: "allow"'),
   "service-worker-aware WebKit coverage is missing");
+assert.ok(playwrightConfig.includes('name: "webkit"')
+  && deployWorkflow.includes("npm run test:webkit")
+  && !deployWorkflow.includes("npm run test:webkit:desktop"),
+  "iPhone WebKit is not covered by deployment validation");
 assert.ok(deployWorkflow.indexOf("npm ci") < deployWorkflow.indexOf("npm test"),
   "Node dependencies must be installed before web validation");
 assert.ok(deployWorkflow.includes("actions/checkout@v6")
@@ -271,6 +289,10 @@ assert.ok(dataBuildSupport.includes("PRICE_OVERLAP_DAYS") && dataBuildSupport.in
   "incremental overlap policies are incomplete");
 assert.ok(providerClients.includes("class RetryingHttpClient") && providerClients.includes("fetch_yahoo_prices"),
   "shared provider clients are incomplete");
+assert.ok(buildPagesData.includes("from provider_sources import")
+  && providerSources.includes("def fetch_ecos_leading_cycle(")
+  && providerSources.includes("def fetch_krx_universe("),
+  "external data provider sources are not separated from the payload builder");
 assert.ok(providerClients.includes('"beginBasDt"') && providerClients.includes("stopped_early"),
   "KOFIA incremental pagination is incomplete");
 assert.ok(sourcePipeline.includes("class SourcePipeline") && buildPagesData.includes("pipeline.run("),

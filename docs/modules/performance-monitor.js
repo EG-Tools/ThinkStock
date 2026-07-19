@@ -17,6 +17,7 @@
     let frameStats = { frames: 0, longFrames: 0, maxFrameGap: 0 };
     let frameGaps = [];
     let longTasks = [];
+    let latestOperations = {};
     let longTaskObserver = null;
 
     const getPerformance = () => scope.performance;
@@ -112,6 +113,7 @@
       frameStats = { frames: 0, longFrames: 0, maxFrameGap: 0 };
       frameGaps = [];
       longTasks = [];
+      latestOperations = {};
     }
 
     function summary() {
@@ -168,6 +170,7 @@
       enable: () => setEnabled(true),
       disable: () => setEnabled(false),
       get: () => [...samples],
+      getLatestOperations: () => ({ ...latestOperations }),
       getSlowOperations: () => [...slowSamples],
       getLongTasks: () => [...longTasks],
       clear,
@@ -202,6 +205,7 @@
         at: new Date().toISOString(),
         ...meta,
       };
+      latestOperations[label] = sample;
       if (enabled) {
         samples.push(sample);
         if (samples.length > sampleLimit) samples.splice(0, samples.length - sampleLimit);

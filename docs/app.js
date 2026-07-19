@@ -59,6 +59,10 @@ const recordPerfSample = (label, startedAt, meta = {}) => (
 );
 const appStorageModule = globalThis.ThinkStockAppStorage;
 if (!appStorageModule) throw new Error("App storage module failed to load");
+const runtimeSnapshotPolicyModule = globalThis.ThinkStockRuntimeSnapshotPolicy;
+if (!runtimeSnapshotPolicyModule) throw new Error("Runtime snapshot policy module failed to load");
+const performanceDiagnosticsModule = globalThis.ThinkStockPerformanceDiagnostics;
+if (!performanceDiagnosticsModule) throw new Error("Performance diagnostics module failed to load");
 const startupLoaderModule = globalThis.ThinkStockStartupLoader;
 if (!startupLoaderModule) throw new Error("Startup loader module failed to load");
 const startupLoader = startupLoaderModule.createStartupLoader(globalThis);
@@ -134,7 +138,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.95";
+const APP_VERSION = "0.96";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -160,6 +164,12 @@ const runtimeSnapshotCacheConfig = Object.freeze({
   manifestKey: DATA_CACHE_RECORD_KEY,
   format: RUNTIME_SNAPSHOT_FORMAT,
   componentKeys: RUNTIME_SNAPSHOT_COMPONENT_KEYS,
+});
+const runtimeSnapshotRevisionTracker = runtimeSnapshotPolicyModule.createRevisionTracker(
+  Object.keys(RUNTIME_SNAPSHOT_COMPONENT_KEYS),
+);
+const performanceDiagnostics = performanceDiagnosticsModule.createPerformanceDiagnostics(globalThis, {
+  performanceApi: performanceMonitor.api,
 });
 const FREESIS_CREDIT_META_URL = "https://freesis.kofia.or.kr/meta/getMetaDataList.do";
 const FREESIS_CREDIT_OBJ_NM = "STATSCU0100000070BO";
@@ -407,9 +417,7 @@ let runtimeSnapshotBuildCount = 0;
 let runtimeSnapshotWriteCount = 0;
 let runtimeSnapshotSkipCount = 0;
 let runtimeSnapshotComponentWriteCount = 0;
-let runtimeSnapshotComponentCache = new Map();
 let runtimeSnapshotPersistedRevisions = {};
-let dataRevisions = { price: 0, macro: 0, credit: 0, adr: 0, disclosure: 0 };
 let granularCacheCleanupStats = { runs: 0, transactions: 0, deleted: 0 };
 let lineHighlightDomUpdateCount = 0;
 let disclosureHighlightDomUpdateCount = 0;
@@ -695,41 +703,26 @@ async function ensureDartCorpCodeMapLoaded(stockCode = "", forceNetwork = false)
 }
 
 function getDataRevisions() {
-  return { ...dataRevisions };
+  return runtimeSnapshotRevisionTracker.getRevisions();
 }
 
 function markDataChanged(...names) {
-  names.forEach((name) => {
-    if (!Object.prototype.hasOwnProperty.call(dataRevisions, name)) return;
-    dataRevisions[name] = (Number(dataRevisions[name]) || 0) + 1;
-    runtimeSnapshotComponentCache.delete(name);
-  });
+  runtimeSnapshotRevisionTracker.markChanged(names);
 }
 
 function applySnapshotRevisions(revisions, loadedNames) {
-  const source = revisions && typeof revisions === "object" ? revisions : {};
-  loadedNames.forEach((name) => {
-    const incoming = Number(source[name]);
-    dataRevisions[name] = Number.isFinite(incoming) && incoming > 0
-      ? incoming
-      : (Number(dataRevisions[name]) || 0) + 1;
-    runtimeSnapshotComponentCache.delete(name);
-  });
+  runtimeSnapshotRevisionTracker.applyRevisions(revisions, loadedNames);
 }
 
 function getSnapshotComponent(name) {
-  const revision = Number(dataRevisions[name]) || 0;
-  const cached = runtimeSnapshotComponentCache.get(name);
-  if (cached?.revision === revision) return cached.value;
-
-  let value = null;
-  if (name === "price") value = sanitizePricePayloadForSnapshot(pricePayload);
-  else if (name === "macro") value = normalizePayloadRecords(macroRows);
-  else if (name === "credit") value = normalizeCreditRows(creditRows);
-  else if (name === "adr") value = normalizePayloadRecords(adrRows);
-  else if (name === "disclosure") value = sanitizeDisclosureRows(disclosureRows);
-  runtimeSnapshotComponentCache.set(name, { revision, value });
-  return value;
+  return runtimeSnapshotRevisionTracker.getComponent(name, () => {
+    if (name === "price") return sanitizePricePayloadForSnapshot(pricePayload);
+    if (name === "macro") return normalizePayloadRecords(macroRows);
+    if (name === "credit") return normalizeCreditRows(creditRows);
+    if (name === "adr") return normalizePayloadRecords(adrRows);
+    if (name === "disclosure") return sanitizeDisclosureRows(disclosureRows);
+    return null;
+  });
 }
 
 function buildRuntimeDataSnapshot() {
@@ -755,43 +748,37 @@ function buildRuntimeDataSnapshot() {
 }
 
 function buildCompactLocalSnapshot() {
-  const safePricePayload = getSnapshotComponent("price");
-  return {
-    version: DATA_CACHE_SCHEMA_VERSION,
-    format: "compact-v1",
-    app_version: APP_VERSION,
-    build_version: APP_BUILD_VERSION,
-    saved_at: new Date().toISOString(),
-    historical_data_loaded: false,
+  return runtimeSnapshotPolicyModule.buildCompactSnapshot({
+    metadata: {
+      version: DATA_CACHE_SCHEMA_VERSION,
+      format: "compact-v1",
+      app_version: APP_VERSION,
+      build_version: APP_BUILD_VERSION,
+      saved_at: new Date().toISOString(),
+    },
     revisions: getDataRevisions(),
-    pricePayload: safePricePayload ? {
-      ...safePricePayload,
-      records: safePricePayload.records.slice(-LOCAL_SNAPSHOT_MAX_ROWS),
-    } : null,
-    macroRows: getSnapshotComponent("macro").slice(-LOCAL_SNAPSHOT_MAX_ROWS),
-    creditRows: getSnapshotComponent("credit").slice(-LOCAL_SNAPSHOT_MAX_ROWS),
-    adrRows: getSnapshotComponent("adr").slice(-LOCAL_SNAPSHOT_MAX_ROWS),
-    disclosureRows: getSnapshotComponent("disclosure").slice(-LOCAL_SNAPSHOT_MAX_DISCLOSURES),
-  };
+    maxRows: LOCAL_SNAPSHOT_MAX_ROWS,
+    maxDisclosures: LOCAL_SNAPSHOT_MAX_DISCLOSURES,
+    components: Object.fromEntries(
+      Object.keys(RUNTIME_SNAPSHOT_COMPONENT_KEYS).map((name) => [name, getSnapshotComponent(name)]),
+    ),
+  });
 }
 
 function getRuntimeDataSignature() {
-  const revisions = getDataRevisions();
-  return [
-    historicalDataLoaded ? "history" : "recent",
-    ...Object.keys(RUNTIME_SNAPSHOT_COMPONENT_KEYS).map((name) => `${name}:${revisions[name] || 0}`),
-  ].join("::");
+  return runtimeSnapshotPolicyModule.buildSignature(
+    historicalDataLoaded,
+    Object.keys(RUNTIME_SNAPSHOT_COMPONENT_KEYS),
+    getDataRevisions(),
+  );
 }
 
 function isRuntimeSnapshotUsable(snapshot) {
-  if (!snapshot || typeof snapshot !== "object") return false;
-  if (snapshot.version !== DATA_CACHE_SCHEMA_VERSION) return false;
-  const savedAtMs = Date.parse(String(snapshot.saved_at || ""));
-  if (!Number.isFinite(savedAtMs)) return false;
-  const now = Date.now();
-  if (savedAtMs > now + DAY_MS) return false;
-  if (now - savedAtMs > DATA_CACHE_MAX_AGE_DAYS * DAY_MS) return false;
-  return true;
+  return runtimeSnapshotPolicyModule.isSnapshotUsable(snapshot, {
+    schemaVersion: DATA_CACHE_SCHEMA_VERSION,
+    futureToleranceMs: DAY_MS,
+    maxAgeMs: DATA_CACHE_MAX_AGE_DAYS * DAY_MS,
+  });
 }
 
 function applyRuntimeDataSnapshot(snapshot) {
@@ -829,14 +816,14 @@ function applyRuntimeDataSnapshot(snapshot) {
   }
   applySnapshotRevisions(snapshot.revisions, loadedNames);
   loadedNames.forEach((name) => {
-    runtimeSnapshotComponentCache.set(name, {
-      revision: dataRevisions[name],
-      value: name === "price" ? safePricePayload
+    runtimeSnapshotRevisionTracker.seedComponent(
+      name,
+      name === "price" ? safePricePayload
         : name === "macro" ? safeMacroRows
           : name === "credit" ? safeCreditRows
             : name === "adr" ? safeAdrRows
               : safeDisclosureRows,
-    });
+    );
   });
   runtimeSnapshotPersistedRevisions = snapshot._persistedRevisions
     ? { ...snapshot._persistedRevisions }
@@ -1176,9 +1163,36 @@ function setupApiSettingsPanel(msgEl) {
 
   const closeBtn = document.getElementById("apiSettingsCloseBtn");
   const dataCacheClearBtn = document.getElementById("dataCacheClearBtn");
+  const diagnosticsBtn = document.getElementById("performanceDiagnosticsBtn");
+  const diagnosticsPanel = document.getElementById("performanceDiagnosticsPanel");
+  const diagnosticsSummary = document.getElementById("performanceDiagnosticsSummary");
+  const diagnosticsRefreshBtn = document.getElementById("performanceDiagnosticsRefreshBtn");
+  const diagnosticsClearBtn = document.getElementById("performanceDiagnosticsClearBtn");
 
   const close = () => { modal.hidden = true; };
   const open = () => { modal.hidden = false; };
+  const renderDiagnostics = async () => {
+    if (!diagnosticsPanel || !diagnosticsSummary) return;
+    diagnosticsPanel.hidden = false;
+    diagnosticsSummary.textContent = "측정 중...";
+    diagnosticsBtn?.setAttribute("disabled", "");
+    diagnosticsRefreshBtn?.setAttribute("disabled", "");
+    try {
+      const report = await performanceDiagnostics.capture({
+        appVersion: APP_VERSION,
+        buildVersion: APP_BUILD_VERSION,
+      });
+      const previous = performanceDiagnostics.readHistory().find((item) => (
+        item?.buildVersion !== report.buildVersion || item?.appVersion !== report.appVersion
+      ));
+      diagnosticsSummary.textContent = performanceDiagnostics.reportLines(report, previous).join("\n");
+    } catch (error) {
+      diagnosticsSummary.textContent = `상태를 측정하지 못했습니다: ${error?.message || error}`;
+    } finally {
+      diagnosticsBtn?.removeAttribute("disabled");
+      diagnosticsRefreshBtn?.removeAttribute("disabled");
+    }
+  };
 
   if (openBtn.dataset.bound === "1") {
     syncApiOptionsButton();
@@ -1203,6 +1217,18 @@ function setupApiSettingsPanel(msgEl) {
     } catch (err) {
       setMessage(msgEl, `Last chart screen cache could not be cleared: ${err.message}`, true);
     }
+  });
+  diagnosticsBtn?.addEventListener("click", () => {
+    if (diagnosticsPanel && !diagnosticsPanel.hidden) {
+      diagnosticsPanel.hidden = true;
+      return;
+    }
+    renderDiagnostics();
+  });
+  diagnosticsRefreshBtn?.addEventListener("click", renderDiagnostics);
+  diagnosticsClearBtn?.addEventListener("click", () => {
+    performanceDiagnostics.clear();
+    if (diagnosticsSummary) diagnosticsSummary.textContent = "이전 성능 기록을 지웠습니다.";
   });
 
   syncApiOptionsButton();
@@ -2753,7 +2779,8 @@ let CREDIT_OFFSET_DAYS = 2;  // Fund-data publication-lag alignment in days (UI 
 const CREDIT_COLS = ["customer_deposit", "kospi_credit", "kosdaq_credit"];
 
 function dataRevisionSignature(...names) {
-  return names.map((name) => `${name}:${Number(dataRevisions[name]) || 0}`).join("|");
+  const revisions = getDataRevisions();
+  return names.map((name) => `${name}:${Number(revisions[name]) || 0}`).join("|");
 }
 
 function sortedObjectSignature(obj) {

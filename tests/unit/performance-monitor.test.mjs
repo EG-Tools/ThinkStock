@@ -82,6 +82,7 @@ test("records samples and uses percentile frame timing", () => {
   harness.runFrame(1816);
 
   assert.deepEqual(api.get().map((sample) => sample.label), ["pointerMove"]);
+  assert.equal(api.getLatestOperations().pointerMove.duration, 12.3);
   assert.deepEqual(api.summary(), {
     frames: 4,
     longFrames: 1,

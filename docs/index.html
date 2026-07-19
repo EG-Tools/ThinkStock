@@ -79,10 +79,19 @@
         <p class="api-settings-help">ECOS·KOSIS·KOFIA·KRX·DART 데이터는 GitHub Actions가 서버에서 갱신합니다.</p>
         <p class="api-settings-note">API 키는 브라우저에 저장하거나 외부 공개 프록시로 보내지 않습니다. 종목 목록과 최근 주요 공시는 예약 빌드 후 자동 반영됩니다.</p>
         <div class="api-settings-actions">
+          <button id="performanceDiagnosticsBtn" class="api-action-btn" type="button">앱 상태 보기</button>
           <button id="dataCacheClearBtn" class="api-action-btn" type="button">마지막 화면 초기화</button>
         </div>
+        <section id="performanceDiagnosticsPanel" class="performance-diagnostics" hidden>
+          <div class="performance-diagnostics-header">
+            <strong>성능 및 저장공간</strong>
+            <button id="performanceDiagnosticsRefreshBtn" class="api-action-btn" type="button">다시 측정</button>
+          </div>
+          <p id="performanceDiagnosticsSummary" class="performance-diagnostics-summary" aria-live="polite"></p>
+          <button id="performanceDiagnosticsClearBtn" class="diagnostics-clear-btn" type="button">이전 기록 지우기</button>
+        </section>
         <p class="api-settings-meta">
-          Version : <span id="appVersionText">0.95</span><br>
+          Version : <span id="appVersionText">0.96</span><br>
           회사명 : Life User<br>
           이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a>
         </p>
