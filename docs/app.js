@@ -132,7 +132,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.92";
+const APP_VERSION = "0.93";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -4077,15 +4077,25 @@ function mainChartRelayoutPayload(layout) {
 
 async function applyMainChartRender(el, traces, layout) {
   if (canApplyMainChartPartialUpdate(el, traces)) {
+    chartSyncing = true;
     try {
       const traceIndexes = traces.map((_, index) => index);
-      await Plotly.restyle(el, mainChartRestylePayload(traces), traceIndexes);
-      await Plotly.relayout(el, mainChartRelayoutPayload(layout));
+      // Combine trace and viewport changes so Plotly performs one SVG/layout
+      // pass. chartSyncing prevents the emitted relayout event from bouncing
+      // the same range into the auxiliary chart during this atomic update.
+      await Plotly.update(
+        el,
+        mainChartRestylePayload(traces),
+        mainChartRelayoutPayload(layout),
+        traceIndexes,
+      );
       mainChartPartialUpdateCount += 1;
       lastMainChartRenderMode = "partial";
       return lastMainChartRenderMode;
     } catch (_) {
-      // Plotly can reject a restyle when a plugin mutates trace structure.
+      // Plotly can reject a partial update when a plugin mutates trace structure.
+    } finally {
+      chartSyncing = false;
     }
   }
   await Plotly.react(el, traces, layout, PLOTLY_CONFIG);

@@ -198,8 +198,13 @@ assert.ok(!app.includes('addEventListener("touchmove"') && !app.includes('addEve
 assert.ok(app.includes("function applyDisclosureStateFast("), "disclosure-only updates still require a full chart render");
 assert.ok(app.includes("function applyMainChartRender(") && app.includes("mainChartPartialUpdateCount"),
   "main chart partial update fast path is missing");
-assert.ok(app.includes("Plotly.restyle(el, mainChartRestylePayload(traces)"),
-  "main chart data updates still require Plotly.react");
+assert.ok(app.includes("await Plotly.update(")
+  && app.includes("mainChartRestylePayload(traces)")
+  && app.includes("mainChartRelayoutPayload(layout)"),
+  "main chart trace and viewport updates are not applied atomically");
+assert.ok(!app.includes("await Plotly.restyle(el, mainChartRestylePayload(traces)")
+  && !app.includes("await Plotly.relayout(el, mainChartRelayoutPayload(layout))"),
+  "main chart partial updates still perform separate SVG/layout passes");
 assert.ok(app.includes('const DISCLOSURE_ICON_TEXT = "◆";'), "disclosure icon is not configured");
 assert.ok(app.includes("fetchSegmentedSeedText"), "segmented data loading is missing");
 assert.ok(app.includes("ensureHistoricalDataLoaded"), "historical lazy loading is missing");
