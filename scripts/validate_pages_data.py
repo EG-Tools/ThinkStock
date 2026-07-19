@@ -256,10 +256,14 @@ def validate_build_health(build_report: dict) -> list[str]:
     warning_values = health.get("warnings")
     if not isinstance(warning_values, list):
         fail("build health: warnings must be a list")
+    anomaly_values = health.get("anomalies", [])
+    if not isinstance(anomaly_values, list):
+        fail("build health: anomalies must be a list")
     return [
         f"build health: {monitored} sources, {total_duration} ms, "
         f"HTTP {http['requests']} requests/{http['retries']} retries/{http['failures']} failures",
         f"build alerts: {', '.join(alerts) if alerts else 'none'}",
+        f"output anomalies: {len(anomaly_values)}",
     ]
 
 

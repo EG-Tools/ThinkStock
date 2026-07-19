@@ -8,8 +8,10 @@
     const longTaskSampleLimit = Number(options.longTaskSampleLimit) || 40;
     const slowOperationMs = Number(options.slowOperationMs) || 80;
     const slowSampleLimit = Number(options.slowSampleLimit) || 30;
+    const diagnosticSampleLimit = Number(options.diagnosticSampleLimit) || 120;
     const autoObserveLongTasks = options.autoObserveLongTasks !== false;
     let samples = [];
+    let diagnosticSamples = [];
     let slowSamples = [];
     let enabled = false;
     let frameRafId = 0;
@@ -108,6 +110,7 @@
 
     function clear() {
       samples = [];
+      diagnosticSamples = [];
       slowSamples = [];
       lastFrameAt = 0;
       frameStats = { frames: 0, longFrames: 0, maxFrameGap: 0 };
@@ -117,11 +120,11 @@
     }
 
     function summary() {
-      const pointerSamples = samples.filter((sample) => sample.label === "pointerMove");
-      const renderSamples = samples.filter((sample) => sample.label === "renderChart");
-      const auxiliaryRenderSamples = samples.filter((sample) => sample.label === "renderAdrChart");
-      const refreshSamples = samples.filter((sample) => sample.label === "runtimeRefresh");
-      const startupSamples = samples.filter((sample) => sample.label === "appStartup");
+      const pointerSamples = diagnosticSamples.filter((sample) => sample.label === "pointerMove");
+      const renderSamples = diagnosticSamples.filter((sample) => sample.label === "renderChart");
+      const auxiliaryRenderSamples = diagnosticSamples.filter((sample) => sample.label === "renderAdrChart");
+      const refreshSamples = diagnosticSamples.filter((sample) => sample.label === "runtimeRefresh");
+      const startupSamples = diagnosticSamples.filter((sample) => sample.label === "appStartup");
       const percentileDuration = (source, percentile) => {
         if (!source.length) return 0;
         const durations = source
@@ -206,6 +209,10 @@
         ...meta,
       };
       latestOperations[label] = sample;
+      diagnosticSamples.push(sample);
+      if (diagnosticSamples.length > diagnosticSampleLimit) {
+        diagnosticSamples.splice(0, diagnosticSamples.length - diagnosticSampleLimit);
+      }
       if (enabled) {
         samples.push(sample);
         if (samples.length > sampleLimit) samples.splice(0, samples.length - sampleLimit);

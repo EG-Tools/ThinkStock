@@ -5,7 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from build_reporting import summarize_build_trend, write_report_with_history
+from build_reporting import (
+    detect_output_anomalies,
+    payload_file_summary,
+    summarize_build_trend,
+    write_report_with_history,
+)
 
 
 class BuildReportingTests(unittest.TestCase):
@@ -43,6 +48,47 @@ class BuildReportingTests(unittest.TestCase):
         self.assertEqual(trend["median_duration_ms"], 100)
         self.assertEqual(trend["duration_vs_median_pct"], 100.0)
         self.assertEqual(trend["healthy_runs"], 2)
+
+    def test_payload_summary_keeps_latest_numeric_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "payload.json"
+            path.write_text(json.dumps({
+                "dates": ["2026-01-01", "2026-01-02"],
+                "columns": {"leading_cycle": [100.0, 101.5]},
+            }), encoding="utf-8")
+
+            summary = payload_file_summary(path)
+
+        self.assertEqual(summary["series_latest_values"]["leading_cycle"], 101.5)
+
+    def test_output_anomalies_detect_regression_drop_and_value_jump(self) -> None:
+        previous_runs = [{
+            "outputs": {
+                "macro": {
+                    "rows": 100,
+                    "latest": "2026-05-01",
+                    "series_points": {"leading_cycle": 100},
+                    "series_latest_values": {"leading_cycle": 100.0},
+                },
+            },
+        }]
+        report = {
+            "outputs": {
+                "macro": {
+                    "rows": 70,
+                    "latest": "2026-04-01",
+                    "series_points": {"leading_cycle": 70},
+                    "series_latest_values": {"leading_cycle": 110.0},
+                },
+            },
+        }
+
+        warnings = detect_output_anomalies(report, previous_runs)
+
+        self.assertTrue(any("latest regressed" in warning for warning in warnings))
+        self.assertTrue(any("rows dropped" in warning for warning in warnings))
+        self.assertTrue(any("points dropped" in warning for warning in warnings))
+        self.assertTrue(any("latest value changed" in warning for warning in warnings))
 
 
 if __name__ == "__main__":

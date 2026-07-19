@@ -5,7 +5,7 @@ import path from "node:path";
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractionMath, chartInteractionController, cacheRefreshPolicy, browserMarketClient, auxiliaryChartModel, mainChartRenderer, performanceMonitor, performanceDiagnostics, runtimeSnapshotPolicy, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, disclosurePopover, dartDisclosure, serviceWorkerClient, runtimeRefresh, dataSeedLoader, deployWorkflow, plotlyBuilder, buildPagesData, dataBuildSupport, providerClients, providerContracts, providerSources, sourcePipeline, buildReporting, plotlyBundle, appBundle] = await Promise.all([
+const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractionMath, chartInteractionController, cacheRefreshPolicy, browserMarketClient, auxiliaryChartModel, mainChartRenderer, performanceMonitor, performanceDiagnostics, appUiBindings, runtimeSnapshotPolicy, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, disclosurePopover, dartDisclosure, serviceWorkerClient, runtimeRefresh, dataSeedLoader, deployWorkflow, plotlyBuilder, buildPagesData, dataBuildSupport, providerClients, providerContracts, providerSources, creditProcessing, disclosureProcessing, payloadOutput, sourcePipeline, buildReporting, plotlyBundle, appBundle] = await Promise.all([
   readFile(path.join(root, "docs", "app.js"), "utf8"),
   readFile(path.join(root, "docs", "index.html"), "utf8"),
   readFile(path.join(root, "docs", "sw.js"), "utf8"),
@@ -20,6 +20,7 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractio
   readFile(path.join(root, "docs", "modules", "main-chart-renderer.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "performance-monitor.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "performance-diagnostics.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "app-ui-bindings.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "runtime-snapshot-policy.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "app-storage.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "startup-loader.js"), "utf8"),
@@ -39,6 +40,9 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractio
   readFile(path.join(root, "scripts", "provider_clients.py"), "utf8"),
   readFile(path.join(root, "scripts", "provider_contracts.py"), "utf8"),
   readFile(path.join(root, "scripts", "provider_sources.py"), "utf8"),
+  readFile(path.join(root, "scripts", "credit_processing.py"), "utf8"),
+  readFile(path.join(root, "scripts", "disclosure_processing.py"), "utf8"),
+  readFile(path.join(root, "scripts", "payload_output.py"), "utf8"),
   readFile(path.join(root, "scripts", "source_pipeline.py"), "utf8"),
   readFile(path.join(root, "scripts", "build_reporting.py"), "utf8"),
   stat(path.join(root, "docs", "vendor", "plotly-thinkstock-2.35.2.min.js")),
@@ -194,6 +198,13 @@ assert.ok(app.includes("ThinkStockPerformanceDiagnostics")
   && performanceDiagnostics.includes("createPerformanceDiagnostics")
   && performanceDiagnostics.includes("readStorageState"),
   "persistent performance diagnostics are incomplete");
+assert.ok(performanceDiagnostics.includes("startAutomaticCapture")
+  && performanceMonitor.includes("diagnosticSamples"),
+  "automatic local performance history is incomplete");
+assert.ok(app.includes("ThinkStockAppUiBindings")
+  && appUiBindings.includes("bindManualRefresh")
+  && appUiBindings.includes("bindRangeButtons"),
+  "boot UI event bindings are not separated from app.js");
 assert.ok(app.includes("ThinkStockRuntimeSnapshotPolicy")
   && runtimeSnapshotPolicy.includes("createRevisionTracker")
   && runtimeSnapshotPolicy.includes("isSnapshotUsable"),
@@ -293,6 +304,16 @@ assert.ok(buildPagesData.includes("from provider_sources import")
   && providerSources.includes("def fetch_ecos_leading_cycle(")
   && providerSources.includes("def fetch_krx_universe("),
   "external data provider sources are not separated from the payload builder");
+assert.ok(buildPagesData.includes("from disclosure_processing import")
+  && disclosureProcessing.includes("def normalize_disclosure_records(")
+  && buildPagesData.includes("from credit_processing import")
+  && creditProcessing.includes("def merge_credit_seed_with_incremental_tail(")
+  && buildPagesData.includes("from payload_output import")
+  && payloadOutput.includes("def write_columnar_payload_or_keep("),
+  "disclosure processing or payload output is not separated from the builder");
+assert.ok(buildReporting.includes("detect_output_anomalies")
+  && buildReporting.includes("series_latest_values"),
+  "cross-build output anomaly reporting is incomplete");
 assert.ok(providerClients.includes('"beginBasDt"') && providerClients.includes("stopped_early"),
   "KOFIA incremental pagination is incomplete");
 assert.ok(sourcePipeline.includes("class SourcePipeline") && buildPagesData.includes("pipeline.run("),

@@ -7,6 +7,7 @@ import "../docs/modules/auxiliary-chart-model.js";
 import "../docs/modules/main-chart-renderer.js";
 import "../docs/modules/performance-monitor.js";
 import "../docs/modules/performance-diagnostics.js";
+import "../docs/modules/app-ui-bindings.js";
 import "../docs/modules/app-storage.js";
 import "../docs/modules/runtime-snapshot-policy.js";
 import "../docs/modules/startup-loader.js";

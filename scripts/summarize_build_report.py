@@ -54,6 +54,8 @@ def main() -> int:
             f"| {int(summary.get('duration_ms') or 0)} ms |"
         )
     warnings = health.get("warnings") if isinstance(health.get("warnings"), list) else []
+    anomalies = health.get("anomalies") if isinstance(health.get("anomalies"), list) else []
+    print(f"- Output anomalies: `{len(anomalies)}`")
     if warnings:
         print()
         print("### Warnings")

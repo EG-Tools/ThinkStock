@@ -63,6 +63,8 @@ const runtimeSnapshotPolicyModule = globalThis.ThinkStockRuntimeSnapshotPolicy;
 if (!runtimeSnapshotPolicyModule) throw new Error("Runtime snapshot policy module failed to load");
 const performanceDiagnosticsModule = globalThis.ThinkStockPerformanceDiagnostics;
 if (!performanceDiagnosticsModule) throw new Error("Performance diagnostics module failed to load");
+const appUiBindingsModule = globalThis.ThinkStockAppUiBindings;
+if (!appUiBindingsModule) throw new Error("App UI bindings module failed to load");
 const startupLoaderModule = globalThis.ThinkStockStartupLoader;
 if (!startupLoaderModule) throw new Error("Startup loader module failed to load");
 const startupLoader = startupLoaderModule.createStartupLoader(globalThis);
@@ -138,7 +140,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.96";
+const APP_VERSION = "0.97";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -1182,10 +1184,10 @@ function setupApiSettingsPanel(msgEl) {
         appVersion: APP_VERSION,
         buildVersion: APP_BUILD_VERSION,
       });
-      const previous = performanceDiagnostics.readHistory().find((item) => (
-        item?.buildVersion !== report.buildVersion || item?.appVersion !== report.appVersion
-      ));
-      diagnosticsSummary.textContent = performanceDiagnostics.reportLines(report, previous).join("\n");
+      diagnosticsSummary.textContent = performanceDiagnostics.reportLines(
+        report,
+        performanceDiagnostics.comparisonFor(report),
+      ).join("\n");
     } catch (error) {
       diagnosticsSummary.textContent = `상태를 측정하지 못했습니다: ${error?.message || error}`;
     } finally {
@@ -5634,108 +5636,65 @@ async function boot() {
     await renderChart(false);
     setStartupLoaderProgress(72, restoredLastSnapshot ? "Rendering last view" : "Rendering saved data");
 
-    document.querySelectorAll(".range-btn").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const previousMonths = activeMonths;
-        const nextMonths = Number(btn.dataset.months);
-        activeMonths = nextMonths;
-        pinnedXRange = null;
-        syncButtons();
-        if (nextMonths > RECENT_DATA_MONTHS && !historicalDataLoaded) {
-          const rangeButtons = [...document.querySelectorAll(".range-btn")];
-          rangeButtons.forEach((item) => { item.disabled = true; });
-          setMessage(msgEl, ["과거 데이터를 불러오는 중입니다."]);
-          try {
-            await ensureHistoricalDataLoaded();
-            setMessage(msgEl, []);
-          } catch (err) {
-            activeMonths = previousMonths;
-            syncButtons();
-            setMessage(msgEl, [`과거 데이터 로딩 오류: ${err.message}`], true);
-            return;
-          } finally {
-            rangeButtons.forEach((item) => { item.disabled = false; });
-          }
-        }
-        saveState();
-        requestChartRender(false);
-      });
+    appUiBindingsModule.bindRangeButtons({
+      buttons: document.querySelectorAll(".range-btn"),
+      getActiveMonths: () => activeMonths,
+      setActiveMonths: (value) => { activeMonths = value; },
+      clearPinnedRange: () => { pinnedXRange = null; },
+      syncButtons,
+      recentDataMonths: RECENT_DATA_MONTHS,
+      isHistoricalDataLoaded: () => historicalDataLoaded,
+      ensureHistoricalDataLoaded,
+      setMessage: (message, isError) => setMessage(msgEl, message, isError),
+      saveState,
+      requestChartRender,
     });
 
     document.getElementById("resetHandles").addEventListener("click", resetHandles);
 
-    // Hover popup toggle
-    const hoverToggleBtn = document.getElementById("hoverToggle");
-    const applyHoverState = () => {
-      document.getElementById("chart")?.classList.toggle("no-hover-popup", !hoverShowPopup);
-      document.getElementById("chart-adr")?.classList.toggle("no-hover-popup", !hoverShowPopup);
-    };
-    if (hoverToggleBtn) {
-      hoverToggleBtn.classList.toggle("is-active", hoverShowPopup);
-      applyHoverState();
-      hoverToggleBtn.addEventListener("click", () => {
-        hoverShowPopup = !hoverShowPopup;
-        hoverToggleBtn.classList.toggle("is-active", hoverShowPopup);
-        applyHoverState();
-        saveState();
-        requestChartRender();
-      });
-    }
+    appUiBindingsModule.bindHoverToggle({
+      button: document.getElementById("hoverToggle"),
+      chartElements: [
+        document.getElementById("chart"),
+        document.getElementById("chart-adr"),
+      ],
+      getEnabled: () => hoverShowPopup,
+      setEnabled: (value) => { hoverShowPopup = value; },
+      saveState,
+      requestChartRender,
+    });
 
-    const disclosureToggleBtn = document.getElementById("disclosureToggle");
-    if (disclosureToggleBtn) {
-      syncDisclosureToggleButton(lastDisclosureTraceStats.markers);
-      disclosureToggleBtn.addEventListener("click", () => {
-        showDisclosures = !showDisclosures;
-        syncDisclosureToggleButton(lastDisclosureTraceStats.markers);
-        if (!showDisclosures) hideDisclosurePopover();
-        saveState();
-        if (!applyDisclosureStateFast()) requestChartRender();
-      });
-    }
+    appUiBindingsModule.bindDisclosureToggle({
+      button: document.getElementById("disclosureToggle"),
+      getEnabled: () => showDisclosures,
+      setEnabled: (value) => { showDisclosures = value; },
+      markerCount: () => lastDisclosureTraceStats.markers,
+      syncButton: syncDisclosureToggleButton,
+      hidePopover: hideDisclosurePopover,
+      saveState,
+      applyFastState: applyDisclosureStateFast,
+      requestChartRender,
+    });
 
-    // Credit offset input binding
-    const creditOffsetEl = document.getElementById("creditOffset");
-    if (creditOffsetEl) {
-      creditOffsetEl.value = -CREDIT_OFFSET_DAYS;
-      creditOffsetEl.addEventListener("change", () => {
-        const v = parseInt(creditOffsetEl.value, 10);
-        if (Number.isFinite(v)) {
-          CREDIT_OFFSET_DAYS = Math.abs(v);
-          saveState();
-          requestChartRender();
-        }
-      });
-    }
+    appUiBindingsModule.bindCreditOffsetInput({
+      input: document.getElementById("creditOffset"),
+      getOffsetDays: () => CREDIT_OFFSET_DAYS,
+      setOffsetDays: (value) => { CREDIT_OFFSET_DAYS = value; },
+      saveState,
+      requestChartRender,
+    });
 
-    // Manual refresh: reload seed files and live APIs
-    const refreshBtn = document.getElementById("refreshData");
-    if (refreshBtn) {
-      refreshBtn.addEventListener("click", async () => {
-        if (refreshBtn.classList.contains("spinning")) return;
-        refreshBtn.classList.add("spinning");
-        setMessage(msgEl, []);
-        try {
-          let serviceWorkerRefresh = null;
-          if (navigator.serviceWorker.controller) {
-            serviceWorkerRefresh = await requestServiceWorkerDataRefresh();
-          }
-          const forceSeedNetwork = serviceWorkerRefresh?.ok !== true;
-          if (hasRuntimeDataLoaded()) {
-            await loadData(forceSeedNetwork, { mergeWithExisting: true });
-          } else {
-            const restored = await loadLastRuntimeSnapshot();
-            if (restored) await renderChart(false);
-            else await loadData(forceSeedNetwork);
-          }
-          await refreshRuntimeData(msgEl, { forceNetwork: true });
-        } catch (err) {
-          setMessage(msgEl, `데이터 갱신 중 오류: ${err.message}`, true);
-        } finally {
-          refreshBtn.classList.remove("spinning");
-        }
-      });
-    }
+    appUiBindingsModule.bindManualRefresh({
+      button: document.getElementById("refreshData"),
+      setMessage: (message, isError) => setMessage(msgEl, message, isError),
+      hasServiceWorkerController: () => Boolean(navigator.serviceWorker.controller),
+      requestServiceWorkerDataRefresh,
+      hasRuntimeDataLoaded,
+      loadData,
+      loadLastRuntimeSnapshot,
+      renderChart,
+      refreshRuntimeData: (options) => refreshRuntimeData(msgEl, options),
+    });
 
     await waitForFirstPaint();
     setStartupLoaderProgress(84, "Refreshing latest data");
@@ -5768,6 +5727,10 @@ async function boot() {
     recordPerfSample("appStartup", startupPerfStartedAt, {
       historicalDataLoaded,
       restoredSnapshot: hasRuntimeDataLoaded(),
+    });
+    performanceDiagnostics.startAutomaticCapture({
+      appVersion: APP_VERSION,
+      buildVersion: APP_BUILD_VERSION,
     });
   }
 }

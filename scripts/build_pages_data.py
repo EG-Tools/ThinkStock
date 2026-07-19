@@ -33,7 +33,48 @@ from build_reporting import (
     utc_stamp,
     write_report_with_history,
 )
+from credit_processing import (
+    CREDIT_MAX_DAILY_ABS_CHANGE,
+    CREDIT_MAX_DAILY_PCT_CHANGE,
+    CREDIT_SERIES,
+    MACRO_SERIES,
+    accepted_credit_series_tail,
+    credit_frame_from_payload,
+    extract_credit_seed_from_macro,
+    extract_public_macro_source,
+    find_credit_history_discontinuity,
+    is_plausible_credit_transition,
+    is_plausible_credit_value_transition,
+    median_scale_factor,
+    merge_credit_frames,
+    merge_credit_seed_with_existing_tail,
+    merge_credit_seed_with_freesis,
+    merge_credit_seed_with_incremental_tail,
+    merge_credit_seed_with_kofia,
+    pick_numeric_columns,
+    quarantine_credit_frame,
+    select_credit_seed,
+)
+from disclosure_processing import (
+    build_dart_corp_code_payload,
+    build_dart_corp_code_payloads,
+    build_disclosure_manifest,
+    build_disclosure_payload,
+    compact_dart_corp_codes,
+    disclosure_file_name,
+    disclosure_type_from_title,
+    is_important_disclosure_title,
+    is_low_impact_disclosure_title,
+    normalize_disclosure_records,
+    should_display_disclosure,
+)
 from macro_utils import densify_macro
+from payload_output import (
+    build_payload,
+    records_from_payload,
+    records_to_frame,
+    write_columnar_payload_or_keep,
+)
 from provider_clients import (
     RetryingHttpClient,
     fetch_kofia_items,
@@ -59,15 +100,7 @@ from split_pages_data import split_all_payloads
 from source_pipeline import SourcePipeline
 
 DEFAULT_TICKERS = ["^KS11", "^KQ11", "005930.KS", "218410.KQ"]
-MACRO_SERIES = ["leading_cycle", "news_sentiment"]
-CREDIT_SERIES = ["customer_deposit", "kospi_credit", "kosdaq_credit"]
 AUXILIARY_SERIES = ["adr_kospi", "adr_kosdaq", "fear_greed"]
-CREDIT_MAX_DAILY_PCT_CHANGE = 0.12
-CREDIT_MAX_DAILY_ABS_CHANGE = {
-    "customer_deposit": 25.0,
-    "kospi_credit": 3.0,
-    "kosdaq_credit": 1.0,
-}
 DISPLAY_NAMES = {
     "leading_cycle": "\uC120\uD589\uC21C\uD658\uBCC0\uB3D9",
     "news_sentiment": "\uB274\uC2A4\uC2EC\uB9AC",
@@ -184,193 +217,6 @@ def load_macro_source() -> pd.DataFrame:
     macro = macro.set_index("date")
     macro.index.name = "date"
     return macro
-
-
-def pick_numeric_columns(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
-    if frame.empty:
-        return pd.DataFrame(columns=columns)
-    out = frame.copy()
-    for column in columns:
-        if column not in out.columns:
-            out[column] = pd.NA
-        out[column] = pd.to_numeric(out[column], errors="coerce")
-    out = out[columns].dropna(how="all").sort_index()
-    out.index.name = "date"
-    return out
-
-
-def extract_credit_seed_from_macro(macro: pd.DataFrame) -> pd.DataFrame:
-    return pick_numeric_columns(macro, CREDIT_SERIES)
-
-
-def extract_public_macro_source(macro: pd.DataFrame) -> pd.DataFrame:
-    return pick_numeric_columns(macro, MACRO_SERIES)
-
-
-def merge_credit_frames(*frames: pd.DataFrame) -> pd.DataFrame:
-    prepared = [pick_numeric_columns(frame, CREDIT_SERIES) for frame in frames if frame is not None and not frame.empty]
-    if not prepared:
-        return pd.DataFrame(columns=CREDIT_SERIES)
-    merged = prepared[0].copy()
-    for frame in prepared[1:]:
-        merged = frame.combine_first(merged)
-    merged = merged.sort_index()
-    merged.index.name = "date"
-    return merged[CREDIT_SERIES]
-
-
-def is_plausible_credit_transition(
-    prev_date: pd.Timestamp,
-    prev_row: pd.Series,
-    row_date: pd.Timestamp,
-    row: pd.Series,
-) -> bool:
-    day_span = max(1, (row_date.normalize() - prev_date.normalize()).days)
-    for column in CREDIT_SERIES:
-        prev_value = pd.to_numeric(prev_row.get(column), errors="coerce")
-        value = pd.to_numeric(row.get(column), errors="coerce")
-        if pd.isna(prev_value) or pd.isna(value) or float(prev_value) <= 0:
-            continue
-        daily_pct_change = abs(float(value) / float(prev_value) - 1.0) / day_span
-        daily_abs_change = abs(float(value) - float(prev_value)) / day_span
-        if (
-            daily_pct_change > CREDIT_MAX_DAILY_PCT_CHANGE
-            and daily_abs_change > CREDIT_MAX_DAILY_ABS_CHANGE[column]
-        ):
-            return False
-    return True
-
-
-def is_plausible_credit_value_transition(
-    column: str,
-    prev_date: pd.Timestamp,
-    prev_value: float,
-    row_date: pd.Timestamp,
-    value: float,
-) -> bool:
-    day_span = max(1, (row_date.normalize() - prev_date.normalize()).days)
-    daily_pct_change = abs(float(value) / float(prev_value) - 1.0) / day_span if prev_value > 0 else 0.0
-    daily_abs_change = abs(float(value) - float(prev_value)) / day_span
-    return not (
-        daily_pct_change > CREDIT_MAX_DAILY_PCT_CHANGE
-        and daily_abs_change > CREDIT_MAX_DAILY_ABS_CHANGE[column]
-    )
-
-
-def accepted_credit_series_tail(
-    column: str,
-    seed_series: pd.Series,
-    live_series: pd.Series,
-    source_name: str,
-    events: list[str] | None = None,
-) -> pd.Series:
-    seed_values = pd.to_numeric(seed_series, errors="coerce").dropna().sort_index()
-    live_values = pd.to_numeric(live_series, errors="coerce").dropna().sort_index()
-    live_values = live_values[live_values > 0]
-    if live_values.empty:
-        return pd.Series(dtype="float64", name=column)
-
-    if seed_values.empty:
-        previous_date = live_values.index[0]
-        previous_value = float(live_values.iloc[0])
-        accepted: dict[pd.Timestamp, float] = {previous_date: previous_value}
-        candidates = live_values.iloc[1:]
-    else:
-        previous_date = seed_values.index[-1]
-        previous_value = float(seed_values.iloc[-1])
-        accepted = {}
-        candidates = live_values[live_values.index > previous_date]
-
-    candidate_items = list(candidates.items())
-    for index, (row_date, raw_value) in enumerate(candidate_items):
-        value = float(raw_value)
-        if is_plausible_credit_value_transition(
-            column,
-            previous_date,
-            previous_value,
-            row_date,
-            value,
-        ):
-            accepted[row_date] = value
-            previous_date = row_date
-            previous_value = value
-            continue
-
-        next_item = candidate_items[index + 1] if index + 1 < len(candidate_items) else None
-        isolated_spike = bool(
-            next_item
-            and is_plausible_credit_value_transition(
-                column,
-                previous_date,
-                previous_value,
-                next_item[0],
-                float(next_item[1]),
-            )
-        )
-        action = "point" if isolated_spike else "tail"
-        event = (
-            f"Quarantined {source_name} {column} {action} from "
-            f"{row_date.strftime('%Y-%m-%d')} due to discontinuity."
-        )
-        print(event)
-        if events is not None:
-            events.append(event)
-        if not isolated_spike:
-            break
-
-    return pd.Series(accepted, dtype="float64", name=column).sort_index()
-
-
-def quarantine_credit_frame(
-    live: pd.DataFrame,
-    fallback: pd.DataFrame,
-    source_name: str,
-    events: list[str] | None = None,
-) -> pd.DataFrame:
-    live = pick_numeric_columns(live, CREDIT_SERIES)
-    fallback = pick_numeric_columns(fallback, CREDIT_SERIES)
-    output = pd.DataFrame(index=live.index.union(fallback.index).sort_values(), columns=CREDIT_SERIES)
-    for column in CREDIT_SERIES:
-        accepted = accepted_credit_series_tail(
-            column,
-            pd.Series(dtype="float64"),
-            live[column],
-            source_name,
-            events,
-        )
-        fallback_values = pd.to_numeric(fallback[column], errors="coerce")
-        output[column] = accepted.combine_first(fallback_values)
-    output = output.dropna(how="all").sort_index()
-    output.index.name = "date"
-    return output[CREDIT_SERIES]
-
-
-def merge_credit_seed_with_existing_tail(seed: pd.DataFrame, existing: pd.DataFrame) -> pd.DataFrame:
-    seed = pick_numeric_columns(seed, CREDIT_SERIES)
-    existing = pick_numeric_columns(existing, CREDIT_SERIES)
-    if seed.empty:
-        return existing
-    if existing.empty:
-        return seed
-
-    tail = existing[existing.index > seed.index.max()].sort_index()
-    if tail.empty:
-        return seed
-
-    keep: list[pd.Timestamp] = []
-    prev_date = seed.index.max()
-    prev_row = seed.loc[prev_date]
-    for row_date, row in tail.iterrows():
-        if not is_plausible_credit_transition(prev_date, prev_row, row_date, row):
-            print(f"Dropped existing credit tail from {row_date.strftime('%Y-%m-%d')} due to discontinuity.")
-            break
-        keep.append(row_date)
-        prev_date = row_date
-        prev_row = row
-
-    if not keep:
-        return seed
-    return merge_credit_frames(seed, tail.loc[keep])
 
 
 def _read_env_key(path: Path, key: str) -> str:
@@ -856,65 +702,6 @@ def build_adr_payload(frame: pd.DataFrame) -> dict:
     return payload
 
 
-def disclosure_type_from_title(title: str) -> str | None:
-    text = str(title or "")
-    if re.search(r"반기보고서|분기보고서|사업보고서|영업\(잠정\)실적|잠정실적|매출액.?또는.?손익구조|감사보고서제출", text):
-        return "실적"
-    if re.search(r"배당|현금ㆍ현물배당|현금.?현물배당", text):
-        return "배당"
-    if re.search(r"단일판매|공급계약|수주", text):
-        return "수주"
-    if re.search(r"유상증자|무상증자|감자|증권신고서\(지분증권\)", text):
-        return "증자/감자"
-    if re.search(r"전환사채|신주인수권|신주인수권부사채|교환사채|사채권", text):
-        return "자금조달"
-    if re.search(r"자기주식(취득|처분)결정|주식소각", text):
-        return "자사주"
-    if re.search(r"합병|분할|영업양수|영업양도|타법인주식|출자증권|신규시설투자|시설투자", text):
-        return "구조/투자"
-    if re.search(r"최대주주변경|대표이사.*변경|영업정지|거래정지|상장폐지|관리종목|소송|횡령|배임|회생|파산|부도|공개매수|장래사업|경영계획", text):
-        return "경영변동"
-    return "공시"
-
-
-def is_important_disclosure_title(title: str, event_type: str = "") -> bool:
-    text = str(title or "")
-    if event_type in {"실적", "배당", "수주", "증자/감자", "자금조달", "자사주", "구조/투자", "경영변동"}:
-        return True
-    return bool(
-        re.search(
-            r"반기보고서|분기보고서|사업보고서|영업\(잠정\)실적|잠정실적|매출액.?또는.?손익구조|감사보고서제출|"
-            r"배당|현금ㆍ현물배당|단일판매|공급계약|수주|유상증자|무상증자|감자|증권신고서\(지분증권\)|"
-            r"전환사채|신주인수권|신주인수권부사채|교환사채|사채권|자기주식(취득|처분)결정|주식소각|"
-            r"합병|분할|영업양수|영업양도|타법인주식|출자증권|신규시설투자|시설투자|"
-            r"최대주주변경|대표이사.*변경|영업정지|거래정지|상장폐지|관리종목|소송|횡령|배임|회생|파산|부도|공개매수|장래사업|경영계획",
-            text,
-        )
-    )
-
-
-def is_low_impact_disclosure_title(title: str) -> bool:
-    text = str(title or "")
-    return bool(
-        re.search(
-            r"임원ㆍ주요주주특정증권등소유상황보고서|주식등의대량보유상황보고서|최대주주등소유주식변동신고서|"
-            r"기업설명회|IR\)|대규모기업집단현황공시|기업지배구조보고서|지속가능경영보고서|동일인등출자계열회사|"
-            r"특수관계인|지급수단별|주주총회소집공고|주주총회소집결의|주주총회집중일|정기주주총회결과|"
-            r"의결권대리행사|주주명부폐쇄|기준일설정|사외이사의선임|해임또는중도퇴임|"
-            r"자기주식취득결과보고서|자기주식처분결과보고서",
-            text,
-        )
-    )
-
-
-def should_display_disclosure(title: str, event_type: str = "") -> bool:
-    if is_important_disclosure_title(title, event_type):
-        return True
-    if is_low_impact_disclosure_title(title):
-        return False
-    return False
-
-
 def fetch_dart_corp_code_map(api_key: str) -> dict[str, dict[str, str]]:
     content = http_client().get_bytes(
         DART_CORP_CODE_URL,
@@ -1118,75 +905,6 @@ def fetch_dart_market_disclosures(
     return normalize_disclosure_records(records)
 
 
-def normalize_disclosure_records(records: list[dict]) -> list[dict]:
-    out: dict[tuple[str, str, str], dict] = {}
-    for record in records:
-        if not isinstance(record, dict):
-            continue
-        ticker = str(record.get("ticker") or "").strip().upper()
-        code = str(record.get("code") or (ticker.split(".")[0] if ticker else "")).strip()
-        date_value = str(record.get("date") or "").strip()[:10]
-        title = str(record.get("title") or record.get("report_nm") or "").strip()
-        if not re.match(r"^[0-9]{6}\.(KS|KQ)$", ticker):
-            continue
-        if not re.match(r"^\d{4}-\d{2}-\d{2}$", date_value) or not title:
-            continue
-        classified_type = disclosure_type_from_title(title)
-        raw_type = str(record.get("type") or "").strip()
-        event_type = classified_type if not raw_type or raw_type == "공시" else raw_type
-        if not should_display_disclosure(title, event_type):
-            continue
-        out[(ticker, date_value, title)] = {
-            "ticker": ticker,
-            "code": code,
-            "name": str(record.get("name") or record.get("corp_name") or ticker).strip(),
-            "date": date_value,
-            "type": event_type,
-            "title": title,
-            "summary": str(record.get("summary") or "").strip(),
-            "source": str(record.get("source") or "OpenDART").strip(),
-            "receiptNo": str(record.get("receiptNo") or record.get("rcept_no") or "").strip(),
-            "url": str(record.get("url") or "").strip(),
-        }
-    return sorted(out.values(), key=lambda row: (row["date"], row["ticker"], row["title"]))
-
-
-def build_disclosure_payload(records: list[dict]) -> dict:
-    return {
-        "generated_at": pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "source": "OpenDART",
-        "series": ["disclosures"],
-        "records": normalize_disclosure_records(records),
-    }
-
-
-def disclosure_file_name(ticker: str) -> str:
-    return f"{ticker}.json"
-
-
-def build_disclosure_manifest(records: list[dict]) -> dict:
-    normalized = normalize_disclosure_records(records)
-    tickers = sorted({str(record.get("ticker") or "") for record in normalized if record.get("ticker")})
-    files = {ticker: f"./data/disclosures/{disclosure_file_name(ticker)}" for ticker in tickers}
-    counts = {ticker: 0 for ticker in tickers}
-    latest = {ticker: "" for ticker in tickers}
-    for record in normalized:
-        ticker = record["ticker"]
-        counts[ticker] += 1
-        latest[ticker] = max(latest[ticker], record["date"])
-    return {
-        "generated_at": pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "source": "OpenDART",
-        "format": "by-ticker-v1",
-        "series": ["disclosures"],
-        "tickers": tickers,
-        "files": files,
-        "counts": counts,
-        "latest": latest,
-        "total": len(normalized),
-    }
-
-
 def write_disclosure_payloads(records: list[dict]) -> dict:
     normalized = normalize_disclosure_records(records)
     DISCLOSURE_DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -1208,71 +926,11 @@ def write_disclosure_payloads(records: list[dict]) -> dict:
     return build_disclosure_manifest(normalized)
 
 
-def compact_dart_corp_codes(corp_map: dict[str, dict[str, str]]) -> dict[str, str]:
-    return {
-        stock_code: str(item.get("corp_code") or "").strip()
-        for stock_code, item in sorted(corp_map.items())
-        if len(stock_code) == 6 and str(item.get("corp_code") or "").strip()
-    }
-
-
-def build_dart_corp_code_payloads(
-    corp_map: dict[str, dict[str, str]],
-    prefix_length: int = DART_CORP_CODE_PREFIX_LENGTH,
-) -> tuple[dict, dict[str, dict]]:
-    clean_prefix_length = max(1, min(4, int(prefix_length)))
-    codes = compact_dart_corp_codes(corp_map)
-    by_prefix: dict[str, dict[str, str]] = {}
-    for stock_code, corp_code in codes.items():
-        by_prefix.setdefault(stock_code[:clean_prefix_length], {})[stock_code] = corp_code
-
-    generated_at = pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ")
-    shards = {
-        prefix: {
-            "generated_at": generated_at,
-            "source": "OpenDART",
-            "format": "stock-to-corp-shard-v1",
-            "prefix": prefix,
-            "codes": prefix_codes,
-        }
-        for prefix, prefix_codes in sorted(by_prefix.items())
-    }
-    manifest = {
-        "generated_at": generated_at,
-        "source": "OpenDART",
-        "format": "stock-to-corp-shards-v1",
-        "prefix_length": clean_prefix_length,
-        "total": len(codes),
-        "files": {
-            prefix: f"data/dart_corp_codes/{prefix}.json"
-            for prefix in shards
-        },
-        "counts": {
-            prefix: len(payload["codes"])
-            for prefix, payload in shards.items()
-        },
-    }
-    return manifest, shards
-
-
-def build_dart_corp_code_payload(corp_map: dict[str, dict[str, str]]) -> dict:
-    """Return the legacy compact payload for cached-data migration."""
-    codes = {
-        stock_code: str(item.get("corp_code") or "").strip()
-        for stock_code, item in sorted(corp_map.items())
-        if len(stock_code) == 6 and str(item.get("corp_code") or "").strip()
-    }
-    return {
-        "generated_at": pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "source": "OpenDART",
-        "format": "stock-to-corp-v2",
-        "total": len(codes),
-        "codes": codes,
-    }
-
-
 def write_dart_corp_code_payloads(corp_map: dict[str, dict[str, str]]) -> dict:
-    manifest, shards = build_dart_corp_code_payloads(corp_map)
+    manifest, shards = build_dart_corp_code_payloads(
+        corp_map,
+        DART_CORP_CODE_PREFIX_LENGTH,
+    )
     DART_CORP_CODE_DATA_DIR.mkdir(parents=True, exist_ok=True)
     for stale in DART_CORP_CODE_DATA_DIR.glob("*.json"):
         if stale.stem not in shards:
@@ -1368,43 +1026,6 @@ def load_existing_disclosure_seed() -> list[dict]:
     return normalize_disclosure_records(out)
 
 
-def records_from_payload(payload: dict) -> list[dict]:
-    records = payload.get("records", []) if isinstance(payload, dict) else []
-    if isinstance(records, list) and records:
-        return records
-
-    dates = payload.get("dates", []) if isinstance(payload, dict) else []
-    columns = payload.get("columns", {}) if isinstance(payload, dict) else {}
-    if not isinstance(dates, list) or not isinstance(columns, dict):
-        return []
-    raw_series = payload.get("series", [])
-    series = [str(value).strip() for value in raw_series if str(value).strip()] if isinstance(raw_series, list) else list(columns)
-    out: list[dict] = []
-    for idx, raw_date in enumerate(dates):
-        row = {"date": raw_date}
-        for key in series:
-            values = columns.get(key)
-            row[key] = values[idx] if isinstance(values, list) and idx < len(values) else None
-        out.append(row)
-    return out
-
-
-def records_to_frame(records: list[dict], series_names: list[str]) -> pd.DataFrame:
-    frame = pd.DataFrame.from_records(records)
-    if frame.empty or "date" not in frame.columns:
-        return pd.DataFrame(columns=series_names)
-    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
-    frame = frame.dropna(subset=["date"]).set_index("date").sort_index()
-    for column in series_names:
-        if column not in frame.columns:
-            frame[column] = pd.NA
-        frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    frame = frame[series_names]
-    frame = frame[~frame.index.duplicated(keep="last")]
-    frame.index.name = "date"
-    return frame
-
-
 def load_existing_price_seed() -> pd.DataFrame:
     if not OUTPUT_JSON.exists():
         return pd.DataFrame(columns=DEFAULT_TICKERS)
@@ -1479,29 +1100,6 @@ def merge_auxiliary_data(seed: pd.DataFrame, records: list[dict], columns: list[
     return merged
 
 
-def credit_frame_from_payload(payload: dict) -> pd.DataFrame:
-    rows = records_from_payload(payload)
-    if not isinstance(rows, list) or not rows:
-        return pd.DataFrame(columns=CREDIT_SERIES)
-
-    frame = pd.DataFrame.from_records(rows)
-    if "date" not in frame.columns:
-        return pd.DataFrame(columns=CREDIT_SERIES)
-
-    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
-    for column in CREDIT_SERIES:
-        if column not in frame.columns:
-            frame[column] = pd.NA
-        frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    frame = frame.dropna(subset=["date"]).drop_duplicates(subset=["date"]).sort_values("date")
-    if frame.empty:
-        return pd.DataFrame(columns=CREDIT_SERIES)
-
-    out = frame.set_index("date")[CREDIT_SERIES]
-    out.index.name = "date"
-    return out
-
-
 def load_existing_credit_seed() -> pd.DataFrame:
     if not OUTPUT_CREDIT_JSON.exists():
         return pd.DataFrame(columns=CREDIT_SERIES)
@@ -1525,186 +1123,6 @@ def load_committed_credit_seed() -> pd.DataFrame:
     except Exception:
         return pd.DataFrame(columns=CREDIT_SERIES)
     return credit_frame_from_payload(payload)
-
-
-def select_credit_seed(
-    historical_credit_seed: pd.DataFrame,
-    existing_credit_seed: pd.DataFrame,
-) -> pd.DataFrame:
-    """Prefer the verified cache without reintroducing rough historical estimates."""
-    if existing_credit_seed is not None and not existing_credit_seed.empty:
-        return existing_credit_seed.copy()
-    if historical_credit_seed is not None and not historical_credit_seed.empty:
-        return historical_credit_seed.copy()
-    return pd.DataFrame(columns=CREDIT_SERIES)
-
-
-def find_credit_history_discontinuity(frame: pd.DataFrame) -> str:
-    if frame is None or frame.empty:
-        return ""
-    last_seen: dict[str, tuple[pd.Timestamp, float] | None] = {
-        column: None for column in CREDIT_SERIES
-    }
-    for row_date, row in frame.sort_index().iterrows():
-        for column in CREDIT_SERIES:
-            value = pd.to_numeric(row.get(column), errors="coerce")
-            if pd.isna(value):
-                continue
-            previous = last_seen[column]
-            if previous is not None:
-                prev_date, prev_value = previous
-                day_span = max(1, (row_date.normalize() - prev_date.normalize()).days)
-                daily_pct_change = abs(float(value) / prev_value - 1.0) / day_span if prev_value > 0 else 0.0
-                daily_abs_change = abs(float(value) - prev_value) / day_span
-                if (
-                    daily_pct_change > CREDIT_MAX_DAILY_PCT_CHANGE
-                    and daily_abs_change > CREDIT_MAX_DAILY_ABS_CHANGE[column]
-                ):
-                    return (
-                        f"{column} {prev_date.strftime('%Y-%m-%d')}->{row_date.strftime('%Y-%m-%d')} "
-                        f"({prev_value:g}->{float(value):g})"
-                    )
-            last_seen[column] = (row_date, float(value))
-    return ""
-
-
-def median_scale_factor(seed: pd.Series, live: pd.Series) -> float:
-    merged = pd.concat([seed, live], axis=1, keys=["seed", "live"]).dropna()
-    if merged.empty:
-        return 1.0
-    ratios = (merged["seed"] / merged["live"]).replace([pd.NA, float("inf"), float("-inf")], pd.NA).dropna()
-    ratios = ratios[(ratios > 0)]
-    if ratios.empty:
-        return 1.0
-    return float(ratios.median())
-
-
-def merge_credit_seed_with_freesis(
-    seed: pd.DataFrame,
-    live: pd.DataFrame,
-    events: list[str] | None = None,
-) -> tuple[pd.DataFrame, int]:
-    if live.empty:
-        return seed, 0
-    if seed.empty:
-        return live.sort_index(), len(live)
-
-    # Unit code 01 matches the KOFIA public API scale, so Freesis can replace
-    # the rough historical seed. When a full history is available, prefer it
-    # outright so rough pre-2021 seed rows do not create validation jumps.
-    live = live.sort_index()
-    if len(live) >= 1000:
-        merged = quarantine_credit_frame(live, seed, "Freesis", events)
-        merged.index.name = "date"
-        return merged[CREDIT_SERIES], len(merged)
-    return merge_credit_seed_with_incremental_tail(seed, live, "Freesis", events)
-
-
-def merge_credit_seed_with_incremental_tail(
-    seed: pd.DataFrame,
-    live: pd.DataFrame,
-    source_name: str,
-    events: list[str] | None = None,
-) -> tuple[pd.DataFrame, int]:
-    if live.empty:
-        return seed, 0
-    if seed.empty:
-        return live.sort_index(), len(live)
-
-    seed = pick_numeric_columns(seed, CREDIT_SERIES)
-    live = pick_numeric_columns(live, CREDIT_SERIES).sort_index()
-
-    # KOFIA and Freesis occasionally expose the same series with different
-    # units. Align the incoming source on a real overlap, then preserve the
-    # already validated overlap instead of replacing it.
-    aligned_live = live.copy()
-    for column in CREDIT_SERIES:
-        overlap = pd.concat(
-            [
-                pd.to_numeric(seed[column], errors="coerce").rename("seed"),
-                pd.to_numeric(live[column], errors="coerce").rename("live"),
-            ],
-            axis=1,
-            join="inner",
-        ).dropna()
-        overlap = overlap[(overlap["seed"] > 0) & (overlap["live"] > 0)]
-        factor = 1.0
-        if len(overlap) >= 5:
-            recent_overlap = overlap.sort_index().tail(20)
-            factor = median_scale_factor(recent_overlap["seed"], recent_overlap["live"])
-        if 0.5 <= factor <= 2.0 and (factor > 1.02 or factor < 0.98):
-            aligned_live[column] = aligned_live[column] * factor
-
-    merged = seed.copy()
-    accepted_dates: set[pd.Timestamp] = set()
-    for column in CREDIT_SERIES:
-        accepted = accepted_credit_series_tail(
-            column,
-            seed[column],
-            aligned_live[column],
-            source_name,
-            events,
-        )
-        for row_date, value in accepted.items():
-            merged.loc[row_date, column] = value
-            accepted_dates.add(row_date)
-
-    if not accepted_dates:
-        return seed, 0
-    merged = pick_numeric_columns(merged, CREDIT_SERIES)
-    merged.index.name = "date"
-    return merged[CREDIT_SERIES], len(accepted_dates)
-
-
-def merge_credit_seed_with_kofia(
-    seed: pd.DataFrame,
-    live: pd.DataFrame,
-    events: list[str] | None = None,
-) -> tuple[pd.DataFrame, int]:
-    return merge_credit_seed_with_incremental_tail(seed, live, "KOFIA", events)
-
-
-def build_payload(df: pd.DataFrame, labels: dict[str, str], series_names: list[str]) -> dict:
-    dates: list[str] = []
-    columns: dict[str, list[float | None]] = {series: [] for series in series_names}
-    if not df.empty:
-        clean = df.copy()
-        for series in series_names:
-            if series not in clean.columns:
-                clean[series] = pd.NA
-        clean = clean[series_names].reset_index().copy()
-        clean["date"] = pd.to_datetime(clean["date"]).dt.strftime("%Y-%m-%d")
-        dates = clean["date"].tolist()
-        for column in series_names:
-            clean[column] = pd.to_numeric(clean[column], errors="coerce").round(6)
-            columns[column] = clean[column].astype(object).where(pd.notna(clean[column]), None).tolist()
-    return {
-        "generated_at": pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "format": "columnar-v1",
-        "series": series_names,
-        "display_names": {key: labels[key] for key in series_names if key in labels},
-        "dates": dates,
-        "columns": columns,
-    }
-
-
-def write_columnar_payload_or_keep(path: Path, payload: dict, label: str) -> bool:
-    if payload.get("dates"):
-        path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False),
-            encoding="utf-8",
-        )
-        return True
-
-    if path.exists():
-        print(f"{label} payload is empty; keeping existing {path.name}.")
-        return False
-
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False),
-        encoding="utf-8",
-    )
-    return True
 
 
 def main() -> None:

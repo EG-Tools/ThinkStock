@@ -10,6 +10,13 @@ import pandas as pd
 
 BUILD_HISTORY_FORMAT = "thinkstock-build-history-v1"
 BUILD_HISTORY_LIMIT = 20
+DEFAULT_VALUE_CHANGE_THRESHOLDS = {
+    "leading_cycle": 0.05,
+    "news_sentiment": 0.35,
+    "customer_deposit": 0.25,
+    "kospi_credit": 0.25,
+    "kosdaq_credit": 0.25,
+}
 
 
 def utc_stamp() -> str:
@@ -48,6 +55,7 @@ def payload_file_summary(path: Path) -> dict:
         if isinstance(columns, dict):
             series_latest: dict[str, str] = {}
             series_points: dict[str, int] = {}
+            series_latest_values: dict[str, float] = {}
             for key, values in columns.items():
                 if not isinstance(values, list):
                     continue
@@ -61,8 +69,10 @@ def payload_file_summary(path: Path) -> dict:
                 if valid_indexes:
                     series_latest[str(key)] = str(dates[valid_indexes[-1]])[:10]
                     series_points[str(key)] = len(valid_indexes)
+                    series_latest_values[str(key)] = float(values[valid_indexes[-1]])
             summary["series_latest"] = series_latest
             summary["series_points"] = series_points
+            summary["series_latest_values"] = series_latest_values
         return summary
 
     records = payload.get("records")
@@ -97,7 +107,95 @@ def compact_history_entry(report: dict) -> dict:
             for name, summary in sources.items()
             if isinstance(summary, dict) and summary.get("status")
         },
+        "outputs": {
+            str(name): {
+                key: summary.get(key)
+                for key in (
+                    "rows",
+                    "latest",
+                    "series_latest",
+                    "series_points",
+                    "series_latest_values",
+                )
+                if key in summary
+            }
+            for name, summary in (report.get("outputs") or {}).items()
+            if isinstance(summary, dict)
+        },
     }
+
+
+def detect_output_anomalies(
+    report: dict,
+    previous_runs: list[dict],
+    retention_ratio: float = 0.8,
+    value_change_thresholds: dict[str, float] | None = None,
+) -> list[str]:
+    if not previous_runs:
+        return []
+    current_outputs = report.get("outputs") if isinstance(report.get("outputs"), dict) else {}
+    previous_outputs = previous_runs[-1].get("outputs")
+    if not isinstance(previous_outputs, dict):
+        return []
+
+    thresholds = {
+        **DEFAULT_VALUE_CHANGE_THRESHOLDS,
+        **(value_change_thresholds or {}),
+    }
+    warnings: list[str] = []
+    for name, current in current_outputs.items():
+        previous = previous_outputs.get(name)
+        if not isinstance(current, dict) or not isinstance(previous, dict):
+            continue
+        current_latest = str(current.get("latest") or "")
+        previous_latest = str(previous.get("latest") or "")
+        if current_latest and previous_latest and current_latest < previous_latest:
+            warnings.append(
+                f"output {name}: latest regressed ({previous_latest} -> {current_latest})"
+            )
+
+        previous_rows = int(previous.get("rows") or 0)
+        current_rows = int(current.get("rows") or 0)
+        if previous_rows >= 20 and current_rows < previous_rows * retention_ratio:
+            warnings.append(
+                f"output {name}: rows dropped ({previous_rows} -> {current_rows})"
+            )
+
+        previous_points = previous.get("series_points")
+        current_points = current.get("series_points")
+        if isinstance(previous_points, dict) and isinstance(current_points, dict):
+            for series, previous_count_raw in previous_points.items():
+                previous_count = int(previous_count_raw or 0)
+                current_count = int(current_points.get(series) or 0)
+                if previous_count >= 20 and current_count < previous_count * retention_ratio:
+                    warnings.append(
+                        f"output {name}/{series}: points dropped "
+                        f"({previous_count} -> {current_count})"
+                    )
+
+        previous_values = previous.get("series_latest_values")
+        current_values = current.get("series_latest_values")
+        if not isinstance(previous_values, dict) or not isinstance(current_values, dict):
+            continue
+        for series, current_value_raw in current_values.items():
+            if series not in previous_values:
+                continue
+            try:
+                previous_value = float(previous_values[series])
+                current_value = float(current_value_raw)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(previous_value) or not math.isfinite(current_value):
+                continue
+            threshold = float(thresholds.get(series, 0.75))
+            denominator = max(abs(previous_value), 1e-9)
+            change_ratio = abs(current_value - previous_value) / denominator
+            if change_ratio > threshold:
+                warnings.append(
+                    f"output {name}/{series}: latest value changed "
+                    f"{change_ratio * 100:.1f}% ({previous_value:g} -> {current_value:g})"
+                )
+    return warnings
 
 
 def load_build_history(path: Path) -> list[dict]:
@@ -161,8 +259,16 @@ def summarize_build_trend(runs: list[dict], window: int = 10) -> dict:
 
 
 def write_report_with_history(report: dict, report_path: Path, history_path: Path) -> None:
+    previous_runs = load_build_history(history_path)
+    anomalies = detect_output_anomalies(report, previous_runs)
+    health = report.setdefault("health", {})
+    health["anomalies"] = anomalies
+    warnings = health.setdefault("warnings", [])
+    for anomaly in anomalies:
+        if anomaly not in warnings:
+            warnings.append(anomaly)
     runs = update_build_history(history_path, report)
-    report.setdefault("health", {})["trend"] = summarize_build_trend(runs)
+    health["trend"] = summarize_build_trend(runs)
     report_path.write_text(
         json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False),
         encoding="utf-8",

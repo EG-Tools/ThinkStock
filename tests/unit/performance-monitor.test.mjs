@@ -208,4 +208,24 @@ test("keeps a bounded slow-operation trail without debug mode", () => {
   );
   assert.equal(api.summary().slowOperations, 2);
   assert.equal(api.summary().latestSlowOperation, "operation-2");
+  assert.equal(api.summary().runtimeRefreshes, 0);
+});
+
+
+test("keeps bounded diagnostic timings without enabling frame monitoring", () => {
+  const harness = createScope();
+  const monitor = createPerformanceMonitor(harness.scope, { diagnosticSampleLimit: 2 });
+  const api = monitor.init();
+
+  [10, 20, 30].forEach((duration) => {
+    harness.setNow(100);
+    const startedAt = monitor.startSample();
+    harness.setNow(100 + duration);
+    monitor.recordSample("pointerMove", startedAt);
+  });
+
+  assert.deepEqual(api.get(), []);
+  assert.equal(api.summary().pointerMoves, 2);
+  assert.equal(api.summary().p95PointerMove, 20);
+  assert.equal(api.summary().maxPointerMove, 30);
 });
