@@ -48,10 +48,11 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractio
   stat(path.join(root, "docs", "vendor", "plotly-thinkstock-2.35.2.min.js")),
   stat(path.join(root, "docs", "assets", "app.bundle.min.js")),
 ]);
-const [deferredDiagnostics, dataHealth, pagesEntry] = await Promise.all([
+const [deferredDiagnostics, dataHealth, pagesEntry, styles] = await Promise.all([
   readFile(path.join(root, "docs", "modules", "deferred-diagnostics.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "data-health.js"), "utf8"),
   readFile(path.join(root, "scripts", "pages-entry.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "styles.css"), "utf8"),
 ]);
 const precacheAssetsSource = sw.match(/const PRECACHE_ASSETS = \[([\s\S]*?)\];/)?.[1] || "";
 
@@ -191,6 +192,16 @@ assert.ok(buildPagesData.includes("def fetch_dart_market_disclosures(")
   "DART browser secret removal or market seed is incomplete");
 assert.ok(app.includes('name: "공포탐욕"') && app.includes('yaxis: "y2"'), "fear-greed auxiliary panel is missing");
 assert.ok(app.includes("lastAdrRenderKey === renderKey"), "ADR render fast path is missing");
+assert.ok(app.includes('el.on("plotly_legendclick"') && app.includes("hiddenAuxiliarySeries"),
+  "auxiliary chart legend toggles are not wired");
+assert.ok(app.includes(".legend, .modebar-container"),
+  "chart drag handling can intercept auxiliary legend controls");
+assert.ok(styles.includes(".chart-frame.chart-frame-adr .main-svg .legend *")
+  && styles.includes("cursor: pointer !important"),
+  "auxiliary chart legend does not expose a pointer cursor");
+assert.ok(app.includes("hiddenAuxiliarySeries: [...hiddenAuxiliarySeries]")
+  && app.includes("Array.isArray(p.hiddenAuxiliarySeries)"),
+  "auxiliary chart visibility is not persisted");
 assert.ok(chartLoader.includes("plotly-thinkstock-2.35.2.min.js"), "ThinkStock Plotly bundle is not configured");
 assert.ok(plotlyBundle.size < 950_000, `ThinkStock Plotly bundle is too large: ${plotlyBundle.size} bytes`);
 assert.ok(plotlyBuilder.includes("stats.hasErrors()") && plotlyBuilder.includes("process.exitCode = 1"),

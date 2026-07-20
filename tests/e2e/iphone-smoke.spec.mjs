@@ -377,6 +377,37 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
     element.data?.some((trace) => trace.name === "공포탐욕" && trace.yaxis === "y2")
       && element.data?.some((trace) => trace.name === "뉴스심리" && trace.yaxis === "y3")
   ))).toBe(true);
+  const depositToggle = page.locator('[data-series="customer_deposit"]');
+  await expect(depositToggle).toHaveClass(/is-off/);
+  await depositToggle.click();
+  await expect(depositToggle).toHaveClass(/is-on/);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    element.data?.find((trace) => trace.meta?.seriesKey === "customer_deposit")?.visible
+  ))).toBe(true);
+  await depositToggle.click();
+  await expect(depositToggle).toHaveClass(/is-off/);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    element.data?.find((trace) => trace.meta?.seriesKey === "customer_deposit")?.visible
+  ))).toBe("legendonly");
+
+  const fearGreedLegend = page.locator("#chart-adr .legend .traces")
+    .filter({ hasText: "공포탐욕" });
+  await expect(fearGreedLegend).toBeVisible();
+  await expect(fearGreedLegend).toHaveCSS("cursor", "pointer");
+  await expect(fearGreedLegend.locator(".legendtext")).toHaveCSS("cursor", "pointer");
+  await expect(fearGreedLegend.locator(".legendtoggle")).toHaveCSS("cursor", "pointer");
+  await fearGreedLegend.click();
+  await expect.poll(() => page.locator("#chart-adr").evaluate((element) => (
+    element.data?.find((trace) => trace.meta?.auxiliarySeriesKey === "fear_greed")?.visible
+  ))).toBe("legendonly");
+  await page.locator('.range-btn[data-months="36"]').click();
+  await expect.poll(() => page.locator("#chart-adr").evaluate((element) => (
+    element.data?.find((trace) => trace.meta?.auxiliarySeriesKey === "fear_greed")?.visible
+  ))).toBe("legendonly");
+  await fearGreedLegend.click();
+  await expect.poll(() => page.locator("#chart-adr").evaluate((element) => (
+    element.data?.find((trace) => trace.meta?.auxiliarySeriesKey === "fear_greed")?.visible
+  ))).toBe(true);
   expect(await page.locator("#chart-adr").evaluate((element) => {
     const labels = (element.layout?.annotations || []).map((item) => item.text);
     const boundaryLines = (element.layout?.shapes || []).filter((item) => (

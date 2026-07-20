@@ -148,7 +148,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.00";
+const APP_VERSION = "1.01";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -335,6 +335,7 @@ let dartCorpCodeMapPromises = new Map();
 let dartDisclosureTickerRefreshPromises = new Map();
 let activeMonths = 120;
 let hiddenSeries = new Set(["customer_deposit", "kospi_credit", "^KQ11", "kosdaq_credit"]);
+let hiddenAuxiliarySeries = new Set();
 let customStocks = [];
 let krxUniverse = [];
 let krxUniverseLoaded = false;
@@ -575,6 +576,7 @@ function saveState() {
     localStorage.setItem(STATE_KEY, JSON.stringify({
       activeMonths,
       hiddenSeries: [...hiddenSeries],
+      hiddenAuxiliarySeries: [...hiddenAuxiliarySeries],
       customStocks,
       seriesOffsets,
       seriesScales,
@@ -592,6 +594,9 @@ function loadState() {
     const p = JSON.parse(raw);
     if (typeof p.activeMonths === "number") activeMonths = p.activeMonths;
     if (Array.isArray(p.hiddenSeries)) hiddenSeries = new Set(p.hiddenSeries);
+    if (Array.isArray(p.hiddenAuxiliarySeries)) {
+      hiddenAuxiliarySeries = new Set(p.hiddenAuxiliarySeries);
+    }
     if (p.seriesOffsets && typeof p.seriesOffsets === "object") seriesOffsets = p.seriesOffsets;
     if (p.seriesScales && typeof p.seriesScales === "object") seriesScales = p.seriesScales;
     if (typeof p.creditOffset === "number") CREDIT_OFFSET_DAYS = Math.abs(p.creditOffset);
@@ -1998,7 +2003,8 @@ function bindCursorMoveSync() {
 
   const onPointerDown = (event) => {
     if (!event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) return;
-    if (event.target instanceof Element && event.target.closest(".disclosure-popover, .y-handle")) return;
+    if (event.target instanceof Element
+      && event.target.closest(".disclosure-popover, .y-handle, .legend, .modebar-container")) return;
     const sourceEl = event.currentTarget;
     const xa = sourceEl?._fullLayout?.xaxis;
     if (!xa) return;
@@ -2090,7 +2096,8 @@ function bindCursorMoveSync() {
 
   const onPointerMove = (event) => {
     if (!event.isPrimary || isHandleDragging || isViewportDragging) return;
-    if (event.target instanceof Element && event.target.closest(".disclosure-popover")) return;
+    if (event.target instanceof Element
+      && event.target.closest(".disclosure-popover, .legend, .modebar-container")) return;
     const sample = latestPointerSample(event);
     if (event.pointerType === "touch") {
       event.preventDefault();
@@ -4413,6 +4420,12 @@ const FEAR_GREED_LOW_THRESH = 25;
 const FEAR_GREED_HIGH_THRESH = 75;
 const NEWS_SENTIMENT_LOW_THRESH = 90;
 const NEWS_SENTIMENT_HIGH_THRESH = 110;
+const AUXILIARY_SERIES_KEYS = Object.freeze({
+  adrKospi: "adr_kospi",
+  adrKosdaq: "adr_kosdaq",
+  fearGreed: "fear_greed",
+  newsSentiment: "news_sentiment",
+});
 
 /**
  * Build ADR overlay traces with segmented zones.
@@ -4422,8 +4435,15 @@ const NEWS_SENTIMENT_HIGH_THRESH = 110;
  *
  * Uses threshold baselines with fill="tonexty" to avoid filling toward y=0.
  */
-function buildAdrZoneTraces(dates, zoneModel, mainColor, legendName) {
-  const base = { x: dates, type: "scatter", mode: "lines", connectgaps: false };
+function buildAdrZoneTraces(dates, zoneModel, mainColor, legendName, seriesKey) {
+  const base = {
+    x: dates,
+    type: "scatter",
+    mode: "lines",
+    connectgaps: false,
+    meta: { auxiliarySeriesKey: seriesKey },
+    visible: hiddenAuxiliarySeries.has(seriesKey) ? "legendonly" : true,
+  };
   const noHover = { hoverinfo: "skip", hovertemplate: undefined };
   const {
     low: yLow,
@@ -4580,8 +4600,20 @@ async function renderAdrChart(xRange) {
   ];
 
   const traces = [
-    ...buildAdrZoneTraces(dates, kospiZones,  "#facc15", "ADR KOSPI"),
-    ...buildAdrZoneTraces(dates, kosdaqZones, "#f472b6", "ADR KOSDAQ"),
+    ...buildAdrZoneTraces(
+      dates,
+      kospiZones,
+      "#facc15",
+      "ADR KOSPI",
+      AUXILIARY_SERIES_KEYS.adrKospi,
+    ),
+    ...buildAdrZoneTraces(
+      dates,
+      kosdaqZones,
+      "#f472b6",
+      "ADR KOSDAQ",
+      AUXILIARY_SERIES_KEYS.adrKosdaq,
+    ),
     {
       x: dates,
       y: fearGreedVals,
@@ -4589,6 +4621,8 @@ async function renderAdrChart(xRange) {
       type: "scatter",
       mode: "lines",
       name: "공포탐욕",
+      meta: { auxiliarySeriesKey: AUXILIARY_SERIES_KEYS.fearGreed },
+      visible: hiddenAuxiliarySeries.has(AUXILIARY_SERIES_KEYS.fearGreed) ? "legendonly" : true,
       connectgaps: false,
       line: { color: SERIES_COLORS.fear_greed, width: 2 },
       hoverinfo: "skip",
@@ -4600,6 +4634,8 @@ async function renderAdrChart(xRange) {
       type: "scatter",
       mode: "lines",
       name: "뉴스심리",
+      meta: { auxiliarySeriesKey: AUXILIARY_SERIES_KEYS.newsSentiment },
+      visible: hiddenAuxiliarySeries.has(AUXILIARY_SERIES_KEYS.newsSentiment) ? "legendonly" : true,
       connectgaps: false,
       line: { color: SERIES_COLORS.news_sentiment, width: 2 },
       hoverinfo: hoverShowPopup ? undefined : "skip",
@@ -4782,11 +4818,31 @@ async function renderAdrChart(xRange) {
   };
 
   lastAdrRenderKey = renderKey;
-  Promise.resolve(Plotly.react(el, traces, layout, PLOTLY_CONFIG)).catch(() => {
+  try {
+    await Plotly.react(el, traces, layout, PLOTLY_CONFIG);
+  } catch (error) {
     if (lastAdrRenderKey === renderKey) lastAdrRenderKey = "";
-  });
+    throw error;
+  }
 
   if (!adrHandlerSet) {
+    el.on("plotly_legendclick", (eventData) => {
+      const key = el.data?.[eventData?.curveNumber]?.meta?.auxiliarySeriesKey;
+      if (!key) return true;
+      if (hiddenAuxiliarySeries.has(key)) hiddenAuxiliarySeries.delete(key);
+      else hiddenAuxiliarySeries.add(key);
+      const indexes = el.data
+        .map((trace, index) => trace?.meta?.auxiliarySeriesKey === key ? index : -1)
+        .filter((index) => index >= 0);
+      Plotly.restyle(
+        el,
+        { visible: hiddenAuxiliarySeries.has(key) ? "legendonly" : true },
+        indexes,
+      );
+      saveState();
+      return false;
+    });
+    el.on("plotly_legenddoubleclick", () => false);
     el.on("plotly_relayout", (eventData) => {
       const rangePair = Array.isArray(eventData["xaxis.range"]) ? eventData["xaxis.range"] : null;
       const hasRange = (eventData["xaxis.range[0]"] != null && eventData["xaxis.range[1]"] != null)

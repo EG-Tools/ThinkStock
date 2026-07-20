@@ -656,6 +656,11 @@ body {
   cursor: ns-resize !important;
 }
 
+.chart-frame.chart-frame-adr .main-svg .legend,
+.chart-frame.chart-frame-adr .main-svg .legend * {
+  cursor: pointer !important;
+}
+
 .drag-zoom-overlay {
   position: absolute;
   inset: 0;
