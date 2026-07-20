@@ -34,7 +34,7 @@ function columnar(series, dates, columns) {
   };
 }
 
-async function stubExternalRefreshes(page) {
+async function stubExternalRefreshes(page, { stubFearGreed = true } = {}) {
   const unavailable = (route) => route.fulfill({
     status: 503,
     headers: { "access-control-allow-origin": "*", "content-type": "application/json" },
@@ -42,6 +42,9 @@ async function stubExternalRefreshes(page) {
   });
   await page.route("https://query2.finance.yahoo.com/**", unavailable);
   await page.route("https://corsproxy.io/**", unavailable);
+  if (stubFearGreed) {
+    await page.route("https://kospi.feargreedchart.com/**", unavailable);
+  }
 }
 
 async function installDataRoutes(page) {
@@ -242,7 +245,7 @@ test("startup loader releases before supplemental refresh finishes", async ({ pa
       body: "{}",
     });
   });
-  await stubExternalRefreshes(page);
+  await stubExternalRefreshes(page, { stubFearGreed: false });
 
   try {
     await page.goto("/?e2e=1&perf=1", { waitUntil: "domcontentloaded" });
