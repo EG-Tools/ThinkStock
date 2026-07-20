@@ -25,6 +25,7 @@ const {
   normalizeSeries,
   centeredScale,
   autoFitScales,
+  shiftIsoDateByDays,
 } = marketDataModule;
 const chartInteractionMath = globalThis.ThinkStockChartInteractionMath;
 if (!chartInteractionMath) throw new Error("Chart interaction math module failed to load");
@@ -140,7 +141,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.97";
+const APP_VERSION = "0.98";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -2968,7 +2969,6 @@ function buildMainChartModel(priceRows, start, end, allowedSeries) {
     macroRows,
     creditRows,
     creditCols: CREDIT_COLS,
-    creditOffsetDays: CREDIT_OFFSET_DAYS,
     start,
     end,
   });
@@ -3006,7 +3006,9 @@ function buildMainChartModel(priceRows, start, end, allowedSeries) {
     const rawValues = rows.map((r) => toNum(r[series]));
     const rawTexts = rawValues.map((v) => formatActualValue(v));
     const baseLineWidth = macroCols.includes(series) ? 3 : 2;
-    const xValues = rows.map((r) => r.date);
+    const xValues = CREDIT_COLS.includes(series) && CREDIT_OFFSET_DAYS
+      ? rows.map((r) => shiftIsoDateByDays(r.date, -CREDIT_OFFSET_DAYS))
+      : rows.map((r) => r.date);
 
     let values = [...rawValues];
     const base = commonNormBases[series];

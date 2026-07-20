@@ -95,6 +95,42 @@ test("chart worker merges raw price, macro, and credit sources", () => {
   );
 });
 
+test("chart worker applies credit offset only as a horizontal date shift", () => {
+  const dates = ["2026-01-03", "2026-01-04", "2026-01-05"];
+  const payload = {
+    priceRows: dates.map((date, index) => ({ date, AAA: 100 + index })),
+    macroRows: dates.map((date, index) => ({ date, kospi_credit: 10 + index })),
+    creditRows: dates.map((date, index) => ({ date, kospi_credit: 50 + index })),
+    creditCols: ["kospi_credit"],
+    start: dates[0],
+    end: dates[2],
+    allowedSeries: ["AAA", "kospi_credit"],
+    priorityOrder: ["AAA", "kospi_credit"],
+    displayNames: {},
+    hiddenSeries: [],
+    seriesOffsets: {},
+    seriesScales: {},
+    displayBudget: 100,
+  };
+  const zeroOffset = runWorker({ ...payload, creditOffsetDays: 0 });
+  const twoDayOffset = runWorker({ ...payload, creditOffsetDays: 2 });
+  const zeroCredit = zeroOffset.result.seriesModels.find((item) => item.series === "kospi_credit");
+  const shiftedCredit = twoDayOffset.result.seriesModels.find((item) => item.series === "kospi_credit");
+  const zeroPrice = zeroOffset.result.seriesModels.find((item) => item.series === "AAA");
+  const shiftedPrice = twoDayOffset.result.seriesModels.find((item) => item.series === "AAA");
+
+  assert.equal(zeroOffset.ok, true);
+  assert.equal(twoDayOffset.ok, true);
+  assert.deepEqual(Array.from(shiftedCredit.values), Array.from(zeroCredit.values));
+  assert.deepEqual(Array.from(shiftedCredit.baseValues), Array.from(zeroCredit.baseValues));
+  assert.deepEqual(Array.from(shiftedCredit.rawTexts), Array.from(zeroCredit.rawTexts));
+  assert.deepEqual(
+    Array.from(shiftedCredit.xValues),
+    ["2026-01-01", "2026-01-02", "2026-01-03"],
+  );
+  assert.deepEqual(Array.from(shiftedPrice.xValues), Array.from(zeroPrice.xValues));
+});
+
 
 test("chart worker reuses cached sources for configuration-only requests", () => {
   const harness = createWorkerHarness();

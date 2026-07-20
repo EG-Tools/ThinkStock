@@ -63,6 +63,27 @@ test("aligns historical credit scale before using current KOFIA values", () => {
   assert.deepEqual(result.liveCols, ["AAA"]);
 });
 
+test("keeps credit values fixed while dates are shifted independently", () => {
+  const dates = ["2026-01-01", "2026-01-02", "2026-01-03"];
+  const input = {
+    priceRows: dates.map((date, index) => ({ date, AAA: 100 + index })),
+    macroRows: dates.map((date, index) => ({ date, kospi_credit: 10 + index })),
+    creditRows: [
+      { date: dates[1], kospi_credit: 100 },
+      { date: dates[2], kospi_credit: 110 },
+    ],
+    creditCols: ["kospi_credit"],
+    start: dates[0],
+    end: dates[2],
+  };
+  const zeroOffset = marketData.mergeSources({ ...input, creditOffsetDays: 0 });
+  const twoDayOffset = marketData.mergeSources({ ...input, creditOffsetDays: 2 });
+
+  assert.deepEqual(twoDayOffset.rows, zeroOffset.rows);
+  assert.equal(marketData.shiftIsoDateByDays("2026-01-03", -2), "2026-01-01");
+  assert.equal(marketData.shiftIsoDateByDays("invalid", -2), "invalid");
+});
+
 
 test("sanitizes columnar price payloads in the shared module", () => {
   const payload = marketData.sanitizePricePayload({

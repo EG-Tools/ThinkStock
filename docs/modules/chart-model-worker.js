@@ -2,7 +2,13 @@ importScripts("./market-data.js?v=dev");
 importScripts("./auxiliary-chart-model.js?v=dev");
 const marketDataModule = self.ThinkStockMarketData;
 if (!marketDataModule) throw new Error("Market data module failed to load");
-const { mergeSources, normalizeSeries, centeredScale, autoFitScales } = marketDataModule;
+const {
+  mergeSources,
+  normalizeSeries,
+  centeredScale,
+  autoFitScales,
+  shiftIsoDateByDays,
+} = marketDataModule;
 const auxiliaryChartModelModule = self.ThinkStockAuxiliaryChartModel;
 if (!auxiliaryChartModelModule) throw new Error("Auxiliary chart model module failed to load");
 const { buildAuxiliaryChartModel } = auxiliaryChartModelModule;
@@ -142,6 +148,8 @@ function buildMainChartModel(payload) {
   const displayNames = payload.displayNames || {};
   const offsets = payload.seriesOffsets || {};
   const scales = payload.seriesScales || {};
+  const creditCols = Array.isArray(payload.creditCols) ? payload.creditCols : [];
+  const creditOffsetDays = Number(payload.creditOffsetDays) || 0;
   const budget = Math.max(1, Number(payload.displayBudget) || rows.length || 1);
 
   const allSeries = sortSeries(
@@ -175,7 +183,7 @@ function buildMainChartModel(payload) {
 
   const visible = selected.filter((series) => !hidden.has(series));
   const autoScales = autoFitScales(rows, visible.length ? visible : selected, commonNormBases);
-  const xValues = rows.map((row) => row.date);
+  const baseXValues = rows.map((row) => row.date);
   const seriesModels = selected.map((series) => {
     const rawValues = rows.map((row) => toNum(row[series]));
     const rawTexts = rawValues.map((value) => Number.isFinite(value) ? numberFormat.format(value) : "N/A");
@@ -191,6 +199,9 @@ function buildMainChartModel(payload) {
     }
     const offset = offsets[series] || 0;
     if (offset) values = values.map((value) => value !== null ? value + offset : null);
+    const xValues = creditCols.includes(series) && creditOffsetDays
+      ? baseXValues.map((date) => shiftIsoDateByDays(date, -creditOffsetDays))
+      : baseXValues;
     return {
       series,
       rawTexts,

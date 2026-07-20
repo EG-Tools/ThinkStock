@@ -118,6 +118,12 @@ assert.ok(dataWorker.includes('importScripts("./data-payload.js?v=dev")'), "data
 assert.ok(app.includes("ThinkStockMarketData"), "market data module is not wired into the app");
 assert.ok(marketData.includes("mergeSources") && marketData.includes("findTickerPriceRebaseSignal"), "market data module is incomplete");
 assert.ok(chartModelWorker.includes('importScripts("./market-data.js?v=dev")'), "chart worker does not reuse the market data module");
+assert.ok(
+  marketData.includes("shiftIsoDateByDays")
+    && chartModelWorker.includes("creditCols.includes(series)")
+    && app.includes("CREDIT_COLS.includes(series)"),
+  "credit offset must shift only the credit trace dates",
+);
 assert.ok(chartModelWorker.includes('importScripts("./auxiliary-chart-model.js?v=dev")'), "chart worker does not reuse the auxiliary chart model module");
 assert.ok(!app.includes("function mergeSources(") && !app.includes("function findTickerPriceRebaseSignal("), "market data logic still lives in app.js");
 assert.ok(app.includes("ThinkStockChartInteractionMath"), "chart interaction math module is not wired into the app");

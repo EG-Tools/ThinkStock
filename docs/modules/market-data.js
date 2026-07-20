@@ -163,7 +163,14 @@
       : null;
   }
 
-  function buildCreditInterpolator(creditRows, creditCols, offsetDays = 0) {
+  function shiftIsoDateByDays(date, days = 0) {
+    const baseTime = toUtcMs(String(date || "").slice(0, 10));
+    if (!Number.isFinite(baseTime)) return String(date || "").slice(0, 10);
+    const shiftDays = Number(days) || 0;
+    return new Date(baseTime + shiftDays * DEFAULT_DAY_MS).toISOString().slice(0, 10);
+  }
+
+  function buildCreditInterpolator(creditRows, creditCols) {
     if (!Array.isArray(creditRows) || !creditRows.length) return () => null;
     const points = creditRows
       .map((row) => {
@@ -210,7 +217,7 @@
     return (priceDate) => {
       const baseTime = toUtcMs(priceDate);
       if (!Number.isFinite(baseTime)) return null;
-      return interpolate(baseTime + offsetDays * DEFAULT_DAY_MS);
+      return interpolate(baseTime);
     };
   }
 
@@ -221,7 +228,6 @@
     const creditCols = Array.isArray(payload.creditCols) ? payload.creditCols : [];
     const start = String(payload.start || "");
     const end = String(payload.end || "");
-    const offsetDays = Number(payload.creditOffsetDays) || 0;
     const priceMap = new Map(priceRows.map((row) => [row.date, row]));
     const macroMap = new Map(macroRows.map((row) => [row.date, row]));
 
@@ -288,7 +294,7 @@
     const creditSeriesRows = [...creditByDate.entries()]
       .map(([date, values]) => ({ date, ...values }))
       .sort((left, right) => left.date.localeCompare(right.date));
-    const shiftedCreditAtPriceDate = buildCreditInterpolator(creditSeriesRows, creditCols, offsetDays);
+    const creditAtPriceDate = buildCreditInterpolator(creditSeriesRows, creditCols);
     const liveCols = getSeriesColumns(priceRows);
     const macroCols = getSeriesColumns(macroRows).filter((key) => !creditCols.includes(key));
     const rows = [];
@@ -298,10 +304,12 @@
       const prices = priceMap.get(date) || {};
       const macro = macroMap.get(date) || {};
       const exactCredit = creditByDate.get(date) || null;
-      const shiftedCredit = shiftedCreditAtPriceDate(date) || exactCredit;
+      const interpolatedCredit = creditAtPriceDate(date) || exactCredit;
       liveCols.forEach((key) => { row[key] = toNum(prices[key]); });
       macroCols.forEach((key) => { row[key] = toNum(macro[key]); });
-      creditCols.forEach((key) => { row[key] = shiftedCredit ? toNum(shiftedCredit[key]) : null; });
+      creditCols.forEach((key) => {
+        row[key] = interpolatedCredit ? toNum(interpolatedCredit[key]) : null;
+      });
       rows.push(row);
     });
     return { rows, macroCols: [...new Set([...macroCols, ...creditCols])], liveCols };
@@ -355,6 +363,7 @@
     priceDivergenceRatio,
     dateDistanceDays,
     findTickerPriceRebaseSignal,
+    shiftIsoDateByDays,
     buildCreditInterpolator,
     mergeSources,
     normalizeSeries,
