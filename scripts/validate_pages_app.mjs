@@ -152,8 +152,10 @@ assert.ok(!html.includes('data-series="news_sentiment"'), "news sentiment must n
 assert.ok(buildPagesData.includes("getSecuritiesMarketTotalCapitalInfo"), "server customer deposit endpoint is missing");
 assert.ok(app.includes('name: "뉴스심리"'), "news sentiment auxiliary trace is missing");
 assert.ok(app.includes('yaxis: "y3"'), "news sentiment auxiliary axis is missing");
-assert.ok(app.includes('text: "비관"'), "news sentiment pessimism guide is missing");
-assert.ok(app.includes('text: "낙관"'), "news sentiment optimism guide is missing");
+assert.ok(app.includes('text: "공포"'), "fear guide is missing");
+assert.ok(app.includes('text: "탐욕"'), "greed guide is missing");
+assert.ok(app.includes('text: "부정"'), "news sentiment negative guide is missing");
+assert.ok(app.includes('text: "긍정"'), "news sentiment positive guide is missing");
 assert.ok(app.includes("CUSTOM_STOCK_PRELOAD_CONCURRENCY"), "custom stock preload concurrency guard is missing");
 assert.ok(runtimeRefresh.includes("const criticalPromise") && runtimeRefresh.includes("const supplementalPromise"), "refresh phases do not start in parallel");
 assert.ok(app.includes("coreIndexTask") && app.includes("preloadTask"), "price refresh tasks still run serially");

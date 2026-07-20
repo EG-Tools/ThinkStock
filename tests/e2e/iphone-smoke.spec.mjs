@@ -336,11 +336,11 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
     const separators = (element.layout?.shapes || [])
       .filter((item) => item.type === "line" && item.yref === "paper")
       .map((item) => item.y0);
-    return labels.includes("침체")
-      && labels.includes("과열")
+    return labels.includes("공포")
+      && labels.includes("탐욕")
       && boundaryLines.length === 2
-      && labels.includes("비관")
-      && labels.includes("낙관")
+      && labels.includes("부정")
+      && labels.includes("긍정")
       && newsBoundaryLines.length === 2
       && separators.includes(0.54)
       && separators.includes(0.25)
