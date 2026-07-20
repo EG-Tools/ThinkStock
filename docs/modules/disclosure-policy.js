@@ -30,10 +30,111 @@
     return false;
   }
 
+  function createDisclosureDataService(options = {}) {
+    const classifyType = options.classifyType || classifyDisclosureType;
+    const shouldDisplay = options.shouldDisplay || shouldDisplayDisclosure;
+    const labelName = options.labelName || ((value) => String(value || ""));
+    const refreshCacheKey = String(options.refreshCacheKey || "");
+    const refreshCacheTtlMs = Math.max(1, Number(options.refreshCacheTtlMs) || 86400000);
+    const getStorage = options.getStorage || (() => null);
+    const now = options.now || (() => Date.now());
+
+    function sanitizeRows(records) {
+      if (!Array.isArray(records)) return [];
+      const output = [];
+      const seen = new Set();
+      records.forEach((record) => {
+        if (!record || typeof record !== "object") return;
+        const ticker = String(record.ticker || "").trim().toUpperCase();
+        const code = String(record.code || ticker.split(".")[0] || "").trim();
+        const date = String(record.date || "").slice(0, 10);
+        const title = String(record.title || record.report_nm || "").trim();
+        if (!/^[0-9]{6}\.(KS|KQ)$/.test(ticker) || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !title) return;
+        const classifiedType = classifyType(title);
+        const rawType = String(record.type || "").trim();
+        const type = !rawType || rawType === "공시" ? classifiedType : rawType;
+        if (!shouldDisplay(title, type)) return;
+        const url = String(record.url || "").trim();
+        const key = `${ticker}|${date}|${title}|${url}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        output.push({
+          ticker,
+          code,
+          name: String(record.name || record.corp_name || labelName(ticker)).trim() || labelName(ticker),
+          date,
+          type,
+          title,
+          summary: String(record.summary || "").trim(),
+          url,
+          source: String(record.source || "DART").trim(),
+          receiptNo: String(record.receiptNo || record.rcept_no || "").trim(),
+        });
+      });
+      return output.sort((left, right) => (
+        left.date.localeCompare(right.date) || left.ticker.localeCompare(right.ticker)
+      ));
+    }
+
+    function mergeRows(existingRows, incomingRows) {
+      const rows = new Map();
+      sanitizeRows(existingRows).forEach((row) => {
+        rows.set(`${row.ticker}|${row.date}|${row.title}`, row);
+      });
+      sanitizeRows(incomingRows).forEach((row) => {
+        rows.set(`${row.ticker}|${row.date}|${row.title}`, row);
+      });
+      return [...rows.values()].sort((left, right) => (
+        left.date.localeCompare(right.date) || left.ticker.localeCompare(right.ticker)
+      ));
+    }
+
+    function readRefreshCache() {
+      try {
+        const raw = getStorage()?.getItem(refreshCacheKey);
+        const parsed = raw ? JSON.parse(raw) : {};
+        return parsed && typeof parsed === "object" ? parsed : {};
+      } catch (_) {
+        return {};
+      }
+    }
+
+    function getRefreshCacheEntry(ticker) {
+      const target = String(ticker || "").trim().toUpperCase();
+      if (!target) return null;
+      const entry = readRefreshCache()[target];
+      const savedAt = Number(entry?.savedAt || 0);
+      if (!entry || !Number.isFinite(savedAt) || now() - savedAt > refreshCacheTtlMs) return null;
+      return entry;
+    }
+
+    function rememberRefresh(ticker, info) {
+      const target = String(ticker || "").trim().toUpperCase();
+      if (!target) return;
+      const cache = readRefreshCache();
+      cache[target] = {
+        savedAt: now(),
+        fetched: Number(info?.fetched || 0),
+        added: Number(info?.added || 0),
+        latestDate: String(info?.latestDate || ""),
+      };
+      try { getStorage()?.setItem(refreshCacheKey, JSON.stringify(cache)); } catch (_) {}
+    }
+
+    return Object.freeze({
+      sanitizeRows,
+      mergeRows,
+      getRefreshCacheEntry,
+      rememberRefresh,
+      hasFreshRefresh: (ticker) => Boolean(getRefreshCacheEntry(ticker)),
+    });
+  }
+
   globalThis.ThinkStockDisclosurePolicy = Object.freeze({
     classifyDisclosureType,
     isImportantDisclosureTitle,
     isLowImpactDisclosureTitle,
     shouldDisplayDisclosure,
+    createDisclosureDataService,
   });
 })();

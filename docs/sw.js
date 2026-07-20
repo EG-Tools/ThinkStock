@@ -59,6 +59,8 @@ const CORE_ASSET_PATHS = [
   "/modules/auxiliary-chart-model.js",
   "/modules/data-worker.js",
   "/modules/chart-model-worker.js",
+  "/modules/performance-diagnostics.js",
+  "/modules/dart-disclosure.js",
   "/vendor/plotly-thinkstock-2.35.2.min.js",
 ];
 

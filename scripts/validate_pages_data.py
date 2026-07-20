@@ -56,10 +56,24 @@ SOURCE_OUTPUT_RULES = (
     ("adr", "adr", ("adr_kospi", "adr_kosdaq"), False),
     ("fear_greed", "adr", ("fear_greed",), False),
 )
+STRICT_VALUE_ANOMALY_SERIES = (
+    "^KS11",
+    "^KQ11",
+    "leading_cycle",
+    "news_sentiment",
+    *CREDIT_COLUMNS,
+    *ADR_COLUMNS,
+)
 
 
 def fail(message: str) -> None:
     raise AssertionError(message)
+
+def emit_github_error(message: str) -> None:
+    if os.environ.get("GITHUB_ACTIONS", "").lower() != "true":
+        return
+    escaped = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::error file=scripts/validate_pages_data.py,line=1::{escaped}")
 
 
 def validate_segmented_payloads() -> list[str]:
@@ -127,6 +141,22 @@ def fail_or_warn_freshness(message: str) -> None:
     if STRICT_FRESHNESS:
         fail(message)
     warn(message)
+
+def actionable_output_anomalies(anomalies: list[object]) -> list[str]:
+    actionable: list[str] = []
+    for raw_value in anomalies:
+        value = str(raw_value)
+        structural = any(
+            phrase in value
+            for phrase in ("latest regressed", "rows dropped", "points dropped")
+        )
+        critical_value_jump = (
+            "latest value changed" in value
+            and any(f"/{series}:" in value for series in STRICT_VALUE_ANOMALY_SERIES)
+        )
+        if structural or critical_value_jump:
+            actionable.append(value)
+    return actionable
 
 
 def parse_date(raw: object, label: str) -> date:
@@ -259,6 +289,9 @@ def validate_build_health(build_report: dict) -> list[str]:
     anomaly_values = health.get("anomalies", [])
     if not isinstance(anomaly_values, list):
         fail("build health: anomalies must be a list")
+    actionable_anomalies = actionable_output_anomalies(anomaly_values)
+    if STRICT_FRESHNESS and actionable_anomalies:
+        fail(f"build health: output anomalies detected: {'; '.join(actionable_anomalies[:8])}")
     return [
         f"build health: {monitored} sources, {total_duration} ms, "
         f"HTTP {http['requests']} requests/{http['retries']} retries/{http['failures']} failures",
@@ -584,5 +617,7 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except AssertionError as exc:
-        print(f"Pages data validation failed: {exc}", file=sys.stderr)
+        message = f"Pages data validation failed: {exc}"
+        print(message, file=sys.stderr)
+        emit_github_error(message)
         raise SystemExit(1)

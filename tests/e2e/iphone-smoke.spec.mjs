@@ -297,7 +297,56 @@ test("component snapshot restores the latest auxiliary data after reload", async
   expect(pageErrors).toEqual([]);
 });
 
+test("credit offset moves dates without changing the credit curve", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 120,
+      hiddenSeries: ["leading_cycle", "^KQ11", "customer_deposit", "kosdaq_credit"],
+      customStocks: [],
+      creditOffset: 0,
+      showDisclosures: false,
+      hoverShowPopup: false,
+    }));
+  });
+  await installDataRoutes(page);
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+
+  const readCurves = () => page.locator("#chart").evaluate((element) => {
+    const credit = element.data?.find((trace) => trace?.meta?.seriesKey === "kospi_credit");
+    const price = element.data?.find((trace) => trace?.meta?.seriesKey === "^KS11");
+    return {
+      creditX: [...credit.x],
+      creditY: [...credit.y],
+      priceX: [...price.x],
+      priceY: [...price.y],
+    };
+  });
+  const zeroOffset = await readCurves();
+  const input = page.locator("#creditOffset");
+  await input.fill("-2");
+  await input.dispatchEvent("change");
+  await expect.poll(async () => (await readCurves()).creditX[0])
+    .not.toBe(zeroOffset.creditX[0]);
+  const shifted = await readCurves();
+  const shiftedDates = zeroOffset.creditX.map((dateText) => {
+    const date = new Date(`${dateText}T00:00:00Z`);
+    date.setUTCDate(date.getUTCDate() - 2);
+    return date.toISOString().slice(0, 10);
+  });
+
+  expect(shifted.creditX).toEqual(shiftedDates);
+  expect(shifted.creditY).toEqual(zeroOffset.creditY);
+  expect(shifted.priceX).toEqual(zeroOffset.priceX);
+  expect(shifted.priceY).toEqual(zeroOffset.priceY);
+});
+
 test("chart, disclosure popover, and lazy history remain interactive", async ({ page, isMobile }) => {
+  let diagnosticsRequests = 0;
+  await page.route("**/modules/performance-diagnostics.js*", async (route) => {
+    diagnosticsRequests += 1;
+    await route.continue();
+  });
   await page.addInitScript(() => {
     localStorage.setItem("thinkstock-v5", JSON.stringify({
       activeMonths: 120,
@@ -313,10 +362,13 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await expect(page.locator("#appVersionText")).toHaveText(/^\d+\.\d+$/);
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
+  expect(await page.evaluate(() => Boolean(window.ThinkStockPerformanceDiagnostics))).toBe(false);
   await page.locator("#apiOptionsBtn").click();
   await page.locator("#performanceDiagnosticsBtn").click();
   await expect(page.locator("#performanceDiagnosticsPanel")).toBeVisible();
   await expect(page.locator("#performanceDiagnosticsSummary")).toContainText("현재");
+  expect(diagnosticsRequests).toBe(1);
+  expect(await page.evaluate(() => Boolean(window.ThinkStockPerformanceDiagnostics))).toBe(true);
   await page.locator("#apiSettingsCloseBtn").click();
   await expect(page.locator("#apiSettingsModal")).toBeHidden();
   await expect(page.locator('[data-series="customer_deposit"]')).toBeVisible();

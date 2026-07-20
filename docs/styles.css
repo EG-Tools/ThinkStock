@@ -887,6 +887,12 @@ body {
   background: rgba(250, 204, 21, 0.08);
 }
 
+.freshness-chip.is-anomaly {
+  border-color: rgba(248, 113, 113, 0.48);
+  background: rgba(248, 113, 113, 0.12);
+  color: #fca5a5;
+}
+
 .freshness-chip.is-empty {
   opacity: 0.62;
 }

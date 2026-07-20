@@ -1,6 +1,10 @@
 const disclosurePolicy = globalThis.ThinkStockDisclosurePolicy;
 if (!disclosurePolicy) throw new Error("Disclosure policy module failed to load");
-const { classifyDisclosureType, shouldDisplayDisclosure } = disclosurePolicy;
+const {
+  classifyDisclosureType,
+  shouldDisplayDisclosure,
+  createDisclosureDataService,
+} = disclosurePolicy;
 const serviceWorkerClientModule = globalThis.ThinkStockServiceWorkerClient;
 if (!serviceWorkerClientModule) throw new Error("Service worker client module failed to load");
 const serviceWorkerClient = serviceWorkerClientModule.createServiceWorkerClient(globalThis);
@@ -58,12 +62,15 @@ const startPerfSample = () => performanceMonitor.startSample();
 const recordPerfSample = (label, startedAt, meta = {}) => (
   performanceMonitor.recordSample(label, startedAt, meta)
 );
+const deferredDiagnosticsModule = globalThis.ThinkStockDeferredDiagnostics;
+if (!deferredDiagnosticsModule) throw new Error("Deferred diagnostics module failed to load");
+const dataHealthModule = globalThis.ThinkStockDataHealth;
+if (!dataHealthModule) throw new Error("Data health module failed to load");
+const { buildFreshnessItems } = dataHealthModule;
 const appStorageModule = globalThis.ThinkStockAppStorage;
 if (!appStorageModule) throw new Error("App storage module failed to load");
 const runtimeSnapshotPolicyModule = globalThis.ThinkStockRuntimeSnapshotPolicy;
 if (!runtimeSnapshotPolicyModule) throw new Error("Runtime snapshot policy module failed to load");
-const performanceDiagnosticsModule = globalThis.ThinkStockPerformanceDiagnostics;
-if (!performanceDiagnosticsModule) throw new Error("Performance diagnostics module failed to load");
 const appUiBindingsModule = globalThis.ThinkStockAppUiBindings;
 if (!appUiBindingsModule) throw new Error("App UI bindings module failed to load");
 const startupLoaderModule = globalThis.ThinkStockStartupLoader;
@@ -141,7 +148,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "0.99";
+const APP_VERSION = "1.00";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -153,6 +160,10 @@ function getAppBuildVersion() {
   }
 }
 const APP_BUILD_VERSION = getAppBuildVersion();
+const deferredPerformanceDiagnostics = deferredDiagnosticsModule.createDeferredDiagnostics(globalThis, {
+  scriptUrl: `./modules/performance-diagnostics.js?v=${encodeURIComponent(APP_BUILD_VERSION)}`,
+  createOptions: { performanceApi: performanceMonitor.api },
+});
 const indexedCacheStore = appStorageModule.createIndexedCacheStore(globalThis, {
   dbName: DATA_CACHE_DB_NAME,
   dbVersion: DATA_CACHE_DB_VERSION,
@@ -171,9 +182,6 @@ const runtimeSnapshotCacheConfig = Object.freeze({
 const runtimeSnapshotRevisionTracker = runtimeSnapshotPolicyModule.createRevisionTracker(
   Object.keys(RUNTIME_SNAPSHOT_COMPONENT_KEYS),
 );
-const performanceDiagnostics = performanceDiagnosticsModule.createPerformanceDiagnostics(globalThis, {
-  performanceApi: performanceMonitor.api,
-});
 const FREESIS_CREDIT_META_URL = "https://freesis.kofia.or.kr/meta/getMetaDataList.do";
 const FREESIS_CREDIT_OBJ_NM = "STATSCU0100000070BO";
 const FREESIS_CREDIT_LOOKBACK_DAYS = 120;
@@ -599,9 +607,7 @@ function clearLegacyBrowserApiSettings() {
   try { sessionStorage.removeItem(API_SETTINGS_SESSION_KEY); } catch (_) {}
 }
 
-const dartDisclosureModule = globalThis.ThinkStockDartDisclosure;
-if (!dartDisclosureModule) throw new Error("DART disclosure module failed to load");
-const dartDisclosureService = dartDisclosureModule.createDartDisclosureService({
+const disclosureDataService = createDisclosureDataService({
   classifyType: classifyDisclosureType,
   shouldDisplay: shouldDisplayDisclosure,
   labelName,
@@ -609,9 +615,28 @@ const dartDisclosureService = dartDisclosureModule.createDartDisclosureService({
   refreshCacheTtlMs: DART_DISCLOSURE_CACHE_TTL_DAYS * DAY_MS,
   getStorage: () => localStorage,
 });
+let dartDisclosureServicePromise = null;
+
+function ensureDartDisclosureService() {
+  if (dartDisclosureServicePromise) return dartDisclosureServicePromise;
+  dartDisclosureServicePromise = deferredDiagnosticsModule.loadScriptGlobal(
+    globalThis,
+    `./modules/dart-disclosure.js?v=${encodeURIComponent(APP_BUILD_VERSION)}`,
+    "ThinkStockDartDisclosure",
+    "thinkstockDartDisclosure",
+  ).then((module) => module.createDartDisclosureService({
+    classifyType: classifyDisclosureType,
+    shouldDisplay: shouldDisplayDisclosure,
+    labelName,
+  })).catch((error) => {
+    dartDisclosureServicePromise = null;
+    throw error;
+  });
+  return dartDisclosureServicePromise;
+}
 
 function sanitizeDisclosureRows(records) {
-  return dartDisclosureService.sanitizeRows(records);
+  return disclosureDataService.sanitizeRows(records);
 }
 
 function sanitizeDartCorpCodeRows(records) {
@@ -1098,63 +1123,77 @@ function enableDisclosureMarkers() {
   syncDisclosureToggleButton(lastDisclosureTraceStats.markers);
 }
 
-function latestDateForRows(rows, keys = []) {
-  return dateSpanForRows(rows, keys).latest;
-}
-
-function dateSpanForRows(rows, keys = []) {
-  if (!Array.isArray(rows)) return { first: "", latest: "" };
-  const targetKeys = Array.isArray(keys) ? keys : [];
-  let first = "";
-  let latest = "";
-  rows.forEach((row) => {
-    const date = String(row?.date || "").slice(0, 10);
-    if (!date) return;
-    const hasValue = targetKeys.length
-      ? targetKeys.some((key) => toNum(row?.[key]) !== null)
-      : Object.entries(row).some(([key, value]) => key !== "date" && toNum(value) !== null);
-    if (!hasValue) return;
-    if (!first || date < first) first = date;
-    if (!latest || date > latest) latest = date;
-  });
-  return { first, latest };
-}
-
-function daysSinceDate(dateText) {
-  const time = toUtcMs(dateText);
-  if (!Number.isFinite(time)) return null;
-  const today = toUtcMs(new Date().toISOString().slice(0, 10));
-  if (!Number.isFinite(today)) return null;
-  return Math.floor((today - time) / DAY_MS);
-}
-
 function renderDataFreshness() {
   const el = document.getElementById("dataFreshness");
   if (!el) return;
 
   const priceKeys = Array.isArray(pricePayload?.series) ? pricePayload.series : [];
   const creditSourceRows = [...(macroRows || []), ...(creditRows || [])];
-  const items = [
-    { label: "가격", ...dateSpanForRows(pricePayload?.records || [], priceKeys), staleDays: 10 },
-    { label: "선행", ...dateSpanForRows(macroRows, ["leading_cycle"]), staleDays: 75 },
-    { label: "뉴스심리", ...dateSpanForRows(macroRows, ["news_sentiment"]), staleDays: 10 },
-    { label: "예탁·신용", ...dateSpanForRows(creditSourceRows, CREDIT_COLS), staleDays: 14 },
-    { label: "ADR", ...dateSpanForRows(adrRows, ADR_SERIES), staleDays: 10 },
-    { label: "공포탐욕", ...dateSpanForRows(adrRows, FEAR_GREED_SERIES), staleDays: 10 },
-  ].map((item) => ({ ...item, date: item.latest }));
+  const items = buildFreshnessItems([
+    { label: "가격", rows: pricePayload?.records || [], keys: priceKeys, staleDays: 10 },
+    {
+      label: "선행",
+      rows: macroRows,
+      keys: ["leading_cycle"],
+      staleDays: 75,
+      changePolicies: {
+        leading_cycle: { maxRelativeChange: 0.05, maxAbsoluteChange: 3, maxGapDays: 62 },
+      },
+    },
+    {
+      label: "뉴스심리",
+      rows: macroRows,
+      keys: ["news_sentiment"],
+      staleDays: 10,
+      changePolicies: {
+        news_sentiment: { maxRelativeChange: 0.35, maxAbsoluteChange: 20, maxGapDays: 14 },
+      },
+    },
+    {
+      label: "예탁·신용",
+      rows: creditSourceRows,
+      keys: CREDIT_COLS,
+      staleDays: 14,
+      changePolicies: {
+        customer_deposit: { maxRelativeChange: 0.2, maxAbsoluteChange: 25, maxGapDays: 14 },
+        kospi_credit: { maxRelativeChange: 0.15, maxAbsoluteChange: 3, maxGapDays: 14 },
+        kosdaq_credit: { maxRelativeChange: 0.15, maxAbsoluteChange: 1, maxGapDays: 14 },
+      },
+    },
+    {
+      label: "ADR",
+      rows: adrRows,
+      keys: ADR_SERIES,
+      staleDays: 10,
+      changePolicies: {
+        adr_kospi: { maxRelativeChange: 0.5, maxAbsoluteChange: 40, maxGapDays: 14 },
+        adr_kosdaq: { maxRelativeChange: 0.5, maxAbsoluteChange: 40, maxGapDays: 14 },
+      },
+    },
+    {
+      label: "공포탐욕",
+      rows: adrRows,
+      keys: FEAR_GREED_SERIES,
+      staleDays: 10,
+      changePolicies: {
+        fear_greed: { maxRelativeChange: 0.5, maxAbsoluteChange: 30, maxGapDays: 14 },
+      },
+    },
+  ]);
 
   el.innerHTML = items.map((item) => {
-    const age = daysSinceDate(item.date);
-    const isEmpty = !item.date;
-    const isStale = Number.isFinite(age) && age > item.staleDays;
     const classes = [
       "freshness-chip",
-      isEmpty ? "is-empty" : "",
-      isStale ? "is-stale" : "",
+      item.isEmpty ? "is-empty" : "",
+      item.isStale ? "is-stale" : "",
+      item.anomalies.length ? "is-anomaly" : "",
     ].filter(Boolean).join(" ");
     const rangeTitle = item.first && item.latest ? `범위: ${item.first} ~ ${item.latest}` : "";
-    const staleTitle = isStale ? `최신 데이터 확인 필요: ${age}일 전` : "";
-    const title = [rangeTitle, staleTitle].filter(Boolean).join(" / ");
+    const staleTitle = item.isStale ? `최신 데이터 확인 필요: ${item.ageDays}일 전` : "";
+    const anomalyTitle = item.anomalies.length
+      ? `최근 값 급변 확인 필요: ${item.anomalies.map((entry) => labelName(entry.key)).join(", ")}`
+      : "";
+    const title = [rangeTitle, staleTitle, anomalyTitle].filter(Boolean).join(" / ");
     return `<span class="${classes}" title="${escapeHtml(title)}"><strong>${escapeHtml(item.label)}</strong>${escapeHtml(item.date || "없음")}</span>`;
   }).join("");
 }
@@ -1181,6 +1220,7 @@ function setupApiSettingsPanel(msgEl) {
     diagnosticsBtn?.setAttribute("disabled", "");
     diagnosticsRefreshBtn?.setAttribute("disabled", "");
     try {
+      const performanceDiagnostics = await deferredPerformanceDiagnostics.ensure();
       const report = await performanceDiagnostics.capture({
         appVersion: APP_VERSION,
         buildVersion: APP_BUILD_VERSION,
@@ -1229,9 +1269,16 @@ function setupApiSettingsPanel(msgEl) {
     renderDiagnostics();
   });
   diagnosticsRefreshBtn?.addEventListener("click", renderDiagnostics);
-  diagnosticsClearBtn?.addEventListener("click", () => {
-    performanceDiagnostics.clear();
-    if (diagnosticsSummary) diagnosticsSummary.textContent = "이전 성능 기록을 지웠습니다.";
+  diagnosticsClearBtn?.addEventListener("click", async () => {
+    try {
+      const performanceDiagnostics = await deferredPerformanceDiagnostics.ensure();
+      performanceDiagnostics.clear();
+      if (diagnosticsSummary) diagnosticsSummary.textContent = "이전 성능 기록을 지웠습니다.";
+    } catch (error) {
+      if (diagnosticsSummary) {
+        diagnosticsSummary.textContent = `기록을 지우지 못했습니다: ${error?.message || error}`;
+      }
+    }
   });
 
   syncApiOptionsButton();
@@ -3763,6 +3810,7 @@ function disclosureTargetMaps() {
 
 async function fetchDartDisclosuresLive(apiKey, options = {}) {
   const { byCode, markets } = disclosureTargetMaps();
+  const dartDisclosureService = await ensureDartDisclosureService();
   return dartDisclosureService.fetchForMarkets(apiKey, byCode, markets, options);
 }
 
@@ -3783,23 +3831,24 @@ async function fetchDartDisclosuresForTickerLive(apiKey, ticker, options = {}) {
     throw new Error("DART corp_code 매핑을 찾지 못했습니다. 앱을 새로고침한 뒤 다시 시도해 주세요.");
   }
 
+  const dartDisclosureService = await ensureDartDisclosureService();
   return dartDisclosureService.fetchForTicker(clean, targetTicker, corp.corp_code, options);
 }
 
 function mergeDisclosureRows(existingRows, incomingRows) {
-  return dartDisclosureService.mergeRows(existingRows, incomingRows);
+  return disclosureDataService.mergeRows(existingRows, incomingRows);
 }
 
 function getDartDisclosureRefreshCacheEntry(ticker) {
-  return dartDisclosureService.getRefreshCacheEntry(ticker);
+  return disclosureDataService.getRefreshCacheEntry(ticker);
 }
 
 function rememberDartDisclosureRefresh(ticker, info) {
-  dartDisclosureService.rememberRefresh(ticker, info);
+  disclosureDataService.rememberRefresh(ticker, info);
 }
 
 function hasFreshDartDisclosureRefresh(ticker) {
-  return dartDisclosureService.hasFreshRefresh(ticker);
+  return disclosureDataService.hasFreshRefresh(ticker);
 }
 
 function disclosureRowsForTicker(ticker) {
@@ -5730,7 +5779,7 @@ async function boot() {
       historicalDataLoaded,
       restoredSnapshot: hasRuntimeDataLoaded(),
     });
-    performanceDiagnostics.startAutomaticCapture({
+    deferredPerformanceDiagnostics.scheduleAutomaticCapture({
       appVersion: APP_VERSION,
       buildVersion: APP_BUILD_VERSION,
     });

@@ -48,6 +48,12 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractio
   stat(path.join(root, "docs", "vendor", "plotly-thinkstock-2.35.2.min.js")),
   stat(path.join(root, "docs", "assets", "app.bundle.min.js")),
 ]);
+const [deferredDiagnostics, dataHealth, pagesEntry] = await Promise.all([
+  readFile(path.join(root, "docs", "modules", "deferred-diagnostics.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "data-health.js"), "utf8"),
+  readFile(path.join(root, "scripts", "pages-entry.mjs"), "utf8"),
+]);
+const precacheAssetsSource = sw.match(/const PRECACHE_ASSETS = \[([\s\S]*?)\];/)?.[1] || "";
 
 const appVersion = app.match(/const APP_VERSION = "([0-9]+\.[0-9]+)";/)?.[1];
 const htmlVersion = html.match(/id="appVersionText">([0-9]+\.[0-9]+)</)?.[1];
@@ -111,6 +117,12 @@ assert.ok(app.includes("supplementalTasks: [adrTask, fearGreedTask, dartTask]"),
 assert.ok(app.includes("awaitCriticalRender: true") && app.includes("onCriticalReady"), "startup loader does not wait for the critical render phase");
 assert.ok(dartDisclosure.includes("fetchForMarkets") && dartDisclosure.includes("fetchForTicker"), "DART disclosure fetch service is incomplete");
 assert.ok(dartDisclosure.includes("rememberRefresh") && dartDisclosure.includes("mergeRows"), "DART disclosure cache service is incomplete");
+assert.ok(disclosurePolicy.includes("createDisclosureDataService")
+  && app.includes("const disclosureDataService = createDisclosureDataService"),
+  "boot-time disclosure data handling is not separated from the live DART client");
+assert.ok(!pagesEntry.includes('import "../docs/modules/dart-disclosure.js"')
+  && sw.includes('"/modules/dart-disclosure.js"'),
+  "live DART client must stay out of the initial bundle");
 assert.ok(!app.includes("function fetchDartDisclosurePage("), "DART page fetching still lives in app.js");
 assert.ok(app.includes("ThinkStockDataPayload"), "data payload module is not wired into the app");
 assert.ok(dataPayload.includes("rowsFromColumnarPayload"), "shared columnar payload parser is missing");
@@ -202,13 +214,27 @@ assert.ok(app.includes("function getTraceLinePaths("), "DOM-only line highlighti
 assert.ok(!app.includes('Plotly.restyle(el, { "line.width"'), "line hover still triggers Plotly restyle");
 assert.ok(app.includes("ThinkStockPerformanceMonitor"), "performance monitor module is not wired into the app");
 assert.ok(performanceMonitor.includes("createPerformanceMonitor") && performanceMonitor.includes("p95FrameGap"), "performance monitor module is incomplete");
-assert.ok(app.includes("ThinkStockPerformanceDiagnostics")
+assert.ok(app.includes("ThinkStockDeferredDiagnostics")
+  && deferredDiagnostics.includes("createDeferredDiagnostics")
   && performanceDiagnostics.includes("createPerformanceDiagnostics")
   && performanceDiagnostics.includes("readStorageState"),
   "persistent performance diagnostics are incomplete");
 assert.ok(performanceDiagnostics.includes("startAutomaticCapture")
+  && deferredDiagnostics.includes("scheduleAutomaticCapture")
   && performanceMonitor.includes("diagnosticSamples"),
   "automatic local performance history is incomplete");
+assert.ok(!pagesEntry.includes('import "../docs/modules/performance-diagnostics.js"')
+  && pagesEntry.includes('import "../docs/modules/deferred-diagnostics.js"'),
+  "performance diagnostics must stay out of the initial bundle");
+assert.ok(sw.includes('"/modules/performance-diagnostics.js"')
+  && !precacheAssetsSource.includes("./modules/performance-diagnostics.js"),
+  "deferred performance diagnostics cache policy is incorrect");
+assert.ok(app.includes("ThinkStockDataHealth")
+  && dataHealth.includes("buildFreshnessItems")
+  && dataHealth.includes("detectRecentChanges"),
+  "shared data health checks are incomplete");
+assert.ok(!app.includes("function dateSpanForRows(") && !app.includes("function daysSinceDate("),
+  "data health logic still lives in app.js");
 assert.ok(app.includes("ThinkStockAppUiBindings")
   && appUiBindings.includes("bindManualRefresh")
   && appUiBindings.includes("bindRangeButtons"),

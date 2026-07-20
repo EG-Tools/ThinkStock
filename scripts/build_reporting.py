@@ -11,11 +11,16 @@ import pandas as pd
 BUILD_HISTORY_FORMAT = "thinkstock-build-history-v1"
 BUILD_HISTORY_LIMIT = 20
 DEFAULT_VALUE_CHANGE_THRESHOLDS = {
+    "^KS11": 0.35,
+    "^KQ11": 0.35,
     "leading_cycle": 0.05,
     "news_sentiment": 0.35,
     "customer_deposit": 0.25,
     "kospi_credit": 0.25,
     "kosdaq_credit": 0.25,
+    "adr_kospi": 0.5,
+    "adr_kosdaq": 0.5,
+    "fear_greed": 0.5,
 }
 
 

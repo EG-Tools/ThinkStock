@@ -90,6 +90,37 @@ class BuildReportingTests(unittest.TestCase):
         self.assertTrue(any("points dropped" in warning for warning in warnings))
         self.assertTrue(any("latest value changed" in warning for warning in warnings))
 
+    def test_output_anomalies_cover_auxiliary_market_series(self) -> None:
+        previous_runs = [{
+            "outputs": {
+                "adr": {
+                    "rows": 100,
+                    "latest": "2026-07-19",
+                    "series_latest_values": {
+                        "adr_kospi": 100.0,
+                        "fear_greed": 50.0,
+                    },
+                },
+            },
+        }]
+        report = {
+            "outputs": {
+                "adr": {
+                    "rows": 101,
+                    "latest": "2026-07-20",
+                    "series_latest_values": {
+                        "adr_kospi": 170.0,
+                        "fear_greed": 90.0,
+                    },
+                },
+            },
+        }
+
+        warnings = detect_output_anomalies(report, previous_runs)
+
+        self.assertTrue(any("adr_kospi" in warning for warning in warnings))
+        self.assertTrue(any("fear_greed" in warning for warning in warnings))
+
 
 if __name__ == "__main__":
     unittest.main()
