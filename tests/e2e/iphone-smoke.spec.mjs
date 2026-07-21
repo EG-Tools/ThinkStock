@@ -125,7 +125,13 @@ async function installDataRoutes(page) {
     if (name === "disclosures.json") {
       await route.fulfill({ json: {
         generated_at: "2026-07-15T00:00:00Z",
-        records: [],
+        source: "OpenDART",
+        format: "by-ticker-v1",
+        tickers: ["005930.KS"],
+        files: { "005930.KS": "./data/disclosures/005930.KS.json" },
+        counts: { "005930.KS": 1 },
+        latest: { "005930.KS": "2026-04-14" },
+        total: 1,
       } });
       return;
     }
@@ -161,6 +167,25 @@ async function installDataRoutes(page) {
       return;
     }
     await route.abort();
+  });
+  await page.route("**/data/disclosures/*.json*", async (route) => {
+    const name = new URL(route.request().url()).pathname.split("/").pop();
+    if (name !== "005930.KS.json") {
+      await route.abort();
+      return;
+    }
+    await route.fulfill({ json: {
+      generated_at: "2026-07-15T00:00:00Z",
+      source: "OpenDART",
+      records: [{
+        date: "2026-04-14",
+        ticker: "005930.KS",
+        name: "삼성전자",
+        title: "유상증자 결정",
+        url: "https://dart.fss.or.kr/example",
+        source: "OpenDART",
+      }],
+    } });
   });
   await page.route("**/data/dart_corp_codes/*.json*", async (route) => {
     await route.fulfill({ json: {
