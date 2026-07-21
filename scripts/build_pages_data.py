@@ -2,7 +2,9 @@ import json
 import os
 import re
 import subprocess
+import threading
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -133,6 +135,7 @@ LOOKBACK_YEARS = 30
 DART_DISCLOSURE_LOOKBACK_YEARS = 3
 DART_MARKET_LOOKBACK_DAYS = 90
 DART_MARKET_MAX_PAGES = 60
+DART_MARKET_FETCH_WORKERS = 4
 DART_MARKET_DISCLOSURE_TYPES = ("A", "B", "C", "E", "I")
 DART_CORP_CODE_PREFIX_LENGTH = 2
 KRX_LOOKBACK_DAYS = 14
@@ -163,7 +166,9 @@ KRX_BASE_INFO_ENDPOINTS = {
     "KOSPI": "stk_isu_base_info",
     "KOSDAQ": "ksq_isu_base_info",
 }
-_HTTP_CLIENT: RetryingHttpClient | None = None
+_HTTP_CLIENT_LOCAL = threading.local()
+_HTTP_CLIENTS: list[RetryingHttpClient] = []
+_HTTP_CLIENTS_LOCK = threading.Lock()
 SOURCE_STALE_AFTER_DAYS = {
     "prices": 10,
     "ecos_leading_cycle": 150,
@@ -178,10 +183,23 @@ SOURCE_STALE_AFTER_DAYS = {
 
 
 def http_client() -> RetryingHttpClient:
-    global _HTTP_CLIENT
-    if _HTTP_CLIENT is None:
-        _HTTP_CLIENT = RetryingHttpClient()
-    return _HTTP_CLIENT
+    client = getattr(_HTTP_CLIENT_LOCAL, "client", None)
+    if client is None:
+        client = RetryingHttpClient()
+        _HTTP_CLIENT_LOCAL.client = client
+        with _HTTP_CLIENTS_LOCK:
+            _HTTP_CLIENTS.append(client)
+    return client
+
+
+def aggregate_http_metrics() -> dict[str, int]:
+    totals = {"requests": 0, "retries": 0, "failures": 0}
+    with _HTTP_CLIENTS_LOCK:
+        clients = list(_HTTP_CLIENTS)
+    for client in clients:
+        for key, value in client.metrics().items():
+            totals[key] = totals.get(key, 0) + int(value or 0)
+    return totals
 
 
 def years_before(reference: date, years: int) -> date:
@@ -849,12 +867,37 @@ def fetch_dart_market_disclosures(
     lookback_days: int = DART_MARKET_LOOKBACK_DAYS,
     max_pages: int = DART_MARKET_MAX_PAGES,
     end_date: date | None = None,
+    _streams: tuple[tuple[str, str], ...] | None = None,
 ) -> list[dict]:
     clean_key = str(api_key or "").strip()
     if not clean_key:
         return []
     end = end_date or date.today()
     start = end - timedelta(days=max(1, int(lookback_days)) - 1)
+    streams = tuple(
+        (corp_cls, disclosure_type)
+        for corp_cls in ("Y", "K")
+        for disclosure_type in DART_MARKET_DISCLOSURE_TYPES
+    )
+    if _streams is None:
+        worker_count = min(DART_MARKET_FETCH_WORKERS, len(streams))
+
+        def fetch_stream(stream: tuple[str, str]) -> list[dict]:
+            return fetch_dart_market_disclosures(
+                clean_key,
+                lookback_days=lookback_days,
+                max_pages=max_pages,
+                end_date=end,
+                _streams=(stream,),
+            )
+
+        records: list[dict] = []
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="dart-market") as executor:
+            for stream_records in executor.map(fetch_stream, streams):
+                records.extend(stream_records)
+        return normalize_disclosure_records(records)
+
+    selected_streams = set(_streams)
     records: list[dict] = []
 
     windows: list[tuple[date, date]] = []
@@ -867,6 +910,8 @@ def fetch_dart_market_disclosures(
     page_limit = max(1, int(max_pages))
     for corp_cls in ("Y", "K"):
         for disclosure_type in DART_MARKET_DISCLOSURE_TYPES:
+            if (corp_cls, disclosure_type) not in selected_streams:
+                continue
             pending_windows = list(reversed(windows))
             while pending_windows:
                 window_start, window_end = pending_windows.pop(0)
@@ -1642,7 +1687,7 @@ def main() -> None:
     }
     build_report["outputs"]["dart_corp_codes"] = payload_file_summary(OUTPUT_DART_CORP_CODES_JSON)
     build_report["outputs"]["krx_universe"] = payload_file_summary(OUTPUT_KRX_UNIVERSE_JSON)
-    http_metrics = http_client().metrics()
+    http_metrics = aggregate_http_metrics()
     warnings = health_warnings(build_report["sources"])
     if int(http_metrics.get("failures") or 0) > 0:
         warnings.append(f"http: {http_metrics['failures']} failed requests")

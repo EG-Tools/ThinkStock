@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sys
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -190,6 +192,33 @@ class BuildPagesDataHelperTests(unittest.TestCase):
             len([call for call in calls if call["bgn_de"] == call["end_de"]]),
             20,
         )
+
+    def test_dart_market_disclosures_use_bounded_parallel_streams(self) -> None:
+        lock = threading.Lock()
+        active = 0
+        max_active = 0
+
+        def get_json(*_args, **_kwargs):
+            nonlocal active, max_active
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.02)
+            with lock:
+                active -= 1
+            return {"status": "013", "message": "No data"}
+
+        client = type("Client", (), {"get_json": staticmethod(get_json)})()
+        with patch.object(build_pages_data, "http_client", return_value=client):
+            records = build_pages_data.fetch_dart_market_disclosures(
+                "key",
+                lookback_days=1,
+                end_date=build_pages_data.date(2026, 7, 21),
+            )
+
+        self.assertEqual(records, [])
+        self.assertGreater(max_active, 1)
+        self.assertLessEqual(max_active, build_pages_data.DART_MARKET_FETCH_WORKERS)
 
     def test_kofia_merge_preserves_overlap_and_scales_only_new_tail(self) -> None:
         seed_dates = pd.to_datetime([
