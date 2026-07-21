@@ -148,7 +148,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.02";
+const APP_VERSION = "1.03";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -189,6 +189,9 @@ const FREESIS_CREDIT_UNIT_CODE = "01";
 const FEAR_GREED_LIVE_URL = "https://kospi.feargreedchart.com/api/?action=kospi";
 const DART_DISCLOSURE_CACHE_KEY = "thinkstock-dart-disclosure-cache-v1";
 const DART_DISCLOSURE_CACHE_TTL_DAYS = 1;
+const LOCAL_DART_SERVER_KEY = "thinkstock-local-dart-server-v1";
+const LOCAL_DART_DISCLOSURE_ENDPOINT = "./api/dart/disclosures";
+const DART_VISIBLE_REFRESH_CONCURRENCY = 2;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NETWORK_REQUEST_TIMEOUT_MS = 12000;
 const CHART_WORKER_STALE_CANCEL_MS = 40;
@@ -1087,7 +1090,34 @@ function bindRuntimeSnapshotExitSave() {
 function syncApiOptionsButton() {
   const btn = document.getElementById("apiOptionsBtn");
   if (!btn) return;
-  btn.classList.remove("is-configured");
+  btn.classList.toggle("is-configured", Boolean(getConfiguredLocalDartServer()));
+}
+
+function normalizeLocalDartServer(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  try {
+    const url = new URL(text);
+    if (!/^https?:$/.test(url.protocol) || url.username || url.password) return "";
+    url.search = "";
+    url.hash = "";
+    return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+  } catch (_) {
+    return "";
+  }
+}
+
+function getConfiguredLocalDartServer() {
+  try {
+    return normalizeLocalDartServer(localStorage.getItem(LOCAL_DART_SERVER_KEY));
+  } catch (_) {
+    return "";
+  }
+}
+
+function getLocalDartDisclosureEndpoint() {
+  const configured = getConfiguredLocalDartServer();
+  return configured ? `${configured}/api/dart/disclosures` : LOCAL_DART_DISCLOSURE_ENDPOINT;
 }
 
 function renderAppVersionLabel() {
@@ -1215,9 +1245,14 @@ function setupApiSettingsPanel(msgEl) {
   const diagnosticsSummary = document.getElementById("performanceDiagnosticsSummary");
   const diagnosticsRefreshBtn = document.getElementById("performanceDiagnosticsRefreshBtn");
   const diagnosticsClearBtn = document.getElementById("performanceDiagnosticsClearBtn");
+  const localDartServerInput = document.getElementById("localDartServerInput");
+  const localDartServerSaveBtn = document.getElementById("localDartServerSaveBtn");
 
   const close = () => { modal.hidden = true; };
-  const open = () => { modal.hidden = false; };
+  const open = () => {
+    if (localDartServerInput) localDartServerInput.value = getConfiguredLocalDartServer();
+    modal.hidden = false;
+  };
   const renderDiagnostics = async () => {
     if (!diagnosticsPanel || !diagnosticsSummary) return;
     diagnosticsPanel.hidden = false;
@@ -1284,6 +1319,25 @@ function setupApiSettingsPanel(msgEl) {
         diagnosticsSummary.textContent = `기록을 지우지 못했습니다: ${error?.message || error}`;
       }
     }
+  });
+  localDartServerSaveBtn?.addEventListener("click", () => {
+    const raw = String(localDartServerInput?.value || "").trim();
+    const normalized = normalizeLocalDartServer(raw);
+    if (raw && !normalized) {
+      setMessage(msgEl, "PC 주소는 http://192.168.x.x:8787 형식으로 입력해 주세요.", true);
+      return;
+    }
+    try {
+      if (normalized) localStorage.setItem(LOCAL_DART_SERVER_KEY, normalized);
+      else localStorage.removeItem(LOCAL_DART_SERVER_KEY);
+      localStorage.removeItem(DART_DISCLOSURE_CACHE_KEY);
+    } catch (_) {}
+    if (localDartServerInput) localDartServerInput.value = normalized;
+    syncApiOptionsButton();
+    close();
+    setMessage(msgEl, normalized
+      ? [`로컬 공시 서버 주소를 저장했습니다.`, normalized]
+      : ["로컬 공시 서버 주소를 자동 감지로 되돌렸습니다."]);
   });
 
   syncApiOptionsButton();
@@ -3804,42 +3858,41 @@ function disclosureTargetTickers() {
   return [...tickers];
 }
 
-function disclosureTargetMaps() {
-  const byCode = new Map();
-  const markets = new Set();
-  disclosureTargetTickers().forEach((ticker) => {
-    const code = ticker.slice(0, 6);
-    if (!byCode.has(code)) byCode.set(code, ticker);
-    markets.add(ticker.endsWith(".KQ") ? "K" : "Y");
-  });
-  return { byCode, markets: [...markets] };
-}
-
 async function fetchDartDisclosuresLive(apiKey, options = {}) {
-  const { byCode, markets } = disclosureTargetMaps();
-  const dartDisclosureService = await ensureDartDisclosureService();
-  return dartDisclosureService.fetchForMarkets(apiKey, byCode, markets, options);
+  const results = await mapWithConcurrency(
+    disclosureTargetTickers(),
+    DART_VISIBLE_REFRESH_CONCURRENCY,
+    (ticker) => fetchDartDisclosuresForTickerLive(apiKey, ticker, options),
+  );
+  return sanitizeDisclosureRows(results.flat());
 }
 
 async function fetchDartDisclosuresForTickerLive(apiKey, ticker, options = {}) {
-  const clean = String(apiKey || "").trim();
   const targetTicker = String(ticker || "").trim().toUpperCase();
-  const code = targetTicker.slice(0, 6);
-  if (!clean || !/^[0-9]{6}\.(KS|KQ)$/.test(targetTicker)) return [];
-
-  const mapLoaded = await ensureDartCorpCodeMapLoaded(code);
-  throwIfAborted(options?.signal);
-  if (!mapLoaded) {
-    throw new Error("DART corp_code 매핑을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.");
+  if (!/^[0-9]{6}\.(KS|KQ)$/.test(targetTicker)) return [];
+  const query = new URLSearchParams({ ticker: targetTicker });
+  if (options?.forceNetwork) query.set("force", "1");
+  let response;
+  try {
+    response = await fetch(`${getLocalDartDisclosureEndpoint()}?${query.toString()}`, {
+      cache: "no-store",
+      signal: options?.signal || null,
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") throw error;
+    throw new Error("ThinkStock 로컬 서버에 연결할 수 없습니다. run_local_pages.bat을 실행해 주세요.");
   }
-
-  const corp = dartCorpCodeMap.get(code);
-  if (!corp?.corp_code) {
-    throw new Error("DART corp_code 매핑을 찾지 못했습니다. 앱을 새로고침한 뒤 다시 시도해 주세요.");
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch (_) {
+    payload = null;
   }
-
-  const dartDisclosureService = await ensureDartDisclosureService();
-  return dartDisclosureService.fetchForTicker(clean, targetTicker, corp.corp_code, options);
+  if (!response.ok || payload?.ok === false) {
+    const detail = String(payload?.error || "").trim();
+    throw new Error(detail || "ThinkStock 로컬 DART 서버가 응답하지 않습니다.");
+  }
+  return sanitizeDisclosureRows(payload?.records || []);
 }
 
 function mergeDisclosureRows(existingRows, incomingRows) {
@@ -3928,39 +3981,21 @@ function getDisclosureSeedTickers() {
     .filter((ticker) => /^[0-9]{6}\.(KS|KQ)$/.test(ticker));
 }
 
-function getDisclosureSeedPath(ticker) {
-  const files = disclosureManifest?.files;
-  if (files && typeof files === "object" && files[ticker]) return files[ticker];
-  return `./data/disclosures/${ticker}.json`;
-}
-
-async function ensureDisclosureSeedForTicker(ticker, forceNetwork = false) {
+async function ensureDisclosureSeedForTicker(ticker) {
   const target = String(ticker || "").trim().toUpperCase();
   if (!/^[0-9]{6}\.(KS|KQ)$/.test(target)) return { ticker: target, added: 0 };
   if (disclosureSeedLoadedTickers.has(target)) return { ticker: target, added: 0 };
   if (disclosureSeedLoadPromises.has(target)) return disclosureSeedLoadPromises.get(target);
 
-  const cached = await applyTickerDisclosureCache(target);
-  if (cached.applied && !forceNetwork) {
+  const task = applyTickerDisclosureCache(target).then((cached) => {
     disclosureSeedLoadedTickers.add(target);
-    return { ticker: target, added: cached.added, cached: true, latestDate: cached.latestDate };
-  }
-
-  const manifestTickers = Array.isArray(disclosureManifest?.tickers) ? disclosureManifest.tickers : [];
-  if (manifestTickers.length && !manifestTickers.includes(target)) return { ticker: target, added: 0 };
-
-  const task = (async () => {
-    const beforeCount = disclosureRows.length;
-    const text = await fetchSeedText(getDisclosureSeedPath(target), forceNetwork);
-    if (!text) return { ticker: target, added: 0 };
-    const payload = parsePayloadText(text);
-    const rows = sanitizeDisclosureRows(normalizeDisclosureSeedRows(payload?.records || []));
-    disclosureRows = mergeDisclosureRows(disclosureRows, rows);
-    if (rows.length) markDataChanged("disclosure");
-    disclosureSeedLoadedTickers.add(target);
-    writeTickerDisclosureCache(target, disclosureRowsForTicker(target)).catch(() => {});
-    return { ticker: target, added: Math.max(0, disclosureRows.length - beforeCount) };
-  })().catch(() => ({ ticker: target, added: 0 })).finally(() => {
+    return {
+      ticker: target,
+      added: cached.added,
+      cached: cached.applied,
+      latestDate: cached.latestDate,
+    };
+  }).catch(() => ({ ticker: target, added: 0 })).finally(() => {
     disclosureSeedLoadPromises.delete(target);
   });
 
@@ -3988,7 +4023,10 @@ async function refreshDartDisclosuresFromApi(apiKey, ticker = "", options = {}) 
     };
   }
   const liveRows = ticker
-    ? await fetchDartDisclosuresForTickerLive(apiKey, targetTicker, { signal })
+    ? await fetchDartDisclosuresForTickerLive(apiKey, targetTicker, {
+      signal,
+      forceNetwork: options.forceNetwork,
+    })
     : await fetchDartDisclosuresLive(apiKey, { signal });
   throwIfAborted(signal);
   const beforeCount = disclosureRows.length;
@@ -4041,7 +4079,10 @@ async function refreshDartDisclosuresForVisibleTickersFromApi(apiKey, options = 
       if (!options.forceNetwork && hasFreshDartDisclosureRefresh(ticker)) {
         return { ticker, rows: [], cached: true };
       }
-      const rows = await fetchDartDisclosuresForTickerLive(apiKey, ticker, { signal });
+      const rows = await fetchDartDisclosuresForTickerLive(apiKey, ticker, {
+        signal,
+        forceNetwork: options.forceNetwork,
+      });
       throwIfAborted(signal);
       rememberDartDisclosureRefresh(ticker, {
         fetched: rows.length,
@@ -4096,19 +4137,23 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
   enableDisclosureMarkers();
   saveState();
   const task = ensureDisclosureSeedForTicker(target)
-    .then((seedInfo) => {
+    .then(async (seedInfo) => {
       if (seedInfo?.added > 0) {
         if (!applyDisclosureStateFast()) requestChartRender(false);
-        scheduleLastRuntimeSnapshotSave();
       }
+      const refreshInfo = await refreshDartDisclosuresFromApi("local", target, { forceNetwork: true });
+      if (refreshInfo?.added > 0 || refreshInfo?.fetched > 0) {
+        if (!applyDisclosureStateFast()) requestChartRender(false);
+      }
+      scheduleLastRuntimeSnapshotSave();
       const rows = disclosureRowsForTicker(target);
       setMessage(msgEl, rows.length
-        ? [`${name} 종목을 추가했습니다.`, `서버 공시 ${rows.length}건을 반영했습니다.`]
-        : [`${name} 종목을 추가했습니다.`, "현재 서버 데이터에는 표시할 주요 공시가 없습니다."]);
+        ? [`${name} 종목을 추가했습니다.`, `로컬 DART 공시 ${rows.length}건을 반영했습니다.`]
+        : [`${name} 종목을 추가했습니다.`, "최근 3년간 표시할 주요 공시가 없습니다."]);
     })
     .catch((error) => {
       setMessage(msgEl, [
-        `${name} 종목은 추가됐지만 서버 공시를 확인하지 못했습니다.`,
+        `${name} 종목은 추가됐지만 로컬 DART 공시를 확인하지 못했습니다.`,
         error.message,
       ], true);
     })
@@ -5589,7 +5634,18 @@ async function runRuntimeDataRefresh(msgEl, options = {}) {
     }))
     .catch((error) => ({ info: [], warnings: [`공포탐욕 불러오기 오류: ${error.message}`] }));
 
-  const dartTask = () => Promise.resolve({ info: [], warnings: [], refreshed: false });
+  const dartTask = () => refreshDartDisclosuresForVisibleTickersFromApi("local", {
+    forceNetwork,
+    signal,
+  }).then((result) => ({
+    info: result.fetched > 0 ? [`로컬 DART 공시 ${result.fetched}건 확인`] : [],
+    warnings: result.failed || [],
+    refreshed: result.fetched > 0,
+  })).catch((error) => ({
+    info: [],
+    warnings: [`로컬 DART 공시 오류: ${error.message}`],
+    refreshed: false,
+  }));
 
   const liveTask = () => refreshLiveApiData(signal)
     .then((result) => ({ info: result.applied || [], warnings: result.warnings || [] }))

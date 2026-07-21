@@ -7,12 +7,19 @@ ThinkStock ships in two modes from the same repository.
 - Mobile web app source: `docs/`
 - GitHub Pages should be configured to use `GitHub Actions`.
 
-## 2. Full Streamlit app
+## 2. Local web app with DART disclosures
+- Put `DART_API_KEY=...` in `/.env.local`.
+- Double-click `run_local_pages.bat` to open `http://127.0.0.1:8787`.
+- A phone on the same Wi-Fi can open the private-network address printed in the server window.
+- In the installed iOS app, save that address under API settings as the iPhone PC address.
+- DART keys stay on the PC. Per-ticker disclosures are cached on both the PC and browser.
+
+## 3. Full Streamlit app
 - Entrypoint: `app.py` or `streamlit_app.py`
 - Local run: `run_app.bat`
 - Streamlit Community Cloud entrypoint: `app.py` or `streamlit_app.py`
 
-## 3. Native iOS app packaging (Capacitor)
+## 4. Native iOS app packaging (Capacitor)
 - Web source for iOS app shell: `docs/`
 - Setup guide: `IOS_APP_TESTFLIGHT.md`
 - First-time commands:
@@ -21,7 +28,7 @@ ThinkStock ships in two modes from the same repository.
   - `npm run cap:sync:ios`
   - `npm run cap:open:ios` (macOS)
 
-## 4. iOS build without Mac (Codemagic)
+## 5. iOS build without Mac (Codemagic)
 - CI config: `codemagic.yaml`
 - Setup guide: `CODEMAGIC_IOS.md`
 - Workflow id: `thinkstock-ios-testflight`
@@ -46,4 +53,4 @@ ThinkStock ships in two modes from the same repository.
   - `KOSIS_API_KEY=...`
   - `KRX_API_KEY=...`
   - `ECOS_API_KEY=...`
-- GitHub Pages builds use GitHub Secrets, not local `.env.local`.
+- GitHub Pages builds use GitHub Secrets for public market and macro data. DART disclosures are fetched only by the local PC server.

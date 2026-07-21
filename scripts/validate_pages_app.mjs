@@ -311,6 +311,8 @@ assert.ok(sw.includes('const DATA_CACHE_PREFIX = "thinkstock-data-v1-"')
   "service worker data cache does not survive shell deployments");
 assert.ok(sw.includes("function dataCacheFirst("),
   "validated data cache is not preferred after an atomic refresh");
+assert.ok(sw.includes('url.pathname.includes("/api/")'),
+  "local API requests must bypass the service worker cache");
 assert.ok(!sw.includes(".map((req) => cache.delete(req))"), "service worker still deletes data before refresh");
 assert.ok(playwrightConfig.includes('name: "webkit-sw"') && playwrightConfig.includes('serviceWorkers: "allow"'),
   "service-worker-aware WebKit coverage is missing");

@@ -250,6 +250,7 @@ self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
+  if (url.pathname.includes("/api/")) return;
 
   if (isVersionedAssetUrl(url)) {
     event.respondWith(cacheFirst(event.request));

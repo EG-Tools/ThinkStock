@@ -19,6 +19,7 @@ node_modules/
 playwright-report/
 test-results/
 .pages-artifact/
+.thinkstock-cache/
 .capacitor/
 .codex-ci-deps/
 docs/data/build_report.json

@@ -103,8 +103,6 @@ jobs:
           KOSIS_API_KEY: ${{ secrets.KOSIS_API_KEY }}
           KOFIA_API_KEY: ${{ secrets.KOFIA_API_KEY }}
           KRX_API_KEY: ${{ secrets.KRX_API_KEY }}
-          DART_API_KEY: ${{ secrets.DART_API_KEY }}
-          DART_DISCLOSURE_STOCK_CODES: ${{ vars.DART_DISCLOSURE_STOCK_CODES }}
           ENABLE_FREESIS_CREDIT_TAIL: "1"
           PAGES_FULL_REBUILD: ${{ (github.event_name == 'workflow_dispatch' || github.event.schedule == '35 3 * * 0') && '1' || '0' }}
         run: python scripts/build_pages_data.py
