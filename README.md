@@ -10,6 +10,7 @@ ThinkStock ships in two modes from the same repository.
 ## 2. Local web app with DART disclosures
 - Put `DART_API_KEY=...` in `/.env.local`.
 - Double-click `run_local_pages.bat` to open `http://127.0.0.1:8787`.
+- The local server uses the repository's Node.js runtime and does not require Python.
 - A phone on the same Wi-Fi can open the private-network address printed in the server window.
 - In the installed iOS app, save that address under API settings as the iPhone PC address.
 - DART keys stay on the PC. Per-ticker disclosures are cached on both the PC and browser.
