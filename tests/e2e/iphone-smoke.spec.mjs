@@ -187,6 +187,9 @@ async function installDataRoutes(page) {
 
 test("new stock loads its own local DART disclosures", async ({ page }) => {
   await installDataRoutes(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-local-dart-server-v1", "http://127.0.0.1:8787");
+  });
   let requestedNewStockDisclosure = false;
   await page.route("**/api/dart/disclosures?*", async (route) => {
     const ticker = new URL(route.request().url()).searchParams.get("ticker") || "";
@@ -231,6 +234,63 @@ test("new stock loads its own local DART disclosures", async ({ page }) => {
   await expect(page.locator('[data-series="000660.KS"]')).toBeVisible();
   await expect.poll(() => requestedNewStockDisclosure).toBe(true);
   await expect(page.locator("#chart .textpoint text").filter({ hasText: "◆" }).first()).toBeVisible();
+});
+
+test("new stock loads its deployed disclosure file without a local server", async ({ page }) => {
+  await installDataRoutes(page);
+  let requestedStaticDisclosure = false;
+  let localApiRequests = 0;
+  await page.route("**/data/disclosures.json*", async (route) => {
+    await route.fulfill({ json: {
+      generated_at: "2026-07-21T00:00:00Z",
+      source: "OpenDART",
+      format: "by-ticker-v1",
+      tickers: ["000660.KS"],
+      files: { "000660.KS": "./data/disclosures/000660.KS.json" },
+      counts: { "000660.KS": 1 },
+      latest: { "000660.KS": "2026-04-14" },
+      total: 1,
+    } });
+  });
+  await page.route("**/data/disclosures/000660.KS.json*", async (route) => {
+    requestedStaticDisclosure = true;
+    await route.fulfill({ json: {
+      generated_at: "2026-07-21T00:00:00Z",
+      records: [{
+        date: "2026-04-14",
+        ticker: "000660.KS",
+        name: "SK하이닉스",
+        title: "단일판매ㆍ공급계약체결",
+        url: "https://dart.fss.or.kr/example",
+        source: "OpenDART",
+      }],
+    } });
+  });
+  await page.route("**/api/dart/disclosures?*", async (route) => {
+    localApiRequests += 1;
+    await route.abort();
+  });
+  await page.route("https://query2.finance.yahoo.com/v8/finance/chart/000660.KS**", async (route) => {
+    await route.fulfill({ json: {
+      chart: {
+        result: [{
+          meta: { gmtoffset: 0 },
+          timestamp: [1768348800, 1776124800, 1783987200],
+          indicators: { quote: [{ close: [180000, 210000, 240000] }] },
+        }],
+        error: null,
+      },
+    } });
+  });
+
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await page.locator("#stockSearchInput").fill("SK하이닉스");
+  await page.locator(".stock-suggest-item").filter({ hasText: "SK하이닉스" }).click();
+
+  await expect.poll(() => requestedStaticDisclosure).toBe(true);
+  await expect(page.locator("#chart .textpoint text").filter({ hasText: "◆" }).first()).toBeVisible();
+  expect(localApiRequests).toBe(0);
 });
 
 test("bundled recent data boots through the chart worker", async ({ page }) => {

@@ -133,6 +133,7 @@ LOOKBACK_YEARS = 30
 DART_DISCLOSURE_LOOKBACK_YEARS = 3
 DART_MARKET_LOOKBACK_DAYS = 90
 DART_MARKET_MAX_PAGES = 60
+DART_MARKET_DISCLOSURE_TYPES = ("A", "B", "C", "E", "I")
 DART_CORP_CODE_PREFIX_LENGTH = 2
 KRX_LOOKBACK_DAYS = 14
 ECOS_STAT_CODE = "901Y067"  # Composite Leading Indicator
@@ -237,6 +238,15 @@ def resolve_kofia_api_key() -> str:
 
 def resolve_dart_api_key() -> str:
     return resolve_api_key(LOCAL_ENV_FILE, "DART_API_KEY")
+
+
+def redact_error_message(error: Exception, *secrets: str) -> str:
+    message = str(error)
+    for secret in secrets:
+        clean = str(secret or "").strip()
+        if clean:
+            message = message.replace(clean, "[redacted]")
+    return message
 
 
 def resolve_krx_api_key() -> str:
@@ -745,7 +755,7 @@ def fetch_dart_disclosures(
         try:
             corp_map = fetch_dart_corp_code_map(api_key)
         except Exception as exc:
-            print(f"DART corp code fetch failed: {exc}")
+            print(f"DART corp code fetch failed: {redact_error_message(exc, api_key)}")
             return []
 
     default_start_date = years_before(date.today(), DART_DISCLOSURE_LOOKBACK_YEARS).strftime("%Y%m%d")
@@ -779,7 +789,10 @@ def fetch_dart_disclosures(
                     timeout=30,
                 )
             except Exception as exc:
-                print(f"DART disclosure fetch failed for {stock_code}: {exc}")
+                print(
+                    f"DART disclosure fetch failed for {stock_code}: "
+                    f"{redact_error_message(exc, api_key)}"
+                )
                 break
 
             try:
@@ -835,72 +848,90 @@ def fetch_dart_market_disclosures(
     api_key: str,
     lookback_days: int = DART_MARKET_LOOKBACK_DAYS,
     max_pages: int = DART_MARKET_MAX_PAGES,
+    end_date: date | None = None,
 ) -> list[dict]:
     clean_key = str(api_key or "").strip()
     if not clean_key:
         return []
-    end = date.today()
-    start = end - timedelta(days=max(1, int(lookback_days)))
+    end = end_date or date.today()
+    start = end - timedelta(days=max(1, int(lookback_days)) - 1)
     records: list[dict] = []
 
-    for corp_cls in ("Y", "K"):
-        page_no = 1
-        total_page = 1
-        while page_no <= min(total_page, max(1, int(max_pages))):
-            try:
-                payload = http_client().get_json(
-                    DART_DISCLOSURE_URL,
-                    params={
-                        "crtfc_key": clean_key,
-                        "bgn_de": start.strftime("%Y%m%d"),
-                        "end_de": end.strftime("%Y%m%d"),
-                        "last_reprt_at": "Y",
-                        "corp_cls": corp_cls,
-                        "sort": "date",
-                        "sort_mth": "desc",
-                        "page_no": str(page_no),
-                        "page_count": "100",
-                    },
-                    timeout=30,
-                )
-                dart_page = dart_disclosure_page(payload)
-            except Exception as exc:
-                print(f"DART market disclosure fetch failed for {corp_cls} page {page_no}: {exc}")
-                break
-            if dart_page.status == "013":
-                break
-            if dart_page.status and dart_page.status != "000":
-                print(f"DART market returned {dart_page.status} for {corp_cls}: {dart_page.message}")
-                break
+    windows: list[tuple[date, date]] = []
+    cursor = start
+    while cursor <= end:
+        window_end = min(end, cursor + timedelta(days=89))
+        windows.append((cursor, window_end))
+        cursor = window_end + timedelta(days=1)
 
-            total_page = min(dart_page.total_page, max(1, int(max_pages)))
-            for item in dart_page.items:
-                stock_code = re.sub(r"\D", "", str(item.get("stock_code") or ""))[:6]
-                title = str(item.get("report_nm") or "").strip()
-                event_type = disclosure_type_from_title(title)
-                raw_date = str(item.get("rcept_dt") or "").strip()
-                if (
-                    len(stock_code) != 6
-                    or len(raw_date) != 8
-                    or not event_type
-                    or not should_display_disclosure(title, event_type)
-                ):
-                    continue
-                receipt_no = str(item.get("rcept_no") or "").strip()
-                ticker = stock_code_to_ticker(stock_code, corp_cls)
-                records.append({
-                    "ticker": ticker,
-                    "code": stock_code,
-                    "name": str(item.get("corp_name") or stock_code).strip(),
-                    "date": f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}",
-                    "type": event_type,
-                    "title": title,
-                    "summary": "",
-                    "source": "OpenDART",
-                    "receiptNo": receipt_no,
-                    "url": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={receipt_no}" if receipt_no else "",
-                })
-            page_no += 1
+    for window_start, window_end in reversed(windows):
+        for corp_cls in ("Y", "K"):
+            for disclosure_type in DART_MARKET_DISCLOSURE_TYPES:
+                page_no = 1
+                total_page = 1
+                while page_no <= min(total_page, max(1, int(max_pages))):
+                    try:
+                        payload = http_client().get_json(
+                            DART_DISCLOSURE_URL,
+                            params={
+                                "crtfc_key": clean_key,
+                                "bgn_de": window_start.strftime("%Y%m%d"),
+                                "end_de": window_end.strftime("%Y%m%d"),
+                                "last_reprt_at": "Y",
+                                "corp_cls": corp_cls,
+                                "pblntf_ty": disclosure_type,
+                                "sort": "date",
+                                "sort_mth": "desc",
+                                "page_no": str(page_no),
+                                "page_count": "100",
+                            },
+                            timeout=30,
+                        )
+                        dart_page = dart_disclosure_page(payload)
+                    except Exception as exc:
+                        print(
+                            "DART market disclosure fetch failed for "
+                            f"{window_start}..{window_end} {corp_cls}/{disclosure_type} page {page_no}: "
+                            f"{redact_error_message(exc, clean_key)}"
+                        )
+                        break
+                    if dart_page.status == "013":
+                        break
+                    if dart_page.status and dart_page.status != "000":
+                        print(
+                            f"DART market returned {dart_page.status} for "
+                            f"{window_start}..{window_end} {corp_cls}/{disclosure_type}: {dart_page.message}"
+                        )
+                        break
+
+                    total_page = min(dart_page.total_page, max(1, int(max_pages)))
+                    for item in dart_page.items:
+                        stock_code = re.sub(r"\D", "", str(item.get("stock_code") or ""))[:6]
+                        title = str(item.get("report_nm") or "").strip()
+                        event_type = disclosure_type_from_title(title)
+                        raw_date = str(item.get("rcept_dt") or "").strip()
+                        if (
+                            len(stock_code) != 6
+                            or len(raw_date) != 8
+                            or not event_type
+                            or not should_display_disclosure(title, event_type)
+                        ):
+                            continue
+                        receipt_no = str(item.get("rcept_no") or "").strip()
+                        ticker = stock_code_to_ticker(stock_code, corp_cls)
+                        records.append({
+                            "ticker": ticker,
+                            "code": stock_code,
+                            "name": str(item.get("corp_name") or stock_code).strip(),
+                            "date": f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}",
+                            "type": event_type,
+                            "title": title,
+                            "summary": "",
+                            "source": "OpenDART",
+                            "receiptNo": receipt_no,
+                            "url": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={receipt_no}" if receipt_no else "",
+                        })
+                    page_no += 1
 
     return normalize_disclosure_records(records)
 
@@ -1443,8 +1474,8 @@ def main() -> None:
                 dart_corp_map = refreshed_dart_corp_map
                 dart_corp_mode = "refreshed"
         except Exception as exc:
-            dart_corp_error = str(exc)
-            print(f"DART corp code map fetch failed: {exc}")
+            dart_corp_error = redact_error_message(exc, dart_key)
+            print(f"DART corp code map fetch failed: {dart_corp_error}")
     if not dart_corp_map:
         print("DART corp code map is unavailable.")
     elif not full_rebuild:
@@ -1463,6 +1494,12 @@ def main() -> None:
     )
 
     existing_disclosure_records = load_existing_disclosure_seed()
+    existing_disclosure_tickers = {
+        str(record.get("ticker") or "")
+        for record in existing_disclosure_records
+        if record.get("ticker")
+    }
+    market_disclosure_backfill = full_rebuild or len(existing_disclosure_tickers) < 1000
     disclosure_stock_codes = configured_disclosure_stock_codes()
     dart_starts = disclosure_start_dates(
         existing_disclosure_records,
@@ -1484,14 +1521,30 @@ def main() -> None:
         if dart_key
         else []
     )
-    market_disclosure_records = fetch_dart_market_disclosures(dart_key) if dart_key else []
+    market_lookback_days = (
+        DART_DISCLOSURE_LOOKBACK_YEARS * 366
+        if market_disclosure_backfill
+        else DART_MARKET_LOOKBACK_DAYS
+    )
+    build_report["policy"]["dart_market_backfill"] = market_disclosure_backfill
+    build_report["policy"]["dart_market_lookback_days"] = market_lookback_days
+    market_disclosure_records = (
+        fetch_dart_market_disclosures(dart_key, lookback_days=market_lookback_days)
+        if dart_key
+        else []
+    )
     fresh_disclosure_records = normalize_disclosure_records(
         configured_disclosure_records + market_disclosure_records
     )
     if fresh_disclosure_records:
         disclosure_records = normalize_disclosure_records(
-            fresh_disclosure_records if full_rebuild else existing_disclosure_records + fresh_disclosure_records
+            existing_disclosure_records + fresh_disclosure_records
         )
+        disclosure_cutoff = years_before(date.today(), DART_DISCLOSURE_LOOKBACK_YEARS).isoformat()
+        disclosure_records = [
+            record for record in disclosure_records
+            if str(record.get("date") or "") >= disclosure_cutoff
+        ]
         print(f"Applied DART disclosure rows: {len(fresh_disclosure_records)} (latest={fresh_disclosure_records[-1]['date']})")
         build_report["events"].append(
             f"Applied DART disclosure rows: {len(fresh_disclosure_records)} latest={fresh_disclosure_records[-1]['date']}"

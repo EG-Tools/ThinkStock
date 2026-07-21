@@ -19,6 +19,7 @@ from build_pages_data import (
     build_dart_corp_code_payloads,
     find_credit_history_discontinuity,
     normalize_krx_universe_rows,
+    redact_error_message,
     merge_credit_seed_with_freesis,
     merge_credit_seed_with_kofia,
     select_credit_seed,
@@ -27,6 +28,15 @@ import build_pages_data
 
 
 class BuildPagesDataHelperTests(unittest.TestCase):
+    def test_dart_errors_never_expose_the_api_key(self) -> None:
+        key = "private-dart-key"
+        error = RuntimeError(f"request failed: https://example.test/?crtfc_key={key}")
+
+        message = redact_error_message(error, key)
+
+        self.assertNotIn(key, message)
+        self.assertIn("[redacted]", message)
+
     def test_ecos_contract_failure_preserves_expected_series(self) -> None:
         client = type("Client", (), {"get_json": lambda *_args, **_kwargs: {"unexpected": {}}})()
         with patch.object(build_pages_data, "http_client", return_value=client):
@@ -105,13 +115,55 @@ class BuildPagesDataHelperTests(unittest.TestCase):
                 },
             ],
         }
-        client = type("Client", (), {"get_json": lambda *_args, **_kwargs: payload})()
+        calls: list[dict] = []
+
+        def get_json(*_args, **kwargs):
+            calls.append(kwargs["params"])
+            return payload
+
+        client = type("Client", (), {"get_json": staticmethod(get_json)})()
         with patch.object(build_pages_data, "http_client", return_value=client):
-            records = build_pages_data.fetch_dart_market_disclosures("key")
+            records = build_pages_data.fetch_dart_market_disclosures(
+                "key",
+                end_date=build_pages_data.date(2026, 7, 21),
+            )
 
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["ticker"], "005930.KS")
         self.assertEqual(records[0]["title"], "현금ㆍ현물배당결정")
+        self.assertEqual(len(calls), 10)
+        self.assertEqual(
+            {call["pblntf_ty"] for call in calls},
+            set(build_pages_data.DART_MARKET_DISCLOSURE_TYPES),
+        )
+        self.assertEqual({call["corp_cls"] for call in calls}, {"Y", "K"})
+
+    def test_dart_market_disclosures_split_long_history_into_90_day_windows(self) -> None:
+        calls: list[dict] = []
+
+        def get_json(*_args, **kwargs):
+            calls.append(kwargs["params"])
+            return {"status": "013", "message": "조회된 데이터가 없습니다."}
+
+        client = type("Client", (), {"get_json": staticmethod(get_json)})()
+        with patch.object(build_pages_data, "http_client", return_value=client):
+            records = build_pages_data.fetch_dart_market_disclosures(
+                "key",
+                lookback_days=181,
+                end_date=build_pages_data.date(2026, 7, 21),
+            )
+
+        self.assertEqual(records, [])
+        self.assertEqual(len(calls), 30)
+        windows = {(call["bgn_de"], call["end_de"]) for call in calls}
+        self.assertEqual(len(windows), 3)
+        for begin, end in windows:
+            span = build_pages_data.date.fromisoformat(
+                f"{end[:4]}-{end[4:6]}-{end[6:]}"
+            ) - build_pages_data.date.fromisoformat(
+                f"{begin[:4]}-{begin[4:6]}-{begin[6:]}"
+            )
+            self.assertLessEqual(span.days, 89)
 
     def test_kofia_merge_preserves_overlap_and_scales_only_new_tail(self) -> None:
         seed_dates = pd.to_datetime([

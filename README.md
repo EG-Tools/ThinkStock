@@ -7,7 +7,10 @@ ThinkStock ships in two modes from the same repository.
 - Mobile web app source: `docs/`
 - GitHub Pages should be configured to use `GitHub Actions`.
 
-## 2. Local web app with DART disclosures
+## 2. DART disclosures
+- GitHub Pages receives market-wide important disclosures during the scheduled Actions build.
+- Public disclosure data can therefore be used when the home PC is off or the phone is outside the home network.
+- Newly published disclosures can appear after the next Pages deployment (normally within six hours).
 - Put `DART_API_KEY=...` in `/.env.local`.
 - Double-click `run_local_pages.bat` to open `http://127.0.0.1:8787`.
 - The local server uses the repository's Node.js runtime and does not require Python.
@@ -54,4 +57,4 @@ ThinkStock ships in two modes from the same repository.
   - `KOSIS_API_KEY=...`
   - `KRX_API_KEY=...`
   - `ECOS_API_KEY=...`
-- GitHub Pages builds use GitHub Secrets for public market and macro data. DART disclosures are fetched only by the local PC server.
+- GitHub Pages builds use GitHub Secrets for public market, macro, and market-wide DART disclosure data.

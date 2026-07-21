@@ -148,7 +148,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.04";
+const APP_VERSION = "1.05";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -1118,6 +1118,15 @@ function getConfiguredLocalDartServer() {
 function getLocalDartDisclosureEndpoint() {
   const configured = getConfiguredLocalDartServer();
   return configured ? `${configured}/api/dart/disclosures` : LOCAL_DART_DISCLOSURE_ENDPOINT;
+}
+
+function canUseLocalDartServer() {
+  if (getConfiguredLocalDartServer()) return true;
+  const hostname = String(window.location.hostname || "").toLowerCase();
+  const privateIpv4 = /^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(hostname);
+  return window.location.protocol === "http:"
+    && window.location.port === "8787"
+    && (hostname === "localhost" || hostname === "::1" || privateIpv4);
 }
 
 function renderAppVersionLabel() {
@@ -3981,21 +3990,52 @@ function getDisclosureSeedTickers() {
     .filter((ticker) => /^[0-9]{6}\.(KS|KQ)$/.test(ticker));
 }
 
-async function ensureDisclosureSeedForTicker(ticker) {
+async function fetchDisclosureSeedForTicker(ticker, forceNetwork = false) {
+  const target = String(ticker || "").trim().toUpperCase();
+  const relativePath = String(disclosureManifest?.files?.[target] || "").trim();
+  if (!relativePath) return { ticker: target, added: 0, seeded: false, latestDate: "" };
+
+  const text = await fetchSeedText(relativePath, forceNetwork);
+  const payload = parsePayloadText(text);
+  const rows = normalizeDisclosureSeedRows(payload?.records || [])
+    .filter((row) => row.ticker === target);
+  const beforeCount = disclosureRows.length;
+  disclosureRows = mergeDisclosureRows(disclosureRows, rows);
+  if (rows.length) {
+    markDataChanged("disclosure");
+    await writeTickerDisclosureCache(target, disclosureRowsForTicker(target));
+  }
+  return {
+    ticker: target,
+    added: Math.max(0, disclosureRows.length - beforeCount),
+    seeded: true,
+    latestDate: rows.at(-1)?.date || "",
+  };
+}
+
+async function ensureDisclosureSeedForTicker(ticker, forceNetwork = false) {
   const target = String(ticker || "").trim().toUpperCase();
   if (!/^[0-9]{6}\.(KS|KQ)$/.test(target)) return { ticker: target, added: 0 };
-  if (disclosureSeedLoadedTickers.has(target)) return { ticker: target, added: 0 };
+  if (disclosureSeedLoadedTickers.has(target) && !forceNetwork) return { ticker: target, added: 0 };
   if (disclosureSeedLoadPromises.has(target)) return disclosureSeedLoadPromises.get(target);
 
-  const task = applyTickerDisclosureCache(target).then((cached) => {
+  const task = (async () => {
+    const cached = await applyTickerDisclosureCache(target);
+    const manifestLatest = String(disclosureManifest?.latest?.[target] || "");
+    const cacheIsCurrent = cached.applied
+      && (!manifestLatest || String(cached.latestDate || "") >= manifestLatest);
+    const seeded = cacheIsCurrent && !forceNetwork
+      ? { ticker: target, added: 0, seeded: false, latestDate: cached.latestDate }
+      : await fetchDisclosureSeedForTicker(target, forceNetwork);
     disclosureSeedLoadedTickers.add(target);
     return {
       ticker: target,
-      added: cached.added,
+      added: cached.added + seeded.added,
       cached: cached.applied,
-      latestDate: cached.latestDate,
+      seeded: seeded.seeded,
+      latestDate: seeded.latestDate || cached.latestDate,
     };
-  }).catch(() => ({ ticker: target, added: 0 })).finally(() => {
+  })().catch(() => ({ ticker: target, added: 0 })).finally(() => {
     disclosureSeedLoadPromises.delete(target);
   });
 
@@ -4141,15 +4181,17 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
       if (seedInfo?.added > 0) {
         if (!applyDisclosureStateFast()) requestChartRender(false);
       }
-      const refreshInfo = await refreshDartDisclosuresFromApi("local", target, { forceNetwork: true });
-      if (refreshInfo?.added > 0 || refreshInfo?.fetched > 0) {
-        if (!applyDisclosureStateFast()) requestChartRender(false);
+      if (canUseLocalDartServer()) {
+        const refreshInfo = await refreshDartDisclosuresFromApi("local", target, { forceNetwork: true });
+        if (refreshInfo?.added > 0 || refreshInfo?.fetched > 0) {
+          if (!applyDisclosureStateFast()) requestChartRender(false);
+        }
       }
       scheduleLastRuntimeSnapshotSave();
       const rows = disclosureRowsForTicker(target);
       setMessage(msgEl, rows.length
-        ? [`${name} 종목을 추가했습니다.`, `로컬 DART 공시 ${rows.length}건을 반영했습니다.`]
-        : [`${name} 종목을 추가했습니다.`, "최근 3년간 표시할 주요 공시가 없습니다."]);
+        ? [`${name} 종목을 추가했습니다.`, `주요 공시 ${rows.length}건을 반영했습니다.`]
+        : [`${name} 종목을 추가했습니다.`, "표시할 주요 공시가 없거나 다음 공시 갱신을 기다리는 중입니다."]);
     })
     .catch((error) => {
       setMessage(msgEl, [
@@ -5634,18 +5676,21 @@ async function runRuntimeDataRefresh(msgEl, options = {}) {
     }))
     .catch((error) => ({ info: [], warnings: [`공포탐욕 불러오기 오류: ${error.message}`] }));
 
-  const dartTask = () => refreshDartDisclosuresForVisibleTickersFromApi("local", {
-    forceNetwork,
-    signal,
-  }).then((result) => ({
-    info: result.fetched > 0 ? [`로컬 DART 공시 ${result.fetched}건 확인`] : [],
-    warnings: result.failed || [],
-    refreshed: result.fetched > 0,
-  })).catch((error) => ({
-    info: [],
-    warnings: [`로컬 DART 공시 오류: ${error.message}`],
-    refreshed: false,
-  }));
+  const dartTask = () => {
+    if (!canUseLocalDartServer()) return Promise.resolve({ info: [], warnings: [], refreshed: false });
+    return refreshDartDisclosuresForVisibleTickersFromApi("local", {
+      forceNetwork,
+      signal,
+    }).then((result) => ({
+      info: result.fetched > 0 ? [`로컬 DART 공시 ${result.fetched}건 확인`] : [],
+      warnings: result.failed || [],
+      refreshed: result.fetched > 0,
+    })).catch((error) => ({
+      info: [],
+      warnings: [`로컬 DART 공시 오류: ${error.message}`],
+      refreshed: false,
+    }));
+  };
 
   const liveTask = () => refreshLiveApiData(signal)
     .then((result) => ({ info: result.applied || [], warnings: result.warnings || [] }))
