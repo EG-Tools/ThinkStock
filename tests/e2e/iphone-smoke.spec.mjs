@@ -187,6 +187,7 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
 
   await expect(page.locator("#appVersionText")).toHaveText(/^\d+\.\d+$/);
+  await expect(page.locator(".data-attribution")).toContainText("한국거래소 통계정보");
   expect(await page.evaluate(() => window.ThinkStockE2E.applyDartCorpCodesForTest({
     format: "stock-to-corp-v2",
     codes: {
@@ -196,6 +197,16 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   }))).toBe(2);
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
+  const [chartBox, resetBox] = await Promise.all([
+    page.locator("#chart").boundingBox(),
+    page.locator("#resetHandles").boundingBox(),
+  ]);
+  expect(chartBox).not.toBeNull();
+  expect(resetBox).not.toBeNull();
+  expect(resetBox.x).toBeGreaterThanOrEqual(chartBox.x);
+  expect(resetBox.y).toBeGreaterThanOrEqual(chartBox.y);
+  expect(resetBox.x + resetBox.width).toBeLessThan(chartBox.x + chartBox.width);
+  expect(resetBox.y + resetBox.height).toBeLessThan(chartBox.y + chartBox.height);
   await page.locator("#stockSearchInput").fill("SK하이닉스");
   await expect(page.locator(".stock-suggest-item")).toContainText("SK하이닉스");
   await page.locator("#stockSearchInput").press("Escape");

@@ -60,6 +60,14 @@ const appVersion = app.match(/const APP_VERSION = "([0-9]+\.[0-9]+)";/)?.[1];
 const htmlVersion = html.match(/id="appVersionText">([0-9]+\.[0-9]+)</)?.[1];
 assert.ok(appVersion, "APP_VERSION is missing from docs/app.js");
 assert.equal(htmlVersion, appVersion, "docs/index.html and docs/app.js versions differ");
+assert.ok(
+  html.includes("본 서비스는 한국거래소 통계정보를 사용합니다.") && styles.includes(".data-attribution"),
+  "KRX data attribution is missing",
+);
+assert.ok(
+  html.includes('class="main-chart-wrap"') && html.includes('class="reset-btn chart-reset-btn"'),
+  "chart reset button is not positioned in the main chart",
+);
 
 const ids = [...html.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
 assert.equal(new Set(ids).size, ids.length, "docs/index.html contains duplicate element IDs");
@@ -69,6 +77,7 @@ const requiredIds = [
   "chart-adr",
   "messageArea",
   "dataFreshness",
+  "resetHandles",
   "stockSearchInput",
   "disclosureToggle",
   "refreshData",

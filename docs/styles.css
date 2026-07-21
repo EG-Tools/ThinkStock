@@ -180,6 +180,21 @@ body {
 
 .reset-btn:hover { background: rgba(255, 255, 255, 0.1); color: var(--ink); }
 
+.main-chart-wrap {
+  position: relative;
+}
+
+.chart-reset-btn {
+  position: absolute;
+  z-index: 120;
+  top: 14px;
+  left: 14px;
+  padding: 5px 11px;
+  background: rgba(18, 18, 18, 0.78);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
 .api-settings-modal {
   position: fixed;
   inset: 0;
@@ -347,6 +362,15 @@ body {
 .api-settings-meta a:hover {
   text-decoration: underline;
 }
+
+.data-attribution {
+  margin: 16px 4px 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+  text-align: center;
+}
+
 .api-action-btn {
   border: 1px solid var(--border);
   border-radius: 999px;
