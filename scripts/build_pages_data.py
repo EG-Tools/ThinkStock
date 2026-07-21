@@ -864,12 +864,15 @@ def fetch_dart_market_disclosures(
         windows.append((cursor, window_end))
         cursor = window_end + timedelta(days=1)
 
-    for window_start, window_end in reversed(windows):
-        for corp_cls in ("Y", "K"):
-            for disclosure_type in DART_MARKET_DISCLOSURE_TYPES:
+    page_limit = max(1, int(max_pages))
+    for corp_cls in ("Y", "K"):
+        for disclosure_type in DART_MARKET_DISCLOSURE_TYPES:
+            pending_windows = list(reversed(windows))
+            while pending_windows:
+                window_start, window_end = pending_windows.pop(0)
                 page_no = 1
                 total_page = 1
-                while page_no <= min(total_page, max(1, int(max_pages))):
+                while page_no <= min(total_page, page_limit):
                     try:
                         payload = http_client().get_json(
                             DART_DISCLOSURE_URL,
@@ -904,7 +907,26 @@ def fetch_dart_market_disclosures(
                         )
                         break
 
-                    total_page = min(dart_page.total_page, max(1, int(max_pages)))
+                    available_pages = max(1, dart_page.total_page)
+                    if page_no == 1 and available_pages > page_limit and window_start < window_end:
+                        midpoint = window_start + (window_end - window_start) // 2
+                        pending_windows[0:0] = [
+                            (midpoint + timedelta(days=1), window_end),
+                            (window_start, midpoint),
+                        ]
+                        print(
+                            "Splitting saturated DART market window "
+                            f"{window_start}..{window_end} {corp_cls}/{disclosure_type} "
+                            f"({available_pages} pages)."
+                        )
+                        break
+                    if page_no == 1 and available_pages > page_limit:
+                        print(
+                            "DART market single-day result reached the page limit for "
+                            f"{window_start} {corp_cls}/{disclosure_type}: "
+                            f"{available_pages} pages, reading {page_limit}."
+                        )
+                    total_page = min(available_pages, page_limit)
                     for item in dart_page.items:
                         stock_code = re.sub(r"\D", "", str(item.get("stock_code") or ""))[:6]
                         title = str(item.get("report_nm") or "").strip()

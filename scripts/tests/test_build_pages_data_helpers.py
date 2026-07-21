@@ -165,6 +165,32 @@ class BuildPagesDataHelperTests(unittest.TestCase):
             )
             self.assertLessEqual(span.days, 89)
 
+    def test_dart_market_disclosures_split_saturated_windows(self) -> None:
+        calls: list[dict] = []
+
+        def get_json(*_args, **kwargs):
+            params = kwargs["params"]
+            calls.append(params)
+            if params["bgn_de"] != params["end_de"]:
+                return {"status": "000", "message": "정상", "total_page": 61, "list": []}
+            return {"status": "013", "message": "조회된 데이터가 없습니다."}
+
+        client = type("Client", (), {"get_json": staticmethod(get_json)})()
+        with patch.object(build_pages_data, "http_client", return_value=client):
+            records = build_pages_data.fetch_dart_market_disclosures(
+                "key",
+                lookback_days=2,
+                max_pages=60,
+                end_date=build_pages_data.date(2026, 7, 21),
+            )
+
+        self.assertEqual(records, [])
+        self.assertEqual(len(calls), 30)
+        self.assertEqual(
+            len([call for call in calls if call["bgn_de"] == call["end_de"]]),
+            20,
+        )
+
     def test_kofia_merge_preserves_overlap_and_scales_only_new_tail(self) -> None:
         seed_dates = pd.to_datetime([
             "2026-01-01",
