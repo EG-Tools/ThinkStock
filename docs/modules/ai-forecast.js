@@ -4,6 +4,15 @@
   const DAY_MS = 24 * 60 * 60 * 1000;
   const DEFAULT_HORIZON = 126;
   const FORECAST_SERIES_PATTERN = /^\d{6}\.(KS|KQ)$/;
+  const BACKTEST_HORIZONS = [20, 63, 126];
+  const BACKTEST_HORIZON_WEIGHTS = [0.2, 0.3, 0.5];
+  const STRATEGY_CANDIDATES = [
+    { patternWeight: 0.52, trendMultiplier: 1, baseline: true },
+    ...[0.35, 0.55, 0.75].flatMap((patternWeight) => (
+      [-0.4, 0.3, 0.8, 1.25].map((trendMultiplier) => ({ patternWeight, trendMultiplier }))
+    )),
+  ];
+  const calibrationCache = new Map();
 
   const toNumber = (value) => (
     value != null && Number.isFinite(Number(value)) ? Number(value) : null
@@ -184,6 +193,187 @@
     return weightTotal ? total / weightTotal : null;
   }
 
+  function momentumReturn(returns, volatility) {
+    return clamp(
+      (mean(returns.slice(-20)) * 0.5)
+      + (mean(returns.slice(-60)) * 0.3)
+      + (mean(returns.slice(-126)) * 0.2),
+      -volatility * 0.16,
+      volatility * 0.16,
+    );
+  }
+
+  function regimeFeatures(returns) {
+    const recent = returns.slice(-63);
+    const volatility = clamp(winsorizedDeviation(recent) || 0.01, 0.003, 0.08);
+    const longVolatility = clamp(winsorizedDeviation(returns.slice(-126)) || volatility, 0.003, 0.08);
+    return {
+      trend: clamp((mean(recent) * Math.sqrt(Math.max(1, recent.length))) / volatility, -2.5, 2.5),
+      volatilityRatio: clamp(volatility / longVolatility, 0.5, 2),
+    };
+  }
+
+  function regimeWeight(current, historical) {
+    const trendDistance = Math.abs(current.trend - historical.trend) / 2.5;
+    const volatilityDistance = Math.abs(Math.log(
+      current.volatilityRatio / historical.volatilityRatio,
+    ));
+    return 0.3 + (0.7 * Math.exp(-1.1 * (trendDistance + volatilityDistance)));
+  }
+
+  function weightedMedian(entries) {
+    if (!entries.length) return null;
+    const sorted = [...entries].sort((left, right) => left.value - right.value);
+    const total = sorted.reduce((sum, entry) => sum + entry.weight, 0);
+    let cumulative = 0;
+    for (const entry of sorted) {
+      cumulative += entry.weight;
+      if (cumulative >= total / 2) return entry.value;
+    }
+    return sorted.at(-1).value;
+  }
+
+  function calibrateForecastStrategy(returns, horizon = DEFAULT_HORIZON) {
+    const fallback = {
+      patternWeight: 0.52,
+      trendMultiplier: 1,
+      volatilityRatio: 0.75,
+      samples: 0,
+      directionAccuracy: null,
+      normalizedError: null,
+      improvement: 0,
+      confidence: 0.2,
+    };
+    if (returns.length < 420 || horizon < 63) return fallback;
+
+    const currentRegime = regimeFeatures(returns);
+    const latestAnchor = returns.length - horizon;
+    const earliestAnchor = Math.max(294, latestAnchor - 3 * 252);
+    const anchors = [];
+    for (let anchor = latestAnchor; anchor >= earliestAnchor && anchors.length < 14; anchor -= 42) {
+      anchors.push(anchor);
+    }
+    if (anchors.length < 5) return fallback;
+
+    const candidateScores = STRATEGY_CANDIDATES.map((candidate) => ({
+      ...candidate,
+      error: 0,
+      hits: 0,
+      trials: 0,
+      weight: 0,
+    }));
+    const volatilityRatios = [];
+    let validSamples = 0;
+    anchors.forEach((anchor) => {
+      const history = returns.slice(0, anchor);
+      const actualFuture = returns.slice(anchor, anchor + horizon);
+      if (history.length < 294 || actualFuture.length < horizon) return;
+      const historyVolatility = clamp(
+        winsorizedDeviation(history.slice(-63)) || 0.01,
+        0.003,
+        0.08,
+      );
+      const windowSize = Math.min(63, Math.max(30, Math.floor(history.length / 6)));
+      const matches = findPatternMatches(history, windowSize, horizon);
+      if (!matches.length) return;
+      const patternPath = Array.from({ length: horizon }, (_, index) => (
+        weightedPatternReturn(matches, index) || 0
+      ));
+      const anchorMomentum = momentumReturn(history, historyVolatility);
+      const trendPath = Array.from({ length: horizon }, (_, index) => (
+        anchorMomentum * Math.exp(-index / 100)
+      ));
+      const historicalRegime = regimeFeatures(history);
+      const similarity = regimeWeight(currentRegime, historicalRegime);
+      const recency = Math.exp(-(latestAnchor - anchor) / (3 * 252));
+      const sampleWeight = similarity * (0.55 + (0.45 * recency));
+      const futureVolatility = winsorizedDeviation(actualFuture);
+      if (futureVolatility > 0) {
+        volatilityRatios.push({
+          value: clamp(futureVolatility / historyVolatility, 0.5, 1.15),
+          weight: sampleWeight,
+        });
+      }
+
+      candidateScores.forEach((candidate) => {
+        let weightedError = 0;
+        BACKTEST_HORIZONS.forEach((endpoint, endpointIndex) => {
+          const actual = actualFuture.slice(0, endpoint).reduce((sum, value) => sum + value, 0);
+          const pattern = patternPath.slice(0, endpoint).reduce((sum, value) => sum + value, 0);
+          const trend = trendPath.slice(0, endpoint).reduce((sum, value) => sum + value, 0);
+          const predicted = (pattern * candidate.patternWeight)
+            + (trend * candidate.trendMultiplier * (1 - candidate.patternWeight));
+          const scale = Math.max(0.01, historyVolatility * Math.sqrt(endpoint));
+          const directionMiss = Math.sign(predicted) !== Math.sign(actual) ? 0.35 : 0;
+          weightedError += BACKTEST_HORIZON_WEIGHTS[endpointIndex]
+            * (Math.min(4, Math.abs(predicted - actual) / scale) + directionMiss);
+          candidate.hits += sampleWeight * (Math.sign(predicted) === Math.sign(actual) ? 1 : 0);
+          candidate.trials += sampleWeight;
+        });
+        candidate.error += weightedError * sampleWeight;
+        candidate.weight += sampleWeight;
+      });
+      validSamples += 1;
+    });
+    if (validSamples < 5) return fallback;
+
+    const ranked = candidateScores
+      .filter((candidate) => candidate.weight > 0)
+      .map((candidate) => ({
+        ...candidate,
+        score: candidate.error / candidate.weight,
+        accuracy: candidate.trials ? candidate.hits / candidate.trials : 0,
+      }))
+      .sort((left, right) => left.score - right.score);
+    if (!ranked.length) return fallback;
+    const bestScore = ranked[0].score;
+    const baselineScore = ranked.find((candidate) => candidate.baseline)?.score || bestScore;
+    const selected = ranked
+      .filter((candidate) => candidate.score <= baselineScore + Number.EPSILON)
+      .slice(0, 3)
+      .map((candidate) => ({
+      ...candidate,
+      ensembleWeight: Math.exp(-2.2 * (candidate.score - bestScore)),
+      }));
+    const ensembleWeight = selected.reduce((sum, candidate) => sum + candidate.ensembleWeight, 0);
+    const blend = (key) => selected.reduce((sum, candidate) => (
+      sum + (candidate[key] * candidate.ensembleWeight)
+    ), 0) / ensembleWeight;
+    const directionAccuracy = blend("accuracy");
+    const normalizedError = blend("score");
+    const sampleConfidence = clamp(validSamples / 12, 0, 1);
+    const accuracyConfidence = clamp((directionAccuracy - 0.45) / 0.25, 0, 1);
+    const errorConfidence = clamp(1 - (normalizedError / 2.2), 0, 1);
+    const rawConfidence = clamp(
+      0.2 + (sampleConfidence * 0.35) + (accuracyConfidence * 0.25) + (errorConfidence * 0.2),
+      0.2,
+      0.9,
+    );
+    const accuracyCap = clamp(0.35 + ((directionAccuracy - 0.45) * 2), 0.35, 0.9);
+    return {
+      patternWeight: blend("patternWeight"),
+      trendMultiplier: blend("trendMultiplier"),
+      volatilityRatio: weightedMedian(volatilityRatios) || fallback.volatilityRatio,
+      samples: validSamples,
+      directionAccuracy,
+      normalizedError,
+      improvement: baselineScore > 0
+        ? clamp((baselineScore - normalizedError) / baselineScore, 0, 1)
+        : 0,
+      confidence: Math.min(rawConfidence, accuracyCap),
+    };
+  }
+
+  function cachedForecastCalibration(ticker, points, returns, horizon) {
+    const lastPoint = points.at(-1);
+    const key = `${ticker}|${lastPoint?.date || ""}|${points.length}|${lastPoint?.price || ""}|${horizon}`;
+    if (calibrationCache.has(key)) return calibrationCache.get(key);
+    const calibration = calibrateForecastStrategy(returns, horizon);
+    calibrationCache.set(key, calibration);
+    while (calibrationCache.size > 60) calibrationCache.delete(calibrationCache.keys().next().value);
+    return calibration;
+  }
+
   function buildAnalogWave(matches, returns, horizon) {
     const matched = matches[0]?.future || [];
     const fallbackLength = Math.min(126, returns.length);
@@ -257,15 +447,10 @@
     const windowSize = Math.min(63, Math.max(30, Math.floor(returns.length / 6)));
     const matches = findPatternMatches(returns, windowSize, horizon);
     const volatility = clamp(winsorizedDeviation(returns.slice(-63)) || 0.01, 0.003, 0.08);
-    const momentum = clamp(
-      (mean(returns.slice(-20)) * 0.5)
-      + (mean(returns.slice(-60)) * 0.3)
-      + (mean(returns.slice(-126)) * 0.2),
-      -volatility * 0.16,
-      volatility * 0.16,
-    );
+    const momentum = momentumReturn(returns, volatility);
     const technical = rsiSignal(returns);
     const lastPoint = points.at(-1);
+    const calibration = cachedForecastCalibration(ticker, points, returns, horizon);
     const signals = buildContextSignal(options, ticker, lastPoint.date, lastPoint.price);
     const historyConfidence = clamp((points.length - 60) / 192, 0.2, 1);
     const patternPath = Array.from({ length: horizon }, (_, index) => (
@@ -281,7 +466,11 @@
       const trend = momentum * Math.exp(-index / 100);
       const technicalBias = technical * volatility * 0.025 * historyConfidence * Math.exp(-index / 35);
       const contextBias = signals.combined * volatility * 0.018 * historyConfidence * Math.exp(-index / 150);
-      const directionalTarget = (pattern === null ? trend : ((pattern * 0.52) + (trend * 0.48)))
+      const calibratedTrend = trend * calibration.trendMultiplier;
+      const directionalTarget = (pattern === null
+        ? calibratedTrend
+        : ((pattern * calibration.patternWeight)
+          + (calibratedTrend * (1 - calibration.patternWeight))))
         + technicalBias
         + contextBias;
       directionalReturn = (directionalReturn * 0.84) + (directionalTarget * 0.16);
@@ -294,7 +483,11 @@
     }
 
     const volatilityCeiling = ticker.startsWith("^") ? 0.025 : 0.04;
-    const projectedVolatility = clamp(volatility * 0.75, 0.003, volatilityCeiling);
+    const projectedVolatility = clamp(
+      volatility * calibration.volatilityRatio,
+      0.003,
+      volatilityCeiling,
+    );
     const forecastReturns = calibrateForecastVolatility(candidateReturns, projectedVolatility);
     const factors = [1];
     let cumulative = 0;
@@ -320,12 +513,14 @@
       historyDays: points.length,
       horizon,
       projectedVolatility,
+      backtest: { ...calibration },
     };
   }
 
   globalScope.ThinkStockAiForecast = Object.freeze({
     buildContextSignal,
     buildForecast,
+    calibrateForecastStrategy,
     isForecastSeries,
     nextBusinessDates,
   });

@@ -8,7 +8,12 @@ const source = await readFile(path.resolve("docs/modules/ai-forecast.js"), "utf8
 const context = {};
 vm.createContext(context);
 vm.runInContext(source, context);
-const { buildContextSignal, buildForecast, nextBusinessDates } = context.ThinkStockAiForecast;
+const {
+  buildContextSignal,
+  buildForecast,
+  calibrateForecastStrategy,
+  nextBusinessDates,
+} = context.ThinkStockAiForecast;
 
 function tradingDates(count, start = "2020-01-02") {
   const output = [start];
@@ -46,11 +51,23 @@ test("builds a deterministic six-month forecast from at most five years", () => 
   )).length;
   assert.ok(forecastVolatility >= first.projectedVolatility * 0.75);
   assert.ok(turningPoints >= 12);
+  assert.ok(first.backtest.samples >= 5);
+  assert.ok(first.backtest.patternWeight >= 0.35 && first.backtest.patternWeight <= 0.75);
+  assert.ok(first.backtest.trendMultiplier >= -0.4 && first.backtest.trendMultiplier <= 1.25);
+  assert.ok(first.backtest.directionAccuracy >= 0 && first.backtest.directionAccuracy <= 1);
+  assert.ok(first.backtest.improvement >= 0 && first.backtest.improvement <= 1);
   first.dates.slice(1).forEach((date) => {
     const day = new Date(`${date}T00:00:00Z`).getUTCDay();
     assert.notEqual(day, 0);
     assert.notEqual(day, 6);
   });
+});
+
+test("walk-forward calibration falls back when completed history is insufficient", () => {
+  const fallback = calibrateForecastStrategy(Array(300).fill(0.001), 126);
+  assert.equal(fallback.samples, 0);
+  assert.equal(fallback.patternWeight, 0.52);
+  assert.equal(fallback.volatilityRatio, 0.75);
 });
 
 test("does not forecast newly listed stocks with fewer than 90 trading days", () => {

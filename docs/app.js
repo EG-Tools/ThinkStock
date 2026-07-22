@@ -153,7 +153,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.11";
+const APP_VERSION = "1.12";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -4350,6 +4350,11 @@ function buildAiForecastTraces(rows, seriesModels) {
     });
     if (!forecast) return;
     const consensusUsed = Math.abs(Number(forecast.signals?.consensus) || 0) > 0;
+    const backtestSamples = Number(forecast.backtest?.samples) || 0;
+    const backtestAccuracy = Number(forecast.backtest?.directionAccuracy);
+    const backtestSummary = backtestSamples >= 5 && Number.isFinite(backtestAccuracy)
+      ? `<br>워크포워드 방향 적중 ${Math.round(backtestAccuracy * 100)}% (${backtestSamples}회)`
+      : "";
     traces.push({
       x: forecast.dates,
       y: forecast.chartValues,
@@ -4361,7 +4366,7 @@ function buildAiForecastTraces(rows, seriesModels) {
       connectgaps: false,
       hoverinfo: hoverShowPopup ? undefined : "skip",
       hovertemplate: hoverShowPopup
-        ? `AI 가상 흐름<br>%{x|%Y.%-m.%-d}<br>%{text}${consensusUsed ? "<br>컨센서스 반영" : ""}<extra>${escapeHtml(labelName(series))}</extra>`
+        ? `AI 가상 흐름<br>%{x|%Y.%-m.%-d}<br>%{text}${backtestSummary}${consensusUsed ? "<br>컨센서스 반영" : ""}<extra>${escapeHtml(labelName(series))}</extra>`
         : undefined,
       line: { color: "rgba(190, 190, 190, 0.7)", width: 2, dash: "dot", shape: "linear" },
       meta: {
@@ -4369,6 +4374,11 @@ function buildAiForecastTraces(rows, seriesModels) {
         seriesKey: series,
         historyDays: forecast.historyDays,
         patternMatches: forecast.patternMatches,
+        backtestSamples,
+        backtestAccuracy: Number.isFinite(backtestAccuracy) ? backtestAccuracy : null,
+        backtestConfidence: Number(forecast.backtest?.confidence) || 0,
+        calibratedPatternWeight: Number(forecast.backtest?.patternWeight) || 0,
+        calibratedTrendMultiplier: Number(forecast.backtest?.trendMultiplier) || 0,
         consensusUsed,
       },
     });
