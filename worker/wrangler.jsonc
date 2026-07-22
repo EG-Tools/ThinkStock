@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
-  "name": "thinkstock",
+  "name": "thinkstock-api",
   "main": "src/index.mjs",
   "compatibility_date": "2026-07-22",
   "workers_dev": true,

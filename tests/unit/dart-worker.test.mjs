@@ -24,7 +24,7 @@ function memoryKv(initial = {}) {
 }
 
 function request(path, options = {}) {
-  return new Request(`https://thinkstock.keg0320.workers.dev${path}`, {
+  return new Request(`https://thinkstock-api.keg0320.workers.dev${path}`, {
     headers: {
       Origin: "https://eg-tools.github.io",
       ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),

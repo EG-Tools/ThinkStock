@@ -153,7 +153,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.09";
+const APP_VERSION = "1.10";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -199,7 +199,7 @@ const FREESIS_CREDIT_UNIT_CODE = "01";
 const FEAR_GREED_LIVE_URL = "https://kospi.feargreedchart.com/api/?action=kospi";
 const DART_DISCLOSURE_CACHE_KEY = "thinkstock-dart-disclosure-cache-v1";
 const DART_DISCLOSURE_CACHE_TTL_DAYS = 1;
-const DART_GATEWAY_URL = "https://thinkstock.keg0320.workers.dev";
+const DART_GATEWAY_URL = "https://thinkstock-api.keg0320.workers.dev";
 const DART_GATEWAY_DISCLOSURE_ENDPOINT = `${DART_GATEWAY_URL}/api/dart/disclosures`;
 const AI_CONSENSUS_ENDPOINT = `${DART_GATEWAY_URL}/api/consensus`;
 const DART_VISIBLE_REFRESH_CONCURRENCY = 2;
