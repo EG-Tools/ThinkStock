@@ -430,6 +430,11 @@ test("AI analysis loads only on demand and reuses its monthly browser cache", as
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     (element.data || []).filter((trace) => trace?.meta?.fundamentalsUsed).length
   ))).toBeGreaterThan(0);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const trace = (element.data || []).find((item) => item?.meta?.isAiForecastTrace);
+    const rangeEnd = element?._fullLayout?.xaxis?.range?.[1];
+    return Boolean(trace?.x?.at(-1) && rangeEnd && String(rangeEnd).slice(0, 10) >= trace.x.at(-1));
+  })).toBe(true);
   await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-busy", "false");
 
   const firstRequestCount = analysisRequests;

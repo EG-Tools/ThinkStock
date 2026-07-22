@@ -166,7 +166,7 @@ const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.15";
+const APP_VERSION = "1.16";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -3927,7 +3927,7 @@ async function requestAiAnalysisForTicker(ticker) {
     let cached = memoryAnalysis || await readAiAnalysisCacheForTicker(target);
     if (cached) {
       aiAnalysisByTicker.set(target, cached);
-      if (showAiForecast) requestChartRender(true);
+      if (showAiForecast) requestChartRender(lastAiForecastTraceCount > 0);
       if (aiAnalysisIsFresh(cached)) return cached;
     }
     if (!canUseDartGateway()) return cached;
@@ -3947,7 +3947,7 @@ async function requestAiAnalysisForTicker(ticker) {
     aiAnalysisPromises.delete(target);
     aiAnalysisPendingTickers.delete(target);
     syncAiForecastToggleButton();
-    if (showAiForecast) requestChartRender(true);
+    if (showAiForecast) requestChartRender(lastAiForecastTraceCount > 0);
   });
   aiAnalysisPromises.set(target, task);
   return task;
