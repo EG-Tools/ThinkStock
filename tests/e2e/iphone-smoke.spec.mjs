@@ -958,7 +958,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await page.evaluate(() => window.ThinkStockE2E.saveRuntimeSnapshotNow());
   const snapshotStatsBefore = await page.evaluate(() => window.ThinkStockE2E.getRuntimeSnapshotStats());
   const runtimeCacheKeys = await page.evaluate(() => new Promise((resolve, reject) => {
-    const request = indexedDB.open("thinkstock-runtime-cache-v1", 2);
+    const request = indexedDB.open("thinkstock-runtime-cache-v1", 3);
     request.onerror = () => reject(request.error);
     request.onsuccess = () => {
       const db = request.result;
@@ -987,7 +987,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   expect(snapshotStatsAfter.skips).toBeGreaterThan(snapshotStatsBefore.skips);
 
   await page.evaluate(() => new Promise((resolve, reject) => {
-    const request = indexedDB.open("thinkstock-runtime-cache-v1", 2);
+    const request = indexedDB.open("thinkstock-runtime-cache-v1", 3);
     request.onerror = () => reject(request.error);
     request.onsuccess = () => {
       const db = request.result;
@@ -1005,7 +1005,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   const cleanupBefore = await page.evaluate(() => window.ThinkStockE2E.getCacheCleanupStats());
   await page.evaluate(() => window.ThinkStockE2E.pruneGranularCacheForTest("tickerPrices", 2));
   const remainingTickerCacheKeys = await page.evaluate(() => new Promise((resolve, reject) => {
-    const request = indexedDB.open("thinkstock-runtime-cache-v1", 2);
+    const request = indexedDB.open("thinkstock-runtime-cache-v1", 3);
     request.onerror = () => reject(request.error);
     request.onsuccess = () => {
       const db = request.result;
