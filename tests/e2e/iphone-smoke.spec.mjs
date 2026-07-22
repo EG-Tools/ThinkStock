@@ -358,6 +358,27 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   expect(pageErrors).toEqual([]);
 });
 
+test("AI toggle draws and removes a six-month virtual forecast", async ({ page }) => {
+  await stubExternalRefreshes(page);
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+
+  await page.locator("#aiForecastToggle").click();
+  await expect(page.locator("#aiForecastToggle")).toHaveClass(/is-active/);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length
+  ))).toBeGreaterThan(0);
+  const horizonPoints = await page.locator("#chart").evaluate((element) => (
+    (element.data || []).find((trace) => trace?.meta?.isAiForecastTrace)?.x?.length || 0
+  ));
+  expect(horizonPoints).toBe(127);
+
+  await page.locator("#aiForecastToggle").click();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length
+  ))).toBe(0);
+});
+
 test("macro refresh uses deployed data instead of browser ECOS or KOSIS requests", async ({ page }) => {
   let directMacroRequests = 0;
   await page.addInitScript(() => {

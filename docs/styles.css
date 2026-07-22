@@ -195,6 +195,25 @@ body {
   -webkit-backdrop-filter: blur(8px);
 }
 
+.chart-ai-btn {
+  position: absolute;
+  z-index: 120;
+  top: 48px;
+  left: 14px;
+  min-width: 48px;
+  padding: 5px 11px;
+  background: rgba(18, 18, 18, 0.78);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.chart-ai-btn.is-active {
+  border-color: rgba(210, 210, 210, 0.72);
+  background: rgba(170, 170, 170, 0.26);
+  color: #f3f3f3;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset;
+}
+
 .api-settings-modal {
   position: fixed;
   inset: 0;

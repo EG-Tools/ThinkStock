@@ -54,6 +54,9 @@ if (!auxiliaryChartModelModule) throw new Error("Auxiliary chart model module fa
 const buildAuxiliaryChartModelSync = auxiliaryChartModelModule.buildAuxiliaryChartModel;
 const mainChartRenderer = globalThis.ThinkStockMainChartRenderer;
 if (!mainChartRenderer) throw new Error("Main chart renderer module failed to load");
+const aiForecastModule = globalThis.ThinkStockAiForecast;
+if (!aiForecastModule) throw new Error("AI forecast module failed to load");
+const { buildForecast: buildAiForecast, isForecastSeries } = aiForecastModule;
 const performanceMonitorModule = globalThis.ThinkStockPerformanceMonitor;
 if (!performanceMonitorModule) throw new Error("Performance monitor module failed to load");
 const performanceMonitor = performanceMonitorModule.createPerformanceMonitor(globalThis);
@@ -150,7 +153,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.08";
+const APP_VERSION = "1.09";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -198,6 +201,7 @@ const DART_DISCLOSURE_CACHE_KEY = "thinkstock-dart-disclosure-cache-v1";
 const DART_DISCLOSURE_CACHE_TTL_DAYS = 1;
 const DART_GATEWAY_URL = "https://thinkstock.keg0320.workers.dev";
 const DART_GATEWAY_DISCLOSURE_ENDPOINT = `${DART_GATEWAY_URL}/api/dart/disclosures`;
+const AI_CONSENSUS_ENDPOINT = `${DART_GATEWAY_URL}/api/consensus`;
 const DART_VISIBLE_REFRESH_CONCURRENCY = 2;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NETWORK_REQUEST_TIMEOUT_MS = 12000;
@@ -400,6 +404,10 @@ let chartRenderGeneration = 0;
 let chartSyncing = false;   // relayout sync loop guard
 let hoverShowPopup = false;
 let showDisclosures = true;
+let showAiForecast = false;
+let lastAiForecastTraceCount = 0;
+let aiConsensusByTicker = new Map();
+let aiConsensusPromises = new Map();
 let isHandleDragging = false;
 let pinnedXRange = null;
 let hoverSyncing = false;
@@ -593,6 +601,7 @@ function saveState() {
       creditOffset: -CREDIT_OFFSET_DAYS,
       hoverShowPopup,
       showDisclosures,
+      showAiForecast,
     }));
   } catch (_) {}
 }
@@ -612,6 +621,7 @@ function loadState() {
     if (typeof p.creditOffset === "number") CREDIT_OFFSET_DAYS = Math.abs(p.creditOffset);
     if (typeof p.hoverShowPopup === "boolean") hoverShowPopup = p.hoverShowPopup;
     if (typeof p.showDisclosures === "boolean") showDisclosures = p.showDisclosures;
+    if (typeof p.showAiForecast === "boolean") showAiForecast = p.showAiForecast;
     if (Array.isArray(p.customStocks)) customStocks = sanitizeCustomStocks(p.customStocks);
     applyCustomStockDisplayNames();
   } catch (_) {}
@@ -2225,6 +2235,11 @@ function applySeriesVisibilityFast(seriesKey) {
   const el = document.getElementById("chart");
   const traceIndex = currentSelected.indexOf(seriesKey);
   if (!el?.data || traceIndex < 0 || traceIndex >= el.data.length) return false;
+  if (showAiForecast) {
+    syncSeriesToggleBoard(currentSelected);
+    requestChartRender();
+    return true;
+  }
 
   Plotly.restyle(el, { visible: hiddenSeries.has(seriesKey) ? "legendonly" : true }, [traceIndex])
     .then(() => {
@@ -2674,6 +2689,11 @@ async function addCustomStock(candidate, msgEl) {
     requestChartRender(false);
     setMessage(msgEl, [`${candidate.name} 종목이 추가되었습니다.`]);
     requestDartDisclosureRefreshForTicker(candidate.ticker, msgEl);
+    if (showAiForecast) {
+      requestAiConsensusForTicker(candidate.ticker)
+        .then(() => requestChartRender(true))
+        .catch(() => {});
+    }
   } catch (err) {
     delete DISPLAY_NAMES[candidate.ticker];
     setMessage(msgEl, `종목 추가 중 오류가 발생했습니다: ${err.message}`, true);
@@ -3348,6 +3368,10 @@ function restyleLive(traceIndex, seriesKey) {
 
 function finishTraceYEdit(rebuildForDisclosures = true, seriesKey = "") {
   saveState();
+  if (showAiForecast) {
+    requestAnimationFrame(() => requestChartRender());
+    return;
+  }
   if (showDisclosures && rebuildForDisclosures) {
     requestAnimationFrame(() => {
       if (!refreshDisclosureTraceFast(seriesKey)) requestChartRender();
@@ -3828,6 +3852,44 @@ function highlightDisclosureHoverPoint(evtData) {
   setDisclosureTextHighlighted(chartEl, pointIndex, true);
 }
 
+async function requestAiConsensusForTicker(ticker) {
+  const target = String(ticker || "").trim().toUpperCase();
+  if (!/^\d{6}\.(KS|KQ)$/.test(target) || !canUseDartGateway()) return null;
+  if (aiConsensusByTicker.has(target)) return aiConsensusByTicker.get(target);
+  if (aiConsensusPromises.has(target)) return aiConsensusPromises.get(target);
+
+  const task = (async () => {
+    const response = await fetchWithTimeout(`${AI_CONSENSUS_ENDPOINT}?ticker=${encodeURIComponent(target)}`, {
+      cache: "no-store",
+      headers: { Authorization: `Bearer ${getDartGatewayAccessToken()}` },
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || payload?.ok === false) return null;
+    const consensus = payload?.consensus && typeof payload.consensus === "object"
+      ? payload.consensus
+      : null;
+    aiConsensusByTicker.set(target, consensus);
+    return consensus;
+  })().catch(() => null).finally(() => {
+    aiConsensusPromises.delete(target);
+  });
+  aiConsensusPromises.set(target, task);
+  return task;
+}
+
+async function refreshAiConsensusForVisibleSeries() {
+  if (!showAiForecast || !canUseDartGateway()) return 0;
+  const tickers = currentSelected
+    .map((ticker) => String(ticker || "").toUpperCase())
+    .filter((ticker) => /^\d{6}\.(KS|KQ)$/.test(ticker) && !hiddenSeries.has(ticker));
+  if (!tickers.length) return 0;
+  const before = aiConsensusByTicker.size;
+  await mapWithConcurrency([...new Set(tickers)], 2, requestAiConsensusForTicker);
+  const added = Math.max(0, aiConsensusByTicker.size - before);
+  if (showAiForecast && added > 0) requestChartRender(true);
+  return added;
+}
+
 function disclosureTargetTickers() {
   const tickers = new Set();
   (pricePayload?.series || []).forEach((series) => {
@@ -3887,6 +3949,19 @@ async function fetchDartDisclosuresForTickerLive(apiKey, ticker, options = {}) {
     throw new Error(detail || "ThinkStock DART 중계 서버가 응답하지 않습니다.");
   }
   return sanitizeDisclosureRows(payload?.records || []);
+}
+
+function syncAiForecastToggleButton(traceCount = lastAiForecastTraceCount) {
+  const button = document.getElementById("aiForecastToggle");
+  if (!button) return;
+  const count = Number(traceCount) || 0;
+  button.classList.toggle("is-active", showAiForecast);
+  button.setAttribute("aria-pressed", showAiForecast ? "true" : "false");
+  button.title = showAiForecast
+    ? (count > 0
+      ? `6개월 AI 가상 흐름 켜짐 - ${count}개 종목 (투자 판단용 아님)`
+      : "AI 분석에는 종목별로 최소 90거래일이 필요합니다.")
+    : "6개월 AI 가상 흐름 (투자 판단용 아님)";
 }
 
 function mergeDisclosureRows(existingRows, incomingRows) {
@@ -4252,6 +4327,57 @@ function renderChartWhenIdleOrNow(preserveZoom = true) {
   return true;
 }
 
+function buildAiForecastTraces(rows, seriesModels) {
+  if (!showAiForecast) {
+    lastAiForecastTraceCount = 0;
+    syncAiForecastToggleButton(0);
+    return [];
+  }
+  const traces = [];
+  (seriesModels || []).forEach((model) => {
+    const series = String(model?.series || "").toUpperCase();
+    if (!isForecastSeries(series) || hiddenSeries.has(series)) return;
+    const forecast = buildAiForecast({
+      series,
+      dates: model.xValues,
+      prices: (rows || []).map((row) => row?.[series]),
+      chartValues: model.values,
+      macroRows,
+      auxiliaryRows: adrRows,
+      disclosures: disclosureRows,
+      consensus: aiConsensusByTicker.get(series) || null,
+      horizon: 126,
+    });
+    if (!forecast) return;
+    const consensusUsed = Math.abs(Number(forecast.signals?.consensus) || 0) > 0;
+    traces.push({
+      x: forecast.dates,
+      y: forecast.chartValues,
+      text: forecast.prices.map((value) => formatActualValue(value)),
+      type: MAIN_LINE_TRACE_TYPE,
+      mode: "lines",
+      name: `${labelName(series)} AI 가상 흐름`,
+      showlegend: false,
+      connectgaps: false,
+      hoverinfo: hoverShowPopup ? undefined : "skip",
+      hovertemplate: hoverShowPopup
+        ? `AI 가상 흐름<br>%{x|%Y.%-m.%-d}<br>%{text}${consensusUsed ? "<br>컨센서스 반영" : ""}<extra>${escapeHtml(labelName(series))}</extra>`
+        : undefined,
+      line: { color: "rgba(190, 190, 190, 0.7)", width: 2, dash: "dot", shape: "linear" },
+      meta: {
+        isAiForecastTrace: true,
+        seriesKey: series,
+        historyDays: forecast.historyDays,
+        patternMatches: forecast.patternMatches,
+        consensusUsed,
+      },
+    });
+  });
+  lastAiForecastTraceCount = traces.length;
+  syncAiForecastToggleButton(traces.length);
+  return traces;
+}
+
 async function renderChart(preserveZoom = true) {
   const perfStartedAt = startPerfSample();
   const el = document.getElementById("chart");
@@ -4355,6 +4481,9 @@ async function renderChart(preserveZoom = true) {
     };
   });
 
+  const aiForecastTraces = buildAiForecastTraces(rows, seriesModels);
+  traces.push(...aiForecastTraces);
+
   if (!showDisclosures) {
     lastDisclosureTraceStats = { total: disclosureRows.length, candidates: 0, markers: 0 };
   }
@@ -4371,7 +4500,10 @@ async function renderChart(preserveZoom = true) {
     ? (pinnedXRange ? [...pinnedXRange] : (el._fullLayout?.xaxis?.range?.slice() || null))
     : null;
   const savedYRange = preserveZoom ? (el._fullLayout?.yaxis?.range?.slice() || null) : null;
-  const defaultXRange = [start, end];
+  const forecastEnd = aiForecastTraces
+    .map((trace) => trace.x?.at(-1) || "")
+    .reduce((latest, date) => date > latest ? date : latest, end);
+  const defaultXRange = [start, forecastEnd];
 
   clearDisclosureHoverTimer();
   currentDisclosureHighlight = null;
@@ -5801,6 +5933,7 @@ async function boot() {
   setupApiSettingsPanel(msgEl);
   syncApiOptionsButton();
   renderAppVersionLabel();
+  syncAiForecastToggleButton();
   bindRuntimeSnapshotExitSave();
   scheduleGranularCacheCleanup();
   setStartupLoaderProgress(10, "Preparing");
@@ -5846,6 +5979,14 @@ async function boot() {
     });
 
     document.getElementById("resetHandles").addEventListener("click", resetHandles);
+    document.getElementById("aiForecastToggle").addEventListener("click", () => {
+      showAiForecast = !showAiForecast;
+      saveState();
+      syncAiForecastToggleButton();
+      requestChartRender(false);
+      if (showAiForecast) refreshAiConsensusForVisibleSeries().catch(() => {});
+    });
+    if (showAiForecast) refreshAiConsensusForVisibleSeries().catch(() => {});
 
     appUiBindingsModule.bindHoverToggle({
       button: document.getElementById("hoverToggle"),

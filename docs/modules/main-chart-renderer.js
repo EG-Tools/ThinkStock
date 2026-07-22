@@ -3,6 +3,7 @@
 
   function traceIdentity(trace) {
     if (trace?.meta?.isDisclosureTrace) return "disclosure";
+    if (trace?.meta?.isAiForecastTrace) return `ai:${String(trace.meta.seriesKey || "")}`;
     const seriesKey = String(trace?.meta?.seriesKey || "");
     return seriesKey ? `series:${seriesKey}` : "";
   }

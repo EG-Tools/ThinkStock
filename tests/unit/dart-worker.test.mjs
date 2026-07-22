@@ -5,6 +5,7 @@ import {
   handleRequest,
   isAllowedOrigin,
   mergeRecords,
+  parseConsensusHtml,
 } from "../../worker/src/index.mjs";
 
 
@@ -73,4 +74,34 @@ test("merges disclosures by receipt number and keeps the newest payload", () => 
   const merged = mergeRecords([oldRecord], [newRecord]);
   assert.equal(merged.length, 1);
   assert.equal(merged[0].name, "new");
+});
+
+test("parses Naver WiseReport consensus values", () => {
+  const html = `<table id="cTB15"><tr><th>opinion</th></tr><tr>
+    <td><b>4.00</b></td><td>132,600</td><td>1,665</td><td>26.16</td><td>5</td>
+  </tr></table>`;
+  const result = parseConsensusHtml(html, "218410.KQ");
+  assert.equal(result.opinion, 4);
+  assert.equal(result.targetPrice, 132600);
+  assert.equal(result.institutions, 5);
+});
+
+test("returns a fresh consensus KV cache without requiring the DART key", async () => {
+  const consensus = { ticker: "218410.KQ", targetPrice: 132600, institutions: 5 };
+  const cache = memoryKv({
+    "consensus:218410.KQ": JSON.stringify({
+      schema: 1,
+      ticker: "218410.KQ",
+      savedAt: Date.now(),
+      consensus,
+    }),
+  });
+  const response = await handleRequest(
+    request("/api/consensus?ticker=218410.KQ", { token: "private" }),
+    { THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: cache },
+  );
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(payload.cached, true);
+  assert.deepEqual(payload.consensus, consensus);
 });
