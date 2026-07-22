@@ -7,6 +7,7 @@ import "../docs/modules/auxiliary-chart-model.js";
 import "../docs/modules/main-chart-renderer.js";
 import "../docs/modules/macd-oscillator.js";
 import "../docs/modules/ai-forecast.js";
+import "../docs/modules/ai-analysis-cache.js";
 import "../docs/modules/performance-monitor.js";
 import "../docs/modules/deferred-diagnostics.js";
 import "../docs/modules/data-health.js";

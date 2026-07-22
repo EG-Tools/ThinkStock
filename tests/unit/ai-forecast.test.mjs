@@ -90,6 +90,55 @@ test("weights reliable consensus direction into the context signal", () => {
   assert.ok(positive.combined > unavailable.combined);
 });
 
+test("uses accumulated earnings growth as a bounded context signal", () => {
+  const improving = buildContextSignal({
+    financials: [
+      { period: "2024-12", frequency: "annual", revenue: 1000, operatingProfit: 80 },
+      { period: "2025-12", frequency: "annual", revenue: 1300, operatingProfit: 160 },
+      { period: "2025-12", frequency: "quarter", revenue: 300, operatingProfit: 32 },
+      { period: "2026-03", frequency: "quarter", revenue: 390, operatingProfit: 58 },
+      { period: "2026-12", frequency: "annual", estimate: true, revenue: 1600, operatingProfit: 220 },
+    ],
+  }, "218410.KQ", "2026-07-22", 100);
+  const deteriorating = buildContextSignal({
+    financials: [
+      { period: "2024-12", frequency: "annual", revenue: 1300, operatingProfit: 160 },
+      { period: "2025-12", frequency: "annual", revenue: 1000, operatingProfit: 40 },
+      { period: "2025-12", frequency: "quarter", revenue: 390, operatingProfit: 58 },
+      { period: "2026-03", frequency: "quarter", revenue: 300, operatingProfit: 10 },
+    ],
+  }, "218410.KQ", "2026-07-22", 100);
+
+  assert.ok(improving.fundamentals > 0.5);
+  assert.ok(deteriorating.fundamentals < -0.5);
+  assert.ok(improving.combined > deteriorating.combined);
+  assert.ok(improving.fundamentalsConfidence > 0.8);
+});
+
+test("uses reported earnings surprises as a conservative fundamentals signal", () => {
+  const positive = buildContextSignal({
+    financials: [{
+      period: "2026-03",
+      frequency: "quarter",
+      operatingProfit: 120,
+      operatingProfitSurprise: 24,
+      netIncomeSurprise: 12,
+    }],
+  }, "218410.KQ", "2026-07-22", 100);
+  const negative = buildContextSignal({
+    financials: [{
+      period: "2026-03",
+      frequency: "quarter",
+      operatingProfit: 80,
+      operatingProfitSurprise: -24,
+      netIncomeSurprise: -12,
+    }],
+  }, "218410.KQ", "2026-07-22", 100);
+  assert.ok(positive.fundamentals > 0);
+  assert.ok(negative.fundamentals < 0);
+  assert.ok(positive.combined > negative.combined);
+});
+
 test("uses MACD as a bounded part of the forecast technical signal", () => {
   const dates = tradingDates(500);
   const prices = dates.map((_, index) => 100 * Math.exp(

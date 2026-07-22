@@ -1,11 +1,26 @@
+import {
+  fetchCompanyAnalysis,
+  mergeFinancialRecords,
+  parseConsensusHtml,
+  parseEarningsTrendHtml,
+  parseFinancialSummaryHtml,
+} from "./company-analysis.mjs";
+
+export {
+  mergeFinancialRecords,
+  parseConsensusHtml,
+  parseEarningsTrendHtml,
+  parseFinancialSummaryHtml,
+};
+
 const DART_LIST_URL = "https://opendart.fss.or.kr/api/list.json";
-const CONSENSUS_URL = "https://navercomp.wisereport.co.kr/v2/company/c1010001.aspx";
 const TICKER_PATTERN = /^(\d{6})\.(KS|KQ)$/;
 const CORP_CODE_PATTERN = /^\d{8}$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const CACHE_SCHEMA = 1;
 const CACHE_FRESH_MS = 6 * 60 * 60 * 1000;
-const CONSENSUS_CACHE_FRESH_MS = 24 * 60 * 60 * 1000;
+const ANALYSIS_CACHE_SCHEMA = 2;
+const ANALYSIS_CACHE_FRESH_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_PAGES = 100;
 const PAGE_SIZE = 100;
 const OVERLAP_DAYS = 7;
@@ -84,97 +99,73 @@ function apiDate(value) {
   return String(value || "").replaceAll("-", "");
 }
 
-function htmlText(value) {
-  return String(value || "")
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;|&#160;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&quot;/gi, '"')
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function consensusNumber(value) {
-  const cleaned = htmlText(value).replaceAll(",", "").replace(/[^0-9.+-]/g, "");
-  const number = Number(cleaned);
-  return Number.isFinite(number) ? number : null;
-}
-
-export function parseConsensusHtml(html, ticker) {
-  const table = String(html || "").match(/<table\b[^>]*\bid=["']cTB15["'][^>]*>[\s\S]*?<\/table>/i)?.[0] || "";
-  if (!table) return null;
-  const rows = [...table.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)];
-  const dataRow = rows
-    .map((match) => [...match[1].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map((cell) => cell[1]))
-    .find((cells) => cells.length >= 5);
-  if (!dataRow) return null;
-  const [opinion, targetPrice, eps, per, institutions] = dataRow.slice(-5).map(consensusNumber);
-  if (!Number.isFinite(targetPrice) || targetPrice <= 0 || !Number.isFinite(institutions) || institutions < 1) return null;
-  const code = String(ticker || "").slice(0, 6);
-  return {
-    ticker,
-    opinion,
-    targetPrice,
-    eps,
-    per,
-    institutions,
-    source: "Naver Finance / WiseReport",
-    sourceUrl: `https://finance.naver.com/item/coinfo.naver?code=${encodeURIComponent(code)}`,
-    fetchedAt: new Date().toISOString(),
-  };
-}
-
-async function fetchConsensus(ticker) {
-  const code = ticker.slice(0, 6);
-  const response = await fetch(`${CONSENSUS_URL}?cmp_cd=${encodeURIComponent(code)}`, {
-    headers: { Accept: "text/html", "Accept-Language": "ko-KR,ko;q=0.9" },
-    signal: AbortSignal.timeout(20000),
-  });
-  if (!response.ok) throw new Error(`Consensus HTTP ${response.status}`);
-  return parseConsensusHtml(await response.text(), ticker);
-}
-
-async function readConsensusCache(env, ticker) {
+async function readAnalysisCache(env, ticker) {
   if (!env.DISCLOSURE_CACHE) return null;
   try {
-    const value = await env.DISCLOSURE_CACHE.get(`consensus:${ticker}`, "json");
-    return value?.schema === 1 && value?.ticker === ticker ? value : null;
+    const value = await env.DISCLOSURE_CACHE.get(`analysis:${ticker}`, "json");
+    if (value?.schema === ANALYSIS_CACHE_SCHEMA && value?.ticker === ticker) return value;
+    const legacy = await env.DISCLOSURE_CACHE.get(`consensus:${ticker}`, "json");
+    return legacy?.schema === 1 && legacy?.ticker === ticker
+      ? { ...legacy, schema: ANALYSIS_CACHE_SCHEMA, financials: [] }
+      : null;
   } catch (_) {
     return null;
   }
 }
 
-async function writeConsensusCache(env, ticker, consensus) {
-  if (!env.DISCLOSURE_CACHE || !consensus) return;
-  await env.DISCLOSURE_CACHE.put(`consensus:${ticker}`, JSON.stringify({
-    schema: 1,
+async function writeAnalysisCache(env, ticker, analysis) {
+  if (!env.DISCLOSURE_CACHE) return;
+  await env.DISCLOSURE_CACHE.put(`analysis:${ticker}`, JSON.stringify({
+    schema: ANALYSIS_CACHE_SCHEMA,
     ticker,
-    savedAt: Date.now(),
-    consensus,
-  }), { expirationTtl: 45 * 24 * 60 * 60 });
+    savedAt: analysis.savedAt,
+    consensus: analysis.consensus || null,
+    financials: analysis.financials || [],
+  }));
 }
 
-async function consensusResponse(env, ctx, ticker, origin) {
-  const cached = await readConsensusCache(env, ticker);
-  if (cached && Date.now() - Number(cached.savedAt || 0) <= CONSENSUS_CACHE_FRESH_MS) {
-    return jsonResponse({ ok: true, cached: true, consensus: cached.consensus || null }, 200, origin);
+function analysisPayload(cached, extra = {}) {
+  return {
+    ok: true,
+    ticker: cached.ticker,
+    savedAt: cached.savedAt,
+    consensus: cached.consensus || null,
+    financials: cached.financials || [],
+    ...extra,
+  };
+}
+
+async function analysisResponse(env, ctx, ticker, origin, options = {}) {
+  const cached = await readAnalysisCache(env, ticker);
+  const fresh = cached && Date.now() - Number(cached.savedAt || 0) <= ANALYSIS_CACHE_FRESH_MS;
+  if (fresh && (!options.requireFinancials || cached.financials?.length)) {
+    return jsonResponse(analysisPayload(cached, { cached: true }), 200, origin);
   }
   try {
-    const consensus = await fetchConsensus(ticker);
-    if (consensus) {
-      const write = writeConsensusCache(env, ticker, consensus);
-      if (ctx?.waitUntil) ctx.waitUntil(write);
-      else await write;
+    const incoming = await fetchCompanyAnalysis(ticker);
+    if (options.requireFinancials && !incoming.financials?.length) {
+      throw new Error("Embedded earnings data is empty");
     }
-    return jsonResponse({ ok: true, cached: false, consensus }, 200, origin);
+    const analysis = {
+      schema: ANALYSIS_CACHE_SCHEMA,
+      ticker,
+      savedAt: Date.now(),
+      consensus: incoming.consensus || cached?.consensus || null,
+      financials: mergeFinancialRecords(cached?.financials || [], incoming.financials || []),
+    };
+    const write = writeAnalysisCache(env, ticker, analysis);
+    if (ctx?.waitUntil) ctx.waitUntil(write);
+    else await write;
+    return jsonResponse(analysisPayload(analysis, { cached: false }), 200, origin);
   } catch (error) {
-    if (cached?.consensus) {
-      return jsonResponse({ ok: true, cached: true, stale: true, consensus: cached.consensus }, 200, origin);
+    if (cached?.consensus || cached?.financials?.length) {
+      return jsonResponse(analysisPayload(cached, {
+        cached: true,
+        stale: true,
+        warning: "최신 기업 분석을 가져오지 못해 마지막 저장 자료를 사용했습니다.",
+      }), 200, origin);
     }
-    return jsonResponse({ ok: false, error: `Consensus lookup failed: ${error?.message || error}` }, 503, origin);
+    return jsonResponse({ ok: false, error: `Company analysis failed: ${error?.message || error}` }, 503, origin);
   }
 }
 
@@ -325,7 +316,8 @@ export async function handleRequest(request, env, ctx = null) {
   }
   const isDartRequest = url.pathname === "/api/dart/disclosures" && request.method === "GET";
   const isConsensusRequest = url.pathname === "/api/consensus" && request.method === "GET";
-  if (!isDartRequest && !isConsensusRequest) {
+  const isAnalysisRequest = url.pathname === "/api/analysis" && request.method === "GET";
+  if (!isDartRequest && !isConsensusRequest && !isAnalysisRequest) {
     return jsonResponse({ ok: false, error: "Not found" }, 404, origin);
   }
   if (!env.THINKSTOCK_ACCESS_TOKEN
@@ -336,7 +328,9 @@ export async function handleRequest(request, env, ctx = null) {
   if (!TICKER_PATTERN.test(ticker)) {
     return jsonResponse({ ok: false, error: "종목코드 형식이 올바르지 않습니다." }, 400, origin);
   }
-  if (isConsensusRequest) return consensusResponse(env, ctx, ticker, origin);
+  if (isConsensusRequest || isAnalysisRequest) {
+    return analysisResponse(env, ctx, ticker, origin, { requireFinancials: isAnalysisRequest });
+  }
   if (!env.DART_API_KEY) return jsonResponse({ ok: false, error: "Cloudflare에 DART 키가 설정되지 않았습니다." }, 503, origin);
 
   const corpCode = String(url.searchParams.get("corpCode") || "").trim();

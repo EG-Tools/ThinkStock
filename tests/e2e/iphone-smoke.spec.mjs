@@ -379,6 +379,69 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page }
   ))).toBe(0);
 });
 
+test("AI analysis loads only on demand and reuses its monthly browser cache", async ({ page }) => {
+  let analysisRequests = 0;
+  let releaseAnalysis;
+  const analysisGate = new Promise((resolve) => { releaseAnalysis = resolve; });
+  await stubExternalRefreshes(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "private" }));
+    if (!localStorage.getItem("thinkstock-v5")) {
+      localStorage.setItem("thinkstock-v5", JSON.stringify({
+        customStocks: [{
+          ticker: "005930.KS",
+          name: "삼성전자",
+          code: "005930",
+          market: "KOSPI",
+        }],
+      }));
+    }
+  });
+  await page.route("https://thinkstock-api.keg0320.workers.dev/api/analysis**", async (route) => {
+    analysisRequests += 1;
+    const ticker = new URL(route.request().url()).searchParams.get("ticker");
+    await analysisGate;
+    await route.fulfill({
+      status: 200,
+      headers: { "access-control-allow-origin": "*", "content-type": "application/json" },
+      body: JSON.stringify({
+        ok: true,
+        ticker,
+        savedAt: Date.now(),
+        consensus: { ticker, targetPrice: 150000, opinion: 4.2, institutions: 6 },
+        financials: [
+          { ticker, period: "2024-12", frequency: "annual", revenue: 1000, operatingProfit: 80 },
+          { ticker, period: "2025-12", frequency: "annual", revenue: 1300, operatingProfit: 160 },
+          { ticker, period: "2025-12", frequency: "quarter", revenue: 300, operatingProfit: 32 },
+          { ticker, period: "2026-03", frequency: "quarter", revenue: 390, operatingProfit: 58 },
+        ],
+      }),
+    });
+  });
+
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  expect(analysisRequests).toBe(0);
+
+  await page.locator("#aiForecastToggle").click();
+  await expect.poll(() => analysisRequests).toBeGreaterThan(0);
+  await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-busy", "true");
+  releaseAnalysis();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.fundamentalsUsed).length
+  ))).toBeGreaterThan(0);
+  await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-busy", "false");
+
+  const firstRequestCount = analysisRequests;
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.locator("#aiForecastToggle")).toHaveClass(/is-active/);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.fundamentalsUsed).length
+  ))).toBeGreaterThan(0);
+  await page.waitForTimeout(300);
+  expect(analysisRequests).toBe(firstRequestCount);
+});
+
 test("MACD toggle inserts a stock oscillator between the main and ADR charts", async ({ page }) => {
   await stubExternalRefreshes(page);
   await page.addInitScript(() => {

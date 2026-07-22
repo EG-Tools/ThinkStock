@@ -102,6 +102,90 @@
     return weightTotal ? clamp(weighted / Math.max(1, weightTotal), -1, 1) : 0;
   }
 
+  function relativeChangeSignal(current, previous, scale) {
+    const next = toNumber(current);
+    const prior = toNumber(previous);
+    if (next === null || prior === null) return null;
+    const base = Math.max(Math.abs(prior), Math.abs(next) * 0.15, 1);
+    return clamp(((next - prior) / base) / scale, -1, 1);
+  }
+
+  function financialSeriesSignal(records) {
+    const actual = (Array.isArray(records) ? records : [])
+      .filter((record) => record?.estimate !== true)
+      .sort((left, right) => String(left.period).localeCompare(String(right.period)));
+    if (actual.length < 2) return null;
+    const previous = actual.at(-2);
+    const current = actual.at(-1);
+    const revenue = relativeChangeSignal(current.revenue, previous.revenue, 0.25);
+    const operatingProfit = relativeChangeSignal(
+      current.operatingProfit,
+      previous.operatingProfit,
+      0.6,
+    );
+    const currentRevenue = toNumber(current.revenue);
+    const previousRevenue = toNumber(previous.revenue);
+    const currentProfit = toNumber(current.operatingProfit);
+    const previousProfit = toNumber(previous.operatingProfit);
+    const margin = currentRevenue && previousRevenue && currentProfit !== null && previousProfit !== null
+      ? clamp((((currentProfit / currentRevenue) - (previousProfit / previousRevenue)) / 0.08), -1, 1)
+      : null;
+    const components = [
+      [revenue, 0.35],
+      [operatingProfit, 0.4],
+      [margin, 0.25],
+    ].filter(([value]) => value !== null);
+    if (!components.length) return null;
+    const weight = components.reduce((sum, item) => sum + item[1], 0);
+    return components.reduce((sum, item) => sum + (item[0] * item[1]), 0) / weight;
+  }
+
+  function estimateSignal(records) {
+    const source = (Array.isArray(records) ? records : [])
+      .filter((record) => record?.frequency === "annual")
+      .sort((left, right) => String(left.period).localeCompare(String(right.period)));
+    const estimate = source.filter((record) => record?.estimate === true).at(-1);
+    const actual = source.filter((record) => record?.estimate !== true).at(-1);
+    if (!estimate || !actual) return null;
+    const revenue = relativeChangeSignal(estimate.revenue, actual.revenue, 0.3);
+    const operatingProfit = relativeChangeSignal(estimate.operatingProfit, actual.operatingProfit, 0.7);
+    const values = [revenue, operatingProfit].filter((value) => value !== null);
+    return values.length ? mean(values) : null;
+  }
+
+  function earningsSurpriseSignal(records) {
+    const values = (Array.isArray(records) ? records : [])
+      .filter((record) => record?.estimate !== true)
+      .sort((left, right) => String(left.period).localeCompare(String(right.period)))
+      .slice(-2)
+      .flatMap((record) => [record?.operatingProfitSurprise, record?.netIncomeSurprise])
+      .map(toNumber)
+      .filter((value) => value !== null)
+      .map((value) => clamp(value / 30, -1, 1));
+    return values.length ? mean(values) : null;
+  }
+
+  function fundamentalsSignal(financials) {
+    const source = Array.isArray(financials) ? financials : [];
+    const annual = financialSeriesSignal(source.filter((record) => record?.frequency === "annual"));
+    const quarter = financialSeriesSignal(source.filter((record) => record?.frequency === "quarter"));
+    const estimate = estimateSignal(source);
+    const surprise = earningsSurpriseSignal(source);
+    const components = [
+      [annual, 0.35],
+      [quarter, 0.35],
+      [estimate, 0.15],
+      [surprise, 0.15],
+    ].filter(([value]) => value !== null);
+    if (!components.length) return { signal: 0, confidence: 0 };
+    const availableWeight = components.reduce((sum, item) => sum + item[1], 0);
+    const signal = components.reduce((sum, item) => sum + (item[0] * item[1]), 0) / availableWeight;
+    return {
+      signal: clamp(signal * Math.min(1, availableWeight / 0.85), -1, 1),
+      confidence: clamp(availableWeight / 0.85, 0, 1),
+    };
+  }
+
   function buildContextSignal(options, ticker, lastDate, currentPrice = null) {
     const macroRows = options.macroRows || [];
     const auxiliaryRows = options.auxiliaryRows || [];
@@ -122,18 +206,22 @@
       : 0;
     const opinionSignal = opinion === null ? 0 : clamp((opinion - 3) / 2, -1, 1);
     const consensusSignal = ((targetSignal * 0.7) + (opinionSignal * 0.3)) * reliability;
+    const fundamentals = fundamentalsSignal(options.financials);
     return {
       news,
       fearGreed,
       adr,
       disclosure,
       consensus: consensusSignal,
+      fundamentals: fundamentals.signal,
+      fundamentalsConfidence: fundamentals.confidence,
       combined: clamp(
-        (news * 0.28)
-        + (fearGreed * 0.18)
-        + (adr * 0.14)
-        + (disclosure * 0.1)
-        + (consensusSignal * 0.3),
+        (news * 0.25)
+        + (fearGreed * 0.16)
+        + (adr * 0.13)
+        + (disclosure * 0.09)
+        + (consensusSignal * 0.25)
+        + (fundamentals.signal * 0.12),
         -1,
         1,
       ),

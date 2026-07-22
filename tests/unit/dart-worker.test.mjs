@@ -4,8 +4,11 @@ import test from "node:test";
 import {
   handleRequest,
   isAllowedOrigin,
+  mergeFinancialRecords,
   mergeRecords,
   parseConsensusHtml,
+  parseEarningsTrendHtml,
+  parseFinancialSummaryHtml,
 } from "../../worker/src/index.mjs";
 
 
@@ -86,6 +89,62 @@ test("parses Naver WiseReport consensus values", () => {
   assert.equal(result.institutions, 5);
 });
 
+test("parses annual and quarterly WiseReport financial summaries", () => {
+  const html = `<table><thead><tr>
+    <th class="r02c00">2024/12</th><th class="r02c01">2025/12</th>
+    <th class="r02c04">2025/12</th><th class="r02c05">2026/03</th>
+  </tr></thead><tbody>
+    <tr><th>매출액</th><td title="1,000"></td><td title="1,300"></td><td title="320"></td><td title="410"></td></tr>
+    <tr><th>영업이익(발표기준)</th><td title="100"></td><td title="180"></td><td title="42"></td><td title="61"></td></tr>
+    <tr><th>당기순이익(지배)</th><td title="70"></td><td title="120"></td><td title="31"></td><td title="48"></td></tr>
+    <tr><th>EPS</th><td title="700"></td><td title="1,200"></td><td title="310"></td><td title="480"></td></tr>
+  </tbody></table>`;
+  const result = parseFinancialSummaryHtml(html, "218410.KQ");
+  assert.equal(result.length, 4);
+  assert.deepEqual(result[1], {
+    ticker: "218410.KQ",
+    period: "2025-12",
+    frequency: "annual",
+    estimate: false,
+    revenue: 1300,
+    operatingProfit: 180,
+    netIncome: 120,
+    eps: 1200,
+  });
+  assert.equal(result[3].frequency, "quarter");
+});
+
+test("parses embedded quarterly earnings without a second upstream request", () => {
+  const html = `<script>var EarnigList = function() {
+    var res = {"yymm":["202512","202603","202606"],"data":[
+      {"1":90.3,"2":70,"3":122.2},{"1":110.7,"2":77.3,"3":null},
+      {"1":22.6,"2":10.5,"3":null},{"1":349.8,"2":107.1,"3":null},
+      {"1":50.4,"2":-32.6,"3":null},{"1":81,"2":67,"3":99},
+      {"1":118.3,"2":67.1,"3":null},{"1":46,"2":0.1,"3":null},
+      {"1":1494.9,"2":71.6,"3":null},{"1":108.6,"2":-44,"3":null}
+    ],"yymmdd":["2026/01/26(connected)","2026/04/27(connected)",null],"type":[1,1,0]};
+  };</script>`;
+  const result = parseEarningsTrendHtml(html, "218410.KQ");
+  assert.equal(result.length, 3);
+  assert.equal(result[0].operatingProfit, 110.7);
+  assert.equal(result[0].operatingProfitConsensus, 90.3);
+  assert.equal(result[0].operatingProfitSurprise, 22.6);
+  assert.equal(result[0].reportDate, "2026-01-26");
+  assert.equal(result[2].estimate, true);
+  assert.equal(result[2].operatingProfit, 122.2);
+  assert.equal(result[2].netIncome, 99);
+});
+
+test("merges newly collected financial periods without discarding history", () => {
+  const old = { ticker: "218410.KQ", period: "2024-12", frequency: "annual", revenue: 1000 };
+  const revised = { ticker: "218410.KQ", period: "2024-12", frequency: "annual", revenue: 1010 };
+  const added = { ticker: "218410.KQ", period: "2025-12", frequency: "annual", revenue: 1300 };
+  const result = mergeFinancialRecords([old], [revised, added]);
+  assert.equal(result.length, 2);
+  assert.equal(result[0].revenue, 1010);
+  assert.equal(result[1].period, "2025-12");
+});
+
 test("returns a fresh consensus KV cache without requiring the DART key", async () => {
   const consensus = { ticker: "218410.KQ", targetPrice: 132600, institutions: 5 };
   const cache = memoryKv({
@@ -104,4 +163,31 @@ test("returns a fresh consensus KV cache without requiring the DART key", async 
   assert.equal(response.status, 200);
   assert.equal(payload.cached, true);
   assert.deepEqual(payload.consensus, consensus);
+});
+
+test("returns a fresh accumulated analysis cache without an upstream request", async () => {
+  const financials = [{
+    ticker: "218410.KQ",
+    period: "2025-12",
+    frequency: "annual",
+    estimate: false,
+    revenue: 1300,
+  }];
+  const cache = memoryKv({
+    "analysis:218410.KQ": JSON.stringify({
+      schema: 2,
+      ticker: "218410.KQ",
+      savedAt: Date.now(),
+      consensus: null,
+      financials,
+    }),
+  });
+  const response = await handleRequest(
+    request("/api/analysis?ticker=218410.KQ", { token: "private" }),
+    { THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: cache },
+  );
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(payload.cached, true);
+  assert.deepEqual(payload.financials, financials);
 });
