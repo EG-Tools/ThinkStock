@@ -450,7 +450,6 @@
     const momentum = momentumReturn(returns, volatility);
     const technical = rsiSignal(returns);
     const macd = clamp(toNumber(options.macdSignal) || 0, -1, 1);
-    const technicalComposite = (technical * 0.65) + (macd * 0.35);
     const lastPoint = points.at(-1);
     const calibration = cachedForecastCalibration(ticker, points, returns, horizon);
     const signals = buildContextSignal(options, ticker, lastPoint.date, lastPoint.price);
@@ -466,8 +465,10 @@
     for (let index = 0; index < horizon; index += 1) {
       const pattern = patternPath[index];
       const trend = momentum * Math.exp(-index / 100);
-      const technicalBias = technicalComposite * volatility * 0.025
-        * historyConfidence * Math.exp(-index / 35);
+      const technicalBias = (
+        (technical * 0.8 * Math.exp(-index / 35))
+        + (macd * 0.2 * Math.exp(-index / 12))
+      ) * volatility * 0.025 * historyConfidence;
       const contextBias = signals.combined * volatility * 0.018 * historyConfidence * Math.exp(-index / 150);
       const calibratedTrend = trend * calibration.trendMultiplier;
       const directionalTarget = (pattern === null

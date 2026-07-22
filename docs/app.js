@@ -157,7 +157,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.13";
+const APP_VERSION = "1.14";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -4672,13 +4672,6 @@ async function renderChart(preserveZoom = true) {
   });
 }
 
-function colorWithAlpha(color, alpha) {
-  const match = /^#([0-9a-f]{6})$/i.exec(String(color || ""));
-  if (!match) return color;
-  const value = Number.parseInt(match[1], 16);
-  return `rgba(${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255}, ${alpha})`;
-}
-
 function getMacdModelForSeries(series) {
   const ticker = String(series || "").toUpperCase();
   if (!MACD_STOCK_PATTERN.test(ticker)) return null;
@@ -4754,14 +4747,12 @@ async function renderMacdChart(xRange) {
       x: thinned.dates,
       y: thinned.values,
       type: "bar",
-      name: `${labelName(series)} MACD`,
+      name: labelName(series),
       marker: {
-        color: thinned.values.map((value) => (
-          value >= 0 ? colorWithAlpha(baseColor, 0.82) : colorWithAlpha(baseColor, 0.3)
-        )),
+        color: baseColor,
         line: { width: 0 },
       },
-      opacity: visibleSeries.length > 1 ? 0.72 : 0.9,
+      opacity: visibleSeries.length > 1 ? 0.78 : 0.9,
       hoverinfo: hoverShowPopup ? undefined : "skip",
       hovertemplate: hoverShowPopup
         ? "%{x|%Y.%-m.%-d}<br>오실레이터 %{y:.3f}%<extra>%{fullData.name}</extra>"
@@ -4792,7 +4783,13 @@ async function renderMacdChart(xRange) {
       x0: 0, x1: 1, y0: 0, y1: 0,
       line: { color: "rgba(255,255,255,0.42)", width: 1, dash: "dot" },
     }],
-    annotations: traces.length ? [] : [{
+    annotations: traces.length ? [{
+      xref: "paper", yref: "paper", x: 0, y: 1.18,
+      xanchor: "left", yanchor: "middle",
+      text: "MACD",
+      showarrow: false,
+      font: { color: "rgba(255,255,255,0.72)", size: 11 },
+    }] : [{
       xref: "paper", yref: "paper", x: 0.5, y: 0.5,
       text: "표시 중인 종목의 MACD 이력이 부족합니다.",
       showarrow: false,

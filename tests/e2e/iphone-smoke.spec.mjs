@@ -402,6 +402,28 @@ test("MACD toggle inserts a stock oscillator between the main and ADR charts", a
     (element.data || []).filter((trace) => trace?.meta?.macdSeriesKey).length
   ))).toBeGreaterThan(0);
 
+  const macdPresentation = await page.evaluate(() => {
+    const mainTraces = document.getElementById("chart")?.data || [];
+    const macdElement = document.getElementById("chart-macd");
+    const macdTraces = (macdElement?.data || []).filter((trace) => trace?.meta?.macdSeriesKey);
+    return {
+      labels: macdTraces.map((trace) => trace.name),
+      colorsMatch: macdTraces.every((trace) => {
+        const mainTrace = mainTraces.find((candidate) => (
+          candidate?.meta?.seriesKey === trace.meta.macdSeriesKey
+        ));
+        return mainTrace?.line?.color === trace?.marker?.color;
+      }),
+      indicatorLabel: (macdElement?.layout?.annotations || []).some((annotation) => (
+        annotation?.text === "MACD" && annotation?.xanchor === "left"
+      )),
+    };
+  });
+  expect(macdPresentation.labels).toContain("삼성전자");
+  expect(macdPresentation.labels.every((label) => !label.endsWith(" MACD"))).toBe(true);
+  expect(macdPresentation.colorsMatch).toBe(true);
+  expect(macdPresentation.indicatorLabel).toBe(true);
+
   const positions = await page.evaluate(() => ({
     main: document.getElementById("chart").getBoundingClientRect().bottom,
     macdTop: document.getElementById("chart-macd").getBoundingClientRect().top,
