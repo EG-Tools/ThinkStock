@@ -122,6 +122,8 @@ const CUSTOM_STOCK_PRELOAD_CONCURRENCY = 3;
 const STATE_KEY = "thinkstock-v5";
 const API_SETTINGS_KEY = "thinkstock-api-v1";
 const API_SETTINGS_SESSION_KEY = "thinkstock-api-session-v1";
+const DART_GATEWAY_SETTINGS_KEY = "thinkstock-dart-gateway-v1";
+const DART_GATEWAY_SETTINGS_SESSION_KEY = "thinkstock-dart-gateway-session-v1";
 const DATA_CACHE_DB_NAME = "thinkstock-runtime-cache-v1";
 const DATA_CACHE_DB_VERSION = 2;
 const DATA_CACHE_STORE_NAME = "snapshots";
@@ -148,7 +150,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.07";
+const APP_VERSION = "1.08";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -173,6 +175,11 @@ const indexedCacheStore = appStorageModule.createIndexedCacheStore(globalThis, {
     TICKER_DISCLOSURE_CACHE_STORE_NAME,
   ],
 });
+const dartGatewaySettingsStore = appStorageModule.createApiSettingsStore(globalThis, {
+  defaults: { accessToken: "" },
+  localKey: DART_GATEWAY_SETTINGS_KEY,
+  sessionKey: DART_GATEWAY_SETTINGS_SESSION_KEY,
+});
 const runtimeSnapshotCacheConfig = Object.freeze({
   storeName: DATA_CACHE_STORE_NAME,
   manifestKey: DATA_CACHE_RECORD_KEY,
@@ -189,8 +196,8 @@ const FREESIS_CREDIT_UNIT_CODE = "01";
 const FEAR_GREED_LIVE_URL = "https://kospi.feargreedchart.com/api/?action=kospi";
 const DART_DISCLOSURE_CACHE_KEY = "thinkstock-dart-disclosure-cache-v1";
 const DART_DISCLOSURE_CACHE_TTL_DAYS = 1;
-const LOCAL_DART_SERVER_KEY = "thinkstock-local-dart-server-v1";
-const LOCAL_DART_DISCLOSURE_ENDPOINT = "./api/dart/disclosures";
+const DART_GATEWAY_URL = "https://thinkstock.keg0320.workers.dev";
+const DART_GATEWAY_DISCLOSURE_ENDPOINT = `${DART_GATEWAY_URL}/api/dart/disclosures`;
 const DART_VISIBLE_REFRESH_CONCURRENCY = 2;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NETWORK_REQUEST_TIMEOUT_MS = 12000;
@@ -1090,43 +1097,15 @@ function bindRuntimeSnapshotExitSave() {
 function syncApiOptionsButton() {
   const btn = document.getElementById("apiOptionsBtn");
   if (!btn) return;
-  btn.classList.toggle("is-configured", Boolean(getConfiguredLocalDartServer()));
+  btn.classList.toggle("is-configured", canUseDartGateway());
 }
 
-function normalizeLocalDartServer(value) {
-  const text = String(value || "").trim();
-  if (!text) return "";
-  try {
-    const url = new URL(text);
-    if (!/^https?:$/.test(url.protocol) || url.username || url.password) return "";
-    url.search = "";
-    url.hash = "";
-    return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
-  } catch (_) {
-    return "";
-  }
+function getDartGatewayAccessToken() {
+  return String(dartGatewaySettingsStore.load()?.accessToken || "").trim();
 }
 
-function getConfiguredLocalDartServer() {
-  try {
-    return normalizeLocalDartServer(localStorage.getItem(LOCAL_DART_SERVER_KEY));
-  } catch (_) {
-    return "";
-  }
-}
-
-function getLocalDartDisclosureEndpoint() {
-  const configured = getConfiguredLocalDartServer();
-  return configured ? `${configured}/api/dart/disclosures` : LOCAL_DART_DISCLOSURE_ENDPOINT;
-}
-
-function canUseLocalDartServer() {
-  if (getConfiguredLocalDartServer()) return true;
-  const hostname = String(window.location.hostname || "").toLowerCase();
-  const privateIpv4 = /^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(hostname);
-  return window.location.protocol === "http:"
-    && window.location.port === "8787"
-    && (hostname === "localhost" || hostname === "::1" || privateIpv4);
+function canUseDartGateway() {
+  return Boolean(getDartGatewayAccessToken());
 }
 
 function renderAppVersionLabel() {
@@ -1254,12 +1233,12 @@ function setupApiSettingsPanel(msgEl) {
   const diagnosticsSummary = document.getElementById("performanceDiagnosticsSummary");
   const diagnosticsRefreshBtn = document.getElementById("performanceDiagnosticsRefreshBtn");
   const diagnosticsClearBtn = document.getElementById("performanceDiagnosticsClearBtn");
-  const localDartServerInput = document.getElementById("localDartServerInput");
-  const localDartServerSaveBtn = document.getElementById("localDartServerSaveBtn");
+  const dartGatewayTokenInput = document.getElementById("dartGatewayTokenInput");
+  const dartGatewayTokenSaveBtn = document.getElementById("dartGatewayTokenSaveBtn");
 
   const close = () => { modal.hidden = true; };
   const open = () => {
-    if (localDartServerInput) localDartServerInput.value = getConfiguredLocalDartServer();
+    if (dartGatewayTokenInput) dartGatewayTokenInput.value = getDartGatewayAccessToken();
     modal.hidden = false;
   };
   const renderDiagnostics = async () => {
@@ -1329,24 +1308,19 @@ function setupApiSettingsPanel(msgEl) {
       }
     }
   });
-  localDartServerSaveBtn?.addEventListener("click", () => {
-    const raw = String(localDartServerInput?.value || "").trim();
-    const normalized = normalizeLocalDartServer(raw);
-    if (raw && !normalized) {
-      setMessage(msgEl, "PC 주소는 http://192.168.x.x:8787 형식으로 입력해 주세요.", true);
-      return;
-    }
+  dartGatewayTokenSaveBtn?.addEventListener("click", () => {
+    const accessToken = String(dartGatewayTokenInput?.value || "").trim();
     try {
-      if (normalized) localStorage.setItem(LOCAL_DART_SERVER_KEY, normalized);
-      else localStorage.removeItem(LOCAL_DART_SERVER_KEY);
+      if (accessToken) dartGatewaySettingsStore.save({ accessToken });
+      else dartGatewaySettingsStore.clear();
       localStorage.removeItem(DART_DISCLOSURE_CACHE_KEY);
     } catch (_) {}
-    if (localDartServerInput) localDartServerInput.value = normalized;
+    if (dartGatewayTokenInput) dartGatewayTokenInput.value = accessToken;
     syncApiOptionsButton();
     close();
-    setMessage(msgEl, normalized
-      ? [`로컬 공시 서버 주소를 저장했습니다.`, normalized]
-      : ["로컬 공시 서버 주소를 자동 감지로 되돌렸습니다."]);
+    setMessage(msgEl, accessToken
+      ? ["DART 개인 접속 코드를 이 기기에 저장했습니다."]
+      : ["DART 개인 접속 코드를 이 기기에서 지웠습니다."]);
   });
 
   syncApiOptionsButton();
@@ -3879,17 +3853,28 @@ async function fetchDartDisclosuresLive(apiKey, options = {}) {
 async function fetchDartDisclosuresForTickerLive(apiKey, ticker, options = {}) {
   const targetTicker = String(ticker || "").trim().toUpperCase();
   if (!/^[0-9]{6}\.(KS|KQ)$/.test(targetTicker)) return [];
-  const query = new URLSearchParams({ ticker: targetTicker });
+  const stockCode = targetTicker.slice(0, 6);
+  const corpCodeLoaded = await ensureDartCorpCodeMapLoaded(stockCode);
+  const corpCode = String(dartCorpCodeMap.get(stockCode)?.corp_code || "");
+  if (!corpCodeLoaded || !corpCode) {
+    throw new Error("DART 회사코드를 찾지 못했습니다. 배포 데이터 갱신 후 다시 시도해 주세요.");
+  }
+  const accessToken = getDartGatewayAccessToken();
+  if (!accessToken) throw new Error("API 설정에서 DART 개인 접속 코드를 먼저 저장해 주세요.");
+  const query = new URLSearchParams({ ticker: targetTicker, corpCode });
+  const latestDate = disclosureRowsForTicker(targetTicker).at(-1)?.date || "";
+  if (latestDate) query.set("since", latestDate);
   if (options?.forceNetwork) query.set("force", "1");
   let response;
   try {
-    response = await fetch(`${getLocalDartDisclosureEndpoint()}?${query.toString()}`, {
+    response = await fetchWithTimeout(`${DART_GATEWAY_DISCLOSURE_ENDPOINT}?${query.toString()}`, {
       cache: "no-store",
+      headers: { Authorization: `Bearer ${accessToken}` },
       signal: options?.signal || null,
     });
   } catch (error) {
     if (error?.name === "AbortError") throw error;
-    throw new Error("ThinkStock 로컬 서버에 연결할 수 없습니다. run_local_pages.bat을 실행해 주세요.");
+    throw new Error("ThinkStock DART 중계 서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.");
   }
   let payload = null;
   try {
@@ -3899,7 +3884,7 @@ async function fetchDartDisclosuresForTickerLive(apiKey, ticker, options = {}) {
   }
   if (!response.ok || payload?.ok === false) {
     const detail = String(payload?.error || "").trim();
-    throw new Error(detail || "ThinkStock 로컬 DART 서버가 응답하지 않습니다.");
+    throw new Error(detail || "ThinkStock DART 중계 서버가 응답하지 않습니다.");
   }
   return sanitizeDisclosureRows(payload?.records || []);
 }
@@ -4181,8 +4166,8 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
       if (seedInfo?.added > 0) {
         if (!applyDisclosureStateFast()) requestChartRender(false);
       }
-      if (canUseLocalDartServer()) {
-        const refreshInfo = await refreshDartDisclosuresFromApi("local", target, { forceNetwork: true });
+      if (canUseDartGateway()) {
+        const refreshInfo = await refreshDartDisclosuresFromApi("gateway", target, { forceNetwork: true });
         if (refreshInfo?.added > 0 || refreshInfo?.fetched > 0) {
           if (!applyDisclosureStateFast()) requestChartRender(false);
         }
@@ -4195,7 +4180,7 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
     })
     .catch((error) => {
       setMessage(msgEl, [
-        `${name} 종목은 추가됐지만 로컬 DART 공시를 확인하지 못했습니다.`,
+        `${name} 종목은 추가됐지만 최신 DART 공시를 확인하지 못했습니다.`,
         error.message,
       ], true);
     })
@@ -5677,17 +5662,19 @@ async function runRuntimeDataRefresh(msgEl, options = {}) {
     .catch((error) => ({ info: [], warnings: [`공포탐욕 불러오기 오류: ${error.message}`] }));
 
   const dartTask = () => {
-    if (!canUseLocalDartServer()) return Promise.resolve({ info: [], warnings: [], refreshed: false });
-    return refreshDartDisclosuresForVisibleTickersFromApi("local", {
+    if (!forceNetwork || !canUseDartGateway()) {
+      return Promise.resolve({ info: [], warnings: [], refreshed: false });
+    }
+    return refreshDartDisclosuresForVisibleTickersFromApi("gateway", {
       forceNetwork,
       signal,
     }).then((result) => ({
-      info: result.fetched > 0 ? [`로컬 DART 공시 ${result.fetched}건 확인`] : [],
+      info: result.fetched > 0 ? [`DART 공시 ${result.fetched}건 확인`] : [],
       warnings: result.failed || [],
       refreshed: result.fetched > 0,
     })).catch((error) => ({
       info: [],
-      warnings: [`로컬 DART 공시 오류: ${error.message}`],
+      warnings: [`DART 공시 오류: ${error.message}`],
       refreshed: false,
     }));
   };

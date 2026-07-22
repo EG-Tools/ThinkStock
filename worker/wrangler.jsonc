@@ -1,0 +1,20 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "thinkstock",
+  "main": "src/index.mjs",
+  "compatibility_date": "2026-07-22",
+  "workers_dev": true,
+  "preview_urls": true,
+  "secrets": {
+    "required": [
+      "DART_API_KEY",
+      "THINKSTOCK_ACCESS_TOKEN"
+    ]
+  },
+  "kv_namespaces": [
+    {
+      "binding": "DISCLOSURE_CACHE",
+      "id": "e9fbb955e3824421963ff9127cfbb357"
+    }
+  ]
+}

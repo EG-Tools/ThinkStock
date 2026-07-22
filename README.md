@@ -8,15 +8,14 @@ ThinkStock ships in two modes from the same repository.
 - GitHub Pages should be configured to use `GitHub Actions`.
 
 ## 2. DART disclosures
-- GitHub Pages receives market-wide important disclosures during the scheduled Actions build.
-- Public disclosure data can therefore be used when the home PC is off or the phone is outside the home network.
-- Newly published disclosures can appear after the next Pages deployment (normally within six hours).
-- Put `DART_API_KEY=...` in `/.env.local`.
-- Double-click `run_local_pages.bat` to open `http://127.0.0.1:8787`.
-- The local server uses the repository's Node.js runtime and does not require Python.
-- A phone on the same Wi-Fi can open the private-network address printed in the server window.
-- In the installed iOS app, save that address under API settings as the iPhone PC address.
-- DART keys stay on the PC. Per-ticker disclosures are cached on both the PC and browser.
+- The Pages build keeps the last deployed disclosure snapshot as an offline fallback.
+- Adding a stock checks only that stock once through the private Cloudflare Worker.
+- Manual refresh checks only Korean stocks whose chart toggles are currently on.
+- App startup and scheduled Pages builds do not request market-wide DART disclosures.
+- The DART key is stored as the Worker's `DART_API_KEY` secret and is never sent to the browser.
+- Store the same `THINKSTOCK_ACCESS_TOKEN` in the Worker and once in each device's API settings.
+- Per-ticker results are shared through Cloudflare KV and retained in each browser's IndexedDB cache.
+- Worker source and deployment configuration live in `worker/`; deploy with `npm run worker:deploy`.
 
 ## 3. Full Streamlit app
 - Entrypoint: `app.py` or `streamlit_app.py`
@@ -57,4 +56,4 @@ ThinkStock ships in two modes from the same repository.
   - `KOSIS_API_KEY=...`
   - `KRX_API_KEY=...`
   - `ECOS_API_KEY=...`
-- GitHub Pages builds use GitHub Secrets for public market, macro, and market-wide DART disclosure data.
+- GitHub Pages builds use GitHub Secrets for market and macro data. DART refreshes run only through the private Worker.

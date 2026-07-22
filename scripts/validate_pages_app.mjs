@@ -82,6 +82,8 @@ const requiredIds = [
   "disclosureToggle",
   "refreshData",
   "apiSettingsModal",
+  "dartGatewayTokenInput",
+  "dartGatewayTokenSaveBtn",
   "performanceDiagnosticsBtn",
   "performanceDiagnosticsPanel",
   "performanceDiagnosticsSummary",
@@ -185,8 +187,10 @@ assert.ok(!app.includes("ecos.bok.or.kr/api/") && !app.includes("kosis.kr/openap
   "ECOS or KOSIS is still called directly from the browser");
 assert.ok(!app.includes("ecosApiKey") && !app.includes("kosisApiKey") && !app.includes("apiSettings."),
   "server-refreshed API keys must not remain in browser storage");
-assert.ok(!html.includes('type="password"') && !html.includes("dartProxyEnabledInput"),
-  "server-refreshed API keys must not be requested in the browser");
+assert.ok(html.includes('id="dartGatewayTokenInput" type="password"')
+  && !html.includes("dartProxyEnabledInput")
+  && !html.includes("DART API 키"),
+"only the private gateway access token may be requested in the browser");
 assert.ok(deployWorkflow.includes("KOSIS_API_KEY: ${{ secrets.KOSIS_API_KEY }}")
   && buildPagesData.includes("fetch_kosis_leading_cycle")
   && providerContracts.includes("def kosis_rows("),
@@ -331,8 +335,9 @@ assert.ok(deployWorkflow.includes("actions/checkout@v6")
   "GitHub Actions are not on the Node 24 compatible majors");
 assert.ok(deployWorkflow.includes("--requirement requirements-pages.txt"),
   "Pages build dependencies are not installed from the lock file");
-assert.ok(deployWorkflow.includes('cron: "35 3 * * 0"'), "weekly full Pages data rebuild is missing");
-assert.ok(deployWorkflow.includes("PAGES_FULL_REBUILD:"), "Pages full rebuild mode is not configured");
+assert.ok(!deployWorkflow.includes("DART_API_KEY:")
+  && deployWorkflow.includes('PAGES_FULL_REBUILD: "0"'),
+"scheduled Pages builds must not perform full-market DART refreshes");
 assert.ok(deployWorkflow.includes('cache: "pip"'), "Python dependency caching is missing");
 assert.ok(deployWorkflow.includes("Publish Data Build Health"), "Pages data health summary is missing");
 assert.ok(deployWorkflow.includes("validate-web:")

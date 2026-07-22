@@ -81,15 +81,15 @@
           <h2 id="apiSettingsTitle">API 설정</h2>
           <button id="apiSettingsCloseBtn" class="api-close-btn" type="button" aria-label="닫기">×</button>
         </header>
-        <p class="api-settings-help">공개 공시는 GitHub 배포 데이터에서 종목별로 불러오며 화면이 열린 뒤 표시될 수 있습니다.</p>
-        <p class="api-settings-note">로컬 서버를 실행하면 최신 공시를 즉시 확인할 수 있습니다. DART 키는 .env.local에만 보관되며 브라우저로 전달되지 않습니다.</p>
+        <p class="api-settings-help">공시는 종목을 추가하거나 새로고침할 때 켜진 종목만 최신 상태를 확인합니다.</p>
+        <p class="api-settings-note">DART 원본 키는 Cloudflare에 안전하게 보관됩니다. 아래 개인 접속 코드는 이 기기에만 저장됩니다.</p>
         <div class="api-local-server-field">
-          <label for="localDartServerInput">iPhone 앱용 PC 주소</label>
+          <label for="dartGatewayTokenInput">DART 개인 접속 코드</label>
           <div class="api-local-server-row">
-            <input id="localDartServerInput" type="url" inputmode="url" autocomplete="off" placeholder="http://192.168.0.10:8787">
-            <button id="localDartServerSaveBtn" class="api-action-btn" type="button">저장</button>
+            <input id="dartGatewayTokenInput" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="개인 접속 코드">
+            <button id="dartGatewayTokenSaveBtn" class="api-action-btn" type="button">저장</button>
           </div>
-          <small>Safari로 PC 주소에 직접 접속할 때는 비워 두어도 됩니다.</small>
+          <small>PC와 iPhone에 각각 한 번만 저장하면 됩니다.</small>
         </div>
         <div class="api-settings-actions">
           <button id="performanceDiagnosticsBtn" class="api-action-btn" type="button">앱 상태 보기</button>
@@ -104,7 +104,7 @@
           <button id="performanceDiagnosticsClearBtn" class="diagnostics-clear-btn" type="button">이전 기록 지우기</button>
         </section>
         <p class="api-settings-meta">
-          Version : <span id="appVersionText">1.07</span><br>
+          Version : <span id="appVersionText">1.08</span><br>
           회사명 : Life User<br>
           이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a>
         </p>

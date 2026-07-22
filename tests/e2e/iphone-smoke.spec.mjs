@@ -191,7 +191,10 @@ async function installDataRoutes(page) {
     await route.fulfill({ json: {
       format: "stock-to-corp-shard-v1",
       prefix: "00",
-      codes: { "005930": "00126380" },
+      codes: {
+        "005930": "00126380",
+        "000660": "00164779",
+      },
     } });
   });
   await page.route("**/api/dart/disclosures?*", async (route) => {
@@ -210,10 +213,10 @@ async function installDataRoutes(page) {
   return () => historyRequests;
 }
 
-test("new stock loads its own local DART disclosures", async ({ page }) => {
+test("new stock loads its own Cloudflare DART disclosures", async ({ page }) => {
   await installDataRoutes(page);
   await page.addInitScript(() => {
-    localStorage.setItem("thinkstock-local-dart-server-v1", "http://127.0.0.1:8787");
+    localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "e2e-token" }));
   });
   let requestedNewStockDisclosure = false;
   await page.route("**/api/dart/disclosures?*", async (route) => {
@@ -261,10 +264,10 @@ test("new stock loads its own local DART disclosures", async ({ page }) => {
   await expect(page.locator("#chart .textpoint text").filter({ hasText: "◆" }).first()).toBeVisible();
 });
 
-test("new stock loads its deployed disclosure file without a local server", async ({ page }) => {
+test("new stock loads its deployed disclosure file without a gateway token", async ({ page }) => {
   await installDataRoutes(page);
   let requestedStaticDisclosure = false;
-  let localApiRequests = 0;
+  let gatewayApiRequests = 0;
   await page.route("**/data/disclosures.json*", async (route) => {
     await route.fulfill({ json: {
       generated_at: "2026-07-21T00:00:00Z",
@@ -292,7 +295,7 @@ test("new stock loads its deployed disclosure file without a local server", asyn
     } });
   });
   await page.route("**/api/dart/disclosures?*", async (route) => {
-    localApiRequests += 1;
+    gatewayApiRequests += 1;
     await route.abort();
   });
   await page.route("https://query2.finance.yahoo.com/v8/finance/chart/000660.KS**", async (route) => {
@@ -315,7 +318,7 @@ test("new stock loads its deployed disclosure file without a local server", asyn
 
   await expect.poll(() => requestedStaticDisclosure).toBe(true);
   await expect(page.locator("#chart .textpoint text").filter({ hasText: "◆" }).first()).toBeVisible();
-  expect(localApiRequests).toBe(0);
+  expect(gatewayApiRequests).toBe(0);
 });
 
 test("bundled recent data boots through the chart worker", async ({ page }) => {

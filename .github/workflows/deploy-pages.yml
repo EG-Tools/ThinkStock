@@ -7,7 +7,6 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "20 */6 * * *"
-    - cron: "35 3 * * 0"
 
 permissions:
   contents: read
@@ -38,18 +37,18 @@ jobs:
         run: npm test
 
       - name: Cache WebKit Browser
-        if: github.event_name != 'schedule' || github.event.schedule == '35 3 * * 0'
+        if: github.event_name != 'schedule'
         uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
           key: playwright-webkit-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
 
       - name: Install WebKit Test Dependencies
-        if: github.event_name != 'schedule' || github.event.schedule == '35 3 * * 0'
+        if: github.event_name != 'schedule'
         run: npx playwright install --with-deps webkit
 
       - name: Test Safari and iPhone WebKit Interactions
-        if: github.event_name != 'schedule' || github.event.schedule == '35 3 * * 0'
+        if: github.event_name != 'schedule'
         run: npm run test:webkit
 
   build:
@@ -103,9 +102,8 @@ jobs:
           KOSIS_API_KEY: ${{ secrets.KOSIS_API_KEY }}
           KOFIA_API_KEY: ${{ secrets.KOFIA_API_KEY }}
           KRX_API_KEY: ${{ secrets.KRX_API_KEY }}
-          DART_API_KEY: ${{ secrets.DART_API_KEY }}
           ENABLE_FREESIS_CREDIT_TAIL: "1"
-          PAGES_FULL_REBUILD: ${{ (github.event_name == 'workflow_dispatch' || github.event.schedule == '35 3 * * 0') && '1' || '0' }}
+          PAGES_FULL_REBUILD: "0"
         run: python scripts/build_pages_data.py
 
       - name: Publish Data Build Health
