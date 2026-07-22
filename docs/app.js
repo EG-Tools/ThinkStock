@@ -57,6 +57,9 @@ if (!mainChartRenderer) throw new Error("Main chart renderer module failed to lo
 const aiForecastModule = globalThis.ThinkStockAiForecast;
 if (!aiForecastModule) throw new Error("AI forecast module failed to load");
 const { buildForecast: buildAiForecast, isForecastSeries } = aiForecastModule;
+const macdOscillatorModule = globalThis.ThinkStockMacdOscillator;
+if (!macdOscillatorModule) throw new Error("MACD oscillator module failed to load");
+const { buildMacdOscillator, thinMacdPoints } = macdOscillatorModule;
 const performanceMonitorModule = globalThis.ThinkStockPerformanceMonitor;
 if (!performanceMonitorModule) throw new Error("Performance monitor module failed to load");
 const performanceMonitor = performanceMonitorModule.createPerformanceMonitor(globalThis);
@@ -101,6 +104,7 @@ const DISPLAY_NAMES = {
 const ADR_SERIES = ["adr_kospi", "adr_kosdaq"];
 const FEAR_GREED_SERIES = ["fear_greed"];
 const NEWS_SENTIMENT_SERIES = ["news_sentiment"];
+const MACD_STOCK_PATTERN = /^\d{6}\.(KS|KQ)$/;
 const SUPPLEMENTAL_SERIES = [...ADR_SERIES, ...FEAR_GREED_SERIES, ...NEWS_SENTIMENT_SERIES];
 const CORE_SERIES = ["leading_cycle", "^KS11", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit"];
 const BASE_SERIES_PRIORITY = [...CORE_SERIES, ...SUPPLEMENTAL_SERIES];
@@ -153,7 +157,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.12";
+const APP_VERSION = "1.13";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -408,6 +412,11 @@ let showAiForecast = false;
 let lastAiForecastTraceCount = 0;
 let aiConsensusByTicker = new Map();
 let aiConsensusPromises = new Map();
+let showMacdOscillator = false;
+let lastMacdTraceCount = 0;
+let lastMacdRenderKey = "";
+let macdModelCache = new Map();
+let macdHandlerSet = false;
 let isHandleDragging = false;
 let pinnedXRange = null;
 let hoverSyncing = false;
@@ -419,7 +428,7 @@ let deferredRenderTimer = 0;
 let pendingDeferredRenderPreserveZoom = true;
 let handleUpdateTimer = 0;
 let viewportSyncTimer = 0;
-let pendingViewportSync = null;
+let pendingViewportSync = new Map();
 let disclosureHoverTimer = 0;
 let pendingDisclosureHoverData = null;
 let disclosureGroupStore = new Map();
@@ -602,6 +611,7 @@ function saveState() {
       hoverShowPopup,
       showDisclosures,
       showAiForecast,
+      showMacdOscillator,
     }));
   } catch (_) {}
 }
@@ -622,6 +632,7 @@ function loadState() {
     if (typeof p.hoverShowPopup === "boolean") hoverShowPopup = p.hoverShowPopup;
     if (typeof p.showDisclosures === "boolean") showDisclosures = p.showDisclosures;
     if (typeof p.showAiForecast === "boolean") showAiForecast = p.showAiForecast;
+    if (typeof p.showMacdOscillator === "boolean") showMacdOscillator = p.showMacdOscillator;
     if (Array.isArray(p.customStocks)) customStocks = sanitizeCustomStocks(p.customStocks);
     applyCustomStockDisplayNames();
   } catch (_) {}
@@ -1464,8 +1475,9 @@ function showCursorLine(el, localX) {
 
 function applySyncedCursor(xValue, sourceEl, sourceClientX, sourceLocalX = null) {
   const mainEl = document.getElementById("chart");
+  const macdEl = document.getElementById("chart-macd");
   const adrEl = document.getElementById("chart-adr");
-  const targets = [mainEl, adrEl].filter(Boolean);
+  const targets = [mainEl, macdEl, adrEl].filter((el) => el && !el.hidden);
   if (!targets.length) return;
   if (xValue == null) {
     targets.forEach((el) => hideCursorLine(el));
@@ -1519,6 +1531,7 @@ function applySyncedXRangeMs(startMs, endMs) {
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return;
 
   const mainEl = document.getElementById("chart");
+  const macdEl = document.getElementById("chart-macd");
   const adrEl = document.getElementById("chart-adr");
   const r0 = new Date(startMs).toISOString();
   const r1 = new Date(endMs).toISOString();
@@ -1529,6 +1542,9 @@ function applySyncedXRangeMs(startMs, endMs) {
   const tasks = [];
   if (mainEl?.data) {
     tasks.push(Plotly.relayout(mainEl, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 }));
+  }
+  if (macdEl?.data && !macdEl.hidden) {
+    tasks.push(Plotly.relayout(macdEl, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 }));
   }
   if (adrEl?.data) {
     tasks.push(Plotly.relayout(adrEl, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 }));
@@ -1549,32 +1565,33 @@ function scheduleHandleUpdate(delay = HANDLE_UPDATE_DEBOUNCE_MS) {
 
 function scheduleViewportRangeSync(targetEl, payload) {
   if (!targetEl?.data || !payload) return;
-  pendingViewportSync = { targetEl, payload };
+  pendingViewportSync.set(targetEl.id || String(pendingViewportSync.size), { targetEl, payload });
   if (viewportSyncTimer) clearTimeout(viewportSyncTimer);
   viewportSyncTimer = setTimeout(() => {
-    const pending = pendingViewportSync;
-    pendingViewportSync = null;
+    const pending = [...pendingViewportSync.values()];
+    pendingViewportSync.clear();
     viewportSyncTimer = 0;
-    if (!pending?.targetEl?.data) return;
-
-    const { targetEl: el, payload: nextPayload } = pending;
-    const r0 = nextPayload["xaxis.range[0]"];
-    const r1 = nextPayload["xaxis.range[1]"];
-    if (r0 != null && r1 != null && xRangeMatches(el, r0, r1)) return;
+    const tasks = pending.map(({ targetEl: el, payload: nextPayload }) => {
+      if (!el?.data) return null;
+      const r0 = nextPayload["xaxis.range[0]"];
+      const r1 = nextPayload["xaxis.range[1]"];
+      if (r0 != null && r1 != null && xRangeMatches(el, r0, r1)) return null;
+      try {
+        return Promise.resolve(Plotly.relayout(el, nextPayload))
+          .catch(() => {})
+          .finally(() => {
+            if (el.id === "chart") scheduleHandleUpdate(40);
+          });
+      } catch (_) {
+        return null;
+      }
+    }).filter(Boolean);
+    if (!tasks.length) return;
 
     chartSyncing = true;
-    let task = null;
-    try {
-      task = Plotly.relayout(el, nextPayload);
-    } catch (_) {
-      chartSyncing = false;
-      return;
-    }
-    Promise.resolve(task)
-      .catch(() => {})
+    Promise.allSettled(tasks)
       .finally(() => {
         chartSyncing = false;
-        if (el.id === "chart") scheduleHandleUpdate(40);
       });
   }, VIEWPORT_SYNC_DEBOUNCE_MS);
 }
@@ -1889,6 +1906,7 @@ function beginLineOffsetDrag(el, target, startClientY, pointerId) {
 
 function bindCursorMoveSync() {
   const mainEl = document.getElementById("chart");
+  const macdEl = document.getElementById("chart-macd");
   const adrEl = document.getElementById("chart-adr");
   let disclosurePointerDown = null;
   if (!mainEl || !adrEl) return;
@@ -1978,6 +1996,7 @@ function bindCursorMoveSync() {
     resetDisclosureHoverHighlight(mainEl);
     scheduleSyncedCursor(null);
     clearHoverOnChart(mainEl);
+    clearHoverOnChart(macdEl);
     clearHoverOnChart(adrEl);
   };
 
@@ -2172,7 +2191,7 @@ function bindCursorMoveSync() {
     onLeave();
   };
 
-  [mainEl, adrEl].forEach((chartEl) => {
+  [mainEl, macdEl, adrEl].filter(Boolean).forEach((chartEl) => {
     chartEl.addEventListener("pointerdown", onPointerDown, { passive: false });
     chartEl.addEventListener("pointermove", onPointerMove, { passive: false });
     chartEl.addEventListener("pointerleave", onLeave);
@@ -2248,6 +2267,10 @@ function applySeriesVisibilityFast(seriesKey) {
         return;
       }
       updateHandles();
+      if (showMacdOscillator) {
+        lastMacdRenderKey = "";
+        renderMacdChart(el._fullLayout?.xaxis?.range?.slice() || null).catch(() => {});
+      }
       scheduleLastRuntimeSnapshotSave();
     })
     .catch(() => requestChartRender());
@@ -3964,6 +3987,19 @@ function syncAiForecastToggleButton(traceCount = lastAiForecastTraceCount) {
     : "6개월 AI 가상 흐름 (투자 판단용 아님)";
 }
 
+function syncMacdToggleButton(traceCount = lastMacdTraceCount) {
+  const button = document.getElementById("macdToggle");
+  if (!button) return;
+  const count = Number(traceCount) || 0;
+  button.classList.toggle("is-active", showMacdOscillator);
+  button.setAttribute("aria-pressed", showMacdOscillator ? "true" : "false");
+  button.title = showMacdOscillator
+    ? (count > 0
+      ? `MACD 오실레이터 켜짐 - ${count}개 종목 (12·26·9)`
+      : "표시 중인 종목에 MACD 계산용 가격 이력이 부족합니다.")
+    : "종목별 MACD 오실레이터 (12·26·9)";
+}
+
 function mergeDisclosureRows(existingRows, incomingRows) {
   return disclosureDataService.mergeRows(existingRows, incomingRows);
 }
@@ -4337,6 +4373,7 @@ function buildAiForecastTraces(rows, seriesModels) {
   (seriesModels || []).forEach((model) => {
     const series = String(model?.series || "").toUpperCase();
     if (!isForecastSeries(series) || hiddenSeries.has(series)) return;
+    const macdModel = getMacdModelForSeries(series);
     const forecast = buildAiForecast({
       series,
       dates: model.xValues,
@@ -4346,6 +4383,7 @@ function buildAiForecastTraces(rows, seriesModels) {
       auxiliaryRows: adrRows,
       disclosures: disclosureRows,
       consensus: aiConsensusByTicker.get(series) || null,
+      macdSignal: macdModel?.signal || 0,
       horizon: 126,
     });
     if (!forecast) return;
@@ -4564,20 +4602,27 @@ async function renderChart(preserveZoom = true) {
       if (cursorSyncing && !hasRange && !hasAuto) return;
       scheduleHandleUpdate();
       // Sync main chart pan/zoom to ADR chart x-axis.
-      const adrEl = document.getElementById("chart-adr");
-      if (adrEl && adrEl.data) {
+      const syncedCharts = [
+        document.getElementById("chart-macd"),
+        document.getElementById("chart-adr"),
+      ].filter((target) => target?.data && !target.hidden);
+      if (syncedCharts.length) {
         const r0 = eventData["xaxis.range[0]"] ?? (Array.isArray(rangePair) ? rangePair[0] : null);
         const r1 = eventData["xaxis.range[1]"] ?? (Array.isArray(rangePair) ? rangePair[1] : null);
         if (r0 != null && r1 != null) {
           pinnedXRange = [r0, r1];
-          scheduleViewportRangeSync(adrEl, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 });
+          syncedCharts.forEach((target) => {
+            scheduleViewportRangeSync(target, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 });
+          });
         } else if (hasAuto) {
           pinnedXRange = null;
           const mainRange = el._fullLayout?.xaxis?.range?.slice();
           if (Array.isArray(mainRange) && mainRange.length === 2) {
-            scheduleViewportRangeSync(adrEl, { "xaxis.range[0]": mainRange[0], "xaxis.range[1]": mainRange[1] });
+            syncedCharts.forEach((target) => {
+              scheduleViewportRangeSync(target, { "xaxis.range[0]": mainRange[0], "xaxis.range[1]": mainRange[1] });
+            });
           } else {
-            scheduleViewportRangeSync(adrEl, { "xaxis.autorange": true });
+            syncedCharts.forEach((target) => scheduleViewportRangeSync(target, { "xaxis.autorange": true }));
           }
         }
       }
@@ -4587,13 +4632,17 @@ async function renderChart(preserveZoom = true) {
       if (!hoverShowPopup || hoverSyncing) return;
       const xValue = eventData?.points?.[0]?.x;
       if (!xValue) return;
+      const macdEl = document.getElementById("chart-macd");
       const adrEl = document.getElementById("chart-adr");
+      if (!macdEl?.hidden) syncHoverToChart(macdEl, xValue);
       syncHoverToChart(adrEl, xValue);
     });
     el.on("plotly_unhover", () => {
       resetDisclosureHoverHighlight(el);
       if (!hoverShowPopup || hoverSyncing) return;
+      const macdEl = document.getElementById("chart-macd");
       const adrEl = document.getElementById("chart-adr");
+      clearHoverOnChart(macdEl);
       clearHoverOnChart(adrEl);
     });
     el.on("plotly_click", (evtData) => {
@@ -4609,6 +4658,7 @@ async function renderChart(preserveZoom = true) {
 
   updateHandles();
   const mainRangeForAdr = el._fullLayout?.xaxis?.range?.slice() || (savedXRange ? [...savedXRange] : null);
+  renderMacdChart(mainRangeForAdr ? [...mainRangeForAdr] : null).catch(() => {});
   renderAdrChart(mainRangeForAdr ? [...mainRangeForAdr] : null);
   bindCursorMoveSync();
   recordPerfSample("renderChart", perfStartedAt, {
@@ -4619,6 +4669,185 @@ async function renderChart(preserveZoom = true) {
     cacheHit: lastMainChartModelCacheHit,
     modelSource: lastMainChartModelSource,
     renderMode,
+  });
+}
+
+function colorWithAlpha(color, alpha) {
+  const match = /^#([0-9a-f]{6})$/i.exec(String(color || ""));
+  if (!match) return color;
+  const value = Number.parseInt(match[1], 16);
+  return `rgba(${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255}, ${alpha})`;
+}
+
+function getMacdModelForSeries(series) {
+  const ticker = String(series || "").toUpperCase();
+  if (!MACD_STOCK_PATTERN.test(ticker)) return null;
+  const records = Array.isArray(pricePayload?.records) ? pricePayload.records : [];
+  const latest = records.at(-1);
+  const cacheKey = [
+    dataRevisionSignature("price"),
+    ticker,
+    records.length,
+    latest?.date || "",
+    latest?.[ticker] ?? "",
+  ].join("|");
+  if (macdModelCache.has(cacheKey)) return macdModelCache.get(cacheKey);
+
+  const model = buildMacdOscillator({
+    dates: records.map((row) => row?.date),
+    prices: records.map((row) => row?.[ticker]),
+  });
+  macdModelCache.set(cacheKey, model);
+  while (macdModelCache.size > 40) macdModelCache.delete(macdModelCache.keys().next().value);
+  return model;
+}
+
+async function renderMacdChart(xRange) {
+  const perfStartedAt = startPerfSample();
+  const el = document.getElementById("chart-macd");
+  if (!el) return;
+  if (!showMacdOscillator) {
+    el.hidden = true;
+    lastMacdTraceCount = 0;
+    syncMacdToggleButton(0);
+    return;
+  }
+
+  el.hidden = false;
+  const visibleSeries = (currentMainChartModel?.seriesModels || [])
+    .map((model) => String(model?.series || "").toUpperCase())
+    .filter((series) => MACD_STOCK_PATTERN.test(series) && !hiddenSeries.has(series));
+  const renderKey = [
+    activeMonths,
+    hoverShowPopup ? 1 : 0,
+    dataRevisionSignature("price"),
+    visibleSeries.join(","),
+  ].join("::");
+  if (lastMacdRenderKey === renderKey && el.data?.length) {
+    if (Array.isArray(xRange) && xRange.length === 2 && !xRangeMatches(el, xRange[0], xRange[1])) {
+      scheduleViewportRangeSync(el, { "xaxis.range[0]": xRange[0], "xaxis.range[1]": xRange[1] });
+    }
+    return;
+  }
+
+  const width = Math.max(320, el.getBoundingClientRect?.().width || 900);
+  const pointBudget = Math.max(320, Math.min(1400, Math.round(width * 1.35)));
+  const traces = [];
+  const allValues = [];
+  visibleSeries.forEach((series) => {
+    const model = getMacdModelForSeries(series);
+    if (!model) return;
+    const displayDates = [];
+    const displayValues = [];
+    model.dates.forEach((date, index) => {
+      if ((currentStart && date < currentStart) || (currentEnd && date > currentEnd)) return;
+      const value = model.normalized[index];
+      if (!Number.isFinite(value)) return;
+      displayDates.push(date);
+      displayValues.push(value);
+    });
+    if (!displayValues.length) return;
+    const thinned = thinMacdPoints(displayDates, displayValues, pointBudget);
+    const baseColor = seriesColor(series);
+    allValues.push(...thinned.values.filter(Number.isFinite));
+    traces.push({
+      x: thinned.dates,
+      y: thinned.values,
+      type: "bar",
+      name: `${labelName(series)} MACD`,
+      marker: {
+        color: thinned.values.map((value) => (
+          value >= 0 ? colorWithAlpha(baseColor, 0.82) : colorWithAlpha(baseColor, 0.3)
+        )),
+        line: { width: 0 },
+      },
+      opacity: visibleSeries.length > 1 ? 0.72 : 0.9,
+      hoverinfo: hoverShowPopup ? undefined : "skip",
+      hovertemplate: hoverShowPopup
+        ? "%{x|%Y.%-m.%-d}<br>오실레이터 %{y:.3f}%<extra>%{fullData.name}</extra>"
+        : undefined,
+      meta: { macdSeriesKey: series, macdSignal: model.signal },
+    });
+  });
+
+  lastMacdTraceCount = traces.length;
+  syncMacdToggleButton(traces.length);
+  const maxAbs = allValues.length
+    ? Math.max(0.02, ...allValues.map((value) => Math.abs(value)))
+    : 1;
+  const layout = {
+    paper_bgcolor: "transparent",
+    plot_bgcolor: "#111111",
+    margin: { l: 42, r: 42, t: 34, b: 30 },
+    hovermode: hoverShowPopup ? "x unified" : false,
+    showlegend: traces.length > 0,
+    legend: {
+      orientation: "h", x: 0.5, y: 1.18, xanchor: "center",
+      font: { color: "rgba(255,255,255,0.72)", size: 10 },
+    },
+    barmode: "overlay",
+    bargap: 0,
+    shapes: [{
+      type: "line", xref: "paper", yref: "y",
+      x0: 0, x1: 1, y0: 0, y1: 0,
+      line: { color: "rgba(255,255,255,0.42)", width: 1, dash: "dot" },
+    }],
+    annotations: traces.length ? [] : [{
+      xref: "paper", yref: "paper", x: 0.5, y: 0.5,
+      text: "표시 중인 종목의 MACD 이력이 부족합니다.",
+      showarrow: false,
+      font: { color: "rgba(255,255,255,0.55)", size: 11 },
+    }],
+    xaxis: {
+      showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1,
+      zeroline: false, color: "#666", tickfont: { size: 9 }, fixedrange: false,
+      showspikes: false, hoverformat: "%Y.%-m.%-d",
+      ...(Array.isArray(xRange) && xRange.length === 2 ? { range: xRange } : {}),
+    },
+    yaxis: {
+      showgrid: true, gridcolor: "rgba(255,255,255,0.055)", gridwidth: 1,
+      zeroline: false, color: "#777", tickfont: { size: 9 }, ticksuffix: "%",
+      tickformat: ".2f", fixedrange: true, range: [-maxAbs * 1.08, maxAbs * 1.08],
+    },
+    font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
+    hoverlabel: plotlyHoverLabel(11),
+    dragmode: false,
+  };
+
+  await Plotly.react(el, traces, layout, PLOTLY_CONFIG);
+  lastMacdRenderKey = renderKey;
+  if (!macdHandlerSet) {
+    el.on("plotly_relayout", (eventData) => {
+      if (chartSyncing) return;
+      const rangePair = Array.isArray(eventData["xaxis.range"]) ? eventData["xaxis.range"] : null;
+      const r0 = eventData["xaxis.range[0]"] ?? rangePair?.[0];
+      const r1 = eventData["xaxis.range[1]"] ?? rangePair?.[1];
+      if (r0 == null || r1 == null) return;
+      pinnedXRange = [r0, r1];
+      [document.getElementById("chart"), document.getElementById("chart-adr")]
+        .filter((target) => target?.data)
+        .forEach((target) => scheduleViewportRangeSync(target, {
+          "xaxis.range[0]": r0,
+          "xaxis.range[1]": r1,
+        }));
+    });
+    el.on("plotly_hover", (eventData) => {
+      if (!hoverShowPopup || hoverSyncing) return;
+      const xValue = eventData?.points?.[0]?.x;
+      if (!xValue) return;
+      syncHoverToChart(document.getElementById("chart"), xValue);
+      syncHoverToChart(document.getElementById("chart-adr"), xValue);
+    });
+    el.on("plotly_unhover", () => {
+      if (!hoverShowPopup || hoverSyncing) return;
+      clearHoverOnChart(document.getElementById("chart"));
+      clearHoverOnChart(document.getElementById("chart-adr"));
+    });
+    macdHandlerSet = true;
+  }
+  recordPerfSample("renderMacdChart", perfStartedAt, {
+    traces: traces.length,
+    points: traces.reduce((sum, trace) => sum + (trace.x?.length || 0), 0),
   });
 }
 
@@ -5065,20 +5294,29 @@ async function renderAdrChart(xRange) {
       if (chartSyncing) return;
       if (cursorSyncing && !hasRange && !hasAuto) return;
       scheduleHandleUpdate();
-      const mainEl = document.getElementById("chart");
-      if (mainEl && mainEl.data) {
+      const syncedCharts = [
+        document.getElementById("chart"),
+        document.getElementById("chart-macd"),
+      ].filter((target) => target?.data && !target.hidden);
+      if (syncedCharts.length) {
         const r0 = eventData["xaxis.range[0]"] ?? (Array.isArray(rangePair) ? rangePair[0] : null);
         const r1 = eventData["xaxis.range[1]"] ?? (Array.isArray(rangePair) ? rangePair[1] : null);
         if (r0 != null && r1 != null) {
           pinnedXRange = [r0, r1];
-          scheduleViewportRangeSync(mainEl, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 });
+          syncedCharts.forEach((target) => scheduleViewportRangeSync(target, {
+            "xaxis.range[0]": r0,
+            "xaxis.range[1]": r1,
+          }));
         } else if (hasAuto) {
           pinnedXRange = null;
           const adrRange = el._fullLayout?.xaxis?.range?.slice();
           if (Array.isArray(adrRange) && adrRange.length === 2) {
-            scheduleViewportRangeSync(mainEl, { "xaxis.range[0]": adrRange[0], "xaxis.range[1]": adrRange[1] });
+            syncedCharts.forEach((target) => scheduleViewportRangeSync(target, {
+              "xaxis.range[0]": adrRange[0],
+              "xaxis.range[1]": adrRange[1],
+            }));
           } else {
-            scheduleViewportRangeSync(mainEl, { "xaxis.autorange": true });
+            syncedCharts.forEach((target) => scheduleViewportRangeSync(target, { "xaxis.autorange": true }));
           }
         }
       }
@@ -5088,12 +5326,16 @@ async function renderAdrChart(xRange) {
       const xValue = eventData?.points?.[0]?.x;
       if (!xValue) return;
       const mainEl = document.getElementById("chart");
+      const macdEl = document.getElementById("chart-macd");
       syncHoverToChart(mainEl, xValue);
+      if (!macdEl?.hidden) syncHoverToChart(macdEl, xValue);
     });
     el.on("plotly_unhover", () => {
       if (!hoverShowPopup || hoverSyncing) return;
       const mainEl = document.getElementById("chart");
+      const macdEl = document.getElementById("chart-macd");
       clearHoverOnChart(mainEl);
+      clearHoverOnChart(macdEl);
     });
     adrHandlerSet = true;
   }
@@ -5944,6 +6186,7 @@ async function boot() {
   syncApiOptionsButton();
   renderAppVersionLabel();
   syncAiForecastToggleButton();
+  syncMacdToggleButton();
   bindRuntimeSnapshotExitSave();
   scheduleGranularCacheCleanup();
   setStartupLoaderProgress(10, "Preparing");
@@ -5996,12 +6239,22 @@ async function boot() {
       requestChartRender(false);
       if (showAiForecast) refreshAiConsensusForVisibleSeries().catch(() => {});
     });
+    document.getElementById("macdToggle").addEventListener("click", () => {
+      showMacdOscillator = !showMacdOscillator;
+      saveState();
+      syncMacdToggleButton();
+      const mainRange = document.getElementById("chart")?._fullLayout?.xaxis?.range?.slice() || null;
+      renderMacdChart(mainRange).catch((err) => {
+        setMessage(msgEl, err.message || "MACD 차트 렌더링 오류", true);
+      });
+    });
     if (showAiForecast) refreshAiConsensusForVisibleSeries().catch(() => {});
 
     appUiBindingsModule.bindHoverToggle({
       button: document.getElementById("hoverToggle"),
       chartElements: [
         document.getElementById("chart"),
+        document.getElementById("chart-macd"),
         document.getElementById("chart-adr"),
       ],
       getEnabled: () => hoverShowPopup,

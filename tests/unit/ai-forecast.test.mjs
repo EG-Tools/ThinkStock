@@ -89,3 +89,21 @@ test("weights reliable consensus direction into the context signal", () => {
   assert.ok(positive.consensus > 0.8);
   assert.ok(positive.combined > unavailable.combined);
 });
+
+test("uses MACD as a bounded part of the forecast technical signal", () => {
+  const dates = tradingDates(500);
+  const prices = dates.map((_, index) => 100 * Math.exp(
+    (index * 0.0002) + (Math.sin(index / 13) * 0.025),
+  ));
+  const chartValues = prices.map((price) => 70 + (price * 0.3));
+  const positive = buildForecast({
+    series: "218410.KQ", dates, prices, chartValues, macdSignal: 1,
+  });
+  const negative = buildForecast({
+    series: "218410.KQ", dates, prices, chartValues, macdSignal: -1,
+  });
+
+  assert.equal(positive.signals.macd, 1);
+  assert.equal(negative.signals.macd, -1);
+  assert.ok(positive.prices.at(-1) > negative.prices.at(-1));
+});

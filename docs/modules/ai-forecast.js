@@ -449,6 +449,8 @@
     const volatility = clamp(winsorizedDeviation(returns.slice(-63)) || 0.01, 0.003, 0.08);
     const momentum = momentumReturn(returns, volatility);
     const technical = rsiSignal(returns);
+    const macd = clamp(toNumber(options.macdSignal) || 0, -1, 1);
+    const technicalComposite = (technical * 0.65) + (macd * 0.35);
     const lastPoint = points.at(-1);
     const calibration = cachedForecastCalibration(ticker, points, returns, horizon);
     const signals = buildContextSignal(options, ticker, lastPoint.date, lastPoint.price);
@@ -464,7 +466,8 @@
     for (let index = 0; index < horizon; index += 1) {
       const pattern = patternPath[index];
       const trend = momentum * Math.exp(-index / 100);
-      const technicalBias = technical * volatility * 0.025 * historyConfidence * Math.exp(-index / 35);
+      const technicalBias = technicalComposite * volatility * 0.025
+        * historyConfidence * Math.exp(-index / 35);
       const contextBias = signals.combined * volatility * 0.018 * historyConfidence * Math.exp(-index / 150);
       const calibratedTrend = trend * calibration.trendMultiplier;
       const directionalTarget = (pattern === null
@@ -508,7 +511,7 @@
       chartValues: factors.map((factor) => (
         (transform.slope * lastPoint.price * factor) + transform.intercept + anchorCorrection
       )),
-      signals: { ...signals, technical },
+      signals: { ...signals, technical, macd },
       patternMatches: matches.length,
       historyDays: points.length,
       horizon,

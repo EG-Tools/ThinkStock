@@ -207,7 +207,20 @@ body {
   -webkit-backdrop-filter: blur(8px);
 }
 
-.chart-ai-btn.is-active {
+.chart-macd-btn {
+  position: absolute;
+  z-index: 120;
+  top: 82px;
+  left: 14px;
+  min-width: 48px;
+  padding: 5px 11px;
+  background: rgba(18, 18, 18, 0.78);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.chart-ai-btn.is-active,
+.chart-macd-btn.is-active {
   border-color: rgba(210, 210, 210, 0.72);
   background: rgba(170, 170, 170, 0.26);
   color: #f3f3f3;
@@ -729,7 +742,9 @@ body {
 }
 
 .chart-frame.chart-frame-adr .main-svg .legend,
-.chart-frame.chart-frame-adr .main-svg .legend * {
+.chart-frame.chart-frame-adr .main-svg .legend *,
+.chart-frame.chart-frame-macd .main-svg .legend,
+.chart-frame.chart-frame-macd .main-svg .legend * {
   cursor: pointer !important;
 }
 
@@ -768,6 +783,13 @@ body {
   min-height: 463px;
   max-height: 493px;
 }
+
+.chart-frame-macd {
+  min-height: 190px;
+  max-height: 250px;
+}
+
+.chart-frame-macd[hidden] { display: none !important; }
 
 .disclosure-popover {
   position: absolute;
@@ -1025,6 +1047,7 @@ body {
   .custom-stock-chip .series-toggle-btn { padding: 7px 32px 7px 8px; }
   .stock-remove-btn { width: 14px; height: 14px; font-size: 11px; right: 6px; }
   .chart-frame { border-radius: 22px; min-height: 350px; }
+  .chart-frame-macd { min-height: 175px; max-height: 225px; }
   .chart-frame-adr { min-height: 443px; max-height: 473px; }
   .api-settings-panel {
     width: calc(100vw - 12px);

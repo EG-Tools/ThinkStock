@@ -52,7 +52,9 @@
         <div id="chart" class="chart-frame"></div>
         <button id="resetHandles" class="reset-btn chart-reset-btn" type="button" title="차트 위치와 배율 초기화">리셋</button>
         <button id="aiForecastToggle" class="reset-btn chart-ai-btn" type="button" title="6개월 AI 가상 흐름 (투자 판단용 아님)" aria-pressed="false">AI</button>
+        <button id="macdToggle" class="reset-btn chart-macd-btn" type="button" title="종목별 MACD 오실레이터" aria-pressed="false">MACD</button>
       </div>
+      <div id="chart-macd" class="chart-frame chart-frame-macd" hidden></div>
       <div id="chart-adr" class="chart-frame chart-frame-adr"></div>
       <div class="range-row">
         <button class="range-btn" data-months="1">1M</button>
@@ -105,7 +107,7 @@
           <button id="performanceDiagnosticsClearBtn" class="diagnostics-clear-btn" type="button">이전 기록 지우기</button>
         </section>
         <p class="api-settings-meta">
-          Version : <span id="appVersionText">1.12</span><br>
+          Version : <span id="appVersionText">1.13</span><br>
           회사명 : Life User<br>
           이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a>
         </p>

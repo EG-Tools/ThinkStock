@@ -379,6 +379,42 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page }
   ))).toBe(0);
 });
 
+test("MACD toggle inserts a stock oscillator between the main and ADR charts", async ({ page }) => {
+  await stubExternalRefreshes(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      customStocks: [{
+        ticker: "005930.KS",
+        name: "삼성전자",
+        code: "005930",
+        market: "KOSPI",
+      }],
+    }));
+  });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await expect(page.locator("#chart-macd")).toBeHidden();
+
+  await page.locator("#macdToggle").click();
+  await expect(page.locator("#macdToggle")).toHaveClass(/is-active/);
+  await expect(page.locator("#chart-macd .main-svg").first()).toBeVisible();
+  await expect.poll(() => page.locator("#chart-macd").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.macdSeriesKey).length
+  ))).toBeGreaterThan(0);
+
+  const positions = await page.evaluate(() => ({
+    main: document.getElementById("chart").getBoundingClientRect().bottom,
+    macdTop: document.getElementById("chart-macd").getBoundingClientRect().top,
+    macdBottom: document.getElementById("chart-macd").getBoundingClientRect().bottom,
+    adr: document.getElementById("chart-adr").getBoundingClientRect().top,
+  }));
+  expect(positions.macdTop).toBeGreaterThanOrEqual(positions.main);
+  expect(positions.adr).toBeGreaterThanOrEqual(positions.macdBottom);
+
+  await page.locator("#macdToggle").click();
+  await expect(page.locator("#chart-macd")).toBeHidden();
+});
+
 test("macro refresh uses deployed data instead of browser ECOS or KOSIS requests", async ({ page }) => {
   let directMacroRequests = 0;
   await page.addInitScript(() => {
