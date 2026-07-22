@@ -19,6 +19,14 @@
     return Math.sqrt(mean(values.map((value) => (value - average) ** 2)));
   }
 
+  function winsorizedDeviation(values, trimRatio = 0.1) {
+    if (values.length < 10) return standardDeviation(values);
+    const sorted = [...values].sort((left, right) => left - right);
+    const low = sorted[Math.floor((sorted.length - 1) * trimRatio)];
+    const high = sorted[Math.ceil((sorted.length - 1) * (1 - trimRatio))];
+    return standardDeviation(values.map((value) => clamp(value, low, high)));
+  }
+
   function normalizedShape(values) {
     const average = mean(values);
     const deviation = standardDeviation(values) || 1;
@@ -176,6 +184,34 @@
     return weightTotal ? total / weightTotal : null;
   }
 
+  function buildAnalogWave(matches, returns, horizon) {
+    const matched = matches[0]?.future || [];
+    const fallbackLength = Math.min(126, returns.length);
+    const source = matched.some(Number.isFinite)
+      ? matched
+      : returns.slice(-fallbackLength);
+    const finite = source.filter(Number.isFinite);
+    if (finite.length < 2) return Array(horizon).fill(0);
+    const center = mean(finite);
+    return Array.from({ length: horizon }, (_, index) => {
+      const value = source[index % source.length];
+      return Number.isFinite(value) ? value - center : 0;
+    });
+  }
+
+  function calibrateForecastVolatility(values, targetVolatility) {
+    if (!values.length) return [];
+    const center = mean(values);
+    const deviation = standardDeviation(values);
+    const scale = deviation > 0 ? targetVolatility / deviation : 0;
+    const dailyLimit = Math.max(0.012, targetVolatility * 3.2);
+    return values.map((value) => clamp(
+      center + ((value - center) * scale),
+      -dailyLimit,
+      dailyLimit,
+    ));
+  }
+
   function fitChartTransform(points) {
     const pairs = points
       .filter((point) => Number.isFinite(point.price) && Number.isFinite(point.chart))
@@ -220,7 +256,7 @@
     const horizon = clamp(Math.round(Number(options.horizon) || DEFAULT_HORIZON), 20, 260);
     const windowSize = Math.min(63, Math.max(30, Math.floor(returns.length / 6)));
     const matches = findPatternMatches(returns, windowSize, horizon);
-    const volatility = clamp(standardDeviation(returns.slice(-63)) || 0.01, 0.003, 0.08);
+    const volatility = clamp(winsorizedDeviation(returns.slice(-63)) || 0.01, 0.003, 0.08);
     const momentum = clamp(
       (mean(returns.slice(-20)) * 0.5)
       + (mean(returns.slice(-60)) * 0.3)
@@ -232,21 +268,40 @@
     const lastPoint = points.at(-1);
     const signals = buildContextSignal(options, ticker, lastPoint.date, lastPoint.price);
     const historyConfidence = clamp((points.length - 60) / 192, 0.2, 1);
-    const factors = [1];
-    let cumulative = 0;
-    let smoothed = momentum;
+    const patternPath = Array.from({ length: horizon }, (_, index) => (
+      weightedPatternReturn(matches, index)
+    ));
+    const finitePatternReturns = patternPath.filter(Number.isFinite);
+    const patternCenter = finitePatternReturns.length ? mean(finitePatternReturns) : 0;
+    const analogWave = buildAnalogWave(matches, returns, horizon);
+    const candidateReturns = [];
+    let directionalReturn = momentum;
     for (let index = 0; index < horizon; index += 1) {
-      const pattern = weightedPatternReturn(matches, index);
+      const pattern = patternPath[index];
       const trend = momentum * Math.exp(-index / 100);
       const technicalBias = technical * volatility * 0.025 * historyConfidence * Math.exp(-index / 35);
       const contextBias = signals.combined * volatility * 0.018 * historyConfidence * Math.exp(-index / 150);
-      const raw = (pattern === null ? trend : ((pattern * 0.78) + (trend * 0.22)))
+      const directionalTarget = (pattern === null ? trend : ((pattern * 0.52) + (trend * 0.48)))
         + technicalBias
         + contextBias;
-      smoothed = (smoothed * 0.72) + (raw * 0.28);
-      cumulative = clamp(cumulative + clamp(smoothed, -volatility * 2.5, volatility * 2.5), Math.log(0.35), Math.log(2.5));
-      factors.push(Math.exp(cumulative));
+      directionalReturn = (directionalReturn * 0.84) + (directionalTarget * 0.16);
+      const ensembleWave = pattern === null ? 0 : pattern - patternCenter;
+      candidateReturns.push(
+        directionalReturn
+        + (analogWave[index] * 0.68)
+        + (ensembleWave * 0.22),
+      );
     }
+
+    const volatilityCeiling = ticker.startsWith("^") ? 0.025 : 0.04;
+    const projectedVolatility = clamp(volatility * 0.75, 0.003, volatilityCeiling);
+    const forecastReturns = calibrateForecastVolatility(candidateReturns, projectedVolatility);
+    const factors = [1];
+    let cumulative = 0;
+    forecastReturns.forEach((dailyReturn) => {
+      cumulative = clamp(cumulative + dailyReturn, Math.log(0.35), Math.log(2.5));
+      factors.push(Math.exp(cumulative));
+    });
 
     const transform = fitChartTransform(points);
     const lastChart = toNumber(lastPoint.chart);
@@ -264,6 +319,7 @@
       patternMatches: matches.length,
       historyDays: points.length,
       horizon,
+      projectedVolatility,
     };
   }
 
