@@ -6,12 +6,19 @@
   const FORECAST_SERIES_PATTERN = /^\d{6}\.(KS|KQ)$/;
   const BACKTEST_HORIZONS = [20, 63, 126];
   const BACKTEST_HORIZON_WEIGHTS = [0.2, 0.3, 0.5];
-  const STRATEGY_CANDIDATES = [
+  const BASE_STRATEGY_CANDIDATES = [
     { patternWeight: 0.52, trendMultiplier: 1, baseline: true },
     ...[0.35, 0.55, 0.75].flatMap((patternWeight) => (
       [-0.4, 0.3, 0.8, 1.25].map((trendMultiplier) => ({ patternWeight, trendMultiplier }))
     )),
   ];
+  const STRATEGY_CANDIDATES = BASE_STRATEGY_CANDIDATES.flatMap((candidate) => (
+    [0, 0.12, 0.22].map((cycleWeight) => ({
+      ...candidate,
+      cycleWeight,
+      baseline: candidate.baseline === true && cycleWeight === 0,
+    }))
+  ));
   const calibrationCache = new Map();
 
   const toNumber = (value) => (
@@ -315,6 +322,96 @@
     );
   }
 
+  function pearsonCorrelation(left, right) {
+    if (left.length !== right.length || left.length < 40) return null;
+    const leftMean = mean(left);
+    const rightMean = mean(right);
+    let covariance = 0;
+    let leftVariance = 0;
+    let rightVariance = 0;
+    for (let index = 0; index < left.length; index += 1) {
+      const leftDelta = left[index] - leftMean;
+      const rightDelta = right[index] - rightMean;
+      covariance += leftDelta * rightDelta;
+      leftVariance += leftDelta ** 2;
+      rightVariance += rightDelta ** 2;
+    }
+    const denominator = Math.sqrt(leftVariance * rightVariance);
+    return denominator > 0 ? covariance / denominator : null;
+  }
+
+  function cycleSignal(returns) {
+    const shortWindow = 63;
+    const longWindow = 252;
+    const signal = [];
+    let shortSum = 0;
+    let longSum = 0;
+    for (let index = 0; index < returns.length; index += 1) {
+      shortSum += returns[index];
+      longSum += returns[index];
+      if (index >= shortWindow) shortSum -= returns[index - shortWindow];
+      if (index >= longWindow) longSum -= returns[index - longWindow];
+      if (index >= longWindow - 1) signal.push(shortSum - (longSum * (shortWindow / longWindow)));
+    }
+    return signal;
+  }
+
+  function lagCorrelation(values, lag, maxPairs = null) {
+    if (lag < 1 || values.length < lag * 2) return null;
+    const pairCount = Math.min(values.length - lag, maxPairs || values.length);
+    const start = values.length - pairCount;
+    return pearsonCorrelation(
+      values.slice(start, start + pairCount),
+      values.slice(start - lag, start - lag + pairCount),
+    );
+  }
+
+  function detectMarketCycle(returns) {
+    const signal = cycleSignal(Array.isArray(returns) ? returns : []);
+    const minLag = 126;
+    const maxLag = Math.min(630, Math.floor(signal.length / 2));
+    if (maxLag < minLag) return null;
+
+    let best = null;
+    for (let lag = minLag; lag <= maxLag; lag += 5) {
+      const correlation = lagCorrelation(signal, lag);
+      const recentCorrelation = lagCorrelation(signal, lag, Math.min(signal.length - lag, 504));
+      if (!Number.isFinite(correlation) || !Number.isFinite(recentCorrelation)) continue;
+      const repeatCoverage = clamp(signal.length / (lag * 2.5), 0, 1);
+      const score = ((correlation * 0.58) + (recentCorrelation * 0.42)) * repeatCoverage;
+      if (!best || score > best.score) {
+        best = { lag, correlation, recentCorrelation, repeatCoverage, score };
+      }
+    }
+    // Searching many smooth lags can manufacture weak cycles, so only retain
+    // correlations above the empirical 99% random-walk threshold.
+    if (!best || best.correlation < 0.72 || best.recentCorrelation < 0.65 || best.score < 0.6) {
+      return null;
+    }
+    return {
+      tradingDays: best.lag,
+      years: best.lag / 252,
+      correlation: best.correlation,
+      recentCorrelation: best.recentCorrelation,
+      strength: clamp((best.score - 0.55) / 0.35, 0, 1),
+    };
+  }
+
+  function buildCycleReturnPath(returns, cycle, horizon) {
+    if (!cycle || cycle.tradingDays < horizon || returns.length < cycle.tradingDays + horizon) {
+      return Array(horizon).fill(0);
+    }
+    const start = returns.length - cycle.tradingDays;
+    const source = returns.slice(start, start + horizon);
+    const center = mean(source);
+    const volatility = clamp(winsorizedDeviation(returns.slice(-63)) || 0.01, 0.003, 0.08);
+    return Array.from({ length: horizon }, (_, index) => clamp(
+      (source[index] || 0) - center,
+      -volatility * 2.5,
+      volatility * 2.5,
+    ));
+  }
+
   function regimeFeatures(returns) {
     const recent = returns.slice(-63);
     const volatility = clamp(winsorizedDeviation(recent) || 0.01, 0.003, 0.08);
@@ -349,8 +446,11 @@
     const fallback = {
       patternWeight: 0.52,
       trendMultiplier: 1,
+      cycleWeight: 0,
       volatilityRatio: 0.75,
       samples: 0,
+      trainingSamples: 0,
+      validationSamples: 0,
       directionAccuracy: null,
       normalizedError: null,
       improvement: 0,
@@ -365,17 +465,10 @@
     for (let anchor = latestAnchor; anchor >= earliestAnchor && anchors.length < 14; anchor -= 42) {
       anchors.push(anchor);
     }
-    if (anchors.length < 5) return fallback;
+    if (anchors.length < 8) return fallback;
 
-    const candidateScores = STRATEGY_CANDIDATES.map((candidate) => ({
-      ...candidate,
-      error: 0,
-      hits: 0,
-      trials: 0,
-      weight: 0,
-    }));
     const volatilityRatios = [];
-    let validSamples = 0;
+    const samples = [];
     anchors.forEach((anchor) => {
       const history = returns.slice(0, anchor);
       const actualFuture = returns.slice(anchor, anchor + horizon);
@@ -395,6 +488,8 @@
       const trendPath = Array.from({ length: horizon }, (_, index) => (
         anchorMomentum * Math.exp(-index / 100)
       ));
+      const cycle = detectMarketCycle(history);
+      const cyclePath = buildCycleReturnPath(history, cycle, horizon);
       const historicalRegime = regimeFeatures(history);
       const similarity = regimeWeight(currentRegime, historicalRegime);
       const recency = Math.exp(-(latestAnchor - anchor) / (3 * 252));
@@ -406,58 +501,146 @@
           weight: sampleWeight,
         });
       }
+      samples.push({
+        actualFuture,
+        cyclePath,
+        cycleStrength: cycle?.strength || 0,
+        historyVolatility,
+        patternPath,
+        sampleWeight,
+        trendPath,
+      });
+    });
+    if (samples.length < 8) return fallback;
 
+    const validationCount = Math.min(5, Math.max(3, Math.floor(samples.length / 3)));
+    const candidateScores = STRATEGY_CANDIDATES.map((candidate) => ({
+      ...candidate,
+      trainingError: 0,
+      trainingHits: 0,
+      trainingTrials: 0,
+      trainingWeight: 0,
+      validationError: 0,
+      validationHits: 0,
+      validationTrials: 0,
+      validationWeight: 0,
+    }));
+    samples.forEach((sample, sampleIndex) => {
+      const group = sampleIndex < validationCount ? "validation" : "training";
       candidateScores.forEach((candidate) => {
         let weightedError = 0;
         BACKTEST_HORIZONS.forEach((endpoint, endpointIndex) => {
-          const actual = actualFuture.slice(0, endpoint).reduce((sum, value) => sum + value, 0);
-          const pattern = patternPath.slice(0, endpoint).reduce((sum, value) => sum + value, 0);
-          const trend = trendPath.slice(0, endpoint).reduce((sum, value) => sum + value, 0);
-          const predicted = (pattern * candidate.patternWeight)
+          const actual = sample.actualFuture.slice(0, endpoint)
+            .reduce((sum, value) => sum + value, 0);
+          const pattern = sample.patternPath.slice(0, endpoint)
+            .reduce((sum, value) => sum + value, 0);
+          const trend = sample.trendPath.slice(0, endpoint)
+            .reduce((sum, value) => sum + value, 0);
+          const cycleReturn = sample.cyclePath.slice(0, endpoint)
+            .reduce((sum, value) => sum + value, 0);
+          const basePrediction = (pattern * candidate.patternWeight)
             + (trend * candidate.trendMultiplier * (1 - candidate.patternWeight));
-          const scale = Math.max(0.01, historyVolatility * Math.sqrt(endpoint));
+          const cycleBlend = clamp(candidate.cycleWeight * sample.cycleStrength, 0, 0.22);
+          const predicted = (basePrediction * (1 - cycleBlend)) + (cycleReturn * cycleBlend);
+          const scale = Math.max(0.01, sample.historyVolatility * Math.sqrt(endpoint));
           const directionMiss = Math.sign(predicted) !== Math.sign(actual) ? 0.35 : 0;
           weightedError += BACKTEST_HORIZON_WEIGHTS[endpointIndex]
             * (Math.min(4, Math.abs(predicted - actual) / scale) + directionMiss);
-          candidate.hits += sampleWeight * (Math.sign(predicted) === Math.sign(actual) ? 1 : 0);
-          candidate.trials += sampleWeight;
+          candidate[`${group}Hits`] += sample.sampleWeight
+            * (Math.sign(predicted) === Math.sign(actual) ? 1 : 0);
+          candidate[`${group}Trials`] += sample.sampleWeight;
         });
-        candidate.error += weightedError * sampleWeight;
-        candidate.weight += sampleWeight;
+        candidate[`${group}Error`] += weightedError * sample.sampleWeight;
+        candidate[`${group}Weight`] += sample.sampleWeight;
       });
-      validSamples += 1;
     });
-    if (validSamples < 5) return fallback;
 
     const ranked = candidateScores
-      .filter((candidate) => candidate.weight > 0)
+      .filter((candidate) => candidate.trainingWeight > 0 && candidate.validationWeight > 0)
       .map((candidate) => ({
         ...candidate,
-        score: candidate.error / candidate.weight,
-        accuracy: candidate.trials ? candidate.hits / candidate.trials : 0,
+        score: candidate.trainingError / candidate.trainingWeight,
+        accuracy: candidate.validationTrials
+          ? candidate.validationHits / candidate.validationTrials
+          : 0,
+        validationScore: candidate.validationError / candidate.validationWeight,
+        productionScore: (candidate.trainingError + candidate.validationError)
+          / (candidate.trainingWeight + candidate.validationWeight),
       }))
       .sort((left, right) => left.score - right.score);
     if (!ranked.length) return fallback;
-    const bestScore = ranked[0].score;
-    const baselineScore = ranked.find((candidate) => candidate.baseline)?.score || bestScore;
-    const selected = ranked
-      .filter((candidate) => candidate.score <= baselineScore + Number.EPSILON)
-      .slice(0, 3)
-      .map((candidate) => ({
+    const uniqueStrategyShapes = (candidates) => {
+      const seen = new Set();
+      return candidates.filter((candidate) => {
+        const key = `${candidate.patternWeight}|${candidate.trendMultiplier}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    };
+    const trainingBestScore = ranked[0].score;
+    const baseline = ranked.find((candidate) => candidate.baseline) || ranked[0];
+    let validationSelected = uniqueStrategyShapes(ranked
+      .filter((candidate) => candidate.score <= baseline.score + Number.EPSILON))
+      .slice(0, 3);
+    const bestNoCycle = ranked.find((candidate) => candidate.cycleWeight === 0) || baseline;
+    const cycleValidationScore = mean(validationSelected.map((candidate) => candidate.validationScore));
+    if (validationSelected.some((candidate) => candidate.cycleWeight > 0)
+        && cycleValidationScore >= bestNoCycle.validationScore * 0.99) {
+      validationSelected = uniqueStrategyShapes(ranked
+        .filter((candidate) => candidate.cycleWeight === 0
+          && candidate.score <= baseline.score + Number.EPSILON))
+        .slice(0, 3);
+    }
+    if (!validationSelected.length || mean(validationSelected.map((candidate) => candidate.validationScore))
+        > baseline.validationScore * 1.02) {
+      validationSelected = [baseline];
+    }
+    validationSelected = validationSelected.map((candidate) => ({
       ...candidate,
-      ensembleWeight: Math.exp(-2.2 * (candidate.score - bestScore)),
-      }));
+      ensembleWeight: Math.exp(-2.2 * (candidate.score - trainingBestScore)),
+    }));
+    const validationEnsembleWeight = validationSelected
+      .reduce((sum, candidate) => sum + candidate.ensembleWeight, 0);
+    const validationBlend = (key) => validationSelected.reduce((sum, candidate) => (
+      sum + (candidate[key] * candidate.ensembleWeight)
+    ), 0) / validationEnsembleWeight;
+
+    const productionRanked = [...ranked]
+      .sort((left, right) => left.productionScore - right.productionScore);
+    const productionBestScore = productionRanked[0].productionScore;
+    const productionBaseline = productionRanked.find((candidate) => candidate.baseline)
+      || productionRanked[0];
+    let selected = uniqueStrategyShapes(productionRanked
+      .filter((candidate) => candidate.productionScore
+        <= productionBaseline.productionScore + Number.EPSILON))
+      .slice(0, 3);
+    const productionNoCycle = productionRanked.find((candidate) => candidate.cycleWeight === 0)
+      || productionBaseline;
+    if (selected.some((candidate) => candidate.cycleWeight > 0)
+        && mean(selected.map((candidate) => candidate.validationScore))
+          >= productionNoCycle.validationScore * 0.99) {
+      selected = uniqueStrategyShapes(productionRanked
+        .filter((candidate) => candidate.cycleWeight === 0
+          && candidate.productionScore <= productionBaseline.productionScore + Number.EPSILON))
+        .slice(0, 3);
+    }
+    if (!selected.length) selected = [productionBaseline];
+    selected = selected.map((candidate) => ({
+        ...candidate,
+        ensembleWeight: Math.exp(-2.2 * (candidate.productionScore - productionBestScore)),
+    }));
     const ensembleWeight = selected.reduce((sum, candidate) => sum + candidate.ensembleWeight, 0);
     const blend = (key) => selected.reduce((sum, candidate) => (
       sum + (candidate[key] * candidate.ensembleWeight)
     ), 0) / ensembleWeight;
-    const directionAccuracy = blend("accuracy");
-    const normalizedError = blend("score");
-    const sampleConfidence = clamp(validSamples / 12, 0, 1);
+    const directionAccuracy = validationBlend("accuracy");
+    const normalizedError = validationBlend("validationScore");
+    const sampleConfidence = clamp(validationCount / 5, 0, 1);
     const accuracyConfidence = clamp((directionAccuracy - 0.45) / 0.25, 0, 1);
     const errorConfidence = clamp(1 - (normalizedError / 2.2), 0, 1);
     const rawConfidence = clamp(
-      0.2 + (sampleConfidence * 0.35) + (accuracyConfidence * 0.25) + (errorConfidence * 0.2),
+      0.15 + (sampleConfidence * 0.2) + (accuracyConfidence * 0.2) + (errorConfidence * 0.45),
       0.2,
       0.9,
     );
@@ -465,12 +648,15 @@
     return {
       patternWeight: blend("patternWeight"),
       trendMultiplier: blend("trendMultiplier"),
+      cycleWeight: blend("cycleWeight"),
       volatilityRatio: weightedMedian(volatilityRatios) || fallback.volatilityRatio,
-      samples: validSamples,
+      samples: validationCount,
+      trainingSamples: samples.length - validationCount,
+      validationSamples: validationCount,
       directionAccuracy,
       normalizedError,
-      improvement: baselineScore > 0
-        ? clamp((baselineScore - normalizedError) / baselineScore, 0, 1)
+      improvement: baseline.validationScore > 0
+        ? clamp((baseline.validationScore - normalizedError) / baseline.validationScore, 0, 1)
         : 0,
       confidence: Math.min(rawConfidence, accuracyCap),
     };
@@ -567,11 +753,18 @@
     const patternPath = Array.from({ length: horizon }, (_, index) => (
       weightedPatternReturn(matches, index)
     ));
+    const cycle = detectMarketCycle(returns);
+    const cyclePath = buildCycleReturnPath(returns, cycle, horizon);
     const calibratedConfidence = clamp(Number(calibration.confidence) || 0.2, 0.2, 0.9);
     const effectivePatternWeight = clamp(
       calibration.patternWeight * (0.55 + (calibratedConfidence * 0.45)),
       0.25,
       0.75,
+    );
+    const effectiveCycleWeight = clamp(
+      (Number(calibration.cycleWeight) || 0) * (Number(cycle?.strength) || 0),
+      0,
+      0.22,
     );
     const candidateReturns = [];
     for (let index = 0; index < horizon; index += 1) {
@@ -583,10 +776,12 @@
       ) * volatility * 0.025 * historyConfidence;
       const contextBias = signals.combined * volatility * 0.018 * historyConfidence * Math.exp(-index / 150);
       const calibratedTrend = trend * calibration.trendMultiplier;
-      const directionalTarget = (pattern === null
+      const baseDirectionalTarget = pattern === null
         ? calibratedTrend
         : ((pattern * effectivePatternWeight)
-          + (calibratedTrend * (1 - effectivePatternWeight))))
+          + (calibratedTrend * (1 - effectivePatternWeight)));
+      const directionalTarget = ((baseDirectionalTarget * (1 - effectiveCycleWeight))
+        + ((cyclePath[index] || 0) * effectiveCycleWeight))
         + technicalBias
         + contextBias;
       candidateReturns.push(directionalTarget);
@@ -623,7 +818,8 @@
       historyDays: points.length,
       horizon,
       projectedVolatility,
-      backtest: { ...calibration, effectivePatternWeight },
+      cycle: cycle ? { ...cycle, weight: effectiveCycleWeight } : null,
+      backtest: { ...calibration, effectivePatternWeight, effectiveCycleWeight },
     };
   }
 
@@ -631,6 +827,7 @@
     buildContextSignal,
     buildForecast,
     calibrateForecastStrategy,
+    detectMarketCycle,
     isForecastSeries,
     nextBusinessDates,
   });

@@ -12,6 +12,7 @@ const {
   buildContextSignal,
   buildForecast,
   calibrateForecastStrategy,
+  detectMarketCycle,
   nextBusinessDates,
 } = context.ThinkStockAiForecast;
 
@@ -51,7 +52,8 @@ test("builds a deterministic six-month forecast from at most five years", () => 
   )).length;
   assert.ok(forecastVolatility >= first.projectedVolatility * 0.75);
   assert.ok(turningPoints >= 12);
-  assert.ok(first.backtest.samples >= 5);
+  assert.ok(first.backtest.trainingSamples >= 5);
+  assert.ok(first.backtest.validationSamples >= 3);
   assert.ok(first.backtest.patternWeight >= 0.35 && first.backtest.patternWeight <= 0.75);
   assert.ok(first.backtest.trendMultiplier >= -0.4 && first.backtest.trendMultiplier <= 1.25);
   assert.ok(first.backtest.directionAccuracy >= 0 && first.backtest.directionAccuracy <= 1);
@@ -67,7 +69,27 @@ test("walk-forward calibration falls back when completed history is insufficient
   const fallback = calibrateForecastStrategy(Array(300).fill(0.001), 126);
   assert.equal(fallback.samples, 0);
   assert.equal(fallback.patternWeight, 0.52);
+  assert.equal(fallback.cycleWeight, 0);
   assert.equal(fallback.volatilityRatio, 0.75);
+});
+
+test("detects a persistent two-year cycle without forcing one onto random returns", () => {
+  const periodic = Array.from({ length: 1500 }, (_, index) => (
+    (0.0025 * Math.sin((2 * Math.PI * index) / 504))
+    + (0.0005 * Math.sin((2 * Math.PI * index) / 17))
+  ));
+  let seed = 123456789;
+  const random = Array.from({ length: 1500 }, () => {
+    seed = ((1664525 * seed) + 1013904223) >>> 0;
+    return ((seed / 4294967296) - 0.5) * 0.04;
+  });
+
+  const cycle = detectMarketCycle(periodic);
+  assert.ok(cycle);
+  assert.ok(Math.abs(cycle.tradingDays - 504) <= 10);
+  assert.ok(Math.abs(cycle.years - 2) < 0.05);
+  assert.ok(cycle.strength > 0.8);
+  assert.equal(detectMarketCycle(random), null);
 });
 
 test("does not forecast newly listed stocks with fewer than 90 trading days", () => {
