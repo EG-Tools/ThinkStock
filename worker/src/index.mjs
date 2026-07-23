@@ -306,7 +306,7 @@ async function fetchDartPage(env, params) {
         redirect: "manual",
         headers: {
           Accept: "application/json",
-          "User-Agent": "ThinkStock/1.27 (+https://eg-tools.github.io/ThinkStock/)",
+          "User-Agent": "ThinkStock/1.28 (+https://eg-tools.github.io/ThinkStock/)",
         },
       });
       if (response.status >= 300 && response.status < 400) {
@@ -687,17 +687,20 @@ export async function handleRequest(request, env, ctx = null) {
     }, 200, origin);
   }
   const isDartRequest = url.pathname === "/api/dart/disclosures" && request.method === "GET";
+  const isAuthCheckRequest = url.pathname === "/api/auth/check" && request.method === "GET";
   const isConsensusRequest = url.pathname === "/api/consensus" && request.method === "GET";
   const isAnalysisRequest = url.pathname === "/api/analysis" && request.method === "GET";
   const isJournalRequest = url.pathname === "/api/forecast-journal"
     && ["GET", "POST"].includes(request.method);
-  if (!isDartRequest && !isConsensusRequest && !isAnalysisRequest && !isJournalRequest) {
+  if (!isDartRequest && !isAuthCheckRequest
+    && !isConsensusRequest && !isAnalysisRequest && !isJournalRequest) {
     return jsonResponse({ ok: false, error: "Not found" }, 404, origin);
   }
   if (!env.THINKSTOCK_ACCESS_TOKEN
     || !await tokensMatch(bearerToken(request), env.THINKSTOCK_ACCESS_TOKEN)) {
     return jsonResponse({ ok: false, error: "개인 접속 코드가 올바르지 않습니다." }, 401, origin);
   }
+  if (isAuthCheckRequest) return jsonResponse({ ok: true }, 200, origin);
   const ticker = String(url.searchParams.get("ticker") || "").trim().toUpperCase();
   if (!TICKER_PATTERN.test(ticker)) {
     return jsonResponse({ ok: false, error: "종목코드 형식이 올바르지 않습니다." }, 400, origin);

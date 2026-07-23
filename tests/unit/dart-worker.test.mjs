@@ -86,6 +86,16 @@ test("rejects disclosure requests without the personal access token", async () =
   assert.equal((await response.json()).ok, false);
 });
 
+test("checks the personal access token without requiring a ticker", async () => {
+  const env = { THINKSTOCK_ACCESS_TOKEN: "private" };
+  const valid = await handleRequest(request("/api/auth/check", { token: "private" }), env);
+  const invalid = await handleRequest(request("/api/auth/check", { token: "wrong" }), env);
+
+  assert.equal(valid.status, 200);
+  assert.equal((await valid.json()).ok, true);
+  assert.equal(invalid.status, 401);
+});
+
 test("returns a fresh per-ticker KV cache without contacting DART", async () => {
   const cachedRecord = { ticker: "005930.KS", date: "2026-07-21", title: "유상증자 결정" };
   const cache = memoryKv({

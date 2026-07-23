@@ -175,7 +175,7 @@ const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.27";
+const APP_VERSION = "1.28";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -224,6 +224,7 @@ const FEAR_GREED_LIVE_URL = "https://kospi.feargreedchart.com/api/?action=kospi"
 const DART_DISCLOSURE_CACHE_KEY = "thinkstock-dart-disclosure-cache-v1";
 const DART_DISCLOSURE_CACHE_TTL_DAYS = 1;
 const DART_GATEWAY_URL = "https://thinkstock-api.keg0320.workers.dev";
+const DART_GATEWAY_AUTH_CHECK_ENDPOINT = `${DART_GATEWAY_URL}/api/auth/check`;
 const DART_GATEWAY_DISCLOSURE_ENDPOINT = `${DART_GATEWAY_URL}/api/dart/disclosures`;
 const AI_ANALYSIS_ENDPOINT = `${DART_GATEWAY_URL}/api/analysis`;
 const AI_FORECAST_JOURNAL_ENDPOINT = `${DART_GATEWAY_URL}/api/forecast-journal`;
@@ -1165,6 +1166,20 @@ function canUseDartGateway() {
   return Boolean(getDartGatewayAccessToken());
 }
 
+async function validateDartGatewayAccessToken(accessToken) {
+  const response = await fetchWithTimeout(DART_GATEWAY_AUTH_CHECK_ENDPOINT, {
+    cache: "no-store",
+    headers: { Authorization: `Bearer ${String(accessToken || "").trim()}` },
+  }, NETWORK_REQUEST_TIMEOUT_MS);
+  const payload = await response.json().catch(() => null);
+  return { ok: response.ok && payload?.ok === true, status: response.status };
+}
+
+function clearInvalidDartGatewayAccessToken() {
+  try { dartGatewaySettingsStore.clear(); } catch (_) {}
+  syncApiOptionsButton();
+}
+
 function renderAppVersionLabel() {
   const el = document.getElementById("appVersionText");
   if (el) {
@@ -1365,19 +1380,40 @@ function setupApiSettingsPanel(msgEl) {
       }
     }
   });
-  dartGatewayTokenSaveBtn?.addEventListener("click", () => {
+  dartGatewayTokenSaveBtn?.addEventListener("click", async () => {
     const accessToken = String(dartGatewayTokenInput?.value || "").trim();
+    if (!accessToken) {
+      try {
+        dartGatewaySettingsStore.clear();
+        localStorage.removeItem(DART_DISCLOSURE_CACHE_KEY);
+      } catch (_) {}
+      syncApiOptionsButton();
+      close();
+      setMessage(msgEl, ["DART 개인 접속 코드를 이 기기에서 지웠습니다."]);
+      return;
+    }
+    dartGatewayTokenSaveBtn.setAttribute("disabled", "");
+    setMessage(msgEl, ["DART 개인 접속 코드를 확인하고 있습니다."]);
     try {
-      if (accessToken) dartGatewaySettingsStore.save({ accessToken });
-      else dartGatewaySettingsStore.clear();
+      const validation = await validateDartGatewayAccessToken(accessToken);
+      if (!validation.ok) {
+        setMessage(msgEl, [
+          "개인 접속 코드가 올바르지 않아 저장하지 않았습니다.",
+          ".env.local의 THINKSTOCK_ACCESS_TOKEN 값을 확인해 주세요.",
+        ], true);
+        return;
+      }
+      dartGatewaySettingsStore.save({ accessToken });
       localStorage.removeItem(DART_DISCLOSURE_CACHE_KEY);
-    } catch (_) {}
-    if (dartGatewayTokenInput) dartGatewayTokenInput.value = accessToken;
-    syncApiOptionsButton();
-    close();
-    setMessage(msgEl, accessToken
-      ? ["DART 개인 접속 코드를 이 기기에 저장했습니다."]
-      : ["DART 개인 접속 코드를 이 기기에서 지웠습니다."]);
+      if (dartGatewayTokenInput) dartGatewayTokenInput.value = accessToken;
+      syncApiOptionsButton();
+      close();
+      setMessage(msgEl, ["확인된 DART 개인 접속 코드를 이 기기에 저장했습니다."]);
+    } catch (error) {
+      setMessage(msgEl, [`접속 코드를 확인하지 못했습니다: ${error.message}`], true);
+    } finally {
+      dartGatewayTokenSaveBtn.removeAttribute("disabled");
+    }
   });
 
   syncApiOptionsButton();
@@ -4225,6 +4261,12 @@ async function fetchDartDisclosuresForTickerLive(apiKey, ticker, options = {}) {
       throw new Error("ThinkStock DART 중계 서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.");
     }
     const payload = await response.json().catch(() => null);
+    if (response.status === 401) {
+      clearInvalidDartGatewayAccessToken();
+      const error = new Error("개인 접속 코드가 만료되었거나 올바르지 않습니다. API 설정에서 다시 저장해 주세요.");
+      error.status = 401;
+      throw error;
+    }
     if (!response.ok || payload?.ok === false) {
       const detail = String(payload?.error || "").trim();
       throw new Error(detail || "ThinkStock DART 중계 서버가 응답하지 않습니다.");
@@ -4494,6 +4536,7 @@ async function refreshDartDisclosuresForVisibleTickersFromApi(apiKey, options = 
   const beforeCount = disclosureRows.length;
   const incomingRows = [];
   const failed = [];
+  let authFailure = false;
   let cached = 0;
 
   const results = await mapWithConcurrency(uniqueTickers, DART_VISIBLE_REFRESH_CONCURRENCY, async (ticker) => {
@@ -4522,7 +4565,8 @@ async function refreshDartDisclosuresForVisibleTickersFromApi(apiKey, options = 
   results.forEach((result) => {
     if (!result) return;
     if (result.error) {
-      failed.push(`${labelName(result.ticker)}: ${result.error.message}`);
+      if (result.error.status === 401) authFailure = true;
+      else failed.push(`${labelName(result.ticker)}: ${result.error.message}`);
       return;
     }
     if (result.cached) {
@@ -4543,7 +4587,9 @@ async function refreshDartDisclosuresForVisibleTickersFromApi(apiKey, options = 
     fetched: incomingRows.length,
     added: Math.max(0, disclosureRows.length - beforeCount),
     latestDate,
-    failed,
+    failed: authFailure
+      ? ["개인 접속 코드가 올바르지 않습니다. API 설정에서 다시 저장해 주세요."]
+      : failed,
     cached,
   };
 }

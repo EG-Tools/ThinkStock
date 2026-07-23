@@ -285,6 +285,37 @@ test("new stock loads its own Cloudflare DART disclosures", async ({ page }) => 
   })).toBe(true);
 });
 
+test("API settings save only a verified personal access token", async ({ page }) => {
+  await installDataRoutes(page);
+  await page.route("**/api/auth/check", async (route) => {
+    const authorization = route.request().headers().authorization || "";
+    await route.fulfill({
+      status: authorization === "Bearer verified-token" ? 200 : 401,
+      json: authorization === "Bearer verified-token"
+        ? { ok: true }
+        : { ok: false, error: "개인 접속 코드가 올바르지 않습니다." },
+    });
+  });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await page.locator("#apiOptionsBtn").click();
+  await page.locator("#dartGatewayTokenInput").fill("wrong-token");
+  await page.locator("#dartGatewayTokenSaveBtn").click();
+
+  await expect(page.locator("#apiSettingsModal")).toBeVisible();
+  await expect(page.locator("#messageArea")).toContainText("올바르지 않아 저장하지 않았습니다");
+  expect(await page.evaluate(() => JSON.parse(
+    localStorage.getItem("thinkstock-dart-gateway-v1") || "{}",
+  ).accessToken || "")).toBe("");
+
+  await page.locator("#dartGatewayTokenInput").fill("verified-token");
+  await page.locator("#dartGatewayTokenSaveBtn").click();
+  await expect(page.locator("#apiSettingsModal")).toBeHidden();
+  await expect(page.locator("#messageArea")).toContainText("확인된 DART 개인 접속 코드");
+  expect(await page.evaluate(() => JSON.parse(
+    localStorage.getItem("thinkstock-dart-gateway-v1"),
+  ).accessToken)).toBe("verified-token");
+});
+
 test("new stock loads its deployed disclosure file without a gateway token", async ({ page }) => {
   await installDataRoutes(page);
   let requestedStaticDisclosure = false;
