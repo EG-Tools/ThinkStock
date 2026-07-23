@@ -19,8 +19,15 @@ const CORP_CODE_PATTERN = /^\d{8}$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const CACHE_SCHEMA = 1;
 const CACHE_FRESH_MS = 6 * 60 * 60 * 1000;
-const ANALYSIS_CACHE_SCHEMA = 2;
+const ANALYSIS_CACHE_SCHEMA = 3;
 const ANALYSIS_CACHE_FRESH_MS = 30 * 24 * 60 * 60 * 1000;
+const ANALYSIS_SNAPSHOT_LIMIT = 60;
+const FORECAST_JOURNAL_SCHEMA = 1;
+const FORECAST_JOURNAL_LIMIT = 120;
+const FORECAST_JOURNAL_BODY_LIMIT = 256 * 1024;
+const FORECAST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,120}$/;
+const FORECAST_MODEL_PATTERN = /^[A-Za-z0-9._:+/-]{1,80}$/;
+const FORECAST_HORIZON_PATTERN = /^[1-9]\d{0,3}$/;
 const MAX_PAGES = 100;
 const PAGE_SIZE = 100;
 const OVERLAP_DAYS = 7;
@@ -51,7 +58,7 @@ function corsHeaders(origin) {
     ? {
       "Access-Control-Allow-Origin": origin,
       "Access-Control-Allow-Headers": "Authorization, Content-Type",
-      "Access-Control-Allow-Methods": "GET, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
       Vary: "Origin",
     }
     : {};
@@ -99,15 +106,89 @@ function apiDate(value) {
   return String(value || "").replaceAll("-", "");
 }
 
+function isValidIsoDate(value) {
+  const text = String(value || "");
+  if (!DATE_PATTERN.test(text)) return false;
+  const date = new Date(`${text}T00:00:00Z`);
+  return Number.isFinite(date.getTime()) && isoDate(date) === text;
+}
+
+function finiteNumber(value, { min = -Infinity, max = Infinity } = {}) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= min && number <= max ? number : null;
+}
+
+function timestamp(value) {
+  return finiteNumber(value, { min: 1, max: 8_640_000_000_000_000 });
+}
+
+function snapshotFromAnalysis(analysis) {
+  const savedAt = timestamp(analysis?.savedAt);
+  if (!savedAt) return null;
+  return {
+    asOf: isoDate(new Date(savedAt)),
+    savedAt,
+    consensus: analysis?.consensus || null,
+    financials: Array.isArray(analysis?.financials) ? analysis.financials : [],
+  };
+}
+
+function sanitizeAnalysisSnapshot(snapshot) {
+  const savedAt = timestamp(snapshot?.savedAt);
+  const asOf = String(snapshot?.asOf || "").slice(0, 10);
+  if (!savedAt || !isValidIsoDate(asOf)) return null;
+  return {
+    asOf,
+    savedAt,
+    consensus: snapshot?.consensus || null,
+    financials: Array.isArray(snapshot?.financials) ? snapshot.financials : [],
+  };
+}
+
+export function mergeAnalysisSnapshots(existing, incoming) {
+  const byMonth = new Map();
+  [...(existing || []), ...(incoming || [])].forEach((value) => {
+    const snapshot = sanitizeAnalysisSnapshot(value);
+    if (!snapshot) return;
+    const month = snapshot.asOf.slice(0, 7);
+    const previous = byMonth.get(month);
+    if (!previous || snapshot.savedAt >= previous.savedAt) byMonth.set(month, snapshot);
+  });
+  return [...byMonth.values()]
+    .sort((left, right) => left.asOf.localeCompare(right.asOf) || left.savedAt - right.savedAt)
+    .slice(-ANALYSIS_SNAPSHOT_LIMIT);
+}
+
+function normalizeAnalysisCache(value, ticker) {
+  if (!value || value.ticker !== ticker || ![2, ANALYSIS_CACHE_SCHEMA].includes(value.schema)) return null;
+  const currentSnapshot = snapshotFromAnalysis(value);
+  const storedSnapshots = mergeAnalysisSnapshots(value.snapshots, []);
+  const snapshots = mergeAnalysisSnapshots(storedSnapshots, currentSnapshot ? [currentSnapshot] : []);
+  const includesCurrentSnapshot = !currentSnapshot
+    || storedSnapshots.some((snapshot) => snapshot.savedAt === currentSnapshot.savedAt);
+  return {
+    schema: ANALYSIS_CACHE_SCHEMA,
+    ticker,
+    savedAt: timestamp(value.savedAt) || 0,
+    consensus: value.consensus || null,
+    financials: Array.isArray(value.financials) ? value.financials : [],
+    snapshots,
+    needsMigration: value.schema !== ANALYSIS_CACHE_SCHEMA
+      || !Array.isArray(value.snapshots)
+      || storedSnapshots.length !== value.snapshots.length
+      || !includesCurrentSnapshot,
+  };
+}
+
 async function readAnalysisCache(env, ticker) {
   if (!env.DISCLOSURE_CACHE) return null;
   try {
     const value = await env.DISCLOSURE_CACHE.get(`analysis:${ticker}`, "json");
-    if (value?.schema === ANALYSIS_CACHE_SCHEMA && value?.ticker === ticker) return value;
+    const normalized = normalizeAnalysisCache(value, ticker);
+    if (normalized) return normalized;
     const legacy = await env.DISCLOSURE_CACHE.get(`consensus:${ticker}`, "json");
-    return legacy?.schema === 1 && legacy?.ticker === ticker
-      ? { ...legacy, schema: ANALYSIS_CACHE_SCHEMA, financials: [] }
-      : null;
+    if (legacy?.schema !== 1 || legacy?.ticker !== ticker) return null;
+    return normalizeAnalysisCache({ ...legacy, schema: 2, financials: [] }, ticker);
   } catch (_) {
     return null;
   }
@@ -121,6 +202,7 @@ async function writeAnalysisCache(env, ticker, analysis) {
     savedAt: analysis.savedAt,
     consensus: analysis.consensus || null,
     financials: analysis.financials || [],
+    snapshots: mergeAnalysisSnapshots(analysis.snapshots, []),
   }));
 }
 
@@ -131,6 +213,7 @@ function analysisPayload(cached, extra = {}) {
     savedAt: cached.savedAt,
     consensus: cached.consensus || null,
     financials: cached.financials || [],
+    snapshots: cached.snapshots || [],
     ...extra,
   };
 }
@@ -139,6 +222,11 @@ async function analysisResponse(env, ctx, ticker, origin, options = {}) {
   const cached = await readAnalysisCache(env, ticker);
   const fresh = cached && Date.now() - Number(cached.savedAt || 0) <= ANALYSIS_CACHE_FRESH_MS;
   if (fresh && (!options.requireFinancials || cached.financials?.length)) {
+    if (cached.needsMigration) {
+      const write = writeAnalysisCache(env, ticker, cached);
+      if (ctx?.waitUntil) ctx.waitUntil(write);
+      else await write;
+    }
     return jsonResponse(analysisPayload(cached, { cached: true }), 200, origin);
   }
   try {
@@ -153,6 +241,11 @@ async function analysisResponse(env, ctx, ticker, origin, options = {}) {
       consensus: incoming.consensus || cached?.consensus || null,
       financials: mergeFinancialRecords(cached?.financials || [], incoming.financials || []),
     };
+    const currentSnapshot = snapshotFromAnalysis(analysis);
+    analysis.snapshots = mergeAnalysisSnapshots(
+      cached?.snapshots || [],
+      currentSnapshot ? [currentSnapshot] : [],
+    );
     const write = writeAnalysisCache(env, ticker, analysis);
     if (ctx?.waitUntil) ctx.waitUntil(write);
     else await write;
@@ -300,6 +393,241 @@ async function writeCache(env, ticker, corpCode, records) {
   await env.DISCLOSURE_CACHE.put(`ticker:${ticker}`, JSON.stringify(payload));
 }
 
+function journalValidationError(message) {
+  const error = new Error(message);
+  error.status = 400;
+  return error;
+}
+
+function normalizeForecastHorizon(value, key, { strict = false } = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    if (strict) throw journalValidationError(`Invalid forecast horizon: ${key}`);
+    return null;
+  }
+  const targetDate = String(value.targetDate || "").slice(0, 10);
+  const predictedPrice = finiteNumber(value.predictedPrice, { min: Number.MIN_VALUE, max: 1e15 });
+  const lowerPrice = finiteNumber(value.lowerPrice, { min: Number.MIN_VALUE, max: 1e15 });
+  const upperPrice = finiteNumber(value.upperPrice, { min: Number.MIN_VALUE, max: 1e15 });
+  if (!isValidIsoDate(targetDate) || !predictedPrice || !lowerPrice || !upperPrice
+    || lowerPrice > upperPrice) {
+    if (strict) throw journalValidationError(`Invalid forecast values for horizon ${key}`);
+    return null;
+  }
+  const result = { targetDate, predictedPrice, lowerPrice, upperPrice };
+  const nestedScore = value.score && typeof value.score === "object" ? value.score : null;
+  const evaluation = nestedScore ? {
+    actualDate: nestedScore.actualDate,
+    actualPrice: nestedScore.actualPrice,
+    absoluteLogError: nestedScore.absLogError ?? nestedScore.absoluteLogError,
+    directionCorrect: nestedScore.directionCorrect,
+    covered: nestedScore.intervalCovered ?? nestedScore.covered,
+    scoredAt: nestedScore.scoredAt,
+  } : value;
+  const evaluationFields = [
+    evaluation.actualDate,
+    evaluation.actualPrice,
+    evaluation.absoluteLogError,
+    evaluation.directionCorrect,
+    evaluation.covered,
+    evaluation.scoredAt,
+  ];
+  const hasEvaluation = evaluationFields.some((field) => field !== undefined && field !== null);
+  if (!hasEvaluation) return result;
+
+  const actualDate = String(evaluation.actualDate || "").slice(0, 10);
+  const actualPrice = finiteNumber(evaluation.actualPrice, { min: Number.MIN_VALUE, max: 1e15 });
+  const absoluteLogError = finiteNumber(evaluation.absoluteLogError, { min: 0, max: 100 });
+  const scoredAt = timestamp(evaluation.scoredAt);
+  const validEvaluation = isValidIsoDate(actualDate)
+    && actualPrice
+    && absoluteLogError !== null
+    && typeof evaluation.directionCorrect === "boolean"
+    && typeof evaluation.covered === "boolean"
+    && scoredAt;
+  if (!validEvaluation) {
+    if (strict) throw journalValidationError(`Invalid evaluation values for horizon ${key}`);
+    return result;
+  }
+  return {
+    ...result,
+    actualDate,
+    actualPrice,
+    absoluteLogError,
+    directionCorrect: evaluation.directionCorrect,
+    covered: evaluation.covered,
+    scoredAt,
+  };
+}
+
+function normalizeForecastRecord(value, ticker, { strict = false } = {}) {
+  const fail = (message) => {
+    if (strict) throw journalValidationError(message);
+    return null;
+  };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return fail("Invalid forecast record");
+  const id = String(value.id || "").trim();
+  const recordTicker = String(value.ticker || "").trim().toUpperCase();
+  const asOf = String(value.asOf || "").slice(0, 10);
+  const basePrice = finiteNumber(value.basePrice, { min: Number.MIN_VALUE, max: 1e15 });
+  const modelVersion = String(value.modelVersion || "").trim();
+  const createdAt = timestamp(value.createdAt);
+  const updatedAt = timestamp(value.updatedAt) || createdAt;
+  if (!FORECAST_ID_PATTERN.test(id)) return fail("Invalid forecast id");
+  if (recordTicker !== ticker) return fail("Forecast ticker does not match the request");
+  if (!isValidIsoDate(asOf) || !basePrice) return fail("Invalid forecast base values");
+  if (!FORECAST_MODEL_PATTERN.test(modelVersion) || !createdAt || !updatedAt || updatedAt < createdAt) {
+    return fail("Invalid forecast metadata");
+  }
+  if (!value.horizons || typeof value.horizons !== "object" || Array.isArray(value.horizons)) {
+    return fail("Forecast horizons are required");
+  }
+  const horizons = {};
+  for (const [key, horizon] of Object.entries(value.horizons)) {
+    if (!FORECAST_HORIZON_PATTERN.test(key) || Number(key) > 3650) {
+      if (strict) throw journalValidationError(`Invalid forecast horizon key: ${key}`);
+      continue;
+    }
+    const normalized = normalizeForecastHorizon(horizon, key, { strict });
+    if (normalized?.targetDate < asOf) {
+      if (strict) throw journalValidationError(`Forecast target precedes its base date: ${key}`);
+      continue;
+    }
+    if (normalized) horizons[key] = normalized;
+  }
+  if (!Object.keys(horizons).length) return fail("At least one forecast horizon is required");
+  return { id, ticker, asOf, basePrice, modelVersion, createdAt, updatedAt, horizons };
+}
+
+export function mergeForecastJournalRecords(existing, incoming, ticker, { strictIncoming = false } = {}) {
+  const records = new Map();
+  const mergeRecord = (previous, record) => {
+    if (!previous) return record;
+    const horizons = { ...previous.horizons };
+    Object.entries(record.horizons).forEach(([key, horizon]) => {
+      const previousHorizon = horizons[key];
+      if (!previousHorizon) {
+        horizons[key] = horizon;
+        return;
+      }
+      const previousScoreTime = timestamp(previousHorizon.scoredAt) || 0;
+      const incomingScoreTime = timestamp(horizon.scoredAt) || 0;
+      if (incomingScoreTime > previousScoreTime) horizons[key] = horizon;
+    });
+    return {
+      ...previous,
+      updatedAt: Math.max(previous.updatedAt, record.updatedAt),
+      horizons,
+    };
+  };
+  (existing || []).forEach((value) => {
+    const record = normalizeForecastRecord(value, ticker);
+    if (record) records.set(record.id, mergeRecord(records.get(record.id), record));
+  });
+  (incoming || []).forEach((value) => {
+    const record = normalizeForecastRecord(value, ticker, { strict: strictIncoming });
+    if (!record) return;
+    records.set(record.id, mergeRecord(records.get(record.id), record));
+  });
+  return [...records.values()]
+    .sort((left, right) => left.asOf.localeCompare(right.asOf) || left.createdAt - right.createdAt)
+    .slice(-FORECAST_JOURNAL_LIMIT);
+}
+
+async function readForecastJournal(env, ticker) {
+  if (!env.DISCLOSURE_CACHE) return null;
+  try {
+    const value = await env.DISCLOSURE_CACHE.get(`forecast-journal:${ticker}`, "json");
+    if (!value) {
+      return { schema: FORECAST_JOURNAL_SCHEMA, ticker, savedAt: 0, records: [] };
+    }
+    if (value.schema !== FORECAST_JOURNAL_SCHEMA || value.ticker !== ticker) return null;
+    return {
+      schema: FORECAST_JOURNAL_SCHEMA,
+      ticker,
+      savedAt: timestamp(value.savedAt) || 0,
+      records: mergeForecastJournalRecords(value.records, [], ticker),
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+async function writeForecastJournal(env, ticker, records) {
+  const payload = {
+    schema: FORECAST_JOURNAL_SCHEMA,
+    ticker,
+    savedAt: Date.now(),
+    records,
+  };
+  await env.DISCLOSURE_CACHE.put(`forecast-journal:${ticker}`, JSON.stringify(payload));
+  return payload;
+}
+
+async function readJournalRequestBody(request) {
+  const contentLength = Number(request.headers.get("Content-Length") || 0);
+  if (Number.isFinite(contentLength) && contentLength > FORECAST_JOURNAL_BODY_LIMIT) {
+    const error = new Error("Forecast journal request is too large");
+    error.status = 413;
+    throw error;
+  }
+  const reader = request.body?.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let bytesRead = 0;
+  if (reader) {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytesRead += value.byteLength;
+      if (bytesRead > FORECAST_JOURNAL_BODY_LIMIT) {
+        await reader.cancel("Forecast journal request is too large");
+        const error = new Error("Forecast journal request is too large");
+        error.status = 413;
+        throw error;
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+  }
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch (_) {
+    throw journalValidationError("Forecast journal body must be valid JSON");
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload) || !Array.isArray(payload.records)) {
+    throw journalValidationError("Forecast journal records are required");
+  }
+  if (payload.records.length > FORECAST_JOURNAL_LIMIT) {
+    throw journalValidationError(`Forecast journal accepts at most ${FORECAST_JOURNAL_LIMIT} records`);
+  }
+  return payload;
+}
+
+async function forecastJournalResponse(request, env, ticker, origin) {
+  if (!env.DISCLOSURE_CACHE) {
+    return jsonResponse({ ok: false, error: "Forecast journal storage is not configured" }, 503, origin);
+  }
+  if (request.method === "GET") {
+    const journal = await readForecastJournal(env, ticker);
+    if (!journal) return jsonResponse({ ok: false, error: "Forecast journal cache is invalid" }, 503, origin);
+    return jsonResponse({ ok: true, ...journal }, 200, origin);
+  }
+  try {
+    const payload = await readJournalRequestBody(request);
+    if (payload.ticker !== undefined && String(payload.ticker).trim().toUpperCase() !== ticker) {
+      throw journalValidationError("Forecast journal ticker does not match the request");
+    }
+    const cached = await readForecastJournal(env, ticker);
+    if (!cached) throw new Error("Forecast journal cache is invalid");
+    const records = mergeForecastJournalRecords(cached.records, payload.records, ticker, { strictIncoming: true });
+    const saved = await writeForecastJournal(env, ticker, records);
+    return jsonResponse({ ok: true, ...saved }, 200, origin);
+  } catch (error) {
+    return jsonResponse({ ok: false, error: error?.message || "Forecast journal update failed" }, error?.status || 503, origin);
+  }
+}
+
 export async function handleRequest(request, env, ctx = null) {
   const origin = String(request.headers.get("Origin") || "");
   if (!isAllowedOrigin(origin)) return jsonResponse({ ok: false, error: "허용되지 않은 앱 주소입니다." }, 403, origin);
@@ -317,7 +645,9 @@ export async function handleRequest(request, env, ctx = null) {
   const isDartRequest = url.pathname === "/api/dart/disclosures" && request.method === "GET";
   const isConsensusRequest = url.pathname === "/api/consensus" && request.method === "GET";
   const isAnalysisRequest = url.pathname === "/api/analysis" && request.method === "GET";
-  if (!isDartRequest && !isConsensusRequest && !isAnalysisRequest) {
+  const isJournalRequest = url.pathname === "/api/forecast-journal"
+    && ["GET", "POST"].includes(request.method);
+  if (!isDartRequest && !isConsensusRequest && !isAnalysisRequest && !isJournalRequest) {
     return jsonResponse({ ok: false, error: "Not found" }, 404, origin);
   }
   if (!env.THINKSTOCK_ACCESS_TOKEN
@@ -328,6 +658,7 @@ export async function handleRequest(request, env, ctx = null) {
   if (!TICKER_PATTERN.test(ticker)) {
     return jsonResponse({ ok: false, error: "종목코드 형식이 올바르지 않습니다." }, 400, origin);
   }
+  if (isJournalRequest) return forecastJournalResponse(request, env, ticker, origin);
   if (isConsensusRequest || isAnalysisRequest) {
     return analysisResponse(env, ctx, ticker, origin, { requireFinancials: isAnalysisRequest });
   }

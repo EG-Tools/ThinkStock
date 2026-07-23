@@ -16,6 +16,10 @@ DATA_DIR = ROOT / "docs" / "data"
 BUILD_REPORT_JSON = DATA_DIR / "build_report.json"
 DART_CORP_CODES_JSON = DATA_DIR / "dart_corp_codes.json"
 KRX_UNIVERSE_JSON = DATA_DIR / "krx_universe.json"
+AI_MARKET_MODEL_JSON = DATA_DIR / "ai_market_model.json"
+AI_MODEL_FORMAT = "thinkstock-ai-market-model-v1"
+AI_FEATURE_FORMAT = "ai-market-features-v1"
+AI_FEATURE_COUNT = 17
 
 DATASETS = {
     "prices": DATA_DIR / "prices.json",
@@ -251,6 +255,116 @@ def validate_krx_universe() -> str:
     if int(payload.get("total") or 0) != len(records):
         fail("krx universe: total does not match records")
     return f"krx universe: {len(records)} stocks ({payload.get('base_date') or 'unknown'})"
+
+
+def validate_ai_market_model(path: Path = AI_MARKET_MODEL_JSON) -> str:
+    if not path.exists():
+        fail("ai market model: payload is missing")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise AssertionError(f"ai market model: invalid JSON: {exc}") from exc
+    if payload.get("format") != AI_MODEL_FORMAT:
+        fail(f"ai market model: {AI_MODEL_FORMAT} payload is required")
+    try:
+        generated = datetime.fromisoformat(str(payload.get("generated_at") or "").replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise AssertionError("ai market model: generated_at is invalid") from exc
+    age_days = (datetime.now(generated.tzinfo).date() - generated.date()).days
+    if age_days < -1:
+        fail("ai market model: generated_at is in the future")
+    if STRICT_FRESHNESS and age_days > 45:
+        fail(f"ai market model: payload is stale ({age_days} days old)")
+
+    training_window = payload.get("training_window")
+    if (
+        not isinstance(training_window, dict)
+        or training_window.get("candidate_lookback_years") != [5, 10, 15, 25]
+        or int(training_window.get("requested_max_calendar_years") or 0) != 25
+        or not isinstance(training_window.get("available_calendar_years"), (int, float))
+        or float(training_window["available_calendar_years"]) <= 0
+    ):
+        fail("ai market model: 5/10/15/25-year training window metadata is invalid")
+
+    universe = payload.get("universe")
+    if not isinstance(universe, dict):
+        fail("ai market model: universe metadata is missing")
+    selection = universe.get("selection")
+    tickers = universe.get("tickers")
+    if selection != {"KOSPI": 200, "KOSDAQ": 200} or not isinstance(tickers, dict):
+        fail("ai market model: KOSPI/KOSDAQ top-200 selection is required")
+    all_tickers: list[str] = []
+    for market, suffix in (("KOSPI", "KS"), ("KOSDAQ", "KQ")):
+        market_tickers = tickers.get(market)
+        if not isinstance(market_tickers, list) or len(market_tickers) != 200:
+            fail(f"ai market model: {market} ticker selection is incomplete")
+        if any(not re.fullmatch(rf"\d{{6}}\.{suffix}", str(ticker)) for ticker in market_tickers):
+            fail(f"ai market model: {market} contains an invalid ticker")
+        all_tickers.extend(market_tickers)
+    if len(set(all_tickers)) != 400:
+        fail("ai market model: selected tickers must be unique")
+
+    feature_schema = payload.get("feature_schema")
+    names = feature_schema.get("names") if isinstance(feature_schema, dict) else None
+    if (
+        not isinstance(feature_schema, dict)
+        or feature_schema.get("format") != AI_FEATURE_FORMAT
+        or not isinstance(names, list)
+        or len(names) != AI_FEATURE_COUNT
+        or len(set(names)) != AI_FEATURE_COUNT
+    ):
+        fail("ai market model: feature schema is invalid")
+
+    horizons = payload.get("horizons")
+    if not isinstance(horizons, dict) or set(horizons) != {"20", "63", "126"}:
+        fail("ai market model: 20/63/126-day models are required")
+    for horizon, model in horizons.items():
+        if not isinstance(model, dict) or int(model.get("horizon_days") or 0) != int(horizon):
+            fail(f"ai market model: {horizon}-day model metadata is invalid")
+        for key in ("coefficients", "means", "standard_deviations"):
+            values = model.get(key)
+            if (
+                not isinstance(values, list)
+                or len(values) != AI_FEATURE_COUNT
+                or any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in values)
+            ):
+                fail(f"ai market model: {horizon}-day {key} is invalid")
+        if any(value <= 0 for value in model["standard_deviations"]):
+            fail(f"ai market model: {horizon}-day standard deviations must be positive")
+        if int(model.get("training_samples") or 0) < 200:
+            fail(f"ai market model: {horizon}-day training sample count is too small")
+        if int(model.get("selected_lookback_years") or 0) not in (5, 10, 15, 25):
+            fail(f"ai market model: {horizon}-day selected lookback is invalid")
+        candidates = model.get("lookback_candidates")
+        if not isinstance(candidates, list) or not candidates:
+            fail(f"ai market model: {horizon}-day lookback candidates are missing")
+        if any(int(candidate.get("years") or 0) not in (5, 10, 15, 25) for candidate in candidates):
+            fail(f"ai market model: {horizon}-day lookback candidate is invalid")
+        if int(model.get("validation_samples") or 0) <= 0 or int(model.get("validation_folds") or 0) < 2:
+            fail(f"ai market model: {horizon}-day purged validation is incomplete")
+        metrics = model.get("metrics")
+        interval = model.get("residual_interval_80")
+        if not isinstance(metrics, dict) or any(
+            not isinstance(metrics.get(key), (int, float)) or not math.isfinite(metrics[key])
+            for key in ("mae", "baseline_mae", "improvement", "direction_accuracy")
+        ):
+            fail(f"ai market model: {horizon}-day performance metrics are invalid")
+        if not 0 <= float(metrics["direction_accuracy"]) <= 1:
+            fail(f"ai market model: {horizon}-day direction accuracy is invalid")
+        if (
+            not isinstance(interval, dict)
+            or not all(isinstance(interval.get(key), (int, float)) for key in ("lower", "upper", "coverage"))
+            or float(interval["lower"]) > float(interval["upper"])
+            or not 0 <= float(interval["coverage"]) <= 1
+        ):
+            fail(f"ai market model: {horizon}-day residual interval is invalid")
+        reliability = model.get("reliability")
+        if not isinstance(reliability, (int, float)) or not 0 <= float(reliability) <= 1:
+            fail(f"ai market model: {horizon}-day reliability is invalid")
+    return (
+        "ai market model: 400 stocks, "
+        f"{sum(int(model['validation_samples']) for model in horizons.values())} validation samples"
+    )
 
 
 def validate_build_health(build_report: dict) -> list[str]:
@@ -576,6 +690,7 @@ def main() -> int:
     summaries: list[str] = validate_segmented_payloads()
     summaries.append(validate_dart_corp_codes())
     summaries.append(validate_krx_universe())
+    summaries.append(validate_ai_market_model())
     rows_by_dataset: dict[str, list[dict]] = {}
     for name in ("prices", "macro", "credit", "adr", "disclosures"):
         payload = load_payload(name)

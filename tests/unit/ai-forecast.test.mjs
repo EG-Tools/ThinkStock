@@ -11,6 +11,7 @@ vm.runInContext(source, context);
 const {
   buildContextSignal,
   buildForecast,
+  marketModelForHorizon,
   nextBusinessDates,
 } = context.ThinkStockAiForecast;
 
@@ -194,4 +195,65 @@ test("reports point-in-time environment coverage when data is available", () => 
 
   assert.equal(forecast.marketEnvironment.coverage, 1);
   assert.ok(Number.isFinite(forecast.marketEnvironment.combined));
+});
+
+test("blends a validated top-400 market model without replacing the local guardrails", () => {
+  const { dates, prices, kospi } = syntheticHistory(1100);
+  const common = {
+    series: "005930.KS",
+    dates,
+    prices,
+    marketCandidates: [{ series: "^KS11", dates, prices: kospi }],
+  };
+  const local = buildForecast(common);
+  const marketModel = {
+    format: "thinkstock-ai-market-model-v1",
+    generated_at: "2026-07-23",
+    horizons: Object.fromEntries([20, 63, 126].map((horizon) => [String(horizon), {
+      indexes: [0],
+      coefficients: [0.2, 0],
+      means: [0],
+      deviations: [1],
+      reliability: 0.4,
+      residual80: 0.03,
+      metrics: { improvement: 0.1, directionAccuracy: 0.6 },
+    }])),
+  };
+  const blended = buildForecast({ ...common, marketModel });
+
+  assert.equal(blended.model.marketModelUsed, true);
+  assert.match(blended.model.name, /top-400/);
+  assert.equal(blended.model.version, "2026-07-23");
+  assert.ok(blended.prices.at(-1) > local.prices.at(-1));
+});
+
+test("ignores a market model that did not beat its validation baseline", () => {
+  const { dates, prices, kospi } = syntheticHistory(1000);
+  const forecast = buildForecast({
+    series: "005930.KS",
+    dates,
+    prices,
+    marketCandidates: [{ series: "^KS11", dates, prices: kospi }],
+    marketModel: {
+      generated_at: "rejected",
+      horizons: Object.fromEntries([20, 63, 126].map((horizon) => [String(horizon), {
+        indexes: [0], coefficients: [1, 0], means: [0], deviations: [1], reliability: 0.6,
+        metrics: { improvement: -0.1, directionAccuracy: 0.7 },
+      }])),
+    },
+  });
+
+  assert.equal(forecast.model.marketModelUsed, false);
+  assert.equal(forecast.model.name, "purged multi-horizon ensemble");
+});
+
+test("accepts every validated horizon in the generated top-400 artifact", async () => {
+  const marketModel = JSON.parse(await readFile(path.resolve("docs/data/ai_market_model.json"), "utf8"));
+  for (const horizon of [20, 63, 126]) {
+    const model = marketModelForHorizon(marketModel, horizon);
+    assert.ok(model);
+    assert.equal(model.coefficients.length, 18);
+    assert.equal(model.indexes.length, 17);
+    assert.ok(model.reliability > 0);
+  }
 });

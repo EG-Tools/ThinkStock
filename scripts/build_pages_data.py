@@ -14,6 +14,7 @@ from xml.etree import ElementTree as ET
 
 import pandas as pd
 
+from build_ai_market_model import build_or_reuse_ai_market_model
 from data_build_support import (
     DART_OVERLAP_DAYS,
     ECOS_LEADING_OVERLAP_MONTHS,
@@ -129,6 +130,7 @@ DISCLOSURE_DATA_DIR = DATA_DIR / "disclosures"
 OUTPUT_DART_CORP_CODES_JSON = DATA_DIR / "dart_corp_codes.json"
 DART_CORP_CODE_DATA_DIR = DATA_DIR / "dart_corp_codes"
 OUTPUT_KRX_UNIVERSE_JSON = DATA_DIR / "krx_universe.json"
+OUTPUT_AI_MARKET_MODEL_JSON = DATA_DIR / "ai_market_model.json"
 OUTPUT_BUILD_REPORT_JSON = DATA_DIR / "build_report.json"
 OUTPUT_BUILD_HISTORY_JSON = DATA_DIR / "build_history.json"
 LOOKBACK_YEARS = 30
@@ -1529,6 +1531,40 @@ def main() -> None:
         status="ok" if krx_universe.get("records") else ("skipped" if not krx_key else "empty"),
     )
 
+    ai_model_started = monotonic()
+    ai_market_model: dict = {}
+    ai_model_status = "skipped"
+    ai_model_error = ""
+    try:
+        ai_market_model, ai_model_status = build_or_reuse_ai_market_model(
+            OUTPUT_AI_MARKET_MODEL_JSON,
+            api_key=krx_key,
+            client=http_client(),
+            force=os.environ.get("AI_MODEL_FORCE", "").strip() == "1",
+        )
+    except Exception as exc:
+        ai_model_error = str(exc).splitlines()[0].strip()
+        print(f"AI market model build failed: {ai_model_error}")
+        build_report["events"].append(f"AI market model build failed: {ai_model_error}")
+    ai_universe = ai_market_model.get("universe") if isinstance(ai_market_model, dict) else {}
+    ai_health_status = {
+        "built": "ok",
+        "cached": "ok",
+        "stale-cache": "degraded",
+        "skipped": "skipped",
+    }.get(ai_model_status, ai_model_status)
+    pipeline.record(
+        "ai_market_model",
+        {
+            "rows": int((ai_universe or {}).get("training_tickers") or 0),
+            "latest": str((ai_universe or {}).get("base_date") or ""),
+            "mode": ai_model_status,
+        },
+        ai_model_started,
+        status="error" if ai_model_error else ai_health_status,
+        error=ai_model_error,
+    )
+
     dart_key = resolve_dart_api_key()
     dart_corp_map = load_existing_dart_corp_code_seed()
     dart_corp_started = monotonic()
@@ -1687,6 +1723,7 @@ def main() -> None:
     }
     build_report["outputs"]["dart_corp_codes"] = payload_file_summary(OUTPUT_DART_CORP_CODES_JSON)
     build_report["outputs"]["krx_universe"] = payload_file_summary(OUTPUT_KRX_UNIVERSE_JSON)
+    build_report["outputs"]["ai_market_model"] = payload_file_summary(OUTPUT_AI_MARKET_MODEL_JSON)
     http_metrics = aggregate_http_metrics()
     warnings = health_warnings(build_report["sources"])
     if int(http_metrics.get("failures") or 0) > 0:

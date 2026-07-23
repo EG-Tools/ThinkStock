@@ -64,6 +64,14 @@ const {
   isAnalysisFresh,
   normalizeAnalysisRecord,
 } = aiAnalysisCacheModule;
+const aiForecastJournalModule = globalThis.ThinkStockAiForecastJournal;
+if (!aiForecastJournalModule) throw new Error("AI forecast journal module failed to load");
+const {
+  SCHEMA_VERSION: AI_FORECAST_JOURNAL_SCHEMA_VERSION,
+  buildForecastRecord,
+  mergeForecastRecords,
+  scoreForecastRecord,
+} = aiForecastJournalModule;
 const macdOscillatorModule = globalThis.ThinkStockMacdOscillator;
 if (!macdOscillatorModule) throw new Error("MACD oscillator module failed to load");
 const { buildMacdOscillator, thinMacdPoints } = macdOscillatorModule;
@@ -139,7 +147,7 @@ const API_SETTINGS_SESSION_KEY = "thinkstock-api-session-v1";
 const DART_GATEWAY_SETTINGS_KEY = "thinkstock-dart-gateway-v1";
 const DART_GATEWAY_SETTINGS_SESSION_KEY = "thinkstock-dart-gateway-session-v1";
 const DATA_CACHE_DB_NAME = "thinkstock-runtime-cache-v1";
-const DATA_CACHE_DB_VERSION = 3;
+const DATA_CACHE_DB_VERSION = 4;
 const DATA_CACHE_STORE_NAME = "snapshots";
 const DATA_CACHE_RECORD_KEY = "latest";
 const DATA_CACHE_LOCAL_KEY = "thinkstock-runtime-cache-v1";
@@ -158,6 +166,7 @@ const LOCAL_SNAPSHOT_MAX_DISCLOSURES = 80;
 const TICKER_PRICE_CACHE_STORE_NAME = "tickerPrices";
 const TICKER_DISCLOSURE_CACHE_STORE_NAME = "tickerDisclosures";
 const TICKER_AI_ANALYSIS_CACHE_STORE_NAME = "tickerAiAnalysis";
+const TICKER_AI_FORECAST_JOURNAL_STORE_NAME = "tickerAiForecastJournal";
 const GRANULAR_CACHE_SCHEMA_VERSION = 1;
 const TICKER_DISCLOSURE_CACHE_SCHEMA_VERSION = 2;
 const GRANULAR_CACHE_MAX_IDLE_DAYS = 120;
@@ -166,7 +175,7 @@ const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.22";
+const APP_VERSION = "1.23";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -190,6 +199,7 @@ const indexedCacheStore = appStorageModule.createIndexedCacheStore(globalThis, {
     TICKER_PRICE_CACHE_STORE_NAME,
     TICKER_DISCLOSURE_CACHE_STORE_NAME,
     TICKER_AI_ANALYSIS_CACHE_STORE_NAME,
+    TICKER_AI_FORECAST_JOURNAL_STORE_NAME,
   ],
 });
 const dartGatewaySettingsStore = appStorageModule.createApiSettingsStore(globalThis, {
@@ -216,6 +226,8 @@ const DART_DISCLOSURE_CACHE_TTL_DAYS = 1;
 const DART_GATEWAY_URL = "https://thinkstock-api.keg0320.workers.dev";
 const DART_GATEWAY_DISCLOSURE_ENDPOINT = `${DART_GATEWAY_URL}/api/dart/disclosures`;
 const AI_ANALYSIS_ENDPOINT = `${DART_GATEWAY_URL}/api/analysis`;
+const AI_FORECAST_JOURNAL_ENDPOINT = `${DART_GATEWAY_URL}/api/forecast-journal`;
+const AI_MARKET_MODEL_URL = "./data/ai_market_model.json";
 const DART_VISIBLE_REFRESH_CONCURRENCY = 2;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NETWORK_REQUEST_TIMEOUT_MS = 12000;
@@ -423,6 +435,16 @@ let lastAiForecastTraceCount = 0;
 let aiAnalysisByTicker = new Map();
 let aiAnalysisPromises = new Map();
 let aiAnalysisPendingTickers = new Set();
+let aiMarketModel = null;
+let aiMarketModelPromise = null;
+let aiMarketModelLoadSettled = false;
+let aiForecastJournalPromises = new Map();
+let aiForecastJournalQueued = new Set();
+let aiForecastWorker = null;
+let aiForecastWorkerSeq = 0;
+let aiForecastWorkerRequests = new Map();
+let aiForecastProgressActive = false;
+let aiForecastProgressHideTimer = 0;
 let showMacdOscillator = false;
 let lastMacdTraceCount = 0;
 let lastMacdRenderKey = "";
@@ -3899,6 +3921,102 @@ function visibleAiAnalysisTickers() {
     .filter((ticker) => /^\d{6}\.(KS|KQ)$/.test(ticker) && !hiddenSeries.has(ticker)))];
 }
 
+async function loadAiMarketModel() {
+  if (aiMarketModel) return aiMarketModel;
+  if (aiMarketModelPromise) return aiMarketModelPromise;
+  aiMarketModelPromise = fetchWithTimeout(AI_MARKET_MODEL_URL, { cache: "no-cache" }, 20000)
+    .then(async (response) => {
+      if (!response.ok) throw new Error(`AI market model HTTP ${response.status}`);
+      const payload = await response.json();
+      if (!payload || typeof payload !== "object" || !payload.horizons) {
+        throw new Error("Invalid AI market model");
+      }
+      aiMarketModel = payload;
+      setAiForecastProgress(20, "시장 학습 모델 준비");
+      return payload;
+    })
+    .catch(() => null)
+    .finally(() => {
+      aiMarketModelPromise = null;
+      aiMarketModelLoadSettled = true;
+      if (showAiForecast) requestChartRender(lastAiForecastTraceCount > 0);
+    });
+  return aiMarketModelPromise;
+}
+
+function setAiForecastProgress(value, label = "AI 계산") {
+  if (!aiForecastProgressActive) return;
+  const progress = Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+  const wrap = document.getElementById("aiForecastProgress");
+  const text = document.getElementById("aiForecastProgressText");
+  const bar = document.getElementById("aiForecastProgressBar");
+  if (!wrap || !text || !bar) return;
+  wrap.hidden = false;
+  text.textContent = `${label} ${progress}%`;
+  bar.style.width = `${progress}%`;
+}
+
+function startAiForecastProgress() {
+  if (aiForecastProgressHideTimer) clearTimeout(aiForecastProgressHideTimer);
+  aiForecastProgressHideTimer = 0;
+  aiForecastProgressActive = true;
+  setAiForecastProgress(0, "AI 자료 준비");
+}
+
+function finishAiForecastProgress() {
+  if (!aiForecastProgressActive) return;
+  setAiForecastProgress(100, "AI 계산 완료");
+  aiForecastProgressHideTimer = setTimeout(() => {
+    aiForecastProgressActive = false;
+    const wrap = document.getElementById("aiForecastProgress");
+    if (wrap) wrap.hidden = true;
+  }, 650);
+}
+
+function stopAiForecastProgress() {
+  aiForecastProgressActive = false;
+  if (aiForecastProgressHideTimer) clearTimeout(aiForecastProgressHideTimer);
+  aiForecastProgressHideTimer = 0;
+  const wrap = document.getElementById("aiForecastProgress");
+  if (wrap) wrap.hidden = true;
+}
+
+function ensureAiForecastWorker() {
+  if (aiForecastWorker) return aiForecastWorker;
+  if (typeof Worker !== "function") return null;
+  const worker = new Worker(`./modules/ai-forecast-worker.js?v=${encodeURIComponent(APP_BUILD_VERSION)}`);
+  worker.onmessage = (event) => {
+    const request = aiForecastWorkerRequests.get(Number(event.data?.id));
+    if (!request) return;
+    aiForecastWorkerRequests.delete(Number(event.data.id));
+    if (event.data?.error) request.reject(new Error(event.data.error));
+    else request.resolve(event.data?.forecast || null);
+  };
+  worker.onerror = () => {
+    aiForecastWorkerRequests.forEach(({ reject }) => reject(new Error("AI forecast worker failed")));
+    aiForecastWorkerRequests.clear();
+    worker.terminate();
+    if (aiForecastWorker === worker) aiForecastWorker = null;
+  };
+  aiForecastWorker = worker;
+  return worker;
+}
+
+function runAiForecast(options) {
+  const worker = ensureAiForecastWorker();
+  if (!worker) return Promise.resolve(buildAiForecast(options));
+  const id = ++aiForecastWorkerSeq;
+  return new Promise((resolve, reject) => {
+    aiForecastWorkerRequests.set(id, { resolve, reject });
+    try {
+      worker.postMessage({ id, options });
+    } catch (error) {
+      aiForecastWorkerRequests.delete(id);
+      resolve(buildAiForecast(options));
+    }
+  });
+}
+
 async function readAiAnalysisCacheForTicker(ticker) {
   try {
     const stored = await readIndexedDbRecord(TICKER_AI_ANALYSIS_CACHE_STORE_NAME, ticker);
@@ -3969,7 +4087,87 @@ async function refreshAiAnalysisForVisibleSeries() {
   if (!tickers.length) return 0;
   const before = aiAnalysisByTicker.size;
   await mapWithConcurrency(tickers, 2, requestAiAnalysisForTicker);
+  setAiForecastProgress(35, "실적·컨센서스 준비");
   return Math.max(0, aiAnalysisByTicker.size - before);
+}
+
+async function readAiForecastJournal(ticker) {
+  try {
+    const value = await readIndexedDbRecord(TICKER_AI_FORECAST_JOURNAL_STORE_NAME, ticker);
+    return mergeForecastRecords([], value?.records || []);
+  } catch (_) {
+    return [];
+  }
+}
+
+async function saveAiForecastJournal(ticker, records) {
+  try {
+    await writeIndexedDbRecord(TICKER_AI_FORECAST_JOURNAL_STORE_NAME, ticker, {
+      schema: AI_FORECAST_JOURNAL_SCHEMA_VERSION,
+      ticker,
+      savedAt: Date.now(),
+      lastAccessed: Date.now(),
+      records: mergeForecastRecords([], records),
+    });
+    pruneGranularCacheStore(TICKER_AI_FORECAST_JOURNAL_STORE_NAME).catch(() => {});
+  } catch (_) {}
+}
+
+async function syncAiForecastJournal(ticker, forecast, historyRows) {
+  const record = buildForecastRecord({
+    ticker,
+    modelVersion: forecast?.model?.version || forecast?.model?.name || "local-v1",
+    forecast,
+  });
+  if (!record) return null;
+  if (aiForecastJournalPromises.has(record.id)) return aiForecastJournalPromises.get(record.id);
+  const task = (async () => {
+    let records = await readAiForecastJournal(ticker);
+    if (canUseDartGateway()) {
+      try {
+        const response = await fetchWithTimeout(
+          `${AI_FORECAST_JOURNAL_ENDPOINT}?ticker=${encodeURIComponent(ticker)}`,
+          {
+            cache: "no-store",
+            headers: { Authorization: `Bearer ${getDartGatewayAccessToken()}` },
+          },
+          15000,
+        );
+        const payload = await response.json().catch(() => null);
+        if (response.ok) records = mergeForecastRecords(records, payload?.records || payload?.journal?.records || []);
+      } catch (_) {}
+    }
+    records = mergeForecastRecords(records, [record])
+      .map((item) => scoreForecastRecord(item, historyRows.map((row) => ({
+        date: row.date,
+        close: row[ticker],
+      }))))
+      .filter(Boolean);
+    await saveAiForecastJournal(ticker, records);
+    if (canUseDartGateway()) {
+      try {
+        await fetchWithTimeout(AI_FORECAST_JOURNAL_ENDPOINT, {
+          method: "POST",
+          cache: "no-store",
+          headers: {
+            Authorization: `Bearer ${getDartGatewayAccessToken()}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ ticker, records }),
+        }, 15000);
+      } catch (_) {}
+    }
+    return records;
+  })().finally(() => aiForecastJournalPromises.delete(record.id));
+  aiForecastJournalPromises.set(record.id, task);
+  return task;
+}
+
+function queueAiForecastJournalSync(ticker, forecast, historyRows) {
+  const queueKey = `${ticker}:${forecast?.dates?.[0] || ""}:${forecast?.model?.version || ""}`;
+  if (!ticker || aiForecastJournalQueued.has(queueKey)) return;
+  aiForecastJournalQueued.add(queueKey);
+  setTimeout(() => syncAiForecastJournal(ticker, forecast, historyRows).catch(() => {}), 0);
 }
 
 function disclosureTargetTickers() {
@@ -4437,7 +4635,7 @@ function aiForecastHistoryRows(series) {
   ));
 }
 
-function buildAiForecastTraces(rows, seriesModels) {
+async function buildAiForecastTraces(rows, seriesModels) {
   if (!showAiForecast) {
     lastAiForecastTraceCount = 0;
     syncAiForecastToggleButton(0);
@@ -4445,14 +4643,23 @@ function buildAiForecastTraces(rows, seriesModels) {
   }
   const traces = [];
   let forecastCount = 0;
-  (seriesModels || []).forEach((model) => {
+  const forecastCandidates = (seriesModels || []).filter((model) => {
     const series = String(model?.series || "").toUpperCase();
-    if (!isForecastSeries(series) || hiddenSeries.has(series)) return;
+    return isForecastSeries(series) && !hiddenSeries.has(series);
+  });
+  const stockCandidates = forecastCandidates.filter((model) => (
+    /^\d{6}\.(KS|KQ)$/.test(String(model?.series || "").toUpperCase())
+  ));
+  const eligibleModels = stockCandidates.length ? stockCandidates : forecastCandidates;
+  setAiForecastProgress(40, "AI 계산 준비");
+  let completedModels = 0;
+  for (const model of eligibleModels) {
+    const series = String(model?.series || "").toUpperCase();
     const analysis = aiAnalysisByTicker.get(series) || null;
-    if (aiAnalysisPendingTickers.has(series) && !analysis) return;
+    if (aiAnalysisPendingTickers.has(series) && !analysis) continue;
     const macdModel = getMacdModelForSeries(series);
     const historyRows = aiForecastHistoryRows(series);
-    const forecast = buildAiForecast({
+    const forecast = await runAiForecast({
       series,
       dates: historyRows.map((row) => row.date),
       prices: historyRows.map((row) => row[series]),
@@ -4469,10 +4676,19 @@ function buildAiForecastTraces(rows, seriesModels) {
       disclosures: disclosureRows,
       consensus: analysis?.consensus || null,
       financials: analysis?.financials || [],
+      marketModel: aiMarketModel,
       macdSignal: macdModel?.signal || 0,
       horizon: 126,
     });
-    if (!forecast) return;
+    completedModels += 1;
+    setAiForecastProgress(
+      40 + ((completedModels / Math.max(1, eligibleModels.length)) * 55),
+      `${labelName(series)} 계산`,
+    );
+    if (!forecast) continue;
+    if (aiMarketModelLoadSettled && /^\d{6}\.(KS|KQ)$/.test(series)) {
+      queueAiForecastJournalSync(series, forecast, historyRows);
+    }
     forecastCount += 1;
     const consensusUsed = Number(forecast.signals?.consensusConfidence) > 0;
     const fundamentalsUsed = Number(forecast.signals?.fundamentalsConfidence) > 0;
@@ -4546,7 +4762,7 @@ function buildAiForecastTraces(rows, seriesModels) {
         fundamentalsUsed,
       },
     });
-  });
+  }
   lastAiForecastTraceCount = forecastCount;
   syncAiForecastToggleButton(forecastCount);
   return traces;
@@ -4655,7 +4871,8 @@ async function renderChart(preserveZoom = true) {
     };
   });
 
-  const aiForecastTraces = buildAiForecastTraces(rows, seriesModels);
+  const aiForecastTraces = await buildAiForecastTraces(rows, seriesModels);
+  if (renderGeneration !== chartRenderGeneration) return;
   traces.push(...aiForecastTraces);
 
   if (!showDisclosures) {
@@ -4796,6 +5013,9 @@ async function renderChart(preserveZoom = true) {
     modelSource: lastMainChartModelSource,
     renderMode,
   });
+  const aiInputsReady = aiMarketModelLoadSettled
+    && visibleAiAnalysisTickers().every((ticker) => !aiAnalysisPendingTickers.has(ticker));
+  if (showAiForecast && aiInputsReady) finishAiForecastProgress();
 }
 
 function getMacdModelForSeries(series) {
@@ -6359,7 +6579,11 @@ async function boot() {
       showAiForecast = !showAiForecast;
       saveState();
       syncAiForecastToggleButton();
-      if (showAiForecast) refreshAiAnalysisForVisibleSeries().catch(() => {});
+      if (showAiForecast) {
+        startAiForecastProgress();
+        refreshAiAnalysisForVisibleSeries().catch(() => {});
+        loadAiMarketModel().catch(() => {});
+      } else stopAiForecastProgress();
       requestChartRender(false);
     });
     document.getElementById("macdToggle").addEventListener("click", () => {
@@ -6371,7 +6595,11 @@ async function boot() {
         setMessage(msgEl, err.message || "MACD 차트 렌더링 오류", true);
       });
     });
-    if (showAiForecast) refreshAiAnalysisForVisibleSeries().catch(() => {});
+    if (showAiForecast) {
+      startAiForecastProgress();
+      refreshAiAnalysisForVisibleSeries().catch(() => {});
+      loadAiMarketModel().catch(() => {});
+    }
 
     appUiBindingsModule.bindHoverToggle({
       button: document.getElementById("hoverToggle"),

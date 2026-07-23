@@ -18,6 +18,8 @@ const PRECACHE_ASSETS = [
   "./modules/auxiliary-chart-model.js?v=dev",
   "./modules/data-worker.js?v=dev",
   "./modules/chart-model-worker.js?v=dev",
+  "./modules/ai-forecast-worker.js?v=dev",
+  "./modules/ai-forecast.js?v=dev",
   "./vendor/plotly-thinkstock-2.35.2.min.js?v=dev",
   "./manifest.webmanifest",
   "./icon.svg",
@@ -27,6 +29,7 @@ const PRECACHE_ASSETS = [
   "./data/adr_data_recent.json",
   "./data/data_manifest.json",
   "./data/disclosures.json",
+  "./data/ai_market_model.json",
 ];
 const DATA_URL_PATTERNS = [
   "/data/prices.json",
@@ -42,6 +45,7 @@ const DATA_URL_PATTERNS = [
   "/data/dart_corp_codes.json",
   "/data/dart_corp_codes/",
   "/data/krx_universe.json",
+  "/data/ai_market_model.json",
   "/data/build_report.json",
   "/data/build_history.json",
   "/data/disclosures/",
@@ -59,6 +63,7 @@ const CORE_ASSET_PATHS = [
   "/modules/auxiliary-chart-model.js",
   "/modules/data-worker.js",
   "/modules/chart-model-worker.js",
+  "/modules/ai-forecast-worker.js",
   "/modules/performance-diagnostics.js",
   "/modules/dart-disclosure.js",
   "/vendor/plotly-thinkstock-2.35.2.min.js",

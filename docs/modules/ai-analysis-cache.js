@@ -1,7 +1,7 @@
 (function initThinkStockAiAnalysisCache(globalScope) {
   "use strict";
 
-  const SCHEMA_VERSION = 1;
+  const SCHEMA_VERSION = 2;
   const TICKER_PATTERN = /^\d{6}\.(KS|KQ)$/;
 
   function finiteOrNull(value) {
@@ -76,6 +76,37 @@
     ));
   }
 
+  function sanitizeSnapshot(value, ticker) {
+    if (!value || typeof value !== "object") return null;
+    const asOf = String(value.asOf || value.as_of || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(asOf)) return null;
+    const consensus = sanitizeConsensus(value.consensus);
+    const financials = mergeFinancialRecords([], value.financials);
+    if (!consensus && !financials.length) return null;
+    const savedAt = Number(value.savedAt ?? value.saved_at);
+    return {
+      asOf,
+      savedAt: Number.isFinite(savedAt) && savedAt > 0 ? savedAt : Date.parse(`${asOf}T00:00:00Z`),
+      ticker,
+      consensus,
+      financials,
+    };
+  }
+
+  function mergeSnapshots(existing, incoming, ticker) {
+    const merged = new Map();
+    [...(existing || []), ...(incoming || [])].forEach((value) => {
+      const snapshot = sanitizeSnapshot(value, ticker);
+      if (!snapshot) return;
+      const key = snapshot.asOf.slice(0, 7);
+      const prior = merged.get(key);
+      if (!prior || snapshot.savedAt >= prior.savedAt) merged.set(key, snapshot);
+    });
+    return [...merged.values()]
+      .sort((left, right) => left.asOf.localeCompare(right.asOf))
+      .slice(-60);
+  }
+
   function normalizeAnalysisRecord(ticker, payload, existing = null, now = Date.now()) {
     const target = String(ticker || "").trim().toUpperCase();
     if (!TICKER_PATTERN.test(target)) return null;
@@ -83,7 +114,8 @@
     const prior = existing && typeof existing === "object" ? existing : {};
     const consensus = sanitizeConsensus(source.consensus) || sanitizeConsensus(prior.consensus);
     const financials = mergeFinancialRecords(prior.financials, source.financials);
-    if (!consensus && !financials.length) return null;
+    const snapshots = mergeSnapshots(prior.snapshots, source.snapshots, target);
+    if (!consensus && !financials.length && !snapshots.length) return null;
     const suppliedSavedAt = Number(source.savedAt);
     const priorSavedAt = Number(prior.savedAt);
     return {
@@ -95,6 +127,7 @@
       lastAccessed: now,
       consensus,
       financials,
+      snapshots,
     };
   }
 
@@ -111,7 +144,9 @@
     SCHEMA_VERSION,
     isAnalysisFresh,
     mergeFinancialRecords,
+    mergeSnapshots,
     normalizeAnalysisRecord,
     sanitizeFinancialRecord,
+    sanitizeSnapshot,
   });
 }(typeof self !== "undefined" ? self : globalThis));

@@ -49,7 +49,7 @@ class RetryingHttpClient:
                     response.raise_for_status()
                     return response
                 response.raise_for_status()
-            except REQUEST_EXCEPTION as exc:
+            except (REQUEST_EXCEPTION, RuntimeError) as exc:
                 last_error = exc
                 response = getattr(exc, "response", None)
                 status_code = getattr(response, "status_code", None)

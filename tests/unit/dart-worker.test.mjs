@@ -4,7 +4,9 @@ import test from "node:test";
 import {
   handleRequest,
   isAllowedOrigin,
+  mergeAnalysisSnapshots,
   mergeFinancialRecords,
+  mergeForecastJournalRecords,
   mergeRecords,
   parseConsensusHtml,
   parseEarningsTrendHtml,
@@ -27,18 +29,52 @@ function memoryKv(initial = {}) {
 }
 
 function request(path, options = {}) {
+  const body = options.body === undefined
+    ? undefined
+    : (typeof options.body === "string" ? options.body : JSON.stringify(options.body));
   return new Request(`https://thinkstock-api.keg0320.workers.dev${path}`, {
+    method: options.method || "GET",
     headers: {
       Origin: "https://eg-tools.github.io",
       ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
+      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      ...(options.headers || {}),
     },
+    body,
   });
+}
+
+function forecastRecord(overrides = {}) {
+  return {
+    id: "218410.KQ:2026-07-23:model-1",
+    ticker: "218410.KQ",
+    asOf: "2026-07-23",
+    basePrice: 32000,
+    modelVersion: "model-1",
+    createdAt: 1784736000000,
+    updatedAt: 1784736000000,
+    horizons: {
+      20: {
+        targetDate: "2026-08-20",
+        predictedPrice: 35000,
+        lowerPrice: 29000,
+        upperPrice: 41000,
+      },
+    },
+    ...overrides,
+  };
 }
 
 test("allows only ThinkStock and local app origins", () => {
   assert.equal(isAllowedOrigin("https://eg-tools.github.io"), true);
   assert.equal(isAllowedOrigin("http://127.0.0.1:8787"), true);
   assert.equal(isAllowedOrigin("https://example.com"), false);
+});
+
+test("allows authenticated journal POST requests through CORS preflight", async () => {
+  const response = await handleRequest(request("/api/forecast-journal", { method: "OPTIONS" }), {});
+  assert.equal(response.status, 204);
+  assert.match(response.headers.get("Access-Control-Allow-Methods"), /POST/);
 });
 
 test("rejects disclosure requests without the personal access token", async () => {
@@ -190,4 +226,192 @@ test("returns a fresh accumulated analysis cache without an upstream request", a
   assert.equal(response.status, 200);
   assert.equal(payload.cached, true);
   assert.deepEqual(payload.financials, financials);
+  assert.equal(payload.snapshots.length, 1);
+  const migrated = JSON.parse(cache.values.get("analysis:218410.KQ"));
+  assert.equal(migrated.schema, 3);
+  assert.equal(migrated.snapshots.length, 1);
+  assert.deepEqual(migrated.snapshots[0].financials, financials);
+});
+
+test("keeps the latest point-in-time analysis snapshot per month and caps history at 60", () => {
+  const snapshots = [];
+  for (let index = 0; index < 62; index += 1) {
+    const savedAt = Date.UTC(2021 + Math.floor(index / 12), index % 12, 1);
+    snapshots.push({
+      asOf: new Date(savedAt).toISOString().slice(0, 10),
+      savedAt,
+      consensus: { targetPrice: 10000 + index },
+      financials: [],
+    });
+  }
+  const replacement = {
+    ...snapshots.at(-1),
+    savedAt: snapshots.at(-1).savedAt + 1000,
+    consensus: { targetPrice: 99999 },
+  };
+  const result = mergeAnalysisSnapshots(snapshots, [replacement]);
+  assert.equal(result.length, 60);
+  assert.equal(result[0].asOf, "2021-03-01");
+  assert.equal(result.at(-1).consensus.targetPrice, 99999);
+});
+
+test("rejects forecast journal requests without the personal access token", async () => {
+  const response = await handleRequest(
+    request("/api/forecast-journal?ticker=218410.KQ"),
+    { THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: memoryKv() },
+  );
+  assert.equal(response.status, 401);
+});
+
+test("returns an empty forecast journal for a ticker without saved forecasts", async () => {
+  const response = await handleRequest(
+    request("/api/forecast-journal?ticker=218410.KQ", { token: "private" }),
+    { THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: memoryKv() },
+  );
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(payload.schema, 1);
+  assert.deepEqual(payload.records, []);
+});
+
+test("merges forecast records and mature evaluation results across devices", async () => {
+  const cache = memoryKv();
+  const env = { THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: cache };
+  const first = forecastRecord();
+  const firstResponse = await handleRequest(
+    request("/api/forecast-journal?ticker=218410.KQ", {
+      method: "POST",
+      token: "private",
+      body: { ticker: "218410.KQ", records: [first] },
+    }),
+    env,
+  );
+  assert.equal(firstResponse.status, 200);
+
+  const scored = forecastRecord({
+    updatedAt: first.updatedAt + 1000,
+    horizons: {
+      20: {
+        ...first.horizons[20],
+        actualDate: "2026-08-20",
+        actualPrice: 36000,
+        absoluteLogError: 0.028171,
+        directionCorrect: true,
+        covered: true,
+        scoredAt: first.updatedAt + 1000,
+      },
+    },
+  });
+  const second = forecastRecord({
+    id: "218410.KQ:2026-07-24:model-1",
+    asOf: "2026-07-24",
+    createdAt: first.createdAt + 2000,
+    updatedAt: first.updatedAt + 2000,
+  });
+  const secondResponse = await handleRequest(
+    request("/api/forecast-journal?ticker=218410.KQ", {
+      method: "POST",
+      token: "private",
+      body: { records: [scored, second] },
+    }),
+    env,
+  );
+  const payload = await secondResponse.json();
+  assert.equal(secondResponse.status, 200);
+  assert.equal(payload.records.length, 2);
+  assert.equal(payload.records[0].horizons[20].actualPrice, 36000);
+  assert.equal(payload.records[0].horizons[20].directionCorrect, true);
+
+  const saved = JSON.parse(cache.values.get("forecast-journal:218410.KQ"));
+  assert.equal(saved.schema, 1);
+  assert.equal(saved.records.length, 2);
+});
+
+test("keeps a newer forecast record when an older device posts stale data", () => {
+  const current = forecastRecord({ createdAt: 1000, updatedAt: 2000 });
+  const stale = forecastRecord({ createdAt: 1000, updatedAt: 1500, basePrice: 1 });
+  const records = mergeForecastJournalRecords([current], [stale], "218410.KQ", { strictIncoming: true });
+  assert.equal(records.length, 1);
+  assert.equal(records[0].basePrice, current.basePrice);
+});
+
+test("does not erase a matured score when another device posts an unscored copy", () => {
+  const base = forecastRecord();
+  const scored = forecastRecord({
+    updatedAt: base.updatedAt + 1000,
+    horizons: {
+      20: {
+        ...base.horizons[20],
+        actualDate: "2026-08-20",
+        actualPrice: 36000,
+        absoluteLogError: 0.028171,
+        directionCorrect: true,
+        covered: true,
+        scoredAt: base.updatedAt + 1000,
+      },
+    },
+  });
+  const unscored = forecastRecord({ updatedAt: base.updatedAt + 2000 });
+  const records = mergeForecastJournalRecords([scored], [unscored], "218410.KQ", { strictIncoming: true });
+  assert.equal(records[0].horizons[20].actualPrice, 36000);
+  assert.equal(records[0].updatedAt, unscored.updatedAt);
+});
+
+test("accepts the browser journal nested score format", async () => {
+  const record = forecastRecord();
+  record.horizons[20].score = {
+    actualDate: "2026-08-20",
+    actualPrice: 36000,
+    actualLogReturn: 0.02,
+    predictedLogReturn: 0.03,
+    absLogError: 0.01,
+    directionCorrect: true,
+    intervalCovered: true,
+    scoredAt: record.updatedAt + 1000,
+  };
+  const response = await handleRequest(
+    request("/api/forecast-journal?ticker=218410.KQ", {
+      method: "POST",
+      token: "private",
+      body: { records: [record] },
+    }),
+    { THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: memoryKv() },
+  );
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(payload.records[0].horizons[20].absoluteLogError, 0.01);
+  assert.equal(payload.records[0].horizons[20].covered, true);
+});
+
+test("rejects malformed, excessive, and oversized forecast journal input", async () => {
+  const env = { THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: memoryKv() };
+  const mismatch = await handleRequest(
+    request("/api/forecast-journal?ticker=218410.KQ", {
+      method: "POST",
+      token: "private",
+      body: { records: [forecastRecord({ ticker: "005930.KS" })] },
+    }),
+    env,
+  );
+  assert.equal(mismatch.status, 400);
+
+  const excessive = await handleRequest(
+    request("/api/forecast-journal?ticker=218410.KQ", {
+      method: "POST",
+      token: "private",
+      body: { records: Array.from({ length: 121 }, () => forecastRecord()) },
+    }),
+    env,
+  );
+  assert.equal(excessive.status, 400);
+
+  const oversized = await handleRequest(
+    request("/api/forecast-journal?ticker=218410.KQ", {
+      method: "POST",
+      token: "private",
+      body: "x".repeat(256 * 1024 + 1),
+    }),
+    env,
+  );
+  assert.equal(oversized.status, 413);
 });

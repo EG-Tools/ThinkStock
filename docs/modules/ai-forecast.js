@@ -418,6 +418,69 @@
     ), model.coefficients[0]);
   }
 
+  function marketModelForHorizon(marketModel, horizon) {
+    if (!marketModel || typeof marketModel !== "object") return null;
+    const models = marketModel.horizons;
+    const source = Array.isArray(models)
+      ? models.find((item) => Number(item?.days ?? item?.horizon) === horizon)
+      : models?.[String(horizon)];
+    if (!source || typeof source !== "object") return null;
+    const rawCoefficients = (source.coefficients || []).map(Number);
+    const indexes = (source.indexes || source.feature_indexes || marketModel.feature_indexes
+      || rawCoefficients.map((_, index) => index))
+      .map(Number)
+      .filter((value) => Number.isInteger(value) && value >= 0);
+    const coefficients = source.intercept !== undefined
+      ? [Number(source.intercept), ...rawCoefficients]
+      : rawCoefficients;
+    const means = (source.means || source.feature_means || []).map(Number);
+    const deviations = (
+      source.deviations || source.standard_deviations || source.feature_scales || []
+    ).map(Number);
+    if (
+      !indexes.length
+      || coefficients.length !== indexes.length + 1
+      || means.length !== indexes.length
+      || deviations.length !== indexes.length
+      || [...coefficients, ...means, ...deviations].some((value) => !Number.isFinite(value))
+      || deviations.some((value) => value <= 0)
+    ) return null;
+    const metrics = source.metrics && typeof source.metrics === "object" ? source.metrics : {};
+    const improvement = finite(metrics.improvement ?? source.improvement) || 0;
+    const directionAccuracy = finite(
+      metrics.directionAccuracy ?? metrics.direction_accuracy ?? source.direction_accuracy,
+    ) || 0;
+    const reliability = clamp(finite(source.reliability) || 0, 0, 0.6);
+    if (improvement <= 0 || directionAccuracy < 0.5 || reliability <= 0) return null;
+    return {
+      coefficients,
+      indexes,
+      means,
+      deviations,
+      reliability,
+      residual80: Math.max(
+        0,
+        finite(source.residual80 ?? source.residual_80)
+          || Math.max(
+            Math.abs(finite(source.residual_interval_80?.lower) || 0),
+            Math.abs(finite(source.residual_interval_80?.upper) || 0),
+          ),
+      ),
+      metrics: { improvement, directionAccuracy },
+    };
+  }
+
+  function marketModelPrediction(marketModel, horizon, feature) {
+    const model = marketModelForHorizon(marketModel, horizon);
+    if (!model || model.indexes.some((index) => !Number.isFinite(feature.features[index]))) return null;
+    return {
+      value: ridgePredict(model, feature.features),
+      reliability: model.reliability,
+      residual80: model.residual80,
+      metrics: model.metrics,
+    };
+  }
+
   function distanceScaler(samples, indexes) {
     return {
       means: indexes.map((index) => mean(samples.map((sample) => sample.x[index]))),
@@ -777,6 +840,7 @@
       latestRowFingerprint(options?.creditRows),
       options?.consensus || null,
       (Array.isArray(options?.financials) ? options.financials : []).slice(-4),
+      options?.marketModel?.generated_at || options?.marketModel?.generatedAt || null,
     ]);
   }
 
@@ -820,8 +884,14 @@
     if (models.some((model) => !model)) return null;
     const finalFeature = featureVector(context, prices.length - 1);
     const contextSignal = buildContextSignal(options, options.series, dates.at(-1), prices.at(-1));
+    let marketModelUsed = false;
     const predictions = models.map((model) => {
-      const raw = predictHorizon(model, finalFeature);
+      const local = predictHorizon(model, finalFeature);
+      const global = marketModelPrediction(options.marketModel, model.horizon, finalFeature);
+      const raw = global
+        ? local + ((global.value - local) * global.reliability)
+        : local;
+      if (global) marketModelUsed = true;
       const labels = model.samples.map((sample) => sample.y);
       const empiricalLow = quantile(labels, 0.05);
       const empiricalHigh = quantile(labels, 0.95);
@@ -830,7 +900,7 @@
       return {
         day: model.horizon,
         value: bounded + (contextSignal.adjustment * (model.horizon / 126)),
-        uncertainty: model.residual68,
+        uncertainty: Math.max(model.residual68, global?.residual80 || 0),
       };
     });
     const anchors = [{ day: 0, value: 0 }, ...predictions];
@@ -871,7 +941,15 @@
       projectedVolatility: finalFeature.volatility,
       patternMatches: models.at(-1).kind === "baseline" ? 0 : 10,
       model: {
-        name: "purged multi-horizon ensemble",
+        name: marketModelUsed
+          ? "top-400 cross-sectional + purged local ensemble"
+          : "purged multi-horizon ensemble",
+        version: String(
+          options.marketModel?.generated_at
+          || options.marketModel?.generatedAt
+          || "local-v1",
+        ),
+        marketModelUsed,
         horizons: models.map((item) => ({
           days: item.horizon,
           kind: item.kind,
@@ -919,6 +997,7 @@
     buildContextSignal,
     buildForecast,
     isForecastSeries,
+    marketModelForHorizon,
     nextBusinessDates,
   });
 }(typeof self !== "undefined" ? self : globalThis));
