@@ -116,11 +116,11 @@ test("returns newest DART pages progressively and completes the ticker cache", a
     requestedPages.push(page);
     return new Response(JSON.stringify({
       status: "000",
-      total_page: 2,
+      total_page: 5,
       list: [{
         corp_name: "테스트",
         report_nm: page === 1 ? "유상증자결정" : "공급계약체결",
-        rcept_dt: page === 1 ? "20260722" : "20260620",
+        rcept_dt: `202607${String(23 - page).padStart(2, "0")}`,
         rcept_no: String(page),
       }],
     }), { status: 200, headers: { "Content-Type": "application/json" } });
@@ -131,14 +131,14 @@ test("returns newest DART pages progressively and completes the ticker cache", a
       { DART_API_KEY: "dart", THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: cache },
     );
     const first = await firstResponse.json();
-    assert.equal(first.records.length, 1);
-    assert.equal(first.page, 1);
-    assert.equal(first.nextPage, 2);
+    assert.equal(first.records.length, 4);
+    assert.equal(first.page, 4);
+    assert.equal(first.nextPage, 5);
     assert.equal(first.complete, false);
     assert.equal(JSON.parse(cache.values.get("ticker:005930.KS")).complete, false);
 
     const secondResponse = await handleRequest(
-      request(`/api/dart/disclosures?ticker=005930.KS&corpCode=00126380&progressive=1&page=2&force=1&since=${first.checkedFrom}`, { token: "private" }),
+      request(`/api/dart/disclosures?ticker=005930.KS&corpCode=00126380&progressive=1&page=5&force=1&since=${first.checkedFrom}`, { token: "private" }),
       { DART_API_KEY: "dart", THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: cache },
     );
     const second = await secondResponse.json();
@@ -147,8 +147,8 @@ test("returns newest DART pages progressively and completes the ticker cache", a
     assert.equal(second.nextPage, null);
     assert.equal(second.complete, true);
     assert.equal(completedCache.complete, true);
-    assert.equal(completedCache.records.length, 2);
-    assert.deepEqual(requestedPages, [1, 2]);
+    assert.equal(completedCache.records.length, 5);
+    assert.deepEqual(requestedPages, [1, 2, 3, 4, 5]);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -30,6 +30,7 @@ const FORECAST_MODEL_PATTERN = /^[A-Za-z0-9._:+/-]{1,80}$/;
 const FORECAST_HORIZON_PATTERN = /^[1-9]\d{0,3}$/;
 const MAX_PAGES = 100;
 const PAGE_SIZE = 100;
+const PROGRESSIVE_PAGE_BATCH_SIZE = 4;
 const OVERLAP_DAYS = 7;
 const LOOKBACK_YEARS = 3;
 const IMPORTANT_DISCLOSURE_PATTERN = /반기보고서|분기보고서|사업보고서|영업\(잠정\)실적|잠정실적|매출액.?또는.?손익구조|감사보고서제출|배당|현금ㆍ현물배당|단일판매|공급계약|수주|유상증자|무상증자|감자|증권신고서\(지분증권\)|전환사채|신주인수권|신주인수권부사채|교환사채|사채권|자기주식(취득|처분)결정|주식소각|합병|분할|영업양수|영업양도|타법인주식|출자증권|신규시설투자|시설투자|최대주주변경|대표이사.*변경|영업정지|거래정지|상장폐지|관리종목|소송|횡령|배임|회생|파산|부도|공개매수|장래사업|경영계획/;
@@ -305,7 +306,7 @@ async function fetchDartPage(env, params) {
         redirect: "manual",
         headers: {
           Accept: "application/json",
-          "User-Agent": "ThinkStock/1.24 (+https://eg-tools.github.io/ThinkStock/)",
+          "User-Agent": "ThinkStock/1.26 (+https://eg-tools.github.io/ThinkStock/)",
         },
       });
       if (response.status >= 300 && response.status < 400) {
@@ -357,6 +358,24 @@ async function fetchDartDisclosurePage(env, ticker, corpCode, since, today, page
   return {
     records: mergeRecords([], records),
     totalPages: Math.min(MAX_PAGES, Math.max(1, Number(payload?.total_page) || 1)),
+  };
+}
+
+async function fetchDartDisclosureBatch(env, ticker, corpCode, since, today, startPage) {
+  const first = await fetchDartDisclosurePage(env, ticker, corpCode, since, today, startPage);
+  const lastPage = Math.min(
+    first.totalPages,
+    startPage + PROGRESSIVE_PAGE_BATCH_SIZE - 1,
+  );
+  const remaining = await Promise.all(
+    Array.from({ length: Math.max(0, lastPage - startPage) }, (_, index) => (
+      fetchDartDisclosurePage(env, ticker, corpCode, since, today, startPage + index + 1)
+    )),
+  );
+  return {
+    records: mergeRecords([], [first, ...remaining].flatMap((page) => page.records)),
+    totalPages: first.totalPages,
+    lastPage,
   };
 }
 
@@ -724,9 +743,9 @@ export async function handleRequest(request, env, ctx = null) {
   );
   try {
     if (progressive) {
-      const page = await fetchDartDisclosurePage(env, ticker, corpCode, since, today, requestedPage);
-      const records = mergeRecords(cached?.records || [], page.records);
-      const complete = requestedPage >= page.totalPages;
+      const batch = await fetchDartDisclosureBatch(env, ticker, corpCode, since, today, requestedPage);
+      const records = mergeRecords(cached?.records || [], batch.records);
+      const complete = batch.lastPage >= batch.totalPages;
       const cacheWrite = writeCache(env, ticker, corpCode, records, complete);
       if (ctx?.waitUntil) ctx.waitUntil(cacheWrite);
       else await cacheWrite;
@@ -736,11 +755,11 @@ export async function handleRequest(request, env, ctx = null) {
         cached: false,
         checkedFrom: since,
         latestDate: records.at(-1)?.date || "",
-        records: page.records,
+        records: batch.records,
         accumulatedCount: records.length,
-        page: requestedPage,
-        totalPages: page.totalPages,
-        nextPage: complete ? null : requestedPage + 1,
+        page: batch.lastPage,
+        totalPages: batch.totalPages,
+        nextPage: complete ? null : batch.lastPage + 1,
         complete,
       }, 200, origin);
     }
@@ -774,7 +793,17 @@ export async function handleRequest(request, env, ctx = null) {
 }
 
 export default {
-  fetch(request, env, ctx) {
-    return handleRequest(request, env, ctx);
+  async fetch(request, env, ctx) {
+    try {
+      return await handleRequest(request, env, ctx);
+    } catch (error) {
+      const origin = String(request.headers.get("Origin") || "");
+      console.error(JSON.stringify({
+        event: "unhandled-request-error",
+        path: new URL(request.url).pathname,
+        message: String(error?.message || error),
+      }));
+      return jsonResponse({ ok: false, error: "ThinkStock server request failed" }, 500, origin);
+    }
   },
 };
