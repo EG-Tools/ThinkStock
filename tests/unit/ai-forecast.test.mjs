@@ -81,6 +81,26 @@ test("does not forecast newly listed stocks with fewer than 90 trading days", ()
   }), null);
 });
 
+test("keeps predicted prices identical when only the visible chart range changes", () => {
+  const dates = tradingDates(900);
+  const prices = dates.map((_, index) => 100 * Math.exp(
+    (index * 0.00018) + (Math.sin(index / 19) * 0.035),
+  ));
+  const buildWithVisiblePoints = (count) => buildForecast({
+    series: "218410.KQ",
+    dates,
+    prices,
+    transformPrices: prices.slice(-count),
+    transformChartValues: prices.slice(-count).map((price) => 60 + (price * 0.25)),
+  });
+  const threeMonths = buildWithVisiblePoints(63);
+  const thirtyYears = buildWithVisiblePoints(900);
+  assert.ok(threeMonths);
+  assert.deepEqual(threeMonths.prices, thirtyYears.prices);
+  assert.equal(threeMonths.historyDays, 900);
+  assert.equal(threeMonths.chartValues[0], 60 + (prices.at(-1) * 0.25));
+});
+
 test("weights reliable consensus direction into the context signal", () => {
   const positive = buildContextSignal({
     consensus: { targetPrice: 150, opinion: 4.5, institutions: 8 },

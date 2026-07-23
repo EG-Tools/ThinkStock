@@ -166,7 +166,7 @@ const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.16";
+const APP_VERSION = "1.17";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -4417,6 +4417,16 @@ function renderChartWhenIdleOrNow(preserveZoom = true) {
   return true;
 }
 
+function aiForecastHistoryRows(series) {
+  const source = Array.isArray(pricePayload?.records) ? pricePayload.records : [];
+  return source.filter((row) => (
+    /^\d{4}-\d{2}-\d{2}$/.test(String(row?.date || "").slice(0, 10))
+    && (!currentEnd || row.date <= currentEnd)
+    && Number.isFinite(toNum(row?.[series]))
+    && toNum(row?.[series]) > 0
+  ));
+}
+
 function buildAiForecastTraces(rows, seriesModels) {
   if (!showAiForecast) {
     lastAiForecastTraceCount = 0;
@@ -4430,11 +4440,13 @@ function buildAiForecastTraces(rows, seriesModels) {
     const analysis = aiAnalysisByTicker.get(series) || null;
     if (aiAnalysisPendingTickers.has(series) && !analysis) return;
     const macdModel = getMacdModelForSeries(series);
+    const historyRows = aiForecastHistoryRows(series);
     const forecast = buildAiForecast({
       series,
-      dates: model.xValues,
-      prices: (rows || []).map((row) => row?.[series]),
-      chartValues: model.values,
+      dates: historyRows.map((row) => row.date),
+      prices: historyRows.map((row) => row[series]),
+      transformPrices: (rows || []).map((row) => row?.[series]),
+      transformChartValues: model.values,
       macroRows,
       auxiliaryRows: adrRows,
       disclosures: disclosureRows,
@@ -4455,6 +4467,7 @@ function buildAiForecastTraces(rows, seriesModels) {
       x: forecast.dates,
       y: forecast.chartValues,
       text: forecast.prices.map((value) => formatActualValue(value)),
+      customdata: forecast.prices,
       type: MAIN_LINE_TRACE_TYPE,
       mode: "lines",
       name: `${labelName(series)} AI 가상 흐름`,

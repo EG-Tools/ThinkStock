@@ -373,6 +373,16 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page }
   ));
   expect(horizonPoints).toBe(127);
 
+  const forecastPrices = () => page.locator("#chart").evaluate((element) => (
+    (element.data || []).find((trace) => trace?.meta?.isAiForecastTrace)?.customdata || []
+  ));
+  const baselineForecast = await forecastPrices();
+  for (const months of [3, 6, 12, 360]) {
+    await page.locator(`.range-btn[data-months="${months}"]`).click();
+    await expect(page.locator(`.range-btn[data-months="${months}"]`)).toHaveClass(/is-active/);
+    await expect.poll(forecastPrices).toEqual(baselineForecast);
+  }
+
   await page.locator("#aiForecastToggle").click();
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length

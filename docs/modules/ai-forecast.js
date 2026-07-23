@@ -247,24 +247,48 @@
     const recent = returns.slice(-windowSize);
     const recentShape = normalizedShape(recent);
     const recentVolatility = standardDeviation(recent) || 0.0001;
-    const matches = [];
+    const recentTrend = clamp(mean(recent) / recentVolatility, -1, 1);
+    const recentDownside = mean(recent.filter((value) => value < 0)) / recentVolatility;
+    const candidates = [];
     const latestCandidateEnd = returns.length - horizon - 21;
     for (let end = windowSize; end <= latestCandidateEnd; end += 3) {
       const candidate = returns.slice(end - windowSize, end);
       const candidateShape = normalizedShape(candidate);
+      const candidateVolatility = standardDeviation(candidate) || 0.0001;
       let shapeError = 0;
       for (let index = 0; index < windowSize; index += 1) {
         shapeError += (recentShape[index] - candidateShape[index]) ** 2;
       }
       const volatilityError = Math.abs(Math.log(
-        Math.max(0.0001, standardDeviation(candidate)) / recentVolatility,
+        candidateVolatility / recentVolatility,
       ));
-      matches.push({
-        score: (shapeError / windowSize) + (volatilityError * 0.35),
+      const trendError = Math.abs(
+        recentTrend - clamp(mean(candidate) / candidateVolatility, -1, 1),
+      );
+      const candidateDownside = mean(candidate.filter((value) => value < 0)) / candidateVolatility;
+      const downsideError = Math.abs(recentDownside - candidateDownside);
+      const ageRatio = latestCandidateEnd > windowSize
+        ? (latestCandidateEnd - end) / (latestCandidateEnd - windowSize)
+        : 0;
+      candidates.push({
+        end,
+        score: ((shapeError / windowSize) * 0.62)
+          + (volatilityError * 0.18)
+          + (trendError * 0.14)
+          + (downsideError * 0.04)
+          + (ageRatio * 0.02),
         future: returns.slice(end, end + horizon),
       });
     }
-    return matches.sort((left, right) => left.score - right.score).slice(0, 12);
+    const separation = Math.max(21, Math.floor(windowSize / 2));
+    const matches = [];
+    candidates.sort((left, right) => left.score - right.score).some((candidate) => {
+      if (matches.every((match) => Math.abs(match.end - candidate.end) >= separation)) {
+        matches.push(candidate);
+      }
+      return matches.length >= 12;
+    });
+    return matches;
   }
 
   function weightedPatternReturn(matches, index) {
@@ -462,21 +486,6 @@
     return calibration;
   }
 
-  function buildAnalogWave(matches, returns, horizon) {
-    const matched = matches[0]?.future || [];
-    const fallbackLength = Math.min(126, returns.length);
-    const source = matched.some(Number.isFinite)
-      ? matched
-      : returns.slice(-fallbackLength);
-    const finite = source.filter(Number.isFinite);
-    if (finite.length < 2) return Array(horizon).fill(0);
-    const center = mean(finite);
-    return Array.from({ length: horizon }, (_, index) => {
-      const value = source[index % source.length];
-      return Number.isFinite(value) ? value - center : 0;
-    });
-  }
-
   function calibrateForecastVolatility(values, targetVolatility) {
     if (!values.length) return [];
     const center = mean(values);
@@ -531,6 +540,19 @@
     }
     if (returns.length < 60) return null;
 
+    const transformPrices = Array.isArray(options.transformPrices)
+      ? options.transformPrices
+      : prices;
+    const transformChartValues = Array.isArray(options.transformChartValues)
+      ? options.transformChartValues
+      : chartValues;
+    const transformPoints = [];
+    for (let index = 0; index < Math.min(transformPrices.length, transformChartValues.length); index += 1) {
+      const price = toNumber(transformPrices[index]);
+      const chart = toNumber(transformChartValues[index]);
+      if (price !== null && price > 0 && chart !== null) transformPoints.push({ price, chart });
+    }
+
     const horizon = clamp(Math.round(Number(options.horizon) || DEFAULT_HORIZON), 20, 260);
     const windowSize = Math.min(63, Math.max(30, Math.floor(returns.length / 6)));
     const matches = findPatternMatches(returns, windowSize, horizon);
@@ -545,11 +567,13 @@
     const patternPath = Array.from({ length: horizon }, (_, index) => (
       weightedPatternReturn(matches, index)
     ));
-    const finitePatternReturns = patternPath.filter(Number.isFinite);
-    const patternCenter = finitePatternReturns.length ? mean(finitePatternReturns) : 0;
-    const analogWave = buildAnalogWave(matches, returns, horizon);
+    const calibratedConfidence = clamp(Number(calibration.confidence) || 0.2, 0.2, 0.9);
+    const effectivePatternWeight = clamp(
+      calibration.patternWeight * (0.55 + (calibratedConfidence * 0.45)),
+      0.25,
+      0.75,
+    );
     const candidateReturns = [];
-    let directionalReturn = momentum;
     for (let index = 0; index < horizon; index += 1) {
       const pattern = patternPath[index];
       const trend = momentum * Math.exp(-index / 100);
@@ -561,22 +585,16 @@
       const calibratedTrend = trend * calibration.trendMultiplier;
       const directionalTarget = (pattern === null
         ? calibratedTrend
-        : ((pattern * calibration.patternWeight)
-          + (calibratedTrend * (1 - calibration.patternWeight))))
+        : ((pattern * effectivePatternWeight)
+          + (calibratedTrend * (1 - effectivePatternWeight))))
         + technicalBias
         + contextBias;
-      directionalReturn = (directionalReturn * 0.84) + (directionalTarget * 0.16);
-      const ensembleWave = pattern === null ? 0 : pattern - patternCenter;
-      candidateReturns.push(
-        directionalReturn
-        + (analogWave[index] * 0.68)
-        + (ensembleWave * 0.22),
-      );
+      candidateReturns.push(directionalTarget);
     }
 
     const volatilityCeiling = ticker.startsWith("^") ? 0.025 : 0.04;
     const projectedVolatility = clamp(
-      volatility * calibration.volatilityRatio,
+      volatility * calibration.volatilityRatio * 0.8,
       0.003,
       volatilityCeiling,
     );
@@ -588,8 +606,8 @@
       factors.push(Math.exp(cumulative));
     });
 
-    const transform = fitChartTransform(points);
-    const lastChart = toNumber(lastPoint.chart);
+    const transform = fitChartTransform(transformPoints);
+    const lastChart = toNumber(transformPoints.at(-1)?.chart);
     if (!transform || lastChart === null) return null;
     const anchorCorrection = lastChart - ((transform.slope * lastPoint.price) + transform.intercept);
     const futureDates = nextBusinessDates(lastPoint.date, horizon);
@@ -605,7 +623,7 @@
       historyDays: points.length,
       horizon,
       projectedVolatility,
-      backtest: { ...calibration },
+      backtest: { ...calibration, effectivePatternWeight },
     };
   }
 
