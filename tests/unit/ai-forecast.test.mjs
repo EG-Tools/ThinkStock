@@ -131,6 +131,25 @@ test("keeps the learned prices independent from the visible chart range", () => 
   assert.equal(longView.chartValues[0], 80 + (prices.at(-1) * 0.5));
 });
 
+test("anchors the forecast to the latest valid chart point when the newest row is empty", () => {
+  const { dates, prices, kospi } = syntheticHistory(1000);
+  const visiblePrices = [...prices.slice(-126), null];
+  const visibleValues = [...prices.slice(-126).map((price) => 25 + (price * 0.4)), null];
+  const forecast = buildForecast({
+    series: "034220.KS",
+    dates,
+    prices,
+    transformPrices: visiblePrices,
+    transformChartValues: visibleValues,
+    marketCandidates: [{ series: "^KS11", dates, prices: kospi }],
+  });
+
+  assert.ok(forecast);
+  assert.equal(forecast.chartValues[0], visibleValues.at(-2));
+  assert.equal(forecast.lowerChartValues[0], visibleValues.at(-2));
+  assert.equal(forecast.upperChartValues[0], visibleValues.at(-2));
+});
+
 test("learns the strongest market relationship without assuming its direction", () => {
   const count = 1100;
   const dates = tradingDates(count);
@@ -250,8 +269,8 @@ test("blends a validated top-400 market model without replacing the local guardr
 
   assert.equal(blended.model.marketModelUsed, true);
   assert.match(blended.model.name, /top-400/);
-  assert.equal(blended.model.version, "2026-07-23|path-v3");
-  assert.equal(blended.model.pathVersion, "path-v3");
+  assert.equal(blended.model.version, "2026-07-23|path-v4");
+  assert.equal(blended.model.pathVersion, "path-v4");
   assert.equal(blended.model.globalMarketSeries, "^KS11");
   assert.ok(blended.prices.at(-1) > local.prices.at(-1));
 });

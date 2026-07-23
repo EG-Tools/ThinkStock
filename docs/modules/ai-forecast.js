@@ -5,12 +5,13 @@
   const MAX_HISTORY = TRADING_DAYS * 5;
   const MIN_HISTORY = TRADING_DAYS * 3;
   const FORECAST_HORIZONS = Object.freeze([20, 63, 126]);
-  const FORECAST_PATH_VERSION = "path-v3";
+  const FORECAST_PATH_VERSION = "path-v4";
   const SAMPLE_STEP = 5;
   const EPSILON = 1e-9;
   const FORECAST_CACHE = new Map();
 
   function finite(value) {
+    if (value === null || value === undefined || value === "") return null;
     const number = Number(value);
     return Number.isFinite(number) ? number : null;
   }
@@ -875,6 +876,19 @@
     return (price) => lastChartValue + ((price - lastPrice) * slope);
   }
 
+  function latestChartAnchor(options, fallbackPrice) {
+    const prices = Array.isArray(options?.transformPrices) ? options.transformPrices : options?.prices;
+    const values = Array.isArray(options?.transformChartValues)
+      ? options.transformChartValues
+      : (Array.isArray(options?.chartValues) ? options.chartValues : prices);
+    for (let index = Math.min(prices?.length || 0, values?.length || 0) - 1; index >= 0; index -= 1) {
+      const price = finite(prices[index]);
+      const value = finite(values[index]);
+      if (price > 0 && value !== null) return { price, value };
+    }
+    return { price: fallbackPrice, value: fallbackPrice };
+  }
+
   function latestRowFingerprint(rows) {
     const source = Array.isArray(rows) ? rows : [];
     return source.length ? JSON.stringify(source.at(-1)) : "";
@@ -910,10 +924,8 @@
 
   function applyChartTransform(forecast, options) {
     const lastPrice = forecast.prices[0];
-    const lastChartValue = finite(options?.transformChartValues?.at?.(-1))
-      ?? finite(options?.chartValues?.at?.(-1))
-      ?? lastPrice;
-    const transform = chartTransformer(options, lastPrice, lastChartValue);
+    const anchor = latestChartAnchor(options, lastPrice);
+    const transform = chartTransformer(options, anchor.price, anchor.value);
     return {
       ...forecast,
       chartValues: forecast.prices.map(transform),
