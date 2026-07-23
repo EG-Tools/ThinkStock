@@ -82,3 +82,23 @@ test("falls back to a full render after a compatible partial update fails", asyn
   assert.deepEqual(result, { mode: "full", attemptedPartial: true });
   assert.deepEqual(calls, ["update", "react"]);
 });
+
+
+test("keeps AI interval bands distinct and updates their fill styling", () => {
+  const lower = {
+    ...trace("005930.KS"),
+    meta: { seriesKey: "005930.KS", isAiForecastBand: true, aiTraceRole: "lower" },
+    fill: "none",
+  };
+  const upper = {
+    ...trace("005930.KS"),
+    meta: { seriesKey: "005930.KS", isAiForecastBand: true, aiTraceRole: "upper" },
+    fill: "tonexty",
+    fillcolor: "rgba(190, 190, 190, 0.10)",
+  };
+
+  assert.notEqual(renderer.traceIdentity(lower), renderer.traceIdentity(upper));
+  const payload = renderer.restylePayload([lower, upper]);
+  assert.deepEqual(payload.fill, ["none", "tonexty"]);
+  assert.deepEqual(payload.fillcolor, [null, "rgba(190, 190, 190, 0.10)"]);
+});

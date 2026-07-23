@@ -166,7 +166,7 @@ const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.20";
+const APP_VERSION = "1.21";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -4434,6 +4434,7 @@ function buildAiForecastTraces(rows, seriesModels) {
     return [];
   }
   const traces = [];
+  let forecastCount = 0;
   (seriesModels || []).forEach((model) => {
     const series = String(model?.series || "").toUpperCase();
     if (!isForecastSeries(series) || hiddenSeries.has(series)) return;
@@ -4462,23 +4463,52 @@ function buildAiForecastTraces(rows, seriesModels) {
       horizon: 126,
     });
     if (!forecast) return;
-    const consensusUsed = Math.abs(Number(forecast.signals?.consensus) || 0) > 0;
+    forecastCount += 1;
+    const consensusUsed = Number(forecast.signals?.consensusConfidence) > 0;
     const fundamentalsUsed = Number(forecast.signals?.fundamentalsConfidence) > 0;
     const backtestSamples = Number(forecast.backtest?.samples) || 0;
     const backtestAccuracy = Number(forecast.backtest?.directionAccuracy);
-    const cycleYears = Number(forecast.cycle?.years);
-    const cycleWeight = Number(forecast.cycle?.weight) || 0;
-    const cycleSummary = cycleWeight >= 0.02 && Number.isFinite(cycleYears)
-      ? `<br>주기 약 ${cycleYears.toFixed(1)}년 반영`
-      : "";
     const marketWeight = Number(forecast.marketRelationship?.weight) || 0;
-    const marketLabel = forecast.marketRelationship?.series === "^KQ11" ? "코스닥" : "코스피";
-    const marketSummary = marketWeight >= 0.02
-      ? `<br>${marketLabel} ${forecast.marketRelationship?.inverseInDownturn ? "하락 역상관" : "시장 환경 연동"} 반영`
-      : "";
     const backtestSummary = backtestSamples >= 3 && Number.isFinite(backtestAccuracy)
-      ? `<br>분리 검증 방향 적중 ${Math.round(backtestAccuracy * 100)}% (${backtestSamples}시점)`
+      ? `<br>시간순 검증 방향 적중 ${Math.round(backtestAccuracy * 100)}% (${backtestSamples}시점)`
       : "";
+    const confidence = Number(forecast.backtest?.confidence) || 0;
+    const intervalLevel = Number(forecast.backtest?.intervalLevel) || 0.8;
+    const confidenceSummary = `<br>검증 예상범위 ${Math.round(intervalLevel * 100)}%`;
+    const commonMeta = {
+      seriesKey: series,
+      historyDays: forecast.historyDays,
+      backtestSamples,
+      backtestAccuracy: Number.isFinite(backtestAccuracy) ? backtestAccuracy : null,
+      backtestConfidence: confidence,
+      modelName: String(forecast.model?.name || ""),
+    };
+    traces.push({
+      x: forecast.dates,
+      y: forecast.lowerChartValues,
+      type: MAIN_LINE_TRACE_TYPE,
+      mode: "lines",
+      name: `${labelName(series)} AI 예상 범위 하단`,
+      showlegend: false,
+      connectgaps: false,
+      hoverinfo: "skip",
+      line: { color: "rgba(190, 190, 190, 0)", width: 0, shape: "linear" },
+      meta: { ...commonMeta, isAiForecastBand: true, aiTraceRole: "lower" },
+    });
+    traces.push({
+      x: forecast.dates,
+      y: forecast.upperChartValues,
+      type: MAIN_LINE_TRACE_TYPE,
+      mode: "lines",
+      name: `${labelName(series)} AI 예상 범위`,
+      showlegend: false,
+      connectgaps: false,
+      hoverinfo: "skip",
+      fill: "tonexty",
+      fillcolor: "rgba(190, 190, 190, 0.10)",
+      line: { color: "rgba(190, 190, 190, 0)", width: 0, shape: "linear" },
+      meta: { ...commonMeta, isAiForecastBand: true, aiTraceRole: "upper" },
+    });
     traces.push({
       x: forecast.dates,
       y: forecast.chartValues,
@@ -4486,27 +4516,18 @@ function buildAiForecastTraces(rows, seriesModels) {
       customdata: forecast.prices,
       type: MAIN_LINE_TRACE_TYPE,
       mode: "lines",
-      name: `${labelName(series)} AI 가상 흐름`,
+      name: `${labelName(series)} AI 예상 흐름`,
       showlegend: false,
       connectgaps: false,
       hoverinfo: hoverShowPopup ? undefined : "skip",
       hovertemplate: hoverShowPopup
-        ? `AI 가상 흐름<br>%{x|%Y.%-m.%-d}<br>%{text}${backtestSummary}${cycleSummary}${marketSummary}${consensusUsed ? "<br>컨센서스 반영" : ""}${fundamentalsUsed ? "<br>실적 추세 반영" : ""}<extra>${escapeHtml(labelName(series))}</extra>`
+        ? `AI 예상 흐름<br>%{x|%Y.%-m.%-d}<br>%{text}${backtestSummary}${confidenceSummary}${marketWeight > 0 ? "<br>시장 관계 학습" : ""}${consensusUsed ? "<br>컨센서스 제한 반영" : ""}${fundamentalsUsed ? "<br>실적 추세 제한 반영" : ""}<extra>${escapeHtml(labelName(series))}</extra>`
         : undefined,
       line: { color: "rgba(190, 190, 190, 0.7)", width: 2, dash: "dot", shape: "linear" },
       meta: {
+        ...commonMeta,
         isAiForecastTrace: true,
-        seriesKey: series,
-        historyDays: forecast.historyDays,
         patternMatches: forecast.patternMatches,
-        backtestSamples,
-        backtestAccuracy: Number.isFinite(backtestAccuracy) ? backtestAccuracy : null,
-        backtestConfidence: Number(forecast.backtest?.confidence) || 0,
-        calibratedPatternWeight: Number(forecast.backtest?.patternWeight) || 0,
-        calibratedTrendMultiplier: Number(forecast.backtest?.trendMultiplier) || 0,
-        cycleYears: Number.isFinite(cycleYears) ? cycleYears : null,
-        cycleStrength: Number(forecast.cycle?.strength) || 0,
-        cycleWeight,
         marketWeight,
         marketSeries: String(forecast.marketRelationship?.series || ""),
         marketDownsideBeta: Number(forecast.marketRelationship?.downsideBeta) || 0,
@@ -4516,8 +4537,8 @@ function buildAiForecastTraces(rows, seriesModels) {
       },
     });
   });
-  lastAiForecastTraceCount = traces.length;
-  syncAiForecastToggleButton(traces.length);
+  lastAiForecastTraceCount = forecastCount;
+  syncAiForecastToggleButton(forecastCount);
   return traces;
 }
 

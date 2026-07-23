@@ -3,6 +3,9 @@
 
   function traceIdentity(trace) {
     if (trace?.meta?.isDisclosureTrace) return "disclosure";
+    if (trace?.meta?.isAiForecastBand) {
+      return `ai-band:${String(trace.meta.seriesKey || "")}:${String(trace.meta.aiTraceRole || "")}`;
+    }
     if (trace?.meta?.isAiForecastTrace) return `ai:${String(trace.meta.seriesKey || "")}`;
     const seriesKey = String(trace?.meta?.seriesKey || "");
     return seriesKey ? `series:${seriesKey}` : "";
@@ -39,6 +42,8 @@
       hoverinfo: traces.map((trace) => trace.hoverinfo ?? null),
       hovertemplate: traces.map((trace) => trace.hovertemplate ?? null),
       visible: traces.map((trace) => trace.visible ?? true),
+      fill: traces.map((trace) => trace.fill ?? "none"),
+      fillcolor: traces.map((trace) => trace.fillcolor ?? null),
     };
   }
 
