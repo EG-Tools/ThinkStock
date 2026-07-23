@@ -131,6 +131,33 @@ test("chart worker applies credit offset only as a horizontal date shift", () =>
   assert.deepEqual(Array.from(shiftedPrice.xValues), Array.from(zeroPrice.xValues));
 });
 
+test("chart worker preserves each visible series latest valid point while thinning", () => {
+  const dates = Array.from({ length: 60 }, (_, index) => `2026-03-${String(index + 1).padStart(2, "0")}`);
+  const response = runWorker({
+    priceRows: dates.map((date, index) => ({
+      date,
+      AAA: index <= 47 ? 100 + index : null,
+      BBB: 200 + index,
+    })),
+    macroRows: [],
+    creditRows: [],
+    creditCols: [],
+    start: dates[0],
+    end: dates.at(-1),
+    allowedSeries: ["AAA", "BBB"],
+    priorityOrder: ["AAA", "BBB"],
+    displayNames: {},
+    hiddenSeries: [],
+    seriesOffsets: {},
+    seriesScales: {},
+    displayBudget: 12,
+  });
+
+  assert.equal(response.ok, true);
+  assert.ok(response.result.displayIndexes.includes(47));
+  assert.ok(response.result.displayIndexes.includes(59));
+});
+
 
 test("chart worker reuses cached sources for configuration-only requests", () => {
   const harness = createWorkerHarness();

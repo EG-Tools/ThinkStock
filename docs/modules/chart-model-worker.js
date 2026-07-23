@@ -87,16 +87,30 @@ function sortSeries(list, priorityOrder, displayNames) {
   });
 }
 
-function thinIndexList(indexes, budget, rowCount) {
+function thinIndexList(indexes, budget, rowCount, requiredIndexes = []) {
   const sorted = [...new Set(indexes)].sort((left, right) => left - right);
   if (sorted.length <= budget) return sorted;
-  const output = new Set([0, rowCount - 1]);
-  const slots = Math.max(1, budget - 2);
+  const output = new Set([0, rowCount - 1, ...requiredIndexes]);
+  const candidates = sorted.filter((index) => !output.has(index));
+  const slots = Math.max(0, budget - output.size);
   for (let index = 1; index <= slots; index += 1) {
-    const sourceIndex = sorted[Math.round((index * (sorted.length - 1)) / (slots + 1))];
+    const sourceIndex = candidates[Math.round((index * (candidates.length - 1)) / (slots + 1))];
     if (Number.isInteger(sourceIndex)) output.add(sourceIndex);
   }
   return [...output].sort((left, right) => left - right);
+}
+
+function seriesBoundaryIndexes(targets, bySeries) {
+  const boundaries = new Set();
+  targets.forEach((series) => {
+    const values = bySeries.get(series) || [];
+    const first = values.findIndex(Number.isFinite);
+    let last = values.length - 1;
+    while (last >= 0 && !Number.isFinite(values[last])) last -= 1;
+    if (first >= 0) boundaries.add(first);
+    if (last >= 0) boundaries.add(last);
+  });
+  return [...boundaries];
 }
 
 function buildDisplayIndexes(rows, seriesModels, selected, hiddenSeries, budget) {
@@ -106,6 +120,7 @@ function buildDisplayIndexes(rows, seriesModels, selected, hiddenSeries, budget)
   const visible = selected.filter((key) => !hidden.has(key));
   const targets = visible.length ? visible : selected;
   const bySeries = new Map(seriesModels.map((model) => [model.series, model.values]));
+  const boundaryIndexes = seriesBoundaryIndexes(targets, bySeries);
   const perBucketCost = Math.max(2, targets.length * 2);
   const bucketCount = Math.max(1, Math.floor((budget - 2) / perBucketCost));
   const bucketSize = Math.max(1, Math.ceil((rowCount - 2) / bucketCount));
@@ -136,7 +151,7 @@ function buildDisplayIndexes(rows, seriesModels, selected, hiddenSeries, budget)
       if (maxIndex >= 0) keep.add(maxIndex);
     });
   }
-  return thinIndexList([...keep], budget, rowCount);
+  return thinIndexList([...keep, ...boundaryIndexes], budget, rowCount, boundaryIndexes);
 }
 
 function buildMainChartModel(payload) {

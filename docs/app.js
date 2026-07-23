@@ -175,7 +175,7 @@ const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.29";
+const APP_VERSION = "1.30";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -3320,16 +3320,30 @@ function pickByIndexes(values, indexes) {
   return indexes.map((idx) => values[idx]);
 }
 
-function thinIndexList(indexes, budget, rowCount) {
+function thinIndexList(indexes, budget, rowCount, requiredIndexes = []) {
   const sorted = [...new Set(indexes)].sort((a, b) => a - b);
   if (sorted.length <= budget) return sorted;
-  const out = new Set([0, rowCount - 1]);
-  const slots = Math.max(1, budget - 2);
+  const out = new Set([0, rowCount - 1, ...requiredIndexes]);
+  const candidates = sorted.filter((index) => !out.has(index));
+  const slots = Math.max(0, budget - out.size);
   for (let i = 1; i <= slots; i += 1) {
-    const idx = sorted[Math.round((i * (sorted.length - 1)) / (slots + 1))];
+    const idx = candidates[Math.round((i * (candidates.length - 1)) / (slots + 1))];
     if (Number.isInteger(idx)) out.add(idx);
   }
   return [...out].sort((a, b) => a - b);
+}
+
+function seriesBoundaryIndexes(targets, bySeries) {
+  const boundaries = new Set();
+  targets.forEach((series) => {
+    const values = bySeries.get(series) || [];
+    const first = values.findIndex(Number.isFinite);
+    let last = values.length - 1;
+    while (last >= 0 && !Number.isFinite(values[last])) last -= 1;
+    if (first >= 0) boundaries.add(first);
+    if (last >= 0) boundaries.add(last);
+  });
+  return [...boundaries];
 }
 
 function buildMainChartDisplayIndexes(rows, seriesModels, selected, budget) {
@@ -3338,6 +3352,7 @@ function buildMainChartDisplayIndexes(rows, seriesModels, selected, budget) {
   const visible = selected.filter((key) => !hiddenSeries.has(key));
   const targets = visible.length ? visible : selected;
   const bySeries = new Map(seriesModels.map((model) => [model.series, model.values]));
+  const boundaryIndexes = seriesBoundaryIndexes(targets, bySeries);
   const perBucketCost = Math.max(2, targets.length * 2);
   const bucketCount = Math.max(1, Math.floor((budget - 2) / perBucketCost));
   const bucketSize = Math.max(1, Math.ceil((rowCount - 2) / bucketCount));
@@ -3369,7 +3384,7 @@ function buildMainChartDisplayIndexes(rows, seriesModels, selected, budget) {
     });
   }
 
-  return thinIndexList([...keep], budget, rowCount);
+  return thinIndexList([...keep, ...boundaryIndexes], budget, rowCount, boundaryIndexes);
 }
 
 /* Drag handles */
