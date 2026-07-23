@@ -262,6 +262,12 @@ test("new stock loads its own Cloudflare DART disclosures", async ({ page }) => 
   await expect(page.locator('[data-series="000660.KS"]')).toBeVisible();
   await expect.poll(() => requestedNewStockDisclosure).toBe(true);
   await expect(page.locator("#chart .textpoint text").filter({ hasText: "◆" }).first()).toBeVisible();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const stockTrace = (element.data || []).find((trace) => trace?.meta?.seriesKey === "000660.KS");
+    const disclosureTrace = (element.data || []).find((trace) => trace?.meta?.isDisclosureTrace);
+    const markerColors = disclosureTrace?.textfont?.color;
+    return Array.isArray(markerColors) && markerColors.includes(stockTrace?.line?.color);
+  })).toBe(true);
 });
 
 test("new stock loads its deployed disclosure file without a gateway token", async ({ page }) => {

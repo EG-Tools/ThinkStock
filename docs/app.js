@@ -166,7 +166,7 @@ const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.21";
+const APP_VERSION = "1.22";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -3615,6 +3615,7 @@ function buildDisclosureTrace(selected, seriesModels, start, end) {
     const group = grouped.get(key) || {
       ticker: event.ticker,
       name: event.name || labelName(event.ticker),
+      color: seriesColor(event.ticker),
       plotDate: point.date,
       y: point.y,
       events: [],
@@ -3650,7 +3651,11 @@ function buildDisclosureTrace(selected, seriesModels, start, end) {
     }),
     meta: { isDisclosureTrace: true },
     textposition: "top center",
-    textfont: { color: DISCLOSURE_MARKER_COLOR, size: DISCLOSURE_TEXT_SIZE, family: "Arial Black, sans-serif" },
+    textfont: {
+      color: groups.map((group) => group.color || DISCLOSURE_MARKER_COLOR),
+      size: DISCLOSURE_TEXT_SIZE,
+      family: "Arial Black, sans-serif",
+    },
   };
 }
 
@@ -3698,7 +3703,7 @@ function refreshDisclosureTraceFast(seriesKey = "") {
       customdata: [nextTrace.customdata],
       hovertemplate: [nextTrace.hovertemplate],
       "textfont.size": [DISCLOSURE_TEXT_SIZE],
-      "textfont.color": [DISCLOSURE_MARKER_COLOR],
+      "textfont.color": [nextTrace.textfont.color],
       visible: true,
     }, [traceIndex]);
   } else if (nextTrace) {
@@ -3810,7 +3815,12 @@ function setDisclosureTextHighlighted(chartEl, pointIndex, highlighted) {
   const node = getDisclosureTextNodes(chartEl)[pointIndex];
   if (!node) return false;
   const size = highlighted ? DISCLOSURE_TEXT_HOVER_SIZE : DISCLOSURE_TEXT_SIZE;
-  const color = highlighted ? DISCLOSURE_MARKER_HOVER_LINE_COLOR : DISCLOSURE_MARKER_COLOR;
+  const disclosureTrace = chartEl.data?.find((trace) => trace?.meta?.isDisclosureTrace);
+  const traceColors = disclosureTrace?.textfont?.color;
+  const baseColor = Array.isArray(traceColors)
+    ? traceColors[pointIndex] || DISCLOSURE_MARKER_COLOR
+    : traceColors || DISCLOSURE_MARKER_COLOR;
+  const color = highlighted ? DISCLOSURE_MARKER_HOVER_LINE_COLOR : baseColor;
   node.style.fontSize = `${size}px`;
   node.style.fill = color;
   node.setAttribute("font-size", String(size));
