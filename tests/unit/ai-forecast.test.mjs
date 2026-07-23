@@ -13,6 +13,8 @@ const {
   buildForecast,
   calibrateForecastStrategy,
   detectMarketCycle,
+  marketEnvironmentSignal,
+  marketRelationship,
   nextBusinessDates,
 } = context.ThinkStockAiForecast;
 
@@ -90,6 +92,76 @@ test("detects a persistent two-year cycle without forcing one onto random return
   assert.ok(Math.abs(cycle.years - 2) < 0.05);
   assert.ok(cycle.strength > 0.8);
   assert.equal(detectMarketCycle(random), null);
+});
+
+test("detects a stable inverse relationship during market declines", () => {
+  const marketReturns = Array.from({ length: 700 }, (_, index) => (
+    (-0.0003) + (0.004 * Math.sin(index / 18))
+  ));
+  const stockReturns = marketReturns.map((value, index) => (
+    (-0.9 * value) + (0.0002 * Math.sin(index / 5))
+  ));
+  const relationship = marketRelationship(stockReturns, marketReturns);
+
+  assert.ok(relationship.downsideBeta < -0.7);
+  assert.ok(relationship.downsideStrength > 0.7);
+  assert.equal(relationship.inverseInDownturn, true);
+});
+
+test("selects the index with the stronger stock relationship", () => {
+  const dates = tradingDates(700);
+  const kospiReturns = Array.from({ length: 699 }, (_, index) => (
+    (-0.0003) + (0.004 * Math.sin(index / 18))
+  ));
+  const kosdaqReturns = Array.from({ length: 699 }, (_, index) => (
+    0.003 * Math.sin(index / 7)
+  ));
+  const stockReturns = kospiReturns.map((value, index) => (
+    (-0.9 * value) + (0.0002 * Math.sin(index / 5))
+  ));
+  const pricesFromReturns = (returns) => returns.reduce(
+    (prices, value) => [...prices, prices.at(-1) * Math.exp(value)],
+    [100],
+  );
+  const prices = pricesFromReturns(stockReturns);
+  const forecast = buildForecast({
+    series: "218410.KQ",
+    dates,
+    prices,
+    chartValues: prices,
+    marketCandidates: [
+      { series: "^KS11", dates, prices: pricesFromReturns(kospiReturns) },
+      { series: "^KQ11", dates, prices: pricesFromReturns(kosdaqReturns) },
+    ],
+  });
+
+  assert.equal(forecast.marketRelationship.series, "^KS11");
+  assert.equal(forecast.marketRelationship.inverseInDownturn, true);
+});
+
+test("combines leading, breadth, liquidity, credit, fear, and news signals", () => {
+  const rising = Array.from({ length: 252 }, (_, index) => 100 + (index * 0.02));
+  const falling = [...rising].reverse();
+  const positive = marketEnvironmentSignal({
+    leadingCycle: rising,
+    adr: Array.from({ length: 252 }, (_, index) => 65 + (index * 0.1)),
+    customerDeposit: rising,
+    credit: falling,
+    fearGreed: Array.from({ length: 252 }, (_, index) => 15 + (index * 0.08)),
+    newsSentiment: rising,
+  });
+  const negative = marketEnvironmentSignal({
+    leadingCycle: falling,
+    adr: Array.from({ length: 252 }, (_, index) => 135 - (index * 0.1)),
+    customerDeposit: falling,
+    credit: rising,
+    fearGreed: Array.from({ length: 252 }, (_, index) => 85 - (index * 0.08)),
+    newsSentiment: falling,
+  });
+
+  assert.equal(positive.coverage, 1);
+  assert.equal(negative.coverage, 1);
+  assert.ok(positive.combined > negative.combined);
 });
 
 test("does not forecast newly listed stocks with fewer than 90 trading days", () => {

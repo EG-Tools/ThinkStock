@@ -12,11 +12,18 @@
       [-0.4, 0.3, 0.8, 1.25].map((trendMultiplier) => ({ patternWeight, trendMultiplier }))
     )),
   ];
-  const STRATEGY_CANDIDATES = BASE_STRATEGY_CANDIDATES.flatMap((candidate) => (
+  const CYCLE_STRATEGY_CANDIDATES = BASE_STRATEGY_CANDIDATES.flatMap((candidate) => (
     [0, 0.12, 0.22].map((cycleWeight) => ({
       ...candidate,
       cycleWeight,
       baseline: candidate.baseline === true && cycleWeight === 0,
+    }))
+  ));
+  const STRATEGY_CANDIDATES = CYCLE_STRATEGY_CANDIDATES.flatMap((candidate) => (
+    [0, 0.18, 0.32].map((marketWeight) => ({
+      ...candidate,
+      marketWeight,
+      baseline: candidate.baseline === true && marketWeight === 0,
     }))
   ));
   const calibrationCache = new Map();
@@ -77,6 +84,78 @@
     const deviation = standardDeviation(values);
     if (!deviation) return 0;
     return clamp((values.at(-1) - mean(values)) / (deviation * 2.5), -1, 1);
+  }
+
+  function numericTrendSignal(source, lookback = 252) {
+    const values = source.filter(Number.isFinite).slice(-lookback);
+    if (values.length < 64) return 0;
+    const changes = values.slice(1).map((value, index) => value - values[index]);
+    const changeDeviation = winsorizedDeviation(changes) || 0.001;
+    const shortTrend = (values.at(-1) - values.at(-22)) / (changeDeviation * Math.sqrt(21));
+    const mediumTrend = (values.at(-1) - values.at(-64)) / (changeDeviation * Math.sqrt(63));
+    return clamp(((shortTrend * 0.6) + (mediumTrend * 0.4)) / 2.5, -1, 1);
+  }
+
+  function latestSeriesTrendSignal(rows, key, lookback = 252) {
+    return numericTrendSignal((Array.isArray(rows) ? rows : [])
+      .map((row) => toNumber(row?.[key]))
+      .filter(Number.isFinite), lookback);
+  }
+
+  function adrRegimeSignal(values) {
+    const finite = values.filter(Number.isFinite);
+    if (finite.length < 64) return 0;
+    const level = clamp((100 - finite.at(-1)) / 70, -1, 1);
+    const trend = numericTrendSignal(finite);
+    return clamp((level * 0.45) + (trend * 0.55), -1, 1);
+  }
+
+  function latestLevelSignal(values, lookback = 252) {
+    const finite = values.filter(Number.isFinite).slice(-lookback);
+    if (finite.length < 12) return null;
+    const deviation = winsorizedDeviation(finite) || 0;
+    return deviation > 0 ? clamp((finite.at(-1) - mean(finite)) / (deviation * 2.5), -1, 1) : 0;
+  }
+
+  function creditRegimeSignal(values) {
+    const finite = values.filter(Number.isFinite);
+    if (finite.length < 64) return null;
+    const trend = numericTrendSignal(finite);
+    const excess = latestLevelSignal(finite) || 0;
+    return clamp((trend * 0.45) - (excess * 0.55), -1, 1);
+  }
+
+  function fearGreedRegimeSignal(values) {
+    const finite = values.filter(Number.isFinite);
+    if (!finite.length) return null;
+    const level = clamp((50 - finite.at(-1)) / 50, -1, 1);
+    const recovery = finite.length >= 64 ? numericTrendSignal(finite) : 0;
+    return clamp((level * 0.65) + (recovery * 0.35), -1, 1);
+  }
+
+  function marketEnvironmentSignal(environment = {}) {
+    const components = [
+      [environment.leadingCycle?.length >= 64
+        ? numericTrendSignal(environment.leadingCycle)
+        : null, 0.22],
+      [environment.adr?.length >= 64 ? adrRegimeSignal(environment.adr) : null, 0.2],
+      [environment.customerDeposit?.length >= 64
+        ? numericTrendSignal(environment.customerDeposit)
+        : null, 0.16],
+      [creditRegimeSignal(environment.credit || []), 0.14],
+      [fearGreedRegimeSignal(environment.fearGreed || []), 0.14],
+      [latestLevelSignal(environment.newsSentiment || []), 0.14],
+    ].filter(([value]) => value !== null && Number.isFinite(value));
+    if (!components.length) return { combined: 0, coverage: 0 };
+    const availableWeight = components.reduce((sum, item) => sum + item[1], 0);
+    return {
+      combined: clamp(
+        components.reduce((sum, item) => sum + (item[0] * item[1]), 0) / availableWeight,
+        -1,
+        1,
+      ),
+      coverage: clamp(availableWeight, 0, 1),
+    };
   }
 
   function latestValue(rows, key) {
@@ -197,11 +276,15 @@
     const macroRows = options.macroRows || [];
     const auxiliaryRows = options.auxiliaryRows || [];
     const news = latestSeriesSignal(macroRows, "news_sentiment");
+    const leadingCycle = latestSeriesTrendSignal(macroRows, "leading_cycle");
     const fearGreedValue = latestValue(auxiliaryRows, "fear_greed");
     const fearGreed = fearGreedValue === null ? 0 : clamp((50 - fearGreedValue) / 50, -1, 1);
     const adrKey = String(ticker).endsWith(".KQ") || ticker === "^KQ11" ? "adr_kosdaq" : "adr_kospi";
-    const adrValue = latestValue(auxiliaryRows, adrKey);
-    const adr = adrValue === null ? 0 : clamp((100 - adrValue) / 70, -1, 1);
+    const adrValues = auxiliaryRows.map((row) => toNumber(row?.[adrKey])).filter(Number.isFinite);
+    const adrValue = adrValues.at(-1) ?? null;
+    const adrLevel = adrValue === null ? 0 : clamp((100 - adrValue) / 70, -1, 1);
+    const adrTrend = numericTrendSignal(adrValues);
+    const adr = adrRegimeSignal(adrValues);
     const disclosure = disclosureSignal(options.disclosures, ticker, lastDate);
     const consensus = options.consensus || null;
     const targetPrice = toNumber(consensus?.targetPrice);
@@ -216,19 +299,19 @@
     const fundamentals = fundamentalsSignal(options.financials);
     return {
       news,
+      leadingCycle,
       fearGreed,
       adr,
+      adrLevel,
+      adrTrend,
       disclosure,
       consensus: consensusSignal,
       fundamentals: fundamentals.signal,
       fundamentalsConfidence: fundamentals.confidence,
       combined: clamp(
-        (news * 0.25)
-        + (fearGreed * 0.16)
-        + (adr * 0.13)
-        + (disclosure * 0.09)
-        + (consensusSignal * 0.25)
-        + (fundamentals.signal * 0.12),
+        (disclosure * 0.18)
+        + (consensusSignal * 0.5)
+        + (fundamentals.signal * 0.32),
         -1,
         1,
       ),
@@ -323,7 +406,7 @@
   }
 
   function pearsonCorrelation(left, right) {
-    if (left.length !== right.length || left.length < 40) return null;
+    if (left.length !== right.length || left.length < 12) return null;
     const leftMean = mean(left);
     const rightMean = mean(right);
     let covariance = 0;
@@ -338,6 +421,147 @@
     }
     const denominator = Math.sqrt(leftVariance * rightVariance);
     return denominator > 0 ? covariance / denominator : null;
+  }
+
+  function regressionStats(stockReturns, marketReturns, predicate = null, lookback = 504) {
+    const stock = [];
+    const market = [];
+    const start = Math.max(0, Math.min(stockReturns.length, marketReturns.length) - lookback);
+    const windowSize = 20;
+    for (let index = start + windowSize - 1;
+      index < Math.min(stockReturns.length, marketReturns.length);
+      index += 5) {
+      let stockReturn = 0;
+      let marketReturn = 0;
+      let valid = true;
+      for (let offset = 0; offset < windowSize; offset += 1) {
+        const stockValue = toNumber(stockReturns[index - offset]);
+        const marketValue = toNumber(marketReturns[index - offset]);
+        if (stockValue === null || marketValue === null) {
+          valid = false;
+          break;
+        }
+        stockReturn += stockValue;
+        marketReturn += marketValue;
+      }
+      if (!valid || (predicate && !predicate(marketReturn))) continue;
+      stock.push(stockReturn);
+      market.push(marketReturn);
+    }
+    if (stock.length < 12) return null;
+    const marketMean = mean(market);
+    const stockMean = mean(stock);
+    let covariance = 0;
+    let variance = 0;
+    for (let index = 0; index < stock.length; index += 1) {
+      covariance += (market[index] - marketMean) * (stock[index] - stockMean);
+      variance += (market[index] - marketMean) ** 2;
+    }
+    return {
+      beta: variance > 0 ? clamp(covariance / variance, -2.5, 2.5) : 0,
+      correlation: pearsonCorrelation(stock, market) || 0,
+      samples: stock.length,
+    };
+  }
+
+  function stableConditionalRelationship(stockReturns, marketReturns, predicate) {
+    const broad = regressionStats(stockReturns, marketReturns, predicate, 504);
+    const recent = regressionStats(stockReturns, marketReturns, predicate, 252);
+    if (!broad) {
+      return { beta: 0, correlation: 0, samples: 0, strength: 0 };
+    }
+    if (!recent) {
+      return {
+        beta: broad.beta,
+        correlation: broad.correlation,
+        samples: broad.samples,
+        strength: clamp(Math.abs(broad.correlation) * clamp(broad.samples / 24, 0, 1) * 0.5, 0, 1),
+      };
+    }
+    const signConsistency = Math.sign(broad.beta) === Math.sign(recent.beta) ? 1 : 0.2;
+    const correlation = Math.min(Math.abs(broad.correlation), Math.abs(recent.correlation));
+    const sampleConfidence = clamp(recent.samples / 24, 0, 1);
+    return {
+      beta: clamp((broad.beta * 0.4) + (recent.beta * 0.6), -2.5, 2.5),
+      correlation: (broad.correlation * 0.4) + (recent.correlation * 0.6),
+      samples: recent.samples,
+      strength: clamp(correlation * sampleConfidence * signConsistency, 0, 1),
+    };
+  }
+
+  function marketRelationship(stockReturns, marketReturns) {
+    if (!Array.isArray(marketReturns) || marketReturns.length < 252) return null;
+    const downside = stableConditionalRelationship(
+      stockReturns,
+      marketReturns,
+      (value) => value < 0,
+    );
+    const upside = stableConditionalRelationship(
+      stockReturns,
+      marketReturns,
+      (value) => value >= 0,
+    );
+    const finiteMarketReturns = marketReturns.filter(Number.isFinite);
+    const marketVolatility = clamp(
+      winsorizedDeviation(finiteMarketReturns.slice(-63)) || 0.01,
+      0.003,
+      0.08,
+    );
+    const marketMomentum = momentumReturn(finiteMarketReturns, marketVolatility);
+    const active = marketMomentum < 0 ? downside : upside;
+    return {
+      beta: active.beta,
+      correlation: active.correlation,
+      downsideBeta: downside.beta,
+      downsideStrength: downside.strength,
+      upsideBeta: upside.beta,
+      upsideStrength: upside.strength,
+      inverseInDownturn: downside.beta < -0.1 && downside.strength >= 0.1,
+      marketMomentum,
+      strength: active.strength,
+    };
+  }
+
+  function sliceEnvironment(environment, end) {
+    return Object.fromEntries(Object.entries(environment || {}).map(([key, values]) => (
+      [key, Array.isArray(values) ? values.slice(0, end) : []]
+    )));
+  }
+
+  function buildMarketReturnPath(stockReturns, marketReturns, horizon, environment = {}) {
+    const relationship = marketRelationship(stockReturns, marketReturns);
+    const environmentSignal = marketEnvironmentSignal(environment);
+    if (!relationship || relationship.strength <= 0) {
+      return { environment: environmentSignal, relationship, path: Array(horizon).fill(0) };
+    }
+    const cleanMarketReturns = marketReturns.filter(Number.isFinite);
+    const volatility = clamp(
+      winsorizedDeviation(cleanMarketReturns.slice(-63)) || 0.01,
+      0.003,
+      0.08,
+    );
+    const stockVolatility = clamp(
+      winsorizedDeviation(stockReturns.slice(-63)) || 0.01,
+      0.003,
+      0.08,
+    );
+    const windowSize = Math.min(63, Math.max(30, Math.floor(cleanMarketReturns.length / 6)));
+    const matches = findPatternMatches(cleanMarketReturns, windowSize, horizon);
+    const momentum = momentumReturn(cleanMarketReturns, volatility);
+    const path = Array.from({ length: horizon }, (_, index) => {
+      const pattern = weightedPatternReturn(matches, index);
+      const trend = momentum * Math.exp(-index / 100);
+      const baseMarketReturn = pattern === null ? trend : ((pattern * 0.55) + (trend * 0.45));
+      const environmentBias = environmentSignal.combined
+        * environmentSignal.coverage
+        * volatility
+        * 0.06
+        * Math.exp(-index / 90);
+      const marketReturn = baseMarketReturn + environmentBias;
+      const beta = marketReturn < 0 ? relationship.downsideBeta : relationship.upsideBeta;
+      return clamp(beta * marketReturn, -stockVolatility * 0.18, stockVolatility * 0.18);
+    });
+    return { environment: environmentSignal, relationship, path };
   }
 
   function cycleSignal(returns) {
@@ -442,11 +666,17 @@
     return sorted.at(-1).value;
   }
 
-  function calibrateForecastStrategy(returns, horizon = DEFAULT_HORIZON) {
+  function calibrateForecastStrategy(
+    returns,
+    horizon = DEFAULT_HORIZON,
+    marketReturns = [],
+    environment = {},
+  ) {
     const fallback = {
       patternWeight: 0.52,
       trendMultiplier: 1,
       cycleWeight: 0,
+      marketWeight: 0,
       volatilityRatio: 0.75,
       samples: 0,
       trainingSamples: 0,
@@ -490,6 +720,12 @@
       ));
       const cycle = detectMarketCycle(history);
       const cyclePath = buildCycleReturnPath(history, cycle, horizon);
+      const marketModel = buildMarketReturnPath(
+        history,
+        marketReturns.slice(0, anchor),
+        horizon,
+        sliceEnvironment(environment, anchor + 1),
+      );
       const historicalRegime = regimeFeatures(history);
       const similarity = regimeWeight(currentRegime, historicalRegime);
       const recency = Math.exp(-(latestAnchor - anchor) / (3 * 252));
@@ -506,6 +742,8 @@
         cyclePath,
         cycleStrength: cycle?.strength || 0,
         historyVolatility,
+        marketPath: marketModel.path,
+        marketStrength: marketModel.relationship?.strength || 0,
         patternPath,
         sampleWeight,
         trendPath,
@@ -538,10 +776,15 @@
             .reduce((sum, value) => sum + value, 0);
           const cycleReturn = sample.cyclePath.slice(0, endpoint)
             .reduce((sum, value) => sum + value, 0);
+          const marketReturn = sample.marketPath.slice(0, endpoint)
+            .reduce((sum, value) => sum + value, 0);
           const basePrediction = (pattern * candidate.patternWeight)
             + (trend * candidate.trendMultiplier * (1 - candidate.patternWeight));
           const cycleBlend = clamp(candidate.cycleWeight * sample.cycleStrength, 0, 0.22);
-          const predicted = (basePrediction * (1 - cycleBlend)) + (cycleReturn * cycleBlend);
+          const cyclePrediction = (basePrediction * (1 - cycleBlend))
+            + (cycleReturn * cycleBlend);
+          const marketBlend = clamp(candidate.marketWeight * sample.marketStrength, 0, 0.32);
+          const predicted = cyclePrediction + (marketReturn * marketBlend);
           const scale = Math.max(0.01, sample.historyVolatility * Math.sqrt(endpoint));
           const directionMiss = Math.sign(predicted) !== Math.sign(actual) ? 0.35 : 0;
           weightedError += BACKTEST_HORIZON_WEIGHTS[endpointIndex]
@@ -592,6 +835,18 @@
           && candidate.score <= baseline.score + Number.EPSILON))
         .slice(0, 3);
     }
+    const bestNoMarket = ranked.find((candidate) => candidate.marketWeight === 0) || baseline;
+    const bestNoMarketValidation = Math.min(...ranked
+      .filter((candidate) => candidate.marketWeight === 0)
+      .map((candidate) => candidate.validationScore));
+    if (validationSelected.some((candidate) => candidate.marketWeight > 0)
+        && mean(validationSelected.map((candidate) => candidate.validationScore))
+          >= Math.min(bestNoMarket.validationScore, bestNoMarketValidation) * 0.97) {
+      validationSelected = uniqueStrategyShapes(ranked
+        .filter((candidate) => candidate.marketWeight === 0
+          && candidate.score <= baseline.score + Number.EPSILON))
+        .slice(0, 3);
+    }
     if (!validationSelected.length || mean(validationSelected.map((candidate) => candidate.validationScore))
         > baseline.validationScore * 1.02) {
       validationSelected = [baseline];
@@ -625,6 +880,19 @@
           && candidate.productionScore <= productionBaseline.productionScore + Number.EPSILON))
         .slice(0, 3);
     }
+    const productionNoMarket = productionRanked.find((candidate) => candidate.marketWeight === 0)
+      || productionBaseline;
+    const productionNoMarketValidation = Math.min(...productionRanked
+      .filter((candidate) => candidate.marketWeight === 0)
+      .map((candidate) => candidate.validationScore));
+    if (selected.some((candidate) => candidate.marketWeight > 0)
+        && mean(selected.map((candidate) => candidate.validationScore))
+          >= Math.min(productionNoMarket.validationScore, productionNoMarketValidation) * 0.97) {
+      selected = uniqueStrategyShapes(productionRanked
+        .filter((candidate) => candidate.marketWeight === 0
+          && candidate.productionScore <= productionBaseline.productionScore + Number.EPSILON))
+        .slice(0, 3);
+    }
     if (!selected.length) selected = [productionBaseline];
     selected = selected.map((candidate) => ({
         ...candidate,
@@ -649,6 +917,7 @@
       patternWeight: blend("patternWeight"),
       trendMultiplier: blend("trendMultiplier"),
       cycleWeight: blend("cycleWeight"),
+      marketWeight: blend("marketWeight"),
       volatilityRatio: weightedMedian(volatilityRatios) || fallback.volatilityRatio,
       samples: validationCount,
       trainingSamples: samples.length - validationCount,
@@ -662,11 +931,22 @@
     };
   }
 
-  function cachedForecastCalibration(ticker, points, returns, horizon) {
+  function cachedForecastCalibration(
+    ticker,
+    points,
+    returns,
+    horizon,
+    marketReturns = [],
+    environment = {},
+  ) {
     const lastPoint = points.at(-1);
-    const key = `${ticker}|${lastPoint?.date || ""}|${points.length}|${lastPoint?.price || ""}|${horizon}`;
+    const lastMarketReturn = marketReturns.findLast?.(Number.isFinite) || "";
+    const environmentRevision = Object.values(environment)
+      .map((values) => `${values?.length || 0}:${values?.findLast?.(Number.isFinite) || ""}`)
+      .join(",");
+    const key = `${ticker}|${lastPoint?.date || ""}|${points.length}|${lastPoint?.price || ""}|${horizon}|${marketReturns.length}|${lastMarketReturn}|${environmentRevision}`;
     if (calibrationCache.has(key)) return calibrationCache.get(key);
-    const calibration = calibrateForecastStrategy(returns, horizon);
+    const calibration = calibrateForecastStrategy(returns, horizon, marketReturns, environment);
     calibrationCache.set(key, calibration);
     while (calibrationCache.size > 60) calibrationCache.delete(calibrationCache.keys().next().value);
     return calibration;
@@ -703,6 +983,91 @@
     return { slope, intercept: chartMean - (slope * priceMean) };
   }
 
+  function alignedMarketReturns(points, marketDates, marketPrices) {
+    if (!Array.isArray(marketPrices)) return [];
+    const marketByDate = new Map();
+    for (let index = 0; index < Math.min(marketDates.length, marketPrices.length); index += 1) {
+      const date = String(marketDates[index] || "").slice(0, 10);
+      const price = toNumber(marketPrices[index]);
+      if (date && price !== null && price > 0) marketByDate.set(date, price);
+    }
+    const returns = [];
+    for (let index = 1; index < points.length; index += 1) {
+      const previous = marketByDate.get(points[index - 1].date);
+      const current = marketByDate.get(points[index].date);
+      returns.push(previous > 0 && current > 0 ? Math.log(current / previous) : null);
+    }
+    return returns;
+  }
+
+  function selectMarketReturns(points, options, ticker, stockReturns) {
+    if (ticker.startsWith("^")) return { series: ticker, returns: [...stockReturns] };
+    const configured = Array.isArray(options.marketCandidates) && options.marketCandidates.length
+      ? options.marketCandidates
+      : [{
+        series: options.marketSeries || "",
+        dates: options.marketDates || options.dates,
+        prices: options.marketPrices,
+      }];
+    const candidates = configured.map((candidate) => {
+      const returns = alignedMarketReturns(
+        points,
+        Array.isArray(candidate?.dates) ? candidate.dates : options.dates,
+        candidate?.prices,
+      );
+      return {
+        series: String(candidate?.series || ""),
+        returns,
+        relationship: marketRelationship(stockReturns, returns),
+      };
+    }).filter((candidate) => candidate.returns.length === stockReturns.length);
+    candidates.sort((left, right) => (
+      (right.relationship?.strength || 0) - (left.relationship?.strength || 0)
+    ));
+    return candidates[0] || { series: "", returns: [] };
+  }
+
+  function alignedSeriesValues(points, rows, key) {
+    const samples = (Array.isArray(rows) ? rows : [])
+      .map((row) => ({
+        date: String(row?.date || "").slice(0, 10),
+        value: toNumber(row?.[key]),
+      }))
+      .filter((sample) => /^\d{4}-\d{2}-\d{2}$/.test(sample.date) && sample.value !== null)
+      .sort((left, right) => left.date.localeCompare(right.date));
+    const values = [];
+    let cursor = 0;
+    let current = null;
+    points.forEach((point) => {
+      while (cursor < samples.length && samples[cursor].date <= point.date) {
+        current = samples[cursor].value;
+        cursor += 1;
+      }
+      values.push(current);
+    });
+    return values;
+  }
+
+  function alignedMarketEnvironment(points, options, ticker) {
+    const isKosdaq = ticker.endsWith(".KQ") || ticker === "^KQ11";
+    return {
+      leadingCycle: alignedSeriesValues(points, options.macroRows, "leading_cycle"),
+      newsSentiment: alignedSeriesValues(points, options.macroRows, "news_sentiment"),
+      adr: alignedSeriesValues(
+        points,
+        options.auxiliaryRows,
+        isKosdaq ? "adr_kosdaq" : "adr_kospi",
+      ),
+      fearGreed: alignedSeriesValues(points, options.auxiliaryRows, "fear_greed"),
+      customerDeposit: alignedSeriesValues(points, options.creditRows, "customer_deposit"),
+      credit: alignedSeriesValues(
+        points,
+        options.creditRows,
+        isKosdaq ? "kosdaq_credit" : "kospi_credit",
+      ),
+    };
+  }
+
   function buildForecast(options = {}) {
     const ticker = String(options.series || "").toUpperCase();
     if (!isForecastSeries(ticker)) return null;
@@ -725,6 +1090,9 @@
       if (Number.isFinite(value)) returns.push(value);
     }
     if (returns.length < 60) return null;
+    const selectedMarket = selectMarketReturns(points, options, ticker, returns);
+    const marketReturns = selectedMarket.returns;
+    const marketEnvironment = alignedMarketEnvironment(points, options, ticker);
 
     const transformPrices = Array.isArray(options.transformPrices)
       ? options.transformPrices
@@ -747,7 +1115,14 @@
     const technical = rsiSignal(returns);
     const macd = clamp(toNumber(options.macdSignal) || 0, -1, 1);
     const lastPoint = points.at(-1);
-    const calibration = cachedForecastCalibration(ticker, points, returns, horizon);
+    const calibration = cachedForecastCalibration(
+      ticker,
+      points,
+      returns,
+      horizon,
+      marketReturns,
+      marketEnvironment,
+    );
     const signals = buildContextSignal(options, ticker, lastPoint.date, lastPoint.price);
     const historyConfidence = clamp((points.length - 60) / 192, 0.2, 1);
     const patternPath = Array.from({ length: horizon }, (_, index) => (
@@ -755,6 +1130,12 @@
     ));
     const cycle = detectMarketCycle(returns);
     const cyclePath = buildCycleReturnPath(returns, cycle, horizon);
+    const marketModel = buildMarketReturnPath(
+      returns,
+      marketReturns,
+      horizon,
+      marketEnvironment,
+    );
     const calibratedConfidence = clamp(Number(calibration.confidence) || 0.2, 0.2, 0.9);
     const effectivePatternWeight = clamp(
       calibration.patternWeight * (0.55 + (calibratedConfidence * 0.45)),
@@ -765,6 +1146,12 @@
       (Number(calibration.cycleWeight) || 0) * (Number(cycle?.strength) || 0),
       0,
       0.22,
+    );
+    const effectiveMarketWeight = clamp(
+      (Number(calibration.marketWeight) || 0)
+        * (Number(marketModel.relationship?.strength) || 0),
+      0,
+      0.32,
     );
     const candidateReturns = [];
     for (let index = 0; index < horizon; index += 1) {
@@ -782,6 +1169,7 @@
           + (calibratedTrend * (1 - effectivePatternWeight)));
       const directionalTarget = ((baseDirectionalTarget * (1 - effectiveCycleWeight))
         + ((cyclePath[index] || 0) * effectiveCycleWeight))
+        + ((marketModel.path[index] || 0) * effectiveMarketWeight)
         + technicalBias
         + contextBias;
       candidateReturns.push(directionalTarget);
@@ -819,7 +1207,20 @@
       horizon,
       projectedVolatility,
       cycle: cycle ? { ...cycle, weight: effectiveCycleWeight } : null,
-      backtest: { ...calibration, effectivePatternWeight, effectiveCycleWeight },
+      marketRelationship: marketModel.relationship
+        ? {
+          ...marketModel.relationship,
+          series: selectedMarket.series,
+          weight: effectiveMarketWeight,
+        }
+        : null,
+      marketEnvironment: marketModel.environment,
+      backtest: {
+        ...calibration,
+        effectivePatternWeight,
+        effectiveCycleWeight,
+        effectiveMarketWeight,
+      },
     };
   }
 
@@ -828,6 +1229,8 @@
     buildForecast,
     calibrateForecastStrategy,
     detectMarketCycle,
+    marketEnvironmentSignal,
+    marketRelationship,
     isForecastSeries,
     nextBusinessDates,
   });

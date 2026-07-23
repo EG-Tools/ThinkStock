@@ -166,7 +166,7 @@ const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.18";
+const APP_VERSION = "1.19";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -4449,6 +4449,12 @@ function buildAiForecastTraces(rows, seriesModels) {
       transformChartValues: model.values,
       macroRows,
       auxiliaryRows: adrRows,
+      creditRows,
+      marketCandidates: ["^KS11", "^KQ11"].map((marketSeries) => ({
+        series: marketSeries,
+        dates: historyRows.map((row) => row.date),
+        prices: historyRows.map((row) => row[marketSeries]),
+      })),
       disclosures: disclosureRows,
       consensus: analysis?.consensus || null,
       financials: analysis?.financials || [],
@@ -4465,6 +4471,11 @@ function buildAiForecastTraces(rows, seriesModels) {
     const cycleSummary = cycleWeight >= 0.02 && Number.isFinite(cycleYears)
       ? `<br>주기 약 ${cycleYears.toFixed(1)}년 반영`
       : "";
+    const marketWeight = Number(forecast.marketRelationship?.weight) || 0;
+    const marketLabel = forecast.marketRelationship?.series === "^KQ11" ? "코스닥" : "코스피";
+    const marketSummary = marketWeight >= 0.02
+      ? `<br>${marketLabel} ${forecast.marketRelationship?.inverseInDownturn ? "하락 역상관" : "시장 환경 연동"} 반영`
+      : "";
     const backtestSummary = backtestSamples >= 3 && Number.isFinite(backtestAccuracy)
       ? `<br>분리 검증 방향 적중 ${Math.round(backtestAccuracy * 100)}% (${backtestSamples}시점)`
       : "";
@@ -4480,7 +4491,7 @@ function buildAiForecastTraces(rows, seriesModels) {
       connectgaps: false,
       hoverinfo: hoverShowPopup ? undefined : "skip",
       hovertemplate: hoverShowPopup
-        ? `AI 가상 흐름<br>%{x|%Y.%-m.%-d}<br>%{text}${backtestSummary}${cycleSummary}${consensusUsed ? "<br>컨센서스 반영" : ""}${fundamentalsUsed ? "<br>실적 추세 반영" : ""}<extra>${escapeHtml(labelName(series))}</extra>`
+        ? `AI 가상 흐름<br>%{x|%Y.%-m.%-d}<br>%{text}${backtestSummary}${cycleSummary}${marketSummary}${consensusUsed ? "<br>컨센서스 반영" : ""}${fundamentalsUsed ? "<br>실적 추세 반영" : ""}<extra>${escapeHtml(labelName(series))}</extra>`
         : undefined,
       line: { color: "rgba(190, 190, 190, 0.7)", width: 2, dash: "dot", shape: "linear" },
       meta: {
@@ -4496,6 +4507,10 @@ function buildAiForecastTraces(rows, seriesModels) {
         cycleYears: Number.isFinite(cycleYears) ? cycleYears : null,
         cycleStrength: Number(forecast.cycle?.strength) || 0,
         cycleWeight,
+        marketWeight,
+        marketSeries: String(forecast.marketRelationship?.series || ""),
+        marketDownsideBeta: Number(forecast.marketRelationship?.downsideBeta) || 0,
+        marketEnvironment: Number(forecast.marketEnvironment?.combined) || 0,
         consensusUsed,
         fundamentalsUsed,
       },
