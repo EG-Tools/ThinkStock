@@ -1148,7 +1148,10 @@
       0.22,
     );
     const effectiveMarketWeight = clamp(
-      (Number(calibration.marketWeight) || 0)
+      Math.max(
+        Number(calibration.marketWeight) || 0,
+        Number(marketModel.environment?.coverage) >= 0.5 ? 0.08 : 0,
+      )
         * (Number(marketModel.relationship?.strength) || 0),
       0,
       0.32,

@@ -124,6 +124,21 @@ test("selects the index with the stronger stock relationship", () => {
     [100],
   );
   const prices = pricesFromReturns(stockReturns);
+  const macroRows = dates.map((date, index) => ({
+    date,
+    leading_cycle: 100 + (index * 0.01),
+    news_sentiment: 95 + (index * 0.02),
+  }));
+  const creditRows = dates.map((date, index) => ({
+    date,
+    customer_deposit: 80 + (index * 0.03),
+    kosdaq_credit: 12 - (index * 0.005),
+  }));
+  const auxiliaryRows = dates.map((date, index) => ({
+    date,
+    adr_kosdaq: 65 + (index * 0.03),
+    fear_greed: 20 + (index * 0.02),
+  }));
   const forecast = buildForecast({
     series: "218410.KQ",
     dates,
@@ -133,10 +148,15 @@ test("selects the index with the stronger stock relationship", () => {
       { series: "^KS11", dates, prices: pricesFromReturns(kospiReturns) },
       { series: "^KQ11", dates, prices: pricesFromReturns(kosdaqReturns) },
     ],
+    macroRows,
+    creditRows,
+    auxiliaryRows,
   });
 
   assert.equal(forecast.marketRelationship.series, "^KS11");
   assert.equal(forecast.marketRelationship.inverseInDownturn, true);
+  assert.ok(forecast.marketEnvironment.coverage >= 0.5);
+  assert.ok(forecast.marketRelationship.weight > 0.05);
 });
 
 test("combines leading, breadth, liquidity, credit, fear, and news signals", () => {
