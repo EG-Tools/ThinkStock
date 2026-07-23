@@ -107,6 +107,53 @@ test("returns a fresh per-ticker KV cache without contacting DART", async () => 
   assert.deepEqual(payload.records, [cachedRecord]);
 });
 
+test("returns newest DART pages progressively and completes the ticker cache", async () => {
+  const originalFetch = globalThis.fetch;
+  const requestedPages = [];
+  const cache = memoryKv();
+  globalThis.fetch = async (url) => {
+    const page = Number(new URL(url).searchParams.get("page_no"));
+    requestedPages.push(page);
+    return new Response(JSON.stringify({
+      status: "000",
+      total_page: 2,
+      list: [{
+        corp_name: "테스트",
+        report_nm: page === 1 ? "유상증자결정" : "공급계약체결",
+        rcept_dt: page === 1 ? "20260722" : "20260620",
+        rcept_no: String(page),
+      }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const firstResponse = await handleRequest(
+      request("/api/dart/disclosures?ticker=005930.KS&corpCode=00126380&progressive=1&page=1&force=1", { token: "private" }),
+      { DART_API_KEY: "dart", THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: cache },
+    );
+    const first = await firstResponse.json();
+    assert.equal(first.records.length, 1);
+    assert.equal(first.page, 1);
+    assert.equal(first.nextPage, 2);
+    assert.equal(first.complete, false);
+    assert.equal(JSON.parse(cache.values.get("ticker:005930.KS")).complete, false);
+
+    const secondResponse = await handleRequest(
+      request(`/api/dart/disclosures?ticker=005930.KS&corpCode=00126380&progressive=1&page=2&force=1&since=${first.checkedFrom}`, { token: "private" }),
+      { DART_API_KEY: "dart", THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: cache },
+    );
+    const second = await secondResponse.json();
+    const completedCache = JSON.parse(cache.values.get("ticker:005930.KS"));
+    assert.equal(second.records.length, 1);
+    assert.equal(second.nextPage, null);
+    assert.equal(second.complete, true);
+    assert.equal(completedCache.complete, true);
+    assert.equal(completedCache.records.length, 2);
+    assert.deepEqual(requestedPages, [1, 2]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("merges disclosures by receipt number and keeps the newest payload", () => {
   const oldRecord = { ticker: "005930.KS", date: "2026-07-20", title: "배당 결정", receiptNo: "1", name: "old" };
   const newRecord = { ...oldRecord, name: "new" };

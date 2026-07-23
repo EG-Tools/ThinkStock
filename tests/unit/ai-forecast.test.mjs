@@ -28,6 +28,11 @@ function pricesFromReturns(returns, initial = 100) {
   );
 }
 
+function standardDeviation(values) {
+  const average = values.reduce((sum, value) => sum + value, 0) / values.length;
+  return Math.sqrt(values.reduce((sum, value) => sum + ((value - average) ** 2), 0) / (values.length - 1));
+}
+
 function syntheticHistory(count = 1300) {
   const dates = tradingDates(count);
   const marketReturns = Array.from({ length: count - 1 }, (_, index) => (
@@ -65,6 +70,10 @@ test("trains deterministic 20, 63, and 126-day models with uncertainty bands", (
   assert.equal(first.dates.length, 127);
   assert.equal(first.prices.length, 127);
   assert.equal(first.historyDays, 1260);
+  const recentReturns = prices.slice(-64).slice(1).map((price, index) => Math.log(price / prices.slice(-64)[index]));
+  const forecastReturns = first.prices.slice(1).map((price, index) => Math.log(price / first.prices[index]));
+  assert.ok(standardDeviation(forecastReturns) >= standardDeviation(recentReturns) * 0.2);
+  assert.ok(standardDeviation(forecastReturns) <= standardDeviation(recentReturns) * 1.2);
   assert.deepEqual(first.prices, second.prices);
   assert.equal(first.model.horizons.map((item) => item.days).join(","), "20,63,126");
   assert.ok(first.backtest.trainingSamples >= 12);
@@ -223,7 +232,8 @@ test("blends a validated top-400 market model without replacing the local guardr
 
   assert.equal(blended.model.marketModelUsed, true);
   assert.match(blended.model.name, /top-400/);
-  assert.equal(blended.model.version, "2026-07-23");
+  assert.equal(blended.model.version, "2026-07-23|path-v2");
+  assert.equal(blended.model.pathVersion, "path-v2");
   assert.ok(blended.prices.at(-1) > local.prices.at(-1));
 });
 

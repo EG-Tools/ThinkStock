@@ -219,13 +219,16 @@ test("new stock loads its own Cloudflare DART disclosures", async ({ page }) => 
     localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "e2e-token" }));
   });
   let requestedNewStockDisclosure = false;
+  let forcedNewStockDisclosure = null;
   await page.route("**/api/dart/disclosures?*", async (route) => {
-    const ticker = new URL(route.request().url()).searchParams.get("ticker") || "";
+    const requestUrl = new URL(route.request().url());
+    const ticker = requestUrl.searchParams.get("ticker") || "";
     if (ticker !== "000660.KS") {
       await route.fallback();
       return;
     }
     requestedNewStockDisclosure = true;
+    forcedNewStockDisclosure = requestUrl.searchParams.get("force");
     await route.fulfill({ json: {
       ok: true,
       ticker,
@@ -261,6 +264,7 @@ test("new stock loads its own Cloudflare DART disclosures", async ({ page }) => 
 
   await expect(page.locator('[data-series="000660.KS"]')).toBeVisible();
   await expect.poll(() => requestedNewStockDisclosure).toBe(true);
+  expect(forcedNewStockDisclosure).toBeNull();
   await expect(page.locator("#chart .textpoint text").filter({ hasText: "◆" }).first()).toBeVisible();
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const stockTrace = (element.data || []).find((trace) => trace?.meta?.seriesKey === "000660.KS");

@@ -175,7 +175,7 @@ const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.23";
+const APP_VERSION = "1.24";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -231,6 +231,7 @@ const AI_MARKET_MODEL_URL = "./data/ai_market_model.json";
 const DART_VISIBLE_REFRESH_CONCURRENCY = 2;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NETWORK_REQUEST_TIMEOUT_MS = 12000;
+const DART_GATEWAY_REQUEST_TIMEOUT_MS = 90000;
 const CHART_WORKER_STALE_CANCEL_MS = 40;
 const RECENT_DATA_MONTHS = 132;
 function appendCacheBust(url) {
@@ -4203,32 +4204,44 @@ async function fetchDartDisclosuresForTickerLive(apiKey, ticker, options = {}) {
   }
   const accessToken = getDartGatewayAccessToken();
   if (!accessToken) throw new Error("API 설정에서 DART 개인 접속 코드를 먼저 저장해 주세요.");
-  const query = new URLSearchParams({ ticker: targetTicker, corpCode });
+  const query = new URLSearchParams({ ticker: targetTicker, corpCode, progressive: "1" });
   const latestDate = disclosureRowsForTicker(targetTicker).at(-1)?.date || "";
   if (latestDate) query.set("since", latestDate);
   if (options?.forceNetwork) query.set("force", "1");
-  let response;
-  try {
-    response = await fetchWithTimeout(`${DART_GATEWAY_DISCLOSURE_ENDPOINT}?${query.toString()}`, {
-      cache: "no-store",
-      headers: { Authorization: `Bearer ${accessToken}` },
-      signal: options?.signal || null,
+  let page = 1;
+  let collected = [];
+  while (page) {
+    query.set("page", String(page));
+    let response;
+    try {
+      response = await fetchWithTimeout(`${DART_GATEWAY_DISCLOSURE_ENDPOINT}?${query.toString()}`, {
+        cache: "no-store",
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: options?.signal || null,
+      }, DART_GATEWAY_REQUEST_TIMEOUT_MS);
+    } catch (error) {
+      if (error?.name === "AbortError") throw error;
+      throw new Error("ThinkStock DART 중계 서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.");
+    }
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || payload?.ok === false) {
+      const detail = String(payload?.error || "").trim();
+      throw new Error(detail || "ThinkStock DART 중계 서버가 응답하지 않습니다.");
+    }
+    const batch = sanitizeDisclosureRows(payload?.records || []);
+    collected = mergeDisclosureRows(collected, batch);
+    await options?.onBatch?.(batch, {
+      page: Number(payload?.page || page),
+      totalPages: Math.max(1, Number(payload?.totalPages || 1)),
+      complete: payload?.nextPage === null || payload?.complete === true,
+      accumulatedCount: Number(payload?.accumulatedCount || collected.length),
+      cached: payload?.cached === true,
     });
-  } catch (error) {
-    if (error?.name === "AbortError") throw error;
-    throw new Error("ThinkStock DART 중계 서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.");
+    if (payload?.checkedFrom) query.set("since", String(payload.checkedFrom).slice(0, 10));
+    const nextPage = Number(payload?.nextPage || 0);
+    page = Number.isInteger(nextPage) && nextPage > page ? nextPage : 0;
   }
-  let payload = null;
-  try {
-    payload = await response.json();
-  } catch (_) {
-    payload = null;
-  }
-  if (!response.ok || payload?.ok === false) {
-    const detail = String(payload?.error || "").trim();
-    throw new Error(detail || "ThinkStock DART 중계 서버가 응답하지 않습니다.");
-  }
-  return sanitizeDisclosureRows(payload?.records || []);
+  return collected;
 }
 
 function syncAiForecastToggleButton(traceCount = lastAiForecastTraceCount) {
@@ -4275,7 +4288,8 @@ function rememberDartDisclosureRefresh(ticker, info) {
 }
 
 function hasFreshDartDisclosureRefresh(ticker) {
-  return disclosureDataService.hasFreshRefresh(ticker);
+  const entry = disclosureDataService.getRefreshCacheEntry(ticker);
+  return Boolean(entry && (Number(entry.fetched || 0) > 0 || disclosureRowsForTicker(ticker).length > 0));
 }
 
 function disclosureRowsForTicker(ticker) {
@@ -4424,13 +4438,22 @@ async function refreshDartDisclosuresFromApi(apiKey, ticker = "", options = {}) 
     ? await fetchDartDisclosuresForTickerLive(apiKey, targetTicker, {
       signal,
       forceNetwork: options.forceNetwork,
+      onBatch: async (batch, progress) => {
+        if (batch.length) {
+          disclosureRows = mergeDisclosureRows(disclosureRows, batch);
+          markDataChanged("disclosure");
+        }
+        await options?.onBatch?.(batch, progress);
+      },
     })
     : await fetchDartDisclosuresLive(apiKey, { signal });
   throwIfAborted(signal);
   const beforeCount = disclosureRows.length;
   disclosureRows = mergeDisclosureRows(disclosureRows, liveRows);
   if (liveRows.length) markDataChanged("disclosure");
-  const latestDate = disclosureRows.length ? disclosureRows[disclosureRows.length - 1].date : "";
+  const latestDate = targetTicker
+    ? (disclosureRowsForTicker(targetTicker).at(-1)?.date || "")
+    : (disclosureRows.at(-1)?.date || "");
   const info = {
     fetched: liveRows.length,
     added: Math.max(0, disclosureRows.length - beforeCount),
@@ -4540,7 +4563,16 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
         if (!applyDisclosureStateFast()) requestChartRender(false);
       }
       if (canUseDartGateway()) {
-        const refreshInfo = await refreshDartDisclosuresFromApi("gateway", target, { forceNetwork: true });
+        const refreshInfo = await refreshDartDisclosuresFromApi("gateway", target, {
+          forceNetwork: false,
+          onBatch: async (_batch, progress) => {
+            if (!applyDisclosureStateFast()) requestChartRender(false);
+            const pageText = progress.cached
+              ? "저장된 공시를 불러왔습니다."
+              : `최신 공시 확인 중 ${progress.page}/${progress.totalPages}`;
+            setMessage(msgEl, [`${name} 종목이 추가되었습니다.`, pageText]);
+          },
+        });
         if (refreshInfo?.added > 0 || refreshInfo?.fetched > 0) {
           if (!applyDisclosureStateFast()) requestChartRender(false);
         }

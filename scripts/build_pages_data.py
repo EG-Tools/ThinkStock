@@ -1570,7 +1570,9 @@ def main() -> None:
     dart_corp_started = monotonic()
     dart_corp_mode = "cached"
     dart_corp_error = ""
-    if dart_key and (full_rebuild or not dart_corp_map):
+    # This is one compact mapping download, not a market-wide disclosure refresh.
+    # Keeping it current lets newly listed stocks use the on-demand Worker immediately.
+    if dart_key:
         try:
             refreshed_dart_corp_map = fetch_dart_corp_code_map(dart_key)
             if refreshed_dart_corp_map:

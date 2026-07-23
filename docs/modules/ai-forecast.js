@@ -5,6 +5,7 @@
   const MAX_HISTORY = TRADING_DAYS * 5;
   const MIN_HISTORY = TRADING_DAYS * 3;
   const FORECAST_HORIZONS = Object.freeze([20, 63, 126]);
+  const FORECAST_PATH_VERSION = "path-v2";
   const SAMPLE_STEP = 5;
   const EPSILON = 1e-9;
   const FORECAST_CACHE = new Map();
@@ -755,6 +756,26 @@
     return anchors.at(-1).value;
   }
 
+  function weightedMedian(items) {
+    const sorted = items
+      .filter((item) => Number.isFinite(item.value) && item.weight > 0)
+      .sort((left, right) => left.value - right.value);
+    const totalWeight = sorted.reduce((sum, item) => sum + item.weight, 0);
+    let accumulated = 0;
+    for (const item of sorted) {
+      accumulated += item.weight;
+      if (accumulated >= totalWeight / 2) return item.value;
+    }
+    return sorted.at(-1)?.value || 0;
+  }
+
+  function smoothPath(values) {
+    return values.map((value, index) => {
+      if (index === 0 || index === values.length - 1) return value;
+      return (values[index - 1] * 0.2) + (value * 0.6) + (values[index + 1] * 0.2);
+    });
+  }
+
   function residualPath(context, finalFeature, model, horizon) {
     if (!model?.samples?.length) return Array(horizon + 1).fill(0);
     const nearest = model.kind === "baseline" || model.kind === "momentum"
@@ -768,31 +789,54 @@
         finalFeature.features,
         model.indexes,
         model.scaler,
-        10,
+        7,
       ).neighbors;
     const paths = nearest.filter(({ sample }) => sample.anchor + horizon < context.prices.length);
     if (!paths.length) return Array(horizon + 1).fill(0);
-    const averagePath = Array(horizon + 1).fill(0);
-    let totalWeight = 0;
-    paths.forEach(({ sample, distance }) => {
+    const analogs = paths.map(({ sample, distance }) => {
       const weight = 1 / Math.max(0.1, distance);
       const endpoint = Math.log(context.prices[sample.anchor + horizon] / context.prices[sample.anchor]);
-      for (let day = 0; day <= horizon; day += 1) {
+      const values = Array.from({ length: horizon + 1 }, (_, day) => {
         const cumulative = Math.log(context.prices[sample.anchor + day] / context.prices[sample.anchor]);
-        averagePath[day] += (cumulative - ((day / horizon) * endpoint)) * weight;
-      }
-      totalWeight += weight;
+        return cumulative - ((day / horizon) * endpoint);
+      });
+      return { values, weight };
     });
-    const raw = averagePath.map((value) => value / totalWeight);
+    const totalWeight = analogs.reduce((sum, item) => sum + item.weight, 0);
+    const raw = Array.from({ length: horizon + 1 }, (_, day) => {
+      const items = analogs.map((item) => ({ value: item.values[day], weight: item.weight }));
+      const average = items.reduce((sum, item) => sum + (item.value * item.weight), 0) / totalWeight;
+      const median = weightedMedian(items);
+      const closest = analogs[0]?.values[day] || 0;
+      return (median * 0.6) + (average * 0.25) + (closest * 0.15);
+    });
     const boundaries = [0, 20, 63, horizon];
-    return raw.map((value, day) => {
+    const detrended = raw.map((value, day) => {
       const rightIndex = boundaries.findIndex((boundary) => boundary >= day);
       const right = boundaries[Math.max(1, rightIndex)];
       const left = boundaries[Math.max(0, rightIndex - 1)];
       const position = (day - left) / Math.max(1, right - left);
       const bridge = raw[left] + ((raw[right] - raw[left]) * position);
-      return day === left || day === right ? 0 : clamp((value - bridge) * 0.35, -0.05, 0.05);
+      return day === left || day === right ? 0 : value - bridge;
     });
+    const shaped = smoothPath(detrended);
+    const output = Array(horizon + 1).fill(0);
+    for (let segment = 1; segment < boundaries.length; segment += 1) {
+      const left = boundaries[segment - 1];
+      const right = boundaries[segment];
+      const segmentValues = shaped.slice(left, right + 1);
+      const dailyChanges = segmentValues.slice(1).map((value, index) => value - segmentValues[index]);
+      const pathVolatility = standardDeviation(dailyChanges);
+      const targetVolatility = clamp(finalFeature.volatility * 0.4, 0.0015, 0.02);
+      const scale = pathVolatility > EPSILON
+        ? clamp(targetVolatility / pathVolatility, 0.75, 2.75)
+        : 1;
+      const swingLimit = clamp(finalFeature.volatility * Math.sqrt(right - left) * 1.2, 0.04, 0.14);
+      for (let day = left + 1; day < right; day += 1) {
+        output[day] = clamp(shaped[day] * scale, -swingLimit, swingLimit);
+      }
+    }
+    return output;
   }
 
   function chartTransformer(options, lastPrice, lastChartValue) {
@@ -830,6 +874,7 @@
       item?.prices?.length,
     ]);
     return JSON.stringify([
+      FORECAST_PATH_VERSION,
       options?.series,
       points.length,
       points.at(-1)?.date,
@@ -944,11 +989,12 @@
         name: marketModelUsed
           ? "top-400 cross-sectional + purged local ensemble"
           : "purged multi-horizon ensemble",
-        version: String(
+        version: `${String(
           options.marketModel?.generated_at
           || options.marketModel?.generatedAt
-          || "local-v1",
-        ),
+          || "local",
+        )}|${FORECAST_PATH_VERSION}`,
+        pathVersion: FORECAST_PATH_VERSION,
         marketModelUsed,
         horizons: models.map((item) => ({
           days: item.horizon,

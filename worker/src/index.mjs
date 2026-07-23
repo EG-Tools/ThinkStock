@@ -300,7 +300,23 @@ async function fetchDartPage(env, params) {
   let lastError = null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(25000) });
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(25000),
+        redirect: "manual",
+        headers: {
+          Accept: "application/json",
+          "User-Agent": "ThinkStock/1.24 (+https://eg-tools.github.io/ThinkStock/)",
+        },
+      });
+      if (response.status >= 300 && response.status < 400) {
+        const location = String(response.headers.get("Location") || "");
+        const redirectHost = (() => {
+          try { return new URL(location, DART_LIST_URL).host; } catch (_) { return "unknown"; }
+        })();
+        const error = new Error(`DART redirect ${response.status} to ${redirectHost}`);
+        error.retryable = false;
+        throw error;
+      }
       if (!response.ok) {
         const error = new Error(`DART HTTP ${response.status}`);
         error.retryable = [408, 425, 429, 500, 502, 503, 504].includes(response.status);
@@ -316,7 +332,7 @@ async function fetchDartPage(env, params) {
   throw new Error(lastError?.message || "DART request failed");
 }
 
-async function fetchDartDisclosures(env, ticker, corpCode, since, today) {
+async function fetchDartDisclosurePage(env, ticker, corpCode, since, today, pageNo) {
   const baseParams = {
     crtfc_key: env.DART_API_KEY,
     corp_code: corpCode,
@@ -324,26 +340,34 @@ async function fetchDartDisclosures(env, ticker, corpCode, since, today) {
     end_de: apiDate(today),
     last_reprt_at: "Y",
     sort: "date",
-    sort_mth: "asc",
+    sort_mth: "desc",
     page_count: String(PAGE_SIZE),
   };
+  const payload = await fetchDartPage(env, { ...baseParams, page_no: String(pageNo) });
+  const status = String(payload?.status || "");
+  if (status === "013") return { records: [], totalPages: 1 };
+  if (status && status !== "000") {
+    const error = new Error(String(payload?.message || `DART status ${status}`));
+    error.status = status === "020" ? 429 : 502;
+    throw error;
+  }
+  const records = (payload?.list || [])
+    .map((item) => recordFromItem(ticker, item))
+    .filter(Boolean);
+  return {
+    records: mergeRecords([], records),
+    totalPages: Math.min(MAX_PAGES, Math.max(1, Number(payload?.total_page) || 1)),
+  };
+}
+
+async function fetchDartDisclosures(env, ticker, corpCode, since, today) {
   const records = [];
   let pageNo = 1;
   let totalPages = 1;
   while (pageNo <= totalPages) {
-    const payload = await fetchDartPage(env, { ...baseParams, page_no: String(pageNo) });
-    const status = String(payload?.status || "");
-    if (status === "013") break;
-    if (status && status !== "000") {
-      const error = new Error(String(payload?.message || `DART status ${status}`));
-      error.status = status === "020" ? 429 : 502;
-      throw error;
-    }
-    totalPages = Math.min(MAX_PAGES, Math.max(1, Number(payload?.total_page) || 1));
-    (payload?.list || []).forEach((item) => {
-      const record = recordFromItem(ticker, item);
-      if (record) records.push(record);
-    });
+    const page = await fetchDartDisclosurePage(env, ticker, corpCode, since, today, pageNo);
+    records.push(...page.records);
+    totalPages = page.totalPages;
     pageNo += 1;
   }
   return mergeRecords([], records);
@@ -380,7 +404,7 @@ async function readCache(env, ticker) {
   }
 }
 
-async function writeCache(env, ticker, corpCode, records) {
+async function writeCache(env, ticker, corpCode, records, complete = true) {
   if (!env.DISCLOSURE_CACHE) return;
   const payload = {
     schema: CACHE_SCHEMA,
@@ -388,6 +412,7 @@ async function writeCache(env, ticker, corpCode, records) {
     corpCode,
     savedAt: Date.now(),
     latestDate: records.at(-1)?.date || "",
+    complete,
     records,
   };
   await env.DISCLOSURE_CACHE.put(`ticker:${ticker}`, JSON.stringify(payload));
@@ -670,9 +695,21 @@ export async function handleRequest(request, env, ctx = null) {
   }
 
   const force = ["1", "true", "yes"].includes(String(url.searchParams.get("force") || "").toLowerCase());
+  const progressive = ["1", "true", "yes"].includes(String(url.searchParams.get("progressive") || "").toLowerCase());
+  const requestedPage = Math.min(MAX_PAGES, Math.max(1, Number(url.searchParams.get("page")) || 1));
   const cached = await readCache(env, ticker);
-  if (!force && cached && Date.now() - Number(cached.savedAt || 0) <= CACHE_FRESH_MS) {
-    return jsonResponse({ ok: true, ticker, cached: true, latestDate: cached.latestDate || "", records: cached.records || [] }, 200, origin);
+  if (!force && requestedPage === 1 && cached?.complete !== false
+    && Date.now() - Number(cached.savedAt || 0) <= CACHE_FRESH_MS) {
+    return jsonResponse({
+      ok: true,
+      ticker,
+      cached: true,
+      latestDate: cached.latestDate || "",
+      records: cached.records || [],
+      nextPage: null,
+      totalPages: 1,
+      complete: true,
+    }, 200, origin);
   }
 
   const today = isoDate();
@@ -686,6 +723,27 @@ export async function handleRequest(request, env, ctx = null) {
     today,
   );
   try {
+    if (progressive) {
+      const page = await fetchDartDisclosurePage(env, ticker, corpCode, since, today, requestedPage);
+      const records = mergeRecords(cached?.records || [], page.records);
+      const complete = requestedPage >= page.totalPages;
+      const cacheWrite = writeCache(env, ticker, corpCode, records, complete);
+      if (ctx?.waitUntil) ctx.waitUntil(cacheWrite);
+      else await cacheWrite;
+      return jsonResponse({
+        ok: true,
+        ticker,
+        cached: false,
+        checkedFrom: since,
+        latestDate: records.at(-1)?.date || "",
+        records: page.records,
+        accumulatedCount: records.length,
+        page: requestedPage,
+        totalPages: page.totalPages,
+        nextPage: complete ? null : requestedPage + 1,
+        complete,
+      }, 200, origin);
+    }
     const incoming = await fetchDartDisclosures(env, ticker, corpCode, since, today);
     const records = mergeRecords(cached?.records || [], incoming);
     const cacheWrite = writeCache(env, ticker, corpCode, records);
