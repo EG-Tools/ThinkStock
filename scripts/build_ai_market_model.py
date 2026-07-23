@@ -18,7 +18,7 @@ from provider_sources import resolve_api_key
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "docs" / "data" / "ai_market_model.json"
 LOCAL_ENV_FILE = ROOT / ".env.local"
-MODEL_FORMAT = "thinkstock-ai-market-model-v1"
+MODEL_FORMAT = "thinkstock-ai-market-model-v2"
 FEATURE_FORMAT = "ai-market-features-v1"
 MARKETS = {
     "KOSPI": {
@@ -53,7 +53,12 @@ FEATURE_NAMES = (
 )
 HORIZONS = (20, 63, 126)
 LOOKBACK_YEARS = (5, 10, 15, 25)
-RIDGE_LAMBDAS = (1.0, 4.0, 16.0, 64.0, 256.0)
+RIDGE_LAMBDAS = (16.0, 64.0, 256.0, 1024.0, 4096.0)
+MODEL_BLEND_WEIGHTS = (0.6, 0.8, 1.0)
+RANDOM_FEATURE_SIZES = (8, 16)
+RANDOM_FEATURE_SCALE = 0.32
+RANDOM_FEATURE_BIAS_LIMIT = 0.8
+RANDOM_FEATURE_SEED = 20260724
 TRADING_DAYS = 252
 SAMPLE_STEP = 21
 MIN_PRICE_ROWS = TRADING_DAYS
@@ -490,6 +495,51 @@ def ridge_predict(model: dict, features: np.ndarray) -> np.ndarray:
     return model["intercept"] + (standardized @ model["coefficients"])
 
 
+def build_random_feature_transform(hidden_size: int) -> dict:
+    size = max(1, int(hidden_size))
+    generator = np.random.default_rng(RANDOM_FEATURE_SEED + size)
+    return {
+        "format": "random-tanh-v1",
+        "input_size": len(FEATURE_NAMES),
+        "hidden_size": size,
+        "weights": generator.normal(
+            0.0,
+            RANDOM_FEATURE_SCALE,
+            (len(FEATURE_NAMES), size),
+        ),
+        "biases": generator.uniform(-RANDOM_FEATURE_BIAS_LIMIT, RANDOM_FEATURE_BIAS_LIMIT, size),
+    }
+
+
+def feature_transform_candidates() -> list[dict | None]:
+    return [None, *(build_random_feature_transform(size) for size in RANDOM_FEATURE_SIZES)]
+
+
+def apply_feature_transform(features: np.ndarray, transform: dict | None) -> np.ndarray:
+    values = np.asarray(features, dtype=float)
+    if not transform:
+        return values
+    weights = np.asarray(transform["weights"], dtype=float)
+    biases = np.asarray(transform["biases"], dtype=float)
+    hidden = np.tanh(values @ weights + biases)
+    return np.column_stack((values, hidden))
+
+
+def serialize_feature_transform(transform: dict | None) -> dict | None:
+    if not transform:
+        return None
+    return {
+        "format": transform["format"],
+        "input_size": int(transform["input_size"]),
+        "hidden_size": int(transform["hidden_size"]),
+        "weights": [
+            [round(float(value), 10) for value in row]
+            for row in np.asarray(transform["weights"], dtype=float)
+        ],
+        "biases": [round(float(value), 10) for value in transform["biases"]],
+    }
+
+
 def prediction_metrics(actual: np.ndarray, predicted: np.ndarray, baseline: np.ndarray) -> dict:
     actual = np.asarray(actual, dtype=float)
     predicted = np.asarray(predicted, dtype=float)
@@ -548,45 +598,71 @@ def train_horizon_model(
     if len(folds) < 2:
         raise ValueError(f"insufficient {horizon}-day validation folds")
     candidate_results: list[dict] = []
-    for ridge_lambda in RIDGE_LAMBDAS:
-        actual_all: list[float] = []
-        predicted_all: list[float] = []
-        baseline_all: list[float] = []
-        winning_folds = 0
-        for training_indexes, validation_indexes in folds:
-            training = [samples[index] for index in training_indexes]
-            validation = [samples[index] for index in validation_indexes]
-            model = fit_ridge(
-                np.asarray([item.features for item in training]),
-                np.asarray([item.target for item in training]),
-                ridge_lambda,
-            )
-            raw = ridge_predict(model, np.asarray([item.features for item in validation]))
-            predicted = np.asarray([
-                clamp(value, -prediction_bound(item.volatility, horizon), prediction_bound(item.volatility, horizon))
-                for value, item in zip(raw, validation)
-            ])
-            actual = np.asarray([item.target for item in validation])
-            baseline = np.asarray([item.baseline for item in validation])
-            if np.mean(np.abs(actual - predicted)) < np.mean(np.abs(actual - baseline)):
-                winning_folds += 1
-            actual_all.extend(actual.tolist())
-            predicted_all.extend(predicted.tolist())
-            baseline_all.extend(baseline.tolist())
-        metrics = prediction_metrics(
-            np.asarray(actual_all),
-            np.asarray(predicted_all),
-            np.asarray(baseline_all),
-        )
-        candidate_results.append({
-            "lambda": ridge_lambda,
-            "metrics": metrics,
-            "winning_folds": winning_folds,
-            "validation_samples": len(actual_all),
-        })
+    for feature_transform in feature_transform_candidates():
+        for ridge_lambda in RIDGE_LAMBDAS:
+            fold_predictions: list[tuple[list[TrainingSample], np.ndarray, np.ndarray, np.ndarray]] = []
+            for training_indexes, validation_indexes in folds:
+                training = [samples[index] for index in training_indexes]
+                validation = [samples[index] for index in validation_indexes]
+                model = fit_ridge(
+                    apply_feature_transform(
+                        np.asarray([item.features for item in training]),
+                        feature_transform,
+                    ),
+                    np.asarray([item.target for item in training]),
+                    ridge_lambda,
+                )
+                raw = ridge_predict(
+                    model,
+                    apply_feature_transform(
+                        np.asarray([item.features for item in validation]),
+                        feature_transform,
+                    ),
+                )
+                actual = np.asarray([item.target for item in validation])
+                baseline = np.asarray([item.baseline for item in validation])
+                fold_predictions.append((validation, raw, actual, baseline))
+            for blend_weight in MODEL_BLEND_WEIGHTS:
+                actual_all: list[float] = []
+                predicted_all: list[float] = []
+                baseline_all: list[float] = []
+                winning_folds = 0
+                for validation, raw, actual, baseline in fold_predictions:
+                    blended = baseline + ((raw - baseline) * blend_weight)
+                    predicted = np.asarray([
+                        clamp(
+                            value,
+                            -prediction_bound(item.volatility, horizon),
+                            prediction_bound(item.volatility, horizon),
+                        )
+                        for value, item in zip(blended, validation)
+                    ])
+                    if np.mean(np.abs(actual - predicted)) < np.mean(np.abs(actual - baseline)):
+                        winning_folds += 1
+                    actual_all.extend(actual.tolist())
+                    predicted_all.extend(predicted.tolist())
+                    baseline_all.extend(baseline.tolist())
+                metrics = prediction_metrics(
+                    np.asarray(actual_all),
+                    np.asarray(predicted_all),
+                    np.asarray(baseline_all),
+                )
+                candidate_results.append({
+                    "lambda": ridge_lambda,
+                    "blend_weight": blend_weight,
+                    "feature_transform": feature_transform,
+                    "metrics": metrics,
+                    "winning_folds": winning_folds,
+                    "validation_samples": len(actual_all),
+                })
     selected = min(
         candidate_results,
-        key=lambda item: (item["metrics"]["mae"], -item["metrics"]["direction_accuracy"], item["lambda"]),
+        key=lambda item: (
+            item["metrics"]["mae"],
+            -item["metrics"]["direction_accuracy"],
+            int(item["feature_transform"]["hidden_size"]) if item["feature_transform"] else 0,
+            item["lambda"],
+        ),
     )
     final_samples = (
         samples_within_lookback(samples, training_lookback_years)
@@ -596,7 +672,10 @@ def train_horizon_model(
     if len(final_samples) < 200:
         raise ValueError(f"insufficient {horizon}-day final training samples: {len(final_samples)}")
     final_model = fit_ridge(
-        np.asarray([item.features for item in final_samples]),
+        apply_feature_transform(
+            np.asarray([item.features for item in final_samples]),
+            selected["feature_transform"],
+        ),
         np.asarray([item.target for item in final_samples]),
         selected["lambda"],
     )
@@ -610,6 +689,8 @@ def train_horizon_model(
     return {
         "horizon_days": horizon,
         "lambda": selected["lambda"],
+        "blend_weight": selected["blend_weight"],
+        "feature_transform": serialize_feature_transform(selected["feature_transform"]),
         "intercept": round(float(final_model["intercept"]), 10),
         "coefficients": [round(float(value), 10) for value in final_model["coefficients"]],
         "means": [round(float(value), 10) for value in final_model["means"]],
@@ -672,6 +753,10 @@ def train_best_lookback_model(
             "baseline_mae": item["model"]["metrics"]["baseline_mae"],
             "improvement": item["model"]["metrics"]["improvement"],
             "direction_accuracy": item["model"]["metrics"]["direction_accuracy"],
+            "blend_weight": item["model"]["blend_weight"],
+            "nonlinear_features": int(
+                (item["model"].get("feature_transform") or {}).get("hidden_size") or 0
+            ),
             "validation_samples": item["model"]["validation_samples"],
         }
         for item in candidates
@@ -750,11 +835,14 @@ def build_model_payload(
             "market_mapping": {market: config["benchmark"] for market, config in MARKETS.items()},
         },
         "validation": {
-            "method": "common recent three-fold purged walk-forward lookback selection",
+            "method": "common recent three-fold purged walk-forward model selection",
             "sample_step_trading_days": SAMPLE_STEP,
             "purge_rule": "training target_date must be earlier than validation anchor_date",
             "baseline": "bounded five-day momentum",
             "candidate_lookback_years": list(LOOKBACK_YEARS),
+            "candidate_nonlinear_features": [0, *RANDOM_FEATURE_SIZES],
+            "candidate_blend_weights": list(MODEL_BLEND_WEIGHTS),
+            "selection_rule": "lowest purged validation MAE, then highest direction accuracy",
             "reliability_formula": "positive MAE improvement, direction >= 0.5, fold consistency, sample coverage",
         },
         "horizons": models,
@@ -791,14 +879,44 @@ def model_payload_passes_validation(payload: object) -> bool:
             mae = float(metrics["mae"])
             baseline_mae = float(metrics["baseline_mae"])
             selected_years = int(model["selected_lookback_years"])
+            blend_weight = float(model["blend_weight"])
         except (KeyError, TypeError, ValueError):
             return False
+        transform = model.get("feature_transform")
+        hidden_size = 0
+        if transform is not None:
+            if not isinstance(transform, dict) or transform.get("format") != "random-tanh-v1":
+                return False
+            try:
+                input_size = int(transform["input_size"])
+                hidden_size = int(transform["hidden_size"])
+                weights = transform["weights"]
+                biases = transform["biases"]
+            except (KeyError, TypeError, ValueError):
+                return False
+            if (
+                input_size != len(FEATURE_NAMES)
+                or hidden_size not in RANDOM_FEATURE_SIZES
+                or not isinstance(weights, list)
+                or len(weights) != input_size
+                or any(not isinstance(row, list) or len(row) != hidden_size for row in weights)
+                or not isinstance(biases, list)
+                or len(biases) != hidden_size
+            ):
+                return False
+            transform_values = [value for row in weights for value in row] + biases
+            if any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in transform_values):
+                return False
+        expected_features = len(FEATURE_NAMES) + hidden_size
+        vectors = (model.get("coefficients"), model.get("means"), model.get("standard_deviations"))
         if (
             not math.isfinite(mae)
             or not math.isfinite(baseline_mae)
             or mae > baseline_mae
             or selected_years not in LOOKBACK_YEARS
+            or blend_weight not in MODEL_BLEND_WEIGHTS
             or int(model.get("validation_folds") or 0) < 2
+            or any(not isinstance(values, list) or len(values) != expected_features for values in vectors)
         ):
             return False
     return True

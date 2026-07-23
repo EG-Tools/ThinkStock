@@ -5,7 +5,7 @@
   const MAX_HISTORY = TRADING_DAYS * 5;
   const MIN_HISTORY = TRADING_DAYS * 3;
   const FORECAST_HORIZONS = Object.freeze([20, 63, 126]);
-  const FORECAST_PATH_VERSION = "path-v4";
+  const FORECAST_PATH_VERSION = "path-v5";
   const SAMPLE_STEP = 5;
   const EPSILON = 1e-9;
   const FORECAST_CACHE = new Map();
@@ -434,6 +434,41 @@
     ), model.coefficients[0]);
   }
 
+  function parseFeatureTransform(source) {
+    if (source === null || source === undefined) return null;
+    if (!source || typeof source !== "object" || source.format !== "random-tanh-v1") return null;
+    const inputSize = Number(source.input_size ?? source.inputSize);
+    const hiddenSize = Number(source.hidden_size ?? source.hiddenSize);
+    const weights = Array.isArray(source.weights)
+      ? source.weights.map((row) => (Array.isArray(row) ? row.map(Number) : []))
+      : [];
+    const biases = Array.isArray(source.biases) ? source.biases.map(Number) : [];
+    if (
+      !Number.isInteger(inputSize)
+      || inputSize <= 0
+      || !Number.isInteger(hiddenSize)
+      || hiddenSize <= 0
+      || weights.length !== inputSize
+      || weights.some((row) => row.length !== hiddenSize)
+      || biases.length !== hiddenSize
+      || [...weights.flat(), ...biases].some((value) => !Number.isFinite(value))
+    ) return null;
+    return { format: source.format, inputSize, hiddenSize, weights, biases };
+  }
+
+  function applyFeatureTransform(features, transform) {
+    if (!transform) return features;
+    if (features.length < transform.inputSize) return [];
+    const hidden = Array.from({ length: transform.hiddenSize }, (_, hiddenIndex) => {
+      let value = transform.biases[hiddenIndex];
+      for (let inputIndex = 0; inputIndex < transform.inputSize; inputIndex += 1) {
+        value += features[inputIndex] * transform.weights[inputIndex][hiddenIndex];
+      }
+      return Math.tanh(value);
+    });
+    return [...features, ...hidden];
+  }
+
   function marketModelForHorizon(marketModel, horizon) {
     if (!marketModel || typeof marketModel !== "object") return null;
     const models = marketModel.horizons;
@@ -453,6 +488,8 @@
     const deviations = (
       source.deviations || source.standard_deviations || source.feature_scales || []
     ).map(Number);
+    const featureTransform = parseFeatureTransform(source.feature_transform ?? source.featureTransform);
+    if ((source.feature_transform ?? source.featureTransform) != null && !featureTransform) return null;
     if (
       !indexes.length
       || coefficients.length !== indexes.length + 1
@@ -466,14 +503,15 @@
     const directionAccuracy = finite(
       metrics.directionAccuracy ?? metrics.direction_accuracy ?? source.direction_accuracy,
     ) || 0;
-    const reliability = clamp(finite(source.reliability) || 0, 0, 0.6);
-    if (improvement <= 0 || directionAccuracy < 0.5 || reliability <= 0) return null;
+    const blendWeight = clamp(finite(source.blend_weight ?? source.blendWeight ?? source.reliability) || 0, 0, 1);
+    if (improvement <= 0 || directionAccuracy < 0.5 || blendWeight <= 0) return null;
     return {
       coefficients,
       indexes,
       means,
       deviations,
-      reliability,
+      featureTransform,
+      reliability: blendWeight,
       residual80: Math.max(
         0,
         finite(source.residual80 ?? source.residual_80)
@@ -488,9 +526,11 @@
 
   function marketModelPrediction(marketModel, horizon, feature) {
     const model = marketModelForHorizon(marketModel, horizon);
-    if (!model || model.indexes.some((index) => !Number.isFinite(feature.features[index]))) return null;
+    if (!model) return null;
+    const transformedFeatures = applyFeatureTransform(feature.features, model.featureTransform);
+    if (model.indexes.some((index) => !Number.isFinite(transformedFeatures[index]))) return null;
     return {
-      value: ridgePredict(model, feature.features),
+      value: ridgePredict(model, transformedFeatures),
       reliability: model.reliability,
       residual80: model.residual80,
       metrics: model.metrics,
@@ -1071,11 +1111,13 @@
   }
 
   globalScope.ThinkStockAiForecast = Object.freeze({
+    applyFeatureTransform,
     buildContextSignal,
     buildForecast,
     globalMarketSeriesFor,
     isForecastSeries,
     marketModelForHorizon,
     nextBusinessDates,
+    parseFeatureTransform,
   });
 }(typeof self !== "undefined" ? self : globalThis));

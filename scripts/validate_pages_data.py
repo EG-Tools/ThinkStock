@@ -17,9 +17,10 @@ BUILD_REPORT_JSON = DATA_DIR / "build_report.json"
 DART_CORP_CODES_JSON = DATA_DIR / "dart_corp_codes.json"
 KRX_UNIVERSE_JSON = DATA_DIR / "krx_universe.json"
 AI_MARKET_MODEL_JSON = DATA_DIR / "ai_market_model.json"
-AI_MODEL_FORMAT = "thinkstock-ai-market-model-v1"
+AI_MODEL_FORMAT = "thinkstock-ai-market-model-v2"
 AI_FEATURE_FORMAT = "ai-market-features-v1"
 AI_FEATURE_COUNT = 17
+AI_NONLINEAR_FEATURE_COUNTS = {8, 16}
 
 DATASETS = {
     "prices": DATA_DIR / "prices.json",
@@ -321,11 +322,34 @@ def validate_ai_market_model(path: Path = AI_MARKET_MODEL_JSON) -> str:
     for horizon, model in horizons.items():
         if not isinstance(model, dict) or int(model.get("horizon_days") or 0) != int(horizon):
             fail(f"ai market model: {horizon}-day model metadata is invalid")
+        transform = model.get("feature_transform")
+        hidden_size = 0
+        if transform is not None:
+            if not isinstance(transform, dict) or transform.get("format") != "random-tanh-v1":
+                fail(f"ai market model: {horizon}-day feature transform is invalid")
+            input_size = int(transform.get("input_size") or 0)
+            hidden_size = int(transform.get("hidden_size") or 0)
+            weights = transform.get("weights")
+            biases = transform.get("biases")
+            if (
+                input_size != AI_FEATURE_COUNT
+                or hidden_size not in AI_NONLINEAR_FEATURE_COUNTS
+                or not isinstance(weights, list)
+                or len(weights) != input_size
+                or any(not isinstance(row, list) or len(row) != hidden_size for row in weights)
+                or not isinstance(biases, list)
+                or len(biases) != hidden_size
+            ):
+                fail(f"ai market model: {horizon}-day feature transform shape is invalid")
+            transform_values = [value for row in weights for value in row] + biases
+            if any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in transform_values):
+                fail(f"ai market model: {horizon}-day feature transform contains invalid values")
+        expected_feature_count = AI_FEATURE_COUNT + hidden_size
         for key in ("coefficients", "means", "standard_deviations"):
             values = model.get(key)
             if (
                 not isinstance(values, list)
-                or len(values) != AI_FEATURE_COUNT
+                or len(values) != expected_feature_count
                 or any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in values)
             ):
                 fail(f"ai market model: {horizon}-day {key} is invalid")
@@ -361,6 +385,9 @@ def validate_ai_market_model(path: Path = AI_MARKET_MODEL_JSON) -> str:
         reliability = model.get("reliability")
         if not isinstance(reliability, (int, float)) or not 0 <= float(reliability) <= 1:
             fail(f"ai market model: {horizon}-day reliability is invalid")
+        blend_weight = model.get("blend_weight")
+        if not isinstance(blend_weight, (int, float)) or float(blend_weight) not in (0.6, 0.8, 1.0):
+            fail(f"ai market model: {horizon}-day blend weight is invalid")
     return (
         "ai market model: 400 stocks, "
         f"{sum(int(model['validation_samples']) for model in horizons.values())} validation samples"

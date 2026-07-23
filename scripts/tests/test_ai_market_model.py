@@ -5,6 +5,7 @@ import unittest
 from datetime import date, timedelta
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 
@@ -17,7 +18,10 @@ from build_ai_market_model import (
     HORIZONS,
     LOOKBACK_YEARS,
     MODEL_FORMAT,
+    MODEL_BLEND_WEIGHTS,
     TrainingSample,
+    apply_feature_transform,
+    build_random_feature_transform,
     build_samples,
     calendar_years_ago,
     common_recent_validation_dates,
@@ -153,7 +157,21 @@ class AiMarketModelTests(unittest.TestCase):
         self.assertGreater(model["metrics"]["improvement"], 0.8)
         self.assertGreater(model["metrics"]["direction_accuracy"], 0.9)
         self.assertGreater(model["reliability"], 0.05)
-        self.assertEqual(len(model["coefficients"]), len(FEATURE_NAMES))
+        hidden_size = int((model.get("feature_transform") or {}).get("hidden_size") or 0)
+        self.assertEqual(len(model["coefficients"]), len(FEATURE_NAMES) + hidden_size)
+        self.assertIn(model["blend_weight"], MODEL_BLEND_WEIGHTS)
+
+    def test_random_feature_transform_is_deterministic_and_preserves_inputs(self) -> None:
+        features = np.asarray([[0.1] * len(FEATURE_NAMES), [-0.2] * len(FEATURE_NAMES)])
+        first = build_random_feature_transform(8)
+        second = build_random_feature_transform(8)
+
+        transformed = apply_feature_transform(features, first)
+
+        self.assertEqual(transformed.shape, (2, len(FEATURE_NAMES) + 8))
+        self.assertTrue((transformed[:, :len(FEATURE_NAMES)] == features).all())
+        self.assertTrue((first["weights"] == second["weights"]).all())
+        self.assertTrue((first["biases"] == second["biases"]).all())
 
     def test_monthly_cache_requires_matching_schema_and_month(self) -> None:
         payload = {"format": MODEL_FORMAT, "generated_at": "2026-07-02T00:00:00Z"}
@@ -171,6 +189,11 @@ class AiMarketModelTests(unittest.TestCase):
             str(horizon): {
                 "selected_lookback_years": 10,
                 "validation_folds": 3,
+                "blend_weight": 1.0,
+                "feature_transform": None,
+                "coefficients": [0.0] * len(FEATURE_NAMES),
+                "means": [0.0] * len(FEATURE_NAMES),
+                "standard_deviations": [1.0] * len(FEATURE_NAMES),
                 "metrics": {"mae": 0.1, "baseline_mae": 0.2},
             }
             for horizon in HORIZONS

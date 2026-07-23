@@ -9,12 +9,29 @@ const context = {};
 vm.createContext(context);
 vm.runInContext(source, context);
 const {
+  applyFeatureTransform,
   buildContextSignal,
   buildForecast,
   globalMarketSeriesFor,
   marketModelForHorizon,
   nextBusinessDates,
+  parseFeatureTransform,
 } = context.ThinkStockAiForecast;
+
+test("replays the serialized nonlinear feature transform exactly", () => {
+  const transform = parseFeatureTransform({
+    format: "random-tanh-v1",
+    input_size: 2,
+    hidden_size: 1,
+    weights: [[0.5], [-0.25]],
+    biases: [0.1],
+  });
+
+  const transformed = applyFeatureTransform([1, 2], transform);
+
+  assert.deepEqual(Array.from(transformed.slice(0, 2)), [1, 2]);
+  assert.ok(Math.abs(transformed[2] - Math.tanh(0.1)) < 1e-12);
+});
 
 test("uses the same benchmark mapping as the cross-sectional training model", () => {
   assert.equal(globalMarketSeriesFor("005930.KS"), "^KS11");
@@ -260,6 +277,7 @@ test("blends a validated top-400 market model without replacing the local guardr
       coefficients: [0.2, 0],
       means: [0],
       deviations: [1],
+      blend_weight: 1,
       reliability: 0.4,
       residual80: 0.03,
       metrics: { improvement: 0.1, directionAccuracy: 0.6 },
@@ -269,9 +287,10 @@ test("blends a validated top-400 market model without replacing the local guardr
 
   assert.equal(blended.model.marketModelUsed, true);
   assert.match(blended.model.name, /top-400/);
-  assert.equal(blended.model.version, "2026-07-23|path-v4");
-  assert.equal(blended.model.pathVersion, "path-v4");
+  assert.equal(blended.model.version, "2026-07-23|path-v5");
+  assert.equal(blended.model.pathVersion, "path-v5");
   assert.equal(blended.model.globalMarketSeries, "^KS11");
+  assert.equal(marketModelForHorizon(marketModel, 20).reliability, 1);
   assert.ok(blended.prices.at(-1) > local.prices.at(-1));
 });
 
@@ -300,8 +319,10 @@ test("accepts every validated horizon in the generated top-400 artifact", async 
   for (const horizon of [20, 63, 126]) {
     const model = marketModelForHorizon(marketModel, horizon);
     assert.ok(model);
-    assert.equal(model.coefficients.length, 18);
-    assert.equal(model.indexes.length, 17);
+    const expectedFeatures = 17 + (model.featureTransform?.hiddenSize || 0);
+    assert.equal(model.coefficients.length, expectedFeatures + 1);
+    assert.equal(model.indexes.length, expectedFeatures);
     assert.ok(model.reliability > 0);
+    assert.ok(model.reliability <= 1);
   }
 });
