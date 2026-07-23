@@ -175,7 +175,7 @@ const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.26";
+const APP_VERSION = "1.27";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -232,6 +232,7 @@ const DART_VISIBLE_REFRESH_CONCURRENCY = 2;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NETWORK_REQUEST_TIMEOUT_MS = 12000;
 const DART_GATEWAY_REQUEST_TIMEOUT_MS = 90000;
+const DART_EMPTY_RESULT_RETRY_DELAY_MS = 1200;
 const CHART_WORKER_STALE_CANCEL_MS = 40;
 const RECENT_DATA_MONTHS = 132;
 function appendCacheBust(url) {
@@ -4563,7 +4564,7 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
         if (!applyDisclosureStateFast()) requestChartRender(false);
       }
       if (canUseDartGateway()) {
-        const refreshInfo = await refreshDartDisclosuresFromApi("gateway", target, {
+        const refreshOptions = {
           forceNetwork: false,
           onBatch: async (_batch, progress) => {
             if (!applyDisclosureStateFast()) requestChartRender(false);
@@ -4572,7 +4573,16 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
               : `최신 공시 확인 중 ${progress.page}/${progress.totalPages}`;
             setMessage(msgEl, [`${name} 종목이 추가되었습니다.`, pageText]);
           },
-        });
+        };
+        let refreshInfo = await refreshDartDisclosuresFromApi("gateway", target, refreshOptions);
+        if (refreshInfo?.fetched === 0 && disclosureRowsForTicker(target).length === 0) {
+          setMessage(msgEl, [`${name} 종목이 추가되었습니다.`, "공시 결과를 한 번 더 확인하고 있습니다."]);
+          await new Promise((resolve) => setTimeout(resolve, DART_EMPTY_RESULT_RETRY_DELAY_MS));
+          refreshInfo = await refreshDartDisclosuresFromApi("gateway", target, {
+            ...refreshOptions,
+            forceNetwork: true,
+          });
+        }
         if (refreshInfo?.added > 0 || refreshInfo?.fetched > 0) {
           if (!applyDisclosureStateFast()) requestChartRender(false);
         }

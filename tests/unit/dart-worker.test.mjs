@@ -107,6 +107,47 @@ test("returns a fresh per-ticker KV cache without contacting DART", async () => 
   assert.deepEqual(payload.records, [cachedRecord]);
 });
 
+test("rechecks DART instead of trusting a fresh empty ticker cache", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCount = 0;
+  const cache = memoryKv({
+    "ticker:259960.KS": JSON.stringify({
+      schema: 1,
+      ticker: "259960.KS",
+      savedAt: Date.now(),
+      latestDate: "",
+      complete: true,
+      records: [],
+    }),
+  });
+  globalThis.fetch = async () => {
+    fetchCount += 1;
+    return new Response(JSON.stringify({
+      status: "000",
+      total_page: 1,
+      list: [{
+        corp_name: "크래프톤",
+        report_nm: "연결재무제표기준영업(잠정)실적(공정공시)",
+        rcept_dt: "20260701",
+        rcept_no: "202607010001",
+      }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const response = await handleRequest(
+      request("/api/dart/disclosures?ticker=259960.KS&corpCode=00760971&progressive=1&page=1", { token: "private" }),
+      { DART_API_KEY: "dart", THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: cache },
+    );
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.cached, false);
+    assert.equal(payload.records.length, 1);
+    assert.equal(fetchCount, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("returns newest DART pages progressively and completes the ticker cache", async () => {
   const originalFetch = globalThis.fetch;
   const requestedPages = [];

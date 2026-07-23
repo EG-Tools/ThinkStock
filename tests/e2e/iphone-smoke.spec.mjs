@@ -218,8 +218,8 @@ test("new stock loads its own Cloudflare DART disclosures", async ({ page }) => 
   await page.addInitScript(() => {
     localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "e2e-token" }));
   });
-  let requestedNewStockDisclosure = false;
-  let forcedNewStockDisclosure = null;
+  let newStockDisclosureRequests = 0;
+  const forcedNewStockDisclosures = [];
   await page.route("**/api/dart/disclosures?*", async (route) => {
     const requestUrl = new URL(route.request().url());
     const ticker = requestUrl.searchParams.get("ticker") || "";
@@ -227,8 +227,19 @@ test("new stock loads its own Cloudflare DART disclosures", async ({ page }) => 
       await route.fallback();
       return;
     }
-    requestedNewStockDisclosure = true;
-    forcedNewStockDisclosure = requestUrl.searchParams.get("force");
+    newStockDisclosureRequests += 1;
+    forcedNewStockDisclosures.push(requestUrl.searchParams.get("force"));
+    if (newStockDisclosureRequests === 1) {
+      await route.fulfill({ json: {
+        ok: true,
+        ticker,
+        cached: true,
+        records: [],
+        nextPage: null,
+        complete: true,
+      } });
+      return;
+    }
     await route.fulfill({ json: {
       ok: true,
       ticker,
@@ -263,8 +274,8 @@ test("new stock loads its own Cloudflare DART disclosures", async ({ page }) => 
   await suggestion.click();
 
   await expect(page.locator('[data-series="000660.KS"]')).toBeVisible();
-  await expect.poll(() => requestedNewStockDisclosure).toBe(true);
-  expect(forcedNewStockDisclosure).toBeNull();
+  await expect.poll(() => newStockDisclosureRequests).toBe(2);
+  expect(forcedNewStockDisclosures).toEqual([null, "1"]);
   await expect(page.locator("#chart .textpoint text").filter({ hasText: "◆" }).first()).toBeVisible();
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const stockTrace = (element.data || []).find((trace) => trace?.meta?.seriesKey === "000660.KS");

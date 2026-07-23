@@ -306,7 +306,7 @@ async function fetchDartPage(env, params) {
         redirect: "manual",
         headers: {
           Accept: "application/json",
-          "User-Agent": "ThinkStock/1.26 (+https://eg-tools.github.io/ThinkStock/)",
+          "User-Agent": "ThinkStock/1.27 (+https://eg-tools.github.io/ThinkStock/)",
         },
       });
       if (response.status >= 300 && response.status < 400) {
@@ -718,6 +718,7 @@ export async function handleRequest(request, env, ctx = null) {
   const requestedPage = Math.min(MAX_PAGES, Math.max(1, Number(url.searchParams.get("page")) || 1));
   const cached = await readCache(env, ticker);
   if (!force && requestedPage === 1 && cached?.complete !== false
+    && cached?.records?.length > 0
     && Date.now() - Number(cached.savedAt || 0) <= CACHE_FRESH_MS) {
     return jsonResponse({
       ok: true,
