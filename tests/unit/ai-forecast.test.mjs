@@ -11,9 +11,18 @@ vm.runInContext(source, context);
 const {
   buildContextSignal,
   buildForecast,
+  globalMarketSeriesFor,
   marketModelForHorizon,
   nextBusinessDates,
 } = context.ThinkStockAiForecast;
+
+test("uses the same benchmark mapping as the cross-sectional training model", () => {
+  assert.equal(globalMarketSeriesFor("005930.KS"), "^KS11");
+  assert.equal(globalMarketSeriesFor("218410.KQ"), "^KQ11");
+  assert.equal(globalMarketSeriesFor("218410.KQ", {
+    feature_schema: { market_mapping: { KOSDAQ: "CUSTOM-KQ" } },
+  }), "CUSTOM-KQ");
+});
 
 function tradingDates(count, start = "2018-01-02") {
   const output = [start];
@@ -140,9 +149,18 @@ test("learns the strongest market relationship without assuming its direction", 
       { series: "^KS11", dates, prices: pricesFromReturns(kospiReturns) },
       { series: "^KQ11", dates, prices: pricesFromReturns(kosdaqReturns) },
     ],
+    marketModel: {
+      generated_at: "fixed-market-test",
+      feature_schema: { market_mapping: { KOSPI: "^KS11", KOSDAQ: "^KQ11" } },
+      horizons: Object.fromEntries([20, 63, 126].map((horizon) => [String(horizon), {
+        indexes: [0], coefficients: [0.01, 0], means: [0], deviations: [1], reliability: 0.2,
+        metrics: { improvement: 0.05, directionAccuracy: 0.55 },
+      }])),
+    },
   });
 
   assert.equal(forecast.marketRelationship.series, "^KS11");
+  assert.equal(forecast.model.globalMarketSeries, "^KQ11");
   assert.ok(forecast.marketRelationship.correlation < -0.8);
   assert.ok(forecast.marketRelationship.downsideBeta < -0.7);
   assert.equal(forecast.marketRelationship.inverseInDownturn, true);
@@ -232,8 +250,9 @@ test("blends a validated top-400 market model without replacing the local guardr
 
   assert.equal(blended.model.marketModelUsed, true);
   assert.match(blended.model.name, /top-400/);
-  assert.equal(blended.model.version, "2026-07-23|path-v2");
-  assert.equal(blended.model.pathVersion, "path-v2");
+  assert.equal(blended.model.version, "2026-07-23|path-v3");
+  assert.equal(blended.model.pathVersion, "path-v3");
+  assert.equal(blended.model.globalMarketSeries, "^KS11");
   assert.ok(blended.prices.at(-1) > local.prices.at(-1));
 });
 

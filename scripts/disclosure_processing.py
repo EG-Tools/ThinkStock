@@ -5,6 +5,15 @@ import re
 import pandas as pd
 
 
+def normalize_dart_company_name(name: str) -> str:
+    compact = re.sub(r"\s+", "", str(name or "").strip())
+    compact = re.sub(r"^(?:주식회사|\(주\))", "", compact)
+    compact = re.sub(r"(?:주식회사|\(주\))$", "", compact)
+    compact = compact.replace("기업인수목적회사", "스팩")
+    compact = compact.replace("기업인수목적", "스팩")
+    return compact.casefold()
+
+
 def disclosure_type_from_title(title: str) -> str | None:
     text = str(title or "")
     if re.search(r"반기보고서|분기보고서|사업보고서|영업\(잠정\)실적|잠정실적|매출액.?또는.?손익구조|감사보고서제출", text):
@@ -134,6 +143,64 @@ def compact_dart_corp_codes(corp_map: dict[str, dict[str, str]]) -> dict[str, st
         for stock_code, item in sorted(corp_map.items())
         if len(stock_code) == 6 and str(item.get("corp_code") or "").strip()
     }
+
+
+def preferred_share_base_name(name: str) -> str:
+    compact = normalize_dart_company_name(name)
+    pattern = r"(?:\d+)?(?:우선주|우(?:B|C)?)(?:\(전환\))?$"
+    if not re.search(pattern, compact, flags=re.IGNORECASE):
+        return ""
+    return re.sub(pattern, "", compact, flags=re.IGNORECASE)
+
+
+def add_krx_preferred_share_aliases(
+    corp_map: dict[str, dict[str, str]],
+    krx_records: list[dict],
+) -> dict[str, dict[str, str]]:
+    expanded = {str(code): dict(value) for code, value in corp_map.items()}
+    candidates = [
+        record for record in krx_records
+        if str(record.get("code") or "") in expanded
+    ]
+    for record in krx_records:
+        code = str(record.get("code") or "").strip()
+        if len(code) != 6 or code in expanded:
+            continue
+        base_name = preferred_share_base_name(str(record.get("name") or ""))
+        if not base_name:
+            continue
+        scored: list[tuple[int, str]] = []
+        for candidate in candidates:
+            candidate_code = str(candidate.get("code") or "").strip()
+            if str(candidate.get("market") or "") != str(record.get("market") or ""):
+                continue
+            candidate_name = normalize_dart_company_name(candidate.get("name"))
+            score = 0
+            if candidate_name == base_name:
+                score += 300
+            elif len(base_name) >= 3 and (
+                candidate_name.startswith(base_name) or base_name.startswith(candidate_name)
+            ):
+                score += 160
+            if candidate_code[:5] == code[:5]:
+                score += 120
+            elif candidate_code[:4] == code[:4]:
+                score += 30
+            if candidate_code.endswith("0"):
+                score += 10
+            if score >= 120:
+                scored.append((score, candidate_code))
+        if not scored:
+            continue
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        best_score, best_code = scored[0]
+        if len(scored) > 1 and scored[1][0] == best_score:
+            continue
+        expanded[code] = {
+            **expanded[best_code],
+            "alias_of": best_code,
+        }
+    return expanded
 
 
 def build_dart_corp_code_payloads(

@@ -5,7 +5,7 @@
   const MAX_HISTORY = TRADING_DAYS * 5;
   const MIN_HISTORY = TRADING_DAYS * 3;
   const FORECAST_HORIZONS = Object.freeze([20, 63, 126]);
-  const FORECAST_PATH_VERSION = "path-v2";
+  const FORECAST_PATH_VERSION = "path-v3";
   const SAMPLE_STEP = 5;
   const EPSILON = 1e-9;
   const FORECAST_CACHE = new Map();
@@ -256,6 +256,14 @@
     return selected;
   }
 
+  function globalMarketSeriesFor(series, marketModel = null) {
+    const normalized = String(series || "").toUpperCase();
+    const market = /\.KQ$/.test(normalized) || normalized === "^KQ11" ? "KOSDAQ" : "KOSPI";
+    const configured = marketModel?.feature_schema?.market_mapping?.[market]
+      || marketModel?.featureSchema?.marketMapping?.[market];
+    return String(configured || (market === "KOSDAQ" ? "^KQ11" : "^KS11"));
+  }
+
   function pointInTimeSignal(values, priceIndex, direction = 1) {
     const available = values.slice(Math.max(0, priceIndex - TRADING_DAYS + 1), priceIndex + 1)
       .filter((value) => value !== null && Number.isFinite(value));
@@ -283,7 +291,7 @@
     ];
   }
 
-  function featureVector(context, priceIndex) {
+  function featureVector(context, priceIndex, options = {}) {
     const { prices, returns, macd, markets, environment } = context;
     const volatility20 = standardDeviation(sliceReturns(returns, priceIndex, 20));
     const volatility63 = standardDeviation(sliceReturns(returns, priceIndex, 63));
@@ -295,7 +303,13 @@
       4,
     );
     const recentReturns = sliceReturns(returns, priceIndex, 63);
-    const selected = selectMarketAt(returns, markets, priceIndex);
+    const fixedMarketSeries = String(options?.marketSeries || "");
+    const fixedMarket = fixedMarketSeries
+      ? markets.find((item) => item.series === fixedMarketSeries)
+      : null;
+    const selected = fixedMarket
+      ? { market: fixedMarket, relationship: relationshipAt(returns, fixedMarket, priceIndex) }
+      : selectMarketAt(returns, markets, priceIndex);
     const market = selected?.market || null;
     const relationship = selected?.relationship || { correlation: 0, beta: 0, downsideBeta: 0 };
     const marketVolatility = market
@@ -928,11 +942,15 @@
     const models = FORECAST_HORIZONS.map((horizon) => trainHorizonModel(context, horizon));
     if (models.some((model) => !model)) return null;
     const finalFeature = featureVector(context, prices.length - 1);
+    const globalMarketSeries = globalMarketSeriesFor(options.series, options.marketModel);
+    const globalFeature = featureVector(context, prices.length - 1, { marketSeries: globalMarketSeries });
     const contextSignal = buildContextSignal(options, options.series, dates.at(-1), prices.at(-1));
     let marketModelUsed = false;
     const predictions = models.map((model) => {
       const local = predictHorizon(model, finalFeature);
-      const global = marketModelPrediction(options.marketModel, model.horizon, finalFeature);
+      const global = globalFeature.marketSeries === globalMarketSeries
+        ? marketModelPrediction(options.marketModel, model.horizon, globalFeature)
+        : null;
       const raw = global
         ? local + ((global.value - local) * global.reliability)
         : local;
@@ -996,6 +1014,7 @@
         )}|${FORECAST_PATH_VERSION}`,
         pathVersion: FORECAST_PATH_VERSION,
         marketModelUsed,
+        globalMarketSeries: marketModelUsed ? globalMarketSeries : "",
         horizons: models.map((item) => ({
           days: item.horizon,
           kind: item.kind,
@@ -1042,6 +1061,7 @@
   globalScope.ThinkStockAiForecast = Object.freeze({
     buildContextSignal,
     buildForecast,
+    globalMarketSeriesFor,
     isForecastSeries,
     marketModelForHorizon,
     nextBusinessDates,

@@ -59,6 +59,7 @@ from credit_processing import (
     select_credit_seed,
 )
 from disclosure_processing import (
+    add_krx_preferred_share_aliases,
     build_dart_corp_code_payload,
     build_dart_corp_code_payloads,
     build_disclosure_manifest,
@@ -68,6 +69,7 @@ from disclosure_processing import (
     disclosure_type_from_title,
     is_important_disclosure_title,
     is_low_impact_disclosure_title,
+    normalize_dart_company_name,
     normalize_disclosure_records,
     should_display_disclosure,
 )
@@ -732,7 +734,10 @@ def build_adr_payload(frame: pd.DataFrame) -> dict:
     return payload
 
 
-def fetch_dart_corp_code_map(api_key: str) -> dict[str, dict[str, str]]:
+def fetch_dart_corp_code_map(
+    api_key: str,
+    krx_records: list[dict] | None = None,
+) -> dict[str, dict[str, str]]:
     content = http_client().get_bytes(
         DART_CORP_CODE_URL,
         params={"crtfc_key": api_key},
@@ -745,12 +750,30 @@ def fetch_dart_corp_code_map(api_key: str) -> dict[str, dict[str, str]]:
         root = ET.fromstring(archive.read(xml_name))
 
     out: dict[str, dict[str, str]] = {}
+    by_name: dict[str, list[dict[str, str]]] = {}
     for node in root.findall("list"):
         stock_code = (node.findtext("stock_code") or "").strip()
         corp_code = (node.findtext("corp_code") or "").strip()
         corp_name = (node.findtext("corp_name") or "").strip()
+        normalized_name = normalize_dart_company_name(corp_name)
+        if corp_code and normalized_name:
+            by_name.setdefault(normalized_name, []).append({
+                "corp_code": corp_code,
+                "corp_name": corp_name,
+            })
         if len(stock_code) == 6 and corp_code:
             out[stock_code] = {"corp_code": corp_code, "corp_name": corp_name}
+    for record in krx_records or []:
+        stock_code = str(record.get("code") or "").strip()
+        if len(stock_code) != 6 or stock_code in out:
+            continue
+        matches = by_name.get(normalize_dart_company_name(record.get("name")), [])
+        unique_codes = {item["corp_code"] for item in matches}
+        if len(unique_codes) == 1:
+            out[stock_code] = {
+                **matches[0],
+                "matched_by_name": True,
+            }
     return out
 
 
@@ -1574,7 +1597,10 @@ def main() -> None:
     # Keeping it current lets newly listed stocks use the on-demand Worker immediately.
     if dart_key:
         try:
-            refreshed_dart_corp_map = fetch_dart_corp_code_map(dart_key)
+            refreshed_dart_corp_map = fetch_dart_corp_code_map(
+                dart_key,
+                krx_universe.get("records") or [],
+            )
             if refreshed_dart_corp_map:
                 dart_corp_map = refreshed_dart_corp_map
                 dart_corp_mode = "refreshed"
@@ -1583,12 +1609,29 @@ def main() -> None:
             print(f"DART corp code map fetch failed: {dart_corp_error}")
     if not dart_corp_map:
         print("DART corp code map is unavailable.")
-    elif not full_rebuild:
+    elif dart_corp_mode == "cached":
         print(f"Keeping existing DART corp code map ({len(dart_corp_map)} rows).")
         build_report["events"].append(f"Keeping existing DART corp code map rows: {len(dart_corp_map)}")
+    dart_alias_count = 0
+    if dart_corp_map and krx_universe.get("records"):
+        expanded_corp_map = add_krx_preferred_share_aliases(
+            dart_corp_map,
+            krx_universe["records"],
+        )
+        dart_alias_count = max(0, len(expanded_corp_map) - len(dart_corp_map))
+        dart_corp_map = expanded_corp_map
+        if dart_alias_count:
+            build_report["events"].append(
+                f"Added DART aliases for {dart_alias_count} preferred-share tickers"
+            )
     pipeline.record(
         "dart_corp_codes",
-        {"rows": len(dart_corp_map), "latest": "", "mode": dart_corp_mode},
+        {
+            "rows": len(dart_corp_map),
+            "latest": "",
+            "mode": dart_corp_mode,
+            "preferred_share_aliases": dart_alias_count,
+        },
         dart_corp_started,
         status=(
             "error"
