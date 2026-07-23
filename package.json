@@ -15,7 +15,9 @@
     "cap:sync": "npx cap sync",
     "cap:sync:ios": "node scripts/sync_ios_public.mjs",
     "cap:add:ios": "npx cap add ios",
-    "cap:open:ios": "npx cap open ios"
+    "cap:open:ios": "npx cap open ios",
+    "deploy": "wrangler deploy",
+    "preview": "wrangler dev"
   },
   "dependencies": {
     "@capacitor/core": "^7.0.0"
