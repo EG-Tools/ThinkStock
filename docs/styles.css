@@ -1082,6 +1082,7 @@ body {
 
 .chart-frame-adr .cartesianlayer .point { display: none !important; }
 .legend .legendlines { display: none !important; }
+.hoverlayer .legendpoints { display: none !important; }
 .no-hover-popup .hoverlayer > g { display: none !important; }
 
 .message-area { margin-top: 12px; }

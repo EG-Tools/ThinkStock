@@ -139,6 +139,7 @@
     if (!matches.length) return null;
     const isBuy = side === "buy";
     const label = isBuy ? "매수" : "매도";
+    const labelColor = isBuy ? BUY_COLOR : SELL_COLOR;
     return {
       x: matches.map((group) => group.plotDate),
       y: matches.map((group) => group.y),
@@ -167,10 +168,11 @@
           ? ""
           : ` (${Number(first.ownershipRate).toLocaleString("ko-KR")}%)`;
         const more = group.events.length > 1 ? `<br>외 ${group.events.length - 1}건` : "";
-        return `<b>${escapeHtml(group.name)}</b><br>${escapeHtml(first.date)} ${label}`
+        return `<span style="color:${labelColor}"><b>내부자거래 : ${label}</b></span>`
+          + `<br><b>${escapeHtml(group.name)}</b><br>${escapeHtml(first.date)}`
           + `${method}<br>보유 증감 ${formatShares(first.sharesChanged)}${owned}${ownershipRate}`
           + `${reporter}${role}${more}`
-          + "<extra>내부거래</extra>";
+          + "<extra></extra>";
       }),
       meta: { isInsiderTradeTrace: true, insiderTradeSide: side },
     };

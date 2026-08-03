@@ -64,6 +64,11 @@ test("builds red upward buy markers and blue downward sell markers", () => {
   assert.equal(traces[0].customdata[0][2], true);
   assert.equal(traces[1].customdata[0][2], true);
   assert.equal(traces.every((trace) => trace.meta.isInsiderTradeTrace), true);
+  assert.match(traces[0].hovertemplate[0], /color:#ef4444/);
+  assert.match(traces[0].hovertemplate[0], /내부자거래 : 매수/);
+  assert.match(traces[1].hovertemplate[0], /color:#3b82f6/);
+  assert.match(traces[1].hovertemplate[0], /내부자거래 : 매도/);
+  assert.equal(traces.every((trace) => trace.hovertemplate[0].endsWith("<extra></extra>")), true);
 });
 
 test("keeps same-day buy and sell details from one major-holder receipt", () => {

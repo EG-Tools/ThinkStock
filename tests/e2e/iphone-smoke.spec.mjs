@@ -664,6 +664,30 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
     { side: "buy", symbol: "triangle-up", color: "#ef4444", yaxis: "y", paired: true, dates: ["2026-04-14"] },
     { side: "sell", symbol: "triangle-down", color: "#3b82f6", yaxis: "y", paired: true, dates: ["2026-04-14"] },
   ]);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const disclosure = (element.data || []).find((trace) => trace?.meta?.isDisclosureTrace);
+    const insiders = (element.data || []).filter((trace) => trace?.meta?.isInsiderTradeTrace);
+    return {
+      disclosure: disclosure?.hovertemplate?.[0] || "",
+      buy: insiders.find((trace) => trace.meta.insiderTradeSide === "buy")?.hovertemplate?.[0] || "",
+      sell: insiders.find((trace) => trace.meta.insiderTradeSide === "sell")?.hovertemplate?.[0] || "",
+    };
+  })).toEqual({
+    disclosure: expect.stringContaining('<span style="color:#f59e0b"><b>공시</b></span>'),
+    buy: expect.stringContaining('<span style="color:#ef4444"><b>내부자거래 : 매수</b></span>'),
+    sell: expect.stringContaining('<span style="color:#3b82f6"><b>내부자거래 : 매도</b></span>'),
+  });
+  expect(await page.evaluate(() => {
+    const hoverLayer = document.createElement("div");
+    hoverLayer.className = "hoverlayer";
+    const legendPoints = document.createElement("div");
+    legendPoints.className = "legendpoints";
+    hoverLayer.append(legendPoints);
+    document.body.append(hoverLayer);
+    const display = getComputedStyle(legendPoints).display;
+    hoverLayer.remove();
+    return display;
+  })).toBe("none");
   await expect(page.locator("#insiderTradeToggle")).toHaveText("내부거래");
   await expect.poll(() => page.evaluate(() => {
     const disclosureStyle = getComputedStyle(document.getElementById("disclosureToggle"));
