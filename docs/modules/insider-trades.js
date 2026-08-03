@@ -115,7 +115,7 @@
       name: `내부거래 ${label}`,
       showlegend: false,
       cliponaxis: false,
-      yaxis: "y2",
+      yaxis: "y",
       marker: {
         symbol: isBuy ? "triangle-up" : "triangle-down",
         size: 12,

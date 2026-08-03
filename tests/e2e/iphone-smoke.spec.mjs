@@ -524,21 +524,29 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
       symbol: trace.marker.symbol,
       color: trace.marker.color,
       yaxis: trace.yaxis,
-      y: trace.y,
     }))
   ))).toEqual([
-    { side: "buy", symbol: "triangle-up", color: "#ef4444", yaxis: "y2", y: [0.07] },
-    { side: "sell", symbol: "triangle-down", color: "#3b82f6", yaxis: "y2", y: [0.07] },
+    { side: "buy", symbol: "triangle-up", color: "#ef4444", yaxis: "y" },
+    { side: "sell", symbol: "triangle-down", color: "#3b82f6", yaxis: "y" },
   ]);
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const disclosure = (element.data || []).find((trace) => trace?.meta?.isDisclosureTrace);
     const insiders = (element.data || []).filter((trace) => trace?.meta?.isInsiderTradeTrace);
+    const stock = (element.data || []).find((trace) => trace?.meta?.seriesKey === "005930.KS");
+    const stockYAt = (date) => {
+      const index = stock?.x?.indexOf(date) ?? -1;
+      return index >= 0 ? Number(stock.y[index]) : Number.NaN;
+    };
     return {
       disclosureAxis: disclosure?.yaxis,
-      disclosureY: disclosure?.y?.[0],
-      insiderY: insiders.map((trace) => trace.y?.[0]),
+      disclosureAboveLine: (disclosure?.x || []).every((date, index) => (
+        Number(disclosure.y[index]) > stockYAt(date)
+      )),
+      insiderBelowLine: insiders.every((trace) => (trace.x || []).every((date, index) => (
+        Number(trace.y[index]) < stockYAt(date)
+      ))),
     };
-  })).toEqual({ disclosureAxis: "y2", disclosureY: 0.93, insiderY: [0.07, 0.07] });
+  })).toEqual({ disclosureAxis: "y", disclosureAboveLine: true, insiderBelowLine: true });
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     [...element.querySelectorAll(".scatterlayer path.point")]
       .filter((point) => ["rgb(239, 68, 68)", "rgb(59, 130, 246)"].includes(point.style.fill))

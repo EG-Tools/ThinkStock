@@ -55,8 +55,8 @@ test("builds red upward buy markers and blue downward sell markers", () => {
   assert.equal(traces[0].marker.color, "#ef4444");
   assert.equal(traces[1].marker.symbol, "triangle-down");
   assert.equal(traces[1].marker.color, "#3b82f6");
-  assert.equal(traces[0].yaxis, "y2");
-  assert.equal(traces[1].yaxis, "y2");
+  assert.equal(traces[0].yaxis, "y");
+  assert.equal(traces[1].yaxis, "y");
   assert.equal(traces[0].x[0], traces[1].x[0]);
   assert.equal(traces[0].y[0], traces[1].y[0]);
   assert.equal(traces.every((trace) => trace.meta.isInsiderTradeTrace), true);

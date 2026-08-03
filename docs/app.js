@@ -182,7 +182,7 @@ const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.35";
+const APP_VERSION = "1.36";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -369,8 +369,7 @@ const DISCLOSURE_TEXT_SIZE = 13;
 const DISCLOSURE_TEXT_HOVER_SIZE = 17;
 const DISCLOSURE_MOUSE_HIT_RADIUS_PX = 22;
 const DISCLOSURE_TOUCH_HIT_RADIUS_PX = 30;
-const DISCLOSURE_MARKER_LANE_Y = 0.93;
-const INSIDER_TRADE_MARKER_LANE_Y = 0.07;
+const EVENT_MARKER_GAP_RATIO = 0.02;
 
 let pricePayload = null;
 let macroRows = [];
@@ -3518,7 +3517,7 @@ function restyleLive(traceIndex, seriesKey) {
 
 function finishTraceYEdit(rebuildForDisclosures = true, seriesKey = "") {
   saveState();
-  if (showAiForecast) {
+  if (showAiForecast || showInsiderTrades) {
     requestAnimationFrame(() => requestChartRender());
     return;
   }
@@ -3712,6 +3711,27 @@ function findNearestDisclosurePoint(eventDate, ticker, pointIndex) {
   return best;
 }
 
+function chartEventMarkerGap(seriesModels, start, end) {
+  let minimum = Number.POSITIVE_INFINITY;
+  let maximum = Number.NEGATIVE_INFINITY;
+  (seriesModels || []).forEach((model) => {
+    if (hiddenSeries.has(model.series)) return;
+    const count = Math.min(model.xValues?.length || 0, model.values?.length || 0);
+    for (let index = 0; index < count; index += 1) {
+      const date = String(model.xValues[index] || "").slice(0, 10);
+      const value = model.values[index];
+      if (date < start || date > end || !Number.isFinite(value)) continue;
+      minimum = Math.min(minimum, value);
+      maximum = Math.max(maximum, value);
+    }
+  });
+  if (!Number.isFinite(minimum) || !Number.isFinite(maximum)) return 1;
+  const span = maximum - minimum;
+  return span > 1e-9
+    ? span * EVENT_MARKER_GAP_RATIO
+    : Math.max(Math.abs(maximum) * 0.006, 0.6);
+}
+
 function buildDisclosureTrace(selected, seriesModels, start, end) {
   lastDisclosureTraceStats = { total: disclosureRows.length, candidates: 0, markers: 0 };
   if (!disclosureRows.length || !seriesModels.length) return null;
@@ -3725,6 +3745,7 @@ function buildDisclosureTrace(selected, seriesModels, start, end) {
   lastDisclosureTraceStats.candidates = candidates.length;
   const candidateTickers = new Set(candidates.map((event) => event.ticker));
   const pointIndex = buildDisclosurePointIndex(seriesModels, candidateTickers);
+  const markerGap = chartEventMarkerGap(seriesModels, start, end);
   const grouped = new Map();
 
   candidates.forEach((event) => {
@@ -3736,7 +3757,7 @@ function buildDisclosureTrace(selected, seriesModels, start, end) {
       name: event.name || labelName(event.ticker),
       color: seriesColor(event.ticker),
       plotDate: point.date,
-      y: DISCLOSURE_MARKER_LANE_Y,
+      y: point.y + markerGap,
       events: [],
     };
     group.events.push(event);
@@ -3763,14 +3784,14 @@ function buildDisclosureTrace(selected, seriesModels, start, end) {
     name: DISCLOSURE_TRACE_NAME,
     showlegend: false,
     cliponaxis: false,
-    yaxis: "y2",
+    yaxis: "y",
     hovertemplate: groups.map((group) => {
       const first = group.events[0];
       const more = group.events.length > 1 ? ` 외 ${group.events.length - 1}건` : "";
       return `${escapeHtml(group.name)}<br>${escapeHtml(first.type)}: ${escapeHtml(first.title)}${more}<extra>공시</extra>`;
     }),
     meta: { isDisclosureTrace: true },
-    textposition: "top center",
+    textposition: "middle center",
     textfont: {
       color: groups.map((group) => group.color || DISCLOSURE_MARKER_COLOR),
       size: DISCLOSURE_TEXT_SIZE,
@@ -3794,6 +3815,7 @@ function buildInsiderTradeTraces(selected, seriesModels, start, end) {
     seriesModels,
     new Set(candidates.map((event) => event.ticker)),
   );
+  const markerGap = chartEventMarkerGap(seriesModels, start, end);
   const grouped = new Map();
   candidates.forEach((event) => {
     const point = findNearestDisclosurePoint(event.date, event.ticker, pointIndex);
@@ -3805,7 +3827,7 @@ function buildInsiderTradeTraces(selected, seriesModels, start, end) {
       name: labelName(event.ticker),
       side,
       plotDate: point.date,
-      y: INSIDER_TRADE_MARKER_LANE_Y,
+      y: point.y - markerGap,
       events: [],
     };
     group.events.push(event);
@@ -5195,7 +5217,6 @@ async function renderChart(preserveZoom = true) {
     legend: { orientation: "h", x: 0, y: 1.08, font: { color: "rgba(255,255,255,0.7)", size: 11 } },
     xaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, color: "#666", tickfont: { size: 10 }, fixedrange: false, showspikes: false, hoverformat: "%Y.%-m.%-d", ...(savedXRange ? { range: savedXRange } : { range: defaultXRange, autorange: false }) },
     yaxis: { showticklabels: false, title: "", showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, fixedrange: true, ...(savedYRange ? { range: savedYRange, autorange: false } : {}) },
-    yaxis2: { overlaying: "y", range: [0, 1], autorange: false, fixedrange: true, visible: false, showgrid: false, zeroline: false },
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
     hoverlabel: plotlyHoverLabel(),
     dragmode: false,
