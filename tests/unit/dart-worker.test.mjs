@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { strToU8, zipSync } from "fflate";
 
 import {
   handleRequest,
@@ -10,6 +11,7 @@ import {
   mergeForecastJournalRecords,
   mergeInsiderRecords,
   mergeRecords,
+  parseMajorHolderDocument,
   parseConsensusHtml,
   parseEarningsTrendHtml,
   parseFinancialSummaryHtml,
@@ -244,12 +246,40 @@ test("normalizes DART insider ownership changes and merges revised reports", () 
   assert.equal(merged.at(-1).sharesChanged, 1300);
 });
 
+test("parses every major-holder transaction row from one DART original document", () => {
+  const xml = `<DOCUMENT><TABLE>
+    <TR><TE ACODE="SPC_NM">Morgan Stanley &amp; Co.</TE><TU AUNIT="MDF_DT">2026.07.20</TU><TU AUNIT="HLD_MTH">장내매도(-)</TU><TU AUNIT="STK_KND">의결권있는 주식</TU><TE ACODE="BFR_MDF_CNT">1,337,773</TE><TE ACODE="MDF_SDK_CNT">-4,767</TE><TE ACODE="AFR_MDF_CNT">1,333,006</TE><TE ACODE="HLD_UNT_PRJ">42,992</TE></TR>
+    <TR><TE ACODE="SPC_NM">Morgan Stanley &amp; Co.</TE><TU AUNIT="MDF_DT">2026.07.20</TU><TU AUNIT="HLD_MTH">장내매수(+)</TU><TU AUNIT="STK_KND">의결권있는 주식</TU><TE ACODE="BFR_MDF_CNT">1,333,006</TE><TE ACODE="MDF_SDK_CNT">13,725</TE><TE ACODE="AFR_MDF_CNT">1,346,731</TE><TE ACODE="HLD_UNT_PRJ">42,695</TE></TR>
+  </TABLE></DOCUMENT>`;
+  const report = {
+    rcept_no: "20260721001006",
+    repror: "MORGANSTANLEY&COINTLPLC",
+    stkrt: "5.07",
+  };
+
+  const rows = parseMajorHolderDocument("218410.KQ", xml, report);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((row) => row.side), ["sell", "buy"]);
+  assert.deepEqual(rows.map((row) => row.sharesChanged), [-4767, 13725]);
+  assert.deepEqual(rows.map((row) => row.sharesOwned), [1333006, 1346731]);
+  assert.equal(rows[1].ownershipRate, 5.07);
+  assert.equal(rows[1].transactionMethod, "장내매수(+)");
+  assert.equal(rows[1].recordType, "major-holder-detail");
+  assert.equal(mergeInsiderRecords([], rows).length, 2);
+});
+
 test("returns three years of authenticated insider trades and caches the result", async () => {
   const originalFetch = globalThis.fetch;
   let fetchCount = 0;
   const cache = memoryKv();
   globalThis.fetch = async (url) => {
     fetchCount += 1;
+    if (new URL(url).pathname === "/api/majorstock.json") {
+      return new Response(JSON.stringify({ status: "013", list: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     assert.equal(new URL(url).pathname, "/api/elestock.json");
     return new Response(JSON.stringify({
       status: "000",
@@ -287,7 +317,57 @@ test("returns three years of authenticated insider trades and caches the result"
     const second = await handleRequest(request(path, { token: "private" }), env);
     const secondPayload = await second.json();
     assert.equal(secondPayload.cached, true);
-    assert.equal(fetchCount, 1);
+    assert.equal(fetchCount, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("combines DART majorstock originals with insider ownership records", async () => {
+  const originalFetch = globalThis.fetch;
+  const cache = memoryKv();
+  const receiptNo = "20260721001006";
+  const xml = `<DOCUMENT><TABLE>
+    <TR><TE ACODE="SPC_NM">Morgan Stanley</TE><TU AUNIT="MDF_DT">2026.07.20</TU><TU AUNIT="HLD_MTH">장내매도(-)</TU><TU AUNIT="STK_KND">의결권있는 주식</TU><TE ACODE="BFR_MDF_CNT">1,337,773</TE><TE ACODE="MDF_SDK_CNT">-4,767</TE><TE ACODE="AFR_MDF_CNT">1,333,006</TE></TR>
+    <TR><TE ACODE="SPC_NM">Morgan Stanley</TE><TU AUNIT="MDF_DT">2026.07.20</TU><TU AUNIT="HLD_MTH">장내매수(+)</TU><TU AUNIT="STK_KND">의결권있는 주식</TU><TE ACODE="BFR_MDF_CNT">1,333,006</TE><TE ACODE="MDF_SDK_CNT">13,725</TE><TE ACODE="AFR_MDF_CNT">1,346,731</TE></TR>
+  </TABLE></DOCUMENT>`;
+  const archive = zipSync({ [`${receiptNo}.xml`]: strToU8(xml) });
+  globalThis.fetch = async (url) => {
+    const pathname = new URL(url).pathname;
+    if (pathname === "/api/elestock.json") {
+      return new Response(JSON.stringify({ status: "013", list: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (pathname === "/api/majorstock.json") {
+      return new Response(JSON.stringify({
+        status: "000",
+        list: [{ rcept_no: receiptNo, rcept_dt: "20260721", repror: "MORGANSTANLEY&COINTLPLC", stkrt: "5.07" }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    assert.equal(pathname, "/api/document.xml");
+    return new Response(archive, {
+      status: 200,
+      headers: { "Content-Type": "application/zip", "Content-Length": String(archive.byteLength) },
+    });
+  };
+
+  try {
+    const env = {
+      DART_API_KEY: "secret",
+      THINKSTOCK_ACCESS_TOKEN: "private",
+      DISCLOSURE_CACHE: cache,
+    };
+    const response = await handleRequest(request(
+      "/api/dart/insider-trades?ticker=218410.KQ&corpCode=01078178",
+      { token: "private" },
+    ), env);
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.records.length, 2);
+    assert.deepEqual(payload.records.map((row) => row.side).sort(), ["buy", "sell"]);
+    assert.equal(payload.records.every((row) => row.receiptNo === receiptNo), true);
   } finally {
     globalThis.fetch = originalFetch;
   }

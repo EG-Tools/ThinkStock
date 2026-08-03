@@ -1,3 +1,5 @@
+import { strFromU8, unzipSync } from "fflate";
+
 import {
   fetchCompanyAnalysis,
   mergeFinancialRecords,
@@ -15,13 +17,19 @@ export {
 
 const DART_LIST_URL = "https://opendart.fss.or.kr/api/list.json";
 const DART_ELESTOCK_URL = "https://opendart.fss.or.kr/api/elestock.json";
+const DART_MAJORSTOCK_URL = "https://opendart.fss.or.kr/api/majorstock.json";
+const DART_DOCUMENT_URL = "https://opendart.fss.or.kr/api/document.xml";
 const TICKER_PATTERN = /^(\d{6})\.(KS|KQ)$/;
 const CORP_CODE_PATTERN = /^\d{8}$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const CACHE_SCHEMA = 1;
 const CACHE_FRESH_MS = 6 * 60 * 60 * 1000;
-const INSIDER_CACHE_SCHEMA = 1;
+const INSIDER_CACHE_SCHEMA = 2;
 const INSIDER_CACHE_FRESH_MS = 6 * 60 * 60 * 1000;
+const MAJOR_HOLDER_DOCUMENT_CONCURRENCY = 4;
+const MAX_MAJOR_HOLDER_DOCUMENTS = 40;
+const MAX_DART_DOCUMENT_ARCHIVE_BYTES = 5 * 1024 * 1024;
+const MAX_DART_DOCUMENT_XML_BYTES = 12 * 1024 * 1024;
 const ANALYSIS_CACHE_SCHEMA = 3;
 const ANALYSIS_CACHE_FRESH_MS = 30 * 24 * 60 * 60 * 1000;
 const ANALYSIS_SNAPSHOT_LIMIT = 60;
@@ -337,7 +345,9 @@ async function fetchDartPage(env, params) {
 }
 
 function dartNumber(value) {
-  const number = Number(String(value ?? "").replaceAll(",", "").trim());
+  const normalized = String(value ?? "").replaceAll(",", "").trim();
+  if (!normalized || normalized === "-") return null;
+  const number = Number(normalized);
   return Number.isFinite(number) ? number : null;
 }
 
@@ -346,6 +356,89 @@ function dartReceiptDate(value) {
   if (digits.length !== 8) return "";
   const date = `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
   return isValidIsoDate(date) ? date : "";
+}
+
+function decodeDartText(value) {
+  return String(value || "")
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&#(\d+);/g, (_, digits) => String.fromCodePoint(Number(digits)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, digits) => String.fromCodePoint(Number.parseInt(digits, 16)))
+    .replace(/&nbsp;|&#160;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;|&#39;/gi, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function majorHolderRecordKey(record) {
+  return [
+    record.receiptNo,
+    record.date,
+    record.reporter,
+    record.transactionMethod,
+    record.securityType,
+    record.sharesBefore,
+    record.sharesChanged,
+    record.sharesOwned,
+  ].map((value) => String(value ?? "")).join("|");
+}
+
+export function parseMajorHolderDocument(ticker, xmlText, report = {}) {
+  const xml = String(xmlText || "");
+  if (!xml || xml.length > MAX_DART_DOCUMENT_XML_BYTES) return [];
+  const receiptNo = String(report?.rcept_no || report?.receiptNo || "").replace(/\D/g, "").slice(0, 14);
+  const reportOwnershipRate = dartNumber(report?.stkrt ?? report?.ownershipRate);
+  const reportReporter = String(report?.repror || report?.reporter || "").trim().slice(0, 80);
+  const records = [];
+  const rowPattern = /<TR\b[^>]*>([\s\S]*?)<\/TR>/gi;
+  let rowMatch;
+  while ((rowMatch = rowPattern.exec(xml))) {
+    const cells = new Map();
+    const cellPattern = /<(TU|TE)\b([^>]*)>([\s\S]*?)<\/\1>/gi;
+    let cellMatch;
+    while ((cellMatch = cellPattern.exec(rowMatch[1]))) {
+      const codeMatch = cellMatch[2].match(/\b(?:ACODE|AUNIT)\s*=\s*"([^"]+)"/i);
+      const code = String(codeMatch?.[1] || "").trim().toUpperCase();
+      if (code) cells.set(code, decodeDartText(cellMatch[3]));
+    }
+
+    const date = dartReceiptDate(cells.get("MDF_DT"));
+    const transactionMethod = String(cells.get("HLD_MTH") || "").trim();
+    const sharesChanged = dartNumber(cells.get("MDF_SDK_CNT"));
+    const sharesBefore = dartNumber(cells.get("BFR_MDF_CNT"));
+    const sharesOwned = dartNumber(cells.get("AFR_MDF_CNT"));
+    if (!date || !sharesChanged || !transactionMethod || transactionMethod === "-") continue;
+
+    const reporter = String(cells.get("SPC_NM") || reportReporter).trim().slice(0, 80);
+    const record = {
+      ticker,
+      date,
+      side: sharesChanged > 0 ? "buy" : "sell",
+      reporter,
+      role: "주요주주 · 대량보유",
+      sharesBefore,
+      sharesChanged,
+      sharesOwned,
+      ownershipRate: reportOwnershipRate,
+      ownershipRateChanged: null,
+      transactionMethod: transactionMethod.slice(0, 80),
+      securityType: String(cells.get("STK_KND") || "").trim().slice(0, 80),
+      unitPrice: dartNumber(cells.get("HLD_UNT_PRJ")),
+      receiptNo,
+      recordType: "major-holder-detail",
+      url: receiptNo
+        ? `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${encodeURIComponent(receiptNo)}`
+        : "",
+      source: "OpenDART",
+    };
+    record.recordId = majorHolderRecordKey(record);
+    records.push(record);
+  }
+  return records;
 }
 
 export function insiderRecordFromItem(ticker, item) {
@@ -369,6 +462,7 @@ export function insiderRecordFromItem(ticker, item) {
     ownershipRate: dartNumber(item?.sp_stock_lmp_rate),
     ownershipRateChanged: dartNumber(item?.sp_stock_lmp_irds_rate),
     receiptNo,
+    recordType: "executive-ownership",
     url: receiptNo
       ? `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${encodeURIComponent(receiptNo)}`
       : "",
@@ -380,7 +474,9 @@ export function mergeInsiderRecords(existing, incoming) {
   const records = new Map();
   [...(existing || []), ...(incoming || [])].forEach((record) => {
     if (!record?.ticker || !record?.date || !["buy", "sell"].includes(record?.side)) return;
-    const key = String(record.receiptNo || [
+    const key = String(record.recordId || (record.recordType === "major-holder-detail"
+      ? majorHolderRecordKey(record)
+      : record.receiptNo) || [
       record.ticker,
       record.date,
       record.reporter,
@@ -394,7 +490,7 @@ export function mergeInsiderRecords(existing, incoming) {
   ));
 }
 
-async function fetchDartInsiderTrades(env, ticker, corpCode, today) {
+async function fetchDartExecutiveTrades(env, ticker, corpCode, today) {
   const url = `${DART_ELESTOCK_URL}?${new URLSearchParams({
     crtfc_key: env.DART_API_KEY,
     corp_code: corpCode,
@@ -407,7 +503,7 @@ async function fetchDartInsiderTrades(env, ticker, corpCode, today) {
         redirect: "manual",
         headers: {
           Accept: "application/json",
-          "User-Agent": "ThinkStock/1.32 (+https://eg-tools.github.io/ThinkStock/)",
+          "User-Agent": "ThinkStock/1.35 (+https://eg-tools.github.io/ThinkStock/)",
         },
       });
       if (response.status >= 300 && response.status < 400) {
@@ -440,6 +536,108 @@ async function fetchDartInsiderTrades(env, ticker, corpCode, today) {
     }
   }
   throw new Error(lastError?.message || "DART ownership request failed");
+}
+
+async function fetchDartMajorHolderReports(env, corpCode, today) {
+  const url = `${DART_MAJORSTOCK_URL}?${new URLSearchParams({
+    crtfc_key: env.DART_API_KEY,
+    corp_code: corpCode,
+  })}`;
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(25000),
+    redirect: "manual",
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "ThinkStock/1.35 (+https://eg-tools.github.io/ThinkStock/)",
+    },
+  });
+  if (!response.ok || (response.status >= 300 && response.status < 400)) {
+    throw new Error(`DART major ownership HTTP ${response.status}`);
+  }
+  const payload = await response.json();
+  const status = String(payload?.status || "");
+  if (status === "013") return [];
+  if (status && status !== "000") {
+    const error = new Error(String(payload?.message || `DART major ownership status ${status}`));
+    error.status = status === "020" ? 429 : 502;
+    throw error;
+  }
+  const cutoff = yearsBefore(today, LOOKBACK_YEARS);
+  return (Array.isArray(payload?.list) ? payload.list : [])
+    .filter((item) => dartReceiptDate(item?.rcept_dt) >= cutoff)
+    .filter((item) => /^\d{14}$/.test(String(item?.rcept_no || "")))
+    .sort((left, right) => String(right.rcept_dt).localeCompare(String(left.rcept_dt)))
+    .slice(0, MAX_MAJOR_HOLDER_DOCUMENTS);
+}
+
+async function fetchDartDocumentXml(env, receiptNo) {
+  const url = `${DART_DOCUMENT_URL}?${new URLSearchParams({
+    crtfc_key: env.DART_API_KEY,
+    rcept_no: receiptNo,
+  })}`;
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(25000),
+    redirect: "manual",
+    headers: {
+      Accept: "application/zip, application/octet-stream",
+      "User-Agent": "ThinkStock/1.35 (+https://eg-tools.github.io/ThinkStock/)",
+    },
+  });
+  if (!response.ok || (response.status >= 300 && response.status < 400)) {
+    throw new Error(`DART document HTTP ${response.status}`);
+  }
+  const announcedSize = Number(response.headers.get("Content-Length"));
+  if (Number.isFinite(announcedSize) && announcedSize > MAX_DART_DOCUMENT_ARCHIVE_BYTES) {
+    throw new Error("DART document archive is too large");
+  }
+  const archive = new Uint8Array(await response.arrayBuffer());
+  if (!archive.length || archive.length > MAX_DART_DOCUMENT_ARCHIVE_BYTES) {
+    throw new Error("DART document archive is empty or too large");
+  }
+  const entries = unzipSync(archive);
+  const xmlEntries = Object.entries(entries)
+    .filter(([name]) => /\.xml$/i.test(name))
+    .sort(([left], [right]) => left.localeCompare(right));
+  let totalBytes = 0;
+  const documents = [];
+  for (const [, bytes] of xmlEntries) {
+    totalBytes += bytes.byteLength;
+    if (totalBytes > MAX_DART_DOCUMENT_XML_BYTES) throw new Error("DART document XML is too large");
+    documents.push(strFromU8(bytes));
+  }
+  if (!documents.length) throw new Error("DART document XML was not found");
+  return documents.join("\n");
+}
+
+async function fetchDartMajorHolderTrades(env, ticker, corpCode, today) {
+  const reports = await fetchDartMajorHolderReports(env, corpCode, today);
+  const records = [];
+  for (let offset = 0; offset < reports.length; offset += MAJOR_HOLDER_DOCUMENT_CONCURRENCY) {
+    const batch = reports.slice(offset, offset + MAJOR_HOLDER_DOCUMENT_CONCURRENCY);
+    const results = await Promise.allSettled(batch.map(async (report) => {
+      const xml = await fetchDartDocumentXml(env, String(report.rcept_no));
+      return parseMajorHolderDocument(ticker, xml, report);
+    }));
+    results.forEach((result) => {
+      if (result.status === "fulfilled") records.push(...result.value);
+    });
+  }
+  const cutoff = yearsBefore(today, LOOKBACK_YEARS);
+  return mergeInsiderRecords([], records.filter((record) => record.date >= cutoff));
+}
+
+async function fetchDartInsiderTrades(env, ticker, corpCode, today) {
+  const results = await Promise.allSettled([
+    fetchDartExecutiveTrades(env, ticker, corpCode, today),
+    fetchDartMajorHolderTrades(env, ticker, corpCode, today),
+  ]);
+  const records = results
+    .filter((result) => result.status === "fulfilled")
+    .flatMap((result) => result.value);
+  if (!records.length && results.every((result) => result.status === "rejected")) {
+    throw results[0].reason;
+  }
+  return mergeInsiderRecords([], records);
 }
 
 async function fetchDartDisclosurePage(env, ticker, corpCode, since, today, pageNo) {
