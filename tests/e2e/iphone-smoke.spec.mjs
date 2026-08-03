@@ -665,6 +665,13 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
     { side: "sell", symbol: "triangle-down", color: "#3b82f6", yaxis: "y", paired: true, dates: ["2026-04-14"] },
   ]);
   await expect(page.locator("#insiderTradeToggle")).toHaveText("내부거래");
+  await expect.poll(() => page.evaluate(() => {
+    const disclosureStyle = getComputedStyle(document.getElementById("disclosureToggle"));
+    const insiderStyle = getComputedStyle(document.getElementById("insiderTradeToggle"));
+    const disclosure = [disclosureStyle.backgroundColor, disclosureStyle.borderColor, disclosureStyle.color];
+    const insider = [insiderStyle.backgroundColor, insiderStyle.borderColor, insiderStyle.color];
+    return insider.every((value, index) => value === disclosure[index]);
+  })).toBe(true);
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const disclosure = (element.data || []).find((trace) => trace?.meta?.isDisclosureTrace);
     const insiders = (element.data || []).filter((trace) => trace?.meta?.isInsiderTradeTrace);
@@ -1100,17 +1107,9 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await expect(page.locator("#hoverToggle")).toHaveCSS("color", "rgb(138, 138, 138)");
   await page.locator("#hoverToggle").click();
   await expect(page.locator("#hoverToggle")).toHaveClass(/is-active/);
-  await expect.poll(() => page.evaluate(() => {
-    const hoverButton = document.getElementById("hoverToggle");
-    const hoverStyle = getComputedStyle(document.getElementById("hoverToggle"));
-    const disclosureStyle = getComputedStyle(document.getElementById("disclosureToggle"));
-    const hover = [hoverStyle.backgroundColor, hoverStyle.borderColor, hoverStyle.color];
-    const disclosure = [disclosureStyle.backgroundColor, disclosureStyle.borderColor, disclosureStyle.color];
-    return {
-      active: hoverButton.classList.contains("is-active"),
-      colorsMatch: hover.every((value, index) => value === disclosure[index]),
-    };
-  })).toEqual({ active: true, colorsMatch: true });
+  await expect(page.locator("#hoverToggle")).toHaveCSS("background-color", "rgba(74, 222, 128, 0.12)");
+  await expect(page.locator("#hoverToggle")).toHaveCSS("border-color", "rgba(74, 222, 128, 0.25)");
+  await expect(page.locator("#hoverToggle")).toHaveCSS("color", "rgb(74, 222, 128)");
   await page.locator("#hoverToggle").click();
   expect(await page.evaluate(() => Boolean(window.ThinkStockPerformanceDiagnostics))).toBe(false);
   await page.locator("#apiOptionsBtn").click();

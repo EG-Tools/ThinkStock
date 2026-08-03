@@ -134,16 +134,11 @@ body {
   border-color: rgba(160, 160, 160, 0.24);
   color: #8a8a8a;
 }
-#hoverToggle.is-active,
-.disclosure-toggle-btn.is-active {
+.disclosure-toggle-btn.is-active,
+.insider-trade-toggle-btn.is-active {
   background: rgba(251, 191, 36, 0.13);
   color: #fbbf24;
   border-color: rgba(251, 191, 36, 0.28);
-}
-.insider-trade-toggle-btn.is-active {
-  background: linear-gradient(90deg, rgba(239, 68, 68, 0.14), rgba(59, 130, 246, 0.14));
-  color: #f8fafc;
-  border-color: rgba(148, 163, 184, 0.42);
 }
 .insider-trade-toggle-btn[aria-busy="true"] { opacity: 0.72; }
 
