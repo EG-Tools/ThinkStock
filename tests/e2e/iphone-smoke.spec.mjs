@@ -705,25 +705,6 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   expect(pairedMarkerGeometry.verticalClearance).toBeGreaterThanOrEqual(0);
   expect(pairedMarkerGeometry.verticalClearance).toBeLessThanOrEqual(4);
 
-  const hoverStockDate = async (date) => page.locator("#chart").evaluate((element, targetDate) => {
-    const stockCurve = (element.data || []).findIndex((trace) => trace?.meta?.seriesKey === "005930.KS");
-    const stockPoint = element.data?.[stockCurve]?.x?.indexOf(targetDate) ?? -1;
-    const eventPoints = (element.data || []).flatMap((trace, curveNumber) => (
-      trace?.meta?.isInsiderTradeTrace || trace?.meta?.isDisclosureTrace
-        ? [{ curveNumber, pointNumber: 0 }]
-        : []
-    ));
-    window.Plotly.Fx.hover(element, [
-      { curveNumber: stockCurve, pointNumber: stockPoint },
-      ...eventPoints,
-    ], ["xy"]);
-    element.emit("plotly_hover", { points: element._hoverdata || [] });
-  }, date);
-  await hoverStockDate("2026-01-14");
-  await expect(page.locator("#chart .hoverlayer")).not.toContainText("2026-04-14");
-  await hoverStockDate("2026-04-14");
-  await expect(page.locator("#chart .hoverlayer")).toContainText("2026-04-14");
-
   const scaleHandle = page.locator('.y-handle-right[title="삼성전자 (스케일)"]');
   await expect(scaleHandle).toBeVisible();
   const scaleHandleBox = await scaleHandle.boundingBox();
@@ -747,6 +728,26 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   await expect.poll(async () => Math.abs(
     (await readPairedMarkerGeometry()).verticalClearance - pairedMarkerGeometry.verticalClearance,
   )).toBeLessThanOrEqual(2);
+
+  const hoverStockDate = async (date) => page.locator("#chart").evaluate((element, targetDate) => {
+    const stockCurve = (element.data || []).findIndex((trace) => trace?.meta?.seriesKey === "005930.KS");
+    const stockPoint = element.data?.[stockCurve]?.x?.indexOf(targetDate) ?? -1;
+    const eventPoints = (element.data || []).flatMap((trace, curveNumber) => (
+      trace?.meta?.isInsiderTradeTrace || trace?.meta?.isDisclosureTrace
+        ? [{ curveNumber, pointNumber: 0 }]
+        : []
+    ));
+    window.Plotly.Fx.hover(element, [
+      { curveNumber: stockCurve, pointNumber: stockPoint },
+      ...eventPoints,
+    ], ["xy"]);
+    element.emit("plotly_hover", { points: element._hoverdata || [] });
+  }, date);
+  await hoverStockDate("2026-01-14");
+  await expect(page.locator("#chart .hoverlayer")).not.toContainText("2026-04-14");
+  await hoverStockDate("2026-04-14");
+  await expect(page.locator("#chart .hoverlayer")).toContainText("2026-04-14");
+  await page.locator("#chart").evaluate((element) => window.Plotly.Fx.unhover(element));
   expect(authorization).toBe("Bearer private");
 
   const insiderMarkerTickers = () => page.locator("#chart").evaluate((element) => (
