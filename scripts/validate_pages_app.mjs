@@ -109,6 +109,9 @@ assert.ok(insiderTrades.includes('"triangle-up"')
   && insiderTrades.includes('const BUY_COLOR = "#ef4444"')
   && insiderTrades.includes('const SELL_COLOR = "#3b82f6"'),
 "insider buy/sell marker styling is incomplete");
+assert.ok(!/(^|\n)\.cartesianlayer \.point \{ display: none !important; \}/.test(styles)
+  && styles.includes(".chart-frame-adr .cartesianlayer .point { display: none !important; }"),
+"global point-marker hiding must not suppress insider trade triangles");
 assert.ok(workerIndex.includes("DART_ELESTOCK_URL")
   && workerIndex.includes('pathname === "/api/dart/insider-trades"')
   && workerIndex.includes("LOOKBACK_YEARS")

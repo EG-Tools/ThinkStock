@@ -182,7 +182,7 @@ const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.32";
+const APP_VERSION = "1.33";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -3767,9 +3767,16 @@ function buildDisclosureTrace(selected, seriesModels, start, end) {
   };
 }
 
-function buildInsiderTradeTraces(selected, seriesModels, start, end) {
+function buildInsiderTradeTraces(selected, seriesModels, start, end, visibleYRange = null) {
   lastInsiderTradeTraceStats = { total: insiderTradeRows.length, candidates: 0, markers: 0 };
   if (!insiderTradeRows.length || !seriesModels.length) return [];
+  const yRange = Array.isArray(visibleYRange) && visibleYRange.length === 2
+    ? visibleYRange.map(Number)
+    : null;
+  const hasYRange = yRange?.every(Number.isFinite) && yRange[0] !== yRange[1];
+  const yMin = hasYRange ? Math.min(...yRange) : null;
+  const yMax = hasYRange ? Math.max(...yRange) : null;
+  const markerOffset = hasYRange ? (yMax - yMin) * 0.025 : 4;
   const selectedSet = new Set(selected);
   const candidates = insiderTradeRows.filter((event) => (
     selectedSet.has(event.ticker)
@@ -3788,12 +3795,16 @@ function buildInsiderTradeTraces(selected, seriesModels, start, end) {
     if (!point) return;
     const side = event.side === "sell" ? "sell" : "buy";
     const key = `${event.ticker}|${point.date}|${side}`;
+    const rawY = point.y + (side === "sell" ? markerOffset : -markerOffset);
+    const markerY = hasYRange
+      ? Math.max(yMin + markerOffset, Math.min(yMax - markerOffset, rawY))
+      : rawY;
     const group = grouped.get(key) || {
       ticker: event.ticker,
       name: labelName(event.ticker),
       side,
       plotDate: point.date,
-      y: point.y + (side === "sell" ? 4 : -4),
+      y: markerY,
       events: [],
     };
     group.events.push(event);
@@ -5143,7 +5154,7 @@ async function renderChart(preserveZoom = true) {
     lastInsiderTradeTraceStats = { total: insiderTradeRows.length, candidates: 0, markers: 0 };
   }
   const insiderTraces = showInsiderTrades
-    ? buildInsiderTradeTraces(selected, seriesModels, start, end)
+    ? buildInsiderTradeTraces(selected, seriesModels, start, end, el._fullLayout?.yaxis?.range)
     : [];
   traces.push(...insiderTraces);
   syncInsiderTradeToggleButton(lastInsiderTradeTraceStats.markers);
