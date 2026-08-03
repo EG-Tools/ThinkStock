@@ -109,7 +109,7 @@
     return {
       x: matches.map((group) => group.plotDate),
       y: matches.map((group) => group.y),
-      customdata: matches.map((group) => [group.ticker, group.events.length]),
+      customdata: matches.map((group) => [group.ticker, group.events.length, group.paired === true]),
       type: "scatter",
       mode: "markers",
       name: `내부거래 ${label}`,

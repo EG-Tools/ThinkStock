@@ -38,6 +38,7 @@ test("builds red upward buy markers and blue downward sell markers", () => {
       side: "buy",
       plotDate: "2026-07-31",
       y: 96,
+      paired: true,
       events: [{ date: "2026-07-31", reporter: "홍길동", sharesChanged: 1250 }],
     },
     {
@@ -46,6 +47,7 @@ test("builds red upward buy markers and blue downward sell markers", () => {
       side: "sell",
       plotDate: "2026-07-31",
       y: 96,
+      paired: true,
       events: [{ date: "2026-07-31", reporter: "김주주", sharesChanged: -500 }],
     },
   ]);
@@ -59,6 +61,8 @@ test("builds red upward buy markers and blue downward sell markers", () => {
   assert.equal(traces[1].yaxis, "y");
   assert.equal(traces[0].x[0], traces[1].x[0]);
   assert.equal(traces[0].y[0], traces[1].y[0]);
+  assert.equal(traces[0].customdata[0][2], true);
+  assert.equal(traces[1].customdata[0][2], true);
   assert.equal(traces.every((trace) => trace.meta.isInsiderTradeTrace), true);
 });
 

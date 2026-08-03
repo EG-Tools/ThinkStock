@@ -524,10 +524,11 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
       symbol: trace.marker.symbol,
       color: trace.marker.color,
       yaxis: trace.yaxis,
+      paired: trace.customdata?.[0]?.[2],
     }))
   ))).toEqual([
-    { side: "buy", symbol: "triangle-up", color: "#ef4444", yaxis: "y" },
-    { side: "sell", symbol: "triangle-down", color: "#3b82f6", yaxis: "y" },
+    { side: "buy", symbol: "triangle-up", color: "#ef4444", yaxis: "y", paired: true },
+    { side: "sell", symbol: "triangle-down", color: "#3b82f6", yaxis: "y", paired: true },
   ]);
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const disclosure = (element.data || []).find((trace) => trace?.meta?.isDisclosureTrace);
@@ -539,6 +540,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
     };
     return {
       disclosureAxis: disclosure?.yaxis,
+      pairedDiamond: Number(insiders[0]?.y?.[0]) > Number(insiders[1]?.y?.[0]),
       disclosureAboveLine: (disclosure?.x || []).every((date, index) => (
         Number(disclosure.y[index]) > stockYAt(date)
       )),
@@ -546,12 +548,35 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
         Number(trace.y[index]) < stockYAt(date)
       ))),
     };
-  })).toEqual({ disclosureAxis: "y", disclosureAboveLine: true, insiderBelowLine: true });
+  })).toEqual({
+    disclosureAxis: "y",
+    pairedDiamond: true,
+    disclosureAboveLine: true,
+    insiderBelowLine: true,
+  });
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     [...element.querySelectorAll(".scatterlayer path.point")]
       .filter((point) => ["rgb(239, 68, 68)", "rgb(59, 130, 246)"].includes(point.style.fill))
       .map((point) => getComputedStyle(point).display)
   ))).toEqual(["inline", "inline"]);
+  const pairedMarkerGeometry = await page.locator("#chart").evaluate((element) => {
+    const points = [...element.querySelectorAll(".scatterlayer path.point")]
+      .filter((point) => ["rgb(239, 68, 68)", "rgb(59, 130, 246)"].includes(point.style.fill));
+    const buy = points.find((point) => point.style.fill === "rgb(239, 68, 68)")?.getBoundingClientRect();
+    const sell = points.find((point) => point.style.fill === "rgb(59, 130, 246)")?.getBoundingClientRect();
+    if (!buy || !sell) return null;
+    return {
+      horizontallyAligned: Math.abs((buy.left + buy.right) - (sell.left + sell.right)) < 1,
+      buyAboveSell: buy.top < sell.top,
+      seamGap: Math.abs(buy.bottom - sell.top),
+    };
+  });
+  expect(pairedMarkerGeometry).toMatchObject({
+    horizontallyAligned: true,
+    buyAboveSell: true,
+    seamGap: expect.any(Number),
+  });
+  expect(pairedMarkerGeometry.seamGap).toBeLessThanOrEqual(3);
   expect(authorization).toBe("Bearer private");
 
   const insiderMarkerTickers = () => page.locator("#chart").evaluate((element) => (
@@ -572,6 +597,12 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   await page.locator(".stock-suggest-item").filter({ hasText: "SK하이닉스" }).click();
   await expect(page.locator('[data-series="000660.KS"]')).toBeVisible();
   await expect.poll(insiderMarkerTickers).toEqual(["000660.KS", "005930.KS"]);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || [])
+      .filter((trace) => trace?.meta?.isInsiderTradeTrace)
+      .flatMap((trace) => trace.customdata || [])
+      .find((item) => item?.[0] === "000660.KS")?.[2]
+  ))).toBe(false);
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     [...element._fullLayout.xaxis.range]
   ))).not.toEqual(zoomedRange);

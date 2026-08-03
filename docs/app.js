@@ -182,7 +182,7 @@ const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.36";
+const APP_VERSION = "1.37";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -370,6 +370,7 @@ const DISCLOSURE_TEXT_HOVER_SIZE = 17;
 const DISCLOSURE_MOUSE_HIT_RADIUS_PX = 22;
 const DISCLOSURE_TOUCH_HIT_RADIUS_PX = 30;
 const EVENT_MARKER_GAP_RATIO = 0.02;
+const PAIRED_INSIDER_MARKER_OFFSET_RATIO = 0.3;
 
 let pricePayload = null;
 let macroRows = [];
@@ -3833,7 +3834,22 @@ function buildInsiderTradeTraces(selected, seriesModels, start, end) {
     group.events.push(event);
     grouped.set(key, group);
   });
-  const groups = [...grouped.values()].sort((left, right) => (
+  const groups = [...grouped.values()];
+  const sidesByMarker = new Map();
+  groups.forEach((group) => {
+    const key = `${group.ticker}|${group.plotDate}`;
+    const sides = sidesByMarker.get(key) || new Set();
+    sides.add(group.side);
+    sidesByMarker.set(key, sides);
+  });
+  groups.forEach((group) => {
+    const paired = sidesByMarker.get(`${group.ticker}|${group.plotDate}`)?.size > 1;
+    group.paired = paired;
+    if (!paired) return;
+    const offset = markerGap * PAIRED_INSIDER_MARKER_OFFSET_RATIO;
+    group.y += group.side === "buy" ? offset : -offset;
+  });
+  groups.sort((left, right) => (
     left.plotDate.localeCompare(right.plotDate) || left.side.localeCompare(right.side)
   ));
   lastInsiderTradeTraceStats.markers = groups.length;
