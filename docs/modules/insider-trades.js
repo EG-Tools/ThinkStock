@@ -134,6 +134,11 @@
     return number === null ? "-" : `${Math.abs(number).toLocaleString("ko-KR")}주`;
   }
 
+  function meaningfulTransactionMethod(value) {
+    const method = String(value || "").trim();
+    return /^기타\s*(?:\([+-]\))?$/.test(method) ? "" : method;
+  }
+
   function markerTrace(groups, side) {
     const matches = (Array.isArray(groups) ? groups : []).filter((group) => group?.side === side);
     if (!matches.length) return null;
@@ -160,7 +165,8 @@
         const first = group.events[0] || {};
         const reporter = first.reporter ? `<br>${escapeHtml(first.reporter)}` : "";
         const role = first.role ? ` · ${escapeHtml(first.role)}` : "";
-        const method = first.transactionMethod ? `<br>${escapeHtml(first.transactionMethod)}` : "";
+        const transactionMethod = meaningfulTransactionMethod(first.transactionMethod);
+        const method = transactionMethod ? `<br>${escapeHtml(transactionMethod)}` : "";
         const owned = first.sharesOwned === null || first.sharesOwned === undefined
           ? ""
           : `<br>거래 후 ${formatShares(first.sharesOwned)}`;
@@ -169,7 +175,6 @@
           : ` (${Number(first.ownershipRate).toLocaleString("ko-KR")}%)`;
         const more = group.events.length > 1 ? `<br>외 ${group.events.length - 1}건` : "";
         return `<span style="color:${labelColor}"><b>내부자거래 : ${label}</b></span>`
-          + `<br><b>${escapeHtml(group.name)}</b><br>${escapeHtml(first.date)}`
           + `${method}<br>보유 증감 ${formatShares(first.sharesChanged)}${owned}${ownershipRate}`
           + `${reporter}${role}${more}`
           + "<extra></extra>";

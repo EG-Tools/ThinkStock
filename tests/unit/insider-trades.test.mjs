@@ -39,7 +39,12 @@ test("builds red upward buy markers and blue downward sell markers", () => {
       plotDate: "2026-07-31",
       y: 96,
       paired: true,
-      events: [{ date: "2026-07-31", reporter: "홍길동", sharesChanged: 1250 }],
+      events: [{
+        date: "2026-07-31",
+        reporter: "홍길동",
+        sharesChanged: 1250,
+        transactionMethod: "장내매수(+)",
+      }],
     },
     {
       ticker: "218410.KQ",
@@ -48,7 +53,12 @@ test("builds red upward buy markers and blue downward sell markers", () => {
       plotDate: "2026-07-31",
       y: 96,
       paired: true,
-      events: [{ date: "2026-07-31", reporter: "김주주", sharesChanged: -500 }],
+      events: [{
+        date: "2026-07-31",
+        reporter: "김주주",
+        sharesChanged: -500,
+        transactionMethod: "기타(-)",
+      }],
     },
   ]);
 
@@ -66,8 +76,12 @@ test("builds red upward buy markers and blue downward sell markers", () => {
   assert.equal(traces.every((trace) => trace.meta.isInsiderTradeTrace), true);
   assert.match(traces[0].hovertemplate[0], /color:#ef4444/);
   assert.match(traces[0].hovertemplate[0], /내부자거래 : 매수/);
+  assert.match(traces[0].hovertemplate[0], /장내매수\(\+\)/);
   assert.match(traces[1].hovertemplate[0], /color:#3b82f6/);
   assert.match(traces[1].hovertemplate[0], /내부자거래 : 매도/);
+  assert.doesNotMatch(traces[1].hovertemplate[0], /기타\(-\)/);
+  assert.doesNotMatch(traces[0].hovertemplate[0], /RFHIC|2026-07-31/);
+  assert.doesNotMatch(traces[1].hovertemplate[0], /RFHIC|2026-07-31/);
   assert.equal(traces.every((trace) => trace.hovertemplate[0].endsWith("<extra></extra>")), true);
 });
 

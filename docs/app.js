@@ -192,7 +192,7 @@ const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.44";
+const APP_VERSION = "1.45";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -3928,7 +3928,7 @@ function buildDisclosureTrace(selected, seriesModels, start, end) {
       const first = group.events[0];
       const more = group.events.length > 1 ? ` 외 ${group.events.length - 1}건` : "";
       return `<span style="color:#f59e0b"><b>공시</b></span>`
-        + `<br>${escapeHtml(group.name)}<br>${escapeHtml(first.type)}: ${escapeHtml(first.title)}${more}`
+        + `<br>${escapeHtml(first.type)}: ${escapeHtml(first.title)}${more}`
         + "<extra></extra>";
     }),
     meta: { isDisclosureTrace: true },

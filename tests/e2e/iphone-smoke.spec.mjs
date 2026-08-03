@@ -677,6 +677,13 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
     buy: expect.stringContaining('<span style="color:#ef4444"><b>내부자거래 : 매수</b></span>'),
     sell: expect.stringContaining('<span style="color:#3b82f6"><b>내부자거래 : 매도</b></span>'),
   });
+  const eventHoverTemplates = await page.locator("#chart").evaluate((element) => (
+    (element.data || [])
+      .filter((trace) => trace?.meta?.isDisclosureTrace || trace?.meta?.isInsiderTradeTrace)
+      .flatMap((trace) => trace.hovertemplate || [])
+  ));
+  expect(eventHoverTemplates.every((template) => !template.includes("삼성전자"))).toBe(true);
+  expect(eventHoverTemplates.every((template) => !template.includes("2026-04-14"))).toBe(true);
   expect(await page.evaluate(() => {
     const hoverLayer = document.createElement("div");
     hoverLayer.className = "hoverlayer";
