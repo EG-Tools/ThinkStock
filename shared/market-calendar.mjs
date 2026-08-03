@@ -57,4 +57,3 @@ const api = Object.freeze({
 });
 
 globalThis.ThinkStockMarketCalendar = api;
-

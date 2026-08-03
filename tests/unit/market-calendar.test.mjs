@@ -21,7 +21,6 @@ test("uses the previous market day before the evening data cutoff", () => {
     "2026-08-04",
   );
 });
-
 test("skips weekends when estimating the latest expected trading date", () => {
   assert.equal(latestWeekdayOnOrBefore("2026-08-02"), "2026-07-31");
   assert.equal(
@@ -29,4 +28,3 @@ test("skips weekends when estimating the latest expected trading date", () => {
     "2026-07-31",
   );
 });
-
