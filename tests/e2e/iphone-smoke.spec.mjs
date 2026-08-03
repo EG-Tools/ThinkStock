@@ -508,6 +508,27 @@ test("co-movement toggle shows only the last visible stock for the selected peri
   await expect(page.locator("#coMovementPanel")).toContainText("코스피 신용 75%");
   await expect(page.locator("#coMovementPanel")).toContainText("코스닥 신용 75%");
 
+  const clickStockLine = async (ticker, date) => {
+    const point = await page.locator("#chart").evaluate((element, target) => {
+      const trace = (element.data || []).find((item) => item?.meta?.seriesKey === target.ticker);
+      const pointIndex = trace?.x?.indexOf(target.date) ?? -1;
+      const xAxis = element?._fullLayout?.xaxis;
+      const yAxis = element?._fullLayout?.yaxis;
+      const rect = element.getBoundingClientRect();
+      if (pointIndex < 0 || !xAxis || !yAxis) return null;
+      return {
+        x: rect.left + Number(xAxis._offset || 0) + xAxis.d2p(trace.x[pointIndex]),
+        y: rect.top + Number(yAxis._offset || 0) + yAxis.l2p(Number(trace.y[pointIndex])),
+      };
+    }, { ticker, date });
+    expect(point).not.toBeNull();
+    await page.mouse.click(point.x, point.y);
+  };
+  await clickStockLine("005930.KS", "2026-01-14");
+  await expect(page.locator("#coMovementPanel")).toContainText("삼성전자 1년 동행율");
+  await clickStockLine("000660.KS", "2026-01-14");
+  await expect(page.locator("#coMovementPanel")).toContainText("SK하이닉스 1년 동행율");
+
   await page.locator('[data-series="000660.KS"]').click();
   await expect(page.locator("#coMovementPanel")).toContainText("삼성전자 1년 동행율");
   await page.locator('[data-series="000660.KS"]').click();
@@ -643,6 +664,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
     { side: "buy", symbol: "triangle-up", color: "#ef4444", yaxis: "y", paired: true, dates: ["2026-04-14"] },
     { side: "sell", symbol: "triangle-down", color: "#3b82f6", yaxis: "y", paired: true, dates: ["2026-04-14"] },
   ]);
+  await expect(page.locator("#insiderTradeToggle")).toHaveText("내부거래");
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const disclosure = (element.data || []).find((trace) => trace?.meta?.isDisclosureTrace);
     const insiders = (element.data || []).filter((trace) => trace?.meta?.isInsiderTradeTrace);
@@ -732,20 +754,27 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   const hoverStockDate = async (date) => page.locator("#chart").evaluate((element, targetDate) => {
     const stockCurve = (element.data || []).findIndex((trace) => trace?.meta?.seriesKey === "005930.KS");
     const stockPoint = element.data?.[stockCurve]?.x?.indexOf(targetDate) ?? -1;
+    const xAxis = element?._fullLayout?.xaxis;
+    const rect = element.getBoundingClientRect();
     const eventPoints = (element.data || []).flatMap((trace, curveNumber) => (
       trace?.meta?.isInsiderTradeTrace || trace?.meta?.isDisclosureTrace
         ? [{ curveNumber, pointNumber: 0 }]
         : []
     ));
+    element.emit("plotly_beforehover", {
+      event: {
+        clientX: rect.left + Number(xAxis?._offset || 0) + xAxis.d2p(targetDate),
+      },
+    });
     window.Plotly.Fx.hover(element, [
       { curveNumber: stockCurve, pointNumber: stockPoint },
       ...eventPoints,
     ], ["xy"]);
-    element.emit("plotly_hover", { points: element._hoverdata || [] });
+    return eventPoints.map(({ curveNumber }) => element.data?.[curveNumber]?.hoverinfo);
   }, date);
-  await hoverStockDate("2026-01-14");
+  expect(await hoverStockDate("2026-01-14")).toEqual(["skip", "skip", "skip"]);
   await expect(page.locator("#chart .hoverlayer")).not.toContainText("2026-04-14");
-  await hoverStockDate("2026-04-14");
+  expect(await hoverStockDate("2026-04-14")).toEqual(["all", "all", "all"]);
   await expect(page.locator("#chart .hoverlayer")).toContainText("2026-04-14");
   await page.locator("#chart").evaluate((element) => window.Plotly.Fx.unhover(element));
   expect(authorization).toBe("Bearer private");
@@ -1299,6 +1328,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
     .toBe(disclosureToggleBefore.generation);
   await page.locator("#disclosureToggle").click();
   await expect(page.locator("#chart .textpoint text").filter({ hasText: "◆" }).first()).toBeVisible();
+  await expect(page.locator("#disclosureToggle")).toHaveText("공시");
   expect(await page.evaluate(() => window.ThinkStockE2E.getChartRenderGeneration()))
     .toBe(disclosureToggleBefore.generation);
   expect(await page.evaluate(() => window.ThinkStockE2E.getChartWorkerStats().partialDisclosureUpdates))

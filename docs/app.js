@@ -192,7 +192,7 @@ const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.40";
+const APP_VERSION = "1.41";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -485,7 +485,6 @@ let macdHandlerSet = false;
 let isHandleDragging = false;
 let pinnedXRange = null;
 let hoverSyncing = false;
-let repairingMainUnifiedHover = false;
 let cursorSyncing = false;
 let cursorMoveBound = false;
 let renderChartRafId = 0;
@@ -1239,15 +1238,13 @@ function setMessage(msgEl, lines, isError = false) {
   msgEl.innerHTML = `<div class="message${isError ? " error" : ""}">${body}</div>`;
 }
 
-function syncDisclosureToggleButton(markerCount = null) {
+function syncDisclosureToggleButton() {
   const btn = document.getElementById("disclosureToggle");
   if (!btn) return;
-  const count = Number(markerCount);
-  const hasCount = showDisclosures && Number.isFinite(count) && count > 0;
   btn.classList.toggle("is-active", showDisclosures);
-  btn.textContent = showDisclosures ? `공시${hasCount ? ` ${count}` : ""}` : "공시";
+  btn.textContent = "공시";
   btn.title = showDisclosures
-    ? `공시 마커 켜짐${hasCount ? ` - 현재 범위 ${count}개` : ""}`
+    ? "공시 마커 켜짐"
     : "공시 마커 꺼짐";
 }
 
@@ -1522,75 +1519,54 @@ function syncHoverToChart(targetEl, xValue) {
   });
 }
 
-function hoverPointDate(point) {
-  const value = point?.x;
-  if (value instanceof Date && Number.isFinite(value.getTime())) {
-    return value.toISOString().slice(0, 10);
-  }
-  return String(value ?? "").slice(0, 10);
-}
-
-function isChartEventHoverPoint(point) {
-  return point?.data?.meta?.isDisclosureTrace === true
-    || point?.data?.meta?.isInsiderTradeTrace === true;
-}
-
-function mainHoverAnchorDate(chartEl, evtData) {
-  const points = Array.isArray(evtData?.points) ? evtData.points : [];
-  const linePoints = points.filter((point) => (
-    !isChartEventHoverPoint(point)
-    && point?.data?.meta?.seriesKey
-    && !point.data.meta.isAiForecastTrace
-  ));
-  if (!linePoints.length) return "";
-
-  const clientX = Number(evtData?.event?.clientX);
-  const rect = chartEl?.getBoundingClientRect?.();
-  if (!rect || !Number.isFinite(clientX)) return hoverPointDate(linePoints[0]);
-  const pointerX = clientX - rect.left;
-  let nearest = linePoints[0];
+function nearestMainLineDate(chartEl, xValue) {
+  const targetMs = toMsSafe(xValue);
+  if (!Number.isFinite(targetMs)) return "";
+  let nearestDate = "";
   let nearestDistance = Number.POSITIVE_INFINITY;
-  linePoints.forEach((point) => {
-    const axis = point?.xaxis;
-    if (typeof axis?.d2p !== "function") return;
-    const pixelX = Number(axis._offset || 0) + axis.d2p(point.x);
-    const distance = Math.abs(pixelX - pointerX);
-    if (distance < nearestDistance) {
-      nearest = point;
-      nearestDistance = distance;
+  (chartEl?.data || []).forEach((trace) => {
+    if (!trace?.meta?.seriesKey || trace.meta.isAiForecastTrace || trace.visible === "legendonly") return;
+    const times = getTraceTimeMsArray(trace);
+    let low = 0;
+    let high = times.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (times[middle] < targetMs) low = middle + 1;
+      else high = middle;
     }
+    [low - 1, low].forEach((index) => {
+      const time = times[index];
+      if (!Number.isFinite(time)) return;
+      const distance = Math.abs(time - targetMs);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestDate = String(trace.x[index] || "").slice(0, 10);
+      }
+    });
   });
-  return hoverPointDate(nearest);
+  return nearestDate;
 }
 
-function repairMainUnifiedHover(chartEl, evtData) {
-  if (repairingMainUnifiedHover || !window.Plotly?.Fx?.hover) return false;
-  const points = Array.isArray(evtData?.points) ? evtData.points : [];
-  const anchorDate = mainHoverAnchorDate(chartEl, evtData);
-  if (!anchorDate) return false;
-  const hasMismatchedEvent = points.some((point) => (
-    isChartEventHoverPoint(point) && hoverPointDate(point) !== anchorDate
-  ));
-  if (!hasMismatchedEvent) return false;
+function configureExactDateEventHover(chartEl, evtData) {
+  const axis = chartEl?._fullLayout?.xaxis;
+  const rect = chartEl?.getBoundingClientRect?.();
+  const clientX = Number(evtData?.event?.clientX);
+  if (!axis || !rect || !Number.isFinite(clientX) || typeof axis.p2d !== "function") return;
+  const axisPixel = clientX - rect.left - Number(axis._offset || 0);
+  const anchorDate = nearestMainLineDate(chartEl, axis.p2d(axisPixel));
+  if (!anchorDate) return;
 
-  const exactPoints = points
-    .filter((point) => !isChartEventHoverPoint(point) || hoverPointDate(point) === anchorDate)
-    .map((point) => ({
-      curveNumber: point.curveNumber,
-      pointNumber: point.pointNumber ?? point.pointIndex,
-    }))
-    .filter((point) => Number.isInteger(point.curveNumber) && Number.isInteger(point.pointNumber));
-  if (!exactPoints.length) return false;
-
-  repairingMainUnifiedHover = true;
-  try {
-    Plotly.Fx.hover(chartEl, exactPoints, ["xy"]);
-  } catch (_) {
-    repairingMainUnifiedHover = false;
-    return false;
+  const traceCount = Math.max(chartEl.data?.length || 0, chartEl._fullData?.length || 0);
+  for (let curveNumber = 0; curveNumber < traceCount; curveNumber += 1) {
+    const inputTrace = chartEl.data?.[curveNumber];
+    const fullTrace = chartEl._fullData?.[curveNumber];
+    const meta = fullTrace?.meta || inputTrace?.meta;
+    if (!meta?.isDisclosureTrace && !meta?.isInsiderTradeTrace) continue;
+    const dates = Array.isArray(inputTrace?.x) ? inputTrace.x : fullTrace?.x || [];
+    const hasExactDate = dates.some((date) => String(date || "").slice(0, 10) === anchorDate);
+    if (inputTrace) inputTrace.hoverinfo = hasExactDate ? "all" : "skip";
+    if (fullTrace) fullTrace.hoverinfo = hasExactDate ? "all" : "skip";
   }
-  requestAnimationFrame(() => { repairingMainUnifiedHover = false; });
-  return true;
 }
 
 function clearHoverOnChart(targetEl) {
@@ -1777,18 +1753,14 @@ function scheduleViewportRangeSync(targetEl, payload) {
   }, VIEWPORT_SYNC_DEBOUNCE_MS);
 }
 
-function syncInsiderTradeToggleButton(markerCount = null) {
+function syncInsiderTradeToggleButton() {
   const button = document.getElementById("insiderTradeToggle");
   if (!button) return;
-  const count = Number(markerCount);
   const pending = insiderTradePendingTickers.size;
-  const hasCount = showInsiderTrades && Number.isFinite(count) && count > 0;
   button.classList.toggle("is-active", showInsiderTrades);
   button.setAttribute("aria-pressed", showInsiderTrades ? "true" : "false");
   button.setAttribute("aria-busy", pending > 0 ? "true" : "false");
-  button.textContent = showInsiderTrades
-    ? `내부거래${hasCount ? ` ${count}` : (pending ? " …" : "")}`
-    : "내부거래";
+  button.textContent = "내부거래";
   button.title = showInsiderTrades
     ? (pending ? `DART 내부거래 불러오는 중 - ${pending}개 종목` : "DART 최근 3년 내부거래 켜짐")
     : "DART 최근 3년 내부거래 꺼짐";
@@ -2069,6 +2041,14 @@ function noteStockVisibilityChange(seriesKey) {
   }
 }
 
+function selectCoMovementTarget(seriesKey) {
+  const ticker = String(seriesKey || "").toUpperCase();
+  if (!showCoMovement || !MACD_STOCK_PATTERN.test(ticker) || hiddenSeries.has(ticker)) return;
+  if (lastVisibleStockSeriesKey === ticker) return;
+  lastVisibleStockSeriesKey = ticker;
+  renderCoMovementPanel();
+}
+
 function syncCoMovementToggleButton() {
   const button = document.getElementById("coMovementToggle");
   if (!button) return;
@@ -2173,6 +2153,7 @@ function beginLineOffsetDrag(el, target, startClientY, pointerId) {
       seriesOffsets[target.seriesKey] = startOffset;
       restyleLive(target.traceIndex, target.seriesKey);
       finishTraceYEdit(false, target.seriesKey);
+      selectCoMovementTarget(target.seriesKey);
       return;
     }
     finishTraceYEdit(true, target.seriesKey);
@@ -5453,8 +5434,10 @@ async function renderChart(preserveZoom = true) {
         }
       }
     });
+    el.on("plotly_beforehover", (eventData) => {
+      configureExactDateEventHover(el, eventData);
+    });
     el.on("plotly_hover", (eventData) => {
-      if (repairMainUnifiedHover(el, eventData)) return;
       scheduleDisclosureHoverHighlight(eventData);
       if (!hoverShowPopup || hoverSyncing) return;
       const xValue = eventData?.points?.[0]?.x;
