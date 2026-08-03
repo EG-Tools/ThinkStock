@@ -14,11 +14,14 @@ export {
 };
 
 const DART_LIST_URL = "https://opendart.fss.or.kr/api/list.json";
+const DART_ELESTOCK_URL = "https://opendart.fss.or.kr/api/elestock.json";
 const TICKER_PATTERN = /^(\d{6})\.(KS|KQ)$/;
 const CORP_CODE_PATTERN = /^\d{8}$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const CACHE_SCHEMA = 1;
 const CACHE_FRESH_MS = 6 * 60 * 60 * 1000;
+const INSIDER_CACHE_SCHEMA = 1;
+const INSIDER_CACHE_FRESH_MS = 6 * 60 * 60 * 1000;
 const ANALYSIS_CACHE_SCHEMA = 3;
 const ANALYSIS_CACHE_FRESH_MS = 30 * 24 * 60 * 60 * 1000;
 const ANALYSIS_SNAPSHOT_LIMIT = 60;
@@ -333,6 +336,112 @@ async function fetchDartPage(env, params) {
   throw new Error(lastError?.message || "DART request failed");
 }
 
+function dartNumber(value) {
+  const number = Number(String(value ?? "").replaceAll(",", "").trim());
+  return Number.isFinite(number) ? number : null;
+}
+
+function dartReceiptDate(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (digits.length !== 8) return "";
+  const date = `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
+  return isValidIsoDate(date) ? date : "";
+}
+
+export function insiderRecordFromItem(ticker, item) {
+  const date = dartReceiptDate(item?.rcept_dt);
+  const sharesChanged = dartNumber(item?.sp_stock_lmp_irds_cnt);
+  if (!date || !sharesChanged) return null;
+  const receiptNo = String(item?.rcept_no || "").replace(/\D/g, "").slice(0, 14);
+  const role = [
+    item?.isu_exctv_rgist_at,
+    item?.isu_exctv_ofcps,
+    item?.isu_main_shrholdr,
+  ].map((value) => String(value || "").trim()).filter(Boolean).join(" · ");
+  return {
+    ticker,
+    date,
+    side: sharesChanged > 0 ? "buy" : "sell",
+    reporter: String(item?.repror || "").trim().slice(0, 80),
+    role: role.slice(0, 120),
+    sharesOwned: dartNumber(item?.sp_stock_lmp_cnt),
+    sharesChanged,
+    ownershipRate: dartNumber(item?.sp_stock_lmp_rate),
+    ownershipRateChanged: dartNumber(item?.sp_stock_lmp_irds_rate),
+    receiptNo,
+    url: receiptNo
+      ? `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${encodeURIComponent(receiptNo)}`
+      : "",
+    source: "OpenDART",
+  };
+}
+
+export function mergeInsiderRecords(existing, incoming) {
+  const records = new Map();
+  [...(existing || []), ...(incoming || [])].forEach((record) => {
+    if (!record?.ticker || !record?.date || !["buy", "sell"].includes(record?.side)) return;
+    const key = String(record.receiptNo || [
+      record.ticker,
+      record.date,
+      record.reporter,
+      record.sharesChanged,
+    ].join("|"));
+    records.set(key, record);
+  });
+  return [...records.values()].sort((left, right) => (
+    String(left.date).localeCompare(String(right.date))
+    || String(left.reporter).localeCompare(String(right.reporter))
+  ));
+}
+
+async function fetchDartInsiderTrades(env, ticker, corpCode, today) {
+  const url = `${DART_ELESTOCK_URL}?${new URLSearchParams({
+    crtfc_key: env.DART_API_KEY,
+    corp_code: corpCode,
+  })}`;
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(25000),
+        redirect: "manual",
+        headers: {
+          Accept: "application/json",
+          "User-Agent": "ThinkStock/1.32 (+https://eg-tools.github.io/ThinkStock/)",
+        },
+      });
+      if (response.status >= 300 && response.status < 400) {
+        const error = new Error(`DART ownership redirect ${response.status}`);
+        error.retryable = false;
+        throw error;
+      }
+      if (!response.ok) {
+        const error = new Error(`DART ownership HTTP ${response.status}`);
+        error.retryable = [408, 425, 429, 500, 502, 503, 504].includes(response.status);
+        throw error;
+      }
+      const payload = await response.json();
+      const status = String(payload?.status || "");
+      if (status === "013") return [];
+      if (status && status !== "000") {
+        const error = new Error(String(payload?.message || `DART ownership status ${status}`));
+        error.status = status === "020" ? 429 : 502;
+        error.retryable = status !== "100";
+        throw error;
+      }
+      const cutoff = yearsBefore(today, LOOKBACK_YEARS);
+      return mergeInsiderRecords([], (payload?.list || [])
+        .map((item) => insiderRecordFromItem(ticker, item))
+        .filter((record) => record && record.date >= cutoff));
+    } catch (error) {
+      lastError = error;
+      if (error?.retryable === false || attempt === 2) break;
+      await new Promise((resolve) => setTimeout(resolve, 300 * (2 ** attempt)));
+    }
+  }
+  throw new Error(lastError?.message || "DART ownership request failed");
+}
+
 async function fetchDartDisclosurePage(env, ticker, corpCode, since, today, pageNo) {
   const baseParams = {
     crtfc_key: env.DART_API_KEY,
@@ -435,6 +544,73 @@ async function writeCache(env, ticker, corpCode, records, complete = true) {
     records,
   };
   await env.DISCLOSURE_CACHE.put(`ticker:${ticker}`, JSON.stringify(payload));
+}
+
+async function readInsiderCache(env, ticker) {
+  if (!env.DISCLOSURE_CACHE) return null;
+  try {
+    const value = await env.DISCLOSURE_CACHE.get(`insider:${ticker}`, "json");
+    return value?.schema === INSIDER_CACHE_SCHEMA && value?.ticker === ticker ? value : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function writeInsiderCache(env, ticker, corpCode, records) {
+  if (!env.DISCLOSURE_CACHE) return;
+  await env.DISCLOSURE_CACHE.put(`insider:${ticker}`, JSON.stringify({
+    schema: INSIDER_CACHE_SCHEMA,
+    ticker,
+    corpCode,
+    savedAt: Date.now(),
+    latestDate: records.at(-1)?.date || "",
+    records,
+  }));
+}
+
+async function insiderTradeResponse(env, ctx, ticker, corpCode, origin, force = false) {
+  const cached = await readInsiderCache(env, ticker);
+  if (!force && cached && Date.now() - Number(cached.savedAt || 0) <= INSIDER_CACHE_FRESH_MS) {
+    return jsonResponse({
+      ok: true,
+      ticker,
+      cached: true,
+      checkedFrom: yearsBefore(isoDate(), LOOKBACK_YEARS),
+      latestDate: cached.latestDate || "",
+      records: cached.records || [],
+    }, 200, origin);
+  }
+  try {
+    const today = isoDate();
+    const records = await fetchDartInsiderTrades(env, ticker, corpCode, today);
+    const cacheWrite = writeInsiderCache(env, ticker, corpCode, records);
+    if (ctx?.waitUntil) ctx.waitUntil(cacheWrite);
+    else await cacheWrite;
+    return jsonResponse({
+      ok: true,
+      ticker,
+      cached: false,
+      checkedFrom: yearsBefore(today, LOOKBACK_YEARS),
+      latestDate: records.at(-1)?.date || "",
+      records,
+    }, 200, origin);
+  } catch (error) {
+    if (cached) {
+      return jsonResponse({
+        ok: true,
+        ticker,
+        cached: true,
+        stale: true,
+        warning: "DART 연결 실패로 마지막 내부거래 데이터를 사용했습니다.",
+        latestDate: cached.latestDate || "",
+        records: cached.records || [],
+      }, 200, origin);
+    }
+    return jsonResponse({
+      ok: false,
+      error: `DART 내부거래 조회 실패: ${error?.message || error}`,
+    }, error?.status || 503, origin);
+  }
 }
 
 function journalValidationError(message) {
@@ -687,12 +863,13 @@ export async function handleRequest(request, env, ctx = null) {
     }, 200, origin);
   }
   const isDartRequest = url.pathname === "/api/dart/disclosures" && request.method === "GET";
+  const isInsiderRequest = url.pathname === "/api/dart/insider-trades" && request.method === "GET";
   const isAuthCheckRequest = url.pathname === "/api/auth/check" && request.method === "GET";
   const isConsensusRequest = url.pathname === "/api/consensus" && request.method === "GET";
   const isAnalysisRequest = url.pathname === "/api/analysis" && request.method === "GET";
   const isJournalRequest = url.pathname === "/api/forecast-journal"
     && ["GET", "POST"].includes(request.method);
-  if (!isDartRequest && !isAuthCheckRequest
+  if (!isDartRequest && !isInsiderRequest && !isAuthCheckRequest
     && !isConsensusRequest && !isAnalysisRequest && !isJournalRequest) {
     return jsonResponse({ ok: false, error: "Not found" }, 404, origin);
   }
@@ -717,6 +894,7 @@ export async function handleRequest(request, env, ctx = null) {
   }
 
   const force = ["1", "true", "yes"].includes(String(url.searchParams.get("force") || "").toLowerCase());
+  if (isInsiderRequest) return insiderTradeResponse(env, ctx, ticker, corpCode, origin, force);
   const progressive = ["1", "true", "yes"].includes(String(url.searchParams.get("progressive") || "").toLowerCase());
   const requestedPage = Math.min(MAX_PAGES, Math.max(1, Number(url.searchParams.get("page")) || 1));
   const cached = await readCache(env, ticker);

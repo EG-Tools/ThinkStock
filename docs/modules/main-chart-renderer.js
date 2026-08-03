@@ -3,6 +3,9 @@
 
   function traceIdentity(trace) {
     if (trace?.meta?.isDisclosureTrace) return "disclosure";
+    if (trace?.meta?.isInsiderTradeTrace) {
+      return `insider:${String(trace.meta.insiderTradeSide || "")}`;
+    }
     if (trace?.meta?.isAiForecastBand) {
       return `ai-band:${String(trace.meta.seriesKey || "")}:${String(trace.meta.aiTraceRole || "")}`;
     }

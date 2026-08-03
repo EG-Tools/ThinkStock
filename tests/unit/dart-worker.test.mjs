@@ -3,10 +3,12 @@ import test from "node:test";
 
 import {
   handleRequest,
+  insiderRecordFromItem,
   isAllowedOrigin,
   mergeAnalysisSnapshots,
   mergeFinancialRecords,
   mergeForecastJournalRecords,
+  mergeInsiderRecords,
   mergeRecords,
   parseConsensusHtml,
   parseEarningsTrendHtml,
@@ -211,6 +213,84 @@ test("merges disclosures by receipt number and keeps the newest payload", () => 
   const merged = mergeRecords([oldRecord], [newRecord]);
   assert.equal(merged.length, 1);
   assert.equal(merged[0].name, "new");
+});
+
+test("normalizes DART insider ownership changes and merges revised reports", () => {
+  const buy = insiderRecordFromItem("218410.KQ", {
+    rcept_dt: "2026-07-31",
+    rcept_no: "20260731000123",
+    repror: "홍길동",
+    isu_exctv_rgist_at: "등기임원",
+    isu_exctv_ofcps: "대표이사",
+    sp_stock_lmp_cnt: "10,000",
+    sp_stock_lmp_irds_cnt: "1,250",
+    sp_stock_lmp_rate: "1.25",
+  });
+  const revised = { ...buy, sharesChanged: 1300 };
+  const sell = insiderRecordFromItem("218410.KQ", {
+    rcept_dt: "20260730",
+    rcept_no: "20260730000123",
+    repror: "김주주",
+    isu_main_shrholdr: "10%이상주주",
+    sp_stock_lmp_cnt: "9,500",
+    sp_stock_lmp_irds_cnt: "-500",
+  });
+
+  assert.equal(buy.side, "buy");
+  assert.equal(buy.role, "등기임원 · 대표이사");
+  assert.equal(sell.side, "sell");
+  const merged = mergeInsiderRecords([buy], [revised, sell]);
+  assert.equal(merged.length, 2);
+  assert.equal(merged.at(-1).sharesChanged, 1300);
+});
+
+test("returns three years of authenticated insider trades and caches the result", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCount = 0;
+  const cache = memoryKv();
+  globalThis.fetch = async (url) => {
+    fetchCount += 1;
+    assert.equal(new URL(url).pathname, "/api/elestock.json");
+    return new Response(JSON.stringify({
+      status: "000",
+      list: [
+        {
+          rcept_dt: new Date().toISOString().slice(0, 10),
+          rcept_no: "20260803000123",
+          repror: "홍길동",
+          sp_stock_lmp_cnt: "10,000",
+          sp_stock_lmp_irds_cnt: "1,250",
+        },
+        {
+          rcept_dt: "2020-01-01",
+          rcept_no: "20200101000123",
+          repror: "과거보고자",
+          sp_stock_lmp_irds_cnt: "100",
+        },
+      ],
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const env = {
+      DART_API_KEY: "dart",
+      THINKSTOCK_ACCESS_TOKEN: "private",
+      DISCLOSURE_CACHE: cache,
+    };
+    const path = "/api/dart/insider-trades?ticker=218410.KQ&corpCode=01035674";
+    const first = await handleRequest(request(path, { token: "private" }), env);
+    const firstPayload = await first.json();
+    assert.equal(first.status, 200);
+    assert.equal(firstPayload.cached, false);
+    assert.equal(firstPayload.records.length, 1);
+    assert.equal(firstPayload.records[0].side, "buy");
+
+    const second = await handleRequest(request(path, { token: "private" }), env);
+    const secondPayload = await second.json();
+    assert.equal(secondPayload.cached, true);
+    assert.equal(fetchCount, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("parses Naver WiseReport consensus values", () => {

@@ -19,6 +19,7 @@ import "../docs/modules/startup-loader.js";
 import "../docs/modules/chart-loader.js";
 import "../docs/modules/disclosure-policy.js";
 import "../docs/modules/disclosure-popover.js";
+import "../docs/modules/insider-trades.js";
 import "../docs/modules/service-worker-client.js";
 import "../docs/modules/runtime-refresh.js";
 import "../docs/modules/data-seed-loader.js";

@@ -1,0 +1,133 @@
+(function initThinkStockInsiderTrades(globalScope) {
+  "use strict";
+
+  const TICKER_PATTERN = /^\d{6}\.(KS|KQ)$/;
+  const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+  const BUY_COLOR = "#ef4444";
+  const SELL_COLOR = "#3b82f6";
+
+  function finiteNumber(value) {
+    const number = Number(String(value ?? "").replaceAll(",", "").trim());
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function normalizeDate(value) {
+    const digits = String(value || "").replace(/\D/g, "");
+    const date = digits.length === 8
+      ? `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`
+      : String(value || "").slice(0, 10);
+    if (!DATE_PATTERN.test(date)) return "";
+    const parsed = new Date(`${date}T00:00:00Z`);
+    return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date ? date : "";
+  }
+
+  function sanitizeRow(value) {
+    const ticker = String(value?.ticker || "").trim().toUpperCase();
+    const date = normalizeDate(value?.date || value?.rcept_dt);
+    const sharesChanged = finiteNumber(value?.sharesChanged ?? value?.sp_stock_lmp_irds_cnt);
+    if (!TICKER_PATTERN.test(ticker) || !date || !sharesChanged) return null;
+    const side = sharesChanged > 0 ? "buy" : "sell";
+    const receiptNo = String(value?.receiptNo || value?.rcept_no || "").replace(/\D/g, "").slice(0, 14);
+    return {
+      ticker,
+      date,
+      side,
+      reporter: String(value?.reporter || value?.repror || "").trim().slice(0, 80),
+      role: String(value?.role || "").trim().slice(0, 120),
+      sharesOwned: finiteNumber(value?.sharesOwned ?? value?.sp_stock_lmp_cnt),
+      sharesChanged,
+      ownershipRate: finiteNumber(value?.ownershipRate ?? value?.sp_stock_lmp_rate),
+      ownershipRateChanged: finiteNumber(
+        value?.ownershipRateChanged ?? value?.sp_stock_lmp_irds_rate,
+      ),
+      receiptNo,
+      url: receiptNo
+        ? `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${encodeURIComponent(receiptNo)}`
+        : "",
+      source: "OpenDART",
+    };
+  }
+
+  function sanitizeRows(records) {
+    return (Array.isArray(records) ? records : []).map(sanitizeRow).filter(Boolean);
+  }
+
+  function mergeRows(existing, incoming) {
+    const rows = new Map();
+    [...sanitizeRows(existing), ...sanitizeRows(incoming)].forEach((row) => {
+      const key = row.receiptNo || [
+        row.ticker,
+        row.date,
+        row.reporter,
+        row.sharesChanged,
+      ].join("|");
+      rows.set(key, row);
+    });
+    return [...rows.values()].sort((left, right) => (
+      left.date.localeCompare(right.date)
+      || left.ticker.localeCompare(right.ticker)
+      || left.reporter.localeCompare(right.reporter)
+    ));
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+  }
+
+  function formatShares(value) {
+    const number = finiteNumber(value);
+    return number === null ? "-" : `${Math.abs(number).toLocaleString("ko-KR")}주`;
+  }
+
+  function markerTrace(groups, side) {
+    const matches = (Array.isArray(groups) ? groups : []).filter((group) => group?.side === side);
+    if (!matches.length) return null;
+    const isBuy = side === "buy";
+    const label = isBuy ? "매수" : "매도";
+    return {
+      x: matches.map((group) => group.plotDate),
+      y: matches.map((group) => group.y),
+      customdata: matches.map((group) => [group.ticker, group.events.length]),
+      type: "scatter",
+      mode: "markers",
+      name: `내부거래 ${label}`,
+      showlegend: false,
+      cliponaxis: false,
+      marker: {
+        symbol: isBuy ? "triangle-up" : "triangle-down",
+        size: 12,
+        color: isBuy ? BUY_COLOR : SELL_COLOR,
+        line: { color: "rgba(255,255,255,0.9)", width: 1 },
+      },
+      hovertemplate: matches.map((group) => {
+        const first = group.events[0] || {};
+        const reporter = first.reporter ? `<br>${escapeHtml(first.reporter)}` : "";
+        const role = first.role ? ` · ${escapeHtml(first.role)}` : "";
+        const more = group.events.length > 1 ? `<br>외 ${group.events.length - 1}건` : "";
+        return `<b>${escapeHtml(group.name)}</b><br>${escapeHtml(first.date)} ${label}`
+          + `<br>보유 증감 ${formatShares(first.sharesChanged)}${reporter}${role}${more}`
+          + "<extra>내부거래</extra>";
+      }),
+      meta: { isInsiderTradeTrace: true, insiderTradeSide: side },
+    };
+  }
+
+  function buildMarkerTraces(groups) {
+    return [markerTrace(groups, "buy"), markerTrace(groups, "sell")].filter(Boolean);
+  }
+
+  globalScope.ThinkStockInsiderTrades = Object.freeze({
+    BUY_COLOR,
+    SELL_COLOR,
+    buildMarkerTraces,
+    mergeRows,
+    normalizeDate,
+    sanitizeRow,
+    sanitizeRows,
+  });
+}(typeof self !== "undefined" ? self : globalThis));

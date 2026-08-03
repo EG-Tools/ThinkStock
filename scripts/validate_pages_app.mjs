@@ -48,11 +48,13 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractio
   stat(path.join(root, "docs", "vendor", "plotly-thinkstock-2.35.2.min.js")),
   stat(path.join(root, "docs", "assets", "app.bundle.min.js")),
 ]);
-const [deferredDiagnostics, dataHealth, pagesEntry, styles] = await Promise.all([
+const [deferredDiagnostics, dataHealth, pagesEntry, styles, insiderTrades, workerIndex] = await Promise.all([
   readFile(path.join(root, "docs", "modules", "deferred-diagnostics.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "data-health.js"), "utf8"),
   readFile(path.join(root, "scripts", "pages-entry.mjs"), "utf8"),
   readFile(path.join(root, "docs", "styles.css"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "insider-trades.js"), "utf8"),
+  readFile(path.join(root, "worker", "src", "index.mjs"), "utf8"),
 ]);
 const precacheAssetsSource = sw.match(/const PRECACHE_ASSETS = \[([\s\S]*?)\];/)?.[1] || "";
 
@@ -80,6 +82,7 @@ const requiredIds = [
   "resetHandles",
   "stockSearchInput",
   "disclosureToggle",
+  "insiderTradeToggle",
   "refreshData",
   "apiSettingsModal",
   "dartGatewayTokenInput",
@@ -89,6 +92,28 @@ const requiredIds = [
   "performanceDiagnosticsSummary",
 ];
 requiredIds.forEach((id) => assert.ok(ids.includes(id), `required UI element is missing: ${id}`));
+
+assert.ok(
+  html.indexOf('id="disclosureToggle"') < html.indexOf('id="insiderTradeToggle"'),
+  "insider trade toggle must appear immediately after the disclosure toggle",
+);
+assert.ok(pagesEntry.includes('import "../docs/modules/insider-trades.js"'),
+  "insider trade module is not included in the app bundle");
+assert.ok(app.includes("ThinkStockInsiderTrades")
+  && app.includes("DART_GATEWAY_INSIDER_ENDPOINT")
+  && app.includes("buildInsiderTradeTraces")
+  && app.includes("showInsiderTrades"),
+"insider trade UI and chart integration is incomplete");
+assert.ok(insiderTrades.includes('"triangle-up"')
+  && insiderTrades.includes('"triangle-down"')
+  && insiderTrades.includes('const BUY_COLOR = "#ef4444"')
+  && insiderTrades.includes('const SELL_COLOR = "#3b82f6"'),
+"insider buy/sell marker styling is incomplete");
+assert.ok(workerIndex.includes("DART_ELESTOCK_URL")
+  && workerIndex.includes('pathname === "/api/dart/insider-trades"')
+  && workerIndex.includes("LOOKBACK_YEARS")
+  && workerIndex.includes("`insider:${ticker}`"),
+"DART insider trade gateway or three-year cache policy is incomplete");
 
 [
   "./index.html",
