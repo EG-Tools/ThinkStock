@@ -129,6 +129,11 @@ body {
 
 .hover-toggle-btn:hover { background: rgba(255, 255, 255, 0.12); color: var(--ink); }
 .hover-toggle-btn.is-active { background: var(--accent-soft); color: var(--accent); border-color: rgba(74, 222, 128, 0.25); }
+#hoverToggle:not(.is-active) {
+  background: rgba(128, 128, 128, 0.16);
+  border-color: rgba(160, 160, 160, 0.24);
+  color: #8a8a8a;
+}
 .disclosure-toggle-btn.is-active {
   background: rgba(251, 191, 36, 0.13);
   color: #fbbf24;
@@ -201,19 +206,49 @@ body {
   -webkit-backdrop-filter: blur(8px);
 }
 
-.chart-ai-btn {
+.co-movement-panel {
+  position: absolute;
+  z-index: 119;
+  top: 48px;
+  left: 88px;
+  right: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+  padding: 4px 10px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(18, 18, 18, 0.78);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+  scrollbar-width: none;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.co-movement-panel::-webkit-scrollbar { display: none; }
+.co-movement-panel[hidden] { display: none; }
+.co-movement-title { flex: 0 0 auto; color: var(--ink); font-weight: 700; }
+.co-movement-metric { flex: 0 0 auto; }
+.co-movement-metric b { color: #f8d477; font-weight: 700; }
+
+.chart-co-movement-btn {
   position: absolute;
   z-index: 120;
   top: 48px;
   left: 14px;
-  min-width: 48px;
+  min-width: 64px;
   padding: 5px 11px;
   background: rgba(18, 18, 18, 0.78);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
 }
 
-.chart-macd-btn {
+.chart-ai-btn {
   position: absolute;
   z-index: 120;
   top: 82px;
@@ -225,6 +260,19 @@ body {
   -webkit-backdrop-filter: blur(8px);
 }
 
+.chart-macd-btn {
+  position: absolute;
+  z-index: 120;
+  top: 116px;
+  left: 14px;
+  min-width: 48px;
+  padding: 5px 11px;
+  background: rgba(18, 18, 18, 0.78);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.chart-co-movement-btn.is-active,
 .chart-ai-btn.is-active,
 .chart-macd-btn.is-active {
   border-color: rgba(210, 210, 210, 0.72);
@@ -236,7 +284,7 @@ body {
 .ai-forecast-progress {
   position: absolute;
   z-index: 121;
-  top: 49px;
+  top: 83px;
   left: 73px;
   width: min(190px, calc(100% - 92px));
   padding: 5px 8px 6px;

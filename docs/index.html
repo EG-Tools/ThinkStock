@@ -27,7 +27,7 @@
         <div class="top-controls">
           <button id="hoverToggle" class="hover-toggle-btn" title="지수팝업 ON/OFF">지수팝업</button>
           <button id="disclosureToggle" class="hover-toggle-btn disclosure-toggle-btn" title="공시 마커 ON/OFF">공시</button>
-          <button id="insiderTradeToggle" class="hover-toggle-btn insider-trade-toggle-btn" title="DART 내부거래 ON/OFF" aria-pressed="false">내부거래 OFF</button>
+          <button id="insiderTradeToggle" class="hover-toggle-btn insider-trade-toggle-btn" title="DART 내부거래 ON/OFF" aria-pressed="false">내부거래</button>
           <label class="credit-offset-wrap" title="예탁금·신용 발표 시차 보정(일)">
             <span class="credit-offset-label">자금옵셋</span>
             <input id="creditOffset" class="credit-offset-input" type="number" value="-2" step="1" min="-30" max="30">
@@ -52,6 +52,8 @@
       <div class="main-chart-wrap">
         <div id="chart" class="chart-frame"></div>
         <button id="resetHandles" class="reset-btn chart-reset-btn" type="button" title="차트 위치와 배율 초기화">리셋</button>
+        <button id="coMovementToggle" class="reset-btn chart-co-movement-btn" type="button" title="마지막 표시 종목 동행율" aria-pressed="false">동행율</button>
+        <div id="coMovementPanel" class="co-movement-panel" role="status" aria-live="polite" hidden></div>
         <button id="aiForecastToggle" class="reset-btn chart-ai-btn" type="button" title="6개월 AI 가상 흐름 (투자 판단용 아님)" aria-pressed="false">AI</button>
         <div id="aiForecastProgress" class="ai-forecast-progress" role="status" aria-live="polite" hidden>
           <span id="aiForecastProgressText">AI 0%</span>
@@ -112,7 +114,7 @@
           <button id="performanceDiagnosticsClearBtn" class="diagnostics-clear-btn" type="button">이전 기록 지우기</button>
         </section>
         <p class="api-settings-meta">
-          Version : <span id="appVersionText">1.38</span><br>
+          Version : <span id="appVersionText">1.39</span><br>
           회사명 : Life User<br>
           이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a>
         </p>

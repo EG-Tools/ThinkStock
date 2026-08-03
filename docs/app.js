@@ -54,6 +54,9 @@ if (!auxiliaryChartModelModule) throw new Error("Auxiliary chart model module fa
 const buildAuxiliaryChartModelSync = auxiliaryChartModelModule.buildAuxiliaryChartModel;
 const mainChartRenderer = globalThis.ThinkStockMainChartRenderer;
 if (!mainChartRenderer) throw new Error("Main chart renderer module failed to load");
+const coMovementModule = globalThis.ThinkStockCoMovement;
+if (!coMovementModule) throw new Error("Co-movement module failed to load");
+const { buildSummary: buildCoMovementSummary } = coMovementModule;
 const insiderTradesModule = globalThis.ThinkStockInsiderTrades;
 if (!insiderTradesModule) throw new Error("Insider trades module failed to load");
 const {
@@ -128,6 +131,12 @@ const ADR_SERIES = ["adr_kospi", "adr_kosdaq"];
 const FEAR_GREED_SERIES = ["fear_greed"];
 const NEWS_SENTIMENT_SERIES = ["news_sentiment"];
 const MACD_STOCK_PATTERN = /^\d{6}\.(KS|KQ)$/;
+const CO_MOVEMENT_COMPARISONS = Object.freeze([
+  { key: "^KS11", label: "코스피" },
+  { key: "^KQ11", label: "코스닥" },
+  { key: "kospi_credit", label: "코스피 신용" },
+  { key: "kosdaq_credit", label: "코스닥 신용" },
+]);
 const SUPPLEMENTAL_SERIES = [...ADR_SERIES, ...FEAR_GREED_SERIES, ...NEWS_SENTIMENT_SERIES];
 const CORE_SERIES = ["leading_cycle", "^KS11", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit"];
 const BASE_SERIES_PRIORITY = [...CORE_SERIES, ...SUPPLEMENTAL_SERIES];
@@ -183,7 +192,7 @@ const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.38";
+const APP_VERSION = "1.39";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -452,6 +461,7 @@ let chartSyncing = false;   // relayout sync loop guard
 let hoverShowPopup = false;
 let showDisclosures = true;
 let showInsiderTrades = false;
+let showCoMovement = false;
 let showAiForecast = false;
 let lastAiForecastTraceCount = 0;
 let aiAnalysisByTicker = new Map();
@@ -502,7 +512,9 @@ let suppressPlotlyClickUntil = 0;
 let hoveredLineTraceIndex = null;
 let activeLineTraceIndex = null;
 let appliedLineHighlightTraceIndex = null;
+let lastVisibleStockSeriesKey = "";
 let isViewportDragging = false;
+let useViewportEventMarkerGap = false;
 let runtimeSnapshotIdleTimer = 0;
 let runtimeSnapshotSavedSignature = "";
 let runtimeSnapshotWritePromise = null;
@@ -668,6 +680,7 @@ function saveState() {
       hoverShowPopup,
       showDisclosures,
       showInsiderTrades,
+      showCoMovement,
       showAiForecast,
       showMacdOscillator,
     }));
@@ -690,6 +703,7 @@ function loadState() {
     if (typeof p.hoverShowPopup === "boolean") hoverShowPopup = p.hoverShowPopup;
     if (typeof p.showDisclosures === "boolean") showDisclosures = p.showDisclosures;
     if (typeof p.showInsiderTrades === "boolean") showInsiderTrades = p.showInsiderTrades;
+    if (typeof p.showCoMovement === "boolean") showCoMovement = p.showCoMovement;
     if (typeof p.showAiForecast === "boolean") showAiForecast = p.showAiForecast;
     if (typeof p.showMacdOscillator === "boolean") showMacdOscillator = p.showMacdOscillator;
     if (Array.isArray(p.customStocks)) customStocks = sanitizeCustomStocks(p.customStocks);
@@ -1230,7 +1244,7 @@ function syncDisclosureToggleButton(markerCount = null) {
   const count = Number(markerCount);
   const hasCount = showDisclosures && Number.isFinite(count) && count > 0;
   btn.classList.toggle("is-active", showDisclosures);
-  btn.textContent = showDisclosures ? `공시${hasCount ? ` ${count}` : ""}` : "공시 OFF";
+  btn.textContent = showDisclosures ? `공시${hasCount ? ` ${count}` : ""}` : "공시";
   btn.title = showDisclosures
     ? `공시 마커 켜짐${hasCount ? ` - 현재 범위 ${count}개` : ""}`
     : "공시 마커 꺼짐";
@@ -1702,7 +1716,7 @@ function syncInsiderTradeToggleButton(markerCount = null) {
   button.setAttribute("aria-busy", pending > 0 ? "true" : "false");
   button.textContent = showInsiderTrades
     ? `내부거래${hasCount ? ` ${count}` : (pending ? " …" : "")}`
-    : "내부거래 OFF";
+    : "내부거래";
   button.title = showInsiderTrades
     ? (pending ? `DART 내부거래 불러오는 중 - ${pending}개 종목` : "DART 최근 3년 내부거래 켜짐")
     : "DART 최근 3년 내부거래 꺼짐";
@@ -1958,6 +1972,86 @@ function refreshLineHighlight() {
   }
 
   el.classList.toggle("is-line-hovering", nextIndex != null);
+}
+
+function visibleStockSeriesKeys() {
+  return customStocks
+    .map((item) => String(item?.ticker || "").toUpperCase())
+    .filter((ticker) => MACD_STOCK_PATTERN.test(ticker) && !hiddenSeries.has(ticker));
+}
+
+function resolveCoMovementTarget() {
+  const visible = visibleStockSeriesKeys();
+  if (visible.includes(lastVisibleStockSeriesKey)) return lastVisibleStockSeriesKey;
+  lastVisibleStockSeriesKey = visible.at(-1) || "";
+  return lastVisibleStockSeriesKey;
+}
+
+function noteStockVisibilityChange(seriesKey) {
+  const ticker = String(seriesKey || "").toUpperCase();
+  if (!MACD_STOCK_PATTERN.test(ticker)) return;
+  if (hiddenSeries.has(ticker)) {
+    if (lastVisibleStockSeriesKey === ticker) lastVisibleStockSeriesKey = "";
+  } else {
+    lastVisibleStockSeriesKey = ticker;
+  }
+}
+
+function syncCoMovementToggleButton() {
+  const button = document.getElementById("coMovementToggle");
+  if (!button) return;
+  const targetKey = resolveCoMovementTarget();
+  button.classList.toggle("is-active", showCoMovement);
+  button.setAttribute("aria-pressed", showCoMovement ? "true" : "false");
+  button.title = showCoMovement
+    ? (targetKey ? `${labelName(targetKey)} 동행율 켜짐` : "표시 중인 종목이 없습니다.")
+    : "마지막 표시 종목 동행율";
+}
+
+function renderCoMovementPanel() {
+  const panel = document.getElementById("coMovementPanel");
+  if (!panel) return;
+  const targetKey = resolveCoMovementTarget();
+  const rows = currentMainChartModel?.rows;
+  syncCoMovementToggleButton();
+  if (!showCoMovement || !targetKey || !rows?.length) {
+    panel.hidden = true;
+    panel.replaceChildren();
+    return;
+  }
+
+  const summary = buildCoMovementSummary({
+    rows,
+    targetKey,
+    targetName: labelName(targetKey),
+    requestedMonths: activeMonths,
+    comparisons: CO_MOVEMENT_COMPARISONS,
+  });
+  if (!summary) {
+    panel.hidden = true;
+    panel.replaceChildren();
+    return;
+  }
+
+  const title = document.createElement("strong");
+  title.className = "co-movement-title";
+  title.textContent = `${summary.targetName} ${summary.periodLabel} 동행율`;
+  const nodes = [title];
+  summary.comparisons.forEach((comparison) => {
+    const metric = document.createElement("span");
+    metric.className = "co-movement-metric";
+    metric.append(`${comparison.label} `);
+    const value = document.createElement("b");
+    value.textContent = Number.isFinite(comparison.rate) ? `${comparison.rate}%` : "--";
+    metric.append(value);
+    metric.title = comparison.samples
+      ? `${comparison.startDate}~${comparison.endDate}, ${comparison.samples}회 변화 비교`
+      : "비교 가능한 데이터가 부족합니다.";
+    nodes.push(metric);
+  });
+  panel.replaceChildren(...nodes);
+  panel.setAttribute("aria-label", nodes.map((node) => node.textContent).join(", "));
+  panel.hidden = false;
 }
 
 function setHoveredLineTarget(target) {
@@ -2370,6 +2464,7 @@ function bindSeriesToggleBoard() {
       if (!key || btn.disabled) return;
       if (hiddenSeries.has(key)) hiddenSeries.delete(key);
       else hiddenSeries.add(key);
+      noteStockVisibilityChange(key);
       resetHandles();
     });
   });
@@ -2411,6 +2506,7 @@ function removeCustomStock(ticker) {
   const before = customStocks.length;
   customStocks = customStocks.filter((item) => item.ticker !== ticker);
   if (customStocks.length === before) return;
+  if (lastVisibleStockSeriesKey === ticker) lastVisibleStockSeriesKey = "";
   hiddenSeries.delete(ticker);
   delete seriesOffsets[ticker];
   delete seriesScales[ticker];
@@ -2788,6 +2884,7 @@ async function addCustomStock(candidate, msgEl) {
     });
 
     hiddenSeries.delete(candidate.ticker);
+    noteStockVisibilityChange(candidate.ticker);
     renderCustomStockButtons();
     saveState();
     if (showAiForecast) requestAiAnalysisForTicker(candidate.ticker).catch(() => {});
@@ -2963,6 +3060,7 @@ async function preloadCustomStocks(options = {}) {
 
   customStocks = customStocks.filter((item) => !failed.includes(item.ticker));
   failed.forEach((ticker) => {
+    if (lastVisibleStockSeriesKey === ticker) lastVisibleStockSeriesKey = "";
     hiddenSeries.delete(ticker);
     delete seriesOffsets[ticker];
     delete seriesScales[ticker];
@@ -3483,7 +3581,27 @@ function restyleLive(traceIndex, seriesKey) {
     const newY = computeFinalValues(seriesKey);
     if (newY) {
       lineHitIndexCache.delete(el);
-      Plotly.restyle(el, { y: [newY] }, [traceIndex]);
+      const traceIndexes = [traceIndex];
+      const yUpdates = [newY];
+      if (showInsiderTrades && updateCurrentMainChartSeriesTransform(seriesKey)) {
+        const nextInsiderTraces = buildInsiderTradeTraces(
+          currentMainChartModel.selected,
+          currentMainChartModel.seriesModels,
+          currentStart,
+          currentEnd,
+        );
+        (el?.data || []).forEach((trace, index) => {
+          const side = trace?.meta?.insiderTradeSide;
+          if (!trace?.meta?.isInsiderTradeTrace || !side) return;
+          const nextTrace = nextInsiderTraces.find((candidate) => (
+            candidate?.meta?.insiderTradeSide === side
+          ));
+          if (!nextTrace) return;
+          traceIndexes.push(index);
+          yUpdates.push(nextTrace.y);
+        });
+      }
+      Plotly.restyle(el, { y: yUpdates }, traceIndexes);
     }
   });
 }
@@ -3509,6 +3627,7 @@ function lockCurrentYAxisRange() {
   const el = document.getElementById("chart");
   const range = el?._fullLayout?.yaxis?.range;
   if (!el || !Array.isArray(range) || range.length < 2) return;
+  useViewportEventMarkerGap = true;
   Plotly.relayout(el, {
     "yaxis.range[0]": range[0],
     "yaxis.range[1]": range[1],
@@ -3547,6 +3666,7 @@ function setupOffsetDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
         seriesOffsets[seriesKey] = startOffset;
         if (hiddenSeries.has(seriesKey)) hiddenSeries.delete(seriesKey);
         else hiddenSeries.add(seriesKey);
+        noteStockVisibilityChange(seriesKey);
         resetHandles();
         return;
       }
@@ -3632,6 +3752,7 @@ function resetHandles() {
   seriesOffsets = {};
   seriesScales = {};
   pinnedXRange = null;
+  useViewportEventMarkerGap = false;
   saveState();
   requestChartRender(false);
 }
@@ -3654,35 +3775,29 @@ function buildDisclosurePointIndex(seriesModels, tickers) {
   return index;
 }
 
-function findNearestDisclosurePoint(eventDate, ticker, pointIndex) {
+function findDisclosurePointOnDate(eventDate, ticker, pointIndex) {
   const points = pointIndex?.[ticker];
   if (!points?.length) return null;
-  const targetMs = toUtcMs(eventDate);
-  if (!Number.isFinite(targetMs)) return null;
-
-  let best = null;
-  const consider = (point) => {
-    if (!point) return;
-    const diff = Math.abs(point.ms - targetMs);
-    if (diff > 10 * DAY_MS) return;
-    if (!best || diff < best.diff || (diff === best.diff && point.date >= eventDate && best.date < eventDate)) {
-      best = { date: point.date, y: point.y, diff };
-    }
-  };
-
   let lo = 0;
   let hi = points.length;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
-    if (points[mid].ms < targetMs) lo = mid + 1;
+    if (points[mid].date < eventDate) lo = mid + 1;
     else hi = mid;
   }
-  consider(points[lo]);
-  consider(points[lo - 1]);
-  return best;
+  const point = points[lo];
+  return point?.date === eventDate ? { date: point.date, y: point.y } : null;
 }
 
 function chartEventMarkerGap(seriesModels, start, end) {
+  const axis = document.getElementById("chart")?._fullLayout?.yaxis;
+  const viewportRange = axis?.range;
+  if (useViewportEventMarkerGap && Array.isArray(viewportRange) && viewportRange.length >= 2) {
+    const viewportSpan = Math.abs(Number(viewportRange[1]) - Number(viewportRange[0]));
+    if (Number.isFinite(viewportSpan) && viewportSpan > 1e-9) {
+      return viewportSpan * EVENT_MARKER_GAP_RATIO;
+    }
+  }
   let minimum = Number.POSITIVE_INFINITY;
   let maximum = Number.NEGATIVE_INFINITY;
   (seriesModels || []).forEach((model) => {
@@ -3720,7 +3835,7 @@ function buildDisclosureTrace(selected, seriesModels, start, end) {
   const grouped = new Map();
 
   candidates.forEach((event) => {
-    const point = findNearestDisclosurePoint(event.date, event.ticker, pointIndex);
+    const point = findDisclosurePointOnDate(event.date, event.ticker, pointIndex);
     if (!point) return;
     const key = `${event.ticker}|${point.date}`;
     const group = grouped.get(key) || {
@@ -3789,7 +3904,7 @@ function buildInsiderTradeTraces(selected, seriesModels, start, end) {
   const markerGap = chartEventMarkerGap(seriesModels, start, end);
   const grouped = new Map();
   candidates.forEach((event) => {
-    const point = findNearestDisclosurePoint(event.date, event.ticker, pointIndex);
+    const point = findDisclosurePointOnDate(event.date, event.ticker, pointIndex);
     if (!point) return;
     const side = event.side === "sell" ? "sell" : "buy";
     const key = `${event.ticker}|${point.date}|${side}`;
@@ -5056,6 +5171,7 @@ async function buildAiForecastTraces(rows, seriesModels) {
 
 async function renderChart(preserveZoom = true) {
   const perfStartedAt = startPerfSample();
+  if (!preserveZoom) useViewportEventMarkerGap = false;
   const el = document.getElementById("chart");
   const msgEl = document.getElementById("messageArea");
   if (!window.Plotly) {
@@ -5114,6 +5230,7 @@ async function renderChart(preserveZoom = true) {
   currentEnd = end;
   syncSeriesToggleBoard(allSeries);
   currentSelected = [...selected];
+  renderCoMovementPanel();
   queueInsiderTradeRefresh();
   if (!showDisclosures) hideDisclosurePopover();
   hoveredLineTraceIndex = null;
@@ -5219,6 +5336,7 @@ async function renderChart(preserveZoom = true) {
       if (key) {
         if (hiddenSeries.has(key)) hiddenSeries.delete(key);
         else hiddenSeries.add(key);
+        noteStockVisibilityChange(key);
       }
       resetHandles();
       return false;
@@ -5233,6 +5351,7 @@ async function renderChart(preserveZoom = true) {
       const hasRange = (eventData["xaxis.range[0]"] != null && eventData["xaxis.range[1]"] != null)
         || (Array.isArray(rangePair) && rangePair.length === 2);
       const hasAuto = eventData["xaxis.autorange"] === true;
+      if (eventData["yaxis.autorange"] === true) useViewportEventMarkerGap = false;
       if (chartSyncing || isHandleDragging) return;
       if (cursorSyncing && !hasRange && !hasAuto) return;
       scheduleHandleUpdate();
@@ -6813,6 +6932,7 @@ async function boot() {
   setupApiSettingsPanel(msgEl);
   syncApiOptionsButton();
   renderAppVersionLabel();
+  syncCoMovementToggleButton();
   syncAiForecastToggleButton();
   syncMacdToggleButton();
   bindRuntimeSnapshotExitSave();
@@ -6860,6 +6980,12 @@ async function boot() {
     });
 
     document.getElementById("resetHandles").addEventListener("click", resetHandles);
+    document.getElementById("coMovementToggle").addEventListener("click", () => {
+      showCoMovement = !showCoMovement;
+      saveState();
+      syncCoMovementToggleButton();
+      renderCoMovementPanel();
+    });
     document.getElementById("aiForecastToggle").addEventListener("click", () => {
       showAiForecast = !showAiForecast;
       syncAiForecastToggleButton();

@@ -443,9 +443,92 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page }
   ))).toBe(0);
 });
 
+test("co-movement toggle shows only the last visible stock for the selected period", async ({ page }) => {
+  await installDataRoutes(page);
+  await page.route("**/data/prices_recent.json*", async (route) => {
+    await route.fulfill({ json: columnar(
+      ["^KS11", "^KQ11", "005930.KS", "000660.KS"],
+      recentDates,
+      {
+        "^KS11": [2800, 2900, 3000, 3100, 3200],
+        "^KQ11": [780, 800, 820, 840, 860],
+        "005930.KS": [70000, 72000, 74000, 76000, 78000],
+        "000660.KS": [90000, 88000, 91000, 93000, 95000],
+      },
+    ) });
+  });
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 12,
+      customStocks: [
+        { ticker: "005930.KS", name: "삼성전자", code: "005930", market: "KOSPI" },
+        { ticker: "000660.KS", name: "SK하이닉스", code: "000660", market: "KOSPI" },
+      ],
+      showCoMovement: false,
+    }));
+  });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+
+  const buttonOrder = await Promise.all([
+    page.locator("#resetHandles").boundingBox(),
+    page.locator("#coMovementToggle").boundingBox(),
+    page.locator("#aiForecastToggle").boundingBox(),
+    page.locator("#macdToggle").boundingBox(),
+  ]);
+  expect(buttonOrder.every(Boolean)).toBe(true);
+  expect(buttonOrder[0].y).toBeLessThan(buttonOrder[1].y);
+  expect(buttonOrder[1].y).toBeLessThan(buttonOrder[2].y);
+  expect(buttonOrder[2].y).toBeLessThan(buttonOrder[3].y);
+
+  await expect(page.locator("#coMovementPanel")).toBeHidden();
+  await page.locator("#coMovementToggle").click();
+  await expect(page.locator("#coMovementToggle")).toHaveClass(/is-active/);
+  await expect(page.locator("#coMovementPanel")).toBeVisible();
+  await expect(page.locator("#coMovementPanel")).toContainText("SK하이닉스 1년 동행율");
+  await expect(page.locator("#coMovementPanel")).toContainText("코스피 75%");
+  await expect(page.locator("#coMovementPanel")).toContainText("코스닥 75%");
+  await expect(page.locator("#coMovementPanel")).toContainText("코스피 신용 75%");
+  await expect(page.locator("#coMovementPanel")).toContainText("코스닥 신용 75%");
+
+  await page.locator('[data-series="000660.KS"]').click();
+  await expect(page.locator("#coMovementPanel")).toContainText("삼성전자 1년 동행율");
+  await page.locator('[data-series="000660.KS"]').click();
+  await expect(page.locator("#coMovementPanel")).toContainText("SK하이닉스 1년 동행율");
+
+  await page.locator('.range-btn[data-months="3"]').click();
+  await expect(page.locator("#coMovementPanel")).toContainText("SK하이닉스 3개월 동행율");
+  await page.locator("#coMovementToggle").click();
+  await expect(page.locator("#coMovementPanel")).toBeHidden();
+});
+
 test("insider trade toggle draws DART buy and sell triangles for three years", async ({ page }) => {
   await installDataRoutes(page);
   await stubExternalRefreshes(page);
+  await page.route("**/data/disclosures/005930.KS.json*", async (route) => {
+    await route.fulfill({ json: {
+      generated_at: "2026-07-15T00:00:00Z",
+      source: "OpenDART",
+      records: [
+        {
+          date: "2026-04-14",
+          ticker: "005930.KS",
+          name: "삼성전자",
+          title: "유상증자 결정",
+          url: "https://dart.fss.or.kr/example",
+          source: "OpenDART",
+        },
+        {
+          date: "2026-04-13",
+          ticker: "005930.KS",
+          name: "삼성전자",
+          title: "전일 공시",
+          url: "https://dart.fss.or.kr/previous",
+          source: "OpenDART",
+        },
+      ],
+    } });
+  });
   let authorization = "";
   await page.addInitScript(() => {
     localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "private" }));
@@ -489,6 +572,15 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
             sharesChanged: -500,
             receiptNo: "20260414000123",
           },
+          {
+            ticker: "005930.KS",
+            date: "2026-04-13",
+            side: "buy",
+            reporter: "전일임원",
+            role: "임원",
+            sharesChanged: 100,
+            receiptNo: "20260413000123",
+          },
         ];
     await route.fulfill({
       status: 200,
@@ -516,6 +608,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
 
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await expect(page.locator("#insiderTradeToggle")).toHaveText("내부거래");
   await page.locator("#insiderTradeToggle").click();
   await expect(page.locator("#insiderTradeToggle")).toHaveClass(/is-active/);
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
@@ -525,10 +618,11 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
       color: trace.marker.color,
       yaxis: trace.yaxis,
       paired: trace.customdata?.[0]?.[2],
+      dates: trace.x,
     }))
   ))).toEqual([
-    { side: "buy", symbol: "triangle-up", color: "#ef4444", yaxis: "y", paired: true },
-    { side: "sell", symbol: "triangle-down", color: "#3b82f6", yaxis: "y", paired: true },
+    { side: "buy", symbol: "triangle-up", color: "#ef4444", yaxis: "y", paired: true, dates: ["2026-04-14"] },
+    { side: "sell", symbol: "triangle-down", color: "#3b82f6", yaxis: "y", paired: true, dates: ["2026-04-14"] },
   ]);
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const disclosure = (element.data || []).find((trace) => trace?.meta?.isDisclosureTrace);
@@ -540,6 +634,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
     };
     return {
       disclosureAxis: disclosure?.yaxis,
+      disclosureDates: disclosure?.x,
       pairedDiamond: Number(insiders[0]?.y?.[0]) > Number(insiders[1]?.y?.[0]),
       disclosureAboveLine: (disclosure?.x || []).every((date, index) => (
         Number(disclosure.y[index]) > stockYAt(date)
@@ -550,6 +645,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
     };
   })).toEqual({
     disclosureAxis: "y",
+    disclosureDates: ["2026-04-14"],
     pairedDiamond: true,
     disclosureAboveLine: true,
     insiderBelowLine: true,
@@ -559,7 +655,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
       .filter((point) => ["rgb(239, 68, 68)", "rgb(59, 130, 246)"].includes(point.style.fill))
       .map((point) => getComputedStyle(point).display)
   ))).toEqual(["inline", "inline"]);
-  const pairedMarkerGeometry = await page.locator("#chart").evaluate((element) => {
+  const readPairedMarkerGeometry = () => page.locator("#chart").evaluate((element) => {
     const points = [...element.querySelectorAll(".scatterlayer path.point")]
       .filter((point) => ["rgb(239, 68, 68)", "rgb(59, 130, 246)"].includes(point.style.fill));
     const buy = points.find((point) => point.style.fill === "rgb(239, 68, 68)")?.getBoundingClientRect();
@@ -579,6 +675,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
       verticalClearance: sell.top - buy.bottom,
     };
   });
+  const pairedMarkerGeometry = await readPairedMarkerGeometry();
   expect(pairedMarkerGeometry).toMatchObject({
     horizontallyAligned: true,
     buyAboveSell: true,
@@ -588,6 +685,30 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   expect(pairedMarkerGeometry.lineClearance).toBeGreaterThanOrEqual(1);
   expect(pairedMarkerGeometry.verticalClearance).toBeGreaterThanOrEqual(0);
   expect(pairedMarkerGeometry.verticalClearance).toBeLessThanOrEqual(4);
+
+  const scaleHandle = page.locator('.y-handle-right[title="삼성전자 (스케일)"]');
+  await expect(scaleHandle).toBeVisible();
+  const scaleHandleBox = await scaleHandle.boundingBox();
+  await page.mouse.move(
+    scaleHandleBox.x + scaleHandleBox.width / 2,
+    scaleHandleBox.y + scaleHandleBox.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    scaleHandleBox.x + scaleHandleBox.width / 2,
+    scaleHandleBox.y + scaleHandleBox.height / 2 - 45,
+    { steps: 3 },
+  );
+  await expect.poll(async () => Math.abs(
+    (await readPairedMarkerGeometry()).lineClearance - pairedMarkerGeometry.lineClearance,
+  )).toBeLessThanOrEqual(2);
+  await page.mouse.up();
+  await expect.poll(async () => Math.abs(
+    (await readPairedMarkerGeometry()).lineClearance - pairedMarkerGeometry.lineClearance,
+  )).toBeLessThanOrEqual(2);
+  await expect.poll(async () => Math.abs(
+    (await readPairedMarkerGeometry()).verticalClearance - pairedMarkerGeometry.verticalClearance,
+  )).toBeLessThanOrEqual(2);
   expect(authorization).toBe("Bearer private");
 
   const insiderMarkerTickers = () => page.locator("#chart").evaluate((element) => (
@@ -624,6 +745,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   await expect.poll(insiderMarkerTickers).toEqual(["000660.KS", "005930.KS"]);
 
   await page.locator("#insiderTradeToggle").click();
+  await expect(page.locator("#insiderTradeToggle")).toHaveText("내부거래");
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     (element.data || []).filter((trace) => trace?.meta?.isInsiderTradeTrace).length
   ))).toBe(0);
@@ -911,6 +1033,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await expect(page.locator("#appVersionText")).toHaveText(/^\d+\.\d+$/);
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
+  await expect(page.locator("#hoverToggle")).toHaveCSS("color", "rgb(138, 138, 138)");
   expect(await page.evaluate(() => Boolean(window.ThinkStockPerformanceDiagnostics))).toBe(false);
   await page.locator("#apiOptionsBtn").click();
   await page.locator("#performanceDiagnosticsBtn").click();
@@ -1131,6 +1254,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
     partial: window.ThinkStockE2E.getChartWorkerStats().partialDisclosureUpdates,
   }));
   await page.locator("#disclosureToggle").click();
+  await expect(page.locator("#disclosureToggle")).toHaveText("공시");
   await expect(page.locator("#chart .textpoint text").filter({ hasText: "◆" })).toHaveCount(0);
   expect(await page.evaluate(() => window.ThinkStockE2E.getChartRenderGeneration()))
     .toBe(disclosureToggleBefore.generation);

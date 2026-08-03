@@ -5,6 +5,7 @@ import "../docs/modules/chart-interaction-controller.js";
 import "../docs/modules/browser-market-client.js";
 import "../docs/modules/auxiliary-chart-model.js";
 import "../docs/modules/main-chart-renderer.js";
+import "../docs/modules/co-movement.js";
 import "../docs/modules/macd-oscillator.js";
 import "../docs/modules/ai-forecast.js";
 import "../docs/modules/ai-analysis-cache.js";
