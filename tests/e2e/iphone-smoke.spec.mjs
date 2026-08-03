@@ -443,6 +443,75 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page }
   ))).toBe(0);
 });
 
+test("insider trade toggle draws DART buy and sell triangles for three years", async ({ page }) => {
+  await installDataRoutes(page);
+  await stubExternalRefreshes(page);
+  let authorization = "";
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "private" }));
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 36,
+      hiddenSeries: ["leading_cycle", "^KS11", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit"],
+      customStocks: [{ ticker: "005930.KS", name: "삼성전자", code: "005930", market: "KOSPI" }],
+      showDisclosures: false,
+      showInsiderTrades: false,
+    }));
+  });
+  await page.route("https://thinkstock-api.keg0320.workers.dev/api/dart/insider-trades?*", async (route) => {
+    authorization = route.request().headers().authorization || "";
+    await route.fulfill({
+      status: 200,
+      headers: { "access-control-allow-origin": "*", "content-type": "application/json" },
+      body: JSON.stringify({
+        ok: true,
+        ticker: "005930.KS",
+        checkedFrom: "2023-08-03",
+        records: [
+          {
+            ticker: "005930.KS",
+            date: "2026-01-14",
+            side: "buy",
+            reporter: "홍길동",
+            role: "대표이사",
+            sharesChanged: 1250,
+            receiptNo: "20260114000123",
+          },
+          {
+            ticker: "005930.KS",
+            date: "2026-04-14",
+            side: "sell",
+            reporter: "김주주",
+            role: "등기임원",
+            sharesChanged: -500,
+            receiptNo: "20260414000123",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await page.locator("#insiderTradeToggle").click();
+  await expect(page.locator("#insiderTradeToggle")).toHaveClass(/is-active/);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.isInsiderTradeTrace).map((trace) => ({
+      side: trace.meta.insiderTradeSide,
+      symbol: trace.marker.symbol,
+      color: trace.marker.color,
+    }))
+  ))).toEqual([
+    { side: "buy", symbol: "triangle-up", color: "#ef4444" },
+    { side: "sell", symbol: "triangle-down", color: "#3b82f6" },
+  ]);
+  expect(authorization).toBe("Bearer private");
+
+  await page.locator("#insiderTradeToggle").click();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.isInsiderTradeTrace).length
+  ))).toBe(0);
+});
+
 test("AI analysis loads only on demand and reuses its monthly browser cache", async ({ page }) => {
   let analysisRequests = 0;
   let releaseAnalysis;

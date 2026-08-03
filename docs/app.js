@@ -54,6 +54,13 @@ if (!auxiliaryChartModelModule) throw new Error("Auxiliary chart model module fa
 const buildAuxiliaryChartModelSync = auxiliaryChartModelModule.buildAuxiliaryChartModel;
 const mainChartRenderer = globalThis.ThinkStockMainChartRenderer;
 if (!mainChartRenderer) throw new Error("Main chart renderer module failed to load");
+const insiderTradesModule = globalThis.ThinkStockInsiderTrades;
+if (!insiderTradesModule) throw new Error("Insider trades module failed to load");
+const {
+  buildMarkerTraces: buildInsiderMarkerTraces,
+  mergeRows: mergeInsiderTradeRows,
+  sanitizeRows: sanitizeInsiderTradeRows,
+} = insiderTradesModule;
 const aiForecastModule = globalThis.ThinkStockAiForecast;
 if (!aiForecastModule) throw new Error("AI forecast module failed to load");
 const { buildForecast: buildAiForecast, isForecastSeries } = aiForecastModule;
@@ -175,7 +182,7 @@ const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.31";
+const APP_VERSION = "1.32";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -226,6 +233,7 @@ const DART_DISCLOSURE_CACHE_TTL_DAYS = 1;
 const DART_GATEWAY_URL = "https://thinkstock-api.keg0320.workers.dev";
 const DART_GATEWAY_AUTH_CHECK_ENDPOINT = `${DART_GATEWAY_URL}/api/auth/check`;
 const DART_GATEWAY_DISCLOSURE_ENDPOINT = `${DART_GATEWAY_URL}/api/dart/disclosures`;
+const DART_GATEWAY_INSIDER_ENDPOINT = `${DART_GATEWAY_URL}/api/dart/insider-trades`;
 const AI_ANALYSIS_ENDPOINT = `${DART_GATEWAY_URL}/api/analysis`;
 const AI_FORECAST_JOURNAL_ENDPOINT = `${DART_GATEWAY_URL}/api/forecast-journal`;
 const AI_MARKET_MODEL_URL = "./data/ai_market_model.json";
@@ -369,6 +377,10 @@ let disclosureRows = [];
 let disclosureManifest = null;
 let disclosureSeedLoadPromises = new Map();
 let disclosureSeedLoadedTickers = new Set();
+let insiderTradeRows = [];
+let insiderTradeLoadedTickers = new Set();
+let insiderTradeTickerPromises = new Map();
+let insiderTradePendingTickers = new Set();
 let dartCorpCodeMap = new Map();
 let dartCorpCodeMapLoaded = false;
 let dartCorpCodeManifest = null;
@@ -391,6 +403,7 @@ let seriesScales = {};
 let currentSelected = [];
 let currentDisclosureHighlight = null;
 let lastDisclosureTraceStats = { total: 0, candidates: 0, markers: 0 };
+let lastInsiderTradeTraceStats = { total: 0, candidates: 0, markers: 0 };
 let baseTraceValues = {};
 let legendHandlerSet = false;
 let adrHandlerSet = false;
@@ -433,6 +446,7 @@ let chartRenderGeneration = 0;
 let chartSyncing = false;   // relayout sync loop guard
 let hoverShowPopup = false;
 let showDisclosures = true;
+let showInsiderTrades = false;
 let showAiForecast = false;
 let lastAiForecastTraceCount = 0;
 let aiAnalysisByTicker = new Map();
@@ -646,6 +660,7 @@ function saveState() {
       creditOffset: -CREDIT_OFFSET_DAYS,
       hoverShowPopup,
       showDisclosures,
+      showInsiderTrades,
       showAiForecast,
       showMacdOscillator,
     }));
@@ -667,6 +682,7 @@ function loadState() {
     if (typeof p.creditOffset === "number") CREDIT_OFFSET_DAYS = Math.abs(p.creditOffset);
     if (typeof p.hoverShowPopup === "boolean") hoverShowPopup = p.hoverShowPopup;
     if (typeof p.showDisclosures === "boolean") showDisclosures = p.showDisclosures;
+    if (typeof p.showInsiderTrades === "boolean") showInsiderTrades = p.showInsiderTrades;
     if (typeof p.showAiForecast === "boolean") showAiForecast = p.showAiForecast;
     if (typeof p.showMacdOscillator === "boolean") showMacdOscillator = p.showMacdOscillator;
     if (Array.isArray(p.customStocks)) customStocks = sanitizeCustomStocks(p.customStocks);
@@ -1666,6 +1682,23 @@ function scheduleViewportRangeSync(targetEl, payload) {
         chartSyncing = false;
       });
   }, VIEWPORT_SYNC_DEBOUNCE_MS);
+}
+
+function syncInsiderTradeToggleButton(markerCount = null) {
+  const button = document.getElementById("insiderTradeToggle");
+  if (!button) return;
+  const count = Number(markerCount);
+  const pending = insiderTradePendingTickers.size;
+  const hasCount = showInsiderTrades && Number.isFinite(count) && count > 0;
+  button.classList.toggle("is-active", showInsiderTrades);
+  button.setAttribute("aria-pressed", showInsiderTrades ? "true" : "false");
+  button.setAttribute("aria-busy", pending > 0 ? "true" : "false");
+  button.textContent = showInsiderTrades
+    ? `내부거래${hasCount ? ` ${count}` : (pending ? " …" : "")}`
+    : "내부거래 OFF";
+  button.title = showInsiderTrades
+    ? (pending ? `DART 내부거래 불러오는 중 - ${pending}개 종목` : "DART 최근 3년 내부거래 켜짐")
+    : "DART 최근 3년 내부거래 꺼짐";
 }
 
 function zoomAroundClientX(sourceEl, clientX, zoomFactor = 0.5) {
@@ -3734,6 +3767,45 @@ function buildDisclosureTrace(selected, seriesModels, start, end) {
   };
 }
 
+function buildInsiderTradeTraces(selected, seriesModels, start, end) {
+  lastInsiderTradeTraceStats = { total: insiderTradeRows.length, candidates: 0, markers: 0 };
+  if (!insiderTradeRows.length || !seriesModels.length) return [];
+  const selectedSet = new Set(selected);
+  const candidates = insiderTradeRows.filter((event) => (
+    selectedSet.has(event.ticker)
+    && !hiddenSeries.has(event.ticker)
+    && event.date >= start
+    && event.date <= end
+  ));
+  lastInsiderTradeTraceStats.candidates = candidates.length;
+  const pointIndex = buildDisclosurePointIndex(
+    seriesModels,
+    new Set(candidates.map((event) => event.ticker)),
+  );
+  const grouped = new Map();
+  candidates.forEach((event) => {
+    const point = findNearestDisclosurePoint(event.date, event.ticker, pointIndex);
+    if (!point) return;
+    const side = event.side === "sell" ? "sell" : "buy";
+    const key = `${event.ticker}|${point.date}|${side}`;
+    const group = grouped.get(key) || {
+      ticker: event.ticker,
+      name: labelName(event.ticker),
+      side,
+      plotDate: point.date,
+      y: point.y + (side === "sell" ? 4 : -4),
+      events: [],
+    };
+    group.events.push(event);
+    grouped.set(key, group);
+  });
+  const groups = [...grouped.values()].sort((left, right) => (
+    left.plotDate.localeCompare(right.plotDate) || left.side.localeCompare(right.side)
+  ));
+  lastInsiderTradeTraceStats.markers = groups.length;
+  return buildInsiderMarkerTraces(groups);
+}
+
 function updateCurrentMainChartSeriesTransform(seriesKey) {
   if (!seriesKey || !currentMainChartModel?.seriesModels) return true;
   const model = currentMainChartModel.seriesModels.find((item) => item.series === seriesKey);
@@ -4300,6 +4372,94 @@ async function fetchDartDisclosuresForTickerLive(apiKey, ticker, options = {}) {
     page = Number.isInteger(nextPage) && nextPage > page ? nextPage : 0;
   }
   return collected;
+}
+
+function insiderTradeRowsForTicker(ticker) {
+  const target = String(ticker || "").trim().toUpperCase();
+  return sanitizeInsiderTradeRows(insiderTradeRows.filter((row) => row.ticker === target));
+}
+
+async function requestInsiderTradesForTicker(ticker, options = {}) {
+  const target = String(ticker || "").trim().toUpperCase();
+  if (!/^[0-9]{6}\.(KS|KQ)$/.test(target)) return [];
+  if (!options.forceNetwork && insiderTradeLoadedTickers.has(target)) {
+    return insiderTradeRowsForTicker(target);
+  }
+  if (insiderTradeTickerPromises.has(target)) return insiderTradeTickerPromises.get(target);
+
+  const task = (async () => {
+    insiderTradePendingTickers.add(target);
+    syncInsiderTradeToggleButton(lastInsiderTradeTraceStats.markers);
+    const stockCode = target.slice(0, 6);
+    const corpCodeLoaded = await ensureDartCorpCodeMapLoaded(stockCode);
+    const corpCode = String(dartCorpCodeMap.get(stockCode)?.corp_code || "");
+    if (!corpCodeLoaded || !corpCode) {
+      throw new Error("DART 회사코드를 찾지 못했습니다. 배포 데이터 갱신 후 다시 시도해 주세요.");
+    }
+    const accessToken = getDartGatewayAccessToken();
+    if (!accessToken) throw new Error("API 설정에서 DART 개인 접속 코드를 먼저 저장해 주세요.");
+    const query = new URLSearchParams({ ticker: target, corpCode });
+    if (options.forceNetwork) query.set("force", "1");
+    let response;
+    try {
+      response = await fetchWithTimeout(`${DART_GATEWAY_INSIDER_ENDPOINT}?${query}`, {
+        cache: "no-store",
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: options.signal || null,
+      }, DART_GATEWAY_REQUEST_TIMEOUT_MS);
+    } catch (error) {
+      if (error?.name === "AbortError") throw error;
+      throw new Error("ThinkStock DART 중계 서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.");
+    }
+    const payload = await response.json().catch(() => null);
+    if (response.status === 401) {
+      clearInvalidDartGatewayAccessToken();
+      const error = new Error("개인 접속 코드가 만료되었거나 올바르지 않습니다. API 설정에서 다시 저장해 주세요.");
+      error.status = 401;
+      throw error;
+    }
+    if (!response.ok || payload?.ok === false) {
+      throw new Error(String(payload?.error || "DART 내부거래 데이터를 가져오지 못했습니다."));
+    }
+    const rows = sanitizeInsiderTradeRows(payload?.records || []);
+    insiderTradeRows = mergeInsiderTradeRows(
+      insiderTradeRows.filter((row) => row.ticker !== target),
+      rows,
+    );
+    insiderTradeLoadedTickers.add(target);
+    return rows;
+  })().finally(() => {
+    insiderTradeTickerPromises.delete(target);
+    insiderTradePendingTickers.delete(target);
+    syncInsiderTradeToggleButton(lastInsiderTradeTraceStats.markers);
+  });
+  insiderTradeTickerPromises.set(target, task);
+  return task;
+}
+
+async function refreshInsiderTradesForVisibleSeries(options = {}) {
+  if (!showInsiderTrades || !canUseDartGateway()) return 0;
+  const tickers = visibleAiAnalysisTickers();
+  if (!tickers.length) return 0;
+  const results = await mapWithConcurrency(
+    tickers,
+    DART_VISIBLE_REFRESH_CONCURRENCY,
+    (ticker) => requestInsiderTradesForTicker(ticker, options),
+  );
+  return results.reduce((count, rows) => count + rows.length, 0);
+}
+
+function queueInsiderTradeRefresh() {
+  if (!showInsiderTrades || !canUseDartGateway()) return;
+  const missing = visibleAiAnalysisTickers().filter((ticker) => (
+    !insiderTradeLoadedTickers.has(ticker) && !insiderTradeTickerPromises.has(ticker)
+  ));
+  if (!missing.length) return;
+  setTimeout(() => {
+    refreshInsiderTradesForVisibleSeries()
+      .then(() => requestChartRender())
+      .catch(() => {});
+  }, 0);
 }
 
 function syncAiForecastToggleButton(traceCount = lastAiForecastTraceCount) {
@@ -4931,6 +5091,7 @@ async function renderChart(preserveZoom = true) {
   currentEnd = end;
   syncSeriesToggleBoard(allSeries);
   currentSelected = [...selected];
+  queueInsiderTradeRefresh();
   if (!showDisclosures) hideDisclosurePopover();
   hoveredLineTraceIndex = null;
   activeLineTraceIndex = null;
@@ -4977,6 +5138,15 @@ async function renderChart(preserveZoom = true) {
   const aiForecastTraces = await buildAiForecastTraces(rows, seriesModels);
   if (renderGeneration !== chartRenderGeneration) return;
   traces.push(...aiForecastTraces);
+
+  if (!showInsiderTrades) {
+    lastInsiderTradeTraceStats = { total: insiderTradeRows.length, candidates: 0, markers: 0 };
+  }
+  const insiderTraces = showInsiderTrades
+    ? buildInsiderTradeTraces(selected, seriesModels, start, end)
+    : [];
+  traces.push(...insiderTraces);
+  syncInsiderTradeToggleButton(lastInsiderTradeTraceStats.markers);
 
   if (!showDisclosures) {
     lastDisclosureTraceStats = { total: disclosureRows.length, candidates: 0, markers: 0 };
@@ -6729,6 +6899,35 @@ async function boot() {
       requestChartRender,
     });
 
+    const insiderTradeToggle = document.getElementById("insiderTradeToggle");
+    syncInsiderTradeToggleButton(lastInsiderTradeTraceStats.markers);
+    insiderTradeToggle?.addEventListener("click", async () => {
+      if (insiderTradeToggle.getAttribute("aria-busy") === "true") return;
+      if (showInsiderTrades) {
+        showInsiderTrades = false;
+        syncInsiderTradeToggleButton(0);
+        saveState();
+        requestChartRender();
+        return;
+      }
+      if (!canUseDartGateway()) {
+        setMessage(msgEl, ["내부거래를 보려면 API 설정에서 DART 개인 접속 코드를 먼저 저장해 주세요."], true);
+        return;
+      }
+      showInsiderTrades = true;
+      syncInsiderTradeToggleButton(0);
+      saveState();
+      try {
+        const count = await refreshInsiderTradesForVisibleSeries();
+        setMessage(msgEl, count > 0
+          ? [`DART 최근 3년 내부거래 ${count}건을 표시했습니다.`]
+          : ["현재 표시 종목에는 최근 3년 내부거래가 없습니다."]);
+      } catch (error) {
+        setMessage(msgEl, [`내부거래 조회 오류: ${error.message}`], true);
+      }
+      requestChartRender();
+    });
+
     appUiBindingsModule.bindCreditOffsetInput({
       input: document.getElementById("creditOffset"),
       getOffsetDays: () => CREDIT_OFFSET_DAYS,
@@ -6746,7 +6945,13 @@ async function boot() {
       loadData,
       loadLastRuntimeSnapshot,
       renderChart,
-      refreshRuntimeData: (options) => refreshRuntimeData(msgEl, options),
+      refreshRuntimeData: async (options) => {
+        await refreshRuntimeData(msgEl, options);
+        if (showInsiderTrades && canUseDartGateway()) {
+          await refreshInsiderTradesForVisibleSeries({ forceNetwork: true });
+          requestChartRender();
+        }
+      },
     });
 
     await waitForFirstPaint();
