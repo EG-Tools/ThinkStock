@@ -1,6 +1,6 @@
-importScripts("./modules/cache-refresh-policy.js?v=dev");
+importScripts("./modules/cache-refresh-policy.js?v=1.48");
 
-const CACHE_NAME = "thinkstock-dev";
+const CACHE_NAME = "thinkstock-1.48";
 const NETWORK_FIRST_TIMEOUT_MS = 3500;
 const DATA_REFRESH_CONCURRENCY = 3;
 const DATA_MANIFEST_PATH = "./data/data_manifest.json";
@@ -11,16 +11,16 @@ const PRECACHE_ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
-  "./assets/app.bundle.min.js?v=dev",
-  "./modules/data-payload.js?v=dev",
-  "./modules/market-data.js?v=dev",
-  "./modules/cache-refresh-policy.js?v=dev",
-  "./modules/auxiliary-chart-model.js?v=dev",
-  "./modules/data-worker.js?v=dev",
-  "./modules/chart-model-worker.js?v=dev",
+  "./assets/app.bundle.min.js?v=1.48",
+  "./modules/data-payload.js?v=1.48",
+  "./modules/market-data.js?v=1.48",
+  "./modules/cache-refresh-policy.js?v=1.48",
+  "./modules/auxiliary-chart-model.js?v=1.48",
+  "./modules/data-worker.js?v=1.48",
+  "./modules/chart-model-worker.js?v=1.48",
   "./modules/ai-forecast-worker.js?v=dev",
   "./modules/ai-forecast.js?v=dev",
-  "./vendor/plotly-thinkstock-2.35.2.min.js?v=dev",
+  "./vendor/plotly-thinkstock-2.35.2.min.js?v=1.48",
   "./manifest.webmanifest",
   "./icon.svg",
   "./data/prices_recent.json",

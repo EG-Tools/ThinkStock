@@ -1,5 +1,5 @@
-importScripts("./market-data.js?v=dev");
-importScripts("./auxiliary-chart-model.js?v=dev");
+importScripts("./market-data.js?v=1.48");
+importScripts("./auxiliary-chart-model.js?v=1.48");
 const marketDataModule = self.ThinkStockMarketData;
 if (!marketDataModule) throw new Error("Market data module failed to load");
 const {

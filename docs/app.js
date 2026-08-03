@@ -15,6 +15,9 @@ if (!runtimeRefreshModule) throw new Error("Runtime refresh module failed to loa
 const { runRefreshPhases } = runtimeRefreshModule;
 const dataSeedLoaderModule = globalThis.ThinkStockDataSeedLoader;
 if (!dataSeedLoaderModule) throw new Error("Data seed loader module failed to load");
+const marketCalendarModule = globalThis.ThinkStockMarketCalendar;
+if (!marketCalendarModule) throw new Error("Market calendar module failed to load");
+const { expectedLatestKoreanTradingDate } = marketCalendarModule;
 const marketDataModule = globalThis.ThinkStockMarketData;
 if (!marketDataModule) throw new Error("Market data module failed to load");
 const {
@@ -188,11 +191,10 @@ const GRANULAR_CACHE_SCHEMA_VERSION = 1;
 const TICKER_DISCLOSURE_CACHE_SCHEMA_VERSION = 2;
 const GRANULAR_CACHE_MAX_IDLE_DAYS = 120;
 const GRANULAR_CACHE_MAX_TICKERS = 60;
-const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.47";
+const APP_VERSION = "1.48";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -414,6 +416,7 @@ let krxUniverseLoading = false;
 let stockSuggestItems = [];
 let stockSuggestActiveIndex = -1;
 let loadingCustomStocks = new Set();
+let tickerPriceStatusByTicker = new Map();
 let seriesOffsets = {};
 let seriesScales = {};
 let currentSelected = [];
@@ -1205,24 +1208,96 @@ function canUseDartGateway() {
   return Boolean(getDartGatewayAccessToken());
 }
 
+function normalizeTickerPriceStatus(ticker, value = {}) {
+  const key = String(ticker || "").trim().toUpperCase();
+  if (!MACD_STOCK_PATTERN.test(key)) return null;
+  const latestDate = String(value.latestDate || "").slice(0, 10);
+  const source = String(value.source || "LOCAL_CACHE").trim().toUpperCase().slice(0, 40);
+  return {
+    ticker: key,
+    source,
+    latestDate: /^\d{4}-\d{2}-\d{2}$/.test(latestDate) ? latestDate : "",
+    marketDate: String(value.marketDate || "").slice(0, 10),
+    expectedDate: String(value.expectedDate || "").slice(0, 10),
+    cached: value.cached === true,
+    localCache: value.localCache === true,
+    stale: value.stale === true,
+    crossCheck: String(value.crossCheck || "").slice(0, 40),
+    warning: String(value.warning || "").trim().slice(0, 300),
+    checkedAt: Number(value.checkedAt) || Date.now(),
+  };
+}
+
+function setTickerPriceStatus(ticker, value = {}) {
+  const status = normalizeTickerPriceStatus(ticker, value);
+  if (!status) return null;
+  tickerPriceStatusByTicker.set(status.ticker, status);
+  renderDataFreshness();
+  return status;
+}
+
+function tickerPriceSourceLabel(status) {
+  if (!status) return "";
+  const source = status.source === "NAVER_FALLBACK"
+    ? "네이버 보완"
+    : (status.source === "KRX" ? "KRX" : "저장본");
+  if (status.stale) return `${source} 확인필요`;
+  if (status.localCache) return `${source} 저장본`;
+  if (status.cached) return `${source} 캐시`;
+  return source;
+}
+
+function visibleTickerPriceStatus() {
+  const visible = visibleStockSeriesKeys();
+  const target = visible.includes(lastVisibleStockSeriesKey)
+    ? lastVisibleStockSeriesKey
+    : visible.at(-1);
+  return target ? tickerPriceStatusByTicker.get(target) || null : null;
+}
+
 async function fetchLatestKrxTickerSeries(ticker, options = {}) {
-  if (!/^\d{6}\.(KS|KQ)$/.test(String(ticker || "").toUpperCase()) || !canUseDartGateway()) return [];
-  const response = await fetchWithTimeout(
-    `${KRX_GATEWAY_PRICE_ENDPOINT}?ticker=${encodeURIComponent(ticker)}`,
-    {
-      cache: "no-store",
-      headers: { Authorization: `Bearer ${getDartGatewayAccessToken()}` },
-      signal: options?.signal || null,
-    },
-    NETWORK_REQUEST_TIMEOUT_MS,
-  );
-  const payload = await response.json().catch(() => null);
-  if (!response.ok || payload?.ok !== true) {
-    throw new Error(payload?.error || `KRX price HTTP ${response.status}`);
+  const key = String(ticker || "").toUpperCase();
+  if (!/^\d{6}\.(KS|KQ)$/.test(key) || !canUseDartGateway()) return [];
+  try {
+    const response = await fetchWithTimeout(
+      `${KRX_GATEWAY_PRICE_ENDPOINT}?ticker=${encodeURIComponent(key)}`,
+      {
+        cache: "no-store",
+        headers: { Authorization: `Bearer ${getDartGatewayAccessToken()}` },
+        signal: options?.signal || null,
+      },
+      NETWORK_REQUEST_TIMEOUT_MS,
+    );
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || payload?.ok !== true) {
+      throw new Error(payload?.error || `KRX price HTTP ${response.status}`);
+    }
+    setTickerPriceStatus(key, {
+      source: payload.source,
+      latestDate: payload.latestDate,
+      marketDate: payload.marketDate,
+      expectedDate: payload.expectedDate,
+      cached: payload.cached,
+      stale: payload.stale,
+      crossCheck: payload.crossCheck,
+      warning: payload.warning,
+    });
+    return (Array.isArray(payload.records) ? payload.records : [])
+      .map((point) => ({ date: String(point?.date || "").slice(0, 10), close: toNum(point?.close) }))
+      .filter((point) => /^\d{4}-\d{2}-\d{2}$/.test(point.date) && point.close !== null && point.close > 0);
+  } catch (error) {
+    if (isAbortError(error) || options?.signal?.aborted) throw error;
+    const previous = tickerPriceStatusByTicker.get(key) || {};
+    setTickerPriceStatus(key, {
+      ...previous,
+      source: previous.source || "LOCAL_CACHE",
+      localCache: true,
+      cached: true,
+      stale: true,
+      warning: `최신 가격 갱신 실패: ${error?.message || error}`,
+    });
+    throw error;
   }
-  return (Array.isArray(payload.records) ? payload.records : [])
-    .map((point) => ({ date: String(point?.date || "").slice(0, 10), close: toNum(point?.close) }))
-    .filter((point) => /^\d{4}-\d{2}-\d{2}$/.test(point.date) && point.close !== null && point.close > 0);
 }
 
 async function validateDartGatewayAccessToken(accessToken) {
@@ -1279,6 +1354,7 @@ function renderDataFreshness() {
   const el = document.getElementById("dataFreshness");
   if (!el) return;
 
+  const selectedPriceStatus = visibleTickerPriceStatus();
   const priceKeys = Array.isArray(pricePayload?.series) ? pricePayload.series : [];
   const creditSourceRows = [...(macroRows || []), ...(creditRows || [])];
   const items = buildFreshnessItems([
@@ -1334,10 +1410,12 @@ function renderDataFreshness() {
   ]);
 
   el.innerHTML = items.map((item) => {
+    const runtimeStatus = item.label === "가격" ? selectedPriceStatus : null;
     const classes = [
       "freshness-chip",
       item.isEmpty ? "is-empty" : "",
-      item.isStale ? "is-stale" : "",
+      item.isStale || runtimeStatus?.stale ? "is-stale" : "",
+      runtimeStatus?.localCache || runtimeStatus?.cached ? "is-cache" : "",
       item.anomalies.length ? "is-anomaly" : "",
     ].filter(Boolean).join(" ");
     const rangeTitle = item.first && item.latest ? `범위: ${item.first} ~ ${item.latest}` : "";
@@ -1345,8 +1423,20 @@ function renderDataFreshness() {
     const anomalyTitle = item.anomalies.length
       ? `최근 값 급변 확인 필요: ${item.anomalies.map((entry) => labelName(entry.key)).join(", ")}`
       : "";
-    const title = [rangeTitle, staleTitle, anomalyTitle].filter(Boolean).join(" / ");
-    return `<span class="${classes}" title="${escapeHtml(title)}"><strong>${escapeHtml(item.label)}</strong>${escapeHtml(item.date || "없음")}</span>`;
+    const runtimeTitle = runtimeStatus
+      ? [
+        labelName(runtimeStatus.ticker),
+        `출처: ${tickerPriceSourceLabel(runtimeStatus)}`,
+        runtimeStatus.marketDate ? `KRX 시장 기준일: ${runtimeStatus.marketDate}` : "",
+        runtimeStatus.expectedDate ? `예상 거래일: ${runtimeStatus.expectedDate}` : "",
+        runtimeStatus.warning,
+      ].filter(Boolean).join(" / ")
+      : "";
+    const title = [rangeTitle, staleTitle, anomalyTitle, runtimeTitle].filter(Boolean).join(" / ");
+    const dateText = runtimeStatus?.latestDate || item.date || "없음";
+    const sourceText = runtimeStatus ? tickerPriceSourceLabel(runtimeStatus) : "";
+    const sourceMarkup = sourceText ? `<small>${escapeHtml(sourceText)}</small>` : "";
+    return `<span class="${classes}" title="${escapeHtml(title)}"><strong>${escapeHtml(item.label)}</strong>${escapeHtml(dateText)}${sourceMarkup}</span>`;
   }).join("");
 }
 
@@ -2781,10 +2871,21 @@ function getTickerPricePointsFromPayload(ticker) {
   })));
 }
 
-function isTickerPriceCacheFresh(latestDate) {
+function isTickerPriceCacheFresh(latestDate, ticker) {
   const latest = String(latestDate || "").slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(latest)) return false;
-  return latest >= shiftDays(new Date().toISOString().slice(0, 10), -TICKER_PRICE_CACHE_FRESH_DAYS);
+  const key = String(ticker || "").trim().toUpperCase();
+  const expectedDate = expectedLatestKoreanTradingDate(new Date());
+  const status = tickerPriceStatusByTicker.get(key);
+  const recentlyConfirmed = status
+    && !status.stale
+    && status.expectedDate === expectedDate
+    && Date.now() - Number(status.checkedAt || 0) <= DAY_MS;
+  if (recentlyConfirmed) return true;
+  const benchmark = key.endsWith(".KQ") ? "^KQ11" : "^KS11";
+  const benchmarkDate = getLatestTickerDateFromPricePayload(benchmark);
+  const requiredDate = [expectedDate, benchmarkDate].filter(Boolean).sort().at(-1) || expectedDate;
+  return latest >= requiredDate;
 }
 
 async function readTickerPriceCache(ticker) {
@@ -2819,6 +2920,11 @@ async function writeTickerPriceCache(ticker, points, displayName = "") {
     savedAt: now,
     lastAccessed: now,
     latestDate: normalized[normalized.length - 1].date,
+    status: normalizeTickerPriceStatus(key, tickerPriceStatusByTicker.get(key) || {
+      source: "LOCAL_CACHE",
+      latestDate: normalized[normalized.length - 1].date,
+      localCache: true,
+    }),
     points: normalized,
   };
   try {
@@ -2838,6 +2944,13 @@ async function applyTickerPriceCache(ticker, displayName = "") {
     DISPLAY_NAMES[key] = displayName || record.displayName;
   }
   mergeTickerSeriesIntoPricePayload(key, record.points);
+  setTickerPriceStatus(key, {
+    ...(record.status || {}),
+    source: record.status?.source || "LOCAL_CACHE",
+    latestDate: record.latestDate || record.points[record.points.length - 1]?.date || "",
+    cached: true,
+    localCache: true,
+  });
   return {
     applied: true,
     count: record.points.length,
@@ -2855,7 +2968,7 @@ async function ensureCustomTickerSeriesLoaded(ticker, options = {}) {
   throwIfAborted(signal);
   const hasExisting = (pricePayload?.records || []).some((row) => toNum(row?.[key]) !== null);
   const latestExisting = cacheInfo.latestDate || getLatestTickerDateFromPricePayload(key);
-  if (hasExisting && !forceRefresh && isTickerPriceCacheFresh(latestExisting)) return;
+  if (hasExisting && !forceRefresh && isTickerPriceCacheFresh(latestExisting, key)) return;
 
   try {
     const existingPoints = getTickerPricePointsFromPayload(key);
@@ -2878,7 +2991,19 @@ async function ensureCustomTickerSeriesLoaded(ticker, options = {}) {
     mergeTickerSeriesIntoPricePayload(key, points);
     await writeTickerPriceCache(key, getTickerPricePointsFromPayload(key), displayName);
   } catch (err) {
-    if (hasExisting || cacheInfo.applied) return;
+    if (hasExisting || cacheInfo.applied) {
+      const previous = tickerPriceStatusByTicker.get(key) || {};
+      setTickerPriceStatus(key, {
+        ...previous,
+        source: previous.source || "LOCAL_CACHE",
+        latestDate: previous.latestDate || latestExisting,
+        cached: true,
+        localCache: true,
+        stale: true,
+        warning: previous.warning || `최신 가격 갱신 실패: ${err?.message || err}`,
+      });
+      return;
+    }
     throw err;
   }
 }

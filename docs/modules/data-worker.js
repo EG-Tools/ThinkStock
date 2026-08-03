@@ -1,4 +1,4 @@
-importScripts("./data-payload.js?v=dev");
+importScripts("./data-payload.js?v=1.48");
 
 const dataPayloadUtils = self.ThinkStockDataPayload;
 if (!dataPayloadUtils) throw new Error("ThinkStock data payload module is unavailable");

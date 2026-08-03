@@ -2,17 +2,21 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { strToU8, zipSync } from "fflate";
 
+import { expectedLatestKoreanTradingDate } from "../../shared/market-calendar.mjs";
+
 import {
   handleRequest,
   insiderRecordFromItem,
   isAllowedOrigin,
   krxStockPointFromRows,
+  krxMarketSnapshotFromRows,
   mergeAnalysisSnapshots,
   mergeFinancialRecords,
   mergeForecastJournalRecords,
   mergeInsiderRecords,
   mergeRecords,
   parseNaverPriceText,
+  evaluateNaverPriceFallback,
   parseMajorHolderDocument,
   parseConsensusHtml,
   parseEarningsTrendHtml,
@@ -110,9 +114,13 @@ test("returns the latest authenticated KRX close for a stock", async () => {
 
   const originalFetch = globalThis.fetch;
   let authKey = "";
-  let requestedPath = "";
+  const requestedPaths = [];
   globalThis.fetch = async (url, options = {}) => {
-    requestedPath = new URL(url).pathname;
+    const target = new URL(url);
+    requestedPaths.push(target.pathname);
+    if (target.hostname === "api.finance.naver.com") {
+      return new Response('["20260803", 73900, 74000, 61400, 61800, 403680]', { status: 200 });
+    }
     authKey = String(new Headers(options.headers).get("AUTH_KEY") || "");
     return new Response(JSON.stringify({
       OutBlock_1: [{ ISU_CD: "383220", BAS_DD: "20260803", TDD_CLSPRC: "61,800" }],
@@ -128,7 +136,7 @@ test("returns the latest authenticated KRX close for a stock", async () => {
     assert.equal(payload.source, "KRX");
     assert.deepEqual(payload.records, [{ date: "2026-08-03", close: 61800 }]);
     assert.equal(authKey, "krx-secret");
-    assert.equal(requestedPath, "/svc/apis/sto/stk_bydd_trd");
+    assert.equal(requestedPaths.includes("/svc/apis/sto/stk_bydd_trd"), true);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -145,7 +153,10 @@ test("uses Naver only when it is newer than a delayed KRX close", async () => {
   globalThis.fetch = async (url) => {
     const target = new URL(url);
     if (target.hostname === "api.finance.naver.com") {
-      return new Response('["20260803", 73900, 74000, 61400, 61800, 403680]', { status: 200 });
+      return new Response(`[
+        ["20260731", 78900, 80600, 75900, 80500, 106753],
+        ["20260803", 73900, 74000, 61400, 61800, 403680]
+      ]`, { status: 200 });
     }
     return new Response(JSON.stringify({
       OutBlock_1: [{ ISU_CD: "383220", BAS_DD: "20260731", TDD_CLSPRC: "80,500" }],
@@ -161,6 +172,54 @@ test("uses Naver only when it is newer than a delayed KRX close", async () => {
     assert.equal(payload.source, "NAVER_FALLBACK");
     assert.equal(payload.latestDate, "2026-08-03");
     assert.deepEqual(payload.records, [{ date: "2026-08-03", close: 61800 }]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("rejects a Naver fallback when its overlapping KRX close does not match", () => {
+  const evaluation = evaluateNaverPriceFallback(
+    { date: "2026-07-31", close: 80500 },
+    [
+      { date: "2026-07-31", close: 60000 },
+      { date: "2026-08-03", close: 61800 },
+    ],
+  );
+  assert.equal(evaluation.accepted, false);
+  assert.equal(evaluation.status, "mismatch");
+});
+
+test("reuses one compact KRX market snapshot for multiple stocks", async () => {
+  const expectedDate = expectedLatestKoreanTradingDate(new Date());
+  const rawDate = expectedDate.replaceAll("-", "");
+  const rows = [
+    { ISU_CD: "005930", BAS_DD: rawDate, TDD_CLSPRC: "90,000" },
+    { ISU_CD: "383220", BAS_DD: rawDate, TDD_CLSPRC: "61,800" },
+  ];
+  const snapshot = krxMarketSnapshotFromRows(rows, "KS", expectedDate);
+  assert.deepEqual(snapshot.prices, { "005930": 90000, "383220": 61800 });
+
+  const originalFetch = globalThis.fetch;
+  const cache = memoryKv();
+  let krxCalls = 0;
+  globalThis.fetch = async () => {
+    krxCalls += 1;
+    return new Response(JSON.stringify({ OutBlock_1: rows }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  const env = {
+    KRX_API_KEY: "krx-secret",
+    THINKSTOCK_ACCESS_TOKEN: "private",
+    DISCLOSURE_CACHE: cache,
+  };
+  try {
+    const first = await handleRequest(request("/api/prices?ticker=005930.KS", { token: "private" }), env);
+    const second = await handleRequest(request("/api/prices?ticker=383220.KS", { token: "private" }), env);
+    assert.equal((await first.json()).cached, false);
+    assert.equal((await second.json()).cached, true);
+    assert.equal(krxCalls, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }

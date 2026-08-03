@@ -1,6 +1,11 @@
 import { strFromU8, unzipSync } from "fflate";
 
 import {
+  expectedLatestKoreanTradingDate,
+  koreanDateText,
+} from "../../shared/market-calendar.mjs";
+
+import {
   fetchCompanyAnalysis,
   mergeFinancialRecords,
   parseConsensusHtml,
@@ -47,8 +52,13 @@ const PROGRESSIVE_PAGE_BATCH_SIZE = 4;
 const OVERLAP_DAYS = 7;
 const LOOKBACK_YEARS = 3;
 const KRX_LATEST_LOOKBACK_DAYS = 10;
+const KRX_MARKET_CACHE_SCHEMA = 1;
+const KRX_MARKET_CACHE_TTL_SECONDS = 15 * 24 * 60 * 60;
+const KRX_EMPTY_MARKET_CACHE_TTL_SECONDS = 10 * 60;
 const NAVER_PRICE_LOOKBACK_DAYS = 21;
 const MAX_NAVER_PRICE_BYTES = 1024 * 1024;
+const NAVER_KRX_OVERLAP_MAX_DIVERGENCE = 1.05;
+const PRICE_MOVE_WARNING_RATIO = 1.35;
 const IMPORTANT_DISCLOSURE_PATTERN = /반기보고서|분기보고서|사업보고서|영업\(잠정\)실적|잠정실적|매출액.?또는.?손익구조|감사보고서제출|배당|현금ㆍ현물배당|단일판매|공급계약|수주|유상증자|무상증자|감자|증권신고서\(지분증권\)|전환사채|신주인수권|신주인수권부사채|교환사채|사채권|자기주식(취득|처분)결정|주식소각|합병|분할|영업양수|영업양도|타법인주식|출자증권|신규시설투자|시설투자|최대주주변경|대표이사.*변경|영업정지|거래정지|상장폐지|관리종목|소송|횡령|배임|회생|파산|부도|공개매수|장래사업|경영계획/;
 const PUBLIC_ORIGIN = "https://eg-tools.github.io";
 
@@ -140,63 +150,203 @@ function krxNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
-export function krxStockPointFromRows(rows, ticker) {
-  const match = TICKER_PATTERN.exec(String(ticker || "").trim().toUpperCase());
-  if (!match) return null;
-  const stockCode = match[1];
-  let latest = null;
-  (Array.isArray(rows) ? rows : []).forEach((row) => {
-    const rawCode = String(row?.ISU_CD ?? row?.ISU_SRT_CD ?? "").replace(/\D/g, "");
-    if (!rawCode.endsWith(stockCode)) return;
+const krxMarketSnapshotRequests = new Map();
+
+function krxStockCode(value, shortValue = "") {
+  const shortDigits = String(shortValue ?? "").replace(/\D/g, "");
+  if (shortDigits.length >= 6) return shortDigits.slice(-6);
+  const text = String(value ?? "").trim().toUpperCase();
+  const isinMatch = /^KR[A-Z0-9](\d{6})\d{3}$/.exec(text);
+  if (isinMatch) return isinMatch[1];
+  const digits = text.replace(/\D/g, "");
+  if (digits.length === 6) return digits;
+  if (digits.length === 10) return digits.slice(1, 7);
+  return digits.length >= 6 ? digits.slice(-6) : "";
+}
+
+export function krxMarketSnapshotFromRows(rows, market = "", baseDate = "") {
+  const normalizedRows = (Array.isArray(rows) ? rows : []).map((row) => {
+    const code = krxStockCode(row?.ISU_CD, row?.ISU_SRT_CD);
     const rawDate = String(row?.BAS_DD ?? "").replace(/\D/g, "");
     const date = rawDate.length === 8
       ? `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`
       : "";
     const close = krxNumber(row?.TDD_CLSPRC ?? row?.CLSPRC);
-    if (!isValidIsoDate(date) || close === null || close <= 0) return;
-    if (!latest || date > latest.date) latest = { date, close };
-  });
-  return latest;
+    return { code, date, close };
+  }).filter((row) => row.code && isValidIsoDate(row.date) && row.close !== null && row.close > 0);
+  const marketDate = normalizedRows.reduce(
+    (latest, row) => (!latest || row.date > latest ? row.date : latest),
+    "",
+  );
+  if (!marketDate) return null;
+  const prices = Object.fromEntries(normalizedRows
+    .filter((row) => row.date === marketDate)
+    .map((row) => [row.code, row.close]));
+  if (!Object.keys(prices).length) return null;
+  return {
+    schema: KRX_MARKET_CACHE_SCHEMA,
+    market: String(market || ""),
+    baseDate: String(baseDate || "").slice(0, 10),
+    marketDate,
+    prices,
+  };
 }
 
-async function fetchLatestKrxStockPoint(env, ticker, today = isoDate()) {
+export function krxStockPointFromRows(rows, ticker) {
+  const match = TICKER_PATTERN.exec(String(ticker || "").trim().toUpperCase());
+  if (!match) return null;
+  const snapshot = krxMarketSnapshotFromRows(rows, match[2], "");
+  const close = snapshot?.prices?.[match[1]];
+  return Number.isFinite(close) ? { date: snapshot.marketDate, close } : null;
+}
+
+function krxMarketCacheKey(market, baseDate) {
+  return `krx-market:${KRX_MARKET_CACHE_SCHEMA}:${market}:${baseDate}`;
+}
+
+async function readKrxMarketSnapshot(env, market, baseDate) {
+  if (!env.DISCLOSURE_CACHE) return null;
+  try {
+    const cached = await env.DISCLOSURE_CACHE.get(krxMarketCacheKey(market, baseDate), "json");
+    if (cached?.schema !== KRX_MARKET_CACHE_SCHEMA
+      || cached?.market !== market
+      || cached?.baseDate !== baseDate
+      || !cached?.prices
+      || typeof cached.prices !== "object") return null;
+    if (cached.empty === true) return { ...cached, cached: true };
+    if (!isValidIsoDate(cached?.marketDate)) return null;
+    return { ...cached, cached: true };
+  } catch (_) {
+    return null;
+  }
+}
+
+async function fetchKrxMarketSnapshot(env, market, endpoint, baseDate) {
+  const cached = await readKrxMarketSnapshot(env, market, baseDate);
+  if (cached) return cached;
+  const requestKey = `${market}:${baseDate}`;
+  if (krxMarketSnapshotRequests.has(requestKey)) return krxMarketSnapshotRequests.get(requestKey);
+  const request = (async () => {
+    const response = await fetch(`${KRX_STOCK_BASE_URL}/${endpoint}?basDd=${apiDate(baseDate)}`, {
+      headers: { AUTH_KEY: env.KRX_API_KEY },
+    });
+    if (!response.ok) throw new Error(`KRX HTTP ${response.status}`);
+    const payload = await response.json();
+    const snapshot = krxMarketSnapshotFromRows(payload?.OutBlock_1, market, baseDate) || {
+      schema: KRX_MARKET_CACHE_SCHEMA,
+      market,
+      baseDate,
+      marketDate: "",
+      prices: {},
+      empty: true,
+    };
+    if (env.DISCLOSURE_CACHE) {
+      await env.DISCLOSURE_CACHE.put(
+        krxMarketCacheKey(market, baseDate),
+        JSON.stringify(snapshot),
+        {
+          expirationTtl: snapshot.empty
+            ? KRX_EMPTY_MARKET_CACHE_TTL_SECONDS
+            : KRX_MARKET_CACHE_TTL_SECONDS,
+        },
+      );
+    }
+    return { ...snapshot, cached: false };
+  })();
+  krxMarketSnapshotRequests.set(requestKey, request);
+  try {
+    return await request;
+  } finally {
+    krxMarketSnapshotRequests.delete(requestKey);
+  }
+}
+
+async function fetchLatestKrxStockPoint(env, ticker, today = koreanDateText()) {
   const market = String(ticker || "").toUpperCase().endsWith(".KQ") ? "KQ" : "KS";
   const endpoint = market === "KQ" ? "ksq_bydd_trd" : "stk_bydd_trd";
+  const stockCode = TICKER_PATTERN.exec(String(ticker || "").trim().toUpperCase())?.[1] || "";
   let lastError = null;
+  let marketDate = "";
+  let cacheHits = 0;
   for (let offset = 0; offset <= KRX_LATEST_LOOKBACK_DAYS; offset += 1) {
     const baseDate = shiftDate(today, -offset);
     try {
-      const response = await fetch(`${KRX_STOCK_BASE_URL}/${endpoint}?basDd=${apiDate(baseDate)}`, {
-        headers: { AUTH_KEY: env.KRX_API_KEY },
-      });
-      if (!response.ok) throw new Error(`KRX HTTP ${response.status}`);
-      const payload = await response.json();
-      const point = krxStockPointFromRows(payload?.OutBlock_1, ticker);
-      if (point) return point;
+      const snapshot = await fetchKrxMarketSnapshot(env, market, endpoint, baseDate);
+      if (!snapshot || snapshot.empty) continue;
+      if (snapshot.cached) cacheHits += 1;
+      if (!marketDate || snapshot.marketDate > marketDate) marketDate = snapshot.marketDate;
+      const close = snapshot.prices?.[stockCode];
+      if (Number.isFinite(close)) {
+        return {
+          point: { date: snapshot.marketDate, close },
+          marketDate,
+          cached: Boolean(snapshot.cached),
+          cacheHits,
+        };
+      }
     } catch (error) {
       lastError = error;
     }
   }
   if (lastError) throw lastError;
-  return null;
+  return { point: null, marketDate, cached: cacheHits > 0, cacheHits };
 }
 
-export function parseNaverPriceText(text) {
-  let latest = null;
+export function parseNaverPriceSeries(text) {
+  const byDate = new Map();
   for (const match of String(text || "").matchAll(/\[\s*"(\d{8})"\s*,([^\]]+)\]/g)) {
     const rawDate = match[1];
     const values = match[2].split(",").map((value) => krxNumber(value));
     const close = values[3];
     const date = `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`;
     if (!isValidIsoDate(date) || close === null || close <= 0) continue;
-    if (!latest || date > latest.date) latest = { date, close };
+    byDate.set(date, { date, close });
   }
-  return latest;
+  return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
 }
 
-async function fetchLatestNaverStockPoint(ticker, today = isoDate()) {
+export function parseNaverPriceText(text) {
+  return parseNaverPriceSeries(text).at(-1) || null;
+}
+
+function priceRatio(left, right) {
+  const a = finiteNumber(left, { min: Number.MIN_VALUE });
+  const b = finiteNumber(right, { min: Number.MIN_VALUE });
+  if (!a || !b) return null;
+  return Math.max(a, b) / Math.min(a, b);
+}
+
+export function evaluateNaverPriceFallback(krxPoint, naverPoints) {
+  const points = (Array.isArray(naverPoints) ? naverPoints : [])
+    .filter((point) => isValidIsoDate(point?.date) && finiteNumber(point?.close, { min: Number.MIN_VALUE }))
+    .sort((left, right) => left.date.localeCompare(right.date));
+  const latest = points.at(-1) || null;
+  if (!latest) return { accepted: false, status: "unavailable", point: null };
+  if (!krxPoint) return { accepted: true, status: "krx-unavailable", point: latest, jumpRatio: null };
+  const overlap = points.find((point) => point.date === krxPoint.date) || null;
+  const overlapRatio = overlap ? priceRatio(overlap.close, krxPoint.close) : null;
+  if (!overlap || overlapRatio === null) {
+    return { accepted: false, status: "no-overlap", point: latest, overlapRatio };
+  }
+  if (overlapRatio > NAVER_KRX_OVERLAP_MAX_DIVERGENCE) {
+    return { accepted: false, status: "mismatch", point: latest, overlapRatio };
+  }
+  if (latest.date <= krxPoint.date) {
+    return { accepted: false, status: "matched", point: latest, overlapRatio };
+  }
+  const prior = [...points].reverse().find((point) => point.date < latest.date) || overlap;
+  return {
+    accepted: true,
+    status: "matched-newer",
+    point: latest,
+    overlapRatio,
+    jumpRatio: priceRatio(prior?.close, latest.close),
+  };
+}
+
+async function fetchLatestNaverStockPoints(ticker, today = koreanDateText()) {
   const stockCode = TICKER_PATTERN.exec(String(ticker || "").trim().toUpperCase())?.[1] || "";
-  if (!stockCode) return null;
+  if (!stockCode) return [];
   const query = new URLSearchParams({
     symbol: stockCode,
     requestType: "1",
@@ -210,7 +360,7 @@ async function fetchLatestNaverStockPoint(ticker, today = isoDate()) {
   if (announcedSize > MAX_NAVER_PRICE_BYTES) throw new Error("Naver price response is too large");
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (bytes.byteLength > MAX_NAVER_PRICE_BYTES) throw new Error("Naver price response is too large");
-  return parseNaverPriceText(new TextDecoder().decode(bytes));
+  return parseNaverPriceSeries(new TextDecoder().decode(bytes));
 }
 
 async function krxPriceResponse(env, ticker, origin) {
@@ -218,32 +368,63 @@ async function krxPriceResponse(env, ticker, origin) {
     return jsonResponse({ ok: false, error: "Cloudflare에 KRX 키가 설정되지 않았습니다." }, 503, origin);
   }
   try {
-    const today = isoDate();
+    const now = new Date();
+    const today = koreanDateText(now);
+    const expectedDate = expectedLatestKoreanTradingDate(now);
     let point = null;
     let source = "KRX";
     let krxError = null;
+    let krxResult = null;
+    let stale = false;
+    let crossCheck = "not-needed";
+    const warnings = [];
     try {
-      point = await fetchLatestKrxStockPoint(env, ticker, today);
+      krxResult = await fetchLatestKrxStockPoint(env, ticker, today);
+      point = krxResult?.point || null;
     } catch (error) {
       krxError = error;
     }
-    if (!point || point.date < shiftDate(today, -1)) {
+    const shouldCheckNaver = !point
+      || !krxResult?.marketDate
+      || krxResult.marketDate < expectedDate
+      || point.date < krxResult.marketDate;
+    if (shouldCheckNaver) {
       try {
-        const naverPoint = await fetchLatestNaverStockPoint(ticker, today);
-        if (naverPoint && (!point || naverPoint.date > point.date)) {
-          point = naverPoint;
+        const naverPoints = await fetchLatestNaverStockPoints(ticker, today);
+        const evaluation = evaluateNaverPriceFallback(point, naverPoints);
+        crossCheck = evaluation.status;
+        if (evaluation.accepted && evaluation.point && (!point || evaluation.point.date > point.date)) {
+          point = evaluation.point;
           source = "NAVER_FALLBACK";
+          if (evaluation.jumpRatio >= PRICE_MOVE_WARNING_RATIO) {
+            warnings.push("최근 가격 변동 폭이 커서 기업행사 여부를 확인해 주세요.");
+          }
+        } else if (evaluation.status === "mismatch") {
+          stale = true;
+          warnings.push("KRX와 네이버의 겹치는 날짜 가격이 달라 KRX 값을 유지했습니다.");
+        } else if (evaluation.status === "matched") {
+          stale = false;
+        } else if (point?.date < expectedDate) {
+          stale = true;
         }
-      } catch (_) {
-        // Preserve the KRX result when the delayed-data fallback is unavailable.
+      } catch (error) {
+        stale = Boolean(point && point.date < expectedDate);
+        warnings.push(`보조 가격 확인 실패: ${error?.message || error}`);
       }
     }
     if (!point && krxError) throw krxError;
+    if (!point) stale = true;
     return jsonResponse({
       ok: true,
       ticker,
       source,
       latestDate: point?.date || "",
+      marketDate: krxResult?.marketDate || "",
+      expectedDate,
+      cached: Boolean(krxResult?.cached),
+      stale,
+      crossCheck,
+      ...(warnings.length ? { warning: warnings.join(" ") } : {}),
       records: point ? [point] : [],
     }, 200, origin);
   } catch (error) {
@@ -911,13 +1092,13 @@ async function insiderTradeResponse(env, ctx, ticker, corpCode, origin, force = 
       ok: true,
       ticker,
       cached: true,
-      checkedFrom: yearsBefore(isoDate(), LOOKBACK_YEARS),
+      checkedFrom: yearsBefore(koreanDateText(), LOOKBACK_YEARS),
       latestDate: cached.latestDate || "",
       records: cached.records || [],
     }, 200, origin);
   }
   try {
-    const today = isoDate();
+    const today = koreanDateText();
     const { records, warnings } = await fetchDartInsiderTrades(env, ticker, corpCode, today);
     const cacheWrite = writeInsiderCache(env, ticker, corpCode, records);
     if (ctx?.waitUntil) ctx.waitUntil(cacheWrite);
@@ -1253,7 +1434,7 @@ export async function handleRequest(request, env, ctx = null) {
     }, 200, origin);
   }
 
-  const today = isoDate();
+  const today = koreanDateText();
   const rawSince = String(url.searchParams.get("since") || "").slice(0, 10);
   const requestedSince = normalizeSince(rawSince, today);
   const cacheSince = cached?.latestDate ? shiftDate(cached.latestDate, -OVERLAP_DAYS) : requestedSince;

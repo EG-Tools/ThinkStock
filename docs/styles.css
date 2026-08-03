@@ -1065,6 +1065,14 @@ body {
   font-weight: 700;
 }
 
+.freshness-chip small {
+  color: #93c5fd;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.freshness-chip.is-cache small { color: #c4b5fd; }
+
 .freshness-chip.is-stale {
   border-color: rgba(250, 204, 21, 0.28);
   background: rgba(250, 204, 21, 0.08);

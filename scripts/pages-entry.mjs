@@ -1,4 +1,5 @@
 import "../docs/modules/data-payload.js";
+import "../shared/market-calendar.mjs";
 import "../docs/modules/market-data.js";
 import "../docs/modules/chart-interaction-math.js";
 import "../docs/modules/chart-interaction-controller.js";

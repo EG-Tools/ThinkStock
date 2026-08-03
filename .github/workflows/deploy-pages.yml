@@ -6,7 +6,8 @@ on:
       - main
   workflow_dispatch:
   schedule:
-    - cron: "20 */6 * * *"
+    # 18:30 KST on weekdays, after the Korean market closes.
+    - cron: "30 9 * * 1-5"
 
 permissions:
   contents: read
