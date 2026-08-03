@@ -20,6 +20,7 @@ const DART_ELESTOCK_URL = "https://opendart.fss.or.kr/api/elestock.json";
 const DART_MAJORSTOCK_URL = "https://opendart.fss.or.kr/api/majorstock.json";
 const DART_DOCUMENT_URL = "https://opendart.fss.or.kr/api/document.xml";
 const KRX_STOCK_BASE_URL = "https://data-dbg.krx.co.kr/svc/apis/sto";
+const NAVER_STOCK_PRICE_URL = "https://api.finance.naver.com/siseJson.naver";
 const TICKER_PATTERN = /^(\d{6})\.(KS|KQ)$/;
 const CORP_CODE_PATTERN = /^\d{8}$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -46,6 +47,8 @@ const PROGRESSIVE_PAGE_BATCH_SIZE = 4;
 const OVERLAP_DAYS = 7;
 const LOOKBACK_YEARS = 3;
 const KRX_LATEST_LOOKBACK_DAYS = 10;
+const NAVER_PRICE_LOOKBACK_DAYS = 21;
+const MAX_NAVER_PRICE_BYTES = 1024 * 1024;
 const IMPORTANT_DISCLOSURE_PATTERN = /반기보고서|분기보고서|사업보고서|영업\(잠정\)실적|잠정실적|매출액.?또는.?손익구조|감사보고서제출|배당|현금ㆍ현물배당|단일판매|공급계약|수주|유상증자|무상증자|감자|증권신고서\(지분증권\)|전환사채|신주인수권|신주인수권부사채|교환사채|사채권|자기주식(취득|처분)결정|주식소각|합병|분할|영업양수|영업양도|타법인주식|출자증권|신규시설투자|시설투자|최대주주변경|대표이사.*변경|영업정지|거래정지|상장폐지|관리종목|소송|횡령|배임|회생|파산|부도|공개매수|장래사업|경영계획/;
 const PUBLIC_ORIGIN = "https://eg-tools.github.io";
 
@@ -178,16 +181,68 @@ async function fetchLatestKrxStockPoint(env, ticker, today = isoDate()) {
   return null;
 }
 
+export function parseNaverPriceText(text) {
+  let latest = null;
+  for (const match of String(text || "").matchAll(/\[\s*"(\d{8})"\s*,([^\]]+)\]/g)) {
+    const rawDate = match[1];
+    const values = match[2].split(",").map((value) => krxNumber(value));
+    const close = values[3];
+    const date = `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`;
+    if (!isValidIsoDate(date) || close === null || close <= 0) continue;
+    if (!latest || date > latest.date) latest = { date, close };
+  }
+  return latest;
+}
+
+async function fetchLatestNaverStockPoint(ticker, today = isoDate()) {
+  const stockCode = TICKER_PATTERN.exec(String(ticker || "").trim().toUpperCase())?.[1] || "";
+  if (!stockCode) return null;
+  const query = new URLSearchParams({
+    symbol: stockCode,
+    requestType: "1",
+    startTime: apiDate(shiftDate(today, -NAVER_PRICE_LOOKBACK_DAYS)),
+    endTime: apiDate(today),
+    timeframe: "day",
+  });
+  const response = await fetch(`${NAVER_STOCK_PRICE_URL}?${query}`);
+  if (!response.ok) throw new Error(`Naver price HTTP ${response.status}`);
+  const announcedSize = Number(response.headers.get("Content-Length") || 0);
+  if (announcedSize > MAX_NAVER_PRICE_BYTES) throw new Error("Naver price response is too large");
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.byteLength > MAX_NAVER_PRICE_BYTES) throw new Error("Naver price response is too large");
+  return parseNaverPriceText(new TextDecoder().decode(bytes));
+}
+
 async function krxPriceResponse(env, ticker, origin) {
   if (!env.KRX_API_KEY) {
     return jsonResponse({ ok: false, error: "Cloudflare에 KRX 키가 설정되지 않았습니다." }, 503, origin);
   }
   try {
-    const point = await fetchLatestKrxStockPoint(env, ticker);
+    const today = isoDate();
+    let point = null;
+    let source = "KRX";
+    let krxError = null;
+    try {
+      point = await fetchLatestKrxStockPoint(env, ticker, today);
+    } catch (error) {
+      krxError = error;
+    }
+    if (!point || point.date < shiftDate(today, -1)) {
+      try {
+        const naverPoint = await fetchLatestNaverStockPoint(ticker, today);
+        if (naverPoint && (!point || naverPoint.date > point.date)) {
+          point = naverPoint;
+          source = "NAVER_FALLBACK";
+        }
+      } catch (_) {
+        // Preserve the KRX result when the delayed-data fallback is unavailable.
+      }
+    }
+    if (!point && krxError) throw krxError;
     return jsonResponse({
       ok: true,
       ticker,
-      source: "KRX",
+      source,
       latestDate: point?.date || "",
       records: point ? [point] : [],
     }, 200, origin);

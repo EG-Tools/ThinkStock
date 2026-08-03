@@ -12,6 +12,7 @@ import {
   mergeForecastJournalRecords,
   mergeInsiderRecords,
   mergeRecords,
+  parseNaverPriceText,
   parseMajorHolderDocument,
   parseConsensusHtml,
   parseEarningsTrendHtml,
@@ -128,6 +129,38 @@ test("returns the latest authenticated KRX close for a stock", async () => {
     assert.deepEqual(payload.records, [{ date: "2026-08-03", close: 61800 }]);
     assert.equal(authKey, "krx-secret");
     assert.equal(requestedPath, "/svc/apis/sto/stk_bydd_trd");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("uses Naver only when it is newer than a delayed KRX close", async () => {
+  assert.deepEqual(parseNaverPriceText(`
+    [['날짜', '시가', '고가', '저가', '종가', '거래량'],
+    ["20260731", 78900, 80600, 75900, 80500, 106753],
+    ["20260803", 73900, 74000, 61400, 61800, 403680]]
+  `), { date: "2026-08-03", close: 61800 });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const target = new URL(url);
+    if (target.hostname === "api.finance.naver.com") {
+      return new Response('["20260803", 73900, 74000, 61400, 61800, 403680]', { status: 200 });
+    }
+    return new Response(JSON.stringify({
+      OutBlock_1: [{ ISU_CD: "383220", BAS_DD: "20260731", TDD_CLSPRC: "80,500" }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const response = await handleRequest(
+      request("/api/prices?ticker=383220.KS", { token: "private" }),
+      { KRX_API_KEY: "krx-secret", THINKSTOCK_ACCESS_TOKEN: "private" },
+    );
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.source, "NAVER_FALLBACK");
+    assert.equal(payload.latestDate, "2026-08-03");
+    assert.deepEqual(payload.records, [{ date: "2026-08-03", close: 61800 }]);
   } finally {
     globalThis.fetch = originalFetch;
   }
