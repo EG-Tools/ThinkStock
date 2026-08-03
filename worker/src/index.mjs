@@ -577,7 +577,7 @@ async function fetchDartDocumentXml(env, receiptNo) {
   })}`;
   const response = await fetch(url, {
     signal: AbortSignal.timeout(25000),
-    redirect: "manual",
+    redirect: "follow",
     headers: {
       Accept: "application/zip, application/octet-stream",
       "User-Agent": "ThinkStock/1.35 (+https://eg-tools.github.io/ThinkStock/)",
@@ -612,6 +612,8 @@ async function fetchDartDocumentXml(env, receiptNo) {
 async function fetchDartMajorHolderTrades(env, ticker, corpCode, today) {
   const reports = await fetchDartMajorHolderReports(env, corpCode, today);
   const records = [];
+  const failures = [];
+  let completedDocuments = 0;
   for (let offset = 0; offset < reports.length; offset += MAJOR_HOLDER_DOCUMENT_CONCURRENCY) {
     const batch = reports.slice(offset, offset + MAJOR_HOLDER_DOCUMENT_CONCURRENCY);
     const results = await Promise.allSettled(batch.map(async (report) => {
@@ -619,14 +621,24 @@ async function fetchDartMajorHolderTrades(env, ticker, corpCode, today) {
       return parseMajorHolderDocument(ticker, xml, report);
     }));
     results.forEach((result) => {
-      if (result.status === "fulfilled") records.push(...result.value);
+      if (result.status === "fulfilled") {
+        completedDocuments += 1;
+        records.push(...result.value);
+      } else {
+        failures.push(result.reason);
+      }
     });
+  }
+  if (reports.length && completedDocuments === 0) {
+    const error = failures[0];
+    throw new Error(`DART major-holder documents failed: ${error?.message || error || "unknown error"}`);
   }
   const cutoff = yearsBefore(today, LOOKBACK_YEARS);
   return mergeInsiderRecords([], records.filter((record) => record.date >= cutoff));
 }
 
 async function fetchDartInsiderTrades(env, ticker, corpCode, today) {
+  const sourceNames = ["executive", "major-holder"];
   const results = await Promise.allSettled([
     fetchDartExecutiveTrades(env, ticker, corpCode, today),
     fetchDartMajorHolderTrades(env, ticker, corpCode, today),
@@ -637,7 +649,12 @@ async function fetchDartInsiderTrades(env, ticker, corpCode, today) {
   if (!records.length && results.every((result) => result.status === "rejected")) {
     throw results[0].reason;
   }
-  return mergeInsiderRecords([], records);
+  const warnings = results.flatMap((result, index) => (
+    result.status === "rejected"
+      ? [`${sourceNames[index]}: ${result.reason?.message || result.reason || "unknown error"}`]
+      : []
+  ));
+  return { records: mergeInsiderRecords([], records), warnings };
 }
 
 async function fetchDartDisclosurePage(env, ticker, corpCode, since, today, pageNo) {
@@ -780,7 +797,7 @@ async function insiderTradeResponse(env, ctx, ticker, corpCode, origin, force = 
   }
   try {
     const today = isoDate();
-    const records = await fetchDartInsiderTrades(env, ticker, corpCode, today);
+    const { records, warnings } = await fetchDartInsiderTrades(env, ticker, corpCode, today);
     const cacheWrite = writeInsiderCache(env, ticker, corpCode, records);
     if (ctx?.waitUntil) ctx.waitUntil(cacheWrite);
     else await cacheWrite;
@@ -791,6 +808,7 @@ async function insiderTradeResponse(env, ctx, ticker, corpCode, origin, force = 
       checkedFrom: yearsBefore(today, LOOKBACK_YEARS),
       latestDate: records.at(-1)?.date || "",
       records,
+      ...(warnings.length ? { warnings } : {}),
     }, 200, origin);
   } catch (error) {
     if (cached) {

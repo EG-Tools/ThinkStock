@@ -373,6 +373,51 @@ test("combines DART majorstock originals with insider ownership records", async 
   }
 });
 
+test("reports a safe warning when every major-holder original document fails", async () => {
+  const originalFetch = globalThis.fetch;
+  const receiptNo = "20260721001006";
+  globalThis.fetch = async (url) => {
+    const pathname = new URL(url).pathname;
+    if (pathname === "/api/elestock.json") {
+      return new Response(JSON.stringify({
+        status: "000",
+        list: [{
+          rcept_dt: "20260731",
+          rcept_no: "20260731000123",
+          repror: "홍길동",
+          sp_stock_lmp_cnt: "10,000",
+          sp_stock_lmp_irds_cnt: "1,250",
+        }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (pathname === "/api/majorstock.json") {
+      return new Response(JSON.stringify({
+        status: "000",
+        list: [{ rcept_no: receiptNo, rcept_dt: "20260721", repror: "MORGANSTANLEY" }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    return new Response("blocked", { status: 403 });
+  };
+
+  try {
+    const response = await handleRequest(request(
+      "/api/dart/insider-trades?ticker=218410.KQ&corpCode=01078178&force=1",
+      { token: "private" },
+    ), {
+      DART_API_KEY: "secret",
+      THINKSTOCK_ACCESS_TOKEN: "private",
+      DISCLOSURE_CACHE: memoryKv(),
+    });
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.records.length, 1);
+    assert.deepEqual(payload.warnings, ["major-holder: DART major-holder documents failed: DART document HTTP 403"]);
+    assert.equal(JSON.stringify(payload).includes("secret"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("parses Naver WiseReport consensus values", () => {
   const html = `<table id="cTB15"><tr><th>opinion</th></tr><tr>
     <td><b>4.00</b></td><td>132,600</td><td>1,665</td><td>26.16</td><td>5</td>
