@@ -751,32 +751,28 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
     (await readPairedMarkerGeometry()).verticalClearance - pairedMarkerGeometry.verticalClearance,
   )).toBeLessThanOrEqual(2);
 
-  const hoverStockDate = async (date) => page.locator("#chart").evaluate((element, targetDate) => {
-    const stockCurve = (element.data || []).findIndex((trace) => trace?.meta?.seriesKey === "005930.KS");
-    const stockPoint = element.data?.[stockCurve]?.x?.indexOf(targetDate) ?? -1;
-    const xAxis = element?._fullLayout?.xaxis;
-    const rect = element.getBoundingClientRect();
-    const eventPoints = (element.data || []).flatMap((trace, curveNumber) => (
-      trace?.meta?.isInsiderTradeTrace || trace?.meta?.isDisclosureTrace
-        ? [{ curveNumber, pointNumber: 0 }]
-        : []
-    ));
-    element.emit("plotly_beforehover", {
-      event: {
-        clientX: rect.left + Number(xAxis?._offset || 0) + xAxis.d2p(targetDate),
-      },
-    });
-    window.Plotly.Fx.hover(element, [
-      { curveNumber: stockCurve, pointNumber: stockPoint },
-      ...eventPoints,
-    ], ["xy"]);
-    return eventPoints.map(({ curveNumber }) => element.data?.[curveNumber]?.hoverinfo);
-  }, date);
-  expect(await hoverStockDate("2026-01-14")).toEqual(["skip", "skip", "skip"]);
-  await expect(page.locator("#chart .hoverlayer")).not.toContainText("2026-04-14");
-  expect(await hoverStockDate("2026-04-14")).toEqual(["all", "all", "all"]);
-  await expect(page.locator("#chart .hoverlayer")).toContainText("2026-04-14");
-  await page.locator("#chart").evaluate((element) => window.Plotly.Fx.unhover(element));
+  const moveNativeHoverToDate = async (date) => {
+    const point = await page.locator("#chart").evaluate((element, targetDate) => {
+      const xAxis = element?._fullLayout?.xaxis;
+      const yAxis = element?._fullLayout?.yaxis;
+      const rect = element.getBoundingClientRect();
+      return {
+        x: rect.left + Number(xAxis?._offset || 0) + xAxis.d2p(targetDate),
+        y: rect.top + Number(yAxis?._offset || 0) + Number(yAxis?._length || 0) / 2,
+      };
+    }, date);
+    await page.mouse.move(point.x - 4, point.y);
+    await page.mouse.move(point.x, point.y);
+  };
+  const eventHoverInfo = () => page.locator("#chart").evaluate((element) => (
+    (element.data || [])
+      .filter((trace) => trace?.meta?.isInsiderTradeTrace || trace?.meta?.isDisclosureTrace)
+      .map((trace) => trace.hoverinfo)
+  ));
+  await moveNativeHoverToDate("2026-01-14");
+  await expect.poll(eventHoverInfo).toEqual(["skip", "skip", "skip"]);
+  await moveNativeHoverToDate("2026-04-14");
+  await expect.poll(eventHoverInfo).toEqual(["all", "all", "all"]);
   expect(authorization).toBe("Bearer private");
 
   const insiderMarkerTickers = () => page.locator("#chart").evaluate((element) => (
@@ -1102,6 +1098,20 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   await expect(page.locator("#hoverToggle")).toHaveCSS("color", "rgb(138, 138, 138)");
+  await page.locator("#hoverToggle").click();
+  await expect(page.locator("#hoverToggle")).toHaveClass(/is-active/);
+  await expect.poll(() => page.evaluate(() => {
+    const hoverButton = document.getElementById("hoverToggle");
+    const hoverStyle = getComputedStyle(document.getElementById("hoverToggle"));
+    const disclosureStyle = getComputedStyle(document.getElementById("disclosureToggle"));
+    const hover = [hoverStyle.backgroundColor, hoverStyle.borderColor, hoverStyle.color];
+    const disclosure = [disclosureStyle.backgroundColor, disclosureStyle.borderColor, disclosureStyle.color];
+    return {
+      active: hoverButton.classList.contains("is-active"),
+      colorsMatch: hover.every((value, index) => value === disclosure[index]),
+    };
+  })).toEqual({ active: true, colorsMatch: true });
+  await page.locator("#hoverToggle").click();
   expect(await page.evaluate(() => Boolean(window.ThinkStockPerformanceDiagnostics))).toBe(false);
   await page.locator("#apiOptionsBtn").click();
   await page.locator("#performanceDiagnosticsBtn").click();

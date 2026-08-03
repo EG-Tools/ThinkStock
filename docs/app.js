@@ -192,7 +192,7 @@ const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.41";
+const APP_VERSION = "1.42";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -1550,7 +1550,7 @@ function nearestMainLineDate(chartEl, xValue) {
 function configureExactDateEventHover(chartEl, evtData) {
   const axis = chartEl?._fullLayout?.xaxis;
   const rect = chartEl?.getBoundingClientRect?.();
-  const clientX = Number(evtData?.event?.clientX);
+  const clientX = Number(evtData?.clientX ?? evtData?.event?.clientX);
   if (!axis || !rect || !Number.isFinite(clientX) || typeof axis.p2d !== "function") return;
   const axisPixel = clientX - rect.left - Number(axis._offset || 0);
   const anchorDate = nearestMainLineDate(chartEl, axis.p2d(axisPixel));
