@@ -7,7 +7,9 @@
   const SELL_COLOR = "#3b82f6";
 
   function finiteNumber(value) {
-    const number = Number(String(value ?? "").replaceAll(",", "").trim());
+    const normalized = String(value ?? "").replaceAll(",", "").trim();
+    if (!normalized || normalized === "-") return null;
+    const number = Number(normalized);
     return Number.isFinite(number) ? number : null;
   }
 
@@ -34,6 +36,7 @@
       side,
       reporter: String(value?.reporter || value?.repror || "").trim().slice(0, 80),
       role: String(value?.role || "").trim().slice(0, 120),
+      sharesBefore: finiteNumber(value?.sharesBefore),
       sharesOwned: finiteNumber(value?.sharesOwned ?? value?.sp_stock_lmp_cnt),
       sharesChanged,
       ownershipRate: finiteNumber(value?.ownershipRate ?? value?.sp_stock_lmp_rate),
@@ -41,10 +44,15 @@
         value?.ownershipRateChanged ?? value?.sp_stock_lmp_irds_rate,
       ),
       receiptNo,
+      recordId: String(value?.recordId || "").trim().slice(0, 300),
+      recordType: String(value?.recordType || "").trim().slice(0, 80),
+      transactionMethod: String(value?.transactionMethod || "").trim().slice(0, 80),
+      securityType: String(value?.securityType || "").trim().slice(0, 80),
+      unitPrice: finiteNumber(value?.unitPrice),
       url: receiptNo
         ? `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${encodeURIComponent(receiptNo)}`
         : "",
-      source: "OpenDART",
+      source: String(value?.source || "OpenDART").trim().slice(0, 80),
     };
   }
 
@@ -55,7 +63,16 @@
   function mergeRows(existing, incoming) {
     const rows = new Map();
     [...sanitizeRows(existing), ...sanitizeRows(incoming)].forEach((row) => {
-      const key = row.receiptNo || [
+      const key = row.recordId || (row.recordType === "major-holder-detail" ? [
+        row.receiptNo,
+        row.date,
+        row.reporter,
+        row.transactionMethod,
+        row.securityType,
+        row.sharesBefore,
+        row.sharesChanged,
+        row.sharesOwned,
+      ].join("|") : row.receiptNo) || [
         row.ticker,
         row.date,
         row.reporter,
@@ -98,19 +115,28 @@
       name: `내부거래 ${label}`,
       showlegend: false,
       cliponaxis: false,
+      yaxis: "y2",
       marker: {
         symbol: isBuy ? "triangle-up" : "triangle-down",
         size: 12,
         color: isBuy ? BUY_COLOR : SELL_COLOR,
-        line: { color: "rgba(255,255,255,0.9)", width: 1 },
+        line: { color: isBuy ? BUY_COLOR : SELL_COLOR, width: 1 },
       },
       hovertemplate: matches.map((group) => {
         const first = group.events[0] || {};
         const reporter = first.reporter ? `<br>${escapeHtml(first.reporter)}` : "";
         const role = first.role ? ` · ${escapeHtml(first.role)}` : "";
+        const method = first.transactionMethod ? `<br>${escapeHtml(first.transactionMethod)}` : "";
+        const owned = first.sharesOwned === null || first.sharesOwned === undefined
+          ? ""
+          : `<br>거래 후 ${formatShares(first.sharesOwned)}`;
+        const ownershipRate = first.ownershipRate === null || first.ownershipRate === undefined
+          ? ""
+          : ` (${Number(first.ownershipRate).toLocaleString("ko-KR")}%)`;
         const more = group.events.length > 1 ? `<br>외 ${group.events.length - 1}건` : "";
         return `<b>${escapeHtml(group.name)}</b><br>${escapeHtml(first.date)} ${label}`
-          + `<br>보유 증감 ${formatShares(first.sharesChanged)}${reporter}${role}${more}`
+          + `${method}<br>보유 증감 ${formatShares(first.sharesChanged)}${owned}${ownershipRate}`
+          + `${reporter}${role}${more}`
           + "<extra>내부거래</extra>";
       }),
       meta: { isInsiderTradeTrace: true, insiderTradeSide: side },

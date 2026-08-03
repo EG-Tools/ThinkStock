@@ -182,7 +182,7 @@ const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.34";
+const APP_VERSION = "1.35";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -369,6 +369,8 @@ const DISCLOSURE_TEXT_SIZE = 13;
 const DISCLOSURE_TEXT_HOVER_SIZE = 17;
 const DISCLOSURE_MOUSE_HIT_RADIUS_PX = 22;
 const DISCLOSURE_TOUCH_HIT_RADIUS_PX = 30;
+const DISCLOSURE_MARKER_LANE_Y = 0.93;
+const INSIDER_TRADE_MARKER_LANE_Y = 0.07;
 
 let pricePayload = null;
 let macroRows = [];
@@ -596,7 +598,9 @@ function initE2eDebugAccess() {
         const traceIndex = chart?.data?.findIndex((item) => item?.meta?.isDisclosureTrace) ?? -1;
         const trace = traceIndex >= 0 ? chart.data[traceIndex] : null;
         const xaxis = chart?._fullLayout?.xaxis;
-        const yaxis = chart?._fullLayout?.yaxis;
+        const yaxis = trace?.yaxis === "y2"
+          ? chart?._fullLayout?.yaxis2
+          : chart?._fullLayout?.yaxis;
         if (!trace || !xaxis || !yaxis || !trace.x?.length) return false;
         const rect = chart.getBoundingClientRect();
         const clientX = rect.left + Number(xaxis._offset || 0) + xaxis.d2p(trace.x[0]) + Number(offsetX || 0);
@@ -1812,7 +1816,7 @@ function getDisclosureMarkerPixelIndex(el, geometry = null) {
   const traceIndex = el.data.findIndex((trace) => trace?.meta?.isDisclosureTrace && trace.visible !== "legendonly");
   const trace = traceIndex >= 0 ? el.data[traceIndex] : null;
   const xAxis = el._fullLayout.xaxis;
-  const yAxis = el._fullLayout.yaxis;
+  const yAxis = trace?.yaxis === "y2" ? el._fullLayout.yaxis2 : el._fullLayout.yaxis;
   if (!trace || !xAxis || !yAxis || typeof xAxis.d2p !== "function" || typeof yAxis.d2p !== "function") return null;
 
   const axisKey = [
@@ -2815,7 +2819,7 @@ async function addCustomStock(candidate, msgEl) {
     renderCustomStockButtons();
     saveState();
     if (showAiForecast) requestAiAnalysisForTicker(candidate.ticker).catch(() => {});
-    requestChartRender(false);
+    resetHandles();
     if (showInsiderTrades && canUseDartGateway()) {
       requestInsiderTradesForTicker(candidate.ticker)
         .then(() => requestChartRender())
@@ -3732,7 +3736,7 @@ function buildDisclosureTrace(selected, seriesModels, start, end) {
       name: event.name || labelName(event.ticker),
       color: seriesColor(event.ticker),
       plotDate: point.date,
-      y: point.y,
+      y: DISCLOSURE_MARKER_LANE_Y,
       events: [],
     };
     group.events.push(event);
@@ -3759,6 +3763,7 @@ function buildDisclosureTrace(selected, seriesModels, start, end) {
     name: DISCLOSURE_TRACE_NAME,
     showlegend: false,
     cliponaxis: false,
+    yaxis: "y2",
     hovertemplate: groups.map((group) => {
       const first = group.events[0];
       const more = group.events.length > 1 ? ` 외 ${group.events.length - 1}건` : "";
@@ -3774,16 +3779,9 @@ function buildDisclosureTrace(selected, seriesModels, start, end) {
   };
 }
 
-function buildInsiderTradeTraces(selected, seriesModels, start, end, visibleYRange = null) {
+function buildInsiderTradeTraces(selected, seriesModels, start, end) {
   lastInsiderTradeTraceStats = { total: insiderTradeRows.length, candidates: 0, markers: 0 };
   if (!insiderTradeRows.length || !seriesModels.length) return [];
-  const yRange = Array.isArray(visibleYRange) && visibleYRange.length === 2
-    ? visibleYRange.map(Number)
-    : null;
-  const hasYRange = yRange?.every(Number.isFinite) && yRange[0] !== yRange[1];
-  const yMin = hasYRange ? Math.min(...yRange) : null;
-  const yMax = hasYRange ? Math.max(...yRange) : null;
-  const markerOffset = hasYRange ? (yMax - yMin) * 0.025 : 4;
   const selectedSet = new Set(selected);
   const candidates = insiderTradeRows.filter((event) => (
     selectedSet.has(event.ticker)
@@ -3802,16 +3800,12 @@ function buildInsiderTradeTraces(selected, seriesModels, start, end, visibleYRan
     if (!point) return;
     const side = event.side === "sell" ? "sell" : "buy";
     const key = `${event.ticker}|${point.date}|${side}`;
-    const rawY = point.y + (side === "sell" ? markerOffset : -markerOffset);
-    const markerY = hasYRange
-      ? Math.max(yMin + markerOffset, Math.min(yMax - markerOffset, rawY))
-      : rawY;
     const group = grouped.get(key) || {
       ticker: event.ticker,
       name: labelName(event.ticker),
       side,
       plotDate: point.date,
-      y: markerY,
+      y: INSIDER_TRADE_MARKER_LANE_Y,
       events: [],
     };
     group.events.push(event);
@@ -5161,7 +5155,7 @@ async function renderChart(preserveZoom = true) {
     lastInsiderTradeTraceStats = { total: insiderTradeRows.length, candidates: 0, markers: 0 };
   }
   const insiderTraces = showInsiderTrades
-    ? buildInsiderTradeTraces(selected, seriesModels, start, end, el._fullLayout?.yaxis?.range)
+    ? buildInsiderTradeTraces(selected, seriesModels, start, end)
     : [];
   traces.push(...insiderTraces);
   syncInsiderTradeToggleButton(lastInsiderTradeTraceStats.markers);
@@ -5201,6 +5195,7 @@ async function renderChart(preserveZoom = true) {
     legend: { orientation: "h", x: 0, y: 1.08, font: { color: "rgba(255,255,255,0.7)", size: 11 } },
     xaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, color: "#666", tickfont: { size: 10 }, fixedrange: false, showspikes: false, hoverformat: "%Y.%-m.%-d", ...(savedXRange ? { range: savedXRange } : { range: defaultXRange, autorange: false }) },
     yaxis: { showticklabels: false, title: "", showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, fixedrange: true, ...(savedYRange ? { range: savedYRange, autorange: false } : {}) },
+    yaxis2: { overlaying: "y", range: [0, 1], autorange: false, fixedrange: true, visible: false, showgrid: false, zeroline: false },
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
     hoverlabel: plotlyHoverLabel(),
     dragmode: false,

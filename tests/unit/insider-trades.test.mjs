@@ -44,9 +44,9 @@ test("builds red upward buy markers and blue downward sell markers", () => {
       ticker: "218410.KQ",
       name: "RFHIC",
       side: "sell",
-      plotDate: "2026-07-30",
-      y: 104,
-      events: [{ date: "2026-07-30", reporter: "김주주", sharesChanged: -500 }],
+      plotDate: "2026-07-31",
+      y: 96,
+      events: [{ date: "2026-07-31", reporter: "김주주", sharesChanged: -500 }],
     },
   ]);
 
@@ -55,5 +55,39 @@ test("builds red upward buy markers and blue downward sell markers", () => {
   assert.equal(traces[0].marker.color, "#ef4444");
   assert.equal(traces[1].marker.symbol, "triangle-down");
   assert.equal(traces[1].marker.color, "#3b82f6");
+  assert.equal(traces[0].yaxis, "y2");
+  assert.equal(traces[1].yaxis, "y2");
+  assert.equal(traces[0].x[0], traces[1].x[0]);
+  assert.equal(traces[0].y[0], traces[1].y[0]);
   assert.equal(traces.every((trace) => trace.meta.isInsiderTradeTrace), true);
+});
+
+test("keeps same-day buy and sell details from one major-holder receipt", () => {
+  const rows = insiderTrades.mergeRows([], [
+    {
+      ticker: "218410.KQ",
+      date: "2026-07-20",
+      sharesChanged: -4767,
+      sharesBefore: 1337773,
+      sharesOwned: 1333006,
+      reporter: "Morgan Stanley",
+      receiptNo: "20260721001006",
+      recordType: "major-holder-detail",
+      transactionMethod: "장내매도(-)",
+    },
+    {
+      ticker: "218410.KQ",
+      date: "2026-07-20",
+      sharesChanged: 13725,
+      sharesBefore: 1333006,
+      sharesOwned: 1346731,
+      reporter: "Morgan Stanley",
+      receiptNo: "20260721001006",
+      recordType: "major-holder-detail",
+      transactionMethod: "장내매수(+)",
+    },
+  ]);
+
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((row) => row.side).sort(), ["buy", "sell"]);
 });

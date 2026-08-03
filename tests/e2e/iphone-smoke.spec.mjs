@@ -453,7 +453,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
       activeMonths: 36,
       hiddenSeries: ["leading_cycle", "^KS11", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit"],
       customStocks: [{ ticker: "005930.KS", name: "삼성전자", code: "005930", market: "KOSPI" }],
-      showDisclosures: false,
+      showDisclosures: true,
       showInsiderTrades: false,
     }));
   });
@@ -473,7 +473,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
       : [
           {
             ticker: "005930.KS",
-            date: "2026-01-14",
+            date: "2026-04-14",
             side: "buy",
             reporter: "홍길동",
             role: "대표이사",
@@ -523,11 +523,22 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
       side: trace.meta.insiderTradeSide,
       symbol: trace.marker.symbol,
       color: trace.marker.color,
+      yaxis: trace.yaxis,
+      y: trace.y,
     }))
   ))).toEqual([
-    { side: "buy", symbol: "triangle-up", color: "#ef4444" },
-    { side: "sell", symbol: "triangle-down", color: "#3b82f6" },
+    { side: "buy", symbol: "triangle-up", color: "#ef4444", yaxis: "y2", y: [0.07] },
+    { side: "sell", symbol: "triangle-down", color: "#3b82f6", yaxis: "y2", y: [0.07] },
   ]);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const disclosure = (element.data || []).find((trace) => trace?.meta?.isDisclosureTrace);
+    const insiders = (element.data || []).filter((trace) => trace?.meta?.isInsiderTradeTrace);
+    return {
+      disclosureAxis: disclosure?.yaxis,
+      disclosureY: disclosure?.y?.[0],
+      insiderY: insiders.map((trace) => trace.y?.[0]),
+    };
+  })).toEqual({ disclosureAxis: "y2", disclosureY: 0.93, insiderY: [0.07, 0.07] });
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     [...element.querySelectorAll(".scatterlayer path.point")]
       .filter((point) => ["rgb(239, 68, 68)", "rgb(59, 130, 246)"].includes(point.style.fill))
@@ -544,10 +555,18 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   ));
   await expect.poll(insiderMarkerTickers).toEqual(["005930.KS"]);
 
+  const zoomedRange = await page.locator("#chart").evaluate(async (element) => {
+    await window.Plotly.relayout(element, { "xaxis.range": ["2026-01-14", "2026-04-14"] });
+    return [...element._fullLayout.xaxis.range];
+  });
+
   await page.locator("#stockSearchInput").fill("SK하이닉스");
   await page.locator(".stock-suggest-item").filter({ hasText: "SK하이닉스" }).click();
   await expect(page.locator('[data-series="000660.KS"]')).toBeVisible();
   await expect.poll(insiderMarkerTickers).toEqual(["000660.KS", "005930.KS"]);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    [...element._fullLayout.xaxis.range]
+  ))).not.toEqual(zoomedRange);
 
   await page.locator('[data-series="005930.KS"]').click();
   await expect.poll(insiderMarkerTickers).toEqual(["000660.KS"]);
