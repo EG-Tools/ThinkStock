@@ -1037,7 +1037,7 @@ body {
   opacity: 0.62;
 }
 
-.cartesianlayer .point { display: none !important; }
+.chart-frame-adr .cartesianlayer .point { display: none !important; }
 .legend .legendlines { display: none !important; }
 .no-hover-popup .hoverlayer > g { display: none !important; }
 

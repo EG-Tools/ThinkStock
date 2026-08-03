@@ -504,6 +504,11 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
     { side: "buy", symbol: "triangle-up", color: "#ef4444" },
     { side: "sell", symbol: "triangle-down", color: "#3b82f6" },
   ]);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    [...element.querySelectorAll(".scatterlayer path.point")]
+      .filter((point) => ["rgb(239, 68, 68)", "rgb(59, 130, 246)"].includes(point.style.fill))
+      .map((point) => getComputedStyle(point).display)
+  ))).toEqual(["inline", "inline"]);
   expect(authorization).toBe("Bearer private");
 
   await page.locator("#insiderTradeToggle").click();
