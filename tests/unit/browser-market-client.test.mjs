@@ -4,7 +4,7 @@ import test from "node:test";
 
 await import("../../docs/modules/browser-market-client.js");
 
-function createClient(fetchJson = async () => ({})) {
+function createClient(fetchJson = async () => ({}), options = {}) {
   return globalThis.ThinkStockBrowserMarketClient.createBrowserMarketClient({
     fetchJson,
     appendCacheBust: (url) => `${url}&cache=1`,
@@ -16,6 +16,7 @@ function createClient(fetchJson = async () => ({})) {
     dayMs: 86400000,
     baseInfoEndpoints: { KOSPI: "stocks" },
     indexEndpoints: { KOSPI: "index" },
+    ...options,
   });
 }
 
@@ -54,5 +55,37 @@ test("normalizes Yahoo history responses into sorted daily points", async () => 
   assert.deepEqual(points, [
     { date: "2026-01-01", close: 101 },
     { date: "2026-01-02", close: 102 },
+  ]);
+});
+
+test("keeps Yahoo history but gives the latest KRX close priority", async () => {
+  const client = createClient(async () => ({
+    chart: {
+      result: [{
+        timestamp: [1785715200],
+        meta: { gmtoffset: 0 },
+        indicators: { quote: [{ close: [62000] }] },
+      }],
+    },
+  }), {
+    fetchLatestPrice: async () => [
+      { date: "2026-08-03", close: 61800 },
+    ],
+  });
+
+  assert.deepEqual(await client.fetchTickerHistorySeries("383220.KS"), [
+    { date: "2026-08-03", close: 61800 },
+  ]);
+});
+
+test("uses KRX latest price when Yahoo is rate limited", async () => {
+  const client = createClient(async () => {
+    throw new Error("Too Many Requests");
+  }, {
+    fetchLatestPrice: async () => [{ date: "2026-08-03", close: 61800 }],
+  });
+
+  assert.deepEqual(await client.fetchTickerHistorySeries("383220.KS"), [
+    { date: "2026-08-03", close: 61800 },
   ]);
 });

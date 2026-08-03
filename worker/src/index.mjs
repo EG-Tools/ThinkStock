@@ -19,6 +19,7 @@ const DART_LIST_URL = "https://opendart.fss.or.kr/api/list.json";
 const DART_ELESTOCK_URL = "https://opendart.fss.or.kr/api/elestock.json";
 const DART_MAJORSTOCK_URL = "https://opendart.fss.or.kr/api/majorstock.json";
 const DART_DOCUMENT_URL = "https://opendart.fss.or.kr/api/document.xml";
+const KRX_STOCK_BASE_URL = "https://data-dbg.krx.co.kr/svc/apis/sto";
 const TICKER_PATTERN = /^(\d{6})\.(KS|KQ)$/;
 const CORP_CODE_PATTERN = /^\d{8}$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -44,6 +45,7 @@ const PAGE_SIZE = 100;
 const PROGRESSIVE_PAGE_BATCH_SIZE = 4;
 const OVERLAP_DAYS = 7;
 const LOOKBACK_YEARS = 3;
+const KRX_LATEST_LOOKBACK_DAYS = 10;
 const IMPORTANT_DISCLOSURE_PATTERN = /반기보고서|분기보고서|사업보고서|영업\(잠정\)실적|잠정실적|매출액.?또는.?손익구조|감사보고서제출|배당|현금ㆍ현물배당|단일판매|공급계약|수주|유상증자|무상증자|감자|증권신고서\(지분증권\)|전환사채|신주인수권|신주인수권부사채|교환사채|사채권|자기주식(취득|처분)결정|주식소각|합병|분할|영업양수|영업양도|타법인주식|출자증권|신규시설투자|시설투자|최대주주변경|대표이사.*변경|영업정지|거래정지|상장폐지|관리종목|소송|횡령|배임|회생|파산|부도|공개매수|장래사업|경영계획/;
 const PUBLIC_ORIGIN = "https://eg-tools.github.io";
 
@@ -128,6 +130,70 @@ function isValidIsoDate(value) {
 function finiteNumber(value, { min = -Infinity, max = Infinity } = {}) {
   const number = Number(value);
   return Number.isFinite(number) && number >= min && number <= max ? number : null;
+}
+
+function krxNumber(value) {
+  const number = Number(String(value ?? "").replaceAll(",", "").trim());
+  return Number.isFinite(number) ? number : null;
+}
+
+export function krxStockPointFromRows(rows, ticker) {
+  const match = TICKER_PATTERN.exec(String(ticker || "").trim().toUpperCase());
+  if (!match) return null;
+  const stockCode = match[1];
+  let latest = null;
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const rawCode = String(row?.ISU_CD ?? row?.ISU_SRT_CD ?? "").replace(/\D/g, "");
+    if (!rawCode.endsWith(stockCode)) return;
+    const rawDate = String(row?.BAS_DD ?? "").replace(/\D/g, "");
+    const date = rawDate.length === 8
+      ? `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`
+      : "";
+    const close = krxNumber(row?.TDD_CLSPRC ?? row?.CLSPRC);
+    if (!isValidIsoDate(date) || close === null || close <= 0) return;
+    if (!latest || date > latest.date) latest = { date, close };
+  });
+  return latest;
+}
+
+async function fetchLatestKrxStockPoint(env, ticker, today = isoDate()) {
+  const market = String(ticker || "").toUpperCase().endsWith(".KQ") ? "KQ" : "KS";
+  const endpoint = market === "KQ" ? "ksq_bydd_trd" : "stk_bydd_trd";
+  let lastError = null;
+  for (let offset = 0; offset <= KRX_LATEST_LOOKBACK_DAYS; offset += 1) {
+    const baseDate = shiftDate(today, -offset);
+    try {
+      const response = await fetch(`${KRX_STOCK_BASE_URL}/${endpoint}?basDd=${apiDate(baseDate)}`, {
+        headers: { AUTH_KEY: env.KRX_API_KEY },
+      });
+      if (!response.ok) throw new Error(`KRX HTTP ${response.status}`);
+      const payload = await response.json();
+      const point = krxStockPointFromRows(payload?.OutBlock_1, ticker);
+      if (point) return point;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (lastError) throw lastError;
+  return null;
+}
+
+async function krxPriceResponse(env, ticker, origin) {
+  if (!env.KRX_API_KEY) {
+    return jsonResponse({ ok: false, error: "Cloudflare에 KRX 키가 설정되지 않았습니다." }, 503, origin);
+  }
+  try {
+    const point = await fetchLatestKrxStockPoint(env, ticker);
+    return jsonResponse({
+      ok: true,
+      ticker,
+      source: "KRX",
+      latestDate: point?.date || "",
+      records: point ? [point] : [],
+    }, 200, origin);
+  } catch (error) {
+    return jsonResponse({ ok: false, error: error?.message || "KRX 가격 조회에 실패했습니다." }, 503, origin);
+  }
 }
 
 function timestamp(value) {
@@ -1074,6 +1140,7 @@ export async function handleRequest(request, env, ctx = null) {
     return jsonResponse({
       ok: true,
       dartConfigured: Boolean(env.DART_API_KEY),
+      krxConfigured: Boolean(env.KRX_API_KEY),
       accessTokenConfigured: Boolean(env.THINKSTOCK_ACCESS_TOKEN),
       cacheConfigured: Boolean(env.DISCLOSURE_CACHE),
     }, 200, origin);
@@ -1083,10 +1150,11 @@ export async function handleRequest(request, env, ctx = null) {
   const isAuthCheckRequest = url.pathname === "/api/auth/check" && request.method === "GET";
   const isConsensusRequest = url.pathname === "/api/consensus" && request.method === "GET";
   const isAnalysisRequest = url.pathname === "/api/analysis" && request.method === "GET";
+  const isPriceRequest = url.pathname === "/api/prices" && request.method === "GET";
   const isJournalRequest = url.pathname === "/api/forecast-journal"
     && ["GET", "POST"].includes(request.method);
   if (!isDartRequest && !isInsiderRequest && !isAuthCheckRequest
-    && !isConsensusRequest && !isAnalysisRequest && !isJournalRequest) {
+    && !isConsensusRequest && !isAnalysisRequest && !isPriceRequest && !isJournalRequest) {
     return jsonResponse({ ok: false, error: "Not found" }, 404, origin);
   }
   if (!env.THINKSTOCK_ACCESS_TOKEN
@@ -1098,6 +1166,7 @@ export async function handleRequest(request, env, ctx = null) {
   if (!TICKER_PATTERN.test(ticker)) {
     return jsonResponse({ ok: false, error: "종목코드 형식이 올바르지 않습니다." }, 400, origin);
   }
+  if (isPriceRequest) return krxPriceResponse(env, ticker, origin);
   if (isJournalRequest) return forecastJournalResponse(request, env, ticker, origin);
   if (isConsensusRequest || isAnalysisRequest) {
     return analysisResponse(env, ctx, ticker, origin, { requireFinancials: isAnalysisRequest });

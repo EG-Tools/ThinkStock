@@ -6,6 +6,7 @@ import {
   handleRequest,
   insiderRecordFromItem,
   isAllowedOrigin,
+  krxStockPointFromRows,
   mergeAnalysisSnapshots,
   mergeFinancialRecords,
   mergeForecastJournalRecords,
@@ -98,6 +99,38 @@ test("checks the personal access token without requiring a ticker", async () => 
   assert.equal(valid.status, 200);
   assert.equal((await valid.json()).ok, true);
   assert.equal(invalid.status, 401);
+});
+
+test("returns the latest authenticated KRX close for a stock", async () => {
+  assert.deepEqual(krxStockPointFromRows([
+    { ISU_CD: "005930", BAS_DD: "20260803", TDD_CLSPRC: "90,000" },
+    { ISU_CD: "383220", BAS_DD: "20260803", TDD_CLSPRC: "61,800" },
+  ], "383220.KS"), { date: "2026-08-03", close: 61800 });
+
+  const originalFetch = globalThis.fetch;
+  let authKey = "";
+  let requestedPath = "";
+  globalThis.fetch = async (url, options = {}) => {
+    requestedPath = new URL(url).pathname;
+    authKey = String(new Headers(options.headers).get("AUTH_KEY") || "");
+    return new Response(JSON.stringify({
+      OutBlock_1: [{ ISU_CD: "383220", BAS_DD: "20260803", TDD_CLSPRC: "61,800" }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const response = await handleRequest(
+      request("/api/prices?ticker=383220.KS", { token: "private" }),
+      { KRX_API_KEY: "krx-secret", THINKSTOCK_ACCESS_TOKEN: "private" },
+    );
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.source, "KRX");
+    assert.deepEqual(payload.records, [{ date: "2026-08-03", close: 61800 }]);
+    assert.equal(authKey, "krx-secret");
+    assert.equal(requestedPath, "/svc/apis/sto/stk_bydd_trd");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("returns a fresh per-ticker KV cache without contacting DART", async () => {

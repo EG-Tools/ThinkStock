@@ -192,7 +192,7 @@ const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.45";
+const APP_VERSION = "1.46";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -244,6 +244,7 @@ const DART_GATEWAY_URL = "https://thinkstock-api.keg0320.workers.dev";
 const DART_GATEWAY_AUTH_CHECK_ENDPOINT = `${DART_GATEWAY_URL}/api/auth/check`;
 const DART_GATEWAY_DISCLOSURE_ENDPOINT = `${DART_GATEWAY_URL}/api/dart/disclosures`;
 const DART_GATEWAY_INSIDER_ENDPOINT = `${DART_GATEWAY_URL}/api/dart/insider-trades`;
+const KRX_GATEWAY_PRICE_ENDPOINT = `${DART_GATEWAY_URL}/api/prices`;
 const AI_ANALYSIS_ENDPOINT = `${DART_GATEWAY_URL}/api/analysis`;
 const AI_FORECAST_JOURNAL_ENDPOINT = `${DART_GATEWAY_URL}/api/forecast-journal`;
 const AI_MARKET_MODEL_URL = "./data/ai_market_model.json";
@@ -308,9 +309,10 @@ const browserMarketClient = browserMarketClientModule.createBrowserMarketClient(
   shiftDays,
   toNumber: toNum,
   dayMs: DAY_MS,
+  fetchLatestPrice: fetchLatestKrxTickerSeries,
 });
 const {
-  fetchYahooHistorySeries,
+  fetchTickerHistorySeries,
 } = browserMarketClient;
 const POPUP_NUMBER_FORMAT = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 4 });
 const formatActualValue = (v) => (Number.isFinite(v) ? POPUP_NUMBER_FORMAT.format(v) : "N/A");
@@ -1201,6 +1203,26 @@ function getDartGatewayAccessToken() {
 
 function canUseDartGateway() {
   return Boolean(getDartGatewayAccessToken());
+}
+
+async function fetchLatestKrxTickerSeries(ticker, options = {}) {
+  if (!/^\d{6}\.(KS|KQ)$/.test(String(ticker || "").toUpperCase()) || !canUseDartGateway()) return [];
+  const response = await fetchWithTimeout(
+    `${KRX_GATEWAY_PRICE_ENDPOINT}?ticker=${encodeURIComponent(ticker)}`,
+    {
+      cache: "no-store",
+      headers: { Authorization: `Bearer ${getDartGatewayAccessToken()}` },
+      signal: options?.signal || null,
+    },
+    NETWORK_REQUEST_TIMEOUT_MS,
+  );
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || payload?.ok !== true) {
+    throw new Error(payload?.error || `KRX price HTTP ${response.status}`);
+  }
+  return (Array.isArray(payload.records) ? payload.records : [])
+    .map((point) => ({ date: String(point?.date || "").slice(0, 10), close: toNum(point?.close) }))
+    .filter((point) => /^\d{4}-\d{2}-\d{2}$/.test(point.date) && point.close !== null && point.close > 0);
 }
 
 async function validateDartGatewayAccessToken(accessToken) {
@@ -2838,7 +2860,7 @@ async function ensureCustomTickerSeriesLoaded(ticker, options = {}) {
   try {
     const existingPoints = getTickerPricePointsFromPayload(key);
     const sinceDate = hasExisting ? getLatestTickerDateFromPricePayload(key) : "";
-    let points = await fetchYahooHistorySeries(key, { sinceDate, signal });
+    let points = await fetchTickerHistorySeries(key, { sinceDate, signal });
     throwIfAborted(signal);
     if (!points.length) throw new Error(`${key} price history is empty`);
     const rebaseSignal = sinceDate ? findTickerPriceRebaseSignal(existingPoints, points, {
@@ -2846,7 +2868,7 @@ async function ensureCustomTickerSeriesLoaded(ticker, options = {}) {
       boundaryDays: PRICE_CACHE_REBASE_BOUNDARY_DAYS,
     }) : null;
     if (rebaseSignal) {
-      points = await fetchYahooHistorySeries(key, { signal });
+      points = await fetchTickerHistorySeries(key, { signal });
       throwIfAborted(signal);
       if (!points.length) throw new Error(`${key} price history is empty`);
       await deleteIndexedDbRecord(TICKER_PRICE_CACHE_STORE_NAME, key).catch(() => {});
@@ -2886,7 +2908,7 @@ async function refreshCoreIndexSeries(options = {}) {
 
   const yahooResults = await Promise.allSettled(
     tickers.map(async (ticker) => {
-      const points = await fetchYahooHistorySeries(ticker, { sinceDate: beforeLatest[ticker], signal });
+      const points = await fetchTickerHistorySeries(ticker, { sinceDate: beforeLatest[ticker], signal });
       if (!points.length) throw new Error("price history is empty");
       throwIfAborted(signal);
       mergeTickerSeriesIntoPricePayload(ticker, points);

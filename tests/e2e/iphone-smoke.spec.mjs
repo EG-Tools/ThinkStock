@@ -209,6 +209,16 @@ async function installDataRoutes(page) {
     }] : [];
     await route.fulfill({ json: { ok: true, ticker, records } });
   });
+  await page.route("**/api/prices?*", async (route) => {
+    const ticker = new URL(route.request().url()).searchParams.get("ticker") || "";
+    await route.fulfill({ json: {
+      ok: true,
+      ticker,
+      source: "KRX",
+      latestDate: "",
+      records: [],
+    } });
+  });
   await stubExternalRefreshes(page);
   return () => historyRequests;
 }

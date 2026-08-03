@@ -10,6 +10,9 @@
       return Number.isFinite(number) ? number : null;
     });
     const dayMs = Number(options.dayMs) || 86400000;
+    const fetchLatestPrice = typeof options.fetchLatestPrice === "function"
+      ? options.fetchLatestPrice
+      : null;
     const baseInfoEndpoints = options.baseInfoEndpoints || {};
     const indexEndpoints = options.indexEndpoints || {};
     if (typeof fetchJson !== "function") throw new TypeError("fetchJson is required");
@@ -115,6 +118,30 @@
         .map(([date, close]) => ({ date, close }));
     }
 
+    function mergePriceSeries(...seriesGroups) {
+      const byDate = new Map();
+      seriesGroups.forEach((points) => {
+        (Array.isArray(points) ? points : []).forEach((point) => {
+          const date = String(point?.date || "").slice(0, 10);
+          const close = toNumber(point?.close);
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || close === null || close <= 0) return;
+          byDate.set(date, { date, close });
+        });
+      });
+      return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
+    }
+
+    async function fetchTickerHistorySeries(ticker, requestOptions = {}) {
+      const tasks = [fetchYahooHistorySeries(ticker, requestOptions)];
+      if (fetchLatestPrice) tasks.push(fetchLatestPrice(ticker, requestOptions));
+      const results = await Promise.allSettled(tasks);
+      const yahooPoints = results[0].status === "fulfilled" ? results[0].value : [];
+      const latestPoints = results[1]?.status === "fulfilled" ? results[1].value : [];
+      const merged = mergePriceSeries(yahooPoints, latestPoints);
+      if (merged.length) return merged;
+      throw results[0].reason || results[1]?.reason || new Error(`${ticker} price history is unavailable`);
+    }
+
     function parseLooseNumber(raw) {
       const cleaned = String(raw ?? "").replace(/,/g, "").trim();
       if (!cleaned) return null;
@@ -217,6 +244,8 @@
       fetchKrxUniverseRows,
       buildYahooHistoryUrl,
       fetchYahooHistorySeries,
+      fetchTickerHistorySeries,
+      mergePriceSeries,
       parseLooseNumber,
       normalizeKrxDate,
       scoreKrxIndexName,
