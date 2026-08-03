@@ -202,6 +202,18 @@ body {
   -webkit-backdrop-filter: blur(8px);
 }
 
+.chart-refresh-btn {
+  position: absolute;
+  z-index: 120;
+  top: 14px;
+  right: 14px;
+  width: 28px;
+  height: 28px;
+  background: rgba(18, 18, 18, 0.78);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
 .co-movement-panel {
   position: absolute;
   z-index: 119;

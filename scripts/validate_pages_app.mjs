@@ -70,6 +70,10 @@ assert.ok(
   html.includes('class="main-chart-wrap"') && html.includes('class="reset-btn chart-reset-btn"'),
   "chart reset button is not positioned in the main chart",
 );
+assert.ok(
+  html.includes('class="refresh-btn chart-refresh-btn"'),
+  "refresh button is not positioned in the main chart",
+);
 
 const ids = [...html.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
 assert.equal(new Set(ids).size, ids.length, "docs/index.html contains duplicate element IDs");

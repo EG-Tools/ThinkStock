@@ -400,16 +400,22 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   }))).toBe(2);
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
-  const [chartBox, resetBox] = await Promise.all([
+  const [chartBox, resetBox, refreshBox] = await Promise.all([
     page.locator("#chart").boundingBox(),
     page.locator("#resetHandles").boundingBox(),
+    page.locator("#refreshData").boundingBox(),
   ]);
   expect(chartBox).not.toBeNull();
   expect(resetBox).not.toBeNull();
+  expect(refreshBox).not.toBeNull();
   expect(resetBox.x).toBeGreaterThanOrEqual(chartBox.x);
   expect(resetBox.y).toBeGreaterThanOrEqual(chartBox.y);
   expect(resetBox.x + resetBox.width).toBeLessThan(chartBox.x + chartBox.width);
   expect(resetBox.y + resetBox.height).toBeLessThan(chartBox.y + chartBox.height);
+  expect(Math.abs(refreshBox.y - resetBox.y)).toBeLessThanOrEqual(1);
+  expect(Math.abs(refreshBox.height - resetBox.height)).toBeLessThanOrEqual(2);
+  expect((chartBox.x + chartBox.width) - (refreshBox.x + refreshBox.width)).toBeGreaterThanOrEqual(10);
+  expect((chartBox.x + chartBox.width) - (refreshBox.x + refreshBox.width)).toBeLessThanOrEqual(18);
   await page.locator("#stockSearchInput").fill("SK하이닉스");
   await expect(page.locator(".stock-suggest-item")).toContainText("SK하이닉스");
   await page.locator("#stockSearchInput").press("Escape");

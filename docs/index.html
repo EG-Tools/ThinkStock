@@ -32,7 +32,6 @@
             <span class="credit-offset-label">자금옵셋</span>
             <input id="creditOffset" class="credit-offset-input" type="number" value="-2" step="1" min="-30" max="30">
           </label>
-          <button id="refreshData" class="refresh-btn" title="새로고침">&#x21BB;</button>
           <button id="apiOptionsBtn" class="icon-btn" title="API 설정" aria-label="API 설정">⚙</button>
         </div>
         <div class="series-toggle-board" id="seriesToggleBoard">
@@ -52,6 +51,7 @@
       <div class="main-chart-wrap">
         <div id="chart" class="chart-frame"></div>
         <button id="resetHandles" class="reset-btn chart-reset-btn" type="button" title="차트 위치와 배율 초기화">리셋</button>
+        <button id="refreshData" class="refresh-btn chart-refresh-btn" type="button" title="최신 데이터 새로고침" aria-label="최신 데이터 새로고침">&#x21BB;</button>
         <button id="coMovementToggle" class="reset-btn chart-co-movement-btn" type="button" title="마지막 표시 종목 동행율" aria-pressed="false">동행율</button>
         <div id="coMovementPanel" class="co-movement-panel" role="status" aria-live="polite" hidden></div>
         <button id="aiForecastToggle" class="reset-btn chart-ai-btn" type="button" title="6개월 AI 가상 흐름 (투자 판단용 아님)" aria-pressed="false">AI</button>
@@ -114,7 +114,7 @@
           <button id="performanceDiagnosticsClearBtn" class="diagnostics-clear-btn" type="button">이전 기록 지우기</button>
         </section>
         <p class="api-settings-meta">
-          Version : <span id="appVersionText">1.48</span><br>
+          Version : <span id="appVersionText">1.49</span><br>
           회사명 : Life User<br>
           이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a>
         </p>
