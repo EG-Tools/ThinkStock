@@ -182,7 +182,7 @@ const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.33";
+const APP_VERSION = "1.34";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -2359,7 +2359,7 @@ function applySeriesVisibilityFast(seriesKey) {
   const el = document.getElementById("chart");
   const traceIndex = currentSelected.indexOf(seriesKey);
   if (!el?.data || traceIndex < 0 || traceIndex >= el.data.length) return false;
-  if (showAiForecast) {
+  if (showAiForecast || showInsiderTrades) {
     syncSeriesToggleBoard(currentSelected);
     requestChartRender();
     return true;
@@ -2816,6 +2816,13 @@ async function addCustomStock(candidate, msgEl) {
     saveState();
     if (showAiForecast) requestAiAnalysisForTicker(candidate.ticker).catch(() => {});
     requestChartRender(false);
+    if (showInsiderTrades && canUseDartGateway()) {
+      requestInsiderTradesForTicker(candidate.ticker)
+        .then(() => requestChartRender())
+        .catch((error) => {
+          setMessage(msgEl, [`${candidate.name} 내부거래 조회 오류: ${error.message}`], true);
+        });
+    }
     setMessage(msgEl, [`${candidate.name} 종목이 추가되었습니다.`]);
     requestDartDisclosureRefreshForTicker(candidate.ticker, msgEl);
   } catch (err) {

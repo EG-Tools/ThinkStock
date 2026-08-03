@@ -459,14 +459,18 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   });
   await page.route("https://thinkstock-api.keg0320.workers.dev/api/dart/insider-trades?*", async (route) => {
     authorization = route.request().headers().authorization || "";
-    await route.fulfill({
-      status: 200,
-      headers: { "access-control-allow-origin": "*", "content-type": "application/json" },
-      body: JSON.stringify({
-        ok: true,
-        ticker: "005930.KS",
-        checkedFrom: "2023-08-03",
-        records: [
+    const ticker = new URL(route.request().url()).searchParams.get("ticker") || "";
+    const records = ticker === "000660.KS"
+      ? [{
+          ticker,
+          date: "2026-04-14",
+          side: "buy",
+          reporter: "박임원",
+          role: "대표이사",
+          sharesChanged: 300,
+          receiptNo: "20260414000456",
+        }]
+      : [
           {
             ticker: "005930.KS",
             date: "2026-01-14",
@@ -485,9 +489,29 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
             sharesChanged: -500,
             receiptNo: "20260414000123",
           },
-        ],
+        ];
+    await route.fulfill({
+      status: 200,
+      headers: { "access-control-allow-origin": "*", "content-type": "application/json" },
+      body: JSON.stringify({
+        ok: true,
+        ticker,
+        checkedFrom: "2023-08-03",
+        records,
       }),
     });
+  });
+  await page.route("https://query2.finance.yahoo.com/v8/finance/chart/000660.KS**", async (route) => {
+    await route.fulfill({ json: {
+      chart: {
+        result: [{
+          meta: { gmtoffset: 0 },
+          timestamp: [1768348800, 1776124800, 1783987200],
+          indicators: { quote: [{ close: [180000, 210000, 240000] }] },
+        }],
+        error: null,
+      },
+    } });
   });
 
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
@@ -510,6 +534,25 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
       .map((point) => getComputedStyle(point).display)
   ))).toEqual(["inline", "inline"]);
   expect(authorization).toBe("Bearer private");
+
+  const insiderMarkerTickers = () => page.locator("#chart").evaluate((element) => (
+    [...new Set((element.data || [])
+      .filter((trace) => trace?.meta?.isInsiderTradeTrace)
+      .flatMap((trace) => trace.customdata || [])
+      .map((item) => item?.[0])
+      .filter(Boolean))].sort()
+  ));
+  await expect.poll(insiderMarkerTickers).toEqual(["005930.KS"]);
+
+  await page.locator("#stockSearchInput").fill("SK하이닉스");
+  await page.locator(".stock-suggest-item").filter({ hasText: "SK하이닉스" }).click();
+  await expect(page.locator('[data-series="000660.KS"]')).toBeVisible();
+  await expect.poll(insiderMarkerTickers).toEqual(["000660.KS", "005930.KS"]);
+
+  await page.locator('[data-series="005930.KS"]').click();
+  await expect.poll(insiderMarkerTickers).toEqual(["000660.KS"]);
+  await page.locator('[data-series="005930.KS"]').click();
+  await expect.poll(insiderMarkerTickers).toEqual(["000660.KS", "005930.KS"]);
 
   await page.locator("#insiderTradeToggle").click();
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
