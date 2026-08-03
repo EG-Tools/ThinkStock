@@ -192,7 +192,7 @@ const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.39";
+const APP_VERSION = "1.40";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -485,6 +485,7 @@ let macdHandlerSet = false;
 let isHandleDragging = false;
 let pinnedXRange = null;
 let hoverSyncing = false;
+let repairingMainUnifiedHover = false;
 let cursorSyncing = false;
 let cursorMoveBound = false;
 let renderChartRafId = 0;
@@ -1519,6 +1520,77 @@ function syncHoverToChart(targetEl, xValue) {
     lastHoverSyncKey = pending.key;
     syncHoverToChartNow(pending.targetEl, pending.xValue);
   });
+}
+
+function hoverPointDate(point) {
+  const value = point?.x;
+  if (value instanceof Date && Number.isFinite(value.getTime())) {
+    return value.toISOString().slice(0, 10);
+  }
+  return String(value ?? "").slice(0, 10);
+}
+
+function isChartEventHoverPoint(point) {
+  return point?.data?.meta?.isDisclosureTrace === true
+    || point?.data?.meta?.isInsiderTradeTrace === true;
+}
+
+function mainHoverAnchorDate(chartEl, evtData) {
+  const points = Array.isArray(evtData?.points) ? evtData.points : [];
+  const linePoints = points.filter((point) => (
+    !isChartEventHoverPoint(point)
+    && point?.data?.meta?.seriesKey
+    && !point.data.meta.isAiForecastTrace
+  ));
+  if (!linePoints.length) return "";
+
+  const clientX = Number(evtData?.event?.clientX);
+  const rect = chartEl?.getBoundingClientRect?.();
+  if (!rect || !Number.isFinite(clientX)) return hoverPointDate(linePoints[0]);
+  const pointerX = clientX - rect.left;
+  let nearest = linePoints[0];
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  linePoints.forEach((point) => {
+    const axis = point?.xaxis;
+    if (typeof axis?.d2p !== "function") return;
+    const pixelX = Number(axis._offset || 0) + axis.d2p(point.x);
+    const distance = Math.abs(pixelX - pointerX);
+    if (distance < nearestDistance) {
+      nearest = point;
+      nearestDistance = distance;
+    }
+  });
+  return hoverPointDate(nearest);
+}
+
+function repairMainUnifiedHover(chartEl, evtData) {
+  if (repairingMainUnifiedHover || !window.Plotly?.Fx?.hover) return false;
+  const points = Array.isArray(evtData?.points) ? evtData.points : [];
+  const anchorDate = mainHoverAnchorDate(chartEl, evtData);
+  if (!anchorDate) return false;
+  const hasMismatchedEvent = points.some((point) => (
+    isChartEventHoverPoint(point) && hoverPointDate(point) !== anchorDate
+  ));
+  if (!hasMismatchedEvent) return false;
+
+  const exactPoints = points
+    .filter((point) => !isChartEventHoverPoint(point) || hoverPointDate(point) === anchorDate)
+    .map((point) => ({
+      curveNumber: point.curveNumber,
+      pointNumber: point.pointNumber ?? point.pointIndex,
+    }))
+    .filter((point) => Number.isInteger(point.curveNumber) && Number.isInteger(point.pointNumber));
+  if (!exactPoints.length) return false;
+
+  repairingMainUnifiedHover = true;
+  try {
+    Plotly.Fx.hover(chartEl, exactPoints, ["xy"]);
+  } catch (_) {
+    repairingMainUnifiedHover = false;
+    return false;
+  }
+  requestAnimationFrame(() => { repairingMainUnifiedHover = false; });
+  return true;
 }
 
 function clearHoverOnChart(targetEl) {
@@ -5382,6 +5454,7 @@ async function renderChart(preserveZoom = true) {
       }
     });
     el.on("plotly_hover", (eventData) => {
+      if (repairMainUnifiedHover(el, eventData)) return;
       scheduleDisclosureHoverHighlight(eventData);
       if (!hoverShowPopup || hoverSyncing) return;
       const xValue = eventData?.points?.[0]?.x;

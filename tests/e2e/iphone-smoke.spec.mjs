@@ -485,6 +485,23 @@ test("co-movement toggle shows only the last visible stock for the selected peri
   await page.locator("#coMovementToggle").click();
   await expect(page.locator("#coMovementToggle")).toHaveClass(/is-active/);
   await expect(page.locator("#coMovementPanel")).toBeVisible();
+  const coMovementLayout = await page.locator("#coMovementPanel").evaluate((panel) => {
+    const chart = document.getElementById("chart");
+    const panelRect = panel.getBoundingClientRect();
+    const chartRect = chart.getBoundingClientRect();
+    const style = getComputedStyle(panel);
+    return {
+      centerDelta: Math.abs((panelRect.left + panelRect.right) / 2 - (chartRect.left + chartRect.right) / 2),
+      topOffset: panelRect.top - chartRect.top,
+      borderWidth: style.borderTopWidth,
+      backgroundColor: style.backgroundColor,
+    };
+  });
+  expect(coMovementLayout.centerDelta).toBeLessThanOrEqual(1);
+  expect(coMovementLayout.topOffset).toBeGreaterThanOrEqual(10);
+  expect(coMovementLayout.topOffset).toBeLessThanOrEqual(18);
+  expect(coMovementLayout.borderWidth).toBe("0px");
+  expect(coMovementLayout.backgroundColor).toBe("rgba(0, 0, 0, 0)");
   await expect(page.locator("#coMovementPanel")).toContainText("SK하이닉스 1년 동행율");
   await expect(page.locator("#coMovementPanel")).toContainText("코스피 75%");
   await expect(page.locator("#coMovementPanel")).toContainText("코스닥 75%");
@@ -536,6 +553,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
       activeMonths: 36,
       hiddenSeries: ["leading_cycle", "^KS11", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit"],
       customStocks: [{ ticker: "005930.KS", name: "삼성전자", code: "005930", market: "KOSPI" }],
+      hoverShowPopup: true,
       showDisclosures: true,
       showInsiderTrades: false,
     }));
@@ -608,6 +626,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
 
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => element._fullLayout?.hovermode)).toBe("x unified");
   await expect(page.locator("#insiderTradeToggle")).toHaveText("내부거래");
   await page.locator("#insiderTradeToggle").click();
   await expect(page.locator("#insiderTradeToggle")).toHaveClass(/is-active/);
@@ -685,6 +704,25 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   expect(pairedMarkerGeometry.lineClearance).toBeGreaterThanOrEqual(1);
   expect(pairedMarkerGeometry.verticalClearance).toBeGreaterThanOrEqual(0);
   expect(pairedMarkerGeometry.verticalClearance).toBeLessThanOrEqual(4);
+
+  const hoverStockDate = async (date) => page.locator("#chart").evaluate((element, targetDate) => {
+    const stockCurve = (element.data || []).findIndex((trace) => trace?.meta?.seriesKey === "005930.KS");
+    const stockPoint = element.data?.[stockCurve]?.x?.indexOf(targetDate) ?? -1;
+    const eventPoints = (element.data || []).flatMap((trace, curveNumber) => (
+      trace?.meta?.isInsiderTradeTrace || trace?.meta?.isDisclosureTrace
+        ? [{ curveNumber, pointNumber: 0 }]
+        : []
+    ));
+    window.Plotly.Fx.hover(element, [
+      { curveNumber: stockCurve, pointNumber: stockPoint },
+      ...eventPoints,
+    ], ["xy"]);
+    element.emit("plotly_hover", { points: element._hoverdata || [] });
+  }, date);
+  await hoverStockDate("2026-01-14");
+  await expect(page.locator("#chart .hoverlayer")).not.toContainText("2026-04-14");
+  await hoverStockDate("2026-04-14");
+  await expect(page.locator("#chart .hoverlayer")).toContainText("2026-04-14");
 
   const scaleHandle = page.locator('.y-handle-right[title="삼성전자 (스케일)"]');
   await expect(scaleHandle).toBeVisible();

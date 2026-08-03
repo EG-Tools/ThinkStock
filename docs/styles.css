@@ -209,25 +209,24 @@ body {
 .co-movement-panel {
   position: absolute;
   z-index: 119;
-  top: 48px;
-  left: 88px;
-  right: 14px;
+  top: 14px;
+  left: 50%;
+  width: max-content;
+  max-width: calc(100% - 176px);
+  transform: translateX(-50%);
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 10px;
-  min-height: 28px;
-  padding: 4px 10px;
+  min-height: 26px;
   overflow-x: auto;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: rgba(18, 18, 18, 0.78);
   color: var(--muted);
   font-size: 11px;
   line-height: 1.2;
   white-space: nowrap;
   scrollbar-width: none;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  text-align: center;
+  text-shadow: 0 1px 3px #111, 0 0 7px #111;
 }
 
 .co-movement-panel::-webkit-scrollbar { display: none; }
