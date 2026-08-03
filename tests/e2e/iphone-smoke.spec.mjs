@@ -565,18 +565,29 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
     const buy = points.find((point) => point.style.fill === "rgb(239, 68, 68)")?.getBoundingClientRect();
     const sell = points.find((point) => point.style.fill === "rgb(59, 130, 246)")?.getBoundingClientRect();
     if (!buy || !sell) return null;
+    const stock = (element.data || []).find((trace) => trace?.meta?.seriesKey === "005930.KS");
+    const stockIndex = stock?.x?.indexOf("2026-04-14") ?? -1;
+    const axis = element?._fullLayout?.yaxis;
+    const chartTop = element.getBoundingClientRect().top;
+    const stockLineY = stockIndex >= 0 && axis
+      ? chartTop + axis._offset + axis.l2p(Number(stock.y[stockIndex]))
+      : Number.NaN;
     return {
       horizontallyAligned: Math.abs((buy.left + buy.right) - (sell.left + sell.right)) < 1,
       buyAboveSell: buy.top < sell.top,
-      seamGap: Math.abs(buy.bottom - sell.top),
+      lineClearance: buy.top - stockLineY,
+      verticalClearance: sell.top - buy.bottom,
     };
   });
   expect(pairedMarkerGeometry).toMatchObject({
     horizontallyAligned: true,
     buyAboveSell: true,
-    seamGap: expect.any(Number),
+    lineClearance: expect.any(Number),
+    verticalClearance: expect.any(Number),
   });
-  expect(pairedMarkerGeometry.seamGap).toBeLessThanOrEqual(3);
+  expect(pairedMarkerGeometry.lineClearance).toBeGreaterThanOrEqual(1);
+  expect(pairedMarkerGeometry.verticalClearance).toBeGreaterThanOrEqual(0);
+  expect(pairedMarkerGeometry.verticalClearance).toBeLessThanOrEqual(4);
   expect(authorization).toBe("Bearer private");
 
   const insiderMarkerTickers = () => page.locator("#chart").evaluate((element) => (
@@ -1001,19 +1012,28 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   expect(middleUpdateAfter.revisions.macro).toBeGreaterThan(middleUpdateBefore.revisions.macro);
   expect(middleUpdateAfter.worker.sourceTransfers).toBeGreaterThan(middleUpdateBefore.worker.sourceTransfers);
 
-  const togglePerfBefore = await page.evaluate(() => ({
-    generation: window.ThinkStockE2E.getChartRenderGeneration(),
-    ...window.ThinkStockE2E.getChartWorkerStats(),
-  }));
+  const toggleRenderGenerationBefore = await page.evaluate(() => (
+    window.ThinkStockE2E.getChartRenderGeneration()
+  ));
+  const toggledFromRange = await page.locator("#chart").evaluate(async (element) => {
+    const current = [...element._fullLayout.xaxis.range];
+    const midpoint = new Date((new Date(current[0]).getTime() + new Date(current[1]).getTime()) / 2);
+    const from = new Date(midpoint);
+    const to = new Date(midpoint);
+    from.setUTCDate(from.getUTCDate() - 20);
+    to.setUTCDate(to.getUTCDate() + 20);
+    const range = [from.toISOString().slice(0, 10), to.toISOString().slice(0, 10)];
+    await window.Plotly.relayout(element, { "xaxis.range": range });
+    return range;
+  });
   await page.locator('[data-series="customer_deposit"]').click();
   await expect(page.locator('[data-series="customer_deposit"]')).toHaveClass(/is-on/);
   await expect.poll(() => page.evaluate(() => (
-    window.ThinkStockE2E.getChartWorkerStats().partialDisclosureUpdates
-  ))).toBeGreaterThan(togglePerfBefore.partialDisclosureUpdates);
-  expect(await page.evaluate(() => window.ThinkStockE2E.getChartRenderGeneration()))
-    .toBe(togglePerfBefore.generation);
-  expect((await page.evaluate(() => window.ThinkStockE2E.getChartWorkerStats())).dispatched)
-    .toBe(togglePerfBefore.dispatched);
+    window.ThinkStockE2E.getChartRenderGeneration()
+  ))).toBeGreaterThan(toggleRenderGenerationBefore);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    [...element._fullLayout.xaxis.range]
+  ))).not.toEqual(toggledFromRange);
 
   const dragPerfBefore = await page.evaluate(() => ({
     generation: window.ThinkStockE2E.getChartRenderGeneration(),

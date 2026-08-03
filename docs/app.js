@@ -59,6 +59,7 @@ if (!insiderTradesModule) throw new Error("Insider trades module failed to load"
 const {
   buildMarkerTraces: buildInsiderMarkerTraces,
   mergeRows: mergeInsiderTradeRows,
+  netSameReporterTrades: netSameReporterInsiderTrades,
   sanitizeRows: sanitizeInsiderTradeRows,
 } = insiderTradesModule;
 const aiForecastModule = globalThis.ThinkStockAiForecast;
@@ -182,7 +183,7 @@ const TICKER_PRICE_CACHE_FRESH_DAYS = 1;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.37";
+const APP_VERSION = "1.38";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -370,7 +371,9 @@ const DISCLOSURE_TEXT_HOVER_SIZE = 17;
 const DISCLOSURE_MOUSE_HIT_RADIUS_PX = 22;
 const DISCLOSURE_TOUCH_HIT_RADIUS_PX = 30;
 const EVENT_MARKER_GAP_RATIO = 0.02;
-const PAIRED_INSIDER_MARKER_OFFSET_RATIO = 0.3;
+const INSIDER_MARKER_LINE_GAP_RATIO = 1.7;
+const PAIRED_INSIDER_BUY_OFFSET_RATIO = 0.3;
+const PAIRED_INSIDER_SELL_OFFSET_RATIO = 0.95;
 
 let pricePayload = null;
 let macroRows = [];
@@ -2358,35 +2361,6 @@ function syncSeriesToggleBoard(allSeries) {
   });
 }
 
-function applySeriesVisibilityFast(seriesKey) {
-  if (!window.Plotly) return false;
-  const el = document.getElementById("chart");
-  const traceIndex = currentSelected.indexOf(seriesKey);
-  if (!el?.data || traceIndex < 0 || traceIndex >= el.data.length) return false;
-  if (showAiForecast || showInsiderTrades) {
-    syncSeriesToggleBoard(currentSelected);
-    requestChartRender();
-    return true;
-  }
-
-  Plotly.restyle(el, { visible: hiddenSeries.has(seriesKey) ? "legendonly" : true }, [traceIndex])
-    .then(() => {
-      if (showDisclosures && !refreshDisclosureTraceFast()) {
-        requestChartRender();
-        return;
-      }
-      updateHandles();
-      if (showMacdOscillator) {
-        lastMacdRenderKey = "";
-        renderMacdChart(el._fullLayout?.xaxis?.range?.slice() || null).catch(() => {});
-      }
-      scheduleLastRuntimeSnapshotSave();
-    })
-    .catch(() => requestChartRender());
-  syncSeriesToggleBoard(currentSelected);
-  return true;
-}
-
 function bindSeriesToggleBoard() {
   document.querySelectorAll(".series-toggle-btn").forEach((btn) => {
     if (btn.dataset.bound === "1") return;
@@ -2396,8 +2370,7 @@ function bindSeriesToggleBoard() {
       if (!key || btn.disabled) return;
       if (hiddenSeries.has(key)) hiddenSeries.delete(key);
       else hiddenSeries.add(key);
-      saveState();
-      if (!applySeriesVisibilityFast(key)) requestChartRender();
+      resetHandles();
     });
   });
 }
@@ -2445,8 +2418,7 @@ function removeCustomStock(ticker) {
   loadingCustomStocks.delete(ticker);
   clearTickerSeriesFromPricePayload(ticker);
   renderCustomStockButtons();
-  saveState();
-  requestChartRender(false);
+  resetHandles();
 }
 
 function clearTickerSeriesFromPricePayload(ticker) {
@@ -3575,9 +3547,7 @@ function setupOffsetDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
         seriesOffsets[seriesKey] = startOffset;
         if (hiddenSeries.has(seriesKey)) hiddenSeries.delete(seriesKey);
         else hiddenSeries.add(seriesKey);
-        restyleLive(traceIndex, seriesKey);
-        saveState();
-        if (!applySeriesVisibilityFast(seriesKey)) requestChartRender();
+        resetHandles();
         return;
       }
       finishTraceYEdit(true, seriesKey);
@@ -3805,12 +3775,12 @@ function buildInsiderTradeTraces(selected, seriesModels, start, end) {
   lastInsiderTradeTraceStats = { total: insiderTradeRows.length, candidates: 0, markers: 0 };
   if (!insiderTradeRows.length || !seriesModels.length) return [];
   const selectedSet = new Set(selected);
-  const candidates = insiderTradeRows.filter((event) => (
+  const candidates = netSameReporterInsiderTrades(insiderTradeRows.filter((event) => (
     selectedSet.has(event.ticker)
     && !hiddenSeries.has(event.ticker)
     && event.date >= start
     && event.date <= end
-  ));
+  )));
   lastInsiderTradeTraceStats.candidates = candidates.length;
   const pointIndex = buildDisclosurePointIndex(
     seriesModels,
@@ -3828,7 +3798,7 @@ function buildInsiderTradeTraces(selected, seriesModels, start, end) {
       name: labelName(event.ticker),
       side,
       plotDate: point.date,
-      y: point.y - markerGap,
+      y: point.y - markerGap * INSIDER_MARKER_LINE_GAP_RATIO,
       events: [],
     };
     group.events.push(event);
@@ -3846,7 +3816,10 @@ function buildInsiderTradeTraces(selected, seriesModels, start, end) {
     const paired = sidesByMarker.get(`${group.ticker}|${group.plotDate}`)?.size > 1;
     group.paired = paired;
     if (!paired) return;
-    const offset = markerGap * PAIRED_INSIDER_MARKER_OFFSET_RATIO;
+    const offsetRatio = group.side === "buy"
+      ? PAIRED_INSIDER_BUY_OFFSET_RATIO
+      : PAIRED_INSIDER_SELL_OFFSET_RATIO;
+    const offset = markerGap * offsetRatio;
     group.y += group.side === "buy" ? offset : -offset;
   });
   groups.sort((left, right) => (
@@ -5247,16 +5220,12 @@ async function renderChart(preserveZoom = true) {
         if (hiddenSeries.has(key)) hiddenSeries.delete(key);
         else hiddenSeries.add(key);
       }
-      Plotly.restyle(el, { visible: hiddenSeries.has(key) ? "legendonly" : true }, [idx]);
-      saveState();
-      updateHandles();
+      resetHandles();
       return false;
     });
     el.on("plotly_legenddoubleclick", () => {
       hiddenSeries.clear();
-      Plotly.restyle(el, { visible: currentSelected.map(() => true) });
-      saveState();
-      updateHandles();
+      resetHandles();
       return false;
     });
     el.on("plotly_relayout", (eventData) => {
@@ -5645,6 +5614,7 @@ async function renderAdrChart(xRange) {
   const renderKey = [
     activeMonths,
     hoverShowPopup ? 1 : 0,
+    [...hiddenAuxiliarySeries].sort().join(","),
     dataRevisionSignature("adr", "macro"),
   ].join("::");
   if (lastAdrRenderKey === renderKey && el.data?.length) {
@@ -5940,15 +5910,7 @@ async function renderAdrChart(xRange) {
       if (!key) return true;
       if (hiddenAuxiliarySeries.has(key)) hiddenAuxiliarySeries.delete(key);
       else hiddenAuxiliarySeries.add(key);
-      const indexes = el.data
-        .map((trace, index) => trace?.meta?.auxiliarySeriesKey === key ? index : -1)
-        .filter((index) => index >= 0);
-      Plotly.restyle(
-        el,
-        { visible: hiddenAuxiliarySeries.has(key) ? "legendonly" : true },
-        indexes,
-      );
-      saveState();
+      resetHandles();
       return false;
     });
     el.on("plotly_legenddoubleclick", () => false);
@@ -6900,23 +6862,18 @@ async function boot() {
     document.getElementById("resetHandles").addEventListener("click", resetHandles);
     document.getElementById("aiForecastToggle").addEventListener("click", () => {
       showAiForecast = !showAiForecast;
-      saveState();
       syncAiForecastToggleButton();
       if (showAiForecast) {
         startAiForecastProgress();
         refreshAiAnalysisForVisibleSeries().catch(() => {});
         loadAiMarketModel().catch(() => {});
       } else stopAiForecastProgress();
-      requestChartRender(false);
+      resetHandles();
     });
     document.getElementById("macdToggle").addEventListener("click", () => {
       showMacdOscillator = !showMacdOscillator;
-      saveState();
       syncMacdToggleButton();
-      const mainRange = document.getElementById("chart")?._fullLayout?.xaxis?.range?.slice() || null;
-      renderMacdChart(mainRange).catch((err) => {
-        setMessage(msgEl, err.message || "MACD 차트 렌더링 오류", true);
-      });
+      resetHandles();
     });
     if (showAiForecast) {
       startAiForecastProgress();

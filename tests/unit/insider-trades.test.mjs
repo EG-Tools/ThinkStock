@@ -95,3 +95,47 @@ test("keeps same-day buy and sell details from one major-holder receipt", () => 
   assert.equal(rows.length, 2);
   assert.deepEqual(rows.map((row) => row.side).sort(), ["buy", "sell"]);
 });
+
+test("nets same-day buy and sell trades by the same reporter into one marker", () => {
+  const rows = insiderTrades.sanitizeRows([
+    {
+      ticker: "218410.KQ",
+      date: "2026-07-20",
+      reporter: "Morgan Stanley",
+      sharesChanged: -4767,
+    },
+    {
+      ticker: "218410.KQ",
+      date: "2026-07-20",
+      reporter: "Morgan Stanley",
+      sharesChanged: 13725,
+    },
+    {
+      ticker: "218410.KQ",
+      date: "2026-07-20",
+      reporter: "Another Holder",
+      sharesChanged: -500,
+    },
+  ]);
+
+  const netted = insiderTrades.netSameReporterTrades(rows);
+
+  assert.equal(netted.length, 2);
+  assert.deepEqual(
+    netted.map((row) => [row.reporter, row.side, row.sharesChanged]),
+    [
+      ["Morgan Stanley", "buy", 8958],
+      ["Another Holder", "sell", -500],
+    ],
+  );
+  assert.equal(netted[0].nettedTransactionCount, 2);
+});
+
+test("removes a same-reporter marker when same-day buys and sells net to zero", () => {
+  const rows = insiderTrades.sanitizeRows([
+    { ticker: "218410.KQ", date: "2026-07-20", reporter: "Same Holder", sharesChanged: 500 },
+    { ticker: "218410.KQ", date: "2026-07-20", reporter: "Same Holder", sharesChanged: -500 },
+  ]);
+
+  assert.deepEqual(insiderTrades.netSameReporterTrades(rows), []);
+});

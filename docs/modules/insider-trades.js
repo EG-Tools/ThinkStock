@@ -87,6 +87,39 @@
     ));
   }
 
+  function netSameReporterTrades(records) {
+    const buckets = new Map();
+    (Array.isArray(records) ? records : []).forEach((row, index) => {
+      const reporter = String(row?.reporter || "").trim();
+      const sharesChanged = finiteNumber(row?.sharesChanged);
+      const canNet = reporter && sharesChanged !== null;
+      const key = canNet
+        ? `${row.ticker}|${row.date}|${reporter.toLowerCase()}`
+        : `unmatched|${index}`;
+      const bucket = buckets.get(key) || [];
+      bucket.push(row);
+      buckets.set(key, bucket);
+    });
+
+    return [...buckets.values()].flatMap((rows) => {
+      const hasBuy = rows.some((row) => finiteNumber(row?.sharesChanged) > 0);
+      const hasSell = rows.some((row) => finiteNumber(row?.sharesChanged) < 0);
+      if (!hasBuy || !hasSell) return rows;
+      const sharesChanged = rows.reduce((total, row) => (
+        total + (finiteNumber(row?.sharesChanged) || 0)
+      ), 0);
+      if (!sharesChanged) return [];
+      const side = sharesChanged > 0 ? "buy" : "sell";
+      const representative = rows.find((row) => row?.side === side) || rows[0];
+      return [{
+        ...representative,
+        side,
+        sharesChanged,
+        nettedTransactionCount: rows.length,
+      }];
+    });
+  }
+
   function escapeHtml(value) {
     return String(value ?? "")
       .replaceAll("&", "&amp;")
@@ -152,6 +185,7 @@
     SELL_COLOR,
     buildMarkerTraces,
     mergeRows,
+    netSameReporterTrades,
     normalizeDate,
     sanitizeRow,
     sanitizeRows,
