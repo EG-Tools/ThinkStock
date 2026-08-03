@@ -50,6 +50,20 @@ const {
 const chartInteractionControllerModule = globalThis.ThinkStockChartInteractionController;
 if (!chartInteractionControllerModule) throw new Error("Chart interaction controller module failed to load");
 const { createPointerFrameController } = chartInteractionControllerModule;
+const tickerPriceRuntimeModule = globalThis.ThinkStockTickerPriceRuntime;
+if (!tickerPriceRuntimeModule) throw new Error("Ticker price runtime module failed to load");
+const chartEventLayerModule = globalThis.ThinkStockChartEventLayer;
+if (!chartEventLayerModule) throw new Error("Chart event layer module failed to load");
+const chartAdjustmentsModule = globalThis.ThinkStockChartAdjustments;
+if (!chartAdjustmentsModule) throw new Error("Chart adjustments module failed to load");
+const {
+  defaultScale: defaultSeriesScale,
+  resolveScale: resolveSeriesScale,
+  transformValues: transformSeriesValues,
+  offsetFromDrag,
+  scaleFromDrag,
+  resetTransforms,
+} = chartAdjustmentsModule;
 const browserMarketClientModule = globalThis.ThinkStockBrowserMarketClient;
 if (!browserMarketClientModule) throw new Error("Browser market client module failed to load");
 const auxiliaryChartModelModule = globalThis.ThinkStockAuxiliaryChartModel;
@@ -194,7 +208,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.49";
+const APP_VERSION = "1.50";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -416,7 +430,9 @@ let krxUniverseLoading = false;
 let stockSuggestItems = [];
 let stockSuggestActiveIndex = -1;
 let loadingCustomStocks = new Set();
-let tickerPriceStatusByTicker = new Map();
+const tickerPriceStatusStore = tickerPriceRuntimeModule.createStatusStore({
+  tickerPattern: MACD_STOCK_PATTERN,
+});
 let seriesOffsets = {};
 let seriesScales = {};
 let currentSelected = [];
@@ -503,7 +519,6 @@ let disclosureHoverTimer = 0;
 let pendingDisclosureHoverData = null;
 let disclosureGroupStore = new Map();
 let disclosureGroupStoreSeq = 0;
-let disclosureMarkerPixelCache = new WeakMap();
 let lineHitIndexCache = new WeakMap();
 let pointerMoveController = null;
 const CURSOR_LINE_CLASS = "synced-cursor-line";
@@ -1209,29 +1224,12 @@ function canUseDartGateway() {
 }
 
 function normalizeTickerPriceStatus(ticker, value = {}) {
-  const key = String(ticker || "").trim().toUpperCase();
-  if (!MACD_STOCK_PATTERN.test(key)) return null;
-  const latestDate = String(value.latestDate || "").slice(0, 10);
-  const source = String(value.source || "LOCAL_CACHE").trim().toUpperCase().slice(0, 40);
-  return {
-    ticker: key,
-    source,
-    latestDate: /^\d{4}-\d{2}-\d{2}$/.test(latestDate) ? latestDate : "",
-    marketDate: String(value.marketDate || "").slice(0, 10),
-    expectedDate: String(value.expectedDate || "").slice(0, 10),
-    cached: value.cached === true,
-    localCache: value.localCache === true,
-    stale: value.stale === true,
-    crossCheck: String(value.crossCheck || "").slice(0, 40),
-    warning: String(value.warning || "").trim().slice(0, 300),
-    checkedAt: Number(value.checkedAt) || Date.now(),
-  };
+  return tickerPriceStatusStore.normalize(ticker, value);
 }
 
 function setTickerPriceStatus(ticker, value = {}) {
-  const status = normalizeTickerPriceStatus(ticker, value);
+  const status = tickerPriceStatusStore.set(ticker, value);
   if (!status) return null;
-  tickerPriceStatusByTicker.set(status.ticker, status);
   renderDataFreshness();
   return status;
 }
@@ -1248,11 +1246,7 @@ function tickerPriceSourceLabel(status) {
 }
 
 function visibleTickerPriceStatus() {
-  const visible = visibleStockSeriesKeys();
-  const target = visible.includes(lastVisibleStockSeriesKey)
-    ? lastVisibleStockSeriesKey
-    : visible.at(-1);
-  return target ? tickerPriceStatusByTicker.get(target) || null : null;
+  return tickerPriceStatusStore.visible(visibleStockSeriesKeys(), lastVisibleStockSeriesKey);
 }
 
 async function fetchLatestKrxTickerSeries(ticker, options = {}) {
@@ -1287,7 +1281,7 @@ async function fetchLatestKrxTickerSeries(ticker, options = {}) {
       .filter((point) => /^\d{4}-\d{2}-\d{2}$/.test(point.date) && point.close !== null && point.close > 0);
   } catch (error) {
     if (isAbortError(error) || options?.signal?.aborted) throw error;
-    const previous = tickerPriceStatusByTicker.get(key) || {};
+    const previous = tickerPriceStatusStore.get(key) || {};
     setTickerPriceStatus(key, {
       ...previous,
       source: previous.source || "LOCAL_CACHE",
@@ -1985,85 +1979,20 @@ function findNearestLineDragTarget(el, clientX, clientY, isTouch = false, geomet
 }
 
 function getDisclosureMarkerPixelIndex(el, geometry = null) {
-  if (!el?._fullLayout || !Array.isArray(el.data)) return null;
-  const traceIndex = el.data.findIndex((trace) => trace?.meta?.isDisclosureTrace && trace.visible !== "legendonly");
-  const trace = traceIndex >= 0 ? el.data[traceIndex] : null;
-  const xAxis = el._fullLayout.xaxis;
-  const yAxis = trace?.yaxis === "y2" ? el._fullLayout.yaxis2 : el._fullLayout.yaxis;
-  if (!trace || !xAxis || !yAxis || typeof xAxis.d2p !== "function" || typeof yAxis.d2p !== "function") return null;
-
-  const axisKey = [
-    xAxis._offset,
-    xAxis._length,
-    ...(Array.isArray(xAxis.range) ? xAxis.range : []),
-    yAxis._offset,
-    yAxis._length,
-    ...(Array.isArray(yAxis.range) ? yAxis.range : []),
-  ].map((value) => String(value ?? "")).join("|");
-  const cached = disclosureMarkerPixelCache.get(el);
-  if (
-    cached
-    && cached.trace === trace
-    && cached.xValues === trace.x
-    && cached.yValues === trace.y
-    && cached.axisKey === axisKey
-  ) {
-    return cached;
-  }
-
-  const pointCount = Math.min(
-    Array.isArray(trace.x) ? trace.x.length : 0,
-    Array.isArray(trace.y) ? trace.y.length : 0,
-  );
-  const chartRect = geometry?.rect || el.getBoundingClientRect();
-  const textNodes = [...el.querySelectorAll(".textpoint text")]
-    .filter((node) => node.textContent?.trim() === DISCLOSURE_ICON_TEXT);
-  const points = [];
-  for (let pointIndex = 0; pointIndex < pointCount; pointIndex += 1) {
-    const x = Number(xAxis._offset || 0) + xAxis.d2p(trace.x[pointIndex]);
-    let y = Number(yAxis._offset || 0) + yAxis.d2p(trace.y[pointIndex]);
-    const textRect = textNodes[pointIndex]?.getBoundingClientRect?.();
-    if (textRect?.height) y = textRect.top + textRect.height * 0.5 - chartRect.top;
-    if (Number.isFinite(x) && Number.isFinite(y)) points.push({ x, y, pointIndex });
-  }
-  points.sort((a, b) => a.x - b.x);
-
-  const index = { trace, traceIndex, xValues: trace.x, yValues: trace.y, axisKey, points };
-  disclosureMarkerPixelCache.set(el, index);
-  return index;
+  return chartEventLayerModule.getMarkerPixelIndex(el, {
+    geometry,
+    iconText: DISCLOSURE_ICON_TEXT,
+  });
 }
 
 function findDisclosureMarkerAtClientPoint(el, clientX, clientY, isTouch = false, geometry = null) {
-  const markerIndex = getDisclosureMarkerPixelIndex(el, geometry);
-  if (!markerIndex) return null;
-
-  const rect = geometry?.rect || el.getBoundingClientRect();
-  const localX = clientX - rect.left;
-  const localY = clientY - rect.top;
-  const hitRadius = isTouch ? DISCLOSURE_TOUCH_HIT_RADIUS_PX : DISCLOSURE_MOUSE_HIT_RADIUS_PX;
-  let best = null;
-  let bestDistance = Number.POSITIVE_INFINITY;
-
-  let low = 0;
-  let high = markerIndex.points.length;
-  const minX = localX - hitRadius;
-  while (low < high) {
-    const middle = (low + high) >>> 1;
-    if (markerIndex.points[middle].x < minX) low = middle + 1;
-    else high = middle;
-  }
-
-  for (let index = low; index < markerIndex.points.length; index += 1) {
-    const point = markerIndex.points[index];
-    if (point.x > localX + hitRadius) break;
-    if (Math.abs(point.y - localY) > hitRadius) continue;
-    const distance = Math.hypot(localX - point.x, localY - point.y);
-    if (distance <= hitRadius && distance < bestDistance) {
-      bestDistance = distance;
-      best = { traceIndex: markerIndex.traceIndex, pointIndex: point.pointIndex };
-    }
-  }
-  return best;
+  return chartEventLayerModule.findMarkerAtClientPoint(el, clientX, clientY, {
+    geometry,
+    iconText: DISCLOSURE_ICON_TEXT,
+    isTouch,
+    mouseRadius: DISCLOSURE_MOUSE_HIT_RADIUS_PX,
+    touchRadius: DISCLOSURE_TOUCH_HIT_RADIUS_PX,
+  });
 }
 
 function openDisclosureMarkerHit(el, hit, sourceEvent) {
@@ -2251,8 +2180,7 @@ function beginLineOffsetDrag(el, target, startClientY, pointerId) {
   function onMove(clientY) {
     const dy = clientY - startClientY;
     if (Math.abs(dy) >= 3) moved = true;
-    const dataDelta = -dy * (range[1] - range[0]) / ya._length;
-    seriesOffsets[target.seriesKey] = startOffset + dataDelta;
+    seriesOffsets[target.seriesKey] = offsetFromDrag(startOffset, startClientY, clientY, ya);
     restyleLive(target.traceIndex, target.seriesKey);
   }
 
@@ -2684,23 +2612,7 @@ function removeCustomStock(ticker) {
 
 function clearTickerSeriesFromPricePayload(ticker) {
   if (!ticker || !pricePayload || typeof pricePayload !== "object") return;
-
-  if (Array.isArray(pricePayload.records)) {
-    pricePayload.records.forEach((row) => {
-      if (row && typeof row === "object") delete row[ticker];
-    });
-  }
-  if (pricePayload.columns && typeof pricePayload.columns === "object") {
-    delete pricePayload.columns[ticker];
-  }
-
-  if (Array.isArray(pricePayload.series)) {
-    pricePayload.series = pricePayload.series.filter((key) => key !== ticker);
-  }
-
-  if (pricePayload.display_names && typeof pricePayload.display_names === "object") {
-    delete pricePayload.display_names[ticker];
-  }
+  pricePayload = tickerPriceRuntimeModule.clearSeries(pricePayload, ticker);
   markDataChanged("price");
 }
 
@@ -2824,68 +2736,35 @@ function renderStockSuggestList(items) {
 }
 
 function mergeTickerSeriesIntoPricePayload(ticker, points) {
-  const byDate = new Map();
-  (pricePayload?.records || []).forEach((row) => {
-    const date = String(row?.date || "").slice(0, 10);
-    if (!date) return;
-    byDate.set(date, { ...row });
-  });
-
-  points.forEach(({ date, close }) => {
-    if (!date || !Number.isFinite(close)) return;
-    const prev = byDate.get(date) || { date };
-    prev[ticker] = close;
-    byDate.set(date, prev);
-  });
-
-  const merged = [...byDate.values()].sort((a, b) => String(a.date).localeCompare(String(b.date)));
-  if (!pricePayload) pricePayload = {};
-  pricePayload.records = merged;
-
-  if (!Array.isArray(pricePayload.series)) pricePayload.series = [];
-  if (!pricePayload.series.includes(ticker)) pricePayload.series.push(ticker);
-
-  if (!pricePayload.display_names || typeof pricePayload.display_names !== "object") {
-    pricePayload.display_names = {};
-  }
-  if (DISPLAY_NAMES[ticker]) pricePayload.display_names[ticker] = DISPLAY_NAMES[ticker];
+  pricePayload = tickerPriceRuntimeModule.mergeSeries(
+    pricePayload,
+    ticker,
+    points,
+    DISPLAY_NAMES[ticker],
+  );
   markDataChanged("price");
 }
 
 function getLatestTickerDateFromPricePayload(ticker) {
-  let latest = "";
-  (pricePayload?.records || []).forEach((row) => {
-    const date = String(row?.date || "").slice(0, 10);
-    const value = toNum(row?.[ticker]);
-    if (!date || value === null) return;
-    if (!latest || date > latest) latest = date;
-  });
-  return latest;
+  return tickerPriceRuntimeModule.latestSeriesDate(pricePayload, ticker, toNum);
 }
 
 function getTickerPricePointsFromPayload(ticker) {
-  const key = String(ticker || "").trim().toUpperCase();
-  return normalizeTickerPricePoints((pricePayload?.records || []).map((row) => ({
-    date: row?.date,
-    close: row?.[key],
-  })));
+  return tickerPriceRuntimeModule.seriesPoints(pricePayload, ticker, normalizeTickerPricePoints);
 }
 
 function isTickerPriceCacheFresh(latestDate, ticker) {
-  const latest = String(latestDate || "").slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(latest)) return false;
   const key = String(ticker || "").trim().toUpperCase();
   const expectedDate = expectedLatestKoreanTradingDate(new Date());
-  const status = tickerPriceStatusByTicker.get(key);
-  const recentlyConfirmed = status
-    && !status.stale
-    && status.expectedDate === expectedDate
-    && Date.now() - Number(status.checkedAt || 0) <= DAY_MS;
-  if (recentlyConfirmed) return true;
   const benchmark = key.endsWith(".KQ") ? "^KQ11" : "^KS11";
-  const benchmarkDate = getLatestTickerDateFromPricePayload(benchmark);
-  const requiredDate = [expectedDate, benchmarkDate].filter(Boolean).sort().at(-1) || expectedDate;
-  return latest >= requiredDate;
+  return tickerPriceRuntimeModule.isCacheFresh({
+    latestDate,
+    expectedDate,
+    benchmarkDate: getLatestTickerDateFromPricePayload(benchmark),
+    status: tickerPriceStatusStore.get(key),
+    nowMs: Date.now(),
+    maxAgeMs: DAY_MS,
+  });
 }
 
 async function readTickerPriceCache(ticker) {
@@ -2920,7 +2799,7 @@ async function writeTickerPriceCache(ticker, points, displayName = "") {
     savedAt: now,
     lastAccessed: now,
     latestDate: normalized[normalized.length - 1].date,
-    status: normalizeTickerPriceStatus(key, tickerPriceStatusByTicker.get(key) || {
+    status: normalizeTickerPriceStatus(key, tickerPriceStatusStore.get(key) || {
       source: "LOCAL_CACHE",
       latestDate: normalized[normalized.length - 1].date,
       localCache: true,
@@ -2992,7 +2871,7 @@ async function ensureCustomTickerSeriesLoaded(ticker, options = {}) {
     await writeTickerPriceCache(key, getTickerPricePointsFromPayload(key), displayName);
   } catch (err) {
     if (hasExisting || cacheInfo.applied) {
-      const previous = tickerPriceStatusByTicker.get(key) || {};
+      const previous = tickerPriceStatusStore.get(key) || {};
       setTickerPriceStatus(key, {
         ...previous,
         source: previous.source || "LOCAL_CACHE",
@@ -3534,13 +3413,9 @@ function buildMainChartModel(priceRows, start, end, allowedSeries) {
     values = centeredScale(values, series === "leading_cycle" ? 100 : (autoScales[series] || 100), true);
     const baseValues = values;
 
-    const userScale = seriesScales[series] != null ? seriesScales[series] : defaultSeriesScale(series);
-    if (userScale !== 1) {
-      values = values.map((v) => (v !== null ? 100 + (v - 100) * userScale : null));
-    }
-
     const offset = seriesOffsets[series] || 0;
-    if (offset) values = values.map((v) => (v !== null ? v + offset : null));
+    const userScale = resolveSeriesScale(seriesScales, series);
+    values = transformSeriesValues(values, userScale, offset);
 
     return { series, rawTexts, baseLineWidth, xValues, values, baseValues };
   });
@@ -3761,16 +3636,14 @@ function updateHandles() {
   });
 }
 
-function defaultSeriesScale(seriesKey) {
-  return seriesKey === "leading_cycle" ? 20 : 1;
-}
-
 function computeFinalValues(seriesKey) {
   const base = baseTraceValues[seriesKey];
   if (!base) return null;
-  const s = seriesScales[seriesKey] != null ? seriesScales[seriesKey] : defaultSeriesScale(seriesKey);
-  const o = seriesOffsets[seriesKey] || 0;
-  return base.map((v) => (v !== null ? 100 + (v - 100) * s + o : null));
+  return transformSeriesValues(
+    base,
+    resolveSeriesScale(seriesScales, seriesKey),
+    seriesOffsets[seriesKey] || 0,
+  );
 }
 
 function restyleLive(traceIndex, seriesKey) {
@@ -3851,8 +3724,7 @@ function setupOffsetDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
 
     function onMove(clientY) {
       const dy = clientY - startClientY;
-      const dataDelta = -dy * (ya.range[1] - ya.range[0]) / ya._length;
-      seriesOffsets[seriesKey] = startOffset + dataDelta;
+      seriesOffsets[seriesKey] = offsetFromDrag(startOffset, startClientY, clientY, ya);
       handle.style.top = basePixelY + dy - 7 + "px";
       restyleLive(traceIndex, seriesKey);
     }
@@ -3886,7 +3758,7 @@ function setupOffsetDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
 
 function setupScaleDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
   function onStart(startClientY, pointerId) {
-    const startScale = seriesScales[seriesKey] != null ? seriesScales[seriesKey] : defaultSeriesScale(seriesKey);
+    const startScale = resolveSeriesScale(seriesScales, seriesKey);
     const lockedXRange = getCurrentMainXRange();
     isHandleDragging = true;
     handle.classList.add("dragging");
@@ -3894,8 +3766,7 @@ function setupScaleDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
 
     function onMove(clientY) {
       const dy = clientY - startClientY;
-      const factor = 1 - dy / 150;
-      seriesScales[seriesKey] = startScale * factor;
+      seriesScales[seriesKey] = scaleFromDrag(startScale, startClientY, clientY);
       handle.style.top = basePixelY + dy - 7 + "px";
       restyleLive(traceIndex, seriesKey);
     }
@@ -3949,8 +3820,9 @@ function addDragListeners(pointerId, onMove, onEnd) {
 }
 
 function resetHandles() {
-  seriesOffsets = {};
-  seriesScales = {};
+  const transforms = resetTransforms();
+  seriesOffsets = transforms.offsets;
+  seriesScales = transforms.scales;
   pinnedXRange = null;
   useViewportEventMarkerGap = false;
   saveState();
@@ -3958,64 +3830,21 @@ function resetHandles() {
 }
 
 function buildDisclosurePointIndex(seriesModels, tickers) {
-  const index = {};
-  const modelBySeries = new Map((seriesModels || []).map((model) => [model.series, model]));
-  (tickers || []).forEach((ticker) => {
-    const model = modelBySeries.get(ticker);
-    if (!model) return;
-    const pointCount = Math.min(model.xValues?.length || 0, model.values?.length || 0);
-    index[ticker] = Array.from({ length: pointCount }, (_, pointIndex) => {
-      const date = String(model.xValues[pointIndex] || "").slice(0, 10);
-      const y = model.values[pointIndex];
-      const ms = toUtcMs(date);
-      return date && Number.isFinite(y) && Number.isFinite(ms) ? { date, y, ms } : null;
-    })
-      .filter(Boolean);
-  });
-  return index;
+  return chartEventLayerModule.buildPointIndex(seriesModels, tickers, toUtcMs);
 }
 
 function findDisclosurePointOnDate(eventDate, ticker, pointIndex) {
-  const points = pointIndex?.[ticker];
-  if (!points?.length) return null;
-  let lo = 0;
-  let hi = points.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (points[mid].date < eventDate) lo = mid + 1;
-    else hi = mid;
-  }
-  const point = points[lo];
-  return point?.date === eventDate ? { date: point.date, y: point.y } : null;
+  return chartEventLayerModule.findPointOnDate(eventDate, ticker, pointIndex);
 }
 
 function chartEventMarkerGap(seriesModels, start, end) {
   const axis = document.getElementById("chart")?._fullLayout?.yaxis;
-  const viewportRange = axis?.range;
-  if (useViewportEventMarkerGap && Array.isArray(viewportRange) && viewportRange.length >= 2) {
-    const viewportSpan = Math.abs(Number(viewportRange[1]) - Number(viewportRange[0]));
-    if (Number.isFinite(viewportSpan) && viewportSpan > 1e-9) {
-      return viewportSpan * EVENT_MARKER_GAP_RATIO;
-    }
-  }
-  let minimum = Number.POSITIVE_INFINITY;
-  let maximum = Number.NEGATIVE_INFINITY;
-  (seriesModels || []).forEach((model) => {
-    if (hiddenSeries.has(model.series)) return;
-    const count = Math.min(model.xValues?.length || 0, model.values?.length || 0);
-    for (let index = 0; index < count; index += 1) {
-      const date = String(model.xValues[index] || "").slice(0, 10);
-      const value = model.values[index];
-      if (date < start || date > end || !Number.isFinite(value)) continue;
-      minimum = Math.min(minimum, value);
-      maximum = Math.max(maximum, value);
-    }
+  return chartEventLayerModule.markerGap(seriesModels, start, end, {
+    ratio: EVENT_MARKER_GAP_RATIO,
+    hiddenSeries,
+    useViewport: useViewportEventMarkerGap,
+    viewportRange: axis?.range,
   });
-  if (!Number.isFinite(minimum) || !Number.isFinite(maximum)) return 1;
-  const span = maximum - minimum;
-  return span > 1e-9
-    ? span * EVENT_MARKER_GAP_RATIO
-    : Math.max(Math.abs(maximum) * 0.006, 0.6);
 }
 
 function buildDisclosureTrace(selected, seriesModels, start, end) {
@@ -4150,13 +3979,11 @@ function updateCurrentMainChartSeriesTransform(seriesKey) {
   if (!seriesKey || !currentMainChartModel?.seriesModels) return true;
   const model = currentMainChartModel.seriesModels.find((item) => item.series === seriesKey);
   if (!model || !Array.isArray(model.baseValues)) return false;
-  const scale = seriesScales[seriesKey] != null
-    ? seriesScales[seriesKey]
-    : defaultSeriesScale(seriesKey);
-  const offset = seriesOffsets[seriesKey] || 0;
-  model.values = model.baseValues.map((value) => (
-    value !== null ? 100 + (value - 100) * scale + offset : null
-  ));
+  model.values = transformSeriesValues(
+    model.baseValues,
+    resolveSeriesScale(seriesScales, seriesKey),
+    seriesOffsets[seriesKey] || 0,
+  );
   return true;
 }
 
@@ -4202,7 +4029,7 @@ function refreshDisclosureTraceFast(seriesKey = "") {
   mainChartCalcCache = null;
   partialDisclosureUpdateCount += 1;
   hideDisclosurePopover();
-  disclosureMarkerPixelCache.delete(el);
+  chartEventLayerModule.invalidateMarkerPixels(el);
   Promise.resolve(task)
     .then(() => {
       syncDisclosureToggleButton(lastDisclosureTraceStats.markers);
@@ -4224,7 +4051,7 @@ function applyDisclosureStateFast(seriesKey = "") {
   lastDisclosureTraceStats = { total: disclosureRows.length, candidates: 0, markers: 0 };
   syncDisclosureToggleButton(0);
   if (traceIndex < 0) return true;
-  disclosureMarkerPixelCache.delete(el);
+  chartEventLayerModule.invalidateMarkerPixels(el);
   Promise.resolve(Plotly.deleteTraces(el, traceIndex))
     .then(() => {
       updateHandles();
