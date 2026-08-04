@@ -1150,7 +1150,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await expect(page.locator("#appVersionText")).toHaveText(/^\d+\.\d+$/);
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
-  await expect(page.locator("#hoverToggle")).toHaveText("팝업");
+  await expect(page.locator("#hoverToggle")).toHaveText("정보창");
   await expect(page.locator("#hoverToggle")).toHaveCSS("color", "rgb(138, 138, 138)");
   if (isMobile) {
     const buttonSizing = await page.locator("#hoverToggle").evaluate((button) => ({
