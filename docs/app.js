@@ -151,8 +151,6 @@ const MACD_STOCK_PATTERN = /^\d{6}\.(KS|KQ)$/;
 const CO_MOVEMENT_COMPARISONS = Object.freeze([
   { key: "^KS11", label: "코스피" },
   { key: "^KQ11", label: "코스닥" },
-  { key: "kospi_credit", label: "코스피 신용" },
-  { key: "kosdaq_credit", label: "코스닥 신용" },
 ]);
 const SUPPLEMENTAL_SERIES = [...ADR_SERIES, ...FEAR_GREED_SERIES, ...NEWS_SENTIMENT_SERIES];
 const CORE_SERIES = ["leading_cycle", "^KS11", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit"];
@@ -208,7 +206,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.50";
+const APP_VERSION = "1.51";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -2128,7 +2126,7 @@ function renderCoMovementPanel() {
 
   const title = document.createElement("strong");
   title.className = "co-movement-title";
-  title.textContent = `${summary.targetName} ${summary.periodLabel} 동행율`;
+  title.textContent = `${summary.targetName} ${summary.periodLabel}`;
   const nodes = [title];
   summary.comparisons.forEach((comparison) => {
     const metric = document.createElement("span");

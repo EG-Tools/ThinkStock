@@ -518,11 +518,10 @@ test("co-movement toggle shows only the last visible stock for the selected peri
   expect(coMovementLayout.topOffset).toBeLessThanOrEqual(18);
   expect(coMovementLayout.borderWidth).toBe("0px");
   expect(coMovementLayout.backgroundColor).toBe("rgba(0, 0, 0, 0)");
-  await expect(page.locator("#coMovementPanel")).toContainText("SK하이닉스 1년 동행율");
+  await expect(page.locator("#coMovementPanel")).toContainText("SK하이닉스 1년");
   await expect(page.locator("#coMovementPanel")).toContainText("코스피 75%");
   await expect(page.locator("#coMovementPanel")).toContainText("코스닥 75%");
-  await expect(page.locator("#coMovementPanel")).toContainText("코스피 신용 75%");
-  await expect(page.locator("#coMovementPanel")).toContainText("코스닥 신용 75%");
+  await expect(page.locator("#coMovementPanel .co-movement-metric")).toHaveCount(2);
 
   const clickStockLine = async (ticker, date) => {
     const point = await page.locator("#chart").evaluate((element, target) => {
@@ -541,17 +540,17 @@ test("co-movement toggle shows only the last visible stock for the selected peri
     await page.mouse.click(point.x, point.y);
   };
   await clickStockLine("005930.KS", "2026-01-14");
-  await expect(page.locator("#coMovementPanel")).toContainText("삼성전자 1년 동행율");
+  await expect(page.locator("#coMovementPanel")).toContainText("삼성전자 1년");
   await clickStockLine("000660.KS", "2026-01-14");
-  await expect(page.locator("#coMovementPanel")).toContainText("SK하이닉스 1년 동행율");
+  await expect(page.locator("#coMovementPanel")).toContainText("SK하이닉스 1년");
 
   await page.locator('[data-series="000660.KS"]').click();
-  await expect(page.locator("#coMovementPanel")).toContainText("삼성전자 1년 동행율");
+  await expect(page.locator("#coMovementPanel")).toContainText("삼성전자 1년");
   await page.locator('[data-series="000660.KS"]').click();
-  await expect(page.locator("#coMovementPanel")).toContainText("SK하이닉스 1년 동행율");
+  await expect(page.locator("#coMovementPanel")).toContainText("SK하이닉스 1년");
 
   await page.locator('.range-btn[data-months="3"]').click();
-  await expect(page.locator("#coMovementPanel")).toContainText("SK하이닉스 3개월 동행율");
+  await expect(page.locator("#coMovementPanel")).toContainText("SK하이닉스 3개월");
   await page.locator("#coMovementToggle").click();
   await expect(page.locator("#coMovementPanel")).toBeHidden();
 });
@@ -1151,7 +1150,15 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await expect(page.locator("#appVersionText")).toHaveText(/^\d+\.\d+$/);
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
+  await expect(page.locator("#hoverToggle")).toHaveText("차트창");
   await expect(page.locator("#hoverToggle")).toHaveCSS("color", "rgb(138, 138, 138)");
+  if (isMobile) {
+    const buttonSizing = await page.locator("#hoverToggle").evaluate((button) => ({
+      width: button.getBoundingClientRect().width,
+      scrollWidth: button.scrollWidth,
+    }));
+    expect(buttonSizing.width - buttonSizing.scrollWidth).toBeLessThanOrEqual(2);
+  }
   await page.locator("#hoverToggle").click();
   await expect(page.locator("#hoverToggle")).toHaveClass(/is-active/);
   await expect(page.locator("#hoverToggle")).toHaveCSS("background-color", "rgba(74, 222, 128, 0.12)");
