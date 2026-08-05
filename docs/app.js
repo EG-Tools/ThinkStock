@@ -206,7 +206,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.64";
+const APP_VERSION = "1.65";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -510,6 +510,9 @@ let cursorSyncing = false;
 let cursorMoveBound = false;
 let renderChartRafId = 0;
 let pendingRenderPreserveZoom = true;
+let mainChartRenderInFlight = 0;
+let disclosureTraceRefreshQueued = false;
+let disclosureTraceRefreshRafId = 0;
 let deferredRenderTimer = 0;
 let pendingDeferredRenderPreserveZoom = true;
 let handleUpdateTimer = 0;
@@ -4996,14 +4999,14 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
   const task = ensureDisclosureSeedForTicker(target)
     .then(async (seedInfo) => {
       if (seedInfo?.added > 0) {
-        if (!applyDisclosureStateFast()) requestChartRender(false);
+        queueDisclosureTraceRefresh();
       }
       if (canUseDartGateway()) {
         const refreshOptions = {
           forceNetwork: false,
           onBatch: async (_batch, progress) => {
-            // Stream new markers without restarting the price-line render.
-            if (currentMainChartModel?.seriesModels?.length) applyDisclosureStateFast();
+            // Coalesce streamed pages until the current line render has finished.
+            if (currentMainChartModel?.seriesModels?.length) queueDisclosureTraceRefresh();
             const pageText = progress.cached
               ? "저장된 공시를 불러왔습니다."
               : `최신 공시 확인 중 ${progress.page}/${progress.totalPages}`;
@@ -5020,7 +5023,7 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
           });
         }
         if (refreshInfo?.added > 0 || refreshInfo?.fetched > 0) {
-          if (!applyDisclosureStateFast()) requestChartRender(false);
+          queueDisclosureTraceRefresh();
         }
       }
       scheduleLastRuntimeSnapshotSave();
@@ -5040,6 +5043,23 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
     });
   dartDisclosureTickerRefreshPromises.set(target, task);
   return task;
+}
+
+function queueDisclosureTraceRefresh() {
+  disclosureTraceRefreshQueued = true;
+  if (disclosureTraceRefreshRafId) return;
+  disclosureTraceRefreshRafId = requestAnimationFrame(() => {
+    disclosureTraceRefreshRafId = 0;
+    if (!disclosureTraceRefreshQueued) return;
+    // Plotly cannot safely restyle an event trace while the line traces are being rebuilt.
+    if (mainChartRenderInFlight || renderChartRafId) return;
+    disclosureTraceRefreshQueued = false;
+    if (!applyDisclosureStateFast()) requestChartRender(false);
+  });
+}
+
+function flushQueuedDisclosureTraceRefresh() {
+  if (disclosureTraceRefreshQueued) queueDisclosureTraceRefresh();
 }
 
 function preloadTickerDartData(ticker, msgEl) {
@@ -5102,7 +5122,7 @@ function requestChartRender(preserveZoom = true, options = {}) {
     const nextPreserveZoom = pendingRenderPreserveZoom;
     renderChartRafId = 0;
     pendingRenderPreserveZoom = true;
-    renderChart(nextPreserveZoom).catch((err) => {
+    runMainChartRender(nextPreserveZoom).catch((err) => {
       const msgEl = document.getElementById("messageArea");
       setMessage(msgEl, err.message || "차트 렌더링 오류", true);
     });
@@ -5114,11 +5134,21 @@ function renderChartWhenIdleOrNow(preserveZoom = true) {
     requestChartRender(preserveZoom);
     return false;
   }
-  renderChart(preserveZoom).catch((err) => {
+  runMainChartRender(preserveZoom).catch((err) => {
     const msgEl = document.getElementById("messageArea");
     setMessage(msgEl, err.message || "차트 렌더링 오류", true);
   });
   return true;
+}
+
+async function runMainChartRender(preserveZoom = true) {
+  mainChartRenderInFlight += 1;
+  try {
+    await renderChart(preserveZoom);
+  } finally {
+    mainChartRenderInFlight = Math.max(0, mainChartRenderInFlight - 1);
+    flushQueuedDisclosureTraceRefresh();
+  }
 }
 
 function aiForecastHistoryRows(series) {
@@ -6882,7 +6912,7 @@ async function applyRuntimeRefreshChanges(revisionsBefore, options = {}) {
   const adrDataChanged = revisionsAfter.adr !== revisionsBefore.adr;
   const disclosureDataChanged = revisionsAfter.disclosure !== revisionsBefore.disclosure;
   if (mainDataChanged) {
-    if (options.awaitMainRender) await renderChart(false);
+    if (options.awaitMainRender) await runMainChartRender(false);
     else renderChartWhenIdleOrNow(false);
   } else {
     if (adrDataChanged) {
@@ -6890,7 +6920,7 @@ async function applyRuntimeRefreshChanges(revisionsBefore, options = {}) {
       const mainEl = document.getElementById("chart");
       renderAdrChart(mainEl?._fullLayout?.xaxis?.range?.slice() || null);
     }
-    if (disclosureDataChanged && !applyDisclosureStateFast()) requestChartRender(false);
+    if (disclosureDataChanged) queueDisclosureTraceRefresh();
   }
   return { revisionsAfter, mainDataChanged, adrDataChanged, disclosureDataChanged };
 }
@@ -7121,7 +7151,7 @@ async function boot() {
     setStartupLoaderProgress(56, "Loading chart engine");
     const plotlyResult = await plotlyReadyTask;
     if (plotlyResult.error) throw plotlyResult.error;
-    await renderChart(false);
+    await runMainChartRender(false);
     setStartupLoaderProgress(72, restoredLastSnapshot ? "Rendering last view" : "Rendering saved data");
 
     appUiBindingsModule.bindRangeButtons({
