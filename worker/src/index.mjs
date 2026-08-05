@@ -233,6 +233,23 @@ function mergeCreditRows(existing, incoming) {
   return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
 }
 
+export function parseFreesisPayload(text) {
+  const source = String(text || "").trim();
+  try {
+    return JSON.parse(source);
+  } catch (_) {
+    // Freesis occasionally omits a comma before the next TMPV field.
+    const repaired = source
+      .replace(/([0-9}"\]])\s*(?="TMPV\d+"\s*:)/g, "$1,")
+      .replace(/}\s*(?=\{)/g, "},");
+    try {
+      return JSON.parse(repaired);
+    } catch (error) {
+      throw new Error(`KOFIA JSON parsing failed: ${error?.message || error}`);
+    }
+  }
+}
+
 async function fetchFreesisRows(objectName) {
   const end = koreanDateText().replaceAll("-", "");
   const start = shiftDate(koreanDateText(), -180).replaceAll("-", "");
@@ -253,7 +270,7 @@ async function fetchFreesisRows(objectName) {
         }),
       });
       if (!response.ok) throw new Error(`KOFIA HTTP ${response.status}`);
-      const payload = await response.json();
+      const payload = parseFreesisPayload(await response.text());
       const rows = Array.isArray(payload?.ds1) ? payload.ds1 : [];
       if (rows.length) return rows;
       throw new Error("KOFIA returned no rows");

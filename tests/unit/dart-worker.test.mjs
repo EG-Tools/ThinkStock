@@ -16,6 +16,7 @@ import {
   mergeForecastJournalRecords,
   mergeInsiderRecords,
   mergeRecords,
+  parseFreesisPayload,
   parseNaverPriceText,
   evaluateNaverPriceFallback,
   parseMajorHolderDocument,
@@ -166,6 +167,17 @@ test("returns authenticated recent credit balances and caches the KOFIA response
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("repairs the occasional missing KOFIA field comma before parsing", () => {
+  const payload = parseFreesisPayload(
+    '{"ds1":[{"TMPV1":"20260804","TMPV2":110407060542129 "TMPV3":45616688934659}]}',
+  );
+  assert.deepEqual(payload.ds1[0], {
+    TMPV1: "20260804",
+    TMPV2: 110407060542129,
+    TMPV3: 45616688934659,
+  });
 });
 
 test("checks credit balances once after the 09:31 Korean market-data window", () => {
