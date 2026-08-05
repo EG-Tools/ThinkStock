@@ -206,7 +206,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.65";
+const APP_VERSION = "1.66";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -511,6 +511,7 @@ let cursorMoveBound = false;
 let renderChartRafId = 0;
 let pendingRenderPreserveZoom = true;
 let mainChartRenderInFlight = 0;
+let pendingChartRenderAfterFlight = false;
 let disclosureTraceRefreshQueued = false;
 let disclosureTraceRefreshRafId = 0;
 let deferredRenderTimer = 0;
@@ -556,6 +557,7 @@ let runtimeRefreshGeneration = 0;
 let runtimeRefreshPhaseStats = { criticalReady: 0, supplementalReady: 0 };
 let runtimeRefreshStatus = { state: "idle", detail: "", updatedAt: 0 };
 let runtimeRefreshStatusHideTimer = 0;
+let runtimeRefreshStatusFadeTimer = 0;
 function initE2eDebugAccess() {
   try {
     const params = new URLSearchParams(window.location.search || "");
@@ -1352,7 +1354,12 @@ function setRuntimeRefreshStatus(state, detail = "") {
     clearTimeout(runtimeRefreshStatusHideTimer);
     runtimeRefreshStatusHideTimer = 0;
   }
+  if (runtimeRefreshStatusFadeTimer) {
+    clearTimeout(runtimeRefreshStatusFadeTimer);
+    runtimeRefreshStatusFadeTimer = 0;
+  }
   el.hidden = false;
+  el.classList.remove("is-fading");
   const isLoading = state === "loading";
   const isError = state === "error";
   el.classList.toggle("is-loading", isLoading);
@@ -1360,7 +1367,14 @@ function setRuntimeRefreshStatus(state, detail = "") {
   el.dataset.state = state;
   el.textContent = runtimeRefreshStatus.detail || "최신 데이터 확인 대기";
   if (state !== "loading") {
-    runtimeRefreshStatusHideTimer = setTimeout(() => { el.hidden = true; }, 1000);
+    runtimeRefreshStatusHideTimer = setTimeout(() => {
+      el.classList.add("is-fading");
+      runtimeRefreshStatusFadeTimer = setTimeout(() => {
+        el.hidden = true;
+        el.classList.remove("is-fading");
+        runtimeRefreshStatusFadeTimer = 0;
+      }, 450);
+    }, 5000);
   }
 }
 
@@ -5117,7 +5131,10 @@ function requestChartRender(preserveZoom = true, options = {}) {
     return;
   }
   pendingRenderPreserveZoom = pendingRenderPreserveZoom && preserveZoom;
-  if (renderChartRafId) return;
+  if (renderChartRafId || mainChartRenderInFlight) {
+    pendingChartRenderAfterFlight = pendingChartRenderAfterFlight || mainChartRenderInFlight > 0;
+    return;
+  }
   renderChartRafId = requestAnimationFrame(() => {
     const nextPreserveZoom = pendingRenderPreserveZoom;
     renderChartRafId = 0;
@@ -5147,6 +5164,11 @@ async function runMainChartRender(preserveZoom = true) {
     await renderChart(preserveZoom);
   } finally {
     mainChartRenderInFlight = Math.max(0, mainChartRenderInFlight - 1);
+    if (mainChartRenderInFlight) return;
+    if (pendingChartRenderAfterFlight) {
+      pendingChartRenderAfterFlight = false;
+      requestChartRender(pendingRenderPreserveZoom, { deferDuringInteraction: false });
+    }
     flushQueuedDisclosureTraceRefresh();
   }
 }
