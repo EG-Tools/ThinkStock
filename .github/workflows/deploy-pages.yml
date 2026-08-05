@@ -5,9 +5,6 @@ on:
     branches:
       - main
   workflow_dispatch:
-  schedule:
-    # 18:30 KST on weekdays, after the Korean market closes.
-    - cron: "30 9 * * 1-5"
 
 permissions:
   contents: read
@@ -74,6 +71,7 @@ jobs:
         run: npm run build:web
 
       - name: Restore Last Known-Good Pages Data
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/cache@v5
         with:
           path: docs/data
@@ -82,9 +80,11 @@ jobs:
             thinkstock-pages-data-v1-
 
       - name: Snapshot Data Baseline
+        if: github.event_name == 'workflow_dispatch'
         run: cp -a docs/data .pages-data-baseline
 
       - name: Setup Python
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
@@ -92,12 +92,15 @@ jobs:
           cache-dependency-path: requirements-pages.txt
 
       - name: Install Data Build Dependencies
+        if: github.event_name == 'workflow_dispatch'
         run: python -m pip install --disable-pip-version-check --requirement requirements-pages.txt
 
       - name: Test Data Regression Guard
+        if: github.event_name == 'workflow_dispatch'
         run: python -m unittest discover -s scripts/tests -p "test_*.py"
 
       - name: Build Pages Data
+        if: github.event_name == 'workflow_dispatch'
         env:
           ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}
           KOSIS_API_KEY: ${{ secrets.KOSIS_API_KEY }}
@@ -108,10 +111,11 @@ jobs:
         run: python scripts/build_pages_data.py
 
       - name: Publish Data Build Health
-        if: always()
+        if: always() && github.event_name == 'workflow_dispatch'
         run: python scripts/summarize_build_report.py >> "$GITHUB_STEP_SUMMARY"
 
       - name: Validate Pages Data
+        if: github.event_name == 'workflow_dispatch'
         env:
           KOFIA_API_KEY: ${{ secrets.KOFIA_API_KEY }}
           ENABLE_FREESIS_CREDIT_TAIL: "1"
@@ -119,6 +123,7 @@ jobs:
         run: python scripts/validate_pages_data.py
 
       - name: Reject Data Regression
+        if: github.event_name == 'workflow_dispatch'
         run: python scripts/check_pages_data_regression.py --baseline .pages-data-baseline --current docs/data
 
       - name: Stamp Pages Asset Version

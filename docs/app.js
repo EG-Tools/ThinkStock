@@ -206,7 +206,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.56";
+const APP_VERSION = "1.57";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -260,6 +260,7 @@ const DART_GATEWAY_DISCLOSURE_ENDPOINT = `${DART_GATEWAY_URL}/api/dart/disclosur
 const DART_GATEWAY_INSIDER_ENDPOINT = `${DART_GATEWAY_URL}/api/dart/insider-trades`;
 const KRX_GATEWAY_PRICE_ENDPOINT = `${DART_GATEWAY_URL}/api/prices`;
 const ECOS_GATEWAY_MACRO_ENDPOINT = `${DART_GATEWAY_URL}/api/macro`;
+const CREDIT_GATEWAY_ENDPOINT = `${DART_GATEWAY_URL}/api/credit`;
 const AI_ANALYSIS_ENDPOINT = `${DART_GATEWAY_URL}/api/analysis`;
 const AI_FORECAST_JOURNAL_ENDPOINT = `${DART_GATEWAY_URL}/api/forecast-journal`;
 const AI_MARKET_MODEL_URL = "./data/ai_market_model.json";
@@ -6547,6 +6548,25 @@ async function refreshEcosMacroFromGateway(signal = null) {
   if (news.updated) applied.push(`뉴스심리 ${news.updated}건 반영(~ ${news.latestDate})`);
   return { applied, warnings: payload.warning ? [payload.warning] : [] };
 }
+
+async function refreshCreditFromGateway(signal = null) {
+  if (!canUseDartGateway()) return { applied: [], warnings: [] };
+  const response = await fetchWithTimeout(`${CREDIT_GATEWAY_ENDPOINT}?refresh=1`, {
+    cache: "no-store",
+    headers: { Authorization: `Bearer ${getDartGatewayAccessToken()}` },
+    signal,
+  }, DART_GATEWAY_REQUEST_TIMEOUT_MS);
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || payload?.ok !== true) {
+    if (response.status === 401) clearInvalidDartGatewayAccessToken();
+    throw new Error(payload?.error || `credit HTTP ${response.status}`);
+  }
+  const result = applyCreditLiveRows(scaleCreditRowsToExisting(payload.rows, creditRows));
+  return {
+    applied: result.updated ? [`신용·예탁금 ${result.updated}건 반영(~ ${result.latestDate})`] : [],
+    warnings: payload.warning ? [payload.warning] : [],
+  };
+}
 /**
  * Fetch adrinfo.kr/chart via CORS proxy, parse arrays, and append only new rows to adrRows.
  * Returns: { added: number, latestDate: string }
@@ -6847,6 +6867,13 @@ async function runRuntimeDataRefresh(msgEl, options = {}) {
     .then((result) => ({ info: result.applied || [], warnings: result.warnings || [] }))
     .catch((error) => ({ info: [], warnings: [`ECOS 지표 불러오기 오류: ${error.message}`] }));
 
+  const creditTask = () => {
+    if (!forceNetwork) return Promise.resolve({ info: [], warnings: [] });
+    return refreshCreditFromGateway(signal)
+      .then((result) => ({ info: result.applied || [], warnings: result.warnings || [] }))
+      .catch((error) => ({ info: [], warnings: [`신용·예탁금 불러오기 오류: ${error.message}`] }));
+  };
+
   const dartTask = () => {
     if (!forceNetwork || !canUseDartGateway()) {
       return Promise.resolve({ info: [], warnings: [], refreshed: false });
@@ -6885,7 +6912,7 @@ async function runRuntimeDataRefresh(msgEl, options = {}) {
 
   await runRefreshPhases({
     criticalTasks: [coreIndexTask, preloadTask, liveTask],
-    supplementalTasks: [adrTask, fearGreedTask, dartTask, ecosTask],
+    supplementalTasks: [adrTask, fearGreedTask, dartTask, ecosTask, creditTask],
     onCritical: async (results) => {
       throwIfAborted(signal);
       collectResults(results);

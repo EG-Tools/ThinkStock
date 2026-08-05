@@ -65,6 +65,11 @@ const ECOS_LEADING_STAT_CODE = "901Y067";
 const ECOS_LEADING_ITEM_CODE = "I16E";
 const ECOS_NEWS_STAT_CODE = "521Y001";
 const ECOS_NEWS_ITEM_CODE = "A001";
+const CREDIT_CACHE_SCHEMA = 1;
+const CREDIT_CACHE_KEY = `credit-macro:${CREDIT_CACHE_SCHEMA}`;
+const FREESIS_CREDIT_URL = "https://freesis.kofia.or.kr/meta/getMetaDataList.do";
+const FREESIS_CREDIT_OBJECT = "STATSCU0100000070BO";
+const CREDIT_CACHE_TTL_SECONDS = 6 * 60 * 60;
 const IMPORTANT_DISCLOSURE_PATTERN = /반기보고서|분기보고서|사업보고서|영업\(잠정\)실적|잠정실적|매출액.?또는.?손익구조|감사보고서제출|배당|현금ㆍ현물배당|단일판매|공급계약|수주|유상증자|무상증자|감자|증권신고서\(지분증권\)|전환사채|신주인수권|신주인수권부사채|교환사채|사채권|자기주식(취득|처분)결정|주식소각|합병|분할|영업양수|영업양도|타법인주식|출자증권|신규시설투자|시설투자|최대주주변경|대표이사.*변경|영업정지|거래정지|상장폐지|관리종목|소송|횡령|배임|회생|파산|부도|공개매수|장래사업|경영계획/;
 const PUBLIC_ORIGIN = "https://eg-tools.github.io";
 
@@ -204,6 +209,81 @@ async function ecosMacroResponse(env, origin, refresh = false) {
   } catch (error) {
     if (cached?.schema === ECOS_CACHE_SCHEMA) return jsonResponse({ ok: true, cached: true, stale: true, warning: "ECOS 연결 실패로 마지막 저장 지표를 사용했습니다.", ...cached }, 200, origin);
     return jsonResponse({ ok: false, error: `ECOS 조회 실패: ${error?.message || error}` }, 503, origin);
+  }
+}
+
+function creditAmountToTrillion(value) {
+  const amount = finiteNumber(String(value ?? "").replaceAll(",", ""), { min: 0 });
+  return amount === null ? null : Math.round((amount / 1e12) * 10000) / 10000;
+}
+
+function mergeCreditRows(existing, incoming) {
+  const byDate = new Map();
+  [...(existing || []), ...(incoming || [])].forEach((row) => {
+    const date = String(row?.date || "").slice(0, 10);
+    if (!isValidIsoDate(date)) return;
+    const previous = byDate.get(date) || { date };
+    const next = { ...previous };
+    ["customer_deposit", "kospi_credit", "kosdaq_credit"].forEach((key) => {
+      const value = finiteNumber(row?.[key], { min: 0 });
+      if (value !== null) next[key] = value;
+    });
+    if (Object.keys(next).length > 1) byDate.set(date, next);
+  });
+  return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
+}
+
+async function fetchFreesisCreditRows() {
+  const end = koreanDateText().replaceAll("-", "");
+  const start = shiftDate(koreanDateText(), -180).replaceAll("-", "");
+  const response = await fetch(FREESIS_CREDIT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json; charset=UTF-8" },
+    body: JSON.stringify({
+      dmSearch: {
+        OBJ_NM: FREESIS_CREDIT_OBJECT,
+        tmpV1: "D",
+        tmpV40: "01",
+        tmpV45: start,
+        tmpV46: end,
+      },
+    }),
+  });
+  if (!response.ok) throw new Error(`KOFIA HTTP ${response.status}`);
+  const payload = await response.json();
+  return (Array.isArray(payload?.ds1) ? payload.ds1 : []).map((row) => {
+    const rawDate = String(row?.TMPV1 || "");
+    const date = /^\d{8}$/.test(rawDate)
+      ? `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`
+      : "";
+    return {
+      date,
+      kospi_credit: creditAmountToTrillion(row?.TMPV3),
+      kosdaq_credit: creditAmountToTrillion(row?.TMPV4),
+    };
+  }).filter((row) => isValidIsoDate(row.date)
+    && (row.kospi_credit !== null || row.kosdaq_credit !== null));
+}
+
+async function creditMacroResponse(env, origin, refresh = false) {
+  const cached = env.DISCLOSURE_CACHE ? await env.DISCLOSURE_CACHE.get(CREDIT_CACHE_KEY, "json") : null;
+  if (!refresh && cached?.schema === CREDIT_CACHE_SCHEMA) return jsonResponse({ ok: true, cached: true, ...cached }, 200, origin);
+  try {
+    const rows = await fetchFreesisCreditRows();
+    const payload = {
+      schema: CREDIT_CACHE_SCHEMA,
+      savedAt: Date.now(),
+      rows: mergeCreditRows(cached?.rows, rows).slice(-210),
+    };
+    if (env.DISCLOSURE_CACHE) {
+      await env.DISCLOSURE_CACHE.put(CREDIT_CACHE_KEY, JSON.stringify(payload), {
+        expirationTtl: CREDIT_CACHE_TTL_SECONDS,
+      });
+    }
+    return jsonResponse({ ok: true, cached: false, ...payload }, 200, origin);
+  } catch (error) {
+    if (cached?.schema === CREDIT_CACHE_SCHEMA) return jsonResponse({ ok: true, cached: true, stale: true, warning: "신용 잔고 연결 실패로 마지막 확인 데이터를 사용합니다.", ...cached }, 200, origin);
+    return jsonResponse({ ok: false, error: `신용 잔고 조회 실패: ${error?.message || error}` }, 503, origin);
   }
 }
 
@@ -1451,10 +1531,11 @@ export async function handleRequest(request, env, ctx = null) {
   const isAnalysisRequest = url.pathname === "/api/analysis" && request.method === "GET";
   const isPriceRequest = url.pathname === "/api/prices" && request.method === "GET";
   const isMacroRequest = url.pathname === "/api/macro" && request.method === "GET";
+  const isCreditRequest = url.pathname === "/api/credit" && request.method === "GET";
   const isJournalRequest = url.pathname === "/api/forecast-journal"
     && ["GET", "POST"].includes(request.method);
   if (!isDartRequest && !isInsiderRequest && !isAuthCheckRequest
-    && !isConsensusRequest && !isAnalysisRequest && !isPriceRequest && !isMacroRequest && !isJournalRequest) {
+    && !isConsensusRequest && !isAnalysisRequest && !isPriceRequest && !isMacroRequest && !isCreditRequest && !isJournalRequest) {
     return jsonResponse({ ok: false, error: "Not found" }, 404, origin);
   }
   if (!env.THINKSTOCK_ACCESS_TOKEN
@@ -1465,6 +1546,10 @@ export async function handleRequest(request, env, ctx = null) {
   if (isMacroRequest) {
     const refresh = ["1", "true", "yes"].includes(String(url.searchParams.get("refresh") || "").toLowerCase());
     return ecosMacroResponse(env, origin, refresh);
+  }
+  if (isCreditRequest) {
+    const refresh = ["1", "true", "yes"].includes(String(url.searchParams.get("refresh") || "").toLowerCase());
+    return creditMacroResponse(env, origin, refresh);
   }
   const ticker = String(url.searchParams.get("ticker") || "").trim().toUpperCase();
   if (!TICKER_PATTERN.test(ticker)) {

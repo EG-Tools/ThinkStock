@@ -133,6 +133,30 @@ test("returns authenticated ECOS macro updates and reuses the Worker cache", asy
   }
 });
 
+test("returns authenticated recent credit balances and caches the KOFIA response", async () => {
+  const originalFetch = globalThis.fetch;
+  const cache = memoryKv();
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({
+      ds1: [{ TMPV1: "20260803", TMPV3: "123,400,000,000,000", TMPV4: "45,600,000,000,000" }],
+    }), { status: 200 });
+  };
+  try {
+    const env = { THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: cache };
+    const refreshed = await handleRequest(request("/api/credit?refresh=1", { token: "private" }), env);
+    const payload = await refreshed.json();
+    assert.equal(refreshed.status, 200);
+    assert.deepEqual(payload.rows.at(-1), { date: "2026-08-03", kospi_credit: 123.4, kosdaq_credit: 45.6 });
+    const cached = await handleRequest(request("/api/credit", { token: "private" }), env);
+    assert.equal((await cached.json()).cached, true);
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("returns the latest authenticated KRX close for a stock", async () => {
   assert.deepEqual(krxStockPointFromRows([
     { ISU_CD: "005930", BAS_DD: "20260803", TDD_CLSPRC: "90,000" },
