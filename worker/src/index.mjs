@@ -238,9 +238,10 @@ export function parseFreesisPayload(text) {
   try {
     return JSON.parse(source);
   } catch (_) {
-    // Freesis occasionally omits a comma before the next TMPV field.
+    // Freesis occasionally omits commas between adjacent JSON properties.
     const repaired = source
-      .replace(/([0-9}"\]])\s*(?="TMPV\d+"\s*:)/g, "$1,")
+      .replace(/([0-9}"\]])\s*(?="[^"]+"\s*:)/g, "$1,")
+      .replace(/\b(true|false|null)\s*(?="[^"]+"\s*:)/g, "$1,")
       .replace(/}\s*(?=\{)/g, "},");
     try {
       return JSON.parse(repaired);

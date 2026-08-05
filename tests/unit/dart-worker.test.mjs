@@ -169,14 +169,16 @@ test("returns authenticated recent credit balances and caches the KOFIA response
   }
 });
 
-test("repairs the occasional missing KOFIA field comma before parsing", () => {
+test("repairs missing KOFIA property commas before parsing", () => {
   const payload = parseFreesisPayload(
-    '{"ds1":[{"TMPV1":"20260804","TMPV2":110407060542129 "TMPV3":45616688934659}]}',
+    '{"ds1":[{"TMPV1":"20260804" "TMPV2":110407060542129 "TMPV3":45616688934659 "TMPV4":null "TMPV5":true}]}',
   );
   assert.deepEqual(payload.ds1[0], {
     TMPV1: "20260804",
     TMPV2: 110407060542129,
     TMPV3: 45616688934659,
+    TMPV4: null,
+    TMPV5: true,
   });
 });
 
