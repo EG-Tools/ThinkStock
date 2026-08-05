@@ -139,19 +139,21 @@ test("returns authenticated recent credit balances and caches the KOFIA response
   const originalFetch = globalThis.fetch;
   const cache = memoryKv();
   let calls = 0;
-  globalThis.fetch = async (_url, options = {}) => {
+  globalThis.fetch = async (url) => {
     calls += 1;
-    const requestBody = JSON.parse(String(options.body || "{}"));
-    const objectName = requestBody?.dmSearch?.OBJ_NM;
-    const ds1 = objectName === "STATSCU0100000060BO"
-      ? [{ TMPV1: "20260803", TMPV2: "68,700,000,000,000" }]
-      : [{ TMPV1: "20260803", TMPV3: "123,400,000,000,000", TMPV4: "45,600,000,000,000" }];
+    const isDeposit = String(url).includes("getSecuritiesMarketTotalCapitalInfo");
+    const item = isDeposit
+      ? { basDt: "20260803", invrDpsgAmt: "68,700,000,000,000" }
+      : { basDt: "20260803", crdTrFingScrs: "123,400,000,000,000", crdTrFingKosdaq: "45,600,000,000,000" };
     return new Response(JSON.stringify({
-      ds1,
+      response: {
+        header: { resultCode: "00", resultMsg: "NORMAL SERVICE" },
+        body: { items: { item: [item] }, totalCount: 1, numOfRows: 1000, pageNo: 1 },
+      },
     }), { status: 200 });
   };
   try {
-    const env = { THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: cache };
+    const env = { THINKSTOCK_ACCESS_TOKEN: "private", KOFIA_API_KEY: "kofia-key", DISCLOSURE_CACHE: cache };
     const refreshed = await handleRequest(request("/api/credit?refresh=1", { token: "private" }), env);
     const payload = await refreshed.json();
     assert.equal(refreshed.status, 200);
@@ -169,28 +171,17 @@ test("returns authenticated recent credit balances and caches the KOFIA response
   }
 });
 
-test("repairs missing KOFIA property commas before parsing", () => {
-  const payload = parseFreesisPayload(
-    '{"ds1":[{"TMPV1":"20260804" "TMPV2":110407060542129 "TMPV3":45616688934659 "TMPV4":null "TMPV5":true}]}',
-  );
-  assert.deepEqual(payload.ds1[0], {
-    TMPV1: "20260804",
-    TMPV2: 110407060542129,
-    TMPV3: 45616688934659,
-    TMPV4: null,
-    TMPV5: true,
-  });
+test("parses valid Freesis JSON without modifying numeric values", () => {
+  const payload = parseFreesisPayload('{"ds1":[{"TMPV1":"20260804","TMPV3":21589187771369,"TMPV4":5814640223301}]}');
+  assert.equal(payload.ds1[0].TMPV3, 21589187771369);
+  assert.equal(payload.ds1[0].TMPV4, 5814640223301);
 });
 
-test("recovers KOFIA rows when a field name also loses its quotes", () => {
-  const payload = parseFreesisPayload(
-    '{"ds1":[{"TMPV1":"20260804" TMPV2:110407060542129 TMPV3:45616688934659}]}',
+test("rejects masked Freesis numbers instead of converting them to zero", () => {
+  assert.throws(
+    () => parseFreesisPayload('{"ds1":[{"TMPV1":"20260804","TMPV3":2158918#######,"TMPV4":581464#######}]}'),
+    /masked numeric values/,
   );
-  assert.deepEqual(payload.ds1[0], {
-    TMPV1: "20260804",
-    TMPV2: 110407060542129,
-    TMPV3: 45616688934659,
-  });
 });
 
 test("checks credit balances once after the 09:31 Korean market-data window", () => {

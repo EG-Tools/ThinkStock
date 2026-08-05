@@ -65,8 +65,10 @@ const ECOS_LEADING_STAT_CODE = "901Y067";
 const ECOS_LEADING_ITEM_CODE = "I16E";
 const ECOS_NEWS_STAT_CODE = "521Y001";
 const ECOS_NEWS_ITEM_CODE = "A001";
-const CREDIT_CACHE_SCHEMA = 2;
+const CREDIT_CACHE_SCHEMA = 3;
 const CREDIT_CACHE_KEY = `credit-macro:${CREDIT_CACHE_SCHEMA}`;
+const KOFIA_CREDIT_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getGrantingOfCreditBalanceInfo";
+const KOFIA_MARKET_FUNDS_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getSecuritiesMarketTotalCapitalInfo";
 const FREESIS_CREDIT_URL = "https://freesis.kofia.or.kr/meta/getMetaDataList.do";
 const FREESIS_CREDIT_OBJECT = "STATSCU0100000070BO";
 const FREESIS_CUSTOMER_DEPOSIT_OBJECT = "STATSCU0100000060BO";
@@ -235,34 +237,66 @@ function mergeCreditRows(existing, incoming) {
 
 export function parseFreesisPayload(text) {
   const source = String(text || "").trim();
-  try {
-    return JSON.parse(source);
-  } catch (_) {
-    // Freesis occasionally omits commas between adjacent JSON properties.
-    const repaired = source
-      .replace(/([0-9}"\]])\s*(?="[^"]+"\s*:)/g, "$1,")
-      .replace(/\b(true|false|null)\s*(?="[^"]+"\s*:)/g, "$1,")
-      .replace(/([0-9}"\]])\s*(?=([A-Za-z_][A-Za-z0-9_]*)\s*:)/g, "$1,\"$2\"")
-      .replace(/}\s*(?=\{)/g, "},");
+  if (source.includes("#")) throw new Error("KOFIA Freesis response masked numeric values");
+  try { return JSON.parse(source); } catch (error) {
+    throw new Error(`KOFIA JSON parsing failed: ${error?.message || error}`);
+  }
+}
+
+async function fetchKofiaOpenApiItems(apiKey, endpoint) {
+  const cleanKey = String(apiKey || "").trim();
+  if (!cleanKey) throw new Error("KOFIA_API_KEY is not configured");
+  let decodedKey = cleanKey;
+  try { decodedKey = decodeURIComponent(cleanKey); } catch (_) {}
+  const keyCandidates = [...new Set([cleanKey, decodedKey].filter(Boolean))];
+  let lastError = null;
+  for (const serviceKey of keyCandidates) {
     try {
-      return JSON.parse(repaired);
+      const url = new URL(endpoint);
+      url.searchParams.set("serviceKey", serviceKey);
+      url.searchParams.set("numOfRows", "1000");
+      url.searchParams.set("pageNo", "1");
+      url.searchParams.set("resultType", "json");
+      url.searchParams.set("beginBasDt", shiftDate(koreanDateText(), -180).replaceAll("-", ""));
+      const response = await fetch(url, { signal: AbortSignal.timeout(30000) });
+      if (!response.ok) throw new Error(`KOFIA Open API HTTP ${response.status}`);
+      const payload = await response.json();
+      const header = payload?.response?.header;
+      if (String(header?.resultCode || "") !== "00") {
+        throw new Error(header?.resultMsg || "KOFIA Open API error");
+      }
+      const rawItems = payload?.response?.body?.items?.item;
+      const items = Array.isArray(rawItems) ? rawItems : (rawItems && typeof rawItems === "object" ? [rawItems] : []);
+      if (!items.length) throw new Error("KOFIA Open API returned no rows");
+      return items;
     } catch (error) {
-      // Some responses also lose quotes around field names. Recover the ds1 rows
-      // directly so a malformed delimiter cannot discard the entire market update.
-      const rows = [...source.matchAll(/\{([^{}]*)\}/g)]
-        .map((match) => {
-          const row = {};
-          const fields = match[1].matchAll(/"?([A-Za-z_][A-Za-z0-9_]*)"?\s*:\s*("(?:\\.|[^"\\])*"|true|false|null|-?\d+(?:\.\d+)?)(?=\s*(?:,|"?[A-Za-z_][A-Za-z0-9_]*"?\s*:|$))/g);
-          for (const field of fields) {
-            try { row[field[1]] = JSON.parse(field[2]); } catch (_) {}
-          }
-          return row;
-        })
-        .filter((row) => Object.keys(row).some((key) => /^TMPV\d+$/i.test(key)));
-      if (rows.length) return { ds1: rows };
-      throw new Error(`KOFIA JSON parsing failed: ${error?.message || error}`);
+      lastError = error;
     }
   }
+  throw lastError || new Error("KOFIA Open API request failed");
+}
+
+async function fetchKofiaOpenApiCreditRows(apiKey) {
+  const rows = await fetchKofiaOpenApiItems(apiKey, KOFIA_CREDIT_URL);
+  return rows.map((row) => {
+    const rawDate = String(row?.basDt || "");
+    return {
+      date: /^\d{8}$/.test(rawDate) ? `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}` : "",
+      kospi_credit: creditAmountToTrillion(row?.crdTrFingScrs),
+      kosdaq_credit: creditAmountToTrillion(row?.crdTrFingKosdaq),
+    };
+  }).filter((row) => isValidIsoDate(row.date) && row.kospi_credit > 0 && row.kosdaq_credit > 0);
+}
+
+async function fetchKofiaOpenApiDepositRows(apiKey) {
+  const rows = await fetchKofiaOpenApiItems(apiKey, KOFIA_MARKET_FUNDS_URL);
+  return rows.map((row) => {
+    const rawDate = String(row?.basDt || "");
+    return {
+      date: /^\d{8}$/.test(rawDate) ? `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}` : "",
+      customer_deposit: creditAmountToTrillion(row?.invrDpsgAmt),
+    };
+  }).filter((row) => isValidIsoDate(row.date) && row.customer_deposit > 0);
 }
 
 async function fetchFreesisRows(objectName) {
@@ -352,8 +386,8 @@ async function creditMacroResponse(env, origin, refresh = false) {
   if (!needsRefresh) return jsonResponse({ ok: true, cached: true, ...cached }, 200, origin);
   try {
     const [creditResult, depositResult] = await Promise.allSettled([
-      fetchFreesisCreditRows(),
-      fetchFreesisCustomerDepositRows(),
+      env.KOFIA_API_KEY ? fetchKofiaOpenApiCreditRows(env.KOFIA_API_KEY) : fetchFreesisCreditRows(),
+      env.KOFIA_API_KEY ? fetchKofiaOpenApiDepositRows(env.KOFIA_API_KEY) : fetchFreesisCustomerDepositRows(),
     ]);
     const rows = mergeCreditRows(
       creditResult.status === "fulfilled" ? creditResult.value : [],
