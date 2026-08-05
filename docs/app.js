@@ -206,7 +206,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.61";
+const APP_VERSION = "1.62";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -4997,7 +4997,7 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
         const refreshOptions = {
           forceNetwork: false,
           onBatch: async (_batch, progress) => {
-            if (!applyDisclosureStateFast()) requestChartRender(false);
+            // DART streams pages progressively. Patch disclosure markers after the final page only.
             const pageText = progress.cached
               ? "저장된 공시를 불러왔습니다."
               : `최신 공시 확인 중 ${progress.page}/${progress.totalPages}`;
