@@ -46,6 +46,9 @@ async function stubExternalRefreshes(page, { stubFearGreed = true } = {}) {
   await page.route("https://thinkstock-api.keg0320.workers.dev/api/macro?*", async (route) => {
     await route.fulfill({ json: { ok: true, leadingRows: [], newsRows: [] } });
   });
+  await page.route("https://thinkstock-api.keg0320.workers.dev/api/credit**", async (route) => {
+    await route.fulfill({ json: { ok: true, rows: [] } });
+  });
   if (stubFearGreed) {
     await page.route("https://kospi.feargreedchart.com/**", unavailable);
   }

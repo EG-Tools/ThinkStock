@@ -6,6 +6,7 @@ import { expectedLatestKoreanTradingDate } from "../../shared/market-calendar.mj
 
 import {
   handleRequest,
+  creditRefreshWindowDate,
   insiderRecordFromItem,
   isAllowedOrigin,
   krxStockPointFromRows,
@@ -155,6 +156,12 @@ test("returns authenticated recent credit balances and caches the KOFIA response
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("checks credit balances once after the 09:31 Korean market-data window", () => {
+  assert.equal(creditRefreshWindowDate(new Date("2026-08-05T00:30:00Z")), "");
+  assert.equal(creditRefreshWindowDate(new Date("2026-08-05T00:31:00Z")), "2026-08-05");
+  assert.equal(creditRefreshWindowDate(new Date("2026-08-08T01:00:00Z")), "");
 });
 
 test("returns the latest authenticated KRX close for a stock", async () => {

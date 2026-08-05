@@ -206,7 +206,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.58";
+const APP_VERSION = "1.59";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -6551,7 +6551,7 @@ async function refreshEcosMacroFromGateway(signal = null) {
 
 async function refreshCreditFromGateway(signal = null) {
   if (!canUseDartGateway()) return { applied: [], warnings: [] };
-  const response = await fetchWithTimeout(`${CREDIT_GATEWAY_ENDPOINT}?refresh=1`, {
+  const response = await fetchWithTimeout(CREDIT_GATEWAY_ENDPOINT, {
     cache: "no-store",
     headers: { Authorization: `Bearer ${getDartGatewayAccessToken()}` },
     signal,
@@ -6868,7 +6868,6 @@ async function runRuntimeDataRefresh(msgEl, options = {}) {
     .catch((error) => ({ info: [], warnings: [`ECOS 지표 불러오기 오류: ${error.message}`] }));
 
   const creditTask = () => {
-    if (!forceNetwork) return Promise.resolve({ info: [], warnings: [] });
     return refreshCreditFromGateway(signal)
       .then((result) => ({ info: result.applied || [], warnings: result.warnings || [] }))
       .catch((error) => ({ info: [], warnings: [`신용·예탁금 불러오기 오류: ${error.message}`] }));

@@ -69,7 +69,6 @@ const CREDIT_CACHE_SCHEMA = 1;
 const CREDIT_CACHE_KEY = `credit-macro:${CREDIT_CACHE_SCHEMA}`;
 const FREESIS_CREDIT_URL = "https://freesis.kofia.or.kr/meta/getMetaDataList.do";
 const FREESIS_CREDIT_OBJECT = "STATSCU0100000070BO";
-const CREDIT_CACHE_TTL_SECONDS = 6 * 60 * 60;
 const IMPORTANT_DISCLOSURE_PATTERN = /반기보고서|분기보고서|사업보고서|영업\(잠정\)실적|잠정실적|매출액.?또는.?손익구조|감사보고서제출|배당|현금ㆍ현물배당|단일판매|공급계약|수주|유상증자|무상증자|감자|증권신고서\(지분증권\)|전환사채|신주인수권|신주인수권부사채|교환사채|사채권|자기주식(취득|처분)결정|주식소각|합병|분할|영업양수|영업양도|타법인주식|출자증권|신규시설투자|시설투자|최대주주변경|대표이사.*변경|영업정지|거래정지|상장폐지|관리종목|소송|횡령|배임|회생|파산|부도|공개매수|장래사업|경영계획/;
 const PUBLIC_ORIGIN = "https://eg-tools.github.io";
 
@@ -265,20 +264,42 @@ async function fetchFreesisCreditRows() {
     && (row.kospi_credit !== null || row.kosdaq_credit !== null));
 }
 
+export function creditRefreshWindowDate(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Seoul",
+    weekday: "short",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now).reduce((out, part) => {
+    out[part.type] = part.value;
+    return out;
+  }, {});
+  if (!new Set(["Mon", "Tue", "Wed", "Thu", "Fri"]).has(parts.weekday)) return "";
+  if (Number(parts.hour) * 60 + Number(parts.minute) < 9 * 60 + 31) return "";
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
 async function creditMacroResponse(env, origin, refresh = false) {
   const cached = env.DISCLOSURE_CACHE ? await env.DISCLOSURE_CACHE.get(CREDIT_CACHE_KEY, "json") : null;
-  if (!refresh && cached?.schema === CREDIT_CACHE_SCHEMA) return jsonResponse({ ok: true, cached: true, ...cached }, 200, origin);
+  const windowDate = creditRefreshWindowDate();
+  const needsRefresh = refresh
+    || !cached || cached.schema !== CREDIT_CACHE_SCHEMA
+    || Boolean(windowDate && cached.lastCheckedWindow !== windowDate);
+  if (!needsRefresh) return jsonResponse({ ok: true, cached: true, ...cached }, 200, origin);
   try {
     const rows = await fetchFreesisCreditRows();
     const payload = {
       schema: CREDIT_CACHE_SCHEMA,
       savedAt: Date.now(),
       rows: mergeCreditRows(cached?.rows, rows).slice(-210),
+      lastCheckedWindow: windowDate || cached?.lastCheckedWindow || "",
     };
     if (env.DISCLOSURE_CACHE) {
-      await env.DISCLOSURE_CACHE.put(CREDIT_CACHE_KEY, JSON.stringify(payload), {
-        expirationTtl: CREDIT_CACHE_TTL_SECONDS,
-      });
+      await env.DISCLOSURE_CACHE.put(CREDIT_CACHE_KEY, JSON.stringify(payload));
     }
     return jsonResponse({ ok: true, cached: false, ...payload }, 200, origin);
   } catch (error) {
