@@ -59,6 +59,12 @@ const NAVER_PRICE_LOOKBACK_DAYS = 21;
 const MAX_NAVER_PRICE_BYTES = 1024 * 1024;
 const NAVER_KRX_OVERLAP_MAX_DIVERGENCE = 1.05;
 const PRICE_MOVE_WARNING_RATIO = 1.35;
+const ECOS_CACHE_SCHEMA = 1;
+const ECOS_CACHE_KEY = `ecos-macro:${ECOS_CACHE_SCHEMA}`;
+const ECOS_LEADING_STAT_CODE = "901Y067";
+const ECOS_LEADING_ITEM_CODE = "I16E";
+const ECOS_NEWS_STAT_CODE = "521Y001";
+const ECOS_NEWS_ITEM_CODE = "A001";
 const IMPORTANT_DISCLOSURE_PATTERN = /반기보고서|분기보고서|사업보고서|영업\(잠정\)실적|잠정실적|매출액.?또는.?손익구조|감사보고서제출|배당|현금ㆍ현물배당|단일판매|공급계약|수주|유상증자|무상증자|감자|증권신고서\(지분증권\)|전환사채|신주인수권|신주인수권부사채|교환사채|사채권|자기주식(취득|처분)결정|주식소각|합병|분할|영업양수|영업양도|타법인주식|출자증권|신규시설투자|시설투자|최대주주변경|대표이사.*변경|영업정지|거래정지|상장폐지|관리종목|소송|횡령|배임|회생|파산|부도|공개매수|장래사업|경영계획/;
 const PUBLIC_ORIGIN = "https://eg-tools.github.io";
 
@@ -143,6 +149,62 @@ function isValidIsoDate(value) {
 function finiteNumber(value, { min = -Infinity, max = Infinity } = {}) {
   const number = Number(value);
   return Number.isFinite(number) && number >= min && number <= max ? number : null;
+}
+
+function ecosDateCode(daysBack, monthly = false) {
+  const text = shiftDate(koreanDateText(), -daysBack).replaceAll("-", "");
+  return monthly ? text.slice(0, 6) : text;
+}
+
+function mergeEcosRows(existing, incoming, key) {
+  const rows = new Map();
+  [...(existing || []), ...(incoming || [])].forEach((row) => {
+    const date = String(row?.date || "").slice(0, 10);
+    const value = finiteNumber(row?.[key]);
+    if (isValidIsoDate(date) && value !== null) rows.set(date, { date, [key]: value });
+  });
+  return [...rows.values()].sort((left, right) => left.date.localeCompare(right.date));
+}
+
+async function fetchEcosRows(env, { frequency, statCode, itemCode, start, key }) {
+  const end = ecosDateCode(0, frequency === "M");
+  const limit = frequency === "M" ? 120 : 500;
+  const url = `https://ecos.bok.or.kr/api/StatisticSearch/${env.ECOS_API_KEY}/json/kr/1/${limit}/${statCode}/${frequency}/${start}/${end}/${itemCode}`;
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`ECOS HTTP ${response.status}`);
+  const payload = await response.json();
+  const rows = Array.isArray(payload?.StatisticSearch?.row) ? payload.StatisticSearch.row : [];
+  if (!rows.length && payload?.RESULT?.MESSAGE) throw new Error(payload.RESULT.MESSAGE);
+  return rows.map((row) => {
+    const time = String(row?.TIME || "");
+    const date = frequency === "M" && /^\d{6}$/.test(time)
+      ? `${time.slice(0, 4)}-${time.slice(4, 6)}-01`
+      : (/^\d{8}$/.test(time) ? `${time.slice(0, 4)}-${time.slice(4, 6)}-${time.slice(6, 8)}` : "");
+    return { date, [key]: finiteNumber(row?.DATA_VALUE) };
+  }).filter((row) => isValidIsoDate(row.date) && row[key] !== null);
+}
+
+async function ecosMacroResponse(env, origin, refresh = false) {
+  if (!env.ECOS_API_KEY) return jsonResponse({ ok: false, error: "Cloudflare에 ECOS 키가 설정되지 않았습니다." }, 503, origin);
+  const cached = env.DISCLOSURE_CACHE ? await env.DISCLOSURE_CACHE.get(ECOS_CACHE_KEY, "json") : null;
+  if (!refresh && cached?.schema === ECOS_CACHE_SCHEMA) return jsonResponse({ ok: true, cached: true, ...cached }, 200, origin);
+  try {
+    const [leading, news] = await Promise.all([
+      fetchEcosRows(env, { frequency: "M", statCode: ECOS_LEADING_STAT_CODE, itemCode: ECOS_LEADING_ITEM_CODE, start: ecosDateCode(730, true), key: "leading_cycle" }),
+      fetchEcosRows(env, { frequency: "D", statCode: ECOS_NEWS_STAT_CODE, itemCode: ECOS_NEWS_ITEM_CODE, start: ecosDateCode(90), key: "news_sentiment" }),
+    ]);
+    const payload = {
+      schema: ECOS_CACHE_SCHEMA,
+      savedAt: Date.now(),
+      leadingRows: mergeEcosRows(cached?.leadingRows, leading, "leading_cycle").slice(-36),
+      newsRows: mergeEcosRows(cached?.newsRows, news, "news_sentiment").slice(-180),
+    };
+    if (env.DISCLOSURE_CACHE) await env.DISCLOSURE_CACHE.put(ECOS_CACHE_KEY, JSON.stringify(payload));
+    return jsonResponse({ ok: true, cached: false, ...payload }, 200, origin);
+  } catch (error) {
+    if (cached?.schema === ECOS_CACHE_SCHEMA) return jsonResponse({ ok: true, cached: true, stale: true, warning: "ECOS 연결 실패로 마지막 저장 지표를 사용했습니다.", ...cached }, 200, origin);
+    return jsonResponse({ ok: false, error: `ECOS 조회 실패: ${error?.message || error}` }, 503, origin);
+  }
 }
 
 function krxNumber(value) {
@@ -1377,6 +1439,7 @@ export async function handleRequest(request, env, ctx = null) {
       ok: true,
       dartConfigured: Boolean(env.DART_API_KEY),
       krxConfigured: Boolean(env.KRX_API_KEY),
+      ecosConfigured: Boolean(env.ECOS_API_KEY),
       accessTokenConfigured: Boolean(env.THINKSTOCK_ACCESS_TOKEN),
       cacheConfigured: Boolean(env.DISCLOSURE_CACHE),
     }, 200, origin);
@@ -1387,10 +1450,11 @@ export async function handleRequest(request, env, ctx = null) {
   const isConsensusRequest = url.pathname === "/api/consensus" && request.method === "GET";
   const isAnalysisRequest = url.pathname === "/api/analysis" && request.method === "GET";
   const isPriceRequest = url.pathname === "/api/prices" && request.method === "GET";
+  const isMacroRequest = url.pathname === "/api/macro" && request.method === "GET";
   const isJournalRequest = url.pathname === "/api/forecast-journal"
     && ["GET", "POST"].includes(request.method);
   if (!isDartRequest && !isInsiderRequest && !isAuthCheckRequest
-    && !isConsensusRequest && !isAnalysisRequest && !isPriceRequest && !isJournalRequest) {
+    && !isConsensusRequest && !isAnalysisRequest && !isPriceRequest && !isMacroRequest && !isJournalRequest) {
     return jsonResponse({ ok: false, error: "Not found" }, 404, origin);
   }
   if (!env.THINKSTOCK_ACCESS_TOKEN
@@ -1398,6 +1462,10 @@ export async function handleRequest(request, env, ctx = null) {
     return jsonResponse({ ok: false, error: "개인 접속 코드가 올바르지 않습니다." }, 401, origin);
   }
   if (isAuthCheckRequest) return jsonResponse({ ok: true }, 200, origin);
+  if (isMacroRequest) {
+    const refresh = ["1", "true", "yes"].includes(String(url.searchParams.get("refresh") || "").toLowerCase());
+    return ecosMacroResponse(env, origin, refresh);
+  }
   const ticker = String(url.searchParams.get("ticker") || "").trim().toUpperCase();
   if (!TICKER_PATTERN.test(ticker)) {
     return jsonResponse({ ok: false, error: "종목코드 형식이 올바르지 않습니다." }, 400, origin);

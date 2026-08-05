@@ -106,6 +106,33 @@ test("checks the personal access token without requiring a ticker", async () => 
   assert.equal(invalid.status, 401);
 });
 
+test("returns authenticated ECOS macro updates and reuses the Worker cache", async () => {
+  const originalFetch = globalThis.fetch;
+  const cache = memoryKv();
+  let calls = 0;
+  globalThis.fetch = async (url) => {
+    calls += 1;
+    const target = String(url);
+    const rows = target.includes("/901Y067/")
+      ? [{ TIME: "202607", DATA_VALUE: "104.8" }]
+      : [{ TIME: "20260803", DATA_VALUE: "101.2" }];
+    return new Response(JSON.stringify({ StatisticSearch: { row: rows } }), { status: 200 });
+  };
+  try {
+    const env = { ECOS_API_KEY: "ecos", THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: cache };
+    const refreshed = await handleRequest(request("/api/macro?refresh=1", { token: "private" }), env);
+    const payload = await refreshed.json();
+    assert.equal(refreshed.status, 200);
+    assert.deepEqual(payload.leadingRows.at(-1), { date: "2026-07-01", leading_cycle: 104.8 });
+    assert.deepEqual(payload.newsRows.at(-1), { date: "2026-08-03", news_sentiment: 101.2 });
+    const cached = await handleRequest(request("/api/macro", { token: "private" }), env);
+    assert.equal((await cached.json()).cached, true);
+    assert.equal(calls, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("returns the latest authenticated KRX close for a stock", async () => {
   assert.deepEqual(krxStockPointFromRows([
     { ISU_CD: "005930", BAS_DD: "20260803", TDD_CLSPRC: "90,000" },

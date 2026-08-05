@@ -157,7 +157,7 @@ assert.ok(dataSeedLoader.includes("fetchDataManifest") && dataSeedLoader.include
   "segmented data manifest is not consumed by the app");
 assert.ok(!app.includes("async function fetchSeedText("), "seed network loading still lives in app.js");
 assert.ok(app.includes("criticalTasks: [coreIndexTask, preloadTask, liveTask]"), "critical startup refresh tasks are not grouped");
-assert.ok(app.includes("supplementalTasks: [adrTask, fearGreedTask, dartTask]"), "supplemental refresh tasks are not grouped");
+assert.ok(app.includes("supplementalTasks: [adrTask, fearGreedTask, dartTask, ecosTask]"), "supplemental refresh tasks are not grouped");
 assert.ok(app.includes("awaitCriticalRender: true") && app.includes("onCriticalReady"), "startup loader does not wait for the critical render phase");
 assert.ok(dartDisclosure.includes("fetchForMarkets") && dartDisclosure.includes("fetchForTicker"), "DART disclosure fetch service is incomplete");
 assert.ok(dartDisclosure.includes("rememberRefresh") && dartDisclosure.includes("mergeRows"), "DART disclosure cache service is incomplete");

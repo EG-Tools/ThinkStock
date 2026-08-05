@@ -9,6 +9,7 @@
     "required": [
       "DART_API_KEY",
       "KRX_API_KEY",
+      "ECOS_API_KEY",
       "THINKSTOCK_ACCESS_TOKEN"
     ]
   },
