@@ -182,6 +182,17 @@ test("repairs missing KOFIA property commas before parsing", () => {
   });
 });
 
+test("recovers KOFIA rows when a field name also loses its quotes", () => {
+  const payload = parseFreesisPayload(
+    '{"ds1":[{"TMPV1":"20260804" TMPV2:110407060542129 TMPV3:45616688934659}]}',
+  );
+  assert.deepEqual(payload.ds1[0], {
+    TMPV1: "20260804",
+    TMPV2: 110407060542129,
+    TMPV3: 45616688934659,
+  });
+});
+
 test("checks credit balances once after the 09:31 Korean market-data window", () => {
   assert.equal(creditRefreshWindowDate(new Date("2026-08-05T00:30:00Z")), "");
   assert.equal(creditRefreshWindowDate(new Date("2026-08-05T00:31:00Z")), "2026-08-05");

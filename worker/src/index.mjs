@@ -242,10 +242,24 @@ export function parseFreesisPayload(text) {
     const repaired = source
       .replace(/([0-9}"\]])\s*(?="[^"]+"\s*:)/g, "$1,")
       .replace(/\b(true|false|null)\s*(?="[^"]+"\s*:)/g, "$1,")
+      .replace(/([0-9}"\]])\s*(?=([A-Za-z_][A-Za-z0-9_]*)\s*:)/g, "$1,\"$2\"")
       .replace(/}\s*(?=\{)/g, "},");
     try {
       return JSON.parse(repaired);
     } catch (error) {
+      // Some responses also lose quotes around field names. Recover the ds1 rows
+      // directly so a malformed delimiter cannot discard the entire market update.
+      const rows = [...source.matchAll(/\{([^{}]*)\}/g)]
+        .map((match) => {
+          const row = {};
+          const fields = match[1].matchAll(/"?([A-Za-z_][A-Za-z0-9_]*)"?\s*:\s*("(?:\\.|[^"\\])*"|true|false|null|-?\d+(?:\.\d+)?)(?=\s*(?:,|"?[A-Za-z_][A-Za-z0-9_]*"?\s*:|$))/g);
+          for (const field of fields) {
+            try { row[field[1]] = JSON.parse(field[2]); } catch (_) {}
+          }
+          return row;
+        })
+        .filter((row) => Object.keys(row).some((key) => /^TMPV\d+$/i.test(key)));
+      if (rows.length) return { ds1: rows };
       throw new Error(`KOFIA JSON parsing failed: ${error?.message || error}`);
     }
   }
