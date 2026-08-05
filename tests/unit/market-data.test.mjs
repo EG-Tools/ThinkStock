@@ -84,6 +84,23 @@ test("keeps credit values fixed while dates are shifted independently", () => {
   assert.equal(marketData.shiftIsoDateByDays("invalid", -2), "invalid");
 });
 
+test("treats unpublished zero credit balances as missing values", () => {
+  const dates = ["2026-08-03", "2026-08-04"];
+  const result = marketData.mergeSources({
+    priceRows: dates.map((date, index) => ({ date, AAA: 100 + index })),
+    macroRows: [],
+    creditRows: [
+      { date: dates[0], kospi_credit: 21.6 },
+      { date: dates[1], kospi_credit: 0 },
+    ],
+    creditCols: ["kospi_credit"],
+    start: dates[0],
+    end: dates[1],
+  });
+
+  assert.deepEqual(result.rows.map((row) => row.kospi_credit), [21.6, null]);
+});
+
 
 test("sanitizes columnar price payloads in the shared module", () => {
   const payload = marketData.sanitizePricePayload({

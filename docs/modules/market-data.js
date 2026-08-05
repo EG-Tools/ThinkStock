@@ -4,6 +4,10 @@
   const toNum = (value) => (
     value != null && Number.isFinite(Number(value)) ? Number(value) : null
   );
+  const toCreditNum = (value) => {
+    const number = toNum(value);
+    return number !== null && number > 0 ? number : null;
+  };
   const toUtcMs = (date) => Date.parse(`${date}T00:00:00Z`);
 
   function normalizePayloadRecords(records) {
@@ -175,7 +179,7 @@
     const points = creditRows
       .map((row) => {
         const point = { time: toUtcMs(row.date) };
-        creditCols.forEach((key) => { point[key] = toNum(row[key]); });
+        creditCols.forEach((key) => { point[key] = toCreditNum(row[key]); });
         return point;
       })
       .filter((row) => Number.isFinite(row.time))
@@ -234,7 +238,7 @@
     const historicalCredit = new Map();
     macroRows.forEach((row) => {
       const values = {};
-      creditCols.forEach((key) => { values[key] = toNum(row[key]); });
+      creditCols.forEach((key) => { values[key] = toCreditNum(row[key]); });
       historicalCredit.set(row.date, values);
     });
     const currentCredit = new Map();
@@ -243,7 +247,7 @@
       if (!date) return;
       const previous = currentCredit.get(date) || {};
       const values = {};
-      creditCols.forEach((key) => { values[key] = toNum(row[key]) ?? previous[key] ?? null; });
+      creditCols.forEach((key) => { values[key] = toCreditNum(row[key]) ?? previous[key] ?? null; });
       currentCredit.set(date, values);
     });
 
@@ -308,7 +312,7 @@
       liveCols.forEach((key) => { row[key] = toNum(prices[key]); });
       macroCols.forEach((key) => { row[key] = toNum(macro[key]); });
       creditCols.forEach((key) => {
-        row[key] = interpolatedCredit ? toNum(interpolatedCredit[key]) : null;
+        row[key] = interpolatedCredit ? toCreditNum(interpolatedCredit[key]) : null;
       });
       rows.push(row);
     });

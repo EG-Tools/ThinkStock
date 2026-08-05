@@ -171,6 +171,38 @@ test("returns authenticated recent credit balances and caches the KOFIA response
   }
 });
 
+test("rejects unpublished zero credit balances from newer KOFIA rows", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const isDeposit = String(url).includes("getSecuritiesMarketTotalCapitalInfo");
+    const items = isDeposit
+      ? [{ basDt: "20260804", invrDpsgAmt: "69,000,000,000,000" }]
+      : [
+        { basDt: "20260804", crdTrFingScrs: "0", crdTrFingKosdaq: "0" },
+        { basDt: "20260803", crdTrFingScrs: "21,600,000,000,000", crdTrFingKosdaq: "5,800,000,000,000" },
+      ];
+    return new Response(JSON.stringify({
+      response: {
+        header: { resultCode: "00", resultMsg: "NORMAL SERVICE" },
+        body: { items: { item: items }, totalCount: items.length },
+      },
+    }), { status: 200 });
+  };
+  try {
+    const response = await handleRequest(request("/api/credit?refresh=1", { token: "private" }), {
+      THINKSTOCK_ACCESS_TOKEN: "private",
+      KOFIA_API_KEY: "kofia-key",
+      DISCLOSURE_CACHE: memoryKv(),
+    });
+    const payload = await response.json();
+    assert.equal(payload.ok, true);
+    assert.equal(payload.rows.some((row) => row.kospi_credit === 0 || row.kosdaq_credit === 0), false);
+    assert.deepEqual(payload.rows.at(-1), { date: "2026-08-04", customer_deposit: 69 });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("parses valid Freesis JSON without modifying numeric values", () => {
   const payload = parseFreesisPayload('{"ds1":[{"TMPV1":"20260804","TMPV3":21589187771369,"TMPV4":5814640223301}]}');
   assert.equal(payload.ds1[0].TMPV3, 21589187771369);

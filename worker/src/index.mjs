@@ -65,7 +65,7 @@ const ECOS_LEADING_STAT_CODE = "901Y067";
 const ECOS_LEADING_ITEM_CODE = "I16E";
 const ECOS_NEWS_STAT_CODE = "521Y001";
 const ECOS_NEWS_ITEM_CODE = "A001";
-const CREDIT_CACHE_SCHEMA = 3;
+const CREDIT_CACHE_SCHEMA = 4;
 const CREDIT_CACHE_KEY = `credit-macro:${CREDIT_CACHE_SCHEMA}`;
 const KOFIA_CREDIT_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getGrantingOfCreditBalanceInfo";
 const KOFIA_MARKET_FUNDS_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getSecuritiesMarketTotalCapitalInfo";
@@ -228,7 +228,7 @@ function mergeCreditRows(existing, incoming) {
     const next = { ...previous };
     ["customer_deposit", "kospi_credit", "kosdaq_credit"].forEach((key) => {
       const value = finiteNumber(row?.[key], { min: 0 });
-      if (value !== null) next[key] = value;
+      if (value !== null && value > 0) next[key] = value;
     });
     if (Object.keys(next).length > 1) byDate.set(date, next);
   });

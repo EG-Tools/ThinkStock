@@ -206,7 +206,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.70";
+const APP_VERSION = "1.71";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -6300,7 +6300,10 @@ function normalizeCreditRows(rows) {
     const date = String(row?.date || "").slice(0, 10);
     if (!date) return;
     const next = { date };
-    CREDIT_COLS.forEach((key) => { next[key] = toNum(row?.[key]); });
+    CREDIT_COLS.forEach((key) => {
+      const value = toNum(row?.[key]);
+      next[key] = Number.isFinite(value) && value > 0 ? value : null;
+    });
     if (!CREDIT_COLS.some((key) => Number.isFinite(next[key]))) return;
     const prev = map.get(date) || { date };
     const merged = { date };
@@ -6581,7 +6584,10 @@ function applyCreditLiveRows(liveRows) {
     const date = String(row?.date || "").slice(0, 10);
     if (!date) return;
     const next = { date };
-    CREDIT_COLS.forEach((key) => { next[key] = toNum(row?.[key]); });
+    CREDIT_COLS.forEach((key) => {
+      const value = toNum(row?.[key]);
+      next[key] = Number.isFinite(value) && value > 0 ? value : null;
+    });
     byDate.set(date, next);
   });
 
