@@ -37,6 +37,8 @@
       meta: traces.map((trace) => trace.meta ?? null),
       line: traces.map((trace) => trace.line ?? null),
       marker: traces.map((trace) => trace.marker ?? null),
+      textfont: traces.map((trace) => trace.textfont ?? null),
+      textposition: traces.map((trace) => trace.textposition ?? null),
       connectgaps: traces.map((trace) => trace.connectgaps ?? false),
       cliponaxis: traces.map((trace) => trace.cliponaxis ?? true),
       showlegend: traces.map((trace) => trace.showlegend ?? true),
