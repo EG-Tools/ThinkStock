@@ -1075,7 +1075,7 @@ test("component snapshot restores the latest auxiliary data after reload", async
     { date: "2026-01-14", news_sentiment: 106.75 },
   ]));
   await expect.poll(() => page.locator("#chart-adr").evaluate((element) => {
-    const trace = element.data?.find((item) => item.name === "뉴스심리 3개월 평균");
+    const trace = element.data?.find((item) => item.name === "뉴스심리 20일 이동평균");
     const index = trace?.x?.indexOf("2026-01-14") ?? -1;
     return index >= 0 ? trace.y[index] : null;
   })).toBeGreaterThan(0);
@@ -1084,7 +1084,7 @@ test("component snapshot restores the latest auxiliary data after reload", async
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   await expect.poll(() => page.locator("#chart-adr").evaluate((element) => {
-    const trace = element.data?.find((item) => item.name === "뉴스심리 3개월 평균");
+    const trace = element.data?.find((item) => item.name === "뉴스심리 20일 이동평균");
     const index = trace?.x?.indexOf("2026-01-14") ?? -1;
     return index >= 0 ? trace.y[index] : null;
   })).toBeGreaterThan(0);
@@ -1185,7 +1185,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await expect(page.locator('[data-series="news_sentiment"]')).toHaveCount(0);
   expect(await page.locator("#chart-adr").evaluate((element) => (
     element.data?.some((trace) => trace.name === "공포탐욕" && trace.yaxis === "y2")
-      && element.data?.some((trace) => trace.name === "뉴스심리 3개월 평균" && trace.yaxis === "y3")
+      && element.data?.some((trace) => trace.name === "뉴스심리 20일 이동평균" && trace.yaxis === "y3")
   ))).toBe(true);
   const depositToggle = page.locator('[data-series="customer_deposit"]');
   await expect(depositToggle).toHaveClass(/is-off/);
@@ -1262,7 +1262,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
     { date: "2026-01-14", news_sentiment: 107.25 },
   ]))).toMatchObject({ updated: 1, latestDate: "2026-01-14" });
   await expect.poll(() => page.locator("#chart-adr").evaluate((element) => {
-    const trace = element.data?.find((item) => item.name === "뉴스심리 3개월 평균");
+    const trace = element.data?.find((item) => item.name === "뉴스심리 20일 이동평균");
     const index = trace?.x?.indexOf("2026-01-14") ?? -1;
     return index >= 0 ? trace.y[index] : null;
   })).toBeGreaterThan(0);

@@ -206,7 +206,7 @@ assert.ok(disclosurePopover.includes("disclosure-title-link"), "disclosure title
 assert.ok(html.includes('data-series="customer_deposit"'), "customer deposit toggle is missing");
 assert.ok(!html.includes('data-series="news_sentiment"'), "news sentiment must not remain in the main-chart toggles");
 assert.ok(buildPagesData.includes("getSecuritiesMarketTotalCapitalInfo"), "server customer deposit endpoint is missing");
-assert.ok(app.includes('name: "뉴스심리 3개월 평균"'), "news sentiment auxiliary trace is missing");
+assert.ok(app.includes('name: "뉴스심리 20일 이동평균"'), "news sentiment auxiliary trace is missing");
 assert.ok(app.includes('yaxis: "y3"'), "news sentiment auxiliary axis is missing");
 assert.ok(app.includes('text: "공포"'), "fear guide is missing");
 assert.ok(app.includes('text: "탐욕"'), "greed guide is missing");

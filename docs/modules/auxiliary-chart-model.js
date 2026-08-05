@@ -1,9 +1,11 @@
 (function initThinkStockAuxiliaryChartModel(globalScope) {
+  const NEWS_MOVING_AVERAGE_DAYS = 20;
+
   const toNumber = (value) => (
     value != null && Number.isFinite(Number(value)) ? Number(value) : null
   );
 
-  function rollingAverage(values, windowSize = 63) {
+  function rollingAverage(values, windowSize = NEWS_MOVING_AVERAGE_DAYS) {
     const window = Math.max(1, Number(windowSize) || 1);
     const output = [];
     const queue = [];
@@ -91,7 +93,7 @@
     const fearGreedValues = filteredAdr.map((row) => toNumber(row.fear_greed));
     const newsDates = filteredNews.map((row) => row.date);
     const newsRawValues = filteredNews.map((row) => toNumber(row.news_sentiment));
-    const newsValues = rollingAverage(newsRawValues, 63);
+    const newsValues = rollingAverage(newsRawValues, NEWS_MOVING_AVERAGE_DAYS);
 
     const adrNumbers = [...kospiValues, ...kosdaqValues].filter(Number.isFinite);
     const adrRawMin = adrNumbers.length ? Math.min(...adrNumbers) : adrLowThreshold;
@@ -120,6 +122,7 @@
   globalScope.ThinkStockAuxiliaryChartModel = Object.freeze({
     buildAuxiliaryChartModel,
     buildThresholdZones,
+    NEWS_MOVING_AVERAGE_DAYS,
     rollingAverage,
   });
 }(typeof self !== "undefined" ? self : globalThis));
