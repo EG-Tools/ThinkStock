@@ -1075,19 +1075,24 @@ test("component snapshot restores the latest auxiliary data after reload", async
     { date: "2026-01-14", news_sentiment: 106.75 },
   ]));
   await expect.poll(() => page.locator("#chart-adr").evaluate((element) => {
-    const trace = element.data?.find((item) => item.name === "뉴스심리");
+    const trace = element.data?.find((item) => item.name === "뉴스심리 3개월 평균");
     const index = trace?.x?.indexOf("2026-01-14") ?? -1;
     return index >= 0 ? trace.y[index] : null;
-  })).toBe(106.75);
+  })).toBeGreaterThan(0);
+  const savedNewsValue = await page.locator("#chart-adr").evaluate((element) => {
+    const trace = element.data?.find((item) => item.name === "뉴스심리 3개월 평균");
+    const index = trace?.x?.indexOf("2026-01-14") ?? -1;
+    return index >= 0 ? trace.y[index] : null;
+  });
   await page.evaluate(() => window.ThinkStockE2E.saveRuntimeSnapshotNow());
 
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   await expect.poll(() => page.locator("#chart-adr").evaluate((element) => {
-    const trace = element.data?.find((item) => item.name === "뉴스심리");
+    const trace = element.data?.find((item) => item.name === "뉴스심리 3개월 평균");
     const index = trace?.x?.indexOf("2026-01-14") ?? -1;
     return index >= 0 ? trace.y[index] : null;
-  })).toBe(106.75);
+  })).toBe(savedNewsValue);
   expect(getHistoryRequests()).toBe(0);
   expect(pageErrors).toEqual([]);
 });
