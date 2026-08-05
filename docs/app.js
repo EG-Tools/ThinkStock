@@ -206,7 +206,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.69";
+const APP_VERSION = "1.70";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -5985,13 +5985,13 @@ async function renderAdrChart(xRange) {
       yaxis: "y3",
       type: "scatter",
       mode: "lines",
-      name: "뉴스심리",
+      name: "뉴스심리 3개월 평균",
       meta: { auxiliarySeriesKey: AUXILIARY_SERIES_KEYS.newsSentiment },
       visible: hiddenAuxiliarySeries.has(AUXILIARY_SERIES_KEYS.newsSentiment) ? "legendonly" : true,
       connectgaps: false,
       line: { color: SERIES_COLORS.news_sentiment, width: 2 },
       hoverinfo: hoverShowPopup ? undefined : "skip",
-      hovertemplate: hoverShowPopup ? "뉴스심리. %{y:.2f}<extra></extra>" : undefined,
+      hovertemplate: hoverShowPopup ? "뉴스심리 3개월 평균. %{y:.2f}<extra></extra>" : undefined,
     },
     ...hoverProxyTraces,
   ];

@@ -6,6 +6,7 @@ await import("../../docs/modules/auxiliary-chart-model.js");
 const {
   buildAuxiliaryChartModel,
   buildThresholdZones,
+  rollingAverage,
 } = globalThis.ThinkStockAuxiliaryChartModel;
 
 
@@ -42,9 +43,13 @@ test("auxiliary model keeps ADR and news dates independent", () => {
   assert.deepEqual(model.dates, ["2026-01-02", "2026-01-03"]);
   assert.deepEqual(model.newsDates, ["2026-01-03", "2026-01-04"]);
   assert.deepEqual(model.kospiValues, [75, 85]);
-  assert.deepEqual(model.newsValues, [105, 112]);
+  assert.deepEqual(model.newsValues, [105, 108.5]);
   assert.equal(model.adrRowCount, 2);
   assert.equal(model.newsRowCount, 2);
   assert.ok(model.adrYMin < 75);
-  assert.ok(model.newsYMax > 112);
+  assert.ok(model.newsYMax >= 112);
+});
+
+test("news smoothing uses a trailing three-month trading window", () => {
+  assert.deepEqual(rollingAverage([100, 110, 90, 130], 3), [100, 105, 100, 110]);
 });

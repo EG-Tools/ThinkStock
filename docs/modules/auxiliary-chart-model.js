@@ -3,6 +3,31 @@
     value != null && Number.isFinite(Number(value)) ? Number(value) : null
   );
 
+  function rollingAverage(values, windowSize = 63) {
+    const window = Math.max(1, Number(windowSize) || 1);
+    const output = [];
+    const queue = [];
+    let sum = 0;
+    let count = 0;
+    values.forEach((value) => {
+      const numeric = toNumber(value);
+      queue.push(numeric);
+      if (Number.isFinite(numeric)) {
+        sum += numeric;
+        count += 1;
+      }
+      if (queue.length > window) {
+        const removed = queue.shift();
+        if (Number.isFinite(removed)) {
+          sum -= removed;
+          count -= 1;
+        }
+      }
+      output.push(count ? sum / count : null);
+    });
+    return output;
+  }
+
   function buildThresholdZones(values, lowThreshold, highThreshold) {
     const low = [];
     const middle = [];
@@ -65,7 +90,8 @@
     const kosdaqValues = filteredAdr.map((row) => toNumber(row.adr_kosdaq));
     const fearGreedValues = filteredAdr.map((row) => toNumber(row.fear_greed));
     const newsDates = filteredNews.map((row) => row.date);
-    const newsValues = filteredNews.map((row) => toNumber(row.news_sentiment));
+    const newsRawValues = filteredNews.map((row) => toNumber(row.news_sentiment));
+    const newsValues = rollingAverage(newsRawValues, 63);
 
     const adrNumbers = [...kospiValues, ...kosdaqValues].filter(Number.isFinite);
     const adrRawMin = adrNumbers.length ? Math.min(...adrNumbers) : adrLowThreshold;
@@ -79,6 +105,7 @@
       fearGreedValues,
       newsDates,
       newsValues,
+      newsRawValues,
       kospiZones: buildThresholdZones(kospiValues, adrLowThreshold, adrHighThreshold),
       kosdaqZones: buildThresholdZones(kosdaqValues, adrLowThreshold, adrHighThreshold),
       adrYMin: Math.min(adrRawMin, adrLowThreshold) - 2.5,
@@ -93,5 +120,6 @@
   globalScope.ThinkStockAuxiliaryChartModel = Object.freeze({
     buildAuxiliaryChartModel,
     buildThresholdZones,
+    rollingAverage,
   });
 }(typeof self !== "undefined" ? self : globalThis));
