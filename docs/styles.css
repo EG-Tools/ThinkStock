@@ -214,6 +214,29 @@ body {
   -webkit-backdrop-filter: blur(8px);
 }
 
+.runtime-refresh-status {
+  position: absolute;
+  z-index: 120;
+  top: 48px;
+  right: 14px;
+  max-width: min(260px, calc(100% - 100px));
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(18, 18, 18, 0.78);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.runtime-refresh-status.is-loading { color: #93c5fd; border-color: rgba(147, 197, 253, 0.32); }
+.runtime-refresh-status.is-error { color: #fca5a5; border-color: rgba(252, 165, 165, 0.32); }
+
 .co-movement-panel {
   position: absolute;
   z-index: 119;

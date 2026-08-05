@@ -206,7 +206,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.59";
+const APP_VERSION = "1.61";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -551,6 +551,7 @@ let runtimeRefreshController = null;
 let runtimeRefreshPromise = null;
 let runtimeRefreshGeneration = 0;
 let runtimeRefreshPhaseStats = { criticalReady: 0, supplementalReady: 0 };
+let runtimeRefreshStatus = { state: "idle", detail: "", updatedAt: 0 };
 function initE2eDebugAccess() {
   try {
     const params = new URLSearchParams(window.location.search || "");
@@ -1337,6 +1338,18 @@ function syncDisclosureToggleButton() {
   btn.title = showDisclosures
     ? "공시 마커 켜짐"
     : "공시 마커 꺼짐";
+}
+
+function setRuntimeRefreshStatus(state, detail = "") {
+  runtimeRefreshStatus = { state, detail: String(detail || ""), updatedAt: Date.now() };
+  const el = document.getElementById("runtimeRefreshStatus");
+  if (!el) return;
+  const isLoading = state === "loading";
+  const isError = state === "error";
+  el.classList.toggle("is-loading", isLoading);
+  el.classList.toggle("is-error", isError);
+  el.dataset.state = state;
+  el.textContent = runtimeRefreshStatus.detail || "최신 데이터 확인 대기";
 }
 
 function enableDisclosureMarkers() {
@@ -2846,8 +2859,22 @@ async function ensureCustomTickerSeriesLoaded(ticker, options = {}) {
   const cacheInfo = await applyTickerPriceCache(key, displayName);
   throwIfAborted(signal);
   const hasExisting = (pricePayload?.records || []).some((row) => toNum(row?.[key]) !== null);
-  const latestExisting = cacheInfo.latestDate || getLatestTickerDateFromPricePayload(key);
-  if (hasExisting && !forceRefresh && isTickerPriceCacheFresh(latestExisting, key)) return;
+  let latestExisting = cacheInfo.latestDate || getLatestTickerDateFromPricePayload(key);
+  if (hasExisting && !forceRefresh) {
+    // Check the KRX-backed runtime endpoint on every boot without downloading history again.
+    try {
+      const latestPoints = await fetchLatestKrxTickerSeries(key, { signal });
+      if (latestPoints.length) {
+        mergeTickerSeriesIntoPricePayload(key, latestPoints);
+        latestExisting = getLatestTickerDateFromPricePayload(key);
+        await writeTickerPriceCache(key, getTickerPricePointsFromPayload(key), displayName);
+      }
+    } catch (error) {
+      if (isAbortError(error) || signal?.aborted) throw error;
+      // Keep a usable local series; the normal incremental loader remains the fallback.
+    }
+    if (isTickerPriceCacheFresh(latestExisting, key)) return;
+  }
 
   try {
     const existingPoints = getTickerPricePointsFromPayload(key);
@@ -3507,6 +3534,21 @@ function getMainChartDisplayPointBudget(el, visibleSeriesCount = 1) {
 
 function pickByIndexes(values, indexes) {
   return indexes.map((idx) => values[idx]);
+}
+
+function keepFiniteTracePoints(xValues, yValues, textValues, baseValues) {
+  const x = [];
+  const y = [];
+  const text = [];
+  const base = [];
+  for (let index = 0; index < yValues.length; index += 1) {
+    if (!Number.isFinite(yValues[index])) continue;
+    x.push(xValues[index]);
+    y.push(yValues[index]);
+    text.push(textValues[index]);
+    base.push(baseValues[index]);
+  }
+  return { x, y, text, base };
 }
 
 function thinIndexList(indexes, budget, rowCount, requiredIndexes = []) {
@@ -5278,10 +5320,14 @@ async function renderChart(preserveZoom = true) {
   const displayPointCount = displayIndexes ? displayIndexes.length : rows.length;
 
   const traces = seriesModels.map(({ series, rawTexts, baseLineWidth, xValues, values, baseValues }) => {
-    const traceX = displayIndexes ? pickByIndexes(xValues, displayIndexes) : xValues;
-    const traceY = displayIndexes ? pickByIndexes(values, displayIndexes) : values;
-    const traceText = displayIndexes ? pickByIndexes(rawTexts, displayIndexes) : rawTexts;
-    baseTraceValues[series] = displayIndexes ? pickByIndexes(baseValues, displayIndexes) : baseValues;
+    const sampledX = displayIndexes ? pickByIndexes(xValues, displayIndexes) : xValues;
+    const sampledY = displayIndexes ? pickByIndexes(values, displayIndexes) : values;
+    const sampledText = displayIndexes ? pickByIndexes(rawTexts, displayIndexes) : rawTexts;
+    const sampledBase = displayIndexes ? pickByIndexes(baseValues, displayIndexes) : baseValues;
+    // Each trace has its own listing and source gaps; omit only the missing render points.
+    const tracePoints = keepFiniteTracePoints(sampledX, sampledY, sampledText, sampledBase);
+    const { x: traceX, y: traceY, text: traceText } = tracePoints;
+    baseTraceValues[series] = tracePoints.base;
 
     return {
       x: traceX,
@@ -5291,7 +5337,7 @@ async function renderChart(preserveZoom = true) {
       mode: "lines",
       name: labelName(series),
       visible: hiddenSeries.has(series) ? "legendonly" : true,
-      connectgaps: true,
+      connectgaps: false,
       meta: { seriesKey: series, baseLineWidth, sourcePointCount: xValues.length, displayPointCount },
       line: {
         color: seriesColor(series),
@@ -6837,6 +6883,7 @@ async function runRuntimeDataRefresh(msgEl, options = {}) {
   let disclosureDataChanged = false;
   const forceNetwork = Boolean(options?.forceNetwork);
   const signal = options?.signal || null;
+  setRuntimeRefreshStatus("loading", "가격·지수 최신분 확인 중");
 
   const coreIndexTask = () => refreshCoreIndexSeries({ signal })
     .then((result) => ({ info: result.applied || [], warnings: result.warnings || [] }));
@@ -6917,6 +6964,7 @@ async function runRuntimeDataRefresh(msgEl, options = {}) {
       collectResults(results);
       const changes = await applyPhaseChanges(Boolean(options?.awaitCriticalRender));
       runtimeRefreshPhaseStats.criticalReady += 1;
+      setRuntimeRefreshStatus("loading", "가격·지수 반영 완료 · 보조지표 갱신 중");
       if (typeof options?.onCriticalReady === "function") {
         setMessage(msgEl, [
           ...infoLines,
@@ -6956,6 +7004,11 @@ async function runRuntimeDataRefresh(msgEl, options = {}) {
   } else {
     setMessage(msgEl, []);
   }
+  const timeText = new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
+  setRuntimeRefreshStatus(
+    "ready",
+    warnLines.length ? `최신 확인 ${timeText} · 일부 항목은 이전 값 유지` : `최신 확인 ${timeText}`,
+  );
 }
 
 async function refreshRuntimeData(msgEl, options = {}) {
@@ -6974,6 +7027,7 @@ async function refreshRuntimeData(msgEl, options = {}) {
   const task = runRuntimeDataRefresh(msgEl, { ...options, signal: controller.signal, generation })
     .catch((error) => {
       if (isAbortError(error) || controller.signal.aborted) return { cancelled: true };
+      setRuntimeRefreshStatus("error", "최신 데이터 확인 실패 · 저장된 값 사용 중");
       throw error;
     })
     .finally(() => {
