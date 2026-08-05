@@ -65,10 +65,11 @@ const ECOS_LEADING_STAT_CODE = "901Y067";
 const ECOS_LEADING_ITEM_CODE = "I16E";
 const ECOS_NEWS_STAT_CODE = "521Y001";
 const ECOS_NEWS_ITEM_CODE = "A001";
-const CREDIT_CACHE_SCHEMA = 1;
+const CREDIT_CACHE_SCHEMA = 2;
 const CREDIT_CACHE_KEY = `credit-macro:${CREDIT_CACHE_SCHEMA}`;
 const FREESIS_CREDIT_URL = "https://freesis.kofia.or.kr/meta/getMetaDataList.do";
 const FREESIS_CREDIT_OBJECT = "STATSCU0100000070BO";
+const FREESIS_CUSTOMER_DEPOSIT_OBJECT = "STATSCU0100000060BO";
 const IMPORTANT_DISCLOSURE_PATTERN = /반기보고서|분기보고서|사업보고서|영업\(잠정\)실적|잠정실적|매출액.?또는.?손익구조|감사보고서제출|배당|현금ㆍ현물배당|단일판매|공급계약|수주|유상증자|무상증자|감자|증권신고서\(지분증권\)|전환사채|신주인수권|신주인수권부사채|교환사채|사채권|자기주식(취득|처분)결정|주식소각|합병|분할|영업양수|영업양도|타법인주식|출자증권|신규시설투자|시설투자|최대주주변경|대표이사.*변경|영업정지|거래정지|상장폐지|관리종목|소송|횡령|배임|회생|파산|부도|공개매수|장래사업|경영계획/;
 const PUBLIC_ORIGIN = "https://eg-tools.github.io";
 
@@ -232,25 +233,41 @@ function mergeCreditRows(existing, incoming) {
   return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
 }
 
-async function fetchFreesisCreditRows() {
+async function fetchFreesisRows(objectName) {
   const end = koreanDateText().replaceAll("-", "");
   const start = shiftDate(koreanDateText(), -180).replaceAll("-", "");
-  const response = await fetch(FREESIS_CREDIT_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json; charset=UTF-8" },
-    body: JSON.stringify({
-      dmSearch: {
-        OBJ_NM: FREESIS_CREDIT_OBJECT,
-        tmpV1: "D",
-        tmpV40: "01",
-        tmpV45: start,
-        tmpV46: end,
-      },
-    }),
-  });
-  if (!response.ok) throw new Error(`KOFIA HTTP ${response.status}`);
-  const payload = await response.json();
-  return (Array.isArray(payload?.ds1) ? payload.ds1 : []).map((row) => {
+  let lastError = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await fetch(FREESIS_CREDIT_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json; charset=UTF-8" },
+        body: JSON.stringify({
+          dmSearch: {
+            OBJ_NM: objectName,
+            tmpV1: "D",
+            tmpV40: "01",
+            tmpV45: start,
+            tmpV46: end,
+          },
+        }),
+      });
+      if (!response.ok) throw new Error(`KOFIA HTTP ${response.status}`);
+      const payload = await response.json();
+      const rows = Array.isArray(payload?.ds1) ? payload.ds1 : [];
+      if (rows.length) return rows;
+      throw new Error("KOFIA returned no rows");
+    } catch (error) {
+      lastError = error;
+      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 350));
+    }
+  }
+  throw lastError || new Error("KOFIA request failed");
+}
+
+async function fetchFreesisCreditRows() {
+  const rows = await fetchFreesisRows(FREESIS_CREDIT_OBJECT);
+  return rows.map((row) => {
     const rawDate = String(row?.TMPV1 || "");
     const date = /^\d{8}$/.test(rawDate)
       ? `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`
@@ -262,6 +279,17 @@ async function fetchFreesisCreditRows() {
     };
   }).filter((row) => isValidIsoDate(row.date)
     && (row.kospi_credit !== null || row.kosdaq_credit !== null));
+}
+
+async function fetchFreesisCustomerDepositRows() {
+  const rows = await fetchFreesisRows(FREESIS_CUSTOMER_DEPOSIT_OBJECT);
+  return rows.map((row) => {
+    const rawDate = String(row?.TMPV1 || "");
+    const date = /^\d{8}$/.test(rawDate)
+      ? `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`
+      : "";
+    return { date, customer_deposit: creditAmountToTrillion(row?.TMPV2) };
+  }).filter((row) => isValidIsoDate(row.date) && row.customer_deposit !== null);
 }
 
 export function creditRefreshWindowDate(now = new Date()) {
@@ -291,12 +319,29 @@ async function creditMacroResponse(env, origin, refresh = false) {
     || Boolean(windowDate && cached.lastCheckedWindow !== windowDate);
   if (!needsRefresh) return jsonResponse({ ok: true, cached: true, ...cached }, 200, origin);
   try {
-    const rows = await fetchFreesisCreditRows();
+    const [creditResult, depositResult] = await Promise.allSettled([
+      fetchFreesisCreditRows(),
+      fetchFreesisCustomerDepositRows(),
+    ]);
+    const rows = mergeCreditRows(
+      creditResult.status === "fulfilled" ? creditResult.value : [],
+      depositResult.status === "fulfilled" ? depositResult.value : [],
+    );
+    if (!rows.length) {
+      const errors = [creditResult, depositResult]
+        .filter((result) => result.status === "rejected")
+        .map((result) => result.reason?.message || String(result.reason));
+      throw new Error(errors.join(" / ") || "KOFIA returned no usable rows");
+    }
+    const warnings = [];
+    if (creditResult.status === "rejected") warnings.push("신용 잔고 연결 실패로 마지막 확인 데이터를 사용합니다.");
+    if (depositResult.status === "rejected") warnings.push("고객예탁금 연결 실패로 마지막 확인 데이터를 사용합니다.");
     const payload = {
       schema: CREDIT_CACHE_SCHEMA,
       savedAt: Date.now(),
       rows: mergeCreditRows(cached?.rows, rows).slice(-210),
       lastCheckedWindow: windowDate || cached?.lastCheckedWindow || "",
+      ...(warnings.length ? { warning: warnings.join(" ") } : {}),
     };
     if (env.DISCLOSURE_CACHE) {
       await env.DISCLOSURE_CACHE.put(CREDIT_CACHE_KEY, JSON.stringify(payload));

@@ -206,7 +206,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.67";
+const APP_VERSION = "1.68";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -6689,6 +6689,19 @@ async function refreshCreditFromGateway(signal = null) {
     warnings: payload.warning ? [payload.warning] : [],
   };
 }
+
+async function refreshCreditFromGatewayWithRetry(signal = null) {
+  try {
+    return await refreshCreditFromGateway(signal);
+  } catch (error) {
+    if (isAbortError(error) || signal?.aborted || /401|접속 코드/.test(String(error?.message || ""))) {
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    throwIfAborted(signal);
+    return refreshCreditFromGateway(signal);
+  }
+}
 /**
  * Fetch adrinfo.kr/chart via CORS proxy, parse arrays, and append only new rows to adrRows.
  * Returns: { added: number, latestDate: string }
@@ -6991,7 +7004,7 @@ async function runRuntimeDataRefresh(msgEl, options = {}) {
     .catch((error) => ({ info: [], warnings: [`ECOS 지표 불러오기 오류: ${error.message}`] }));
 
   const creditTask = () => {
-    return refreshCreditFromGateway(signal)
+    return refreshCreditFromGatewayWithRetry(signal)
       .then((result) => ({ info: result.applied || [], warnings: result.warnings || [] }))
       .catch((error) => ({ info: [], warnings: [`신용·예탁금 불러오기 오류: ${error.message}`] }));
   };

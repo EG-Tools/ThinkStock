@@ -138,10 +138,15 @@ test("returns authenticated recent credit balances and caches the KOFIA response
   const originalFetch = globalThis.fetch;
   const cache = memoryKv();
   let calls = 0;
-  globalThis.fetch = async () => {
+  globalThis.fetch = async (_url, options = {}) => {
     calls += 1;
+    const requestBody = JSON.parse(String(options.body || "{}"));
+    const objectName = requestBody?.dmSearch?.OBJ_NM;
+    const ds1 = objectName === "STATSCU0100000060BO"
+      ? [{ TMPV1: "20260803", TMPV2: "68,700,000,000,000" }]
+      : [{ TMPV1: "20260803", TMPV3: "123,400,000,000,000", TMPV4: "45,600,000,000,000" }];
     return new Response(JSON.stringify({
-      ds1: [{ TMPV1: "20260803", TMPV3: "123,400,000,000,000", TMPV4: "45,600,000,000,000" }],
+      ds1,
     }), { status: 200 });
   };
   try {
@@ -149,10 +154,15 @@ test("returns authenticated recent credit balances and caches the KOFIA response
     const refreshed = await handleRequest(request("/api/credit?refresh=1", { token: "private" }), env);
     const payload = await refreshed.json();
     assert.equal(refreshed.status, 200);
-    assert.deepEqual(payload.rows.at(-1), { date: "2026-08-03", kospi_credit: 123.4, kosdaq_credit: 45.6 });
+    assert.deepEqual(payload.rows.at(-1), {
+      date: "2026-08-03",
+      customer_deposit: 68.7,
+      kospi_credit: 123.4,
+      kosdaq_credit: 45.6,
+    });
     const cached = await handleRequest(request("/api/credit", { token: "private" }), env);
     assert.equal((await cached.json()).cached, true);
-    assert.equal(calls, 1);
+    assert.equal(calls, 2);
   } finally {
     globalThis.fetch = originalFetch;
   }
