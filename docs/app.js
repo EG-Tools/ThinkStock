@@ -206,7 +206,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.54";
+const APP_VERSION = "1.55";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -6808,25 +6808,19 @@ async function runRuntimeDataRefresh(msgEl, options = {}) {
         : [],
     }));
 
-  const adrTask = () => {
-    if (!forceNetwork) return Promise.resolve({ info: [], warnings: [] });
-    return refreshAdrFromWeb(signal)
+  const adrTask = () => refreshAdrFromWeb(signal)
     .then(({ added, latestDate }) => ({
       info: added > 0 ? [`ADR ${added}건 추가 반영(~ ${latestDate})`] : [],
       warnings: [],
     }))
     .catch((adrErr) => ({ info: [], warnings: [`ADR 불러오기 오류: ${adrErr.message}`] }));
-  };
 
-  const fearGreedTask = () => {
-    if (!forceNetwork) return Promise.resolve({ info: [], warnings: [] });
-    return refreshFearGreedFromWeb(signal)
+  const fearGreedTask = () => refreshFearGreedFromWeb(signal)
     .then(({ added, latestDate }) => ({
       info: added > 0 ? [`공포탐욕 최신값 반영(~ ${latestDate})`] : [],
       warnings: [],
     }))
     .catch((error) => ({ info: [], warnings: [`공포탐욕 불러오기 오류: ${error.message}`] }));
-  };
 
   const dartTask = () => {
     if (!forceNetwork || !canUseDartGateway()) {
