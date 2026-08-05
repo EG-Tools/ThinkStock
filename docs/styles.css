@@ -236,6 +236,7 @@ body {
 
 .runtime-refresh-status.is-loading { color: #93c5fd; border-color: rgba(147, 197, 253, 0.32); }
 .runtime-refresh-status.is-error { color: #fca5a5; border-color: rgba(252, 165, 165, 0.32); }
+.runtime-refresh-status[hidden] { display: none; }
 
 .co-movement-panel {
   position: absolute;

@@ -206,7 +206,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.62";
+const APP_VERSION = "1.64";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -552,6 +552,7 @@ let runtimeRefreshPromise = null;
 let runtimeRefreshGeneration = 0;
 let runtimeRefreshPhaseStats = { criticalReady: 0, supplementalReady: 0 };
 let runtimeRefreshStatus = { state: "idle", detail: "", updatedAt: 0 };
+let runtimeRefreshStatusHideTimer = 0;
 function initE2eDebugAccess() {
   try {
     const params = new URLSearchParams(window.location.search || "");
@@ -1344,12 +1345,20 @@ function setRuntimeRefreshStatus(state, detail = "") {
   runtimeRefreshStatus = { state, detail: String(detail || ""), updatedAt: Date.now() };
   const el = document.getElementById("runtimeRefreshStatus");
   if (!el) return;
+  if (runtimeRefreshStatusHideTimer) {
+    clearTimeout(runtimeRefreshStatusHideTimer);
+    runtimeRefreshStatusHideTimer = 0;
+  }
+  el.hidden = false;
   const isLoading = state === "loading";
   const isError = state === "error";
   el.classList.toggle("is-loading", isLoading);
   el.classList.toggle("is-error", isError);
   el.dataset.state = state;
   el.textContent = runtimeRefreshStatus.detail || "최신 데이터 확인 대기";
+  if (state !== "loading") {
+    runtimeRefreshStatusHideTimer = setTimeout(() => { el.hidden = true; }, 1000);
+  }
 }
 
 function enableDisclosureMarkers() {
@@ -2995,15 +3004,8 @@ async function addCustomStock(candidate, msgEl) {
     saveState();
     if (showAiForecast) requestAiAnalysisForTicker(candidate.ticker).catch(() => {});
     resetHandles();
-    if (showInsiderTrades && canUseDartGateway()) {
-      requestInsiderTradesForTicker(candidate.ticker)
-        .then(() => requestChartRender())
-        .catch((error) => {
-          setMessage(msgEl, [`${candidate.name} 내부거래 조회 오류: ${error.message}`], true);
-        });
-    }
     setMessage(msgEl, [`${candidate.name} 종목이 추가되었습니다.`]);
-    requestDartDisclosureRefreshForTicker(candidate.ticker, msgEl);
+    preloadTickerDartData(candidate.ticker, msgEl);
   } catch (err) {
     delete DISPLAY_NAMES[candidate.ticker];
     setMessage(msgEl, `종목 추가 중 오류가 발생했습니다: ${err.message}`, true);
@@ -4852,6 +4854,7 @@ async function refreshDartDisclosuresFromApi(apiKey, ticker = "", options = {}) 
   const signal = options?.signal || null;
   throwIfAborted(signal);
   const targetTicker = String(ticker || "").trim().toUpperCase();
+  let servedFromCache = false;
   if (targetTicker && !options.forceNetwork && hasFreshDartDisclosureRefresh(targetTicker)) {
     const cached = getDartDisclosureRefreshCacheEntry(targetTicker);
     return {
@@ -4866,6 +4869,7 @@ async function refreshDartDisclosuresFromApi(apiKey, ticker = "", options = {}) 
       signal,
       forceNetwork: options.forceNetwork,
       onBatch: async (batch, progress) => {
+        servedFromCache = servedFromCache || progress?.cached === true;
         if (batch.length) {
           disclosureRows = mergeDisclosureRows(disclosureRows, batch);
           markDataChanged("disclosure");
@@ -4885,6 +4889,7 @@ async function refreshDartDisclosuresFromApi(apiKey, ticker = "", options = {}) 
     fetched: liveRows.length,
     added: Math.max(0, disclosureRows.length - beforeCount),
     latestDate,
+    cached: servedFromCache,
   };
   if (targetTicker) {
     rememberDartDisclosureRefresh(targetTicker, info);
@@ -4982,7 +4987,7 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
   const target = String(ticker || "").trim().toUpperCase();
   if (!/^[0-9]{6}\.(KS|KQ)$/.test(target)) return;
   if (dartDisclosureTickerRefreshPromises.has(target)) {
-    return;
+    return dartDisclosureTickerRefreshPromises.get(target);
   }
 
   const name = labelName(target);
@@ -4997,7 +5002,8 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
         const refreshOptions = {
           forceNetwork: false,
           onBatch: async (_batch, progress) => {
-            // DART streams pages progressively. Patch disclosure markers after the final page only.
+            // Stream new markers without restarting the price-line render.
+            if (currentMainChartModel?.seriesModels?.length) applyDisclosureStateFast();
             const pageText = progress.cached
               ? "저장된 공시를 불러왔습니다."
               : `최신 공시 확인 중 ${progress.page}/${progress.totalPages}`;
@@ -5005,7 +5011,7 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
           },
         };
         let refreshInfo = await refreshDartDisclosuresFromApi("gateway", target, refreshOptions);
-        if (refreshInfo?.fetched === 0 && disclosureRowsForTicker(target).length === 0) {
+        if (refreshInfo?.fetched === 0 && refreshInfo?.cached) {
           setMessage(msgEl, [`${name} 종목이 추가되었습니다.`, "공시 결과를 한 번 더 확인하고 있습니다."]);
           await new Promise((resolve) => setTimeout(resolve, DART_EMPTY_RESULT_RETRY_DELAY_MS));
           refreshInfo = await refreshDartDisclosuresFromApi("gateway", target, {
@@ -5033,6 +5039,24 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
       dartDisclosureTickerRefreshPromises.delete(target);
     });
   dartDisclosureTickerRefreshPromises.set(target, task);
+  return task;
+}
+
+function preloadTickerDartData(ticker, msgEl) {
+  const target = String(ticker || "").trim().toUpperCase();
+  const disclosureTask = requestDartDisclosureRefreshForTicker(target, msgEl);
+  if (!canUseDartGateway()) return;
+  // Prioritize the visible disclosure markers. The quieter insider-data request
+  // begins immediately afterward, avoiding competing gateway authentication.
+  Promise.resolve(disclosureTask)
+    .catch(() => undefined)
+    .then(() => requestInsiderTradesForTicker(target))
+    .then(() => {
+      if (showInsiderTrades) requestChartRender();
+    })
+    .catch(() => {
+      // The chart remains usable when a newly added ticker has no DART trade records.
+    });
 }
 
 /* Main chart */
