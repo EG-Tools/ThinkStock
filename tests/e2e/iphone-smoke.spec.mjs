@@ -42,6 +42,10 @@ async function stubExternalRefreshes(page, { stubFearGreed = true } = {}) {
   });
   await page.route("https://query2.finance.yahoo.com/**", unavailable);
   await page.route("https://corsproxy.io/**", unavailable);
+  // Keep the seeded personal token valid while startup checks recent ECOS changes.
+  await page.route("https://thinkstock-api.keg0320.workers.dev/api/macro?*", async (route) => {
+    await route.fulfill({ json: { ok: true, leadingRows: [], newsRows: [] } });
+  });
   if (stubFearGreed) {
     await page.route("https://kospi.feargreedchart.com/**", unavailable);
   }
