@@ -16,3 +16,20 @@ test("converts pointer movement into chart offset and scale", () => {
   assert.equal(adjustments.scaleFromDrag(2, 100, 115), 1.8);
   assert.deepEqual(adjustments.resetTransforms(), { offsets: {}, scales: {} });
 });
+
+test("fits the visible viewport without changing transformed trace values", () => {
+  const traces = [
+    { x: ["2026-01-01", "2026-02-01", "2026-03-01"], y: [20, 80, 200] },
+    { x: ["2026-01-01", "2026-02-01", "2026-03-01"], y: [40, 60, 90] },
+    { x: ["2026-02-01"], y: [-500], visible: "legendonly" },
+  ];
+  const before = JSON.stringify(traces);
+  assert.deepEqual(
+    adjustments.fitRangeForTraces(traces, ["2026-02-01", "2026-03-01"], {
+      paddingRatio: 0.1,
+      minimumPadding: 1,
+    }),
+    [46, 214],
+  );
+  assert.equal(JSON.stringify(traces), before);
+});

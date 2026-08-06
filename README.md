@@ -57,3 +57,9 @@ ThinkStock ships in two modes from the same repository.
   - `KRX_API_KEY=...`
   - `ECOS_API_KEY=...`
 - GitHub Pages builds use GitHub Secrets for market and macro data. DART refreshes run only through the private Worker.
+
+## Local-first update workflow
+- `update_from_github.bat`: downloads `origin/main` only when the worktree is clean, installs dependencies, and builds the app. `.env.local` remains local and is not replaced.
+- `run_local_pages.bat`: builds the current local source and opens `http://127.0.0.1:8787` for quick visual testing.
+- `test_local.bat`: runs the complete test suite, then opens the local app only if every check passes.
+- Local edits are not published automatically. Commit, push, Worker deployment, and GitHub Pages deployment happen only when a release is explicitly approved.

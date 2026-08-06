@@ -421,8 +421,24 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   expect(resetBox.y + resetBox.height).toBeLessThan(chartBox.y + chartBox.height);
   expect(Math.abs(refreshBox.y - resetBox.y)).toBeLessThanOrEqual(1);
   expect(Math.abs(refreshBox.height - resetBox.height)).toBeLessThanOrEqual(2);
-  expect((chartBox.x + chartBox.width) - (refreshBox.x + refreshBox.width)).toBeGreaterThanOrEqual(10);
-  expect((chartBox.x + chartBox.width) - (refreshBox.x + refreshBox.width)).toBeLessThanOrEqual(18);
+  expect((chartBox.x + chartBox.width) - (refreshBox.x + refreshBox.width)).toBeGreaterThanOrEqual(30);
+  expect((chartBox.x + chartBox.width) - (refreshBox.x + refreshBox.width)).toBeLessThanOrEqual(38);
+  const chartControlLayout = await page.locator(".main-chart-wrap").evaluate((container) => {
+    const chartRect = container.querySelector("#chart").getBoundingClientRect();
+    return ["resetHandles", "coMovementToggle", "aiForecastToggle", "macdToggle"].map((id) => {
+      const button = document.getElementById(id);
+      const rect = button.getBoundingClientRect();
+      return {
+        id,
+        insideChart: rect.left >= chartRect.left && rect.right <= chartRect.right,
+        contentFits: button.scrollWidth <= button.clientWidth && button.scrollHeight <= button.clientHeight,
+        whiteSpace: getComputedStyle(button).whiteSpace,
+      };
+    });
+  });
+  expect(chartControlLayout.every((item) => item.insideChart)).toBe(true);
+  expect(chartControlLayout.every((item) => item.contentFits)).toBe(true);
+  expect(chartControlLayout.every((item) => item.whiteSpace === "nowrap")).toBe(true);
   await page.locator("#stockSearchInput").fill("SK하이닉스");
   await expect(page.locator(".stock-suggest-item")).toContainText("SK하이닉스");
   await page.locator("#stockSearchInput").press("Escape");
@@ -988,14 +1004,20 @@ test("MACD toggle inserts a stock oscillator between the main and ADR charts", a
   expect(macdPresentation.colorsMatch).toBe(true);
   expect(macdPresentation.indicatorLabel).toBe(true);
 
-  const positions = await page.evaluate(() => ({
-    main: document.getElementById("chart").getBoundingClientRect().bottom,
-    macdTop: document.getElementById("chart-macd").getBoundingClientRect().top,
-    macdBottom: document.getElementById("chart-macd").getBoundingClientRect().bottom,
-    adr: document.getElementById("chart-adr").getBoundingClientRect().top,
-  }));
+  const positions = await page.evaluate(() => {
+    const shell = document.querySelector(".app-shell").getBoundingClientRect();
+    const macd = document.getElementById("chart-macd").getBoundingClientRect();
+    return {
+      main: document.getElementById("chart").getBoundingClientRect().bottom,
+      macdTop: macd.top,
+      macdBottom: macd.bottom,
+      macdInsideShell: macd.left >= shell.left && macd.right <= shell.right,
+      adr: document.getElementById("chart-adr").getBoundingClientRect().top,
+    };
+  });
   expect(positions.macdTop).toBeGreaterThanOrEqual(positions.main);
   expect(positions.adr).toBeGreaterThanOrEqual(positions.macdBottom);
+  expect(positions.macdInsideShell).toBe(true);
 
   await page.locator("#macdToggle").click();
   await expect(page.locator("#chart-macd")).toBeHidden();

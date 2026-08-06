@@ -25,15 +25,10 @@
     }
 
     const pointCount = Math.min(Array.isArray(trace.x) ? trace.x.length : 0, Array.isArray(trace.y) ? trace.y.length : 0);
-    const chartRect = options.geometry?.rect || element.getBoundingClientRect();
-    const textNodes = [...element.querySelectorAll(".textpoint text")]
-      .filter((node) => node.textContent?.trim() === options.iconText);
     const points = [];
     for (let pointIndex = 0; pointIndex < pointCount; pointIndex += 1) {
       const x = Number(xAxis._offset || 0) + xAxis.d2p(trace.x[pointIndex]);
-      let y = Number(yAxis._offset || 0) + yAxis.d2p(trace.y[pointIndex]);
-      const textRect = textNodes[pointIndex]?.getBoundingClientRect?.();
-      if (textRect?.height) y = textRect.top + textRect.height * 0.5 - chartRect.top;
+      const y = Number(yAxis._offset || 0) + yAxis.d2p(trace.y[pointIndex]);
       if (Number.isFinite(x) && Number.isFinite(y)) points.push({ x, y, pointIndex });
     }
     points.sort((left, right) => left.x - right.x);
