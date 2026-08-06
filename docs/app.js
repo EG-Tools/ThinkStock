@@ -207,7 +207,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.80";
+const APP_VERSION = "1.81";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -254,6 +254,7 @@ const FREESIS_CREDIT_LOOKBACK_DAYS = 120;
 const FREESIS_CREDIT_UNIT_CODE = "01";
 const FEAR_GREED_LIVE_URL = "https://kospi.feargreedchart.com/api/?action=kospi";
 const IS_LOCAL_RUNTIME = typeof window !== "undefined"
+  && !new URLSearchParams(window.location.search).has("e2e")
   && window.location.protocol === "http:"
   && (/^(localhost|127\.0\.0\.1)$/.test(window.location.hostname)
     || /^10\./.test(window.location.hostname)
