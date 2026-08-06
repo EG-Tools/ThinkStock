@@ -63,7 +63,6 @@ const {
   offsetFromDrag,
   scaleFromDrag,
   resetTransforms,
-  fitRangeForTraces,
 } = chartAdjustmentsModule;
 const browserMarketClientModule = globalThis.ThinkStockBrowserMarketClient;
 if (!browserMarketClientModule) throw new Error("Browser market client module failed to load");
@@ -207,7 +206,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.82";
+const APP_VERSION = "1.83";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -611,6 +610,12 @@ function initE2eDebugAccess() {
         return {
           lineDomUpdates: lineHighlightDomUpdateCount,
           disclosureDomUpdates: disclosureHighlightDomUpdateCount,
+        };
+      },
+      getSeriesTransforms() {
+        return {
+          offsets: { ...seriesOffsets },
+          scales: { ...seriesScales },
         };
       },
       applyNewsSentimentForTest(rows) {
@@ -3691,7 +3696,6 @@ function updateHandles() {
     leftHandle.style.top = leftPixelY - 7 + "px";
     leftHandle.style.backgroundColor = color;
     leftHandle.title = labelName(key) + " (위치)";
-    setupOffsetDrag(leftHandle, i, key, leftPixelY, ya);
     container.appendChild(leftHandle);
 
     const rightHandle = document.createElement("div");
@@ -3700,8 +3704,10 @@ function updateHandles() {
     rightHandle.style.left = rightX + "px";
     rightHandle.style.backgroundColor = color;
     rightHandle.title = labelName(key) + " (스케일)";
-    setupScaleDrag(rightHandle, i, key, rightPixelY, ya);
     container.appendChild(rightHandle);
+
+    setupOffsetDrag(leftHandle, i, key, leftPixelY, ya, rightHandle, rightPixelY);
+    setupScaleDrag(rightHandle, i, key, rightPixelY, ya);
   });
 }
 
@@ -3789,10 +3795,15 @@ function lockCurrentYAxisRange() {
   const el = document.getElementById("chart");
   const range = el?._fullLayout?.yaxis?.range;
   if (!el || !Array.isArray(range) || range.length < 2) return;
+  const lockedRange = [range[0], range[1]];
   useViewportEventMarkerGap = true;
-  Plotly.relayout(el, {
-    "yaxis.range[0]": range[0],
-    "yaxis.range[1]": range[1],
+  if (el.layout?.yaxis) {
+    el.layout.yaxis.autorange = false;
+    el.layout.yaxis.range = [...lockedRange];
+  }
+  return Plotly.relayout(el, {
+    "yaxis.range[0]": lockedRange[0],
+    "yaxis.range[1]": lockedRange[1],
     "yaxis.autorange": false,
   });
 }
@@ -3803,7 +3814,7 @@ function getCurrentMainXRange() {
   return [range[0], range[1]];
 }
 
-function setupOffsetDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
+function setupOffsetDrag(handle, traceIndex, seriesKey, basePixelY, ya, pairedHandle, pairedPixelY) {
   function onStart(startClientY, pointerId) {
     const startOffset = seriesOffsets[seriesKey] || 0;
     const lockedXRange = getCurrentMainXRange();
@@ -3815,6 +3826,7 @@ function setupOffsetDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
       const dy = clientY - startClientY;
       seriesOffsets[seriesKey] = offsetFromDrag(startOffset, startClientY, clientY, ya);
       handle.style.top = basePixelY + dy - 7 + "px";
+      if (pairedHandle) pairedHandle.style.top = pairedPixelY + dy - 7 + "px";
       restyleLive(traceIndex, seriesKey);
     }
 
@@ -3916,32 +3928,6 @@ function resetHandles() {
   useViewportEventMarkerGap = false;
   saveState();
   requestChartRender(false);
-}
-
-function fitCurrentChartRatio() {
-  const el = document.getElementById("chart");
-  if (!el?._fullLayout?.yaxis || !window.Plotly) return;
-  const xRange = getCurrentMainXRange();
-  const primaryTraces = (el.data || []).filter((trace) => (
-    trace?.meta?.seriesKey && !trace?.meta?.isDisclosureTrace && !trace?.meta?.isInsiderTradeTrace
-  ));
-  const yRange = fitRangeForTraces(primaryTraces, xRange, {
-    paddingRatio: 0.08,
-    minimumPadding: 0.6,
-  });
-  if (!yRange) return;
-  if (xRange) pinnedXRange = [...xRange];
-  useViewportEventMarkerGap = true;
-  lineHitIndexCache.delete(el);
-  chartEventLayerModule.invalidateMarkerPixels(el);
-  Promise.resolve(Plotly.relayout(el, {
-    "yaxis.range[0]": yRange[0],
-    "yaxis.range[1]": yRange[1],
-    "yaxis.autorange": false,
-  })).then(() => {
-    updateHandles();
-    saveLastRuntimeSnapshot().catch(() => {});
-  });
 }
 
 function buildDisclosurePointIndex(seriesModels, tickers) {
@@ -7318,7 +7304,7 @@ async function boot() {
       requestChartRender,
     });
 
-    document.getElementById("resetHandles").addEventListener("click", fitCurrentChartRatio);
+    document.getElementById("resetHandles").addEventListener("click", resetHandles);
     document.getElementById("coMovementToggle").addEventListener("click", () => {
       showCoMovement = !showCoMovement;
       saveState();
