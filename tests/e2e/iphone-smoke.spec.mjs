@@ -803,6 +803,37 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   expect(pairedMarkerGeometry.verticalClearance).toBeGreaterThanOrEqual(0);
   expect(pairedMarkerGeometry.verticalClearance).toBeLessThanOrEqual(4);
 
+  const offsetHandle = page.locator('.y-handle-left[title="삼성전자 (위치)"]');
+  const pairedScaleHandle = page.locator('.y-handle-right[title="삼성전자 (스케일)"]');
+  await expect(offsetHandle).toBeVisible();
+  await expect(pairedScaleHandle).toBeVisible();
+  const [offsetBefore, scaleBefore] = await Promise.all([
+    offsetHandle.boundingBox(),
+    pairedScaleHandle.boundingBox(),
+  ]);
+  const handleTopsBefore = await page.locator("#y-handles").evaluate(() => ({
+    offset: Number.parseFloat(document.querySelector('.y-handle-left[title="삼성전자 (위치)"]').style.top),
+    scale: Number.parseFloat(document.querySelector('.y-handle-right[title="삼성전자 (스케일)"]').style.top),
+  }));
+  await page.mouse.move(
+    offsetBefore.x + offsetBefore.width / 2,
+    offsetBefore.y + offsetBefore.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    offsetBefore.x + offsetBefore.width / 2,
+    offsetBefore.y + offsetBefore.height / 2 + 30,
+  );
+  const handleTopsDuring = await page.locator("#y-handles").evaluate(() => ({
+    offset: Number.parseFloat(document.querySelector('.y-handle-left[title="삼성전자 (위치)"]').style.top),
+    scale: Number.parseFloat(document.querySelector('.y-handle-right[title="삼성전자 (스케일)"]').style.top),
+  }));
+  const offsetDelta = handleTopsDuring.offset - handleTopsBefore.offset;
+  const scaleDelta = handleTopsDuring.scale - handleTopsBefore.scale;
+  expect(Math.abs(offsetDelta - 30)).toBeLessThanOrEqual(1);
+  expect(Math.abs(scaleDelta - offsetDelta)).toBeLessThanOrEqual(1);
+  await page.mouse.up();
+
   const scaleHandle = page.locator('.y-handle-right[title="삼성전자 (스케일)"]');
   await expect(scaleHandle).toBeVisible();
   const scaleHandleBox = await scaleHandle.boundingBox();
@@ -826,6 +857,48 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   await expect.poll(async () => Math.abs(
     (await readPairedMarkerGeometry()).verticalClearance - pairedMarkerGeometry.verticalClearance,
   )).toBeLessThanOrEqual(2);
+
+  await page.locator("#resetHandles").click();
+  await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getSeriesTransforms())).toEqual({
+    offsets: {},
+    scales: {},
+  });
+  const lineDragStart = await page.locator("#chart").evaluate((element) => {
+    const trace = (element.data || []).find((item) => item?.meta?.seriesKey === "005930.KS");
+    const xAxis = element?._fullLayout?.xaxis;
+    const yAxis = element?._fullLayout?.yaxis;
+    const rect = element.getBoundingClientRect();
+    const validIndexes = Array.from(trace?.y || [], (value, index) => (
+      Number.isFinite(Number(value)) ? index : -1
+    )).filter((index) => index >= 0);
+    const pointIndex = validIndexes[Math.floor(validIndexes.length / 2)] ?? -1;
+    if (!trace || !xAxis || !yAxis || pointIndex < 0) return null;
+    return {
+      x: rect.left + xAxis._offset + xAxis.d2p(trace.x[pointIndex]),
+      y: rect.top + yAxis._offset + yAxis.l2p(Number(trace.y[pointIndex])),
+      ySpan: Math.abs(yAxis.range[1] - yAxis.range[0]),
+    };
+  });
+  expect(lineDragStart).not.toBeNull();
+  await page.mouse.move(lineDragStart.x, lineDragStart.y);
+  await page.mouse.down();
+  await page.mouse.move(lineDragStart.x, lineDragStart.y + 24);
+  await expect.poll(async () => Object.keys(
+    (await page.evaluate(() => window.ThinkStockE2E.getSeriesTransforms())).offsets,
+  ).length).toBeGreaterThan(0);
+  const lineDragYSpan = await page.locator("#chart").evaluate((element) => (
+    Math.abs(element._fullLayout.yaxis.range[1] - element._fullLayout.yaxis.range[0])
+  ));
+  expect(Math.abs(lineDragYSpan - lineDragStart.ySpan)).toBeLessThanOrEqual(0.01);
+  await page.mouse.up();
+  await page.locator("#resetHandles").click();
+  await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getSeriesTransforms())).toEqual({
+    offsets: {},
+    scales: {},
+  });
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    element._fullLayout.yaxis.autorange
+  ))).toBe(true);
 
   const moveNativeHoverToDate = async (date) => {
     const point = await page.locator("#chart").evaluate((element, targetDate) => {
