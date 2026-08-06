@@ -63,6 +63,7 @@ const {
   offsetFromDrag,
   scaleFromDrag,
   resetTransforms,
+  fitRangeForTraces,
 } = chartAdjustmentsModule;
 const browserMarketClientModule = globalThis.ThinkStockBrowserMarketClient;
 if (!browserMarketClientModule) throw new Error("Browser market client module failed to load");
@@ -206,7 +207,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.83";
+const APP_VERSION = "1.84";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -3930,6 +3931,32 @@ function resetHandles() {
   requestChartRender(false);
 }
 
+function fitCurrentChartRatio() {
+  const el = document.getElementById("chart");
+  if (!el?._fullLayout?.yaxis || !window.Plotly) return;
+  const xRange = getCurrentMainXRange();
+  const primaryTraces = (el.data || []).filter((trace) => (
+    trace?.meta?.seriesKey && !trace?.meta?.isDisclosureTrace && !trace?.meta?.isInsiderTradeTrace
+  ));
+  const yRange = fitRangeForTraces(primaryTraces, xRange, {
+    paddingRatio: 0.08,
+    minimumPadding: 0.6,
+  });
+  if (!yRange) return;
+  if (xRange) pinnedXRange = [...xRange];
+  useViewportEventMarkerGap = true;
+  lineHitIndexCache.delete(el);
+  chartEventLayerModule.invalidateMarkerPixels(el);
+  Promise.resolve(Plotly.relayout(el, {
+    "yaxis.range[0]": yRange[0],
+    "yaxis.range[1]": yRange[1],
+    "yaxis.autorange": false,
+  })).then(() => {
+    updateHandles();
+    saveLastRuntimeSnapshot().catch(() => {});
+  });
+}
+
 function buildDisclosurePointIndex(seriesModels, tickers) {
   return chartEventLayerModule.buildPointIndex(seriesModels, tickers, toUtcMs);
 }
@@ -7304,7 +7331,7 @@ async function boot() {
       requestChartRender,
     });
 
-    document.getElementById("resetHandles").addEventListener("click", resetHandles);
+    document.getElementById("resetHandles").addEventListener("click", fitCurrentChartRatio);
     document.getElementById("coMovementToggle").addEventListener("click", () => {
       showCoMovement = !showCoMovement;
       saveState();
