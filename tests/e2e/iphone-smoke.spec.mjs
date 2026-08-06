@@ -858,11 +858,13 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
     (await readPairedMarkerGeometry()).verticalClearance - pairedMarkerGeometry.verticalClearance,
   )).toBeLessThanOrEqual(2);
 
+  const transformsBeforeFit = await page.evaluate(() => window.ThinkStockE2E.getSeriesTransforms());
+  expect(Object.keys(transformsBeforeFit.offsets).length).toBeGreaterThan(0);
+  expect(Object.keys(transformsBeforeFit.scales).length).toBeGreaterThan(0);
   await page.locator("#resetHandles").click();
-  await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getSeriesTransforms())).toEqual({
-    offsets: {},
-    scales: {},
-  });
+  await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getSeriesTransforms())).toEqual(
+    transformsBeforeFit,
+  );
   const lineDragStart = await page.locator("#chart").evaluate((element) => {
     const trace = (element.data || []).find((item) => item?.meta?.seriesKey === "005930.KS");
     const xAxis = element?._fullLayout?.xaxis;
@@ -891,14 +893,34 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   ));
   expect(Math.abs(lineDragYSpan - lineDragStart.ySpan)).toBeLessThanOrEqual(0.01);
   await page.mouse.up();
+  const transformsBeforeFinalFit = await page.evaluate(() => window.ThinkStockE2E.getSeriesTransforms());
   await page.locator("#resetHandles").click();
-  await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getSeriesTransforms())).toEqual({
-    offsets: {},
-    scales: {},
-  });
+  await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getSeriesTransforms())).toEqual(
+    transformsBeforeFinalFit,
+  );
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     element._fullLayout.yaxis.autorange
-  ))).toBe(true);
+  ))).toBe(false);
+  const fittedRangeCoversVisibleLines = await page.locator("#chart").evaluate((element) => {
+    const xRange = element._fullLayout.xaxis.range.map((value) => Date.parse(value));
+    const yRange = element._fullLayout.yaxis.range;
+    const values = (element.data || [])
+      .filter((trace) => trace?.meta?.seriesKey && trace.visible !== "legendonly")
+      .flatMap((trace) => Array.from(trace.y || [], (value, index) => ({
+        x: Date.parse(trace.x[index]),
+        y: Number(value),
+      })))
+      .filter((point) => (
+        Number.isFinite(point.x)
+        && Number.isFinite(point.y)
+        && point.x >= Math.min(...xRange)
+        && point.x <= Math.max(...xRange)
+      ));
+    const minimum = Math.min(...values.map((point) => point.y));
+    const maximum = Math.max(...values.map((point) => point.y));
+    return yRange[0] < minimum && yRange[1] > maximum;
+  });
+  expect(fittedRangeCoversVisibleLines).toBe(true);
 
   const moveNativeHoverToDate = async (date) => {
     const point = await page.locator("#chart").evaluate((element, targetDate) => {
