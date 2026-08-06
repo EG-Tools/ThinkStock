@@ -63,6 +63,7 @@ const {
   offsetFromDrag,
   scaleFromDrag,
   resetTransforms,
+  fitRangeForTraces,
 } = chartAdjustmentsModule;
 const browserMarketClientModule = globalThis.ThinkStockBrowserMarketClient;
 if (!browserMarketClientModule) throw new Error("Browser market client module failed to load");
@@ -206,7 +207,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.71";
+const APP_VERSION = "1.80";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -252,6 +253,12 @@ const FREESIS_CREDIT_OBJ_NM = "STATSCU0100000070BO";
 const FREESIS_CREDIT_LOOKBACK_DAYS = 120;
 const FREESIS_CREDIT_UNIT_CODE = "01";
 const FEAR_GREED_LIVE_URL = "https://kospi.feargreedchart.com/api/?action=kospi";
+const IS_LOCAL_RUNTIME = typeof window !== "undefined"
+  && window.location.protocol === "http:"
+  && (/^(localhost|127\.0\.0\.1)$/.test(window.location.hostname)
+    || /^10\./.test(window.location.hostname)
+    || /^192\.168\./.test(window.location.hostname)
+    || /^172\.(1[6-9]|2\d|3[01])\./.test(window.location.hostname));
 const DART_DISCLOSURE_CACHE_KEY = "thinkstock-dart-disclosure-cache-v1";
 const DART_DISCLOSURE_CACHE_TTL_DAYS = 1;
 const DART_GATEWAY_URL = "https://thinkstock-api.keg0320.workers.dev";
@@ -1227,7 +1234,7 @@ function getDartGatewayAccessToken() {
 }
 
 function canUseDartGateway() {
-  return Boolean(getDartGatewayAccessToken());
+  return IS_LOCAL_RUNTIME || Boolean(getDartGatewayAccessToken());
 }
 
 function normalizeTickerPriceStatus(ticker, value = {}) {
@@ -3717,7 +3724,11 @@ function restyleLive(traceIndex, seriesKey) {
       lineHitIndexCache.delete(el);
       const traceIndexes = [traceIndex];
       const yUpdates = [newY];
-      if (showInsiderTrades && updateCurrentMainChartSeriesTransform(seriesKey)) {
+      const hasEventMarkers = showInsiderTrades || showDisclosures;
+      const eventModelUpdated = hasEventMarkers
+        ? updateCurrentMainChartSeriesTransform(seriesKey)
+        : false;
+      if (showInsiderTrades && eventModelUpdated) {
         const nextInsiderTraces = buildInsiderTradeTraces(
           currentMainChartModel.selected,
           currentMainChartModel.seriesModels,
@@ -3735,6 +3746,22 @@ function restyleLive(traceIndex, seriesKey) {
           yUpdates.push(nextTrace.y);
         });
       }
+      if (showDisclosures && eventModelUpdated) {
+        const nextDisclosureTrace = buildDisclosureTrace(
+          currentMainChartModel.selected,
+          currentMainChartModel.seriesModels,
+          currentStart,
+          currentEnd,
+        );
+        const disclosureTraceIndex = (el?.data || []).findIndex((trace) => (
+          trace?.meta?.isDisclosureTrace
+        ));
+        if (nextDisclosureTrace && disclosureTraceIndex >= 0) {
+          traceIndexes.push(disclosureTraceIndex);
+          yUpdates.push(nextDisclosureTrace.y);
+        }
+      }
+      chartEventLayerModule.invalidateMarkerPixels(el);
       Plotly.restyle(el, { y: yUpdates }, traceIndexes);
     }
   });
@@ -3888,6 +3915,32 @@ function resetHandles() {
   useViewportEventMarkerGap = false;
   saveState();
   requestChartRender(false);
+}
+
+function fitCurrentChartRatio() {
+  const el = document.getElementById("chart");
+  if (!el?._fullLayout?.yaxis || !window.Plotly) return;
+  const xRange = getCurrentMainXRange();
+  const primaryTraces = (el.data || []).filter((trace) => (
+    trace?.meta?.seriesKey && !trace?.meta?.isDisclosureTrace && !trace?.meta?.isInsiderTradeTrace
+  ));
+  const yRange = fitRangeForTraces(primaryTraces, xRange, {
+    paddingRatio: 0.08,
+    minimumPadding: 0.6,
+  });
+  if (!yRange) return;
+  if (xRange) pinnedXRange = [...xRange];
+  useViewportEventMarkerGap = true;
+  lineHitIndexCache.delete(el);
+  chartEventLayerModule.invalidateMarkerPixels(el);
+  Promise.resolve(Plotly.relayout(el, {
+    "yaxis.range[0]": yRange[0],
+    "yaxis.range[1]": yRange[1],
+    "yaxis.autorange": false,
+  })).then(() => {
+    updateHandles();
+    saveLastRuntimeSnapshot().catch(() => {});
+  });
 }
 
 function buildDisclosurePointIndex(seriesModels, tickers) {
@@ -4186,11 +4239,28 @@ function getDisclosureTextNodes(chartEl) {
     .filter((node) => node.textContent?.trim() === DISCLOSURE_ICON_TEXT);
 }
 
-function setDisclosureTextHighlighted(chartEl, pointIndex, highlighted) {
-  const node = getDisclosureTextNodes(chartEl)[pointIndex];
-  if (!node) return false;
+function setDisclosureTextHighlighted(chartEl, traceIndex, pointIndex, highlighted) {
+  const disclosureTrace = chartEl.data?.[traceIndex]
+    || chartEl.data?.find((trace) => trace?.meta?.isDisclosureTrace);
+  const xAxis = chartEl?._fullLayout?.xaxis;
+  const yAxis = disclosureTrace?.yaxis === "y2" ? chartEl?._fullLayout?.yaxis2 : chartEl?._fullLayout?.yaxis;
+  const chartRect = chartEl.getBoundingClientRect?.();
+  const markerX = Number(xAxis?._offset || 0) + Number(xAxis?.d2p?.(disclosureTrace?.x?.[pointIndex]));
+  const markerY = Number(yAxis?._offset || 0) + Number(yAxis?.d2p?.(disclosureTrace?.y?.[pointIndex]));
+  const nodes = getDisclosureTextNodes(chartEl);
+  const node = Number.isFinite(markerX) && Number.isFinite(markerY) && chartRect
+    ? nodes.reduce((nearest, candidate) => {
+      const rect = candidate.getBoundingClientRect?.();
+      if (!rect) return nearest;
+      const distance = Math.hypot(
+        rect.left + rect.width * 0.5 - chartRect.left - markerX,
+        rect.top + rect.height * 0.5 - chartRect.top - markerY,
+      );
+      return !nearest || distance < nearest.distance ? { candidate, distance } : nearest;
+    }, null)?.candidate
+    : nodes[pointIndex];
+  if (!node || !disclosureTrace) return false;
   const size = highlighted ? DISCLOSURE_TEXT_HOVER_SIZE : DISCLOSURE_TEXT_SIZE;
-  const disclosureTrace = chartEl.data?.find((trace) => trace?.meta?.isDisclosureTrace);
   const traceColors = disclosureTrace?.textfont?.color;
   const baseColor = Array.isArray(traceColors)
     ? traceColors[pointIndex] || DISCLOSURE_MARKER_COLOR
@@ -4207,9 +4277,10 @@ function setDisclosureTextHighlighted(chartEl, pointIndex, highlighted) {
 function resetDisclosureHoverHighlight(chartEl = document.getElementById("chart")) {
   clearDisclosureHoverTimer();
   if (!chartEl || !currentDisclosureHighlight) return;
+  const traceIndex = currentDisclosureHighlight.traceIndex;
   const pointIndex = currentDisclosureHighlight.pointIndex;
   currentDisclosureHighlight = null;
-  setDisclosureTextHighlighted(chartEl, pointIndex, false);
+  setDisclosureTextHighlighted(chartEl, traceIndex, pointIndex, false);
 }
 
 function scheduleDisclosureHoverHighlight(evtData) {
@@ -4265,7 +4336,7 @@ function highlightDisclosureHoverPoint(evtData) {
   resetDisclosureHoverHighlight(chartEl);
 
   currentDisclosureHighlight = { traceIndex, pointIndex };
-  setDisclosureTextHighlighted(chartEl, pointIndex, true);
+  setDisclosureTextHighlighted(chartEl, traceIndex, pointIndex, true);
 }
 
 function visibleAiAnalysisTickers() {
@@ -4555,7 +4626,7 @@ async function fetchDartDisclosuresForTickerLive(apiKey, ticker, options = {}) {
     throw new Error("DART 회사코드를 찾지 못했습니다. 배포 데이터 갱신 후 다시 시도해 주세요.");
   }
   const accessToken = getDartGatewayAccessToken();
-  if (!accessToken) throw new Error("API 설정에서 DART 개인 접속 코드를 먼저 저장해 주세요.");
+  if (!IS_LOCAL_RUNTIME && !accessToken) throw new Error("API 설정에서 DART 개인 접속 코드를 먼저 저장해 주세요.");
   const query = new URLSearchParams({ ticker: targetTicker, corpCode, progressive: "1" });
   const latestDate = disclosureRowsForTicker(targetTicker).at(-1)?.date || "";
   if (latestDate) query.set("since", latestDate);
@@ -4566,9 +4637,10 @@ async function fetchDartDisclosuresForTickerLive(apiKey, ticker, options = {}) {
     query.set("page", String(page));
     let response;
     try {
-      response = await fetchWithTimeout(`${DART_GATEWAY_DISCLOSURE_ENDPOINT}?${query.toString()}`, {
+      const endpoint = IS_LOCAL_RUNTIME ? "./api/dart/disclosures" : DART_GATEWAY_DISCLOSURE_ENDPOINT;
+      response = await fetchWithTimeout(`${endpoint}?${query.toString()}`, {
         cache: "no-store",
-        headers: { Authorization: `Bearer ${accessToken}` },
+        headers: IS_LOCAL_RUNTIME ? {} : { Authorization: `Bearer ${accessToken}` },
         signal: options?.signal || null,
       }, DART_GATEWAY_REQUEST_TIMEOUT_MS);
     } catch (error) {
@@ -4625,14 +4697,15 @@ async function requestInsiderTradesForTicker(ticker, options = {}) {
       throw new Error("DART 회사코드를 찾지 못했습니다. 배포 데이터 갱신 후 다시 시도해 주세요.");
     }
     const accessToken = getDartGatewayAccessToken();
-    if (!accessToken) throw new Error("API 설정에서 DART 개인 접속 코드를 먼저 저장해 주세요.");
+    if (!IS_LOCAL_RUNTIME && !accessToken) throw new Error("API 설정에서 DART 개인 접속 코드를 먼저 저장해 주세요.");
     const query = new URLSearchParams({ ticker: target, corpCode });
     if (options.forceNetwork) query.set("force", "1");
     let response;
     try {
-      response = await fetchWithTimeout(`${DART_GATEWAY_INSIDER_ENDPOINT}?${query}`, {
+      const endpoint = IS_LOCAL_RUNTIME ? "./api/dart/insider-trades" : DART_GATEWAY_INSIDER_ENDPOINT;
+      response = await fetchWithTimeout(`${endpoint}?${query}`, {
         cache: "no-store",
-        headers: { Authorization: `Bearer ${accessToken}` },
+        headers: IS_LOCAL_RUNTIME ? {} : { Authorization: `Bearer ${accessToken}` },
         signal: options.signal || null,
       }, DART_GATEWAY_REQUEST_TIMEOUT_MS);
     } catch (error) {
@@ -6658,10 +6731,11 @@ async function refreshLiveApiData(signal = null) {
 }
 
 async function refreshEcosMacroFromGateway(signal = null) {
-  if (!canUseDartGateway()) return { applied: [], warnings: [] };
-  const response = await fetchWithTimeout(`${ECOS_GATEWAY_MACRO_ENDPOINT}?refresh=1`, {
+  if (!IS_LOCAL_RUNTIME && !canUseDartGateway()) return { applied: [], warnings: [] };
+  const endpoint = IS_LOCAL_RUNTIME ? "./api/macro?refresh=1" : `${ECOS_GATEWAY_MACRO_ENDPOINT}?refresh=1`;
+  const response = await fetchWithTimeout(endpoint, {
     cache: "no-store",
-    headers: { Authorization: `Bearer ${getDartGatewayAccessToken()}` },
+    headers: IS_LOCAL_RUNTIME ? {} : { Authorization: `Bearer ${getDartGatewayAccessToken()}` },
     signal,
   }, DART_GATEWAY_REQUEST_TIMEOUT_MS);
   const payload = await response.json().catch(() => null);
@@ -6678,10 +6752,10 @@ async function refreshEcosMacroFromGateway(signal = null) {
 }
 
 async function refreshCreditFromGateway(signal = null) {
-  if (!canUseDartGateway()) return { applied: [], warnings: [] };
-  const response = await fetchWithTimeout(CREDIT_GATEWAY_ENDPOINT, {
+  if (!IS_LOCAL_RUNTIME && !canUseDartGateway()) return { applied: [], warnings: [] };
+  const response = await fetchWithTimeout(IS_LOCAL_RUNTIME ? "./api/credit" : CREDIT_GATEWAY_ENDPOINT, {
     cache: "no-store",
-    headers: { Authorization: `Bearer ${getDartGatewayAccessToken()}` },
+    headers: IS_LOCAL_RUNTIME ? {} : { Authorization: `Bearer ${getDartGatewayAccessToken()}` },
     signal,
   }, DART_GATEWAY_REQUEST_TIMEOUT_MS);
   const payload = await response.json().catch(() => null);
@@ -6713,6 +6787,40 @@ async function refreshCreditFromGatewayWithRetry(signal = null) {
  * Returns: { added: number, latestDate: string }
  */
 async function refreshAdrFromWeb(signal = null) {
+  if (IS_LOCAL_RUNTIME) {
+    const payload = await fetchJsonWithProxyFallback(
+      appendCacheBust("./api/adr"),
+      { signal },
+      { allowProxy: false },
+    );
+    if (payload?.ok !== true || !Array.isArray(payload.rows)) {
+      throw new Error(payload?.error || "Local ADR response format is invalid.");
+    }
+    throwIfAborted(signal);
+    const lastKnown = (adrRows || []).reduce((latest, row) => (
+      (toNum(row?.adr_kospi) !== null || toNum(row?.adr_kosdaq) !== null) && row.date > latest
+        ? row.date
+        : latest
+    ), "");
+    const newRows = payload.rows
+      .filter((row) => String(row?.date || "") > lastKnown)
+      .map((row) => ({
+        date: String(row.date).slice(0, 10),
+        adr_kospi: toNum(row.adr_kospi),
+        adr_kosdaq: toNum(row.adr_kosdaq),
+      }))
+      .filter((row) => row.adr_kospi !== null || row.adr_kosdaq !== null);
+    if (newRows.length) {
+      const byDate = new Map((adrRows || []).map((row) => [row.date, { ...row }]));
+      newRows.forEach((row) => byDate.set(row.date, { ...(byDate.get(row.date) || { date: row.date }), ...row }));
+      adrRows = [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
+      markDataChanged("adr");
+    }
+    return {
+      added: newRows.length,
+      latestDate: adrRows.length ? adrRows[adrRows.length - 1].date : lastKnown,
+    };
+  }
   const sourceUrl = appendCacheBust(ADR_SOURCE_URL);
   const proxyUrl = CORS_PROXY + encodeURIComponent(sourceUrl);
   const res = await fetchWithTimeout(proxyUrl, { cache: "no-store", signal });
@@ -6787,7 +6895,7 @@ function parseSeedBundleSync(texts) {
 
 async function refreshFearGreedFromWeb(signal = null) {
   const payload = await fetchJsonWithProxyFallback(
-    appendCacheBust(FEAR_GREED_LIVE_URL),
+    appendCacheBust(IS_LOCAL_RUNTIME ? "./api/fear-greed" : FEAR_GREED_LIVE_URL),
     { signal },
     { allowProxy: false },
   );
@@ -7209,7 +7317,7 @@ async function boot() {
       requestChartRender,
     });
 
-    document.getElementById("resetHandles").addEventListener("click", resetHandles);
+    document.getElementById("resetHandles").addEventListener("click", fitCurrentChartRatio);
     document.getElementById("coMovementToggle").addEventListener("click", () => {
       showCoMovement = !showCoMovement;
       saveState();

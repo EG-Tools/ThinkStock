@@ -10,7 +10,12 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DOCS_DIR = path.join(ROOT, "docs");
 const ENV_FILE = path.join(ROOT, ".env.local");
 const CACHE_DIR = path.join(ROOT, ".thinkstock-cache", "dart");
+const PAGES_DATA_CACHE_DIR = path.join(ROOT, ".thinkstock-cache", "pages-data");
 const CORP_CODE_DIR = path.join(DOCS_DIR, "data", "dart_corp_codes");
+const PAGES_DATA_BASE_URL = "https://eg-tools.github.io/ThinkStock/data/";
+const THINKSTOCK_WORKER_URL = "https://thinkstock-api.keg0320.workers.dev";
+const ADR_SOURCE_URL = "http://www.adrinfo.kr/chart";
+const FEAR_GREED_SOURCE_URL = "https://kospi.feargreedchart.com/api/?action=kospi";
 const DART_DISCLOSURE_URL = "https://opendart.fss.or.kr/api/list.json";
 const DART_TYPES = ["A", "B", "C", "E", "I"];
 const DISCLOSURE_TTL_MS = 6 * 60 * 60 * 1000;
@@ -56,6 +61,12 @@ export function isPrivateAddress(rawAddress) {
     || (parts[0] === 192 && parts[1] === 168);
 }
 
+function isLoopbackAddress(rawAddress) {
+  let address = String(rawAddress || "").trim().toLowerCase();
+  if (address.startsWith("::ffff:")) address = address.slice(7);
+  return address === "::1" || address === "127.0.0.1";
+}
+
 export function isAllowedOrigin(rawOrigin) {
   const origin = String(rawOrigin || "").trim();
   if (["capacitor://localhost", "ionic://localhost"].includes(origin)) return true;
@@ -97,6 +108,68 @@ async function writeJsonAtomic(filePath, payload) {
   const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   await writeFile(temporary, JSON.stringify(payload), "utf8");
   await rename(temporary, filePath);
+}
+
+async function writeTextAtomic(filePath, text) {
+  const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(temporary, text, "utf8");
+  await rename(temporary, filePath);
+}
+
+export function parseAdrChartRows(html) {
+  const sourceText = String(html || "");
+  const extractArray = (name) => {
+    const marker = `const ${name}=`;
+    const start = sourceText.indexOf(marker);
+    if (start < 0) return [];
+    const end = sourceText.indexOf("];", start);
+    if (end < 0) return [];
+    return JSON.parse(sourceText.slice(start + marker.length, end + 1).replace(/,\s*\]/g, "]"));
+  };
+  const rowsByDate = new Map();
+  [["kospi_adr", "adr_kospi"], ["kosdaq_adr", "adr_kosdaq"]].forEach(([source, key]) => {
+    extractArray(source).forEach(([timestamp, rawValue]) => {
+      const timestampNumber = Number(timestamp);
+      const value = Number(rawValue);
+      if (!Number.isFinite(timestampNumber) || !Number.isFinite(value) || value <= 0) return;
+      const date = new Date(timestampNumber + 9 * 3600000).toISOString().slice(0, 10);
+      rowsByDate.set(date, { ...(rowsByDate.get(date) || { date }), [key]: value });
+    });
+  });
+  return [...rowsByDate.values()].sort((left, right) => left.date.localeCompare(right.date));
+}
+
+export async function syncPagesDataMirror(options = {}) {
+  const fetchImpl = options.fetchImpl || globalThis.fetch;
+  const cacheDir = options.cacheDir || PAGES_DATA_CACHE_DIR;
+  const baseUrl = String(options.baseUrl || PAGES_DATA_BASE_URL);
+  const manifestResponse = await fetchImpl(`${baseUrl}data_manifest.json?_=${Date.now()}`, {
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!manifestResponse.ok) throw new Error(`Pages data manifest HTTP ${manifestResponse.status}`);
+  const manifestText = await manifestResponse.text();
+  const manifest = JSON.parse(manifestText);
+  if (manifest?.format !== "segmented-data-v1" || !manifest?.datasets) {
+    throw new Error("Pages data manifest format is invalid");
+  }
+  const files = new Set();
+  Object.values(manifest.datasets).forEach((dataset) => {
+    [dataset?.recent?.file, dataset?.history?.file].forEach((file) => {
+      if (/^[a-z0-9_-]+\.json$/i.test(String(file || ""))) files.add(String(file));
+    });
+  });
+  await mkdir(cacheDir, { recursive: true });
+  await Promise.all([...files].map(async (file) => {
+    const response = await fetchImpl(`${baseUrl}${file}?_=${Date.now()}`, {
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!response.ok) throw new Error(`Pages data ${file} HTTP ${response.status}`);
+    const text = await response.text();
+    JSON.parse(text);
+    await writeTextAtomic(path.join(cacheDir, file), text);
+  }));
+  await writeTextAtomic(path.join(cacheDir, "data_manifest.json"), manifestText);
+  return { generatedAt: String(manifest.generated_at || ""), files: files.size };
 }
 
 export class DartGateway {
@@ -263,10 +336,15 @@ function sendJson(request, response, statusCode, payload) {
   response.end(body);
 }
 
-async function serveStatic(response, pathname, headOnly = false) {
+async function serveStatic(response, pathname, headOnly = false, dataMirrorDir = PAGES_DATA_CACHE_DIR) {
   const relative = decodeURIComponent(pathname === "/" ? "/index.html" : pathname);
-  const filePath = path.resolve(DOCS_DIR, `.${relative}`);
-  if (filePath !== DOCS_DIR && !filePath.startsWith(`${DOCS_DIR}${path.sep}`)) throw new Error("invalid path");
+  const mirrorName = relative.match(/^\/data\/([a-z0-9_-]+\.json)$/i)?.[1] || "";
+  const mirrorPath = mirrorName ? path.join(dataMirrorDir, mirrorName) : "";
+  const useMirror = mirrorPath && await stat(mirrorPath).then(() => true).catch(() => false);
+  const filePath = useMirror ? mirrorPath : path.resolve(DOCS_DIR, `.${relative}`);
+  if (!useMirror && filePath !== DOCS_DIR && !filePath.startsWith(`${DOCS_DIR}${path.sep}`)) {
+    throw new Error("invalid path");
+  }
   const info = await stat(filePath);
   if (!info.isFile()) throw new Error("not a file");
   response.writeHead(200, {
@@ -281,10 +359,23 @@ async function serveStatic(response, pathname, headOnly = false) {
 
 export async function createThinkStockServer(options = {}) {
   const envText = await readFile(ENV_FILE, "utf8").catch(() => "");
-  const apiKey = String(options.apiKey || process.env.DART_API_KEY || parseEnvText(envText).DART_API_KEY || "").trim();
+  const envValues = parseEnvText(envText);
+  const apiKey = String(options.apiKey || process.env.DART_API_KEY || envValues.DART_API_KEY || "").trim();
+  const workerAccessToken = String(
+    options.workerAccessToken || process.env.THINKSTOCK_ACCESS_TOKEN || envValues.THINKSTOCK_ACCESS_TOKEN || "",
+  ).trim();
+  const fetchImpl = options.fetchImpl || globalThis.fetch;
+  const dataMirrorDir = options.dataMirrorDir || PAGES_DATA_CACHE_DIR;
+  const mirrorStatus = options.syncPagesData === false
+    ? { generatedAt: "", files: 0 }
+    : await syncPagesDataMirror({ fetchImpl, cacheDir: dataMirrorDir }).catch((error) => ({
+      generatedAt: "",
+      files: 0,
+      warning: error?.message || String(error),
+    }));
   const gateway = options.gateway || new DartGateway(apiKey);
   await gateway.initialize();
-  return createServer(async (request, response) => {
+  const server = createServer(async (request, response) => {
     const requestUrl = new URL(request.url || "/", `http://${request.headers.host || "127.0.0.1"}`);
     if (request.method === "OPTIONS" && requestUrl.pathname.startsWith("/api/")) {
       response.writeHead(204, {
@@ -295,8 +386,68 @@ export async function createThinkStockServer(options = {}) {
       response.end();
       return;
     }
+    if (request.method === "POST" && requestUrl.pathname === "/api/shutdown") {
+      if (!isLoopbackAddress(request.socket.remoteAddress)) {
+        sendJson(request, response, 403, { ok: false, error: "Shutdown is allowed only from this PC." });
+        return;
+      }
+      sendJson(request, response, 200, { ok: true });
+      setTimeout(() => server.close(), 50);
+      return;
+    }
     if (requestUrl.pathname === "/api/health") {
-      sendJson(request, response, 200, { ok: true, dartConfigured: Boolean(gateway.apiKey) });
+      sendJson(request, response, 200, {
+        ok: true,
+        dartConfigured: Boolean(gateway.apiKey),
+        workerConfigured: Boolean(workerAccessToken),
+        pagesDataGeneratedAt: mirrorStatus.generatedAt,
+        pagesDataWarning: mirrorStatus.warning || "",
+      });
+      return;
+    }
+    if (requestUrl.pathname === "/api/adr") {
+      try {
+        const upstream = await fetchImpl(`${ADR_SOURCE_URL}?_=${Date.now()}`, {
+          headers: { "User-Agent": "ThinkStock-Local/1.0" },
+          signal: AbortSignal.timeout(30000),
+        });
+        if (!upstream.ok) throw new Error(`adrinfo.kr HTTP ${upstream.status}`);
+        const rows = parseAdrChartRows(await upstream.text());
+        if (!rows.length) throw new Error("ADR response contained no rows");
+        sendJson(request, response, 200, { ok: true, rows });
+      } catch (error) {
+        sendJson(request, response, 503, { ok: false, error: error?.message || String(error) });
+      }
+      return;
+    }
+    if (requestUrl.pathname === "/api/fear-greed") {
+      try {
+        const upstream = await fetchImpl(`${FEAR_GREED_SOURCE_URL}&_=${Date.now()}`, {
+          headers: { "User-Agent": "ThinkStock-Local/1.0" },
+          signal: AbortSignal.timeout(30000),
+        });
+        if (!upstream.ok) throw new Error(`fear-greed HTTP ${upstream.status}`);
+        sendJson(request, response, 200, await upstream.json());
+      } catch (error) {
+        sendJson(request, response, 503, { ok: false, error: error?.message || String(error) });
+      }
+      return;
+    }
+    if (["/api/macro", "/api/credit", "/api/dart/insider-trades"].includes(requestUrl.pathname)) {
+      if (!workerAccessToken) {
+        sendJson(request, response, 503, { ok: false, error: ".env.local에 THINKSTOCK_ACCESS_TOKEN이 없습니다." });
+        return;
+      }
+      try {
+        const upstream = await fetchImpl(`${THINKSTOCK_WORKER_URL}${requestUrl.pathname}${requestUrl.search}`, {
+          headers: { Authorization: `Bearer ${workerAccessToken}` },
+          signal: AbortSignal.timeout(90000),
+        });
+        const payload = await upstream.json();
+        sendJson(request, response, upstream.ok ? 200 : upstream.status, payload);
+      } catch (error) {
+        sendJson(request, response, 503, { ok: false, error: error?.message || String(error) });
+      }
       return;
     }
     if (requestUrl.pathname === "/api/dart/disclosures") {
@@ -325,12 +476,13 @@ export async function createThinkStockServer(options = {}) {
       return;
     }
     try {
-      await serveStatic(response, requestUrl.pathname, request.method === "HEAD");
+      await serveStatic(response, requestUrl.pathname, request.method === "HEAD", dataMirrorDir);
     } catch (_) {
       response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
       response.end("Not found");
     }
   });
+  return server;
 }
 
 function localAddresses(port) {

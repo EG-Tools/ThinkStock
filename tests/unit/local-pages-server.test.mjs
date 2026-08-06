@@ -1,14 +1,18 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { once } from "node:events";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import {
+  createThinkStockServer,
   DartGateway,
   isAllowedOrigin,
   isPrivateAddress,
+  parseAdrChartRows,
   parseEnvText,
+  syncPagesDataMirror,
 } from "../../scripts/local_pages_server.mjs";
 
 
@@ -25,6 +29,66 @@ test("allows only local clients and app origins", () => {
   assert.equal(isAllowedOrigin("capacitor://localhost"), true);
   assert.equal(isAllowedOrigin("http://192.168.0.10:8787"), true);
   assert.equal(isAllowedOrigin("https://example.com"), false);
+});
+
+test("parses ADR chart arrays into one row per date", () => {
+  const timestamp = Date.parse("2026-08-05T15:00:00Z");
+  const rows = parseAdrChartRows(
+    `<script>const kospi_adr=[[${timestamp},91.2],[${timestamp + 86400000},0]];const kosdaq_adr=[[${timestamp},87.4],[${timestamp + 86400000},0]];</script>`,
+  );
+  assert.deepEqual(rows, [{ date: "2026-08-06", adr_kospi: 91.2, adr_kosdaq: 87.4 }]);
+});
+
+test("mirrors deployed segmented data into an ignored local cache", async () => {
+  const cacheDir = await mkdtemp(path.join(os.tmpdir(), "thinkstock-pages-data-"));
+  const manifest = {
+    format: "segmented-data-v1",
+    generated_at: "2026-08-05T00:00:00Z",
+    datasets: {
+      adr_data: {
+        recent: { file: "adr_data_recent.json" },
+        history: { file: "adr_data_history.json" },
+      },
+    },
+  };
+  const fetchImpl = async (url) => new Response(
+    String(url).includes("data_manifest") ? JSON.stringify(manifest) : JSON.stringify({ dates: [], columns: {} }),
+    { status: 200 },
+  );
+  try {
+    const result = await syncPagesDataMirror({ fetchImpl, cacheDir, baseUrl: "https://example.test/data/" });
+    assert.deepEqual(result, { generatedAt: "2026-08-05T00:00:00Z", files: 2 });
+    assert.deepEqual(JSON.parse(await readFile(path.join(cacheDir, "data_manifest.json"), "utf8")), manifest);
+  } finally {
+    await rm(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("proxies local insider requests with the server-side access token", async () => {
+  let requestedUrl = "";
+  let authorization = "";
+  const server = await createThinkStockServer({
+    syncPagesData: false,
+    workerAccessToken: "local-secret",
+    gateway: { apiKey: "", initialize: async () => {} },
+    fetchImpl: async (url, init = {}) => {
+      requestedUrl = String(url);
+      authorization = String(init.headers?.Authorization || "");
+      return new Response(JSON.stringify({ ok: true, records: [] }), { status: 200 });
+    },
+  });
+  try {
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const { port } = server.address();
+    const response = await fetch(`http://127.0.0.1:${port}/api/dart/insider-trades?ticker=005930.KS`);
+    assert.equal(response.status, 200);
+    assert.match(requestedUrl, /\/api\/dart\/insider-trades\?ticker=005930\.KS$/);
+    assert.equal(authorization, "Bearer local-secret");
+  } finally {
+    server.close();
+    await once(server, "close");
+  }
 });
 
 test("filters low-impact disclosures before returning them", () => {

@@ -188,6 +188,7 @@ body {
 .reset-btn:hover { background: rgba(255, 255, 255, 0.1); color: var(--ink); }
 
 .main-chart-wrap {
+  --chart-control-left: 40px;
   position: relative;
 }
 
@@ -195,7 +196,7 @@ body {
   position: absolute;
   z-index: 120;
   top: 14px;
-  left: 14px;
+  left: var(--chart-control-left);
   padding: 5px 11px;
   background: rgba(18, 18, 18, 0.78);
   backdrop-filter: blur(8px);
@@ -206,7 +207,7 @@ body {
   position: absolute;
   z-index: 120;
   top: 14px;
-  right: 14px;
+  right: 34px;
   width: 28px;
   height: 28px;
   background: rgba(18, 18, 18, 0.78);
@@ -218,7 +219,7 @@ body {
   position: absolute;
   z-index: 120;
   top: 48px;
-  right: 14px;
+  right: 34px;
   max-width: min(260px, calc(100% - 100px));
   padding: 4px 8px;
   border: 1px solid var(--border);
@@ -274,7 +275,7 @@ body {
   position: absolute;
   z-index: 120;
   top: 48px;
-  left: 14px;
+  left: var(--chart-control-left);
   min-width: 64px;
   padding: 5px 11px;
   background: rgba(18, 18, 18, 0.78);
@@ -286,7 +287,7 @@ body {
   position: absolute;
   z-index: 120;
   top: 82px;
-  left: 14px;
+  left: var(--chart-control-left);
   min-width: 48px;
   padding: 5px 11px;
   background: rgba(18, 18, 18, 0.78);
@@ -298,7 +299,7 @@ body {
   position: absolute;
   z-index: 120;
   top: 116px;
-  left: 14px;
+  left: var(--chart-control-left);
   min-width: 48px;
   padding: 5px 11px;
   background: rgba(18, 18, 18, 0.78);
@@ -319,8 +320,8 @@ body {
   position: absolute;
   z-index: 121;
   top: 83px;
-  left: 73px;
-  width: min(190px, calc(100% - 92px));
+  left: calc(var(--chart-control-left) + 59px);
+  width: min(190px, calc(100% - var(--chart-control-left) - 78px));
   padding: 5px 8px 6px;
   border: 1px solid rgba(255, 255, 255, 0.13);
   border-radius: 8px;
@@ -1137,6 +1138,7 @@ body {
 .message.error { background: rgba(187, 67, 40, 0.2); color: #f87171; }
 
 @media (max-width: 820px) {
+  body { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
   .app-shell { width: min(100vw - 18px, 720px); padding-top: 12px; }
   .hero { padding-top: 14px; }
   .hero h1 { font-size: clamp(30px, 9vw, 44px); }
@@ -1179,6 +1181,17 @@ body {
   .custom-stock-chip .series-toggle-btn { padding: 7px 32px 7px 8px; }
   .stock-remove-btn { width: 14px; height: 14px; font-size: 11px; right: 6px; }
   .chart-frame { border-radius: 22px; min-height: 350px; }
+  .chart-reset-btn,
+  .chart-co-movement-btn,
+  .chart-ai-btn,
+  .chart-macd-btn {
+    min-height: 28px;
+    max-width: calc(100% - var(--chart-control-left) - 12px);
+    padding: 5px 10px;
+    line-height: 16px;
+    white-space: nowrap;
+    overflow: visible;
+  }
   .chart-frame-macd { min-height: 175px; max-height: 225px; }
   .chart-frame-adr { min-height: 443px; max-height: 473px; }
   .api-settings-panel {

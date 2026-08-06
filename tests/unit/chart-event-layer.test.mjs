@@ -58,3 +58,34 @@ test("finds only a disclosure marker inside its hit radius", () => {
   });
   assert.equal(eventLayer.findMarkerAtClientPoint(element, 115, 250, options), null);
 });
+
+test("selects the vertically nearest disclosure when dates overlap", () => {
+  const trace = {
+    x: [50, 50],
+    y: [20, 80],
+    meta: { isDisclosureTrace: true },
+  };
+  const reversedTextNodes = [
+    { textContent: "diamond", getBoundingClientRect: () => ({ top: 275, height: 10 }) },
+    { textContent: "diamond", getBoundingClientRect: () => ({ top: 215, height: 10 }) },
+  ];
+  const element = {
+    data: [trace],
+    _fullLayout: {
+      xaxis: { _offset: 0, _length: 100, range: [0, 100], d2p: (value) => value },
+      yaxis: { _offset: 0, _length: 100, range: [0, 100], d2p: (value) => value },
+    },
+    getBoundingClientRect: () => ({ left: 100, top: 200 }),
+    querySelectorAll: () => reversedTextNodes,
+  };
+  const options = { iconText: "diamond", mouseRadius: 12, touchRadius: 18, isTouch: false };
+
+  assert.deepEqual(eventLayer.findMarkerAtClientPoint(element, 150, 280, options), {
+    traceIndex: 0,
+    pointIndex: 1,
+  });
+  assert.deepEqual(eventLayer.findMarkerAtClientPoint(element, 150, 220, options), {
+    traceIndex: 0,
+    pointIndex: 0,
+  });
+});
