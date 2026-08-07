@@ -1540,6 +1540,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await test.step("update chart data and exercise direct interactions", async () => {
   const middleUpdateBefore = await page.evaluate(() => ({
     revisions: window.ThinkStockE2E.getRuntimeSnapshotStats().revisions,
+    renderGeneration: window.ThinkStockE2E.getChartRenderGeneration(),
     worker: window.ThinkStockE2E.getChartWorkerStats(),
   }));
   expect(await page.evaluate(() => window.ThinkStockE2E.applyNewsSentimentForTest([
@@ -1550,6 +1551,9 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
     const index = trace?.x?.indexOf("2026-01-14") ?? -1;
     return index >= 0 ? trace.y[index] : null;
   })).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => (
+    window.ThinkStockE2E.getChartRenderGeneration()
+  ))).toBeGreaterThan(middleUpdateBefore.renderGeneration);
   const middleUpdateAfter = await page.evaluate(() => ({
     revisions: window.ThinkStockE2E.getRuntimeSnapshotStats().revisions,
     worker: window.ThinkStockE2E.getChartWorkerStats(),
