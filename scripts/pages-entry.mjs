@@ -15,6 +15,7 @@ import "../docs/modules/co-movement.js";
 import "../docs/modules/macd-oscillator.js";
 import "../docs/modules/market-timing.js";
 import "../docs/modules/market-timing-service.js";
+import "../docs/modules/ai-scenario-paths.js";
 import "../docs/modules/ai-forecast.js";
 import "../docs/modules/ai-analysis-cache.js";
 import "../docs/modules/ai-forecast-journal.js";

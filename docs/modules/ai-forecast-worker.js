@@ -1,4 +1,4 @@
-importScripts("./ai-forecast.js");
+importScripts("./ai-scenario-paths.js", "./ai-forecast.js");
 
 const aiForecast = self.ThinkStockAiForecast;
 if (!aiForecast) throw new Error("AI forecast module failed to load in worker");

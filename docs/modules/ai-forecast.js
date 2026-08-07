@@ -7,7 +7,7 @@
   const MIN_HISTORY = TRADING_DAYS * 3;
   const FORECAST_HORIZONS = Object.freeze([20, 63, 126]);
   const FORECAST_AUDIT_HORIZONS = Object.freeze([5, 10, 20, 63, 126]);
-  const FORECAST_PATH_VERSION = "path-v9";
+  const FORECAST_PATH_VERSION = "path-v10";
   const STOCK_HORIZON_CALIBRATION = Object.freeze({
     20: Object.freeze({ localScale: 0.33, regimeScale: 1, rangeScale: 1 }),
     63: Object.freeze({ localScale: 0.5, regimeScale: 0.25, rangeScale: 1.25 }),
@@ -16,6 +16,7 @@
   const SAMPLE_STEP = 5;
   const EPSILON = 1e-9;
   const FORECAST_CACHE = new Map();
+  const scenarioPathEngine = globalScope.ThinkStockAiScenarioPaths || null;
 
   function finite(value) {
     if (value === null || value === undefined || value === "") return null;
@@ -1493,6 +1494,7 @@
     mediumMomentum = 0,
     probabilitySignalStrength = 1,
     sidewaysProbabilityScale = 1,
+    pathLibrary = null,
   }) {
     const horizon = cumulative.length - 1;
     const median = cumulative.at(-1);
@@ -1543,11 +1545,6 @@
     const upEndpoint = Math.max(flatBand * 1.25, median + (uncertaintyEnd * 0.6));
     const sidewaysEndpoint = clamp(median * 0.2, -flatBand * 0.45, flatBand * 0.45);
     const downEndpoint = Math.min(-flatBand * 1.25, median - (uncertaintyEnd * 0.6));
-    const paths = { upside: [], sideways: [], downside: [] };
-    const phasePulse = (progress, start, end) => {
-      if (progress <= start || progress >= end) return 0;
-      return Math.sin(Math.PI * ((progress - start) / (end - start)));
-    };
     const momentumImpulse = clamp(
       (finite(recentMomentum) || 0)
         + ((finite(mediumMomentum) || 0) * 0.35)
@@ -1556,35 +1553,87 @@
       0.14,
     );
     const supportImpulse = clamp((marketRegime.combined || 0) * 0.06, -0.06, 0.06);
-    const rangeDrag = clamp(structuralRange * 0.035, 0, 0.03);
-    for (let day = 0; day <= horizon; day += 1) {
-      const progress = day / Math.max(1, horizon);
-      const baseShape = cumulative[day] - (median * progress);
-      const localSwing = (residual[day] || 0) * 0.15;
-      const earlyPulse = phasePulse(progress, 0, 0.4);
-      const middlePulse = phasePulse(progress, 0.22, 0.78);
-      const latePulse = phasePulse(progress, 0.55, 1);
-      const upsidePhase = (momentumImpulse >= 0
-        ? (momentumImpulse * 0.7 * earlyPulse) - (rangeDrag * middlePulse)
-        : (momentumImpulse * 0.5 * earlyPulse) + (Math.max(0, supportImpulse) * middlePulse))
-        + (Math.max(0, supportImpulse) * 0.3 * latePulse);
-      const sidewaysPhase = (momentumImpulse * 0.75 * earlyPulse)
-        - (momentumImpulse * 0.35 * middlePulse)
-        + (supportImpulse * 0.2 * latePulse);
-      const downsidePhase = (momentumImpulse >= 0
-        ? (momentumImpulse * 0.65 * earlyPulse) + (Math.min(0, supportImpulse) * middlePulse)
-        : (momentumImpulse * 0.75 * earlyPulse) + (Math.max(0, supportImpulse) * 0.35 * middlePulse))
-        - (Math.max(0, -supportImpulse) * 0.35 * latePulse);
-      paths.upside.push((baseShape * 0.55) + localSwing + (upEndpoint * progress) + upsidePhase);
-      paths.sideways.push((baseShape * 0.22) + (localSwing * 0.5)
-        + (sidewaysEndpoint * progress) + sidewaysPhase);
-      paths.downside.push((baseShape * 0.55) + localSwing + (downEndpoint * progress) + downsidePhase);
+    const baseShape = cumulative.map((value, day) => value - (median * (day / Math.max(1, horizon))));
+    const pathSignals = {
+      momentum: momentumImpulse,
+      support: clamp(
+        (marketRegime.support || 0)
+          + Math.max(0, contextSignal.consensus || 0) * 0.2
+          + Math.max(0, contextSignal.fundamentals || 0) * 0.2
+          + Math.max(0, rotation.support || 0) * 0.2,
+        0,
+        1,
+      ),
+      risk: clamp(
+        (marketRegime.risk || 0)
+          + (corporateRisk.score || 0) * 0.35
+          + Math.max(0, rotation.risk || 0) * 0.2,
+        0,
+        1,
+      ),
+      range: structuralRange,
+    };
+    const morphologies = scenarioPathEngine?.buildScenarioMorphologies({
+      library: pathLibrary,
+      endpoints: {
+        upside: upEndpoint,
+        sideways: sidewaysEndpoint,
+        downside: downEndpoint,
+      },
+      horizon,
+      projectedVolatility,
+      baseShape,
+      signals: pathSignals,
+    }) || null;
+    const paths = morphologies
+      ? Object.fromEntries(Object.entries(morphologies).map(([role, morphology]) => [
+        role,
+        morphology.path,
+      ]))
+      : { upside: [], sideways: [], downside: [] };
+    if (!morphologies) {
+      const phasePulse = (progress, start, end) => {
+        if (progress <= start || progress >= end) return 0;
+        return Math.sin(Math.PI * ((progress - start) / (end - start)));
+      };
+      const rangeDrag = clamp(structuralRange * 0.035, 0, 0.03);
+      for (let day = 0; day <= horizon; day += 1) {
+        const progress = day / Math.max(1, horizon);
+        const localSwing = (residual[day] || 0) * 0.15;
+        const earlyPulse = phasePulse(progress, 0, 0.4);
+        const middlePulse = phasePulse(progress, 0.22, 0.78);
+        const latePulse = phasePulse(progress, 0.55, 1);
+        const upsidePhase = (momentumImpulse >= 0
+          ? (momentumImpulse * 0.7 * earlyPulse) - (rangeDrag * middlePulse)
+          : (momentumImpulse * 0.5 * earlyPulse) + (Math.max(0, supportImpulse) * middlePulse))
+          + (Math.max(0, supportImpulse) * 0.3 * latePulse);
+        const sidewaysPhase = (momentumImpulse * 0.75 * earlyPulse)
+          - (momentumImpulse * 0.35 * middlePulse)
+          + (supportImpulse * 0.2 * latePulse);
+        const downsidePhase = (momentumImpulse >= 0
+          ? (momentumImpulse * 0.65 * earlyPulse) + (Math.min(0, supportImpulse) * middlePulse)
+          : (momentumImpulse * 0.75 * earlyPulse) + (Math.max(0, supportImpulse) * 0.35 * middlePulse))
+          - (Math.max(0, -supportImpulse) * 0.35 * latePulse);
+        paths.upside.push((baseShape[day] * 0.55) + localSwing + (upEndpoint * progress) + upsidePhase);
+        paths.sideways.push((baseShape[day] * 0.22) + (localSwing * 0.5)
+          + (sidewaysEndpoint * progress) + sidewaysPhase);
+        paths.downside.push((baseShape[day] * 0.55) + localSwing + (downEndpoint * progress) + downsidePhase);
+      }
     }
     const toPrices = (values) => values.map((value) => basePrice * Math.exp(value));
+    const scenarioDetails = (role, directionLabel) => ({
+      label: morphologies?.[role]?.label || directionLabel,
+      shortLabel: morphologies?.[role]?.shortLabel || directionLabel,
+      directionLabel,
+      patternKey: morphologies?.[role]?.key || role,
+      pathSource: morphologies?.[role]?.source || "legacy-fallback",
+      patternAnalogCount: morphologies?.[role]?.analogCount || 0,
+      patternSupport: morphologies?.[role]?.support || 0,
+    });
     return {
       upside: {
         key: "upside",
-        label: "상승",
+        ...scenarioDetails("upside", "상승"),
         probability: upProbability,
         weight: upProbability,
         reason: briefScenarioReason("upside", contextSignal, marketRegime, corporateRisk, priceRegime, rotation, confidence),
@@ -1592,7 +1641,7 @@
       },
       sideways: {
         key: "sideways",
-        label: "횡보",
+        ...scenarioDetails("sideways", "횡보"),
         probability: sidewaysProbability,
         weight: sidewaysProbability,
         reason: briefScenarioReason("sideways", contextSignal, marketRegime, corporateRisk, priceRegime, rotation, confidence),
@@ -1600,7 +1649,7 @@
       },
       downside: {
         key: "downside",
-        label: "하락",
+        ...scenarioDetails("downside", "하락"),
         probability: downProbability,
         weight: downProbability,
         reason: briefScenarioReason("downside", contextSignal, marketRegime, corporateRisk, priceRegime, rotation, confidence),
@@ -1618,6 +1667,7 @@
         probabilitySignalStrength: signalStrength,
         sidewaysProbabilityScale,
         pathMomentum: momentumImpulse,
+        pathLibrarySamples: Number(pathLibrary?.sampleCount) || 0,
       },
     };
   }
@@ -1654,21 +1704,36 @@
     });
   }
 
-  function residualPath(context, finalFeature, model, horizon) {
+  function nearestPathSamples(model, finalFeature, count = 12) {
+    if (!model?.samples?.length) return [];
+    if (model.kind === "baseline" || model.kind === "momentum") {
+      return model.samples.map((sample) => {
+        const volatilityDistance = sample.volatility > EPSILON && finalFeature.volatility > EPSILON
+          ? Math.abs(Math.log(sample.volatility / finalFeature.volatility))
+          : 0;
+        return {
+          sample,
+          distance: Math.abs(sample.momentum[5] - finalFeature.momentum[5])
+            + (0.35 * Math.abs(sample.momentum[63] - finalFeature.momentum[63]))
+            + (0.2 * Math.abs(sample.momentum[126] - finalFeature.momentum[126]))
+            + (0.15 * volatilityDistance),
+        };
+      }).sort((left, right) => left.distance - right.distance).slice(0, count);
+    }
+    return neighborPrediction(
+      model.samples,
+      finalFeature.features,
+      model.indexes,
+      model.scaler,
+      count,
+    ).neighbors;
+  }
+
+  function residualPath(context, finalFeature, model, horizon, candidates = null) {
     if (!model?.samples?.length) return Array(horizon + 1).fill(0);
-    const nearest = model.kind === "baseline" || model.kind === "momentum"
-      ? model.samples.map((sample) => ({
-        sample,
-        distance: Math.abs(sample.momentum[5] - finalFeature.momentum[5])
-          + (0.35 * Math.abs(sample.momentum[63] - finalFeature.momentum[63])),
-      })).sort((left, right) => left.distance - right.distance).slice(0, 10)
-      : neighborPrediction(
-        model.samples,
-        finalFeature.features,
-        model.indexes,
-        model.scaler,
-        7,
-      ).neighbors;
+    const nearest = (Array.isArray(candidates) && candidates.length
+      ? candidates
+      : nearestPathSamples(model, finalFeature, 10)).slice(0, 10);
     const paths = nearest.filter(({ sample }) => sample.anchor + horizon < context.prices.length);
     if (!paths.length) return Array(horizon + 1).fill(0);
     const analogs = paths.map(({ sample, distance }) => {
@@ -1972,7 +2037,18 @@
       day: item.day,
       value: item.uncertainty,
     }))];
-    const residual = residualPath(context, finalFeature, models.at(-1), 126);
+    const pathCandidates = nearestPathSamples(
+      models.at(-1),
+      finalFeature,
+      indexForecast ? 180 : 96,
+    );
+    const pathLibrary = scenarioPathEngine?.buildHistoricalPathLibrary({
+      prices: context.prices,
+      candidates: pathCandidates,
+      horizon: 126,
+      projectedVolatility: finalFeature.volatility,
+    }) || null;
+    const residual = residualPath(context, finalFeature, models.at(-1), 126, pathCandidates);
     const cumulative = Array.from({ length: 127 }, (_, day) => (
       interpolateAnchors(anchors, day) + residual[day]
     ));
@@ -2033,6 +2109,7 @@
       mediumMomentum: finalFeature.momentum?.[63],
       probabilitySignalStrength: indexForecast ? 1 : (marketModelUsed ? 0.5 : 0.25),
       sidewaysProbabilityScale: indexForecast ? 1 : 0.7,
+      pathLibrary,
     });
     const market = selectMarketAt(returns, context.markets, prices.length - 1);
     const selectedMarketSeries = String(market?.market?.series || "").toUpperCase();
@@ -2156,6 +2233,7 @@
         financial_rows: contextSignal.financialPeriods,
         consensus_institutions: contextSignal.consensusInstitutions,
         rotation_series: Array.isArray(options?.rotationCandidates) ? options.rotationCandidates.length : 0,
+        path_analog_rows: pathLibrary?.sampleCount || 0,
         internet_news_rows: 0,
         analyst_report_rows: 0,
       }),
@@ -2185,7 +2263,7 @@
       audit,
       historyDays: points.length,
       projectedVolatility: finalFeature.volatility,
-      patternMatches: models.at(-1).kind === "baseline" ? 0 : 10,
+      patternMatches: pathLibrary?.sampleCount || 0,
       model: {
         name: marketModelUsed
           ? "calibrated risk-gated top-400 + purged local ensemble"

@@ -902,6 +902,8 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page }
         width: Number(trace.line?.width),
         color: String(trace.line?.color || ""),
         reason: String(trace.meta.scenarioReason || ""),
+        patternKey: String(trace.meta.scenarioPatternKey || ""),
+        pathSource: String(trace.meta.scenarioPathSource || ""),
       })),
     };
   });
@@ -924,6 +926,10 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page }
   const scenarioStyleGroups = Map.groupBy(scenarioSummary.styles, (style) => style.series);
   scenarioStyleGroups.forEach((styles) => {
     expect(new Set(styles.map((style) => style.reason)).size).toBe(3);
+    expect(new Set(styles.map((style) => style.patternKey)).size).toBe(3);
+    expect(styles.every((style) => ["conditional-analogs", "regime-fallback"].includes(
+      style.pathSource,
+    ))).toBe(true);
     const highestProbability = Math.max(...styles.map((style) => style.probability));
     expect(styles.every((style) => style.weight === style.probability)).toBe(true);
     expect(styles.every((style) => style.calibratedProbability === false)).toBe(true);

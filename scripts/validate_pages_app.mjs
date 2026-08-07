@@ -48,7 +48,7 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractio
   stat(path.join(root, "docs", "vendor", "plotly-thinkstock-2.35.2.min.js")),
   stat(path.join(root, "docs", "assets", "app.bundle.min.js")),
 ]);
-const [deferredDiagnostics, dataHealth, pagesEntry, styles, insiderTrades, workerIndex, workerRouter, marketTimingService, marketTimingWorker] = await Promise.all([
+const [deferredDiagnostics, dataHealth, pagesEntry, styles, insiderTrades, workerIndex, workerRouter, marketTimingService, marketTimingWorker, aiScenarioPaths, aiForecastWorker] = await Promise.all([
   readFile(path.join(root, "docs", "modules", "deferred-diagnostics.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "data-health.js"), "utf8"),
   readFile(path.join(root, "scripts", "pages-entry.mjs"), "utf8"),
@@ -58,6 +58,8 @@ const [deferredDiagnostics, dataHealth, pagesEntry, styles, insiderTrades, worke
   readFile(path.join(root, "worker", "src", "request-router.mjs"), "utf8"),
   readFile(path.join(root, "docs", "modules", "market-timing-service.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "market-timing-worker.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "ai-scenario-paths.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "ai-forecast-worker.js"), "utf8"),
 ]);
 const precacheAssetsSource = sw.match(/const PRECACHE_ASSETS = \[([\s\S]*?)\];/)?.[1] || "";
 
@@ -160,6 +162,7 @@ assert.ok(workerIndex.includes("DART_ELESTOCK_URL")
   "./modules/market-timing.js?v=dev",
   "./modules/market-timing-service.js?v=dev",
   "./modules/market-timing-worker.js?v=dev",
+  "./modules/ai-scenario-paths.js?v=dev",
   "./vendor/plotly-thinkstock-2.35.2.min.js?v=dev",
   "./data/prices_recent.json",
   "./data/macro_data_recent.json",
@@ -207,6 +210,11 @@ assert.ok(pagesEntry.includes('import "../docs/modules/market-timing-service.js"
 "market timing calculation is not isolated in its worker");
 assert.ok(!app.includes("marketTimingModelCache = new Map()"),
   "market timing model cache still lives in app.js");
+assert.ok(pagesEntry.includes('import "../docs/modules/ai-scenario-paths.js"')
+  && aiForecastWorker.includes('importScripts("./ai-scenario-paths.js", "./ai-forecast.js")')
+  && aiScenarioPaths.includes("buildHistoricalPathLibrary")
+  && aiScenarioPaths.includes("buildScenarioMorphologies"),
+"AI scenario path morphology is not shared by the app and forecast worker");
 assert.ok(dataPayload.includes("rowsFromColumnarPayload"), "shared columnar payload parser is missing");
 assert.ok(dataWorker.includes('importScripts("./data-payload.js?v=dev")'), "data worker does not reuse the shared payload parser");
 assert.ok(app.includes("ThinkStockMarketData"), "market data module is not wired into the app");

@@ -4,9 +4,11 @@ import path from "node:path";
 import test from "node:test";
 import vm from "node:vm";
 
+const scenarioPathSource = await readFile(path.resolve("docs/modules/ai-scenario-paths.js"), "utf8");
 const source = await readFile(path.resolve("docs/modules/ai-forecast.js"), "utf8");
 const context = {};
 vm.createContext(context);
+vm.runInContext(scenarioPathSource, context);
 vm.runInContext(source, context);
 const {
   applyFeatureTransform,
@@ -22,6 +24,7 @@ const {
   nextBusinessDates,
   parseFeatureTransform,
 } = context.ThinkStockAiForecast;
+const { classifyHistoricalPath } = context.ThinkStockAiScenarioPaths;
 
 test("replays the serialized nonlinear feature transform exactly", () => {
   const transform = parseFeatureTransform({
@@ -107,7 +110,7 @@ test("trains deterministic 20, 63, and 126-day models with uncertainty bands", (
   assert.ok(standardDeviation(forecastReturns) <= standardDeviation(recentReturns) * 1.2);
   assert.deepEqual(first.prices, second.prices);
   assert.equal(first.model.horizons.map((item) => item.days).join(","), "20,63,126");
-  assert.equal(first.model.pathVersion, "path-v9");
+  assert.equal(first.model.pathVersion, "path-v10");
   const [month, quarter, halfYear] = first.model.horizons;
   assert.equal(month.calibration.localScale, 0.33);
   assert.equal(month.calibration.regimeScale, 1);
@@ -144,6 +147,14 @@ test("trains deterministic 20, 63, and 126-day models with uncertainty bands", (
   assert.equal(first.scenarios.calibration.probabilitySignalStrength, 0.25);
   assert.equal(first.scenarios.calibration.sidewaysProbabilityScale, 0.7);
   assert.ok(scenarios.every((scenario) => scenario.prices.length === 127 && scenario.reason));
+  assert.ok(scenarios.every((scenario) => scenario.patternKey && scenario.pathSource));
+  assert.equal(new Set(scenarios.map((scenario) => scenario.patternKey)).size, 3);
+  scenarios.forEach((scenario) => {
+    const path = scenario.prices.map((price) => Math.log(price / scenario.prices[0]));
+    const classified = classifyHistoricalPath(path, first.scenarios.calibration.flatBand);
+    assert.equal(classified.role, scenario.key);
+    assert.equal(classified.key, scenario.patternKey);
+  });
   assert.equal(new Set(scenarios.map((scenario) => scenario.reason)).size, 3);
   const pathShapes = scenarios.map((scenario) => {
     const endpoint = Math.log(scenario.prices.at(-1) / scenario.prices[0]);
@@ -362,8 +373,8 @@ test("blends a validated top-400 market model without replacing the local guardr
 
   assert.equal(blended.model.marketModelUsed, true);
   assert.match(blended.model.name, /top-400/);
-  assert.equal(blended.model.version, "2026-07-23|path-v9");
-  assert.equal(blended.model.pathVersion, "path-v9");
+  assert.equal(blended.model.version, "2026-07-23|path-v10");
+  assert.equal(blended.model.pathVersion, "path-v10");
   assert.equal(blended.scenarios.calibration.probabilitySignalStrength, 0.5);
   assert.equal(blended.scenarios.calibration.sidewaysProbabilityScale, 0.7);
   assert.equal(blended.model.globalMarketSeries, "^KS11");

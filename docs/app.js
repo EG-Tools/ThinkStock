@@ -244,7 +244,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "2.26";
+const APP_VERSION = "2.27";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -573,6 +573,7 @@ let aiAnalysisPendingTickers = new Set();
 let aiContextPendingTickers = new Set();
 let aiRotationSeriesByTicker = new Map();
 let aiRotationSeriesPromise = null;
+let aiRotationSeriesLoadSettled = false;
 let aiMarketModel = null;
 let aiMarketModelPromise = null;
 let aiMarketModelLoadSettled = false;
@@ -5488,6 +5489,7 @@ function activeAiAnalysisTickers() {
 async function loadAiMarketModel() {
   if (aiMarketModel) return aiMarketModel;
   if (aiMarketModelPromise) return aiMarketModelPromise;
+  aiMarketModelLoadSettled = false;
   aiMarketModelPromise = fetchWithTimeout(AI_MARKET_MODEL_URL, { cache: "no-cache" }, 20000)
     .then(async (response) => {
       if (!response.ok) throw new Error(`AI market model HTTP ${response.status}`);
@@ -5679,6 +5681,9 @@ function aiRotationCandidatesForForecast() {
 }
 
 async function loadAiRotationLeaderSeries() {
+  if (aiRotationSeriesLoadSettled && aiRotationSeriesByTicker.size) {
+    return aiRotationSeriesByTicker.size;
+  }
   if (aiRotationSeriesPromise) return aiRotationSeriesPromise;
   aiRotationSeriesPromise = (async () => {
     for (let index = 0; index < AI_ROTATION_LEADER_TICKERS.length; index += 1) {
@@ -5706,6 +5711,7 @@ async function loadAiRotationLeaderSeries() {
     return aiRotationSeriesByTicker.size;
   })().finally(() => {
     aiRotationSeriesPromise = null;
+    aiRotationSeriesLoadSettled = true;
     syncAiForecastToggleButton();
     if (showAiForecast) requestChartRender(lastAiForecastTraceCount > 0);
   });
@@ -6394,6 +6400,17 @@ function aiForecastInputsPending() {
   );
 }
 
+function aiForecastContextPendingForSeries(series) {
+  const key = String(series || "").toUpperCase();
+  return Boolean(
+    !aiMarketModelLoadSettled
+    || aiMarketModelPromise
+    || aiRotationSeriesPromise
+    || aiContextPendingTickers.has(key)
+    || (aiAnalysisPendingTickers.has(key) && !aiAnalysisByTicker.has(key))
+  );
+}
+
 function scheduleDeferredAiForecastRender(seriesModels) {
   if (!showAiForecast || aiForecastDeferredRenderId) return false;
   const available = new Set((seriesModels || []).map((model) => String(model?.series || "").toUpperCase()));
@@ -6573,15 +6590,16 @@ async function buildAiForecastTraces(rows, seriesModels) {
     };
     const inputKey = getAiForecastInputKey(options);
     const cached = aiForecastResultBySeries.get(series);
+    const contextPending = aiForecastContextPendingForSeries(series);
     const preserveExistingForecast = Boolean(
       cached
       && aiForecastProtectedCachedSeries.has(series)
     );
     const reusableCache = inputKey && cached
-      && (cached.inputKey === inputKey || preserveExistingForecast)
+      && (cached.inputKey === inputKey || preserveExistingForecast || contextPending)
       ? (cached.inputKey === inputKey ? cached : { ...cached, inputKey })
       : null;
-    if (preserveExistingForecast && reusableCache !== cached) {
+    if (preserveExistingForecast && !contextPending && reusableCache !== cached) {
       // A newly enabled target must not make already visible forecasts recalculate.
       // Re-anchor the cached result to the latest shared context for this render.
       aiForecastResultBySeries.set(series, reusableCache);
@@ -6593,10 +6611,13 @@ async function buildAiForecastTraces(rows, seriesModels) {
       options,
       inputKey,
       cached: reusableCache,
+      contextPending,
     }];
   });
   const calculationItems = workItems.filter((item) => (
-    !item.cached && !aiForecastDeferredSeries.has(item.series)
+    !item.cached
+    && !item.contextPending
+    && !aiForecastDeferredSeries.has(item.series)
   ));
   const reportCalculationProgress = calculationItems.length > 0 && !aiForecastInputsPending();
   let completedCalculations = 0;
@@ -6608,7 +6629,7 @@ async function buildAiForecastTraces(rows, seriesModels) {
       : null;
     let calculatedNow = false;
     if (!forecast) {
-      if (aiForecastDeferredSeries.has(series)) continue;
+      if (item.contextPending || aiForecastDeferredSeries.has(series)) continue;
       const seriesProgressLabel = `${labelName(series)} (${completedCalculations + 1}/${calculationItems.length})`;
       if (reportCalculationProgress) {
         resetAiForecastProgress(`${seriesProgressLabel} 준비`);
@@ -6616,9 +6637,12 @@ async function buildAiForecastTraces(rows, seriesModels) {
         setAiForecastProgress(25, `${seriesProgressLabel} 계산`);
       }
       forecast = await runAiForecast(options);
-      calculatedNow = true;
-      aiForecastCalculationCounts.set(series, (aiForecastCalculationCounts.get(series) || 0) + 1);
       completedCalculations += 1;
+      if (targetRevisionAtStart !== aiForecastTargetRevision) return [];
+      calculatedNow = Boolean(forecast);
+      if (calculatedNow) {
+        aiForecastCalculationCounts.set(series, (aiForecastCalculationCounts.get(series) || 0) + 1);
+      }
       if (forecast && item.inputKey) {
         aiForecastResultBySeries.delete(series);
         aiForecastResultBySeries.set(series, { inputKey: item.inputKey, forecast });
@@ -6669,7 +6693,9 @@ async function buildAiForecastTraces(rows, seriesModels) {
       const isPrimaryScenario = scenarioWeight === highestScenarioWeight;
       const lineColor = isPrimaryScenario ? "rgba(248, 248, 248, 0.98)" : style.color;
       const lineWidth = isPrimaryScenario ? 2.9 : style.width;
-      const endpointText = `${scenario.label} 가중치 ${scenarioWeight}%`;
+      const scenarioLabel = String(scenario.label || scenario.directionLabel || scenarioKey);
+      const scenarioShortLabel = String(scenario.shortLabel || scenarioLabel);
+      const endpointText = `${scenarioShortLabel} 가중치 ${scenarioWeight}%`;
       const labels = forecast.dates.map((_, index) => (
         index === forecast.dates.length - 1 ? endpointText : ""
       ));
@@ -6681,13 +6707,13 @@ async function buildAiForecastTraces(rows, seriesModels) {
         customdata: scenario.prices,
         type: MAIN_LINE_TRACE_TYPE,
         mode: "lines+text",
-        name: `${labelName(series)} AI ${scenario.label}`,
+        name: `${labelName(series)} AI ${scenarioLabel}`,
         showlegend: false,
         connectgaps: false,
         cliponaxis: false,
         hoverinfo: hoverShowPopup ? undefined : "skip",
         hovertemplate: hoverShowPopup
-          ? `<b>${escapeHtml(scenario.label)} 가중치 ${scenarioWeight}%</b> · %{hovertext}`
+          ? `<b>${escapeHtml(scenarioLabel)} 가중치 ${scenarioWeight}%</b> · %{hovertext}`
             + `<br>${escapeHtml(scenario.reason)} · 실제 확률 아님<extra></extra>`
           : undefined,
         textposition: style.textposition,
@@ -6704,6 +6730,10 @@ async function buildAiForecastTraces(rows, seriesModels) {
           validationStatus: String(forecast.validation?.status || "experimental"),
           isPrimaryAiScenario: isPrimaryScenario,
           scenarioReason: scenario.reason,
+          scenarioPatternKey: String(scenario.patternKey || scenarioKey),
+          scenarioPathSource: String(scenario.pathSource || ""),
+          scenarioPatternAnalogCount: Number(scenario.patternAnalogCount) || 0,
+          scenarioPatternSupport: Number(scenario.patternSupport) || 0,
           patternMatches: forecast.patternMatches,
           marketWeight,
           marketSeries: String(forecast.marketRelationship?.series || ""),
