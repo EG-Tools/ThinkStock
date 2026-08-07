@@ -360,6 +360,8 @@ test("new stock loads its own Cloudflare DART disclosures", async ({ page }) => 
   });
   await page.locator("#aiForecastToggle").click();
   await expect(page.locator("#aiForecastProgress")).toBeHidden({ timeout: 10000 });
+  await page.locator("#disclosureToggle").click();
+  await expect(page.locator("#disclosureToggle")).toHaveAttribute("aria-pressed", "false");
 
   await page.locator("#stockSearchInput").fill("SK하이닉스");
   const suggestion = page.locator(".stock-suggest-item").filter({ hasText: "SK하이닉스" });
@@ -382,6 +384,12 @@ test("new stock loads its own Cloudflare DART disclosures", async ({ page }) => 
   }))).toEqual(lockedViewport);
   await expect.poll(() => newStockDisclosureRequests).toBe(2);
   expect(forcedNewStockDisclosures).toEqual([null, "1"]);
+  await expect(page.locator("#disclosureToggle")).toHaveAttribute("aria-pressed", "false");
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).some((trace) => trace?.meta?.isDisclosureTrace)
+  ))).toBe(false);
+  await page.locator("#disclosureToggle").click();
+  await expect(page.locator("#disclosureToggle")).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#chart .textpoint text").filter({ hasText: "◆" }).first()).toBeVisible();
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const stockTrace = (element.data || []).find((trace) => trace?.meta?.seriesKey === "000660.KS");
@@ -695,6 +703,31 @@ test("auto chart reset ignores saved series transforms", async ({ page }) => {
     const axisSpan = Math.abs(element._fullLayout.yaxis.range[1] - element._fullLayout.yaxis.range[0]);
     return axisSpan > 0 ? dataSpan / axisSpan : 0;
   })).toBeGreaterThan(0.7);
+  const autoResetXRange = await page.locator("#chart").evaluate((element) => (
+    [...element._fullLayout.xaxis.range]
+  ));
+  const autoResetScaleHandle = page.locator('.y-handle-right[data-series-key="^KS11"]');
+  const autoResetHandleBox = await waitForBoundingBox(autoResetScaleHandle);
+  await page.mouse.move(
+    autoResetHandleBox.x + autoResetHandleBox.width / 2,
+    autoResetHandleBox.y + autoResetHandleBox.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    autoResetHandleBox.x + autoResetHandleBox.width / 2,
+    autoResetHandleBox.y + autoResetHandleBox.height / 2 - 35,
+  );
+  await expect.poll(() => page.evaluate(() => (
+    Object.keys(window.ThinkStockE2E.getSeriesTransforms().scales).length
+  ))).toBeGreaterThan(0);
+  await page.mouse.up();
+  await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getSeriesTransforms())).toEqual({
+    offsets: {},
+    scales: {},
+  });
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    [...element._fullLayout.xaxis.range]
+  ))).toEqual(autoResetXRange);
 });
 
 test("locked chart frame stays fixed and scale handles follow the visible endpoint", async ({ page }) => {
@@ -858,24 +891,42 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page }
       count: traces.length,
       roles: [...new Set(traces.map((trace) => trace.meta.aiTraceRole))].sort(),
       endpoints: traces.map((trace) => String(trace.text?.at(-1) || "")),
+      hoverTemplates: traces.map((trace) => String(trace.hovertemplate || "")),
       hasMacroIndex: traces.some((trace) => trace.meta.forecastMode === "macro-index"),
       styles: traces.map((trace) => ({
         series: trace.meta.seriesKey,
         probability: Number(trace.meta.scenarioProbability),
+        weight: Number(trace.meta.scenarioWeight),
+        calibratedProbability: trace.meta.calibratedProbability,
         primary: trace.meta.isPrimaryAiScenario === true,
         width: Number(trace.line?.width),
         color: String(trace.line?.color || ""),
+        reason: String(trace.meta.scenarioReason || ""),
       })),
     };
   });
   expect(scenarioSummary.count).toBeGreaterThanOrEqual(3);
   expect(scenarioSummary.count % 3).toBe(0);
   expect(scenarioSummary.roles).toEqual(["downside", "sideways", "upside"]);
-  expect(scenarioSummary.endpoints.every((text) => /\d+% · .+/.test(text))).toBe(true);
+  expect(scenarioSummary.endpoints.every((text) => /^.+ \d+%$/.test(text))).toBe(true);
+  expect(scenarioSummary.endpoints.every((text) => text.includes("가중치"))).toBe(true);
+  expect(scenarioSummary.hoverTemplates
+    .filter(Boolean)
+    .every((text) => text.includes("실제 확률 아님"))).toBe(true);
+  expect(scenarioSummary.hoverTemplates.every((text) => (
+    !text.includes("%{x")
+    && !text.includes("검증 예상범위")
+    && !text.includes("시장 관계 학습")
+    && !text.includes("컨센서스 반영")
+    && !text.includes("실적 추세 반영")
+  ))).toBe(true);
   expect(scenarioSummary.hasMacroIndex).toBe(true);
   const scenarioStyleGroups = Map.groupBy(scenarioSummary.styles, (style) => style.series);
   scenarioStyleGroups.forEach((styles) => {
+    expect(new Set(styles.map((style) => style.reason)).size).toBe(3);
     const highestProbability = Math.max(...styles.map((style) => style.probability));
+    expect(styles.every((style) => style.weight === style.probability)).toBe(true);
+    expect(styles.every((style) => style.calibratedProbability === false)).toBe(true);
     const primaryStyles = styles.filter((style) => style.primary);
     expect(primaryStyles.length).toBeGreaterThan(0);
     expect(primaryStyles.every((style) => style.probability === highestProbability)).toBe(true);
@@ -1555,18 +1606,23 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   });
 
   await test.step("keep handles and event markers synchronized during transforms", async () => {
-  const offsetHandle = page.locator('.y-handle-left[title="삼성전자 (위치)"]');
-  const pairedScaleHandle = page.locator('.y-handle-right[title="삼성전자 (스케일)"]');
-  await expect(offsetHandle).toBeVisible();
-  await expect(pairedScaleHandle).toBeVisible();
-  const [offsetBefore, scaleBefore] = await Promise.all([
-    offsetHandle.boundingBox(),
-    pairedScaleHandle.boundingBox(),
-  ]);
-  const handleTopsBefore = await page.locator("#y-handles").evaluate(() => ({
-    offset: Number.parseFloat(document.querySelector('.y-handle-left[title="삼성전자 (위치)"]').style.top),
-    scale: Number.parseFloat(document.querySelector('.y-handle-right[title="삼성전자 (스케일)"]').style.top),
-  }));
+    const chartResetButton = page.locator("#resetHandles");
+    if (await chartResetButton.getAttribute("aria-pressed") === "true") {
+      await chartResetButton.click();
+    }
+    await expect(chartResetButton).toHaveAttribute("aria-pressed", "false");
+    const offsetHandle = page.locator('.y-handle-left[title="삼성전자 (위치)"]');
+    const pairedScaleHandle = page.locator('.y-handle-right[title="삼성전자 (스케일)"]');
+    await expect(offsetHandle).toBeVisible();
+    await expect(pairedScaleHandle).toBeVisible();
+    const [offsetBefore, scaleBefore] = await Promise.all([
+      offsetHandle.boundingBox(),
+      pairedScaleHandle.boundingBox(),
+    ]);
+    const handleTopsBefore = await page.locator("#y-handles").evaluate(() => ({
+      offset: Number.parseFloat(document.querySelector('.y-handle-left[title="삼성전자 (위치)"]').style.top),
+      scale: Number.parseFloat(document.querySelector('.y-handle-right[title="삼성전자 (스케일)"]').style.top),
+    }));
   await page.mouse.move(
     offsetBefore.x + offsetBefore.width / 2,
     offsetBefore.y + offsetBefore.height / 2,
@@ -1626,8 +1682,6 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   const transformsBeforeFit = await page.evaluate(() => window.ThinkStockE2E.getSeriesTransforms());
   expect(Object.keys(transformsBeforeFit.offsets).length).toBeGreaterThan(0);
   expect(Object.keys(transformsBeforeFit.scales).length).toBeGreaterThan(0);
-  await page.locator("#resetHandles").click();
-  await expect(page.locator("#resetHandles")).toHaveAttribute("aria-pressed", "false");
   await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getSeriesTransforms())).toEqual(
     transformsBeforeFit,
   );
@@ -2309,6 +2363,11 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await expect.poll(() => page.evaluate(() => (
     window.ThinkStockE2E?.getRefreshPhaseStats?.().supplementalReady || 0
   ))).toBeGreaterThan(0);
+  const chartResetButton = page.locator("#resetHandles");
+  if (await chartResetButton.getAttribute("aria-pressed") === "true") {
+    await chartResetButton.click();
+  }
+  await expect(chartResetButton).toHaveAttribute("aria-pressed", "false");
   const dragPerfBefore = await page.evaluate(() => ({
     generation: window.ThinkStockE2E.getChartRenderGeneration(),
     ...window.ThinkStockE2E.getChartWorkerStats(),

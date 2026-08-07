@@ -29,7 +29,7 @@ test("allows only local clients and app origins", () => {
   assert.equal(isPrivateAddress("127.0.0.1"), true);
   assert.equal(isPrivateAddress("::ffff:192.168.0.10"), true);
   assert.equal(isPrivateAddress("8.8.8.8"), false);
-  assert.equal(isAllowedOrigin("capacitor://localhost"), true);
+  assert.equal(isAllowedOrigin("thinkstock://localhost"), false);
   assert.equal(isAllowedOrigin("http://192.168.0.10:8787"), true);
   assert.equal(isAllowedOrigin("https://example.com"), false);
 });

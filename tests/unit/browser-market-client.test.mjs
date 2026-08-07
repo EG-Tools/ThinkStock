@@ -46,15 +46,15 @@ test("normalizes Yahoo history responses into sorted daily points", async () => 
       result: [{
         timestamp: [1767312000, 1767225600],
         meta: { gmtoffset: 0 },
-        indicators: { quote: [{ close: [102, 101] }] },
+        indicators: { quote: [{ close: [102, 101], volume: [2200, 1100] }] },
       }],
     },
   }));
 
   const points = await client.fetchYahooHistorySeries("TEST");
   assert.deepEqual(points, [
-    { date: "2026-01-01", close: 101 },
-    { date: "2026-01-02", close: 102 },
+    { date: "2026-01-01", close: 101, volume: 1100 },
+    { date: "2026-01-02", close: 102, volume: 2200 },
   ]);
 });
 

@@ -1,6 +1,6 @@
 importScripts("./modules/cache-refresh-policy.js?v=dev");
 
-const CACHE_NAME = "thinkstock-dev-2.25";
+const CACHE_NAME = "thinkstock-dev-2.26";
 const NETWORK_FIRST_TIMEOUT_MS = 3500;
 const DATA_REFRESH_CONCURRENCY = 3;
 const DATA_MANIFEST_PATH = "./data/data_manifest.json";
@@ -18,6 +18,10 @@ const PRECACHE_ASSETS = [
   "./modules/auxiliary-chart-model.js?v=dev",
   "./modules/data-worker.js?v=dev",
   "./modules/chart-model-worker.js?v=dev",
+  "./modules/macd-oscillator.js?v=dev",
+  "./modules/market-timing.js?v=dev",
+  "./modules/market-timing-service.js?v=dev",
+  "./modules/market-timing-worker.js?v=dev",
   "./modules/ai-forecast-worker.js?v=dev",
   "./modules/ai-forecast.js?v=dev",
   "./vendor/plotly-thinkstock-2.35.2.min.js?v=dev",
@@ -63,6 +67,10 @@ const CORE_ASSET_PATHS = [
   "/modules/auxiliary-chart-model.js",
   "/modules/data-worker.js",
   "/modules/chart-model-worker.js",
+  "/modules/macd-oscillator.js",
+  "/modules/market-timing.js",
+  "/modules/market-timing-service.js",
+  "/modules/market-timing-worker.js",
   "/modules/ai-forecast-worker.js",
   "/modules/performance-diagnostics.js",
   "/modules/dart-disclosure.js",

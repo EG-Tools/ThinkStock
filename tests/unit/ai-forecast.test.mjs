@@ -136,9 +136,23 @@ test("trains deterministic 20, 63, and 126-day models with uncertainty bands", (
   });
   const scenarios = [first.scenarios.upside, first.scenarios.sideways, first.scenarios.downside];
   assert.equal(scenarios.reduce((sum, scenario) => sum + scenario.probability, 0), 100);
+  assert.equal(scenarios.reduce((sum, scenario) => sum + scenario.weight, 0), 100);
+  assert.equal(first.scenarios.calibration.weightType, "relative-scenario-weight");
+  assert.equal(first.scenarios.calibration.calibratedProbability, false);
+  assert.equal(first.validation.status, "experimental");
+  assert.equal(first.validation.benchmarkOutperformanceConfirmed, false);
   assert.equal(first.scenarios.calibration.probabilitySignalStrength, 0.25);
   assert.equal(first.scenarios.calibration.sidewaysProbabilityScale, 0.7);
   assert.ok(scenarios.every((scenario) => scenario.prices.length === 127 && scenario.reason));
+  assert.equal(new Set(scenarios.map((scenario) => scenario.reason)).size, 3);
+  const pathShapes = scenarios.map((scenario) => {
+    const endpoint = Math.log(scenario.prices.at(-1) / scenario.prices[0]);
+    return [32, 63, 95].map((index) => (
+      Math.log(scenario.prices[index] / scenario.prices[0]) / endpoint
+    ).toFixed(3)).join("|");
+  });
+  assert.equal(new Set(pathShapes).size, 3);
+  assert.ok(Number.isFinite(first.scenarios.calibration.pathMomentum));
   assert.ok(first.scenarios.upside.prices.at(-1) > first.scenarios.sideways.prices.at(-1));
   assert.ok(first.scenarios.sideways.prices.at(-1) > first.scenarios.downside.prices.at(-1));
   assert.equal(first.chartValues[0], chartValues.at(-1));

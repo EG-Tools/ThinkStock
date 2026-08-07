@@ -1,65 +1,40 @@
 # ThinkStock
 
-ThinkStock ships in two modes from the same repository.
+ThinkStock is one responsive web app with two access paths. Both run the same source from `docs/`.
 
-## 1. Public iPhone Safari link
-- GitHub Pages app target: https://eg-tools.github.io/ThinkStock/
-- Mobile web app source: `docs/`
-- GitHub Pages should be configured to use `GitHub Actions`.
+## Use
 
-## 2. DART disclosures
-- The Pages build keeps the last deployed disclosure snapshot as an offline fallback.
-- Adding a stock checks only that stock once through the private Cloudflare Worker.
-- Manual refresh checks only Korean stocks whose chart toggles are currently on.
-- App startup and scheduled Pages builds do not request market-wide DART disclosures.
-- The DART key is stored as the Worker's `DART_API_KEY` secret and is never sent to the browser.
-- Store the same `THINKSTOCK_ACCESS_TOKEN` in the Worker and once in each device's API settings.
-- Per-ticker results are shared through Cloudflare KV and retained in each browser's IndexedDB cache.
-- Worker source and deployment configuration live in `worker/`; deploy with `npm run worker:deploy`.
+- Local PC: run `run_local_pages.bat`, then use `http://127.0.0.1:8787/`.
+- External PC or iPhone: open https://eg-tools.github.io/ThinkStock/.
+- iPhone Home Screen: open the Pages link, use Share, then Add to Home Screen.
 
-## 3. Full Streamlit app
-- Entrypoint: `app.py` or `streamlit_app.py`
-- Local run: `run_app.bat`
-- Streamlit Community Cloud entrypoint: `app.py` or `streamlit_app.py`
+The local server keeps API keys in `.env.local`, mirrors the latest deployed data, and provides local fallbacks. The public app uses the private Cloudflare Worker for protected API calls. Secrets must never be committed.
 
-## 4. Native iOS app packaging (Capacitor)
-- Web source for iOS app shell: `docs/`
-- Setup guide: `IOS_APP_TESTFLIGHT.md`
-- First-time commands:
-  - `npm install`
-  - `npm run cap:add:ios`
-  - `npm run cap:sync:ios`
-  - `npm run cap:open:ios` (macOS)
+## Local Workflow
 
-## 5. iOS build without Mac (Codemagic)
-- CI config: `codemagic.yaml`
-- Setup guide: `CODEMAGIC_IOS.md`
-- Workflow id: `thinkstock-ios-testflight`
+- `run_local_pages.bat`: build and open the current local source.
+- `test_local.bat`: validate the app, then open it only when checks pass.
+- `update_from_github.bat`: fast-forward a clean local checkout to `origin/main`.
+- `deploy_pages.bat "commit message"`: run release checks, bump the app version, commit, push, and start the manual GitHub Pages workflow.
 
-## Included repo surfaces
-- `docs/`: GitHub Pages mobile app
-- `app.py`: Streamlit app
-- `streamlit_app.py`: same Streamlit app source for alternate entrypoint use
-- `AGENTS.md`: repo instructions for coding agents
+Local edits are never published automatically. GitHub Pages is deployed only by `.github/workflows/deploy-pages.yml` after an explicit release.
 
-## Docs
-- `IPHONE_TESTING.md`: iPhone testing notes
-- `IOS_APP_TESTFLIGHT.md`: Capacitor iOS/TestFlight build guide
-- `CODEMAGIC_IOS.md`: Codemagic iOS/TestFlight build guide (no Mac)
-- `.github/workflows/deploy-pages.yml`: GitHub Actions Pages workflow
+## Architecture
 
-## API Keys (Local Only)
-- Never commit API keys to this repository.
-- Store local keys in `/.env.local` only:
-  - `DART_API_KEY=...`
-  - `KOFIA_API_KEY=...`
-  - `KOSIS_API_KEY=...`
-  - `KRX_API_KEY=...`
-  - `ECOS_API_KEY=...`
-- GitHub Pages builds use GitHub Secrets for market and macro data. DART refreshes run only through the private Worker.
+- `docs/`: the only user-facing product, shared by local PC and GitHub Pages.
+- `scripts/local_pages_server.mjs`: local runtime server and API fallback.
+- `scripts/build_pages_data.py`: deployment data refresh.
+- `worker/`: private Cloudflare gateway for DART and protected runtime data.
+- `tests/`: unit and Safari/iPhone WebKit coverage.
 
-## Local-first update workflow
-- `update_from_github.bat`: downloads `origin/main` only when the worktree is clean, installs dependencies, and builds the app. `.env.local` remains local and is not replaced.
-- `run_local_pages.bat`: builds the current local source and opens `http://127.0.0.1:8787` for quick visual testing.
-- `test_local.bat`: runs the complete test suite, then opens the local app only if every check passes.
-- Local edits are not published automatically. Commit, push, Worker deployment, and GitHub Pages deployment happen only when a release is explicitly approved.
+## API Keys
+
+Store local keys only in `.env.local`:
+
+- `DART_API_KEY`
+- `KOFIA_API_KEY`
+- `KOSIS_API_KEY`
+- `KRX_API_KEY`
+- `ECOS_API_KEY`
+
+GitHub Pages data builds use matching GitHub Secrets. The DART key remains only in the Cloudflare Worker.

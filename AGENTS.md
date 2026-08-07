@@ -1,29 +1,24 @@
 # Repository Agent Guide
 
-## Purpose
-- ThinkStock has two user-facing surfaces:
-  - `app.py` / `streamlit_app.py`: full Streamlit dashboard for local runs and Streamlit Community Cloud.
-  - `docs/`: GitHub Pages mobile web app for iPhone Safari testing.
+## Product
+- ThinkStock has one user-facing web app in `docs/`.
+- Local PC access uses `run_local_pages.bat` and `scripts/local_pages_server.mjs`.
+- External PC and iPhone access use `https://eg-tools.github.io/ThinkStock/`.
+- Do not recreate separate Streamlit, native iOS, or alternate UI implementations.
 
-## Entry points
-- Treat `streamlit_app.py` as the primary Streamlit source.
-- Keep `app.py` identical to `streamlit_app.py` unless there is a deployment-specific reason not to.
-- The public GitHub Pages URL is expected to be `https://eg-tools.github.io/ThinkStock/` after the GitHub Actions Pages workflow finishes.
+## Data Flow
+- Local mode prefers the validated mirror in `.thinkstock-cache/pages-data` and falls back to bundled `docs/data`.
+- GitHub Pages uses the segmented datasets in `docs/data`.
+- `scripts/build_pages_data.py` refreshes deployment data.
+- Protected runtime calls go through `worker/`; secrets must never enter the public bundle.
 
-## Data flow
-- Streamlit mode fetches live prices with `yfinance` at runtime.
-- GitHub Pages mode uses prebuilt price data from `docs/data/prices.json`.
-- `scripts/build_pages_data.py` refreshes that JSON during the GitHub Pages workflow.
-- Macro data for both surfaces uses the same column convention: `date` plus one or more numeric series columns.
+## Editing Rules
+- Preserve the Korean UX and mobile-first behavior unless there is a clear improvement.
+- Keep local and deployed behavior identical by changing the shared `docs/` source only.
+- Keep `main` as the only long-lived deployment branch.
+- Run unit validation and Safari/iPhone WebKit coverage before release.
 
-## Editing rules
-- If you change labels, presets, or default tickers in Streamlit, mirror the change in the Pages app when relevant.
-- Do not introduce secrets into the repo. Pages deployment must remain public-safe.
-- Prefer mobile-first layout decisions because the repo is being tested from iPhone Safari.
-- Preserve the current Korean UX copy unless there is a clear improvement.
-
-## Deployment notes
-- GitHub Pages is deployed by `.github/workflows/deploy-pages.yml` using GitHub Actions.
-- This deployment model keeps `main` as the only long-lived branch.
-- Streamlit Community Cloud should use `app.py` or `streamlit_app.py` as the entrypoint.
-- If the Pages app changes, make sure the workflow still uploads the `docs/` directory as the artifact.
+## Deployment
+- `.github/workflows/deploy-pages.yml` is the only deployment workflow and is manual-only.
+- `deploy_pages.bat` is the single local release entry point.
+- The workflow must upload the prepared Pages artifact, not an alternate product surface.

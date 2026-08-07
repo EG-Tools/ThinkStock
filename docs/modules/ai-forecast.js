@@ -1489,6 +1489,8 @@
     corporateRisk,
     priceRegime,
     rotation,
+    recentMomentum = 0,
+    mediumMomentum = 0,
     probabilitySignalStrength = 1,
     sidewaysProbabilityScale = 1,
   }) {
@@ -1542,13 +1544,41 @@
     const sidewaysEndpoint = clamp(median * 0.2, -flatBand * 0.45, flatBand * 0.45);
     const downEndpoint = Math.min(-flatBand * 1.25, median - (uncertaintyEnd * 0.6));
     const paths = { upside: [], sideways: [], downside: [] };
+    const phasePulse = (progress, start, end) => {
+      if (progress <= start || progress >= end) return 0;
+      return Math.sin(Math.PI * ((progress - start) / (end - start)));
+    };
+    const momentumImpulse = clamp(
+      (finite(recentMomentum) || 0)
+        + ((finite(mediumMomentum) || 0) * 0.35)
+        + ((marketRegime.macd || 0) * 0.04),
+      -0.14,
+      0.14,
+    );
+    const supportImpulse = clamp((marketRegime.combined || 0) * 0.06, -0.06, 0.06);
+    const rangeDrag = clamp(structuralRange * 0.035, 0, 0.03);
     for (let day = 0; day <= horizon; day += 1) {
       const progress = day / Math.max(1, horizon);
       const baseShape = cumulative[day] - (median * progress);
       const localSwing = (residual[day] || 0) * 0.15;
-      paths.upside.push((baseShape * 0.55) + localSwing + (upEndpoint * progress));
-      paths.sideways.push((baseShape * 0.22) + (localSwing * 0.5) + (sidewaysEndpoint * progress));
-      paths.downside.push((baseShape * 0.55) + localSwing + (downEndpoint * progress));
+      const earlyPulse = phasePulse(progress, 0, 0.4);
+      const middlePulse = phasePulse(progress, 0.22, 0.78);
+      const latePulse = phasePulse(progress, 0.55, 1);
+      const upsidePhase = (momentumImpulse >= 0
+        ? (momentumImpulse * 0.7 * earlyPulse) - (rangeDrag * middlePulse)
+        : (momentumImpulse * 0.5 * earlyPulse) + (Math.max(0, supportImpulse) * middlePulse))
+        + (Math.max(0, supportImpulse) * 0.3 * latePulse);
+      const sidewaysPhase = (momentumImpulse * 0.75 * earlyPulse)
+        - (momentumImpulse * 0.35 * middlePulse)
+        + (supportImpulse * 0.2 * latePulse);
+      const downsidePhase = (momentumImpulse >= 0
+        ? (momentumImpulse * 0.65 * earlyPulse) + (Math.min(0, supportImpulse) * middlePulse)
+        : (momentumImpulse * 0.75 * earlyPulse) + (Math.max(0, supportImpulse) * 0.35 * middlePulse))
+        - (Math.max(0, -supportImpulse) * 0.35 * latePulse);
+      paths.upside.push((baseShape * 0.55) + localSwing + (upEndpoint * progress) + upsidePhase);
+      paths.sideways.push((baseShape * 0.22) + (localSwing * 0.5)
+        + (sidewaysEndpoint * progress) + sidewaysPhase);
+      paths.downside.push((baseShape * 0.55) + localSwing + (downEndpoint * progress) + downsidePhase);
     }
     const toPrices = (values) => values.map((value) => basePrice * Math.exp(value));
     return {
@@ -1556,6 +1586,7 @@
         key: "upside",
         label: "상승",
         probability: upProbability,
+        weight: upProbability,
         reason: briefScenarioReason("upside", contextSignal, marketRegime, corporateRisk, priceRegime, rotation, confidence),
         prices: toPrices(paths.upside),
       },
@@ -1563,6 +1594,7 @@
         key: "sideways",
         label: "횡보",
         probability: sidewaysProbability,
+        weight: sidewaysProbability,
         reason: briefScenarioReason("sideways", contextSignal, marketRegime, corporateRisk, priceRegime, rotation, confidence),
         prices: toPrices(paths.sideways),
       },
@@ -1570,10 +1602,14 @@
         key: "downside",
         label: "하락",
         probability: downProbability,
+        weight: downProbability,
         reason: briefScenarioReason("downside", contextSignal, marketRegime, corporateRisk, priceRegime, rotation, confidence),
         prices: toPrices(paths.downside),
       },
       calibration: {
+        weightType: "relative-scenario-weight",
+        calibratedProbability: false,
+        validationStatus: "experimental",
         median,
         sigma,
         flatBand,
@@ -1581,6 +1617,7 @@
         prior,
         probabilitySignalStrength: signalStrength,
         sidewaysProbabilityScale,
+        pathMomentum: momentumImpulse,
       },
     };
   }
@@ -1992,6 +2029,8 @@
       corporateRisk,
       priceRegime,
       rotation,
+      recentMomentum: finalFeature.momentum?.[20],
+      mediumMomentum: finalFeature.momentum?.[63],
       probabilitySignalStrength: indexForecast ? 1 : (marketModelUsed ? 0.5 : 0.25),
       sidewaysProbabilityScale: indexForecast ? 1 : 0.7,
     });
@@ -2121,9 +2160,9 @@
         analyst_report_rows: 0,
       }),
       scenarioWeights: compactAuditMap({
-        upside: scenarios.upside?.probability,
-        sideways: scenarios.sideways?.probability,
-        downside: scenarios.downside?.probability,
+        upside: scenarios.upside?.weight,
+        sideways: scenarios.sideways?.weight,
+        downside: scenarios.downside?.weight,
       }),
     };
     const forecast = {
@@ -2132,6 +2171,13 @@
       lowerPrices,
       upperPrices,
       scenarios,
+      validation: {
+        status: "experimental",
+        label: "실험 단계",
+        calibratedProbability: false,
+        benchmarkOutperformanceConfirmed: false,
+        note: "상대 시나리오 가중치이며 실제 확률이 아님",
+      },
       attribution: {
         format: "ai-attribution-v1",
         horizons: attributionHorizons,

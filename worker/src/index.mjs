@@ -114,7 +114,6 @@ function isPrivateHostname(hostname) {
 
 export function isAllowedOrigin(origin) {
   if (!origin) return true;
-  if (["capacitor://localhost", "ionic://localhost"].includes(origin)) return true;
   try {
     const url = new URL(origin);
     return url.origin === PUBLIC_ORIGIN

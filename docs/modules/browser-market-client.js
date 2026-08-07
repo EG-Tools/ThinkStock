@@ -104,18 +104,26 @@
       const closes = Array.isArray(result?.indicators?.quote?.[0]?.close)
         ? result.indicators.quote[0].close
         : [];
+      const volumes = Array.isArray(result?.indicators?.quote?.[0]?.volume)
+        ? result.indicators.quote[0].volume
+        : [];
       const offsetSeconds = Number(result?.meta?.gmtoffset || 0);
       const byDate = new Map();
       timestamps.forEach((rawTimestamp, index) => {
         const timestamp = Number(rawTimestamp);
         const close = toNumber(closes[index]);
+        const volume = toNumber(volumes[index]);
         if (!Number.isFinite(timestamp) || close === null) return;
         const date = new Date((timestamp + offsetSeconds) * 1000).toISOString().slice(0, 10);
-        byDate.set(date, close);
+        byDate.set(date, { close, volume: volume !== null && volume >= 0 ? volume : null });
       });
       return [...byDate.entries()]
         .sort((left, right) => left[0].localeCompare(right[0]))
-        .map(([date, close]) => ({ date, close }));
+        .map(([date, point]) => ({
+          date,
+          close: point.close,
+          ...(point.volume !== null ? { volume: point.volume } : {}),
+        }));
     }
 
     function mergePriceSeries(...seriesGroups) {
@@ -125,7 +133,14 @@
           const date = String(point?.date || "").slice(0, 10);
           const close = toNumber(point?.close);
           if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || close === null || close <= 0) return;
-          byDate.set(date, { date, close });
+          const existing = byDate.get(date) || {};
+          const volume = toNumber(point?.volume);
+          byDate.set(date, {
+            ...existing,
+            date,
+            close,
+            ...(volume !== null && volume >= 0 ? { volume } : {}),
+          });
         });
       });
       return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));

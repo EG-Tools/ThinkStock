@@ -158,7 +158,12 @@
       const date = String(point?.date || "").slice(0, 10);
       const close = toNum(point?.close);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || close === null) return;
-      byDate.set(date, { date, close });
+      const volume = toNum(point?.volume);
+      byDate.set(date, {
+        date,
+        close,
+        ...(volume !== null && volume >= 0 ? { volume } : {}),
+      });
     });
     return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
   }

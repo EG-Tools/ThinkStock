@@ -74,7 +74,6 @@ function isLoopbackAddress(rawAddress) {
 
 export function isAllowedOrigin(rawOrigin) {
   const origin = String(rawOrigin || "").trim();
-  if (["capacitor://localhost", "ionic://localhost"].includes(origin)) return true;
   try {
     const parsed = new URL(origin);
     return ["http:", "https:"].includes(parsed.protocol)

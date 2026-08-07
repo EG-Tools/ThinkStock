@@ -48,7 +48,7 @@ test("as-of alignment never uses a future observation", () => {
 test("emits one high-confidence buy signal after an oversold reversal", () => {
   const model = buildMarketTimingSignals({ indexKey: "^KS11", ...timingFixture() });
 
-  assert.equal(model.strategy, "episode-extreme-v8");
+  assert.equal(model.strategy, "episode-extreme-v10");
   assert.equal(model.signals.length, 1);
   assert.ok(model.signals[0].setupReasons.length > 0);
   assert.ok(model.signals[0].stabilizationReasons.length > 0);
@@ -166,6 +166,147 @@ test("applies one volatility-adjusted sell formula to KOSPI and KOSDAQ", () => {
   assert.ok(kosdaq.sellSignals[0].sellSetupReasons.includes("변동성 대비 급등"));
 });
 
+test("detects a gradual stock distribution top after a volatility-adjusted advance", () => {
+  const dates = Array.from({ length: 300 }, (_, index) => dateAt(index));
+  const prices = dates.map((_, index) => {
+    if (index < 250) return 100;
+    if (index <= 270) return 100 + ((index - 250) * 1.5);
+    return 130 - ((index - 270) * 1.1);
+  });
+  const oscillator = dates.map((_, index) => {
+    if (index < 266) return 0.3;
+    if (index <= 270) return 0.3 + ((index - 265) * 0.12);
+    return 0.9 - ((index - 270) * 0.13);
+  });
+  const model = buildMarketTimingSignals({
+    indexKey: "008770.KS",
+    dates,
+    prices,
+    oscillator,
+  });
+
+  assert.equal(model.sellSignals.length, 1);
+  assert.equal(model.sellSignals[0].date, dates[270]);
+  assert.ok(model.sellSignals[0].confirmationDate <= dates[278]);
+  assert.ok(model.sellSignals[0].sellSetupReasons.includes("개별종목 분배형 과열"));
+  assert.ok(model.sellSignals[0].sellTriggerReasons.includes("분배형 고점 이탈"));
+});
+
+test("confirms a mature stock top after a slower medium-term rollover", () => {
+  const dates = Array.from({ length: 320 }, (_, index) => dateAt(index));
+  const prices = dates.map((_, index) => {
+    if (index < 250) return 100;
+    if (index <= 290) return 100 + ((index - 250) * 0.6);
+    return 124 - ((index - 290) * 0.55);
+  });
+  const oscillator = dates.map((_, index) => {
+    if (index < 286) return 0.45;
+    if (index <= 290) return 0.45 + ((index - 285) * 0.08);
+    return 0.85 - ((index - 290) * 0.07);
+  });
+  const model = buildMarketTimingSignals({
+    indexKey: "207940.KS",
+    dates,
+    prices,
+    oscillator,
+  });
+
+  assert.equal(model.sellSignals.length, 1);
+  assert.equal(model.sellSignals[0].date, dates[290]);
+  assert.ok(model.sellSignals[0].confirmationDate <= dates[310]);
+  assert.ok(model.sellSignals[0].sellSetupReasons.includes("개별종목 중기 고점 둔화"));
+});
+
+test("detects a short refuge-flow top while the broad market is fearful", () => {
+  const dates = Array.from({ length: 300 }, (_, index) => dateAt(index));
+  const benchmarkPrices = dates.map((_, index) => {
+    if (index < 250) return 100 + Math.sin(index / 4) * 0.4;
+    return 100 - ((index - 250) * 0.5);
+  });
+  const prices = dates.map((_, index) => {
+    if (index < 250) return 100 + Math.cos(index / 3) * 0.5;
+    if (index <= 270) return 100 + ((index - 250) * 0.75);
+    return 115 - ((index - 270) * 0.8);
+  });
+  const oscillator = dates.map((_, index) => {
+    if (index < 265) return 0.3;
+    if (index <= 270) return 0.3 + ((index - 265) * 0.1);
+    return 0.8 - ((index - 270) * 0.12);
+  });
+  const adrRows = dates.map((date, index) => ({
+    date,
+    adr_kospi: index >= 250 ? 72 : 100,
+    fear_greed: index >= 250 ? 24 : 50,
+  }));
+  const model = buildMarketTimingSignals({
+    indexKey: "207940.KS",
+    dates,
+    prices,
+    oscillator,
+    benchmarkPrices,
+    adrRows,
+  });
+
+  assert.equal(model.sellSignals.length, 1);
+  assert.equal(model.sellSignals[0].date, dates[270]);
+  assert.ok(model.sellSignals[0].confirmationDate <= dates[278]);
+  assert.ok(model.sellSignals[0].sellSetupReasons.includes("공포 피난자금 단기 과열"));
+  assert.ok(model.sellSignals[0].relative20d >= 9);
+});
+
+test("uses a hidden volume climax as supporting evidence for a stock top", () => {
+  const dates = Array.from({ length: 300 }, (_, index) => dateAt(index));
+  const prices = dates.map((_, index) => {
+    if (index < 250) return 100 + Math.sin(index / 5) * 0.4;
+    if (index <= 270) return 100 + ((index - 250) * 0.65);
+    return 113 - ((index - 270) * 0.75);
+  });
+  const oscillator = dates.map((_, index) => (
+    index <= 270 ? 0.45 + Math.max(0, index - 260) * 0.04 : 0.85 - ((index - 270) * 0.12)
+  ));
+  const volumes = dates.map((_, index) => (index === 270 ? 2800 : 1000));
+  const adrRows = dates.map((date, index) => ({
+    date,
+    adr_kospi: index >= 250 ? 82 : 100,
+    fear_greed: index >= 250 ? 72 : 50,
+  }));
+  const model = buildMarketTimingSignals({
+    indexKey: "207940.KS",
+    dates,
+    prices,
+    oscillator,
+    volumes,
+    adrRows,
+  });
+
+  assert.equal(model.sellSignals.length, 1);
+  assert.equal(model.sellSignals[0].date, dates[270]);
+  assert.ok(model.sellSignals[0].sellSetupReasons.includes("고점 거래량 폭증"));
+  assert.ok(model.sellSignals[0].sellSetupReasons.includes("시장폭·심리 괴리 단기 과열"));
+  assert.ok(model.sellSignals[0].setupVolumeRatio >= 1.8);
+});
+
+test("detects a five-day market shock only after MACD starts recovering", () => {
+  const dates = Array.from({ length: 180 }, (_, index) => dateAt(index));
+  const prices = dates.map((_, index) => {
+    if (index < 140) return 120;
+    if (index <= 145) return 120 - ((index - 140) * 4);
+    return 100 + ((index - 145) * 1.2);
+  });
+  const oscillator = dates.map((_, index) => {
+    if (index < 145) return -0.2;
+    if (index === 145) return -1.5;
+    return -1.1 + ((index - 146) * 0.2);
+  });
+  const adrRows = dates.map((date) => ({ date, adr_kospi: 90 }));
+  const model = buildMarketTimingSignals({ indexKey: "^KS11", dates, prices, oscillator, adrRows });
+
+  assert.equal(model.signals.length, 1);
+  assert.equal(model.signals[0].date, dates[145]);
+  assert.ok(model.signals[0].confirmationDate > model.signals[0].date);
+  assert.ok(model.signals[0].setupReasons.includes("5일 충격 급락"));
+});
+
 test("allows washed-out credit to arm a buy only after price and MACD recover", () => {
   const dates = Array.from({ length: 340 }, (_, index) => dateAt(index));
   const prices = dates.map((_, index) => {
@@ -251,10 +392,14 @@ test("recovers major historical KOSPI turning points without future-dated marker
       nearestTradingDays(date, model.signals.map((signal) => signal.date)) <= 2,
       `missing buy near ${date}`,
     ));
-  assert.ok(model.signals.length >= 18 && model.signals.length <= 30);
+  assert.ok(model.signals.length >= 18 && model.signals.length <= 36);
   const combinedBuyDates = [...model.signals, ...kosdaqModel.signals]
     .map((signal) => signal.date)
     .filter((date) => tradingIndex.has(date));
+  [model, kosdaqModel].forEach((marketModel) => assert.ok(
+    nearestTradingDays("2026-03-04", marketModel.signals.map((signal) => signal.date)) <= 1,
+    "missing market-shock buy near 2026-03-04",
+  ));
   ["2013-06-25", "2018-10-30", "2019-08-07", "2023-10-23", "2025-04-15"]
     .forEach((targetDate) => {
       assert.ok(nearestTradingDays(targetDate, combinedBuyDates) <= 4, `missing buy near ${targetDate}`);

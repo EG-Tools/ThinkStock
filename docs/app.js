@@ -124,6 +124,8 @@ const { buildMacdOscillator, thinMacdPoints } = macdOscillatorModule;
 const marketTimingModule = globalThis.ThinkStockMarketTiming;
 if (!marketTimingModule) throw new Error("Market timing module failed to load");
 const { buildMarketTimingSignals } = marketTimingModule;
+const marketTimingServiceModule = globalThis.ThinkStockMarketTimingService;
+if (!marketTimingServiceModule) throw new Error("Market timing service module failed to load");
 const performanceMonitorModule = globalThis.ThinkStockPerformanceMonitor;
 if (!performanceMonitorModule) throw new Error("Performance monitor module failed to load");
 const performanceMonitor = performanceMonitorModule.createPerformanceMonitor(globalThis);
@@ -242,7 +244,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "2.25";
+const APP_VERSION = "2.26";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -254,6 +256,11 @@ function getAppBuildVersion() {
   }
 }
 const APP_BUILD_VERSION = getAppBuildVersion();
+const marketTimingService = marketTimingServiceModule.createMarketTimingService(globalThis, {
+  workerUrl: `./modules/market-timing-worker.js?v=${encodeURIComponent(APP_BUILD_VERSION)}`,
+  buildMacdOscillator,
+  buildMarketTimingSignals,
+});
 const deferredPerformanceDiagnostics = deferredDiagnosticsModule.createDeferredDiagnostics(globalThis, {
   scriptUrl: `./modules/performance-diagnostics.js?v=${encodeURIComponent(APP_BUILD_VERSION)}`,
   createOptions: { performanceApi: performanceMonitor.api },
@@ -499,6 +506,7 @@ let loadingCustomStocks = new Set();
 const tickerPriceStatusStore = tickerPriceRuntimeModule.createStatusStore({
   tickerPattern: MACD_STOCK_PATTERN,
 });
+const tickerVolumeSeriesByTicker = new Map();
 let seriesOffsets = {};
 let seriesScales = {};
 let currentSelected = [];
@@ -554,7 +562,6 @@ let adminAccessGranted = false;
 let lastRecessionSignalCount = 0;
 let lastMarketTimingBuyCount = 0;
 let lastMarketTimingSellCount = 0;
-let marketTimingModelCache = new Map();
 let showAiForecast = false;
 let trimAiForecastRangeOnNextRender = false;
 let revealAiForecastRangeOnNextRender = false;
@@ -1627,11 +1634,6 @@ function setRuntimeRefreshStatus(state, detail = "") {
   }
 }
 
-function enableDisclosureMarkers() {
-  showDisclosures = true;
-  syncDisclosureToggleButton(lastDisclosureTraceStats.markers);
-}
-
 function renderDataFreshness() {
   const el = document.getElementById("dataFreshness");
   if (!el) return;
@@ -2427,7 +2429,10 @@ function applyChartResetPolicy(change, delay = 100) {
   viewportAutoFitTimer = 0;
   if (change === "manual") {
     pendingAutoChartFit = false;
-    return false;
+    if (!autoChartReset) return false;
+    clearAutoResetSeriesTransforms();
+    pendingAutoChartFit = true;
+    return true;
   }
   if (!autoChartReset) {
     if (change === "composition") captureLockedHistoryYRange();
@@ -3172,6 +3177,7 @@ function removeCustomStock(ticker) {
 function clearTickerSeriesFromPricePayload(ticker) {
   if (!ticker || !pricePayload || typeof pricePayload !== "object") return;
   pricePayload = tickerPriceRuntimeModule.clearSeries(pricePayload, ticker);
+  tickerVolumeSeriesByTicker.delete(String(ticker).toUpperCase());
   markDataChanged("price");
 }
 
@@ -3295,9 +3301,17 @@ function renderStockSuggestList(items) {
 }
 
 function mergeTickerSeriesIntoPricePayload(ticker, points) {
+  const key = String(ticker || "").trim().toUpperCase();
+  const volumes = new Map(tickerVolumeSeriesByTicker.get(key) || []);
+  (Array.isArray(points) ? points : []).forEach((point) => {
+    const date = String(point?.date || "").slice(0, 10);
+    const volume = toNum(point?.volume);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date) && volume !== null && volume >= 0) volumes.set(date, volume);
+  });
+  if (volumes.size) tickerVolumeSeriesByTicker.set(key, volumes);
   pricePayload = tickerPriceRuntimeModule.mergeSeries(
     pricePayload,
-    ticker,
+    key,
     points,
     DISPLAY_NAMES[ticker],
   );
@@ -3309,7 +3323,19 @@ function getLatestTickerDateFromPricePayload(ticker) {
 }
 
 function getTickerPricePointsFromPayload(ticker) {
-  return tickerPriceRuntimeModule.seriesPoints(pricePayload, ticker, normalizeTickerPricePoints);
+  const key = String(ticker || "").trim().toUpperCase();
+  const volumes = tickerVolumeSeriesByTicker.get(key);
+  return tickerPriceRuntimeModule.seriesPoints(pricePayload, key, normalizeTickerPricePoints)
+    .map((point) => ({
+      ...point,
+      ...(volumes?.has(point.date) ? { volume: volumes.get(point.date) } : {}),
+    }));
+}
+
+function hasTickerVolumeHistory(ticker) {
+  return getTickerPricePointsFromPayload(ticker)
+    .filter((point) => Number.isFinite(point.volume) && point.volume > 0)
+    .length >= 20;
 }
 
 function isTickerPriceCacheFresh(latestDate, ticker) {
@@ -3419,12 +3445,15 @@ async function ensureCustomTickerSeriesLoaded(ticker, options = {}) {
       if (isAbortError(error) || signal?.aborted) throw error;
       // Keep a usable local series; the normal incremental loader remains the fallback.
     }
-    if (isTickerPriceCacheFresh(latestExisting, key)) return;
+    if (isTickerPriceCacheFresh(latestExisting, key) && hasTickerVolumeHistory(key)) return;
   }
 
   try {
     const existingPoints = getTickerPricePointsFromPayload(key);
-    const sinceDate = hasExisting ? getLatestTickerDateFromPricePayload(key) : "";
+    // Old cache records contain closes only; refill full history once to add hidden volume evidence.
+    const sinceDate = hasExisting && hasTickerVolumeHistory(key)
+      ? getLatestTickerDateFromPricePayload(key)
+      : "";
     let points = await fetchTickerHistorySeries(key, { sinceDate, signal });
     throwIfAborted(signal);
     if (!points.length) throw new Error(`${key} price history is empty`);
@@ -4448,7 +4477,10 @@ function restyleLive(traceIndex, seriesKey) {
 function finishTraceYEdit(rebuildForDisclosures = true, seriesKey = "") {
   getChartVisualFrameCoordinator().flush();
   saveState();
-  applyChartResetPolicy("manual");
+  if (applyChartResetPolicy("manual")) {
+    requestChartRender(true, { deferDuringInteraction: false });
+    return;
+  }
   if (showAiForecast) {
     requestAnimationFrame(() => requestChartRender(true));
     return;
@@ -4700,36 +4732,7 @@ function buildCrisisSignalTrace(selected, seriesModels, start, end) {
 }
 
 function getMarketTimingModel(indexKey) {
-  const records = Array.isArray(pricePayload?.records) ? pricePayload.records : [];
-  const latest = records.at(-1);
-  const cacheKey = [
-    dataRevisionSignature("price", "macro", "credit", "adr", "crisis"),
-    indexKey,
-    records.length,
-    latest?.date || "",
-    latest?.[indexKey] ?? "",
-  ].join("|");
-  if (marketTimingModelCache.has(cacheKey)) return marketTimingModelCache.get(cacheKey);
-
-  const macd = buildMacdOscillator({
-    dates: records.map((row) => row?.date),
-    prices: records.map((row) => row?.[indexKey]),
-  });
-  const model = macd ? buildMarketTimingSignals({
-    indexKey,
-    dates: macd.dates,
-    prices: macd.prices,
-    oscillator: macd.normalized,
-    adrRows,
-    macroRows,
-    creditRows,
-    crisisRows,
-  }) : null;
-  marketTimingModelCache.set(cacheKey, model);
-  while (marketTimingModelCache.size > 10) {
-    marketTimingModelCache.delete(marketTimingModelCache.keys().next().value);
-  }
-  return model;
+  return marketTimingService.get(indexKey);
 }
 
 function visibleMarketTimingSeries(selected, seriesModels) {
@@ -4737,6 +4740,72 @@ function visibleMarketTimingSeries(selected, seriesModels) {
   return (selected || []).filter((ticker) => (
     isForecastSeries(ticker) && available.has(ticker) && !hiddenSeries.has(ticker)
   ));
+}
+
+async function prepareMarketTimingModels(selected, seriesModels) {
+  if (!showRecessionSignals) return;
+  const targets = visibleMarketTimingSeries(selected, seriesModels);
+  if (!targets.length) return;
+  const records = Array.isArray(pricePayload?.records) ? pricePayload.records : [];
+  if (!records.length) return;
+
+  const sourceTickers = [...new Set([
+    "^KS11",
+    "^KQ11",
+    ...customStocks.map((item) => String(item?.ticker || "").toUpperCase()),
+    ...targets,
+  ].filter(isForecastSeries))].sort();
+  const volumeSignature = sourceTickers.map((ticker) => {
+    const volumeMap = tickerVolumeSeriesByTicker.get(ticker);
+    return `${ticker}:${volumeMap?.size || 0}`;
+  }).join(",");
+  const first = records[0] || {};
+  const latest = records.at(-1) || {};
+  const signature = [
+    dataRevisionSignature("price", "macro", "credit", "adr", "crisis"),
+    records.length,
+    first.date || "",
+    latest.date || "",
+    sourceTickers.join(","),
+    sourceTickers.map((ticker) => `${ticker}:${latest[ticker] ?? ""}`).join(","),
+    volumeSignature,
+  ].join("|");
+  let sources;
+  if (marketTimingService.stats().signature !== signature) {
+    const dates = records.map((row) => String(row?.date || "").slice(0, 10));
+    const pricesByTicker = Object.fromEntries(sourceTickers.map((ticker) => [
+      ticker,
+      records.map((row) => row?.[ticker] ?? null),
+    ]));
+    const volumesByTicker = Object.fromEntries(sourceTickers.flatMap((ticker) => {
+      const entries = [...(tickerVolumeSeriesByTicker.get(ticker)?.entries() || [])]
+        .sort((left, right) => String(left[0]).localeCompare(String(right[0])));
+      return entries.length ? [[ticker, entries]] : [];
+    }));
+    sources = {
+      dates,
+      pricesByTicker,
+      volumesByTicker,
+      adrRows,
+      macroRows,
+      creditRows,
+      crisisRows,
+    };
+  }
+  const startedAt = startPerfSample();
+  try {
+    await marketTimingService.prepare({
+      signature,
+      targets,
+      ...(sources ? { sources } : {}),
+    });
+    recordPerfSample("prepareMarketTimingModels", startedAt, {
+      targets: targets.length,
+      models: marketTimingService.stats().modelCount,
+    });
+  } catch (error) {
+    recordRuntimeError("market-timing-worker", error, { targets: targets.length });
+  }
 }
 
 function buildMarketTimingBuyTrace(selected, seriesModels, start, end) {
@@ -5922,9 +5991,9 @@ function syncAiForecastToggleButton(traceCount = lastAiForecastTraceCount) {
     ? (pendingCount > 0
       ? `종목 실적 분석 준비 중 - ${pendingCount}개`
       : (count > 0
-      ? `6개월 AI 가상 흐름 켜짐 - ${count}개 종목 (투자 판단용 아님)`
+      ? `6개월 AI 가상 흐름 켜짐 - ${count}개 종목 (상대 가중치·실제 확률 아님)`
       : "AI 분석에는 종목별로 최소 90거래일이 필요합니다."))
-    : "6개월 AI 가상 흐름 (투자 판단용 아님)";
+    : "6개월 AI 가상 흐름 (실험 상대 가중치·투자 판단용 아님)";
 }
 
 function syncMacdToggleButton(traceCount = lastMacdTraceCount) {
@@ -6227,8 +6296,6 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
   }
 
   const name = labelName(target);
-  enableDisclosureMarkers();
-  saveState();
   const task = ensureDisclosureSeedForTicker(target)
     .then(async (seedInfo) => {
       if (seedInfo?.added > 0) {
@@ -6575,12 +6642,7 @@ async function buildAiForecastTraces(rows, seriesModels) {
     const backtestSamples = Number(forecast.backtest?.samples) || 0;
     const backtestAccuracy = Number(forecast.backtest?.directionAccuracy);
     const marketWeight = Number(forecast.marketRelationship?.weight) || 0;
-    const backtestSummary = backtestSamples >= 3 && Number.isFinite(backtestAccuracy)
-      ? `<br>시간순 검증 방향 적중 ${Math.round(backtestAccuracy * 100)}% (${backtestSamples}시점)`
-      : "";
     const confidence = Number(forecast.backtest?.confidence) || 0;
-    const intervalLevel = Number(forecast.backtest?.intervalLevel) || 0.8;
-    const confidenceSummary = `<br>검증 예상범위 ${Math.round(intervalLevel * 100)}%`;
     const commonMeta = {
       seriesKey: series,
       historyDays: forecast.historyDays,
@@ -6595,17 +6657,19 @@ async function buildAiForecastTraces(rows, seriesModels) {
       downside: { color: "rgba(142, 142, 142, 0.82)", width: 1.8, textposition: "bottom left" },
     };
     const scenarioKeys = ["upside", "sideways", "downside"];
-    const highestScenarioProbability = Math.max(...scenarioKeys.map((scenarioKey) => (
-      Number(forecast.scenarios?.[scenarioKey]?.probability) || 0
+    const highestScenarioWeight = Math.max(...scenarioKeys.map((scenarioKey) => (
+      Number(forecast.scenarios?.[scenarioKey]?.weight
+        ?? forecast.scenarios?.[scenarioKey]?.probability) || 0
     )));
     scenarioKeys.forEach((scenarioKey) => {
       const scenario = forecast.scenarios?.[scenarioKey];
       if (!scenario?.prices?.length || !scenario?.chartValues?.length) return;
       const style = scenarioStyles[scenarioKey];
-      const isPrimaryScenario = Number(scenario.probability) === highestScenarioProbability;
+      const scenarioWeight = Number(scenario.weight ?? scenario.probability) || 0;
+      const isPrimaryScenario = scenarioWeight === highestScenarioWeight;
       const lineColor = isPrimaryScenario ? "rgba(248, 248, 248, 0.98)" : style.color;
       const lineWidth = isPrimaryScenario ? 2.9 : style.width;
-      const endpointText = `${scenario.label} ${scenario.probability}% · ${scenario.reason}`;
+      const endpointText = `${scenario.label} 가중치 ${scenarioWeight}%`;
       const labels = forecast.dates.map((_, index) => (
         index === forecast.dates.length - 1 ? endpointText : ""
       ));
@@ -6623,7 +6687,8 @@ async function buildAiForecastTraces(rows, seriesModels) {
         cliponaxis: false,
         hoverinfo: hoverShowPopup ? undefined : "skip",
         hovertemplate: hoverShowPopup
-          ? `AI ${scenario.label} 시나리오 ${scenario.probability}%<br>%{x|%Y.%-m.%-d}<br>%{hovertext}<br>${escapeHtml(scenario.reason)}${backtestSummary}${confidenceSummary}${marketWeight > 0 ? "<br>시장 관계 학습" : ""}${consensusUsed ? "<br>컨센서스 반영" : ""}${fundamentalsUsed ? "<br>실적 추세 반영" : ""}<extra>${escapeHtml(labelName(series))}</extra>`
+          ? `<b>${escapeHtml(scenario.label)} 가중치 ${scenarioWeight}%</b> · %{hovertext}`
+            + `<br>${escapeHtml(scenario.reason)} · 실제 확률 아님<extra></extra>`
           : undefined,
         textposition: style.textposition,
         textfont: { color: lineColor, size: isPrimaryScenario ? 12 : 11 },
@@ -6634,6 +6699,9 @@ async function buildAiForecastTraces(rows, seriesModels) {
           isAiForecastScenarioTrace: true,
           aiTraceRole: scenarioKey,
           scenarioProbability: scenario.probability,
+          scenarioWeight,
+          calibratedProbability: false,
+          validationStatus: String(forecast.validation?.status || "experimental"),
           isPrimaryAiScenario: isPrimaryScenario,
           scenarioReason: scenario.reason,
           patternMatches: forecast.patternMatches,
@@ -6788,7 +6856,10 @@ async function renderChart(preserveZoom = true) {
     };
   });
 
-  const aiForecastTraces = await buildAiForecastTraces(rows, seriesModels);
+  const [aiForecastTraces] = await Promise.all([
+    buildAiForecastTraces(rows, seriesModels),
+    prepareMarketTimingModels(selected, seriesModels),
+  ]);
   if (renderGeneration !== chartRenderGeneration
     || aiToggleRevisionAtStart !== aiForecastToggleRevision) return;
   traces.push(...aiForecastTraces);

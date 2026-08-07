@@ -98,6 +98,55 @@
     return Math.log(current / previous) / (volatility * Math.sqrt(lookback));
   }
 
+  function rollingMarketRelationship(prices, benchmarkPrices, index, lookback = 60) {
+    const stockReturns = [];
+    const marketReturns = [];
+    const start = Math.max(1, index - lookback + 1);
+    for (let cursor = start; cursor <= index; cursor += 1) {
+      const stock = toNumber(prices[cursor]);
+      const stockPrevious = toNumber(prices[cursor - 1]);
+      const market = toNumber(benchmarkPrices[cursor]);
+      const marketPrevious = toNumber(benchmarkPrices[cursor - 1]);
+      if (!(stock > 0 && stockPrevious > 0 && market > 0 && marketPrevious > 0)) continue;
+      stockReturns.push(Math.log(stock / stockPrevious));
+      marketReturns.push(Math.log(market / marketPrevious));
+    }
+    if (stockReturns.length < 30) return { correlation: null, beta: null };
+
+    const stockAverage = stockReturns.reduce((sum, value) => sum + value, 0) / stockReturns.length;
+    const marketAverage = marketReturns.reduce((sum, value) => sum + value, 0) / marketReturns.length;
+    let covariance = 0;
+    let stockVariance = 0;
+    let marketVariance = 0;
+    stockReturns.forEach((stockReturn, returnIndex) => {
+      const stockDelta = stockReturn - stockAverage;
+      const marketDelta = marketReturns[returnIndex] - marketAverage;
+      covariance += stockDelta * marketDelta;
+      stockVariance += stockDelta ** 2;
+      marketVariance += marketDelta ** 2;
+    });
+    if (stockVariance <= 1e-12 || marketVariance <= 1e-12) return { correlation: null, beta: null };
+    return {
+      correlation: covariance / Math.sqrt(stockVariance * marketVariance),
+      beta: covariance / marketVariance,
+    };
+  }
+
+  function volumeProfile(volumes, index) {
+    const current = toNumber(volumes[index]);
+    const recent = recentFinite(volumes, index - 1, 20);
+    const prior = volumes.slice(Math.max(0, index - 40), Math.max(0, index - 20)).filter(Number.isFinite);
+    if (current === null || recent.length < 10) return { ratio: null, trend: null };
+    const recentAverage = recent.reduce((sum, value) => sum + value, 0) / recent.length;
+    const priorAverage = prior.length
+      ? prior.reduce((sum, value) => sum + value, 0) / prior.length
+      : null;
+    return {
+      ratio: recentAverage > 0 ? current / recentAverage : null,
+      trend: priorAverage > 0 ? recentAverage / priorAverage : null,
+    };
+  }
+
   function rollingPercentile(values, index, lookback = 252) {
     const current = toNumber(values[index]);
     if (current === null) return null;
@@ -119,6 +168,8 @@
       creditGrowth,
       creditPercentile,
       crisis,
+      benchmarkPrices,
+      volumes,
     } = context;
     const adrWindow = recentFinite(adr, index, OVERSOLD_MEMORY_DAYS);
     const fearWindow = recentFinite(fearGreed, index, OVERSOLD_MEMORY_DAYS);
@@ -152,10 +203,15 @@
     const low20 = low20Values.length ? Math.min(...low20Values) : null;
     const priceDrawdown60 = priceNow !== null && high60 ? ((priceNow / high60) - 1) * 100 : null;
     const priceDrawdown120 = priceNow !== null && high120 ? ((priceNow / high120) - 1) * 100 : null;
+    const price5d = changeRate(prices, index, 5);
     const price20d = changeRate(prices, index, 20);
     const price60d = changeRate(prices, index, 60);
     const price20dVolScore = standardizedReturn(prices, index, 20);
     const price60dVolScore = standardizedReturn(prices, index, 60);
+    const benchmark20d = changeRate(benchmarkPrices, index, 20);
+    const relative20d = price20d !== null && benchmark20d !== null ? price20d - benchmark20d : null;
+    const marketRelationship = rollingMarketRelationship(prices, benchmarkPrices, index);
+    const volume = volumeProfile(volumes, index);
 
     const newsNow = toNumber(news[index]);
     const leadingNow = toNumber(leading[index]);
@@ -169,10 +225,17 @@
       fearMin,
       newsMin,
       oscillator: oscNow,
+      price5d,
       price20d,
       price60d,
       price20dVolScore,
       price60dVolScore,
+      benchmark20d,
+      relative20d,
+      marketCorrelation60: marketRelationship.correlation,
+      marketBeta60: marketRelationship.beta,
+      volumeRatio: volume.ratio,
+      volumeTrend: volume.trend,
       price: priceNow,
       high60,
       high120,
@@ -199,6 +262,10 @@
     const dates = Array.isArray(options.dates) ? options.dates.map((date) => String(date || "").slice(0, 10)) : [];
     const prices = Array.isArray(options.prices) ? options.prices.map(toNumber) : [];
     const oscillator = Array.isArray(options.oscillator) ? options.oscillator.map(toNumber) : [];
+    const benchmarkPrices = Array.isArray(options.benchmarkPrices)
+      ? options.benchmarkPrices.map(toNumber)
+      : [];
+    const volumes = Array.isArray(options.volumes) ? options.volumes.map(toNumber) : [];
     const count = Math.min(dates.length, prices.length, oscillator.length);
     if (count < 40) return { signals: [], sellSignals: [], scores: [], coverage: 0 };
 
@@ -225,6 +292,8 @@
       leading: alignedSource(dates, macroRows, "leading_cycle", 75, 60),
       credit: alignedSource(dates, creditRows, creditKey, 10),
       crisis: alignedSource(dates, crisisRows, "score", 14),
+      benchmarkPrices: dates.map((_, index) => benchmarkPrices[index] ?? null),
+      volumes: dates.map((_, index) => volumes[index] ?? null),
     };
     aligned.creditGrowth = aligned.credit.map((_, index) => changeRate(aligned.credit, index, 20));
     aligned.creditPercentile = aligned.creditGrowth.map((_, index) => (
@@ -263,6 +332,9 @@
         && result.priceDrawdown60 !== null && result.priceDrawdown60 <= moderateDrawdownLimit)
         || (result.price60d !== null && result.price60d <= -20
           && result.priceDrawdown120 !== null && result.priceDrawdown120 <= -25);
+      const shockCapitulation = result.price5d !== null && result.price5d <= -12
+        && result.priceDrawdown60 !== null && result.priceDrawdown60 <= -15
+        && result.adr !== null && result.adr <= 95;
       const adrStressed = result.adr !== null && result.adr <= 80;
       const fearStressed = result.fearGreed !== null && result.fearGreed <= 30;
       const creditStressed = result.creditChange !== null && result.creditPercentile !== null
@@ -301,8 +373,8 @@
       ].filter(Boolean);
       const strongBuyArm = priceCapitulation && stressReasons.length >= 2;
       const moderateSupportCount = isKosdaqSeries ? 2 : 1;
-      const moderateBuyArm = moderateCapitulation
-        && moderateStressReasons.length >= moderateSupportCount;
+      const moderateBuyArm = shockCapitulation || (moderateCapitulation
+        && moderateStressReasons.length >= moderateSupportCount);
       const broadBuyArm = broadCorrection && creditReset
         && (breadthWashedOut || deepCorrection);
       const buyArm = strongBuyArm || moderateBuyArm || broadBuyArm;
@@ -315,7 +387,7 @@
           || result.macdSlope >= Math.abs(result.priorMacdSlope) * 0.75);
 
       if (buyEpisode) {
-        const failedBroadRebound = buyEpisode.broad && buyEpisode.signalLocked
+        const failedBroadRebound = (buyEpisode.broad || buyEpisode.shock) && buyEpisode.signalLocked
           && Number.isInteger(buyEpisode.signalConfirmedAt)
           && index - buyEpisode.signalConfirmedAt >= 3
           && result.price !== null && buyEpisode.signalLowPrice > 0
@@ -337,6 +409,7 @@
             signalLocked: false,
             confirmationDays: strongBuyArm ? 3 : 5,
             strong: strongBuyArm,
+            shock: shockCapitulation,
             broad: broadBuyArm && !strongBuyArm && !moderateBuyArm,
             setupReasons: strongBuyArm
               ? [shortCapitulation ? "20일 급락" : "장기 급락", ...stressReasons]
@@ -344,6 +417,9 @@
                 ? ["중간급 조정", ...moderateStressReasons]
                 : ["복합 과매도", ...broadWashoutReasons],
           };
+          if (shockCapitulation) {
+            buyEpisode.setupReasons = ["5일 충격 급락", ...buyEpisode.setupReasons];
+          }
         } else if (!buyEpisode.signalLocked) {
           if (strongBuyArm) {
             buyEpisode.strong = true;
@@ -351,6 +427,7 @@
             buyEpisode.confirmationDays = 3;
           } else if (moderateBuyArm) {
             buyEpisode.broad = false;
+            buyEpisode.shock = buyEpisode.shock || shockCapitulation;
           }
           buyEpisode.setupReasons = [...new Set([
             ...buyEpisode.setupReasons,
@@ -386,7 +463,7 @@
             : buyEpisode.setupReasons.filter((reason) => reason !== "중간급 조정").slice(-2),
           triggerReasons: ["MACD 상승 다이버전스"],
         });
-        if (buyEpisode.broad) {
+        if (buyEpisode.broad || buyEpisode.shock) {
           buyEpisode.signalLocked = true;
           buyEpisode.signalConfirmedAt = index;
           buyEpisode.signalLowPrice = buyEpisode.lowPrice;
@@ -407,6 +484,9 @@
       const priceStronglyExtended = (result.price20dVolScore ?? -Infinity) >= 2.5
         || (result.price60dVolScore ?? -Infinity) >= 2.5;
       const technicalOverheat = (result.oscillator ?? -Infinity) >= 0.5;
+      const volumeClimax = (result.volumeRatio ?? -Infinity) >= 1.8;
+      const volumeDivergence = result.volumeTrend !== null && result.volumeTrend <= 0.72
+        && (result.price20d ?? -Infinity) >= 8;
       const overheatSupportCount = [
         creditCrowded,
         sentimentCrowded,
@@ -431,9 +511,55 @@
         || (result.price20d !== null && result.price20d >= 15
           && result.creditChange !== null && result.creditChange >= 5
           && result.creditPercentile !== null && result.creditPercentile >= 0.75)
+        || (result.price20d !== null && result.price20d >= 12
+          && (result.price20dVolScore ?? -Infinity) >= 1.1
+          && volumeClimax)
       );
+      const extremeStockExtension = result.price20d !== null && result.price20d >= 22
+        && (result.price20dVolScore ?? -Infinity) >= 1.8;
+      const stockDistributionArm = isIndividualStock && nearHigh
+        && ((result.oscillator ?? -Infinity) >= 0.25 || extremeStockExtension)
+        && (
+          (result.price20d !== null && result.price20d >= 18
+            && (result.price20dVolScore ?? -Infinity) >= 1.5)
+          || (result.price60d !== null && result.price60d >= 30
+            && (result.price60dVolScore ?? -Infinity) >= 1.8)
+        );
+      const stockMatureTopArm = isIndividualStock
+        && result.priceDrawdown120 !== null && result.priceDrawdown120 >= -1.2
+        && (result.oscillator ?? -Infinity) >= 0.4
+        && (
+          (result.price20d !== null && result.price20d >= 10
+            && (result.price20dVolScore ?? -Infinity) >= 1.1)
+          || (result.price60d !== null && result.price60d >= 20
+            && (result.price60dVolScore ?? -Infinity) >= 1.3)
+        );
+      const fearRotationReason = result.fearGreed !== null && result.fearGreed <= 35
+        ? "공포 피난자금 단기 과열"
+        : "시장폭·심리 괴리 단기 과열";
+      const fearRotationTopArm = isIndividualStock
+        && nearHigh
+        && result.adr !== null && result.adr <= 85
+        && result.fearGreed !== null
+        && (result.fearGreed <= 35 || result.fearGreed >= 60)
+        && result.benchmark20d !== null && result.benchmark20d <= -3
+        && result.price20d !== null && result.price20d >= 4
+        && result.relative20d !== null && result.relative20d >= 9
+        && (result.oscillator ?? -Infinity) >= 0.2
+        && (result.marketCorrelation60 === null
+          || result.marketCorrelation60 <= 0.35
+          || (result.marketBeta60 ?? Infinity) <= 0.35);
+      const breadthSentimentDivergenceTopArm = isIndividualStock
+        && nearHigh
+        && result.adr !== null && result.adr <= 88
+        && result.fearGreed !== null && result.fearGreed >= 60
+        && result.price20d !== null && result.price20d >= 8
+        && (result.oscillator ?? -Infinity) >= 0.2
+        && volumeClimax;
       const riskDrivenSellArm = creditDrivenSellArm || clusteredOverheatArm;
-      const recentSellArm = riskDrivenSellArm || stockClimaxArm || (nearHigh && priceExtended
+      const recentSellArm = riskDrivenSellArm || stockClimaxArm || stockDistributionArm
+        || stockMatureTopArm || fearRotationTopArm || breadthSentimentDivergenceTopArm
+        || (nearHigh && priceExtended
         && (overheatSupportCount >= 2 || (priceStronglyExtended && overheatSupportCount >= 1)));
       const longNearHigh = result.priceDrawdown120 !== null && result.priceDrawdown120 >= -1.2;
       const historicalCreditCrowded = result.creditChange !== null && result.creditPercentile !== null
@@ -514,6 +640,12 @@
           historicalAdrCrowded && !sentimentCrowded ? "ADR 과열" : "",
           breadthDivergence ? "지수·시장폭 괴리" : "",
         ].filter(Boolean);
+        if (stockDistributionArm) setupReasons.unshift("개별종목 분배형 과열");
+        if (stockMatureTopArm) setupReasons.unshift("개별종목 중기 고점 둔화");
+        if (fearRotationTopArm) setupReasons.unshift(fearRotationReason);
+        if (breadthSentimentDivergenceTopArm) setupReasons.unshift("시장폭·심리 괴리 단기 과열");
+        if (volumeClimax) setupReasons.push("고점 거래량 폭증");
+        if (volumeDivergence) setupReasons.push("가격·거래량 둔화 괴리");
         if (!sellEpisode) {
           sellEpisode = {
             peakIndex: index,
@@ -521,7 +653,17 @@
             signalSlot: null,
             setupReasons,
             crowdingRisk,
+            setupVolumeRatio: result.volumeRatio,
+            setupVolumeTrend: result.volumeTrend,
+            setupAdr: result.adr,
+            setupFearGreed: result.fearGreed,
+            setupRelative20d: result.relative20d,
+            setupBenchmark20d: result.benchmark20d,
+            setupMarketCorrelation60: result.marketCorrelation60,
             riskDriven: riskDrivenSellArm,
+            distribution: stockDistributionArm,
+            matureTop: stockMatureTopArm,
+            fearRotation: fearRotationTopArm,
             historical: historicalSellArm,
             signalLocked: false,
           };
@@ -529,19 +671,36 @@
           sellEpisode.setupReasons = [...new Set([...sellEpisode.setupReasons, ...setupReasons])];
           sellEpisode.historical = sellEpisode.historical || historicalSellArm;
           sellEpisode.riskDriven = sellEpisode.riskDriven || riskDrivenSellArm;
+          sellEpisode.distribution = sellEpisode.distribution || stockDistributionArm;
+          sellEpisode.matureTop = sellEpisode.matureTop || stockMatureTopArm;
+          sellEpisode.fearRotation = sellEpisode.fearRotation || fearRotationTopArm;
+          if (result.volumeRatio !== null) {
+            sellEpisode.setupVolumeRatio = Math.max(sellEpisode.setupVolumeRatio ?? -Infinity, result.volumeRatio);
+          }
+          if (result.volumeTrend !== null) sellEpisode.setupVolumeTrend = result.volumeTrend;
           const priceNearPeak = result.price >= sellEpisode.peakPrice * 0.997;
           const riskStrengthened = crowdingRisk >= (sellEpisode.crowdingRisk || 0) + 0.05;
           if (!sellEpisode.signalLocked
             && (result.price >= sellEpisode.peakPrice || (priceNearPeak && riskStrengthened))) {
-            sellEpisode.peakIndex = index;
-            sellEpisode.peakPrice = result.price;
-            sellEpisode.crowdingRisk = crowdingRisk;
-          }
+              sellEpisode.peakIndex = index;
+              sellEpisode.peakPrice = result.price;
+              sellEpisode.crowdingRisk = crowdingRisk;
+              sellEpisode.setupAdr = result.adr;
+              sellEpisode.setupFearGreed = result.fearGreed;
+              sellEpisode.setupRelative20d = result.relative20d;
+              sellEpisode.setupBenchmark20d = result.benchmark20d;
+              sellEpisode.setupMarketCorrelation60 = result.marketCorrelation60;
+            }
         }
       }
       if (sellEpisode && !sellEpisode.signalLocked && nearHigh && result.price > sellEpisode.peakPrice) {
         sellEpisode.peakIndex = index;
         sellEpisode.peakPrice = result.price;
+        sellEpisode.setupAdr = result.adr;
+        sellEpisode.setupFearGreed = result.fearGreed;
+        sellEpisode.setupRelative20d = result.relative20d;
+        sellEpisode.setupBenchmark20d = result.benchmark20d;
+        sellEpisode.setupMarketCorrelation60 = result.marketCorrelation60;
       }
       const episodeMomentumRollover = sellEpisode?.historical
         ? (historicalMomentumRollover || exceptionalCreditRollover)
@@ -553,21 +712,42 @@
           return episodeDrawdown !== null && episodeDrawdown <= -4
             && (recentMomentumRollover || creditRiskRollover);
         })();
+      const distributionRollover = isIndividualStock
+        && (sellEpisode?.distribution || sellEpisode?.matureTop || sellEpisode?.fearRotation)
+        && result.price !== null && sellEpisode.peakPrice > 0
+        && ((result.price / sellEpisode.peakPrice) - 1) * 100
+          <= (sellEpisode.fearRotation ? -2.5 : (sellEpisode.matureTop ? -5 : -2.5))
+        && result.macdSlope !== null && result.macdSlope <= 0
+        && (sellEpisode.matureTop
+          || result.oscillator > 0
+          || (priorOscillator !== null && priorOscillator > 0));
+      const sellConfirmationWindow = sellEpisode?.fearRotation
+        ? 8
+        : (sellEpisode?.matureTop ? 20 : (sellEpisode?.distribution ? 8 : 3));
       if (sellEpisode && !sellEpisode.signalLocked
         && (!Number.isInteger(sellEpisode.signalConfirmedAt)
           || sellEpisode.peakIndex > sellEpisode.signalConfirmedAt)
-        && index - sellEpisode.peakIndex <= 3 && episodeMomentumRollover) {
+        && index - sellEpisode.peakIndex <= sellConfirmationWindow
+        && (episodeMomentumRollover || distributionRollover)) {
         saveEpisodeSignal(sellSignals, sellEpisode, {
           date: dates[sellEpisode.peakIndex],
           confirmationDate: dates[index],
           peakDate: dates[sellEpisode.peakIndex],
           indexKey,
           ...result,
+          setupVolumeRatio: sellEpisode.setupVolumeRatio ?? null,
+          setupVolumeTrend: sellEpisode.setupVolumeTrend ?? null,
+          setupAdr: sellEpisode.setupAdr ?? null,
+          setupFearGreed: sellEpisode.setupFearGreed ?? null,
+          setupRelative20d: sellEpisode.setupRelative20d ?? null,
+          setupBenchmark20d: sellEpisode.setupBenchmark20d ?? null,
+          setupMarketCorrelation60: sellEpisode.setupMarketCorrelation60 ?? null,
           sellSetupReasons: [...sellEpisode.setupReasons],
           sellDeteriorationReasons: breadthDivergence
             ? ["상승 중 시장폭 급락"]
             : ["고점 갱신 후 탄력 둔화"],
           sellTriggerReasons: [
+            distributionRollover ? "분배형 고점 이탈" : "",
             recentMomentumRollover || historicalMomentumRollover ? "MACD 상승 탄력 반전" : "",
             creditRiskRollover ? "신용 과열 속 고점 정체" : "",
           ].filter(Boolean),
@@ -580,7 +760,7 @@
     }
 
     const covered = scores.filter(Number.isFinite).length;
-    return { signals, sellSignals, scores, coverage: covered / count, strategy: "episode-extreme-v8" };
+    return { signals, sellSignals, scores, coverage: covered / count, strategy: "episode-extreme-v10" };
   }
 
   globalScope.ThinkStockMarketTiming = Object.freeze({
@@ -590,6 +770,8 @@
     alignAsOf,
     buildMarketTimingSignals,
     rollingPercentile,
+    rollingMarketRelationship,
+    volumeProfile,
     scoreTimingPoint,
     standardizedReturn,
     trailingAverage,
