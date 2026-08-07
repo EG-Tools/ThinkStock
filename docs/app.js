@@ -6654,7 +6654,11 @@ async function buildAiForecastTraces(rows, seriesModels) {
     }
   }
   lastAiForecastTraceCount = forecastCount;
-  aiForecastProtectedCachedSeries.clear();
+  const allTargetsCached = [...aiForecastTargetSeries]
+    .every((series) => aiForecastResultBySeries.has(series));
+  if (!aiForecastDeferredSeries.size && allTargetsCached) {
+    aiForecastProtectedCachedSeries.clear();
+  }
   syncAiForecastToggleButton(forecastCount);
   return traces;
 }
