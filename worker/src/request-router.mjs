@@ -9,6 +9,7 @@ const ROUTES = Object.freeze([
   { id: "indices", path: "/api/indices", methods: ["GET"] },
   { id: "macro", path: "/api/macro", methods: ["GET"] },
   { id: "credit", path: "/api/credit", methods: ["GET"] },
+  { id: "crisis-signal", path: "/api/crisis-signal", methods: ["GET"] },
   { id: "forecast-journal", path: "/api/forecast-journal", methods: ["GET", "POST"], ticker: true },
 ]);
 

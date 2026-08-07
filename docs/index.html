@@ -10,7 +10,7 @@
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" href="./icon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./styles.css">
-    <script defer src="./assets/app.bundle.min.js?v=dev&amp;build=2.01"></script>
+    <script defer src="./assets/app.bundle.min.js?v=dev&amp;build=2.24"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -51,11 +51,12 @@
       <div class="main-chart-wrap">
         <div id="chart" class="chart-frame"></div>
         <button id="resetHandles" class="reset-btn chart-reset-btn is-active" type="button" title="차트 변경 시 자동으로 세로 범위를 맞춥니다." aria-pressed="true">차트리셋</button>
+        <button id="recessionToggle" class="reset-btn chart-recession-btn" type="button" title="복합 매수 타이밍과 경기침체 위기신호" aria-pressed="false">타이밍</button>
         <div class="chart-refresh-tools">
           <button id="refreshData" class="refresh-btn chart-refresh-btn" type="button" title="최신 데이터 새로고침" aria-label="최신 데이터 새로고침">&#x21BB;</button>
           <div id="chartRangeStepper" class="chart-range-stepper" data-months="120" title="현재 차트 범위: 10년">
-            <button id="rangeExpand" class="chart-range-step-btn" type="button" title="과거 범위 확대"><span class="range-triangle range-triangle-left" aria-hidden="true"></span></button>
-            <button id="rangeContract" class="chart-range-step-btn" type="button" title="차트 범위 축소"><span class="range-triangle range-triangle-right" aria-hidden="true"></span></button>
+            <button id="rangeContract" class="chart-range-step-btn" type="button" title="우측 끝 기준 확대" aria-label="우측 끝 기준 확대"><span class="range-zoom-symbol" aria-hidden="true">+</span></button>
+            <button id="rangeExpand" class="chart-range-step-btn" type="button" title="우측 끝 기준 축소" aria-label="우측 끝 기준 축소"><span class="range-zoom-symbol" aria-hidden="true">−</span></button>
           </div>
         </div>
         <div id="runtimeRefreshStatus" class="runtime-refresh-status" role="status" aria-live="polite" hidden>최신 데이터 확인 대기</div>
@@ -67,17 +68,32 @@
           <span class="ai-forecast-progress-track"><i id="aiForecastProgressBar"></i></span>
         </div>
         <button id="macdToggle" class="reset-btn chart-macd-btn" type="button" title="종목별 MACD 오실레이터" aria-pressed="false">MACD</button>
+        <div class="chart-history-slider-wrap">
+          <input id="chartHistorySlider" class="chart-history-slider" type="range" min="0" max="1000" value="1000" aria-label="차트 과거 기간 이동">
+        </div>
       </div>
       <div id="chart-macd" class="chart-frame chart-frame-macd" hidden></div>
       <div id="chart-adr" class="chart-frame chart-frame-adr"></div>
-      <div class="source-row">
-        <a class="adr-source-link" href="http://www.adrinfo.kr/chart" target="_blank" rel="noopener">ADR 출처: adrinfo.kr</a>
-        <a class="adr-source-link fear-greed-source-link" href="https://kospi.feargreedchart.com/" target="_blank" rel="noopener">공포탐욕 출처</a>
-      </div>
       <div id="dataFreshness" class="data-freshness" aria-live="polite"></div>
       <div id="messageArea" class="message-area"></div>
       <footer class="data-attribution" aria-label="데이터 출처">
-        본 서비스는 한국거래소 통계정보를 사용합니다.
+        <strong class="data-attribution-title">정보 제공 출처</strong>
+        <nav class="data-source-links" aria-label="정보 제공 출처 링크">
+          <a href="http://www.adrinfo.kr/chart" target="_blank" rel="noopener">ADR</a>
+          <a href="https://kospi.feargreedchart.com/" target="_blank" rel="noopener">공포탐욕</a>
+          <a href="https://ecos.bok.or.kr/" target="_blank" rel="noopener">한국은행 ECOS</a>
+          <a href="https://data.krx.co.kr/" target="_blank" rel="noopener">한국거래소</a>
+          <a href="https://freesis.kofia.or.kr/" target="_blank" rel="noopener">금융투자협회</a>
+          <a href="https://www.data.go.kr/" target="_blank" rel="noopener">공공데이터포털</a>
+          <a href="https://opendart.fss.or.kr/" target="_blank" rel="noopener">OpenDART</a>
+          <a href="https://fred.stlouisfed.org/" target="_blank" rel="noopener">FRED</a>
+          <a href="https://finance.naver.com/" target="_blank" rel="noopener">네이버 금융</a>
+          <a href="https://finance.yahoo.com/" target="_blank" rel="noopener">Yahoo Finance</a>
+        </nav>
+        <p class="data-attribution-note">
+          본 서비스는 한국거래소 통계정보를 사용합니다.<br>
+          This product uses the FRED&reg; API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.
+        </p>
       </footer>
     </div>
 
@@ -89,14 +105,23 @@
           <button id="apiSettingsCloseBtn" class="api-close-btn" type="button" aria-label="닫기">×</button>
         </header>
         <p class="api-settings-help">공시는 종목을 추가하거나 새로고침할 때 켜진 종목만 최신 상태를 확인합니다.</p>
-        <p class="api-settings-note">DART 원본 키는 Cloudflare에 안전하게 보관됩니다. 아래 개인 접속 코드는 이 기기에만 저장됩니다.</p>
+        <p class="api-settings-note">DART 원본 키는 Cloudflare에 안전하게 보관됩니다. 아래 접속 코드는 이 기기에만 저장됩니다.</p>
         <div class="api-local-server-field">
-          <label for="dartGatewayTokenInput">DART 개인 접속 코드</label>
+          <label for="dartGatewayTokenInput">Think Stock 접속 코드</label>
           <div class="api-local-server-row">
-            <input id="dartGatewayTokenInput" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="개인 접속 코드">
+            <input id="dartGatewayTokenInput" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="Think Stock 접속 코드">
             <button id="dartGatewayTokenSaveBtn" class="api-action-btn" type="button">저장</button>
           </div>
           <small>.env.local의 THINKSTOCK_ACCESS_TOKEN 값을 PC와 iPhone에 각각 한 번만 저장하면 됩니다.</small>
+          <small id="dartGatewayTokenStatus" class="api-access-status" role="status" aria-live="polite" hidden></small>
+        </div>
+        <div class="api-local-server-field admin-access-field">
+          <label for="adminAccessCodeInput">관리자 접속 코드</label>
+          <div class="api-local-server-row">
+            <input id="adminAccessCodeInput" type="password" inputmode="numeric" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="10" pattern="[0-9]*" placeholder="10자리 관리자 접속 코드">
+            <button id="adminAccessCodeBtn" class="api-action-btn" type="button">인증</button>
+          </div>
+          <small id="adminAccessStatus">일반 모드: 공시·내부거래·동행율·타이밍·AI·MACD 기능이 잠겨 있습니다.</small>
         </div>
         <div class="api-settings-actions">
           <button id="performanceDiagnosticsBtn" class="api-action-btn" type="button">앱 상태 보기</button>
@@ -111,7 +136,7 @@
           <button id="performanceDiagnosticsClearBtn" class="diagnostics-clear-btn" type="button">이전 기록 지우기</button>
         </section>
         <p class="api-settings-meta">
-          Version : <span id="appVersionText">2.01</span><br>
+          Version : <span id="appVersionText">2.24</span><br>
           회사명 : Life User<br>
           이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a>
         </p>

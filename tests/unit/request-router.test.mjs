@@ -12,6 +12,7 @@ test("describes authentication and parameters for every Worker route", () => {
   });
   assert.equal(matchRequestRoute("/api/prices", "GET").ticker, true);
   assert.equal(matchRequestRoute("/api/indices", "GET").ticker, undefined);
+  assert.equal(matchRequestRoute("/api/crisis-signal", "GET").id, "crisis-signal");
   assert.equal(matchRequestRoute("/api/dart/disclosures", "GET").corpCode, true);
   assert.deepEqual(matchRequestRoute("/api/forecast-journal", "POST").methods, ["GET", "POST"]);
   assert.equal(matchRequestRoute("/api/credit", "POST"), null);

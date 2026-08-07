@@ -188,6 +188,35 @@ test("rejects an unusable proxied credit response before it reaches the browser"
   }
 });
 
+test("proxies and validates the FRED crisis signal for local pages", async () => {
+  let requestedUrl = "";
+  const server = await createThinkStockServer({
+    syncPagesData: false,
+    workerAccessToken: "local-secret",
+    gateway: { apiKey: "", initialize: async () => {} },
+    fetchImpl: async (url) => {
+      requestedUrl = String(url);
+      return new Response(JSON.stringify({
+        ok: true,
+        records: [{ date: "2026-08-06", score: 58, stage: "warning", curve: 30, labor: 14, credit: 14 }],
+      }), { status: 200 });
+    },
+  });
+  try {
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const { port } = server.address();
+    const response = await fetch(`http://127.0.0.1:${port}/api/crisis-signal`);
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.match(requestedUrl, /\/api\/crisis-signal$/);
+    assert.equal(payload.records[0].score, 58);
+  } finally {
+    server.close();
+    await once(server, "close");
+  }
+});
+
 test("filters low-impact disclosures before returning them", () => {
   const important = DartGateway.recordFromItem("383220.KS", {
     rcept_dt: "20260721",

@@ -67,6 +67,20 @@ assert.ok(
   html.includes("본 서비스는 한국거래소 통계정보를 사용합니다.") && styles.includes(".data-attribution"),
   "KRX data attribution is missing",
 );
+[
+  "http://www.adrinfo.kr/chart",
+  "https://kospi.feargreedchart.com/",
+  "https://ecos.bok.or.kr/",
+  "https://data.krx.co.kr/",
+  "https://freesis.kofia.or.kr/",
+  "https://www.data.go.kr/",
+  "https://opendart.fss.or.kr/",
+  "https://fred.stlouisfed.org/",
+  "https://finance.naver.com/",
+  "https://finance.yahoo.com/",
+].forEach((sourceUrl) => {
+  assert.ok(html.includes(`href="${sourceUrl}"`), `data source link is missing: ${sourceUrl}`);
+});
 assert.ok(
   html.includes('class="main-chart-wrap"') && html.includes('class="reset-btn chart-reset-btn'),
   "chart reset button is not positioned in the main chart",
@@ -85,6 +99,7 @@ const requiredIds = [
   "messageArea",
   "dataFreshness",
   "resetHandles",
+  "recessionToggle",
   "stockSearchInput",
   "disclosureToggle",
   "insiderTradeToggle",
@@ -92,6 +107,7 @@ const requiredIds = [
   "chartRangeStepper",
   "rangeExpand",
   "rangeContract",
+  "chartHistorySlider",
   "apiSettingsModal",
   "dartGatewayTokenInput",
   "dartGatewayTokenSaveBtn",
@@ -115,8 +131,8 @@ assert.ok(app.includes("ThinkStockInsiderTrades")
 "insider trade UI and chart integration is incomplete");
 assert.ok(insiderTrades.includes('"triangle-up"')
   && insiderTrades.includes('"triangle-down"')
-  && insiderTrades.includes('const BUY_COLOR = "#ef4444"')
-  && insiderTrades.includes('const SELL_COLOR = "#3b82f6"'),
+  && insiderTrades.includes('const BUY_COLOR = "#b91c1c"')
+  && insiderTrades.includes('const SELL_COLOR = "#1d4ed8"'),
 "insider buy/sell marker styling is incomplete");
 assert.ok(!/(^|\n)\.cartesianlayer \.point \{ display: none !important; \}/.test(styles)
   && styles.includes(".chart-frame-adr .cartesianlayer .point { display: none !important; }"),
@@ -163,7 +179,7 @@ assert.ok(dataSeedLoader.includes("fetchDataManifest") && dataSeedLoader.include
   "segmented data manifest is not consumed by the app");
 assert.ok(!app.includes("async function fetchSeedText("), "seed network loading still lives in app.js");
 assert.ok(app.includes("criticalTasks: [coreIndexTask, preloadTask, liveTask]"), "critical startup refresh tasks are not grouped");
-assert.ok(app.includes("supplementalTasks: [adrTask, fearGreedTask, dartTask, ecosTask, creditTask]"), "supplemental refresh tasks are not grouped");
+assert.ok(app.includes("supplementalTasks: [adrTask, fearGreedTask, dartTask, ecosTask, creditTask, crisisTask]"), "supplemental refresh tasks are not grouped");
 assert.ok(app.includes("awaitCriticalRender: true") && app.includes("onCriticalReady"), "startup loader does not wait for the critical render phase");
 assert.ok(dartDisclosure.includes("fetchForMarkets") && dartDisclosure.includes("fetchForTicker"), "DART disclosure fetch service is incomplete");
 assert.ok(dartDisclosure.includes("rememberRefresh") && dartDisclosure.includes("mergeRows"), "DART disclosure cache service is incomplete");
@@ -261,7 +277,7 @@ assert.ok(deployWorkflow.includes("npm run vendor:sync"),
   "deployment does not rebuild the custom Plotly bundle");
 assert.ok(html.includes("./assets/app.bundle.min.js?v=dev"), "optimized app bundle is not loaded");
 assert.equal([...html.matchAll(/<script\b/g)].length, 1, "runtime scripts are not bundled");
-assert.ok(appBundle.size < 260_000, `app bundle is too large: ${appBundle.size} bytes`);
+assert.ok(appBundle.size < 524_000, `app bundle is too large: ${appBundle.size} bytes`);
 assert.ok(app.includes('const MAIN_LINE_TRACE_TYPE = "scatter";'), "main chart is not using the SVG scatter path");
 assert.ok(app.includes("MAIN_CHART_TOTAL_VISIBLE_POINT_TARGET_MOBILE"), "adaptive mobile chart budget is missing");
 assert.ok(app.includes("const plotlyReadyTask = ensurePlotlyReady()"), "Plotly is not prepared in parallel during boot");

@@ -5,35 +5,70 @@
 
   function getMarkerPixelIndex(element, options = {}) {
     if (!element?._fullLayout || !Array.isArray(element.data)) return null;
-    const traceIndex = element.data.findIndex((trace) => trace?.meta?.isDisclosureTrace && trace.visible !== "legendonly");
-    const trace = traceIndex >= 0 ? element.data[traceIndex] : null;
+    const tracePredicate = typeof options.tracePredicate === "function"
+      ? options.tracePredicate
+      : (trace) => trace?.meta?.isDisclosureTrace;
+    const traceEntries = element.data
+      .map((trace, traceIndex) => ({ trace, traceIndex }))
+      .filter(({ trace }) => tracePredicate(trace) && trace.visible !== "legendonly");
     const xAxis = element._fullLayout.xaxis;
-    const yAxis = trace?.yaxis === "y2" ? element._fullLayout.yaxis2 : element._fullLayout.yaxis;
-    if (!trace || !xAxis || !yAxis || typeof xAxis.d2p !== "function" || typeof yAxis.d2p !== "function") return null;
+    if (!traceEntries.length || !xAxis || typeof xAxis.d2p !== "function") return null;
 
-    const axisKey = [
+    const axisKeyParts = [
       xAxis._offset,
       xAxis._length,
       ...(Array.isArray(xAxis.range) ? xAxis.range : []),
-      yAxis._offset,
-      yAxis._length,
-      ...(Array.isArray(yAxis.range) ? yAxis.range : []),
-    ].map((value) => String(value ?? "")).join("|");
-    const cached = markerPixelCache.get(element);
-    if (cached?.trace === trace && cached.xValues === trace.x && cached.yValues === trace.y && cached.axisKey === axisKey) {
+    ];
+    traceEntries.forEach(({ trace }) => {
+      const yAxis = trace?.yaxis === "y2" ? element._fullLayout.yaxis2 : element._fullLayout.yaxis;
+      axisKeyParts.push(
+        yAxis?._offset,
+        yAxis?._length,
+        ...(Array.isArray(yAxis?.range) ? yAxis.range : []),
+      );
+    });
+    const axisKey = axisKeyParts.map((value) => String(value ?? "")).join("|");
+    const cacheKey = String(options.cacheKey || "disclosure");
+    let cacheByKey = markerPixelCache.get(element);
+    const cached = cacheByKey?.get(cacheKey);
+    const tracesUnchanged = cached?.traceEntries?.length === traceEntries.length
+      && traceEntries.every(({ trace, traceIndex }, index) => (
+        cached.traceEntries[index]?.trace === trace
+        && cached.traceEntries[index]?.traceIndex === traceIndex
+        && cached.traceEntries[index]?.xValues === trace.x
+        && cached.traceEntries[index]?.yValues === trace.y
+      ));
+    if (tracesUnchanged && cached.axisKey === axisKey) {
       return cached;
     }
 
-    const pointCount = Math.min(Array.isArray(trace.x) ? trace.x.length : 0, Array.isArray(trace.y) ? trace.y.length : 0);
     const points = [];
-    for (let pointIndex = 0; pointIndex < pointCount; pointIndex += 1) {
-      const x = Number(xAxis._offset || 0) + xAxis.d2p(trace.x[pointIndex]);
-      const y = Number(yAxis._offset || 0) + yAxis.d2p(trace.y[pointIndex]);
-      if (Number.isFinite(x) && Number.isFinite(y)) points.push({ x, y, pointIndex });
-    }
+    traceEntries.forEach(({ trace, traceIndex }) => {
+      const yAxis = trace?.yaxis === "y2" ? element._fullLayout.yaxis2 : element._fullLayout.yaxis;
+      if (!yAxis || typeof yAxis.d2p !== "function") return;
+      const pointCount = Math.min(Array.isArray(trace.x) ? trace.x.length : 0, Array.isArray(trace.y) ? trace.y.length : 0);
+      for (let pointIndex = 0; pointIndex < pointCount; pointIndex += 1) {
+        const x = Number(xAxis._offset || 0) + xAxis.d2p(trace.x[pointIndex]);
+        const y = Number(yAxis._offset || 0) + yAxis.d2p(trace.y[pointIndex]);
+        if (Number.isFinite(x) && Number.isFinite(y)) points.push({ x, y, traceIndex, pointIndex });
+      }
+    });
     points.sort((left, right) => left.x - right.x);
-    const index = { trace, traceIndex, xValues: trace.x, yValues: trace.y, axisKey, points };
-    markerPixelCache.set(element, index);
+    const index = {
+      traceEntries: traceEntries.map(({ trace, traceIndex }) => ({
+        trace,
+        traceIndex,
+        xValues: trace.x,
+        yValues: trace.y,
+      })),
+      axisKey,
+      points,
+    };
+    if (!cacheByKey) {
+      cacheByKey = new Map();
+      markerPixelCache.set(element, cacheByKey);
+    }
+    cacheByKey.set(cacheKey, index);
     return index;
   }
 
@@ -61,7 +96,7 @@
       const distance = Math.hypot(localX - point.x, localY - point.y);
       if (distance <= hitRadius && distance < bestDistance) {
         bestDistance = distance;
-        best = { traceIndex: markerIndex.traceIndex, pointIndex: point.pointIndex };
+        best = { traceIndex: point.traceIndex, pointIndex: point.pointIndex };
       }
     }
     return best;

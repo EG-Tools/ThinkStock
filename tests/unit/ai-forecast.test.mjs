@@ -11,7 +11,12 @@ vm.runInContext(source, context);
 const {
   applyFeatureTransform,
   buildContextSignal,
+  buildCorporateRiskSignal,
   buildForecast,
+  buildLeadingCyclePhase,
+  buildMarketRegimeSignal,
+  buildPriceRegimeProfile,
+  buildRotationSignal,
   globalMarketSeriesFor,
   marketModelForHorizon,
   nextBusinessDates,
@@ -102,6 +107,26 @@ test("trains deterministic 20, 63, and 126-day models with uncertainty bands", (
   assert.ok(standardDeviation(forecastReturns) <= standardDeviation(recentReturns) * 1.2);
   assert.deepEqual(first.prices, second.prices);
   assert.equal(first.model.horizons.map((item) => item.days).join(","), "20,63,126");
+  assert.equal(first.model.pathVersion, "path-v9");
+  const [month, quarter, halfYear] = first.model.horizons;
+  assert.equal(month.calibration.localScale, 0.33);
+  assert.equal(month.calibration.regimeScale, 1);
+  assert.equal(month.calibration.rangeScale, 1);
+  assert.equal(quarter.calibration.localScale, 0.5);
+  assert.equal(quarter.calibration.regimeScale, 0.25);
+  assert.equal(quarter.calibration.rangeScale, 1.25);
+  assert.equal(halfYear.calibration.localScale, 0.25);
+  assert.equal(halfYear.calibration.regimeScale, 0);
+  assert.equal(halfYear.calibration.rangeScale, 1);
+  assert.deepEqual(Object.keys(first.attribution.horizons), ["5", "10", "20", "63", "126"]);
+  Object.values(first.attribution.horizons).forEach((attribution) => {
+    const componentTotal = Object.values(attribution.components)
+      .reduce((sum, value) => sum + value, 0);
+    assert.ok(Math.abs(componentTotal - attribution.expectedLogReturn) < 1e-10);
+  });
+  assert.equal(first.audit.format, "ai-audit-v1");
+  assert.equal(first.audit.sources.internet_news_rows, 0);
+  assert.equal(first.audit.sources.analyst_report_rows, 0);
   assert.ok(first.backtest.trainingSamples >= 12);
   assert.ok(first.backtest.validationSamples >= 24);
   assert.ok(first.backtest.directionAccuracy >= 0 && first.backtest.directionAccuracy <= 1);
@@ -109,6 +134,13 @@ test("trains deterministic 20, 63, and 126-day models with uncertainty bands", (
     assert.ok(first.lowerPrices[index] <= price);
     assert.ok(first.upperPrices[index] >= price);
   });
+  const scenarios = [first.scenarios.upside, first.scenarios.sideways, first.scenarios.downside];
+  assert.equal(scenarios.reduce((sum, scenario) => sum + scenario.probability, 0), 100);
+  assert.equal(first.scenarios.calibration.probabilitySignalStrength, 0.25);
+  assert.equal(first.scenarios.calibration.sidewaysProbabilityScale, 0.7);
+  assert.ok(scenarios.every((scenario) => scenario.prices.length === 127 && scenario.reason));
+  assert.ok(first.scenarios.upside.prices.at(-1) > first.scenarios.sideways.prices.at(-1));
+  assert.ok(first.scenarios.sideways.prices.at(-1) > first.scenarios.downside.prices.at(-1));
   assert.equal(first.chartValues[0], chartValues.at(-1));
   first.dates.slice(1).forEach((date) => {
     const day = new Date(`${date}T00:00:00Z`).getUTCDay();
@@ -229,6 +261,28 @@ test("uses only bounded current consensus and financial context", () => {
   assert.ok(Math.abs(negative.adjustment) <= 0.04);
 });
 
+test("records the real consensus contribution and moves the forecast when only consensus changes", () => {
+  const { dates, prices, kospi } = syntheticHistory(1100);
+  const common = {
+    series: "005930.KS",
+    dates,
+    prices,
+    marketCandidates: [{ series: "^KS11", dates, prices: kospi }],
+  };
+  const positive = buildForecast({
+    ...common,
+    consensus: { targetPrice: prices.at(-1) * 1.4, opinion: 4.5, institutions: 8 },
+  });
+  const negative = buildForecast({
+    ...common,
+    consensus: { targetPrice: prices.at(-1) * 0.7, opinion: 2, institutions: 8 },
+  });
+
+  assert.ok(positive.attribution.horizons[126].components.consensus > 0);
+  assert.ok(negative.attribution.horizons[126].components.consensus < 0);
+  assert.ok(positive.prices.at(-1) > negative.prices.at(-1));
+});
+
 test("reports point-in-time environment coverage when data is available", () => {
   const { dates, prices, kosdaq } = syntheticHistory(1000);
   const macroRows = dates.map((date, index) => ({
@@ -253,11 +307,18 @@ test("reports point-in-time environment coverage when data is available", () => 
     marketCandidates: [{ series: "^KQ11", dates, prices: kosdaq }],
     macroRows,
     creditRows,
-    auxiliaryRows,
+    auxiliaryRows: [
+      ...auxiliaryRows,
+      { date: nextBusinessDates(dates.at(-1), 1)[0], adr_kosdaq: 999, fear_greed: 999 },
+    ],
   });
 
   assert.equal(forecast.marketEnvironment.coverage, 1);
   assert.ok(Number.isFinite(forecast.marketEnvironment.combined));
+  assert.ok(Number.isFinite(forecast.audit.features.adr_latest));
+  assert.ok(Number.isFinite(forecast.audit.features.adr_change_28d));
+  assert.ok(Number.isFinite(forecast.audit.features.adr_recent_high_28d));
+  assert.notEqual(forecast.audit.features.aux_adr_kosdaq, 999);
 });
 
 test("blends a validated top-400 market model without replacing the local guardrails", () => {
@@ -287,10 +348,12 @@ test("blends a validated top-400 market model without replacing the local guardr
 
   assert.equal(blended.model.marketModelUsed, true);
   assert.match(blended.model.name, /top-400/);
-  assert.equal(blended.model.version, "2026-07-23|path-v5");
-  assert.equal(blended.model.pathVersion, "path-v5");
+  assert.equal(blended.model.version, "2026-07-23|path-v9");
+  assert.equal(blended.model.pathVersion, "path-v9");
+  assert.equal(blended.scenarios.calibration.probabilitySignalStrength, 0.5);
+  assert.equal(blended.scenarios.calibration.sidewaysProbabilityScale, 0.7);
   assert.equal(blended.model.globalMarketSeries, "^KS11");
-  assert.equal(marketModelForHorizon(marketModel, 20).reliability, 1);
+  assert.equal(marketModelForHorizon(marketModel, 20).reliability, 0.4);
   assert.ok(blended.prices.at(-1) > local.prices.at(-1));
 });
 
@@ -311,7 +374,165 @@ test("ignores a market model that did not beat its validation baseline", () => {
   });
 
   assert.equal(forecast.model.marketModelUsed, false);
-  assert.equal(forecast.model.name, "purged multi-horizon ensemble");
+  assert.equal(forecast.model.name, "calibrated risk-gated purged multi-horizon ensemble");
+});
+
+test("gates optimistic forecasts when recent disclosures and losses show terminal risk", () => {
+  const { dates, prices, kospi } = syntheticHistory(1100);
+  const common = {
+    series: "005930.KS",
+    dates,
+    prices,
+    marketCandidates: [{ series: "^KS11", dates, prices: kospi }],
+  };
+  const clean = buildForecast(common);
+  const risky = buildForecast({
+    ...common,
+    disclosures: [{
+      ticker: "005930.KS",
+      date: dates.at(-2),
+      title: "상장폐지 및 거래정지 관련 안내",
+    }],
+    financials: [
+      { period: "2021-06", frequency: "quarter", estimate: false, operatingProfit: -20, netIncome: -30 },
+      { period: "2021-09", frequency: "quarter", estimate: false, operatingProfit: -25, netIncome: -35 },
+      { period: "2021-12", frequency: "quarter", estimate: false, operatingProfit: -40, netIncome: -45 },
+      { period: "2022-03", frequency: "quarter", estimate: false, operatingProfit: -50, netIncome: -60 },
+    ],
+  });
+
+  assert.ok(risky.signals.corporateRisk.score >= 0.9);
+  assert.equal(risky.signals.corporateRisk.terminalRisk, true);
+  assert.ok(risky.prices.at(-1) < clean.prices.at(-1));
+  assert.ok(risky.scenarios.downside.probability > clean.scenarios.downside.probability);
+  assert.match(risky.scenarios.downside.reason, /상장|적자|손실/);
+  assert.ok(buildCorporateRiskSignal({ disclosures: [] }, "005930.KS", dates.at(-1)).score === 0);
+});
+
+test("uses a macro-first model for KOSPI and reacts to rates, trade, and recession risk", () => {
+  const { dates, kospi, kosdaq } = syntheticHistory(1500);
+  const monthlyDates = dates.filter((_, index) => index % 21 === 0);
+  const macroRows = (riskOn) => monthlyDates.map((date, index) => ({
+    date,
+    leading_cycle: 98 + (index * (riskOn ? 0.08 : -0.08)),
+    policy_rate: riskOn ? 4 - (index * 0.02) : 1 + (index * 0.02),
+    export_value: 50000 * Math.exp(index * (riskOn ? 0.012 : -0.012)),
+    import_value: 48000 * Math.exp(index * (riskOn ? 0.004 : 0.008)),
+    news_sentiment: riskOn ? 108 : 82,
+  }));
+  const common = {
+    series: "^KS11",
+    dates,
+    prices: kospi,
+    marketCandidates: [{ series: "^KQ11", dates, prices: kosdaq }],
+  };
+  const supportive = buildForecast({
+    ...common,
+    macroRows: macroRows(true),
+    crisisRows: [{ date: dates.at(-2), score: 12, fedFundsChange6m: -0.5 }],
+  });
+  const defensive = buildForecast({
+    ...common,
+    macroRows: macroRows(false),
+    crisisRows: [{ date: dates.at(-2), score: 78, fedFundsChange6m: 0.75 }],
+  });
+
+  assert.equal(supportive.signals.forecastMode, "macro-index");
+  assert.equal(supportive.model.marketModelUsed, false);
+  assert.match(supportive.model.name, /macro-regime/);
+  supportive.model.horizons.forEach((horizon) => {
+    assert.equal(horizon.calibration.localScale, 1);
+    assert.equal(horizon.calibration.regimeScale, 1);
+    assert.equal(horizon.calibration.rangeScale, 1);
+  });
+  assert.equal(supportive.scenarios.calibration.probabilitySignalStrength, 1);
+  assert.equal(supportive.scenarios.calibration.sidewaysProbabilityScale, 1);
+  assert.ok(supportive.prices.at(-1) > defensive.prices.at(-1));
+  assert.ok(defensive.scenarios.downside.probability > supportive.scenarios.downside.probability);
+  const regime = buildMarketRegimeSignal({
+    macroRows: macroRows(true),
+    crisisRows: [{ date: dates.at(-2), score: 12, fedFundsChange6m: -0.5 }],
+  }, "^KS11", dates.at(-1));
+  assert.ok(regime.support > regime.risk);
+});
+
+test("keeps a historically range-bound stock from inheriting an unconditional growth bias", () => {
+  const dates = tradingDates(1500);
+  const prices = dates.map((_, index) => 100 * Math.exp(
+    (0.055 * Math.sin((index * Math.PI * 2) / 252))
+      + (0.012 * Math.sin((index * Math.PI * 2) / 21)),
+  ));
+  const kospi = dates.map((_, index) => 2200 * Math.exp(index * 0.00022));
+  const forecast = buildForecast({
+    series: "123456.KS",
+    dates,
+    prices,
+    marketCandidates: [{ series: "^KS11", dates, prices: kospi }],
+    consensus: { targetPrice: prices.at(-1) * 1.4, opinion: 4.5, institutions: 12 },
+    financials: [
+      { period: "2024-12", frequency: "annual", revenue: 1000, operatingProfit: 90 },
+      { period: "2025-12", frequency: "annual", revenue: 1080, operatingProfit: 105 },
+      { period: "2026-03", frequency: "quarter", revenue: 280, operatingProfit: 29 },
+      { period: "2026-06", frequency: "quarter", revenue: 295, operatingProfit: 34 },
+    ],
+    macdSignal: 0.3,
+  });
+
+  assert.ok(forecast.signals.priceRegime.rangeBoundScore > 0.5);
+  assert.ok(forecast.scenarios.sideways.probability >= forecast.scenarios.upside.probability);
+  assert.match(forecast.scenarios.sideways.reason, /박스권/);
+});
+
+test("does not force a persistent trend stock into the range-bound prior", () => {
+  const dates = tradingDates(1500);
+  const prices = dates.map((_, index) => 100 * Math.exp(
+    (index * 0.00075) + (0.012 * Math.sin(index / 17)),
+  ));
+  const profile = buildPriceRegimeProfile(
+    prices,
+    Array.from({ length: 80 }, (_, index) => 0.08 + ((index % 5) * 0.005)),
+    0.012,
+  );
+
+  assert.ok(profile.rangeBoundScore < 0.35);
+  assert.ok(profile.annualizedReturn > 0.1);
+});
+
+test("classifies a flattened historical-high leading cycle as a peak regime", () => {
+  const dates = tradingDates(2520).filter((_, index) => index % 21 === 0);
+  const macroRows = dates.map((date, index) => ({
+    date,
+    leading_cycle: 98 + (Math.min(index, dates.length - 12) * 0.055),
+  }));
+  const phase = buildLeadingCyclePhase(macroRows, dates.at(-1));
+
+  assert.equal(phase.phase, "peak");
+  assert.ok(phase.rank >= 0.85);
+  assert.ok(phase.rangePressure > 0);
+});
+
+test("detects cooling semiconductor leadership instead of extending it indefinitely", () => {
+  const dates = tradingDates(1000);
+  const benchmark = dates.map((_, index) => 100 * Math.exp(index * 0.0002));
+  const leader = dates.map((_, index) => {
+    const coolingStart = dates.length - 22;
+    const relativeLog = index <= coolingStart
+      ? index * 0.0008
+      : (coolingStart * 0.0008) - ((index - coolingStart) * 0.0015);
+    return benchmark[index] * Math.exp(relativeLog);
+  });
+  const rotation = buildRotationSignal({
+    marketCandidates: [{ series: "^KS11", dates, prices: benchmark }],
+    rotationCandidates: [
+      { series: "005930.KS", dates, prices: leader },
+      { series: "000660.KS", dates, prices: leader.map((value, index) => value * (1 + (0.01 * Math.sin(index / 9)))) },
+    ],
+  }, "005930.KS", dates, leader, { rangeBoundScore: 0.1 });
+
+  assert.ok(rotation.leaderCooling > 0.25);
+  assert.ok(rotation.risk > 0);
+  assert.ok(rotation.adjustment < 0);
+  assert.match(rotation.riskReasons.join(" "), /주도주 모멘텀 둔화/);
 });
 
 test("accepts every validated horizon in the generated top-400 artifact", async () => {

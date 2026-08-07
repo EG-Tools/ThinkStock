@@ -61,11 +61,13 @@ test("validates snapshot age and creates compact fallback data", () => {
       macro: [1, 2, 3],
       credit: [1, 2, 3],
       adr: [1, 2, 3],
+      crisis: [1, 2, 3],
       disclosure: [1, 2],
     },
   });
   assert.deepEqual(compact.pricePayload.records.map((row) => row.date), ["2", "3"]);
   assert.deepEqual(compact.disclosureRows, [2]);
+  assert.deepEqual(compact.crisisRows, [2, 3]);
   assert.equal(policy.buildSignature(true, ["price"], { price: 2 }), "history::price:2");
 });
 

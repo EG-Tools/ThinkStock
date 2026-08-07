@@ -7,6 +7,8 @@ const {
   normalizeSeries,
   centeredScale,
   autoFitScales,
+  resolveNormalizationBases,
+  mergeFixedAutoScales,
   shiftIsoDateByDays,
 } = marketDataModule;
 const auxiliaryChartModelModule = self.ThinkStockAuxiliaryChartModel;
@@ -189,23 +191,13 @@ function buildMainChartModel(payload) {
   );
   if (!selected.length) selected.push(...allSeries.slice(0, 2));
 
-  const commonNormBases = {};
-  const firstDates = selected.map((series) => {
-    const row = rows.find((item) => toNum(item[series]) !== null);
-    return row?.date || null;
-  }).filter(Boolean);
-  const commonBaseDate = firstDates.length
-    ? firstDates.reduce((latest, value) => (value > latest ? value : latest))
-    : null;
-  if (commonBaseDate) {
-    selected.forEach((series) => {
-      const row = rows.find((item) => item.date >= commonBaseDate && toNum(item[series]) !== null);
-      commonNormBases[series] = row ? toNum(row[series]) : null;
-    });
-  }
+  const commonNormBases = resolveNormalizationBases(rows, selected, payload.fixedNormBases);
 
   const visible = selected.filter((series) => !hidden.has(series));
-  const autoScales = autoFitScales(rows, visible.length ? visible : selected, commonNormBases);
+  const autoScales = mergeFixedAutoScales(
+    autoFitScales(rows, visible.length ? visible : selected, commonNormBases),
+    payload.fixedAutoScales,
+  );
   const baseXValues = rows.map((row) => row.date);
   const seriesModels = selected.map((series) => {
     const rawValues = rows.map((row) => toNum(row[series]));
@@ -240,6 +232,8 @@ function buildMainChartModel(payload) {
     allSeries,
     selected,
     seriesModels,
+    normBases: commonNormBases,
+    autoScales,
     displayIndexes: buildDisplayIndexes(rows, seriesModels, selected, payload.hiddenSeries, budget),
   };
 }

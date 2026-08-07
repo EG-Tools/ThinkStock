@@ -441,6 +441,40 @@
     ]));
   }
 
+  function resolveNormalizationBases(rows, selected, fixedBases = {}) {
+    const bases = {};
+    const seriesList = Array.isArray(selected) ? selected : [];
+    const firstDates = seriesList.map((series) => {
+      const row = rows.find((item) => toNum(item?.[series]) !== null);
+      return row?.date || null;
+    }).filter(Boolean);
+    const commonBaseDate = firstDates.length
+      ? firstDates.reduce((latest, date) => (date > latest ? date : latest))
+      : null;
+
+    seriesList.forEach((series) => {
+      const fixed = toNum(fixedBases?.[series]);
+      if (fixed !== null && Math.abs(fixed) > 1e-9) {
+        bases[series] = fixed;
+        return;
+      }
+      if (!commonBaseDate) return;
+      const row = rows.find((item) => item.date >= commonBaseDate && toNum(item?.[series]) !== null);
+      const value = toNum(row?.[series]);
+      if (value !== null && Math.abs(value) > 1e-9) bases[series] = value;
+    });
+    return bases;
+  }
+
+  function mergeFixedAutoScales(calculatedScales, fixedScales = {}) {
+    const merged = { ...(calculatedScales || {}) };
+    Object.entries(fixedScales || {}).forEach(([series, rawValue]) => {
+      const value = toNum(rawValue);
+      if (value !== null && value > 0) merged[series] = value;
+    });
+    return merged;
+  }
+
   globalScope.ThinkStockMarketData = Object.freeze({
     getSeriesColumns,
     copyDisplayNames,
@@ -460,5 +494,7 @@
     normalizeSeries,
     centeredScale,
     autoFitScales,
+    resolveNormalizationBases,
+    mergeFixedAutoScales,
   });
 }(typeof self !== "undefined" ? self : globalThis));

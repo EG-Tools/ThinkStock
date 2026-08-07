@@ -2,6 +2,9 @@
   "use strict";
 
   function traceIdentity(trace) {
+    if (trace?.meta?.isCrisisSignalTrace) return "crisis-signal";
+    if (trace?.meta?.isMarketTimingBuyTrace) return "market-timing-buy";
+    if (trace?.meta?.isMarketTimingSellTrace) return "market-timing-sell";
     if (trace?.meta?.isDisclosureTrace) return "disclosure";
     if (trace?.meta?.isInsiderTradeTrace) {
       return `insider:${String(trace.meta.insiderTradeSide || "")}`;
@@ -25,6 +28,47 @@
       && trace.type === element.data[index]?.type
       && trace.mode === element.data[index]?.mode
     ));
+  }
+
+  function finiteTracePoints(xValues, yValues, textValues = [], baseValues = []) {
+    const x = [];
+    const y = [];
+    const text = [];
+    const base = [];
+    const count = Math.min(
+      Array.isArray(xValues) ? xValues.length : 0,
+      Array.isArray(yValues) ? yValues.length : 0,
+    );
+    for (let index = 0; index < count; index += 1) {
+      if (!Number.isFinite(yValues[index])) continue;
+      x.push(xValues[index]);
+      y.push(yValues[index]);
+      text.push(textValues[index]);
+      base.push(Number.isFinite(baseValues[index]) ? baseValues[index] : null);
+    }
+    return { x, y, text, base };
+  }
+
+  function visibleEndpointValues(trace, values = trace?.y, xRange = null) {
+    const xValues = Array.isArray(trace?.x) ? trace.x : [];
+    const yValues = Array.isArray(values) ? values : [];
+    const count = Math.min(xValues.length, yValues.length);
+    if (!count) return { first: null, last: null };
+    const startMs = Date.parse(String(xRange?.[0] || ""));
+    const endMs = Date.parse(String(xRange?.[1] || ""));
+    const hasRange = Number.isFinite(startMs) && Number.isFinite(endMs);
+    const low = hasRange ? Math.min(startMs, endMs) : -Infinity;
+    const high = hasRange ? Math.max(startMs, endMs) : Infinity;
+    let first = null;
+    let last = null;
+    for (let index = 0; index < count; index += 1) {
+      const value = Number(yValues[index]);
+      const time = Date.parse(String(xValues[index] || ""));
+      if (!Number.isFinite(value) || (hasRange && (!Number.isFinite(time) || time < low || time > high))) continue;
+      if (first === null) first = value;
+      last = value;
+    }
+    return { first, last };
   }
 
   function restylePayload(traces) {
@@ -94,9 +138,11 @@
 
   globalScope.ThinkStockMainChartRenderer = Object.freeze({
     canApplyPartialUpdate,
+    finiteTracePoints,
     relayoutPayload,
     render,
     restylePayload,
     traceIdentity,
+    visibleEndpointValues,
   });
 }(typeof self !== "undefined" ? self : globalThis));

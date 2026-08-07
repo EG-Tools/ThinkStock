@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  normalizeCrisisSignalPayload,
   normalizeCreditPayload,
   normalizeMacroPayload,
   normalizePricePayload,
@@ -23,11 +24,16 @@ test("keeps only positive credit values and rejects zero-only updates", () => {
 });
 
 test("accepts partial macro success but rejects an entirely empty response", () => {
-  assert.deepEqual(normalizeMacroPayload({
+  const normalized = normalizeMacroPayload({
     ok: true,
     leadingRows: [{ date: "2026-05-01", leading_cycle: 104.8 }],
     newsRows: [],
-  }).leadingRows, [{ date: "2026-05-01", leading_cycle: 104.8 }]);
+    policyRateRows: [{ date: "2026-05-01", policy_rate: 2.5 }],
+    tradeRows: [{ date: "2026-05-01", export_value: 60, import_value: 55 }],
+  });
+  assert.deepEqual(normalized.leadingRows, [{ date: "2026-05-01", leading_cycle: 104.8 }]);
+  assert.deepEqual(normalized.policyRateRows, [{ date: "2026-05-01", policy_rate: 2.5 }]);
+  assert.deepEqual(normalized.tradeRows, [{ date: "2026-05-01", export_value: 60, import_value: 55 }]);
   assert.throws(
     () => normalizeMacroPayload({ ok: true, leadingRows: [], newsRows: [] }),
     /no usable rows/,
@@ -54,4 +60,37 @@ test("rejects an empty or zero latest price so the cached close remains usable",
     () => normalizePricePayload({ ok: true, records: [{ date: "2026-08-07", close: 0 }] }),
     /no usable rows/,
   );
+});
+
+test("normalizes crisis signal scores and preserves diagnostic components", () => {
+  const payload = normalizeCrisisSignalPayload({
+    ok: true,
+    records: [
+      { date: "bad", score: 80 },
+      {
+        date: "2026-08-06",
+        score: 62.4,
+        stage: "warning",
+        curve: 30,
+        labor: 17,
+        credit: 15,
+        t10y2y: 0.24,
+        fedFunds: 4.25,
+        fedFundsChange6m: -0.75,
+        uninversion: true,
+      },
+    ],
+  });
+  assert.deepEqual(payload.records, [{
+    date: "2026-08-06",
+    score: 62,
+    curve: 30,
+    labor: 17,
+    credit: 15,
+    t10y2y: 0.24,
+    fedFunds: 4.25,
+    fedFundsChange6m: -0.75,
+    stage: "warning",
+    uninversion: true,
+  }]);
 });

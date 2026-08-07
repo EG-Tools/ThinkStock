@@ -116,9 +116,12 @@ test("returns authenticated ECOS macro updates and reuses the Worker cache", asy
   globalThis.fetch = async (url) => {
     calls += 1;
     const target = String(url);
-    const rows = target.includes("/901Y067/")
-      ? [{ TIME: "202607", DATA_VALUE: "104.8" }]
-      : [{ TIME: "20260803", DATA_VALUE: "101.2" }];
+    let rows;
+    if (target.includes("/901Y067/")) rows = [{ TIME: "202607", DATA_VALUE: "104.8" }];
+    else if (target.includes("/521Y001/")) rows = [{ TIME: "20260803", DATA_VALUE: "101.2" }];
+    else if (target.includes("/722Y001/")) rows = [{ TIME: "202607", DATA_VALUE: "2.5" }];
+    else if (target.includes("T002")) rows = [{ TIME: "202606", DATA_VALUE: "102166000" }];
+    else rows = [{ TIME: "202606", DATA_VALUE: "66078000" }];
     return new Response(JSON.stringify({ StatisticSearch: { row: rows } }), { status: 200 });
   };
   try {
@@ -128,9 +131,15 @@ test("returns authenticated ECOS macro updates and reuses the Worker cache", asy
     assert.equal(refreshed.status, 200);
     assert.deepEqual(payload.leadingRows.at(-1), { date: "2026-07-01", leading_cycle: 104.8 });
     assert.deepEqual(payload.newsRows.at(-1), { date: "2026-08-03", news_sentiment: 101.2 });
+    assert.deepEqual(payload.policyRateRows.at(-1), { date: "2026-07-01", policy_rate: 2.5 });
+    assert.deepEqual(payload.tradeRows.at(-1), {
+      date: "2026-06-01",
+      export_value: 102166000,
+      import_value: 66078000,
+    });
     const cached = await handleRequest(request("/api/macro", { token: "private" }), env);
     assert.equal((await cached.json()).cached, true);
-    assert.equal(calls, 2);
+    assert.equal(calls, 5);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -957,7 +966,47 @@ test("accepts the browser journal nested score format", async () => {
   const payload = await response.json();
   assert.equal(response.status, 200);
   assert.equal(payload.records[0].horizons[20].absoluteLogError, 0.01);
+  assert.ok(Math.abs(payload.records[0].horizons[20].signedLogError + 0.01) < 1e-12);
+  assert.ok(Math.abs(payload.records[0].horizons[20].squaredLogError - 0.0001) < 1e-12);
   assert.equal(payload.records[0].horizons[20].covered, true);
+});
+
+test("preserves bounded forecast audit features and numeric attribution", async () => {
+  const record = forecastRecord({
+    audit: {
+      format: "ai-audit-v1",
+      features: { adr_latest: 72.5, adr_change_28d: -9.25, model_feature_00: 0.3 },
+      sources: { price_rows: 1500, internet_news_rows: 0 },
+      scenarioWeights: { upside: 25, sideways: 50, downside: 25 },
+    },
+    horizons: {
+      10: {
+        targetDate: "2026-08-06",
+        predictedPrice: 33000,
+        lowerPrice: 29000,
+        upperPrice: 37000,
+        attribution: {
+          days: 10,
+          expectedLogReturn: 0.0307717,
+          components: { localModel: 0.02, marketRegime: 0.0107717 },
+        },
+      },
+    },
+  });
+  const response = await handleRequest(
+    request("/api/forecast-journal?ticker=218410.KQ", {
+      method: "POST",
+      token: "private",
+      body: { records: [record] },
+    }),
+    { THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: memoryKv() },
+  );
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.records[0].audit.features.adr_latest, 72.5);
+  assert.equal(payload.records[0].audit.sources.internet_news_rows, 0);
+  assert.equal(payload.records[0].horizons[10].attribution.components.marketRegime, 0.0107717);
 });
 
 test("rejects malformed, excessive, and oversized forecast journal input", async () => {
@@ -982,11 +1031,21 @@ test("rejects malformed, excessive, and oversized forecast journal input", async
   );
   assert.equal(excessive.status, 400);
 
+  const withinAuditBudget = await handleRequest(
+    request("/api/forecast-journal?ticker=218410.KQ", {
+      method: "POST",
+      token: "private",
+      body: JSON.stringify({ records: [] }).padEnd(384 * 1024, " "),
+    }),
+    env,
+  );
+  assert.equal(withinAuditBudget.status, 200);
+
   const oversized = await handleRequest(
     request("/api/forecast-journal?ticker=218410.KQ", {
       method: "POST",
       token: "private",
-      body: "x".repeat(256 * 1024 + 1),
+      body: "x".repeat(512 * 1024 + 1),
     }),
     env,
   );

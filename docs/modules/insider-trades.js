@@ -3,8 +3,8 @@
 
   const TICKER_PATTERN = /^\d{6}\.(KS|KQ)$/;
   const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-  const BUY_COLOR = "#ef4444";
-  const SELL_COLOR = "#3b82f6";
+  const BUY_COLOR = "#b91c1c";
+  const SELL_COLOR = "#1d4ed8";
 
   function finiteNumber(value) {
     const normalized = String(value ?? "").replaceAll(",", "").trim();

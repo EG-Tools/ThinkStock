@@ -601,7 +601,7 @@ export async function createThinkStockServer(options = {}) {
       }
       return;
     }
-    if (["/api/macro", "/api/credit", "/api/indices", "/api/dart/insider-trades"].includes(requestUrl.pathname)) {
+    if (["/api/macro", "/api/credit", "/api/crisis-signal", "/api/indices", "/api/dart/insider-trades"].includes(requestUrl.pathname)) {
       if (!workerAccessToken) {
         sendJson(request, response, 503, { ok: false, error: ".env.local에 THINKSTOCK_ACCESS_TOKEN이 없습니다." });
         return;
@@ -618,7 +618,9 @@ export async function createThinkStockServer(options = {}) {
         }
         const kind = requestUrl.pathname === "/api/macro"
           ? "macro"
-          : (requestUrl.pathname === "/api/credit" ? "credit" : "insider");
+          : (requestUrl.pathname === "/api/credit"
+            ? "credit"
+            : (requestUrl.pathname === "/api/crisis-signal" ? "crisis" : "insider"));
         sendJson(
           request,
           response,

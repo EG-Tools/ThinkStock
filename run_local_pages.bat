@@ -37,7 +37,8 @@ if %errorlevel%==0 (
     timeout /t 1 >nul
 )
 
-start "" cmd /c "timeout /t 2 >nul && start http://127.0.0.1:8787"
+echo Waiting for the local server before opening the browser...
+start "" /b node scripts\open_local_pages_when_ready.mjs "http://127.0.0.1:8787/"
 node scripts\local_pages_server.mjs --host 0.0.0.0 --port 8787
 if not %errorlevel%==0 pause
 endlocal

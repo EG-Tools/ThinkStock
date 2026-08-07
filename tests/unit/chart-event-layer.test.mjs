@@ -89,3 +89,40 @@ test("selects the vertically nearest disclosure when dates overlap", () => {
     pointIndex: 0,
   });
 });
+
+test("selects timing and disclosure markers through one interactive index", () => {
+  const disclosure = {
+    x: [20],
+    y: [30],
+    meta: { isDisclosureTrace: true },
+  };
+  const timing = {
+    x: [20],
+    y: [70],
+    meta: { isMarketTimingBuyTrace: true },
+  };
+  const element = {
+    data: [disclosure, timing],
+    _fullLayout: {
+      xaxis: { _offset: 0, _length: 100, range: [0, 100], d2p: (value) => value },
+      yaxis: { _offset: 0, _length: 100, range: [0, 100], d2p: (value) => value },
+    },
+    getBoundingClientRect: () => ({ left: 100, top: 200 }),
+  };
+  const options = {
+    cacheKey: "interactive",
+    tracePredicate: (trace) => trace.meta?.isDisclosureTrace || trace.meta?.isMarketTimingBuyTrace,
+    mouseRadius: 10,
+    touchRadius: 16,
+    isTouch: false,
+  };
+
+  assert.deepEqual(eventLayer.findMarkerAtClientPoint(element, 120, 270, options), {
+    traceIndex: 1,
+    pointIndex: 0,
+  });
+  assert.deepEqual(eventLayer.findMarkerAtClientPoint(element, 120, 230, options), {
+    traceIndex: 0,
+    pointIndex: 0,
+  });
+});

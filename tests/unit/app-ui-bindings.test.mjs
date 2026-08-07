@@ -171,6 +171,86 @@ test("range stepper keeps rapid clicks and renders the final requested period", 
 });
 
 
+test("history window keeps zoom anchored to the latest right edge", () => {
+  assert.deepEqual(bindings.resolveHistoryWindow({
+    minDate: "2020-01-31",
+    maxDate: "2026-08-07",
+    months: 6,
+    position: 1,
+  }), {
+    start: "2026-02-07",
+    end: "2026-08-07",
+    position: 1,
+    canNavigate: true,
+  });
+  assert.deepEqual(bindings.resolveHistoryWindow({
+    minDate: "2020-01-31",
+    maxDate: "2026-08-07",
+    months: 6,
+    position: 0,
+  }), {
+    start: "2020-01-31",
+    end: "2020-07-31",
+    position: 0,
+    canNavigate: true,
+  });
+});
+
+
+test("history slider updates the selected past position and requests a fitted render", () => {
+  const slider = fakeElement();
+  let position = 1;
+  let renderedWith = null;
+  let cleared = 0;
+  const controller = bindings.bindHistorySlider({
+    slider,
+    getPosition: () => position,
+    setPosition: (value) => { position = value; },
+    clearPinnedRange: () => { cleared += 1; },
+    isHistoricalDataLoaded: () => true,
+    ensureHistoricalDataLoaded: async () => {},
+    setMessage: () => {},
+    saveState: () => {},
+    requestChartRender: (preserveZoom) => { renderedWith = preserveZoom; },
+  });
+
+  controller.sync({ position: 0.4, start: "2021-01-01", end: "2021-07-01", canNavigate: true });
+  assert.equal(slider.value, "400");
+  slider.value = "250";
+  slider.dispatch("input");
+  assert.equal(position, 0.25);
+  assert.equal(cleared, 1);
+  assert.equal(renderedWith, false);
+});
+
+test("history slider pans an active zoom without resetting its history window", () => {
+  const slider = fakeElement();
+  let position = 1;
+  let pannedTo = null;
+  let cleared = 0;
+  let rendered = 0;
+  bindings.bindHistorySlider({
+    slider,
+    getPosition: () => position,
+    setPosition: (value) => { position = value; },
+    panViewport: (value) => { pannedTo = value; return true; },
+    clearPinnedRange: () => { cleared += 1; },
+    isHistoricalDataLoaded: () => true,
+    ensureHistoricalDataLoaded: async () => {},
+    setMessage: () => {},
+    saveState: () => {},
+    requestChartRender: () => { rendered += 1; },
+  });
+
+  slider.value = "350";
+  slider.dispatch("input");
+  assert.equal(pannedTo, 0.35);
+  assert.equal(position, 1);
+  assert.equal(cleared, 0);
+  assert.equal(rendered, 0);
+});
+
+
 test("disclosure toggle applies its fast path before rendering", () => {
   const button = fakeElement();
   let enabled = true;

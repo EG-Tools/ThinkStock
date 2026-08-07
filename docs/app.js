@@ -36,6 +36,8 @@ const {
   normalizeSeries,
   centeredScale,
   autoFitScales,
+  resolveNormalizationBases,
+  mergeFixedAutoScales,
   shiftIsoDateByDays,
   buildDenseMacroRows,
 } = marketDataModule;
@@ -95,7 +97,12 @@ const {
 } = insiderTradesModule;
 const aiForecastModule = globalThis.ThinkStockAiForecast;
 if (!aiForecastModule) throw new Error("AI forecast module failed to load");
-const { buildForecast: buildAiForecast, isForecastSeries } = aiForecastModule;
+const {
+  applyChartTransform: applyAiForecastChartTransform,
+  buildForecast: buildAiForecast,
+  getForecastInputKey: getAiForecastInputKey,
+  isForecastSeries,
+} = aiForecastModule;
 const aiAnalysisCacheModule = globalThis.ThinkStockAiAnalysisCache;
 if (!aiAnalysisCacheModule) throw new Error("AI analysis cache module failed to load");
 const {
@@ -114,6 +121,9 @@ const {
 const macdOscillatorModule = globalThis.ThinkStockMacdOscillator;
 if (!macdOscillatorModule) throw new Error("MACD oscillator module failed to load");
 const { buildMacdOscillator, thinMacdPoints } = macdOscillatorModule;
+const marketTimingModule = globalThis.ThinkStockMarketTiming;
+if (!marketTimingModule) throw new Error("Market timing module failed to load");
+const { buildMarketTimingSignals } = marketTimingModule;
 const performanceMonitorModule = globalThis.ThinkStockPerformanceMonitor;
 if (!performanceMonitorModule) throw new Error("Performance monitor module failed to load");
 const performanceMonitor = performanceMonitorModule.createPerformanceMonitor(globalThis);
@@ -192,12 +202,23 @@ const API_SETTINGS_KEY = "thinkstock-api-v1";
 const API_SETTINGS_SESSION_KEY = "thinkstock-api-session-v1";
 const DART_GATEWAY_SETTINGS_KEY = "thinkstock-dart-gateway-v1";
 const DART_GATEWAY_SETTINGS_SESSION_KEY = "thinkstock-dart-gateway-session-v1";
+const ADMIN_ACCESS_STORAGE_KEY = "thinkstock-admin-access-v1";
+const ADMIN_ACCESS_HASH = "5b7a763e921d64f5a8ff38a62819a789ec90c8198700672a7929fff376ca3d58";
+const ADMIN_ACCESS_MASK = "0".repeat(10);
+const ADMIN_FEATURE_BUTTON_IDS = Object.freeze([
+  "disclosureToggle",
+  "insiderTradeToggle",
+  "recessionToggle",
+  "aiForecastToggle",
+  "coMovementToggle",
+  "macdToggle",
+]);
 const DATA_CACHE_DB_NAME = "thinkstock-runtime-cache-v1";
 const DATA_CACHE_DB_VERSION = 4;
 const DATA_CACHE_STORE_NAME = "snapshots";
 const DATA_CACHE_RECORD_KEY = "latest";
 const DATA_CACHE_LOCAL_KEY = "thinkstock-runtime-cache-v1";
-const DATA_CACHE_SCHEMA_VERSION = 9;
+const DATA_CACHE_SCHEMA_VERSION = 10;
 const DATA_CACHE_MAX_AGE_DAYS = 7;
 const RUNTIME_SNAPSHOT_FORMAT = "component-v1";
 const RUNTIME_SNAPSHOT_COMPONENT_KEYS = Object.freeze({
@@ -205,6 +226,7 @@ const RUNTIME_SNAPSHOT_COMPONENT_KEYS = Object.freeze({
   macro: "component:macro",
   credit: "component:credit",
   adr: "component:adr",
+  crisis: "component:crisis",
   disclosure: "component:disclosure",
 });
 const LOCAL_SNAPSHOT_MAX_ROWS = 900;
@@ -220,7 +242,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "2.01";
+const APP_VERSION = "2.24";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -291,9 +313,11 @@ const KRX_GATEWAY_PRICE_ENDPOINT = `${DART_GATEWAY_URL}/api/prices`;
 const KRX_GATEWAY_INDEX_ENDPOINT = `${DART_GATEWAY_URL}/api/indices`;
 const ECOS_GATEWAY_MACRO_ENDPOINT = `${DART_GATEWAY_URL}/api/macro`;
 const CREDIT_GATEWAY_ENDPOINT = `${DART_GATEWAY_URL}/api/credit`;
+const CRISIS_SIGNAL_GATEWAY_ENDPOINT = `${DART_GATEWAY_URL}/api/crisis-signal`;
 const AI_ANALYSIS_ENDPOINT = `${DART_GATEWAY_URL}/api/analysis`;
 const AI_FORECAST_JOURNAL_ENDPOINT = `${DART_GATEWAY_URL}/api/forecast-journal`;
 const AI_MARKET_MODEL_URL = "./data/ai_market_model.json";
+const AI_ROTATION_LEADER_TICKERS = Object.freeze(["005930.KS", "000660.KS"]);
 const DART_VISIBLE_REFRESH_CONCURRENCY = 2;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NETWORK_REQUEST_TIMEOUT_MS = 12000;
@@ -360,6 +384,7 @@ const browserMarketClient = browserMarketClientModule.createBrowserMarketClient(
 });
 const {
   fetchTickerHistorySeries,
+  mergePriceSeries,
 } = browserMarketClient;
 const POPUP_NUMBER_FORMAT = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 4 });
 const formatActualValue = (v) => (Number.isFinite(v) ? POPUP_NUMBER_FORMAT.format(v) : "N/A");
@@ -422,6 +447,10 @@ const MAIN_CHART_TOTAL_VISIBLE_POINT_TARGET_MOBILE = 2800;
 const INTERACTION_RENDER_DELAY_MS = 260;
 const DISCLOSURE_TRACE_NAME = "공시";
 const DISCLOSURE_ICON_TEXT = "◆";
+const CRISIS_SIGNAL_COLOR = "#60a5fa";
+const MARKET_TIMING_BUY_COLOR = "#f9a8d4";
+const MARKET_TIMING_SELL_COLOR = "#7dd3fc";
+const TIMING_MARKER_GAP_MULTIPLIER = 1.1;
 const DISCLOSURE_MARKER_COLOR = "#fde047";
 const DISCLOSURE_MARKER_HOVER_LINE_COLOR = "#fef3c7";
 const DISCLOSURE_TEXT_SIZE = 13;
@@ -432,10 +461,13 @@ const EVENT_MARKER_GAP_RATIO = 0.02;
 const INSIDER_MARKER_LINE_GAP_RATIO = 1.7;
 const PAIRED_INSIDER_BUY_OFFSET_RATIO = 0.3;
 const PAIRED_INSIDER_SELL_OFFSET_RATIO = 0.95;
+const INSIDER_TIMING_COLLISION_DISTANCE_RATIO = 0.9;
+const INSIDER_TIMING_COLLISION_OFFSET_RATIO = 2.2;
 
 let pricePayload = null;
 let macroRows = [];
 let creditRows = [];   // KOFIA credit balance seed data (credit_data.json)
+let crisisRows = [];
 let disclosureRows = [];
 let disclosureManifest = null;
 let disclosureSeedLoadPromises = new Map();
@@ -452,6 +484,9 @@ let dartCorpCodeLoadedShards = new Set();
 let dartCorpCodeMapPromises = new Map();
 let dartDisclosureTickerRefreshPromises = new Map();
 let activeMonths = 120;
+let chartHistoryPosition = 1;
+let chartHistorySliderController = null;
+let lastHistoryWindowState = null;
 let hiddenSeries = new Set(["customer_deposit", "kospi_credit", "^KQ11", "kosdaq_credit"]);
 let hiddenAuxiliarySeries = new Set();
 let customStocks = [];
@@ -514,11 +549,23 @@ let hoverShowPopup = false;
 let showDisclosures = true;
 let showInsiderTrades = false;
 let showCoMovement = false;
+let showRecessionSignals = false;
+let adminAccessGranted = false;
+let lastRecessionSignalCount = 0;
+let lastMarketTimingBuyCount = 0;
+let lastMarketTimingSellCount = 0;
+let marketTimingModelCache = new Map();
 let showAiForecast = false;
+let trimAiForecastRangeOnNextRender = false;
+let revealAiForecastRangeOnNextRender = false;
+let aiForecastToggleRevision = 0;
 let lastAiForecastTraceCount = 0;
 let aiAnalysisByTicker = new Map();
 let aiAnalysisPromises = new Map();
 let aiAnalysisPendingTickers = new Set();
+let aiContextPendingTickers = new Set();
+let aiRotationSeriesByTicker = new Map();
+let aiRotationSeriesPromise = null;
 let aiMarketModel = null;
 let aiMarketModelPromise = null;
 let aiMarketModelLoadSettled = false;
@@ -527,7 +574,14 @@ let aiForecastJournalQueued = new Set();
 let aiForecastWorker = null;
 let aiForecastWorkerSeq = 0;
 let aiForecastWorkerRequests = new Map();
+let aiForecastTargetSeries = new Set();
+let aiForecastTargetRevision = 0;
+let aiForecastResultBySeries = new Map();
+let aiForecastDeferredSeries = new Set();
+let aiForecastCalculationCounts = new Map();
+let aiForecastDeferredRenderId = 0;
 let aiForecastProgressActive = false;
+let aiForecastProgressValue = 0;
 let aiForecastProgressHideTimer = 0;
 let showMacdOscillator = false;
 let lastMacdTraceCount = 0;
@@ -537,6 +591,8 @@ let macdHandlerSet = false;
 let isHandleDragging = false;
 let pinnedXRange = null;
 let autoChartReset = true;
+let lockedChartFrame = null;
+let lockedHistoryYRange = null;
 let pendingAutoChartFit = false;
 let hoverSyncing = false;
 let cursorSyncing = false;
@@ -544,12 +600,14 @@ let cursorMoveBound = false;
 let renderChartRafId = 0;
 let pendingRenderPreserveZoom = true;
 let mainChartRenderInFlight = 0;
+let mainChartRenderPromise = null;
 let pendingChartRenderAfterFlight = false;
 let disclosureTraceRefreshQueued = false;
 let disclosureTraceRefreshRafId = 0;
 let deferredRenderTimer = 0;
 let pendingDeferredRenderPreserveZoom = true;
 let handleUpdateTimer = 0;
+let viewportAutoFitTimer = 0;
 let viewportSyncTimer = 0;
 let pendingViewportSync = new Map();
 let disclosureHoverTimer = 0;
@@ -606,6 +664,66 @@ function initE2eDebugAccess() {
       },
       getRefreshPhaseStats() {
         return { ...runtimeRefreshPhaseStats };
+      },
+      getCrisisSignalStats() {
+        const entries = collectCrisisSignalEntries(crisisRows);
+        return {
+          rows: crisisRows.length,
+          entries: entries.length,
+          visibleEntries: entries.filter((row) => row.date >= currentStart && row.date <= currentEnd).length,
+          enabled: showRecessionSignals,
+          renderedMarkers: lastRecessionSignalCount,
+          buyMarkers: lastMarketTimingBuyCount,
+          sellMarkers: lastMarketTimingSellCount,
+          firstDate: crisisRows[0]?.date || "",
+          latestDate: crisisRows.at(-1)?.date || "",
+        };
+      },
+      getTimingMarkerPixelGaps() {
+        const chart = document.getElementById("chart");
+        const axis = chart?._fullLayout?.yaxis;
+        const models = currentMainChartModel?.seriesModels || [];
+        const selected = currentMainChartModel?.selected || [];
+        if (!axis || typeof axis.d2p !== "function" || !models.length) return [];
+        const pointIndex = buildDisclosurePointIndex(models, new Set(selected));
+        return (chart.data || []).flatMap((trace) => {
+          if (!trace?.meta?.isMarketTimingBuyTrace && !trace?.meta?.isMarketTimingSellTrace) return [];
+          return (trace.x || []).flatMap((date, index) => {
+            const ticker = selected.find((series) => labelName(series) === trace.customdata?.[index]?.[0]);
+            const point = findPointOnOrAfterDate(date, ticker, pointIndex, 4);
+            const markerY = Number(trace.y?.[index]);
+            return point && Number.isFinite(markerY)
+              ? [Math.abs(axis.d2p(markerY) - axis.d2p(point.y))]
+              : [];
+          });
+        });
+      },
+      getInsiderTradeState() {
+        return {
+          enabled: showInsiderTrades,
+          rows: insiderTradeRows.length,
+          loadedTickers: [...insiderTradeLoadedTickers],
+          pendingTickers: [...insiderTradePendingTickers],
+          visibleTickers: visibleAiAnalysisTickers(),
+          gatewayReady: canUseDartGateway(),
+        };
+      },
+      getAiForecastState() {
+        return {
+          enabled: showAiForecast,
+          targets: [...aiForecastTargetSeries].sort(),
+          deferredTargets: [...aiForecastDeferredSeries].sort(),
+          cachedTargets: [...aiForecastResultBySeries.keys()].sort(),
+          calculationCounts: Object.fromEntries(aiForecastCalculationCounts),
+          analysisPending: activeAiAnalysisTickers()
+            .filter((ticker) => aiAnalysisPendingTickers.has(ticker))
+            .sort(),
+          renderedTargets: [...new Set((document.getElementById("chart")?.data || [])
+            .filter((trace) => trace?.meta?.isAiForecastTrace)
+            .map((trace) => String(trace?.meta?.seriesKey || "")))]
+            .filter(Boolean)
+            .sort(),
+        };
       },
       getChartWorkerStats() {
         return {
@@ -736,6 +854,7 @@ function saveState() {
   try {
     appStateStore.write({
       activeMonths,
+      chartHistoryPosition,
       hiddenSeries: [...hiddenSeries],
       hiddenAuxiliarySeries: [...hiddenAuxiliarySeries],
       customStocks,
@@ -746,7 +865,7 @@ function saveState() {
       showDisclosures,
       showInsiderTrades,
       showCoMovement,
-      showAiForecast,
+      showRecessionSignals,
       showMacdOscillator,
       autoChartReset,
     });
@@ -754,24 +873,30 @@ function saveState() {
 }
 
 function loadState() {
+  showAiForecast = false;
   try {
     const p = appStateStore.read(null);
     if (!p) return;
     if (typeof p.activeMonths === "number") activeMonths = p.activeMonths;
+    if (typeof p.chartHistoryPosition === "number") {
+      chartHistoryPosition = Math.max(0, Math.min(1, p.chartHistoryPosition));
+    }
     if (Array.isArray(p.hiddenSeries)) hiddenSeries = new Set(p.hiddenSeries);
     if (Array.isArray(p.hiddenAuxiliarySeries)) {
       hiddenAuxiliarySeries = new Set(p.hiddenAuxiliarySeries);
     }
-    if (p.seriesOffsets && typeof p.seriesOffsets === "object") seriesOffsets = p.seriesOffsets;
-    if (p.seriesScales && typeof p.seriesScales === "object") seriesScales = p.seriesScales;
+    if (typeof p.autoChartReset === "boolean") autoChartReset = p.autoChartReset;
+    if (!autoChartReset) {
+      if (p.seriesOffsets && typeof p.seriesOffsets === "object") seriesOffsets = p.seriesOffsets;
+      if (p.seriesScales && typeof p.seriesScales === "object") seriesScales = p.seriesScales;
+    }
     if (typeof p.creditOffset === "number") CREDIT_OFFSET_DAYS = Math.abs(p.creditOffset);
     if (typeof p.hoverShowPopup === "boolean") hoverShowPopup = p.hoverShowPopup;
     if (typeof p.showDisclosures === "boolean") showDisclosures = p.showDisclosures;
     if (typeof p.showInsiderTrades === "boolean") showInsiderTrades = p.showInsiderTrades;
     if (typeof p.showCoMovement === "boolean") showCoMovement = p.showCoMovement;
-    if (typeof p.showAiForecast === "boolean") showAiForecast = p.showAiForecast;
+    if (typeof p.showRecessionSignals === "boolean") showRecessionSignals = p.showRecessionSignals;
     if (typeof p.showMacdOscillator === "boolean") showMacdOscillator = p.showMacdOscillator;
-    if (typeof p.autoChartReset === "boolean") autoChartReset = p.autoChartReset;
     if (Array.isArray(p.customStocks)) customStocks = sanitizeCustomStocks(p.customStocks);
     applyCustomStockDisplayNames();
   } catch (_) {}
@@ -923,6 +1048,7 @@ function getSnapshotComponent(name) {
     if (name === "macro") return normalizePayloadRecords(macroRows);
     if (name === "credit") return normalizeCreditRows(creditRows);
     if (name === "adr") return normalizePayloadRecords(adrRows);
+    if (name === "crisis") return normalizeCrisisSignalRows(crisisRows);
     if (name === "disclosure") return sanitizeDisclosureRows(disclosureRows);
     return null;
   });
@@ -991,9 +1117,12 @@ function applyRuntimeDataSnapshot(snapshot) {
   const safeMacroRows = normalizePayloadRecords(snapshot.macroRows);
   const safeCreditRows = normalizeCreditRows(snapshot.creditRows);
   const safeAdrRows = normalizePayloadRecords(snapshot.adrRows);
+  const safeCrisisRows = normalizeCrisisSignalRows(snapshot.crisisRows);
   const safeDisclosureRows = sanitizeDisclosureRows(snapshot.disclosureRows);
 
-  if (!safePricePayload && !safeMacroRows.length && !safeCreditRows.length && !safeAdrRows.length && !safeDisclosureRows.length) return false;
+  // A restored view cannot render without prices; reload the seed instead of accepting a partial snapshot.
+  if (!safePricePayload?.records?.length) return false;
+  if (!safePricePayload && !safeMacroRows.length && !safeCreditRows.length && !safeAdrRows.length && !safeCrisisRows.length && !safeDisclosureRows.length) return false;
 
   const loadedNames = [];
   if (safePricePayload) {
@@ -1013,6 +1142,10 @@ function applyRuntimeDataSnapshot(snapshot) {
     adrRows = safeAdrRows;
     loadedNames.push("adr");
   }
+  if (Array.isArray(snapshot.crisisRows)) {
+    crisisRows = safeCrisisRows;
+    loadedNames.push("crisis");
+  }
   if (Array.isArray(snapshot.disclosureRows)) {
     disclosureRows = safeDisclosureRows;
     loadedNames.push("disclosure");
@@ -1025,7 +1158,8 @@ function applyRuntimeDataSnapshot(snapshot) {
         : name === "macro" ? safeMacroRows
           : name === "credit" ? safeCreditRows
             : name === "adr" ? safeAdrRows
-              : safeDisclosureRows,
+              : name === "crisis" ? safeCrisisRows
+                : safeDisclosureRows,
     );
   });
   runtimeSnapshotPersistedRevisions = snapshot._persistedRevisions
@@ -1105,6 +1239,72 @@ function scheduleGranularCacheCleanup() {
 
 function readRuntimeSnapshotFromLocalStorage() {
   return runtimeSnapshotLocalStore.read(null);
+}
+
+function loadAdminAccessState() {
+  try {
+    adminAccessGranted = localStorage.getItem(ADMIN_ACCESS_STORAGE_KEY) === ADMIN_ACCESS_HASH;
+  } catch (_) {
+    adminAccessGranted = false;
+  }
+}
+
+function saveAdminAccessState(enabled) {
+  adminAccessGranted = Boolean(enabled);
+  try {
+    if (adminAccessGranted) localStorage.setItem(ADMIN_ACCESS_STORAGE_KEY, ADMIN_ACCESS_HASH);
+    else localStorage.removeItem(ADMIN_ACCESS_STORAGE_KEY);
+  } catch (_) {}
+}
+
+function enforceGeneralModeState() {
+  if (adminAccessGranted) return;
+  showDisclosures = false;
+  showRecessionSignals = false;
+  showCoMovement = false;
+  showInsiderTrades = false;
+  showMacdOscillator = false;
+  if (showAiForecast) aiForecastToggleRevision += 1;
+  showAiForecast = false;
+  refreshAiForecastTargets();
+  revealAiForecastRangeOnNextRender = false;
+  trimAiForecastRangeOnNextRender = true;
+  stopAiForecastProgress();
+}
+
+function syncAdminFeatureAccess() {
+  ADMIN_FEATURE_BUTTON_IDS.forEach((id) => {
+    const button = document.getElementById(id);
+    if (!button) return;
+    button.disabled = !adminAccessGranted;
+    button.classList.toggle("is-admin-locked", !adminAccessGranted);
+    button.setAttribute("aria-disabled", adminAccessGranted ? "false" : "true");
+    if (!adminAccessGranted) button.title = "관리자 모드에서 사용할 수 있습니다.";
+  });
+}
+
+function applyAdminAccessState(enabled, options = {}) {
+  saveAdminAccessState(enabled);
+  if (!adminAccessGranted) enforceGeneralModeState();
+  syncRecessionToggleButton();
+  syncCoMovementToggleButton();
+  syncAiForecastToggleButton();
+  syncDisclosureToggleButton();
+  syncInsiderTradeToggleButton(0);
+  syncMacdToggleButton(0);
+  syncAdminFeatureAccess();
+  renderCoMovementPanel();
+  saveState();
+  if (options.render !== false) requestChartCompositionUpdate();
+}
+
+async function sha256Hex(value) {
+  if (!globalThis.crypto?.subtle || typeof TextEncoder !== "function") return "";
+  const bytes = new TextEncoder().encode(String(value || ""));
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 function writeRuntimeSnapshotToLocalStorage(snapshot) {
@@ -1385,6 +1585,7 @@ function syncDisclosureToggleButton() {
   const btn = document.getElementById("disclosureToggle");
   if (!btn) return;
   btn.classList.toggle("is-active", showDisclosures);
+  btn.setAttribute("aria-pressed", showDisclosures ? "true" : "false");
   btn.textContent = "공시";
   btn.title = showDisclosures
     ? "공시 마커 켜짐"
@@ -1485,6 +1686,12 @@ function renderDataFreshness() {
         fear_greed: DEFAULT_SERIES_POLICIES.fear_greed,
       },
     },
+    {
+      label: "침체신호",
+      rows: crisisRows,
+      keys: ["score"],
+      staleDays: 10,
+    },
   ]);
 
   el.innerHTML = items.map((item) => {
@@ -1532,10 +1739,39 @@ function setupApiSettingsPanel(msgEl) {
   const diagnosticsClearBtn = document.getElementById("performanceDiagnosticsClearBtn");
   const dartGatewayTokenInput = document.getElementById("dartGatewayTokenInput");
   const dartGatewayTokenSaveBtn = document.getElementById("dartGatewayTokenSaveBtn");
+  const dartGatewayTokenStatus = document.getElementById("dartGatewayTokenStatus");
+  const adminAccessCodeInput = document.getElementById("adminAccessCodeInput");
+  const adminAccessCodeBtn = document.getElementById("adminAccessCodeBtn");
+  const adminAccessStatus = document.getElementById("adminAccessStatus");
+
+  const setAccessStatus = (element, message = "", isError = false) => {
+    if (!element) return;
+    element.textContent = message;
+    element.hidden = !message;
+    element.classList.toggle("is-error", Boolean(message) && isError);
+  };
+
+  const syncAdminAccessUi = () => {
+    if (adminAccessStatus) {
+      adminAccessStatus.textContent = adminAccessGranted
+        ? "관리자 모드: 공시·내부거래·동행율·타이밍·AI·MACD 기능을 사용할 수 있습니다."
+        : "일반 모드: 공시·내부거래·동행율·타이밍·AI·MACD 기능이 잠겨 있습니다.";
+      adminAccessStatus.classList.toggle("is-active", adminAccessGranted);
+      adminAccessStatus.classList.remove("is-error");
+      adminAccessStatus.hidden = false;
+    }
+    if (adminAccessCodeInput && adminAccessGranted) {
+      adminAccessCodeInput.value = ADMIN_ACCESS_MASK;
+    }
+    if (adminAccessCodeBtn) adminAccessCodeBtn.textContent = adminAccessGranted ? "해제" : "인증";
+  };
 
   const close = () => { modal.hidden = true; };
   const open = () => {
     if (dartGatewayTokenInput) dartGatewayTokenInput.value = getDartGatewayAccessToken();
+    setAccessStatus(dartGatewayTokenStatus);
+    if (adminAccessCodeInput) adminAccessCodeInput.value = "";
+    syncAdminAccessUi();
     modal.hidden = false;
   };
   const renderDiagnostics = async () => {
@@ -1605,6 +1841,43 @@ function setupApiSettingsPanel(msgEl) {
       }
     }
   });
+  adminAccessCodeBtn?.addEventListener("click", async () => {
+    if (adminAccessGranted) {
+      applyAdminAccessState(false);
+      if (adminAccessCodeInput) adminAccessCodeInput.value = "";
+      syncAdminAccessUi();
+      setMessage(msgEl, ["관리자 모드를 해제하고 일반 모드로 전환했습니다."]);
+      return;
+    }
+    const accessCode = String(adminAccessCodeInput?.value || "").trim();
+    if (!/^\d{10}$/.test(accessCode)) {
+      setAccessStatus(adminAccessStatus, "접속코드가 틀렸습니다.", true);
+      return;
+    }
+    adminAccessCodeBtn.setAttribute("disabled", "");
+    try {
+      const accessHash = await sha256Hex(accessCode);
+      if (!accessHash || accessHash !== ADMIN_ACCESS_HASH) {
+        setAccessStatus(adminAccessStatus, "접속코드가 틀렸습니다.", true);
+        return;
+      }
+      applyAdminAccessState(true);
+      if (adminAccessCodeInput) adminAccessCodeInput.value = "";
+      syncAdminAccessUi();
+      setMessage(msgEl, ["관리자 모드가 활성화되었습니다."]);
+    } finally {
+      adminAccessCodeBtn.removeAttribute("disabled");
+    }
+  });
+  adminAccessCodeInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") adminAccessCodeBtn?.click();
+  });
+  adminAccessCodeInput?.addEventListener("input", () => {
+    if (adminAccessStatus?.classList.contains("is-error")) syncAdminAccessUi();
+  });
+  dartGatewayTokenInput?.addEventListener("input", () => {
+    setAccessStatus(dartGatewayTokenStatus);
+  });
   dartGatewayTokenSaveBtn?.addEventListener("click", async () => {
     const accessToken = String(dartGatewayTokenInput?.value || "").trim();
     if (!accessToken) {
@@ -1614,18 +1887,16 @@ function setupApiSettingsPanel(msgEl) {
       } catch (_) {}
       syncApiOptionsButton();
       close();
-      setMessage(msgEl, ["DART 개인 접속 코드를 이 기기에서 지웠습니다."]);
+      setMessage(msgEl, ["Think Stock 접속 코드를 이 기기에서 지웠습니다."]);
       return;
     }
     dartGatewayTokenSaveBtn.setAttribute("disabled", "");
-    setMessage(msgEl, ["DART 개인 접속 코드를 확인하고 있습니다."]);
+    setAccessStatus(dartGatewayTokenStatus, "Think Stock 접속 코드를 확인하고 있습니다.");
+    setMessage(msgEl, ["Think Stock 접속 코드를 확인하고 있습니다."]);
     try {
       const validation = await validateDartGatewayAccessToken(accessToken);
       if (!validation.ok) {
-        setMessage(msgEl, [
-          "개인 접속 코드가 올바르지 않아 저장하지 않았습니다.",
-          ".env.local의 THINKSTOCK_ACCESS_TOKEN 값을 확인해 주세요.",
-        ], true);
+        setAccessStatus(dartGatewayTokenStatus, "접속코드가 틀렸습니다.", true);
         return;
       }
       dartGatewaySettingsStore.save({ accessToken });
@@ -1633,8 +1904,13 @@ function setupApiSettingsPanel(msgEl) {
       if (dartGatewayTokenInput) dartGatewayTokenInput.value = accessToken;
       syncApiOptionsButton();
       close();
-      setMessage(msgEl, ["확인된 DART 개인 접속 코드를 이 기기에 저장했습니다."]);
+      setMessage(msgEl, ["확인된 Think Stock 접속 코드를 이 기기에 저장했습니다."]);
     } catch (error) {
+      setAccessStatus(
+        dartGatewayTokenStatus,
+        `Think Stock 접속 코드를 확인하지 못했습니다: ${error.message}`,
+        true,
+      );
       setMessage(msgEl, [`접속 코드를 확인하지 못했습니다: ${error.message}`], true);
     } finally {
       dartGatewayTokenSaveBtn.removeAttribute("disabled");
@@ -1642,6 +1918,7 @@ function setupApiSettingsPanel(msgEl) {
   });
 
   syncApiOptionsButton();
+  syncAdminAccessUi();
 }
 function shiftMonths(dateStr, months) {
   const d = new Date(`${dateStr}T00:00:00`);
@@ -1746,7 +2023,13 @@ function configureExactDateEventHover(chartEl, evtData) {
     const inputTrace = chartEl.data?.[curveNumber];
     const fullTrace = chartEl._fullData?.[curveNumber];
     const meta = fullTrace?.meta || inputTrace?.meta;
-    if (!meta?.isDisclosureTrace && !meta?.isInsiderTradeTrace) continue;
+    if (
+      !meta?.isDisclosureTrace
+      && !meta?.isInsiderTradeTrace
+      && !meta?.isCrisisSignalTrace
+      && !meta?.isMarketTimingBuyTrace
+      && !meta?.isMarketTimingSellTrace
+    ) continue;
     const dates = Array.isArray(inputTrace?.x) ? inputTrace.x : fullTrace?.x || [];
     const hasExactDate = dates.some((date) => String(date || "").slice(0, 10) === anchorDate);
     if (inputTrace) inputTrace.hoverinfo = hasExactDate ? "all" : "skip";
@@ -1867,6 +2150,76 @@ function getCurrentXRangeMs(sourceEl) {
   const r1 = toMsSafe(range[1]);
   if (!Number.isFinite(r0) || !Number.isFinite(r1) || r1 <= r0) return null;
   return [r0, r1];
+}
+
+function getChartDataRangeMs(sourceEl) {
+  let start = Infinity;
+  let end = -Infinity;
+  (sourceEl?.data || []).forEach((trace) => {
+    if (trace?.visible === "legendonly"
+      || trace?.meta?.isDisclosureTrace
+      || trace?.meta?.isInsiderTradeTrace
+      || trace?.meta?.isAiForecastTrace
+      || trace?.meta?.isAiForecastScenarioTrace
+      || !Array.isArray(trace?.x)) return;
+    for (let i = 0; i < trace.x.length; i += 1) {
+      const ms = toMsSafe(trace.x[i]);
+      if (Number.isFinite(ms)) {
+        start = Math.min(start, ms);
+        break;
+      }
+    }
+    for (let i = trace.x.length - 1; i >= 0; i -= 1) {
+      const ms = toMsSafe(trace.x[i]);
+      if (Number.isFinite(ms)) {
+        end = Math.max(end, ms);
+        break;
+      }
+    }
+  });
+  return Number.isFinite(start) && Number.isFinite(end) && end > start ? [start, end] : null;
+}
+
+function clampChartViewportToObservedData() {
+  const el = document.getElementById("chart");
+  const viewRange = getCurrentXRangeMs(el);
+  const dataRange = getChartDataRangeMs(el);
+  if (!viewRange || !dataRange || viewRange[1] <= dataRange[1]) return false;
+
+  const start = Math.min(viewRange[0], dataRange[1] - DAY_MS);
+  pinnedXRange = [
+    new Date(start).toISOString(),
+    new Date(dataRange[1]).toISOString(),
+  ];
+  return true;
+}
+
+function syncHistorySliderToViewport(startValue, endValue) {
+  const dataRange = getChartDataRangeMs(document.getElementById("chart"));
+  const start = toMsSafe(startValue);
+  const end = toMsSafe(endValue);
+  const dataSpan = dataRange?.[1] - dataRange?.[0];
+  const viewSpan = end - start;
+  const travel = dataSpan - viewSpan;
+  if (!chartHistorySliderController || !(viewSpan > 0) || !(travel > dataSpan * 0.005)) return false;
+  const position = Math.max(0, Math.min(1, (start - dataRange[0]) / travel));
+  chartHistorySliderController.sync({ position });
+  return true;
+}
+
+function panZoomedViewportFromSlider(position) {
+  const el = document.getElementById("chart");
+  const viewRange = getCurrentXRangeMs(el);
+  const dataRange = getChartDataRangeMs(el);
+  const viewSpan = viewRange?.[1] - viewRange?.[0];
+  const dataSpan = dataRange?.[1] - dataRange?.[0];
+  const travel = dataSpan - viewSpan;
+  if (!(viewSpan > 0) || !(dataSpan > 0) || !(travel > dataSpan * 0.005)) return false;
+  const start = dataRange[0] + travel * Math.max(0, Math.min(1, position));
+  applySyncedXRangeMs(start, start + viewSpan);
+  scheduleHandleUpdate();
+  applyChartResetPolicy("viewport");
+  return true;
 }
 
 function applySyncedXRangeMs(startMs, endMs) {
@@ -2061,13 +2414,76 @@ function getDisclosureMarkerPixelIndex(el, geometry = null) {
   return chartEventLayerModule.getMarkerPixelIndex(el, {
     geometry,
     iconText: DISCLOSURE_ICON_TEXT,
+    cacheKey: "interactive-markers",
+    tracePredicate: isInteractiveChartMarkerTrace,
   });
+}
+
+function applyChartResetPolicy(change, delay = 100) {
+  if (viewportAutoFitTimer) clearTimeout(viewportAutoFitTimer);
+  viewportAutoFitTimer = 0;
+  if (change === "manual") {
+    pendingAutoChartFit = false;
+    return false;
+  }
+  if (!autoChartReset) {
+    if (change === "composition") captureLockedHistoryYRange();
+    return false;
+  }
+  if (change === "composition") {
+    pendingAutoChartFit = true;
+    return true;
+  }
+  viewportAutoFitTimer = setTimeout(() => {
+    viewportAutoFitTimer = 0;
+    if (!isViewportDragging && !isHandleDragging) fitCurrentChartRatio();
+  }, delay);
+  return true;
+}
+
+function clearAutoResetSeriesTransforms(seriesKey = "") {
+  if (!autoChartReset) return false;
+  if (seriesKey) {
+    delete seriesOffsets[seriesKey];
+    delete seriesScales[seriesKey];
+  } else {
+    seriesOffsets = {};
+    seriesScales = {};
+  }
+  mainChartCalcCache = null;
+  return true;
+}
+
+function setAutoChartReset(enabled) {
+  autoChartReset = Boolean(enabled);
+  pendingAutoChartFit = false;
+  if (viewportAutoFitTimer) clearTimeout(viewportAutoFitTimer);
+  viewportAutoFitTimer = 0;
+  if (autoChartReset) {
+    clearAutoResetSeriesTransforms();
+    lockedChartFrame = null;
+    lockedHistoryYRange = null;
+  } else captureLockedHistoryYRange();
+}
+
+function isTimingSignalTrace(trace) {
+  return Boolean(
+    trace?.meta?.isCrisisSignalTrace
+    || trace?.meta?.isMarketTimingBuyTrace
+    || trace?.meta?.isMarketTimingSellTrace
+  );
+}
+
+function isInteractiveChartMarkerTrace(trace) {
+  return Boolean(trace?.meta?.isDisclosureTrace || isTimingSignalTrace(trace));
 }
 
 function findDisclosureMarkerAtClientPoint(el, clientX, clientY, isTouch = false, geometry = null) {
   return chartEventLayerModule.findMarkerAtClientPoint(el, clientX, clientY, {
     geometry,
     iconText: DISCLOSURE_ICON_TEXT,
+    cacheKey: "interactive-markers",
+    tracePredicate: isInteractiveChartMarkerTrace,
     isTouch,
     mouseRadius: DISCLOSURE_MOUSE_HIT_RADIUS_PX,
     touchRadius: DISCLOSURE_TOUCH_HIT_RADIUS_PX,
@@ -2076,6 +2492,20 @@ function findDisclosureMarkerAtClientPoint(el, clientX, clientY, isTouch = false
 
 function openDisclosureMarkerHit(el, hit, sourceEvent) {
   const trace = el?.data?.[hit?.traceIndex];
+  if (isTimingSignalTrace(trace)) {
+    const yAxis = trace?.yaxis === "y2" ? el?._fullLayout?.yaxis2 : el?._fullLayout?.yaxis;
+    return handleTimingSignalClick({
+      event: sourceEvent,
+      points: [{
+        data: trace,
+        x: trace?.x?.[hit.pointIndex],
+        y: trace?.y?.[hit.pointIndex],
+        customdata: trace?.customdata?.[hit.pointIndex],
+        xaxis: el?._fullLayout?.xaxis,
+        yaxis: yAxis,
+      }],
+    });
+  }
   const raw = trace?.customdata?.[hit?.pointIndex]?.[0];
   if (!raw) return false;
   try {
@@ -2177,6 +2607,16 @@ function syncChartResetToggleButton() {
   button.title = autoChartReset
     ? "차트 변경 시 자동으로 세로 범위를 맞춥니다."
     : "차트 변경 시 현재 화면 비율을 유지합니다.";
+}
+
+function syncRecessionToggleButton() {
+  const button = document.getElementById("recessionToggle");
+  if (!button) return;
+  button.classList.toggle("is-active", showRecessionSignals);
+  button.setAttribute("aria-pressed", showRecessionSignals ? "true" : "false");
+  button.title = showRecessionSignals
+    ? `타이밍 켜짐 · 매수 ${lastMarketTimingBuyCount} · 매도 ${lastMarketTimingSellCount} · 침체 ${lastRecessionSignalCount}`
+    : "복합 매수 타이밍과 경기침체 위기신호";
 }
 
 function syncCoMovementToggleButton() {
@@ -2416,6 +2856,27 @@ function bindCursorMoveSync() {
     event.stopPropagation();
   };
 
+  const beginViewportDrag = (event, sourceEl, allowInitialZoom) => {
+    const startRange = getCurrentXRangeMs(sourceEl);
+    const dataRange = getChartDataRangeMs(sourceEl);
+    const isZoomed = startRange && dataRange
+      && (startRange[1] - startRange[0]) < (dataRange[1] - dataRange[0]) * 0.995;
+    if (!allowInitialZoom && !isZoomed) return false;
+    dragState = {
+      sourceEl,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      moved: false,
+    };
+    isViewportDragging = true;
+    renderDragZoomOverlay(sourceEl, event.clientX, event.clientX);
+    try { sourceEl.setPointerCapture?.(event.pointerId); } catch (_) {}
+    window.addEventListener("pointermove", onWindowPointerMove, { passive: false });
+    window.addEventListener("pointerup", onWindowPointerUp);
+    window.addEventListener("pointercancel", onWindowPointerCancel);
+    return true;
+  };
+
   const stopViewportDrag = (upEvent, cancelled = false) => {
     const st = dragState;
     if (!st || upEvent.pointerId !== st.pointerId) return;
@@ -2426,7 +2887,9 @@ function bindCursorMoveSync() {
     window.removeEventListener("pointercancel", onWindowPointerCancel);
     try { st.sourceEl.releasePointerCapture?.(st.pointerId); } catch (_) {}
     hideDragZoomOverlay(st.sourceEl);
-    if (cancelled || !st.moved) return;
+    if (cancelled || !st.moved) {
+      return;
+    }
     suppressPlotlyClickUntil = Date.now() + 700;
 
     const xStart = axisPixelToXValue(st.sourceEl, st.startClientX, true);
@@ -2438,6 +2901,8 @@ function bindCursorMoveSync() {
     const endMs = Math.max(ms0, ms1);
     if ((endMs - startMs) < DAY_MS) return;
     applySyncedXRangeMs(startMs, endMs);
+    scheduleHandleUpdate();
+    applyChartResetPolicy("viewport");
     clearTouchDoubleTapZoomState();
   };
 
@@ -2531,23 +2996,12 @@ function bindCursorMoveSync() {
       lastTouchTapAt = now;
       lastTouchTapX = event.clientX;
       lastTouchTapEl = sourceEl;
+      beginViewportDrag(event, sourceEl, false);
       return;
     }
 
     if (event.pointerType !== "mouse") return;
-    dragState = {
-      sourceEl,
-      pointerId: event.pointerId,
-      startClientX: event.clientX,
-      moved: false,
-    };
-    isViewportDragging = true;
-    renderDragZoomOverlay(sourceEl, event.clientX, event.clientX);
-    try { sourceEl.setPointerCapture?.(event.pointerId); } catch (_) {}
-    event.preventDefault();
-    window.addEventListener("pointermove", onWindowPointerMove, { passive: true });
-    window.addEventListener("pointerup", onWindowPointerUp);
-    window.addEventListener("pointercancel", onWindowPointerCancel);
+    if (beginViewportDrag(event, sourceEl, true)) event.preventDefault();
   };
 
   const onPointerMove = (event) => {
@@ -2646,9 +3100,19 @@ function bindSeriesToggleBoard() {
     btn.addEventListener("click", () => {
       const key = btn.dataset.series;
       if (!key || btn.disabled) return;
-      if (hiddenSeries.has(key)) hiddenSeries.delete(key);
-      else hiddenSeries.add(key);
+      const becomingVisible = hiddenSeries.has(key);
+      if (hiddenSeries.has(key)) {
+        hiddenSeries.delete(key);
+        clearAutoResetSeriesTransforms(key);
+      } else hiddenSeries.add(key);
       noteStockVisibilityChange(key);
+      setAiForecastTargetVisibility(key, becomingVisible);
+      if (becomingVisible && showAiForecast && isForecastSeries(String(key).toUpperCase())) {
+        startAiForecastProgress();
+        if (MACD_STOCK_PATTERN.test(String(key).toUpperCase())) {
+          refreshAiAnalysisForVisibleSeries().catch(() => {});
+        }
+      }
       requestChartCompositionUpdate();
     });
   });
@@ -2696,6 +3160,7 @@ function removeCustomStock(ticker) {
   delete seriesScales[ticker];
   delete DISPLAY_NAMES[ticker];
   loadingCustomStocks.delete(ticker);
+  setAiForecastTargetVisibility(ticker, false);
   clearTickerSeriesFromPricePayload(ticker);
   renderCustomStockButtons();
   requestChartCompositionUpdate();
@@ -3063,10 +3528,20 @@ async function addCustomStock(candidate, msgEl) {
   }
   if (loadingCustomStocks.has(candidate.ticker)) return;
 
+  const trackAiProgress = showAiForecast;
+  if (trackAiProgress) {
+    aiContextPendingTickers.add(candidate.ticker);
+    startAiForecastProgress();
+    setAiForecastProgress(5, `${candidate.name} 가격 준비`);
+    syncAiForecastToggleButton();
+  }
   loadingCustomStocks.add(candidate.ticker);
   try {
     DISPLAY_NAMES[candidate.ticker] = candidate.name;
     await ensureCustomTickerSeriesLoaded(candidate.ticker, { displayName: candidate.name });
+    if (trackAiProgress && showAiForecast) {
+      setAiForecastProgress(14, `${candidate.name} 분석 자료 준비`);
+    }
 
     customStocks.push({
       ticker: candidate.ticker,
@@ -3076,14 +3551,35 @@ async function addCustomStock(candidate, msgEl) {
     });
 
     hiddenSeries.delete(candidate.ticker);
+    setAiForecastTargetVisibility(candidate.ticker, true);
+    clearAutoResetSeriesTransforms(candidate.ticker);
     noteStockVisibilityChange(candidate.ticker);
     renderCustomStockButtons();
     saveState();
-    if (showAiForecast) requestAiAnalysisForTicker(candidate.ticker).catch(() => {});
+    const disclosureTask = preloadTickerDartData(candidate.ticker, msgEl);
+    if (showAiForecast) {
+      setAiForecastProgress(18, `${candidate.name} 공시·실적·컨센서스 준비`);
+      Promise.allSettled([
+        requestAiAnalysisForTicker(candidate.ticker),
+        Promise.resolve(disclosureTask),
+        loadAiRotationLeaderSeries(),
+      ]).finally(() => {
+        aiContextPendingTickers.delete(candidate.ticker);
+        syncAiForecastToggleButton();
+        if (showAiForecast) {
+          setAiForecastProgress(38, `${candidate.name} AI 재계산 준비`);
+          requestChartRender(lastAiForecastTraceCount > 0);
+        }
+      });
+    } else {
+      aiContextPendingTickers.delete(candidate.ticker);
+    }
     requestChartCompositionUpdate();
     setMessage(msgEl, [`${candidate.name} 종목이 추가되었습니다.`]);
-    preloadTickerDartData(candidate.ticker, msgEl);
   } catch (err) {
+    aiContextPendingTickers.delete(candidate.ticker);
+    syncAiForecastToggleButton();
+    if (trackAiProgress && !aiContextPendingTickers.size) stopAiForecastProgress();
     delete DISPLAY_NAMES[candidate.ticker];
     setMessage(msgEl, `종목 추가 중 오류가 발생했습니다: ${err.message}`, true);
   } finally {
@@ -3432,12 +3928,47 @@ function getMainChartCalcCacheKey(priceRows, start, end, displayBudget) {
     [...hiddenSeries].sort().join(","),
     sortedObjectSignature(seriesOffsets),
     sortedObjectSignature(seriesScales),
+    autoChartReset ? "auto-frame" : [
+      sortedObjectSignature(lockedChartFrame?.normBases || {}),
+      sortedObjectSignature(lockedChartFrame?.autoScales || {}),
+    ].join("|"),
     displayBudget,
   ].join("::");
 }
 
 function getChartModelDataKey(priceRows) {
   return dataRevisionSignature("price", "macro", "credit");
+}
+
+function finiteSeriesMap(source) {
+  return Object.fromEntries(Object.entries(source || {}).filter(([, value]) => (
+    Number.isFinite(Number(value)) && Math.abs(Number(value)) > 1e-9
+  )));
+}
+
+function captureLockedChartFrame(model = currentMainChartModel) {
+  if (autoChartReset || !model) return;
+  const mergedAutoScales = {
+    ...finiteSeriesMap(model.autoScales),
+    ...finiteSeriesMap(lockedChartFrame?.autoScales),
+  };
+  lockedChartFrame = {
+    // Existing entries win so moving the history window cannot silently rebase a visible series.
+    normBases: {
+      ...finiteSeriesMap(model.normBases),
+      ...finiteSeriesMap(lockedChartFrame?.normBases),
+    },
+    autoScales: mergedAutoScales,
+  };
+}
+
+function captureLockedHistoryYRange() {
+  if (autoChartReset) return;
+  captureLockedChartFrame();
+  const range = document.getElementById("chart")?._fullLayout?.yaxis?.range;
+  if (Array.isArray(range) && range.length >= 2 && range.every((value) => Number.isFinite(Number(value)))) {
+    lockedHistoryYRange = [Number(range[0]), Number(range[1])];
+  }
 }
 
 function buildMainChartModel(priceRows, start, end, allowedSeries) {
@@ -3460,25 +3991,15 @@ function buildMainChartModel(priceRows, start, end, allowedSeries) {
     selected.push(...fallback.slice(0, 2));
   }
 
-  const commonNormBases = {};
-  const firstDates = selected.map((s) => {
-    const r = rows.find((row) => toNum(row[s]) !== null);
-    return r ? r.date : null;
-  }).filter(Boolean);
-  const commonBaseDate = firstDates.length ? firstDates.reduce((mx, d) => (d > mx ? d : mx)) : null;
-  if (commonBaseDate) {
-    selected.forEach((s) => {
-      const r = rows.find((row) => row.date >= commonBaseDate && toNum(row[s]) !== null);
-      commonNormBases[s] = r ? toNum(r[s]) : null;
-    });
-  }
+  const fixedFrame = autoChartReset ? null : lockedChartFrame;
+  const commonNormBases = resolveNormalizationBases(rows, selected, fixedFrame?.normBases);
 
   const visibleForAuto = selected.filter((s) => !hiddenSeries.has(s));
-  const autoScales = autoFitScales(
+  const autoScales = mergeFixedAutoScales(autoFitScales(
     rows,
     visibleForAuto.length ? visibleForAuto : selected,
     commonNormBases,
-  );
+  ), fixedFrame?.autoScales);
   const seriesModels = selected.map((series) => {
     const rawValues = rows.map((r) => toNum(r[series]));
     const rawTexts = rawValues.map((v) => formatActualValue(v));
@@ -3502,7 +4023,7 @@ function buildMainChartModel(priceRows, start, end, allowedSeries) {
     return { series, rawTexts, baseLineWidth, xValues, values, baseValues };
   });
 
-  return { rows, allSeries, selected, seriesModels };
+  return { rows, allSeries, selected, seriesModels, normBases: commonNormBases, autoScales };
 }
 
 async function buildMainChartModelOffThread(priceRows, start, end, allowedSeries, displayBudget) {
@@ -3519,6 +4040,8 @@ async function buildMainChartModelOffThread(priceRows, start, end, allowedSeries
     hiddenSeries: [...hiddenSeries],
     seriesOffsets: { ...seriesOffsets },
     seriesScales: { ...seriesScales },
+    fixedNormBases: autoChartReset ? null : { ...(lockedChartFrame?.normBases || {}) },
+    fixedAutoScales: autoChartReset ? null : { ...(lockedChartFrame?.autoScales || {}) },
     displayBudget,
   });
   if (!result) return null;
@@ -3530,6 +4053,8 @@ async function buildMainChartModelOffThread(priceRows, start, end, allowedSeries
     allSeries: Array.isArray(result.allSeries) ? result.allSeries : [],
     selected: Array.isArray(result.selected) ? result.selected : [],
     seriesModels,
+    normBases: result.normBases && typeof result.normBases === "object" ? result.normBases : {},
+    autoScales: result.autoScales && typeof result.autoScales === "object" ? result.autoScales : {},
     displayIndexes: Array.isArray(result.displayIndexes) ? result.displayIndexes : null,
   };
 }
@@ -3592,21 +4117,7 @@ function pickByIndexes(values, indexes) {
 }
 
 function keepFiniteTracePoints(xValues, yValues, textValues, baseValues) {
-  const firstFinite = yValues.findIndex(Number.isFinite);
-  let lastFinite = yValues.length - 1;
-  while (lastFinite >= 0 && !Number.isFinite(yValues[lastFinite])) lastFinite -= 1;
-  if (firstFinite < 0 || lastFinite < firstFinite) return { x: [], y: [], text: [], base: [] };
-  const x = [];
-  const y = [];
-  const text = [];
-  const base = [];
-  for (let index = firstFinite; index <= lastFinite; index += 1) {
-    x.push(xValues[index]);
-    y.push(Number.isFinite(yValues[index]) ? yValues[index] : null);
-    text.push(textValues[index]);
-    base.push(Number.isFinite(baseValues[index]) ? baseValues[index] : null);
-  }
-  return { x, y, text, base };
+  return mainChartRenderer.finiteTracePoints(xValues, yValues, textValues, baseValues);
 }
 
 function thinIndexList(indexes, budget, rowCount, requiredIndexes = []) {
@@ -3709,15 +4220,12 @@ function updateHandles() {
     const key = currentSelected[i];
     if (!key) return;
 
-    let firstY = null;
-    for (let j = 0; j < trace.y.length; j++) {
-      if (trace.y[j] !== null) { firstY = trace.y[j]; break; }
-    }
-    let lastY = null;
-    for (let j = trace.y.length - 1; j >= 0; j--) {
-      if (trace.y[j] !== null) { lastY = trace.y[j]; break; }
-    }
-    if (firstY === null) return;
+    const { first: firstY, last: lastY } = mainChartRenderer.visibleEndpointValues(
+      trace,
+      trace.y,
+      xa.range,
+    );
+    if (!Number.isFinite(firstY) || !Number.isFinite(lastY)) return;
 
     const firstFrac = (firstY - ya.range[0]) / (ya.range[1] - ya.range[0]);
     const leftPixelY = ya._offset + ya._length * (1 - firstFrac);
@@ -3774,9 +4282,19 @@ function mainSeriesTraceIndex(el, seriesKey, preferredIndex = null) {
 function positionSeriesHandles(el, seriesKey, values) {
   const yAxis = el?._fullLayout?.yaxis;
   if (!yAxis || !Array.isArray(values)) return;
-  const first = values.find((value) => Number.isFinite(value));
-  const last = [...values].reverse().find((value) => Number.isFinite(value));
-  if (!Number.isFinite(first) || !Number.isFinite(last)) return;
+  const traceIndex = mainSeriesTraceIndex(el, seriesKey);
+  const trace = traceIndex >= 0 ? el.data[traceIndex] : null;
+  const { first, last } = mainChartRenderer.visibleEndpointValues(
+    trace,
+    values,
+    el?._fullLayout?.xaxis?.range,
+  );
+  const handles = [...document.querySelectorAll("#y-handles .y-handle")]
+    .filter((handle) => handle.dataset.seriesKey === seriesKey);
+  if (!Number.isFinite(first) || !Number.isFinite(last)) {
+    handles.forEach((handle) => { handle.hidden = true; });
+    return;
+  }
   const toTop = (value) => {
     if (typeof yAxis.l2p === "function") return yAxis._offset + yAxis.l2p(value) - 7;
     const span = yAxis.range?.[1] - yAxis.range?.[0];
@@ -3785,9 +4303,8 @@ function positionSeriesHandles(el, seriesKey, values) {
   };
   const leftTop = toTop(first);
   const rightTop = toTop(last);
-  [...document.querySelectorAll("#y-handles .y-handle")]
-    .filter((handle) => handle.dataset.seriesKey === seriesKey)
-    .forEach((handle) => {
+  handles.forEach((handle) => {
+      handle.hidden = false;
       const top = handle.classList.contains("y-handle-left") ? leftTop : rightTop;
       if (Number.isFinite(top)) handle.style.top = `${top}px`;
     });
@@ -3831,6 +4348,47 @@ function appendEventMarkerYUpdates(el, traceIndexes, yUpdates) {
       yUpdates.push(nextDisclosureTrace.y);
       disclosureUpdated = true;
     } else if (Boolean(nextDisclosureTrace) !== (disclosureTraceIndex >= 0)) {
+      structureChanged = true;
+    }
+  }
+  if (showRecessionSignals) {
+    const nextCrisisTrace = buildCrisisSignalTrace(
+      currentMainChartModel.selected,
+      currentMainChartModel.seriesModels,
+      currentStart,
+      currentEnd,
+    );
+    const crisisTraceIndex = (el?.data || []).findIndex((trace) => trace?.meta?.isCrisisSignalTrace);
+    if (nextCrisisTrace && crisisTraceIndex >= 0) {
+      traceIndexes.push(crisisTraceIndex);
+      yUpdates.push(nextCrisisTrace.y);
+    } else if (Boolean(nextCrisisTrace) !== (crisisTraceIndex >= 0)) {
+      structureChanged = true;
+    }
+    const nextTimingBuyTrace = buildMarketTimingBuyTrace(
+      currentMainChartModel.selected,
+      currentMainChartModel.seriesModels,
+      currentStart,
+      currentEnd,
+    );
+    const timingBuyTraceIndex = (el?.data || []).findIndex((trace) => trace?.meta?.isMarketTimingBuyTrace);
+    if (nextTimingBuyTrace && timingBuyTraceIndex >= 0) {
+      traceIndexes.push(timingBuyTraceIndex);
+      yUpdates.push(nextTimingBuyTrace.y);
+    } else if (Boolean(nextTimingBuyTrace) !== (timingBuyTraceIndex >= 0)) {
+      structureChanged = true;
+    }
+    const nextTimingSellTrace = buildMarketTimingSellTrace(
+      currentMainChartModel.selected,
+      currentMainChartModel.seriesModels,
+      currentStart,
+      currentEnd,
+    );
+    const timingSellTraceIndex = (el?.data || []).findIndex((trace) => trace?.meta?.isMarketTimingSellTrace);
+    if (nextTimingSellTrace && timingSellTraceIndex >= 0) {
+      traceIndexes.push(timingSellTraceIndex);
+      yUpdates.push(nextTimingSellTrace.y);
+    } else if (Boolean(nextTimingSellTrace) !== (timingSellTraceIndex >= 0)) {
       structureChanged = true;
     }
   }
@@ -3878,7 +4436,7 @@ function restyleLive(traceIndex, seriesKey) {
   getChartVisualFrameCoordinator().schedule({
     seriesKey,
     traceIndex,
-    markers: showInsiderTrades || showDisclosures,
+    markers: showInsiderTrades || showDisclosures || showRecessionSignals,
     handles: true,
     reason: "series-transform",
   });
@@ -3887,13 +4445,12 @@ function restyleLive(traceIndex, seriesKey) {
 function finishTraceYEdit(rebuildForDisclosures = true, seriesKey = "") {
   getChartVisualFrameCoordinator().flush();
   saveState();
+  applyChartResetPolicy("manual");
   if (showAiForecast) {
-    pendingAutoChartFit = autoChartReset;
     requestAnimationFrame(() => requestChartRender(true));
     return;
   }
   updateHandles();
-  if (autoChartReset) requestAnimationFrame(fitCurrentChartRatio);
   saveLastRuntimeSnapshot().catch(() => {});
 }
 
@@ -4002,7 +4559,7 @@ function addDragListeners(pointerId, onMove, onEnd) {
 }
 
 function requestChartCompositionUpdate() {
-  pendingAutoChartFit = autoChartReset;
+  applyChartResetPolicy("composition");
   saveState();
   requestChartRender(true);
 }
@@ -4029,7 +4586,7 @@ function fitCurrentChartRatio() {
     "yaxis.autorange": false,
   })).then(() => {
     getChartVisualFrameCoordinator().schedule({
-      markers: showDisclosures || showInsiderTrades,
+      markers: showDisclosures || showInsiderTrades || showRecessionSignals,
       handles: true,
       reason: "axis-range",
     });
@@ -4043,6 +4600,264 @@ function buildDisclosurePointIndex(seriesModels, tickers) {
 
 function findDisclosurePointOnDate(eventDate, ticker, pointIndex) {
   return chartEventLayerModule.findPointOnDate(eventDate, ticker, pointIndex);
+}
+
+function findPointOnOrAfterDate(eventDate, ticker, pointIndex, maxDays = 14) {
+  const points = pointIndex?.[ticker];
+  if (!points?.length) return null;
+  let low = 0;
+  let high = points.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (points[middle].date < eventDate) low = middle + 1;
+    else high = middle;
+  }
+  const point = points[low];
+  if (!point) return null;
+  const eventMs = Date.parse(`${eventDate}T00:00:00Z`);
+  const pointMs = Date.parse(`${point.date}T00:00:00Z`);
+  return Number.isFinite(eventMs) && Number.isFinite(pointMs) && pointMs - eventMs <= maxDays * DAY_MS
+    ? { date: point.date, y: point.y }
+    : null;
+}
+
+function collectCrisisSignalEntries(rows) {
+  const stageRank = { stable: 0, caution: 1, warning: 2, crisis: 3 };
+  let previousRank = 0;
+  const events = [];
+  (rows || []).forEach((row) => {
+    const score = toNum(row?.score);
+    const rank = stageRank[row?.stage] ?? (score >= 75 ? 3 : score >= 50 ? 2 : score >= 25 ? 1 : 0);
+    if (rank >= 2 && rank > previousRank) events.push(row);
+    previousRank = rank;
+  });
+  return events;
+}
+
+function buildCrisisSignalTrace(selected, seriesModels, start, end) {
+  lastRecessionSignalCount = 0;
+  if (!showRecessionSignals || !crisisRows.length || !seriesModels.length) return null;
+  const events = collectCrisisSignalEntries(crisisRows);
+  const indexes = ["^KS11", "^KQ11"].filter((ticker) => (
+    selected.includes(ticker) && !hiddenSeries.has(ticker)
+  ));
+  if (!indexes.length || !events.length) return null;
+  const pointIndex = buildDisclosurePointIndex(seriesModels, new Set(indexes));
+  const markerGap = chartEventMarkerGap(seriesModels, start, end);
+  const points = [];
+  events.forEach((event) => {
+    if (event.date > end) return;
+    indexes.forEach((ticker) => {
+      const point = findPointOnOrAfterDate(event.date, ticker, pointIndex);
+      if (!point || point.date < start || point.date > end) return;
+      points.push({ event, ticker, date: point.date, y: point.y + (markerGap * TIMING_MARKER_GAP_MULTIPLIER) });
+    });
+  });
+  if (!points.length) return null;
+  lastRecessionSignalCount = points.length;
+  const stageName = (stage) => stage === "crisis" ? "위기" : "경고";
+  return {
+    x: points.map((point) => point.date),
+    y: points.map((point) => point.y),
+    customdata: points.map(({ event, ticker }) => [
+      labelName(ticker),
+      stageName(event.stage),
+      event.score,
+      event.curve,
+      event.labor,
+      event.credit,
+      event.t10y2y,
+      event.t10y3m,
+      event.unemployment,
+      event.initialClaims4w,
+      event.creditSpread,
+    ]),
+    type: "scatter",
+    mode: "markers",
+    name: "침체 위기신호",
+    showlegend: false,
+    cliponaxis: false,
+    yaxis: "y",
+    hoverinfo: hoverShowPopup ? undefined : "none",
+    hovertemplate: hoverShowPopup
+      ? "<b>%{customdata[0]} 침체 %{customdata[1]} %{customdata[2]}</b>"
+        + "<br>금리 %{customdata[3]} · 고용 %{customdata[4]} · 신용 %{customdata[5]}"
+        + "<br>10Y-2Y %{customdata[6]:.2f}% · 10Y-3M %{customdata[7]:.2f}%"
+        + "<br>실업률 %{customdata[8]:.1f}% · 신규수당 4주 %{customdata[9]:,.0f}"
+        + "<br>신용스프레드 %{customdata[10]:.2f}%<extra></extra>"
+      : undefined,
+    meta: { isCrisisSignalTrace: true },
+    marker: {
+      symbol: "triangle-down",
+      size: 13,
+      color: CRISIS_SIGNAL_COLOR,
+      line: { color: "rgba(0,0,0,0.88)", width: 1.2 },
+    },
+  };
+}
+
+function getMarketTimingModel(indexKey) {
+  const records = Array.isArray(pricePayload?.records) ? pricePayload.records : [];
+  const latest = records.at(-1);
+  const cacheKey = [
+    dataRevisionSignature("price", "macro", "credit", "adr", "crisis"),
+    indexKey,
+    records.length,
+    latest?.date || "",
+    latest?.[indexKey] ?? "",
+  ].join("|");
+  if (marketTimingModelCache.has(cacheKey)) return marketTimingModelCache.get(cacheKey);
+
+  const macd = buildMacdOscillator({
+    dates: records.map((row) => row?.date),
+    prices: records.map((row) => row?.[indexKey]),
+  });
+  const model = macd ? buildMarketTimingSignals({
+    indexKey,
+    dates: macd.dates,
+    prices: macd.prices,
+    oscillator: macd.normalized,
+    adrRows,
+    macroRows,
+    creditRows,
+    crisisRows,
+  }) : null;
+  marketTimingModelCache.set(cacheKey, model);
+  while (marketTimingModelCache.size > 10) {
+    marketTimingModelCache.delete(marketTimingModelCache.keys().next().value);
+  }
+  return model;
+}
+
+function visibleMarketTimingSeries(selected, seriesModels) {
+  const available = new Set((seriesModels || []).map((model) => String(model?.series || "").toUpperCase()));
+  return (selected || []).filter((ticker) => (
+    isForecastSeries(ticker) && available.has(ticker) && !hiddenSeries.has(ticker)
+  ));
+}
+
+function buildMarketTimingBuyTrace(selected, seriesModels, start, end) {
+  lastMarketTimingBuyCount = 0;
+  if (!showRecessionSignals || !seriesModels.length) return null;
+  const timingSeries = visibleMarketTimingSeries(selected, seriesModels);
+  if (!timingSeries.length) return null;
+
+  const pointIndex = buildDisclosurePointIndex(seriesModels, new Set(timingSeries));
+  const markerGap = chartEventMarkerGap(seriesModels, start, end);
+  const points = [];
+  timingSeries.forEach((ticker) => {
+    const model = getMarketTimingModel(ticker);
+    (model?.signals || []).forEach((signal) => {
+      if (signal.date > end) return;
+      const point = findPointOnOrAfterDate(signal.date, ticker, pointIndex, 4);
+      if (!point || point.date < start || point.date > end) return;
+      points.push({ signal, ticker, date: point.date, y: point.y - (markerGap * TIMING_MARKER_GAP_MULTIPLIER) });
+    });
+  });
+  if (!points.length) return null;
+  points.sort((left, right) => left.date.localeCompare(right.date) || left.ticker.localeCompare(right.ticker));
+  lastMarketTimingBuyCount = points.length;
+  const printable = (value, digits = 1, suffix = "") => (
+    Number.isFinite(toNum(value)) ? `${toNum(value).toFixed(digits)}${suffix}` : "-"
+  );
+  return {
+    x: points.map((point) => point.date),
+    y: points.map((point) => point.y),
+    customdata: points.map(({ signal, ticker }) => [
+      labelName(ticker),
+      (signal.setupReasons || []).join(" + ") || "심리·시장폭 과매도",
+      [...(signal.sentimentTurnReasons || []), ...(signal.stabilizationReasons || [])].join(" + ") || "악화 중단",
+      (signal.triggerReasons || []).join(" + ") || "가격 반전",
+      printable(signal.adrMin),
+      printable(signal.fearMin),
+      printable(signal.leadingChange, 2),
+      printable(signal.crisis, 0),
+      printable(signal.oscillator, 3),
+      printable(signal.creditChange, 1, "%"),
+      Number.isFinite(signal.creditPercentile) ? `${Math.round(signal.creditPercentile * 100)}%` : "-",
+    ]),
+    type: "scatter",
+    mode: "markers",
+    name: "타이밍 매수신호",
+    showlegend: false,
+    cliponaxis: false,
+    yaxis: "y",
+    hoverinfo: hoverShowPopup ? undefined : "none",
+    hovertemplate: hoverShowPopup
+      ? "<b>%{customdata[0]} 매수 타이밍 · 투매 저점 확인</b>"
+        + "<br>투매 %{customdata[1]}"
+        + "<br>저점 %{customdata[2]}"
+        + "<br>반전 %{customdata[3]}"
+        + "<br>ADR 저점 %{customdata[4]} · 공포탐욕 저점 %{customdata[5]}"
+        + "<br>선행순환 변화 %{customdata[6]} · 침체점수 %{customdata[7]}"
+        + "<br>MACD %{customdata[8]} · 신용 20일 %{customdata[9]} (%{customdata[10]} 백분위)<extra></extra>"
+      : undefined,
+    meta: { isMarketTimingBuyTrace: true },
+    marker: {
+      symbol: "triangle-up",
+      size: 13,
+      color: MARKET_TIMING_BUY_COLOR,
+      line: { color: "rgba(0,0,0,0.88)", width: 1.2 },
+    },
+  };
+}
+
+function buildMarketTimingSellTrace(selected, seriesModels, start, end) {
+  lastMarketTimingSellCount = 0;
+  if (!showRecessionSignals || !seriesModels.length) return null;
+  const timingSeries = visibleMarketTimingSeries(selected, seriesModels);
+  if (!timingSeries.length) return null;
+
+  const pointIndex = buildDisclosurePointIndex(seriesModels, new Set(timingSeries));
+  const markerGap = chartEventMarkerGap(seriesModels, start, end);
+  const points = [];
+  timingSeries.forEach((ticker) => {
+    const model = getMarketTimingModel(ticker);
+    (model?.sellSignals || []).forEach((signal) => {
+      if (signal.date > end) return;
+      const point = findPointOnOrAfterDate(signal.date, ticker, pointIndex, 4);
+      if (!point || point.date < start || point.date > end) return;
+      points.push({ signal, ticker, date: point.date, y: point.y + (markerGap * TIMING_MARKER_GAP_MULTIPLIER) });
+    });
+  });
+  if (!points.length) return null;
+  points.sort((left, right) => left.date.localeCompare(right.date) || left.ticker.localeCompare(right.ticker));
+  lastMarketTimingSellCount = points.length;
+  return {
+    x: points.map((point) => point.date),
+    y: points.map((point) => point.y),
+    customdata: points.map(({ signal, ticker }) => [
+      labelName(ticker),
+      (signal.sellSetupReasons || []).join(" + ") || "과열·위기 준비",
+      (signal.sellDeteriorationReasons || []).join(" + ") || "거시 악화",
+      (signal.sellTriggerReasons || []).join(" + ") || "추세 이탈",
+      Number.isFinite(signal.creditChange) ? signal.creditChange.toFixed(1) : "-",
+      Number.isFinite(signal.creditPercentile) ? Math.round(signal.creditPercentile * 100) : "-",
+      Number.isFinite(signal.priceDrawdown60) ? signal.priceDrawdown60.toFixed(1) : "-",
+    ]),
+    type: "scatter",
+    mode: "markers",
+    name: "타이밍 매도신호",
+    showlegend: false,
+    cliponaxis: false,
+    yaxis: "y",
+    hoverinfo: hoverShowPopup ? undefined : "none",
+    hovertemplate: hoverShowPopup
+      ? "<b>%{customdata[0]} 매도 타이밍 · 상승 절정 확인</b>"
+        + "<br>과열 %{customdata[1]}"
+        + "<br>고점 %{customdata[2]}"
+        + "<br>반전 %{customdata[3]}"
+        + "<br>신용 20일 %{customdata[4]}% · 과거 1년 백분위 %{customdata[5]}%"
+        + "<br>60일 고점 대비 %{customdata[6]}%<extra></extra>"
+      : undefined,
+    meta: { isMarketTimingSellTrace: true },
+    marker: {
+      symbol: "triangle-down",
+      size: 13,
+      color: MARKET_TIMING_SELL_COLOR,
+      line: { color: "rgba(0,0,0,0.88)", width: 1.2 },
+    },
+  };
 }
 
 function chartEventMarkerGap(seriesModels, start, end) {
@@ -4125,6 +4940,47 @@ function buildDisclosureTrace(selected, seriesModels, start, end) {
   };
 }
 
+function collectTimingMarkerYByKey(selected, seriesModels, start, end, pointIndex, markerGap) {
+  const markerYs = new Map();
+  if (!showRecessionSignals) return markerYs;
+  const add = (ticker, point, offset) => {
+    if (!point || point.date < start || point.date > end) return;
+    const key = `${ticker}|${point.date}`;
+    const values = markerYs.get(key) || [];
+    values.push(point.y + offset);
+    markerYs.set(key, values);
+  };
+  visibleMarketTimingSeries(selected, seriesModels).forEach((ticker) => {
+    const model = getMarketTimingModel(ticker);
+    (model?.signals || []).forEach((signal) => {
+      if (signal.date <= end) add(
+        ticker,
+        findPointOnOrAfterDate(signal.date, ticker, pointIndex, 4),
+        -markerGap * TIMING_MARKER_GAP_MULTIPLIER,
+      );
+    });
+    (model?.sellSignals || []).forEach((signal) => {
+      if (signal.date <= end) add(
+        ticker,
+        findPointOnOrAfterDate(signal.date, ticker, pointIndex, 4),
+        markerGap * TIMING_MARKER_GAP_MULTIPLIER,
+      );
+    });
+  });
+  const crisisIndexes = ["^KS11", "^KQ11"].filter((ticker) => (
+    selected.includes(ticker) && !hiddenSeries.has(ticker)
+  ));
+  collectCrisisSignalEntries(crisisRows).forEach((event) => {
+    if (event.date > end) return;
+    crisisIndexes.forEach((ticker) => add(
+      ticker,
+      findPointOnOrAfterDate(event.date, ticker, pointIndex),
+      markerGap * TIMING_MARKER_GAP_MULTIPLIER,
+    ));
+  });
+  return markerYs;
+}
+
 function buildInsiderTradeTraces(selected, seriesModels, start, end) {
   lastInsiderTradeTraceStats = { total: insiderTradeRows.length, candidates: 0, markers: 0 };
   if (!insiderTradeRows.length || !seriesModels.length) return [];
@@ -4153,6 +5009,7 @@ function buildInsiderTradeTraces(selected, seriesModels, start, end) {
       side,
       plotDate: point.date,
       y: point.y - markerGap * INSIDER_MARKER_LINE_GAP_RATIO,
+      anchorY: point.y,
       events: [],
     };
     group.events.push(event);
@@ -4175,6 +5032,25 @@ function buildInsiderTradeTraces(selected, seriesModels, start, end) {
       : PAIRED_INSIDER_SELL_OFFSET_RATIO;
     const offset = markerGap * offsetRatio;
     group.y += group.side === "buy" ? offset : -offset;
+  });
+  const timingMarkerYByKey = collectTimingMarkerYByKey(
+    selected,
+    seriesModels,
+    start,
+    end,
+    pointIndex,
+    markerGap,
+  );
+  groups.forEach((group) => {
+    const timingYs = timingMarkerYByKey.get(`${group.ticker}|${group.plotDate}`) || [];
+    const overlapsTiming = timingYs.some((timingY) => (
+      Math.abs(group.y - timingY) < markerGap * INSIDER_TIMING_COLLISION_DISTANCE_RATIO
+    ));
+    if (overlapsTiming) {
+      // Smaller chart values render lower on screen. Keep the insider triangle
+      // below the timing triangle so same-day signals read as a vertical pair.
+      group.y = group.anchorY - markerGap * INSIDER_TIMING_COLLISION_OFFSET_RATIO;
+    }
   });
   groups.sort((left, right) => (
     left.plotDate.localeCompare(right.plotDate) || left.side.localeCompare(right.side)
@@ -4317,6 +5193,50 @@ function handleDisclosureClick(evtData) {
   }
 }
 
+function handleTimingSignalClick(evtData) {
+  const point = evtData?.points?.find((candidate) => (
+    candidate?.data?.meta?.isMarketTimingBuyTrace
+    || candidate?.data?.meta?.isMarketTimingSellTrace
+    || candidate?.data?.meta?.isCrisisSignalTrace
+  ));
+  if (!point || !isDirectDisclosureTap(evtData, point)) return false;
+  const values = Array.isArray(point.customdata) ? point.customdata : [];
+  const meta = point.data.meta || {};
+  let events;
+  if (meta.isMarketTimingBuyTrace) {
+    events = [
+      { title: "매수 타이밍 · 투매 저점 확인" },
+      { title: `투매: ${values[1] || "심리·시장폭 과매도"}` },
+      { title: `저점: ${values[2] || "신저점 재시험"}` },
+      { title: `반전: ${values[3] || "MACD 상승 다이버전스"}` },
+      { title: `ADR 저점 ${values[4] ?? "-"} · 공포탐욕 저점 ${values[5] ?? "-"}` },
+      { title: `선행순환 변화 ${values[6] ?? "-"} · 침체점수 ${values[7] ?? "-"}` },
+      { title: `MACD ${values[8] ?? "-"} · 신용 20일 ${values[9] ?? "-"} (${values[10] ?? "-"} 백분위)` },
+    ];
+  } else if (meta.isMarketTimingSellTrace) {
+    events = [
+      { title: "매도 타이밍 · 상승 절정 확인" },
+      { title: `과열: ${values[1] || "가격·신용 과열"}` },
+      { title: `고점: ${values[2] || "고점 갱신 후 탄력 둔화"}` },
+      { title: `반전: ${values[3] || "MACD 상승 탄력 반전"}` },
+      { title: `신용 20일 ${values[4] ?? "-"}% · 과거 1년 백분위 ${values[5] ?? "-"}%` },
+      { title: `60일 고점 대비 ${values[6] ?? "-"}%` },
+    ];
+  } else {
+    events = [
+      { title: `침체 ${values[1] ?? "경고"} · 종합 ${values[2] ?? "-"}점` },
+      { title: `금리 ${values[3] ?? "-"} · 고용 ${values[4] ?? "-"} · 신용 ${values[5] ?? "-"}` },
+      { title: `10Y-2Y ${values[6] ?? "-"}% · 10Y-3M ${values[7] ?? "-"}%` },
+    ];
+  }
+  showDisclosurePopover({
+    name: values[0] || point.data.name || "타이밍",
+    plotDate: String(point.x || "").slice(0, 10),
+    events,
+  }, evtData.event);
+  return true;
+}
+
 function findDisclosureEventPoint(evtData) {
   return evtData?.points?.find((p) => p?.data?.meta?.isDisclosureTrace) || null;
 }
@@ -4439,6 +5359,57 @@ function visibleAiAnalysisTickers() {
     .filter((ticker) => /^\d{6}\.(KS|KQ)$/.test(ticker) && !hiddenSeries.has(ticker)))];
 }
 
+function collectVisibleAiForecastSeries() {
+  const models = currentMainChartModel?.seriesModels || [];
+  return [...new Set(models
+    .map((model) => String(model?.series || "").toUpperCase())
+    .filter((series) => isForecastSeries(series) && !hiddenSeries.has(series)))];
+}
+
+function cancelAiForecastCalculations() {
+  if (!aiForecastWorker) return;
+  aiForecastWorkerRequests.forEach(({ resolve }) => resolve(null));
+  aiForecastWorkerRequests.clear();
+  aiForecastWorker.terminate();
+  aiForecastWorker = null;
+}
+
+function refreshAiForecastTargets() {
+  const next = new Set(showAiForecast ? collectVisibleAiForecastSeries() : []);
+  const changed = next.size !== aiForecastTargetSeries.size
+    || [...next].some((series) => !aiForecastTargetSeries.has(series));
+  if (!changed) return false;
+  aiForecastTargetSeries = next;
+  aiForecastDeferredSeries = new Set(
+    [...aiForecastDeferredSeries].filter((series) => next.has(series)),
+  );
+  aiForecastTargetRevision += 1;
+  cancelAiForecastCalculations();
+  return true;
+}
+
+function setAiForecastTargetVisibility(series, visible) {
+  const key = String(series || "").toUpperCase();
+  if (!showAiForecast || !isForecastSeries(key)) return false;
+  const next = new Set(aiForecastTargetSeries);
+  if (visible) next.add(key);
+  else next.delete(key);
+  const changed = next.size !== aiForecastTargetSeries.size
+    || [...next].some((item) => !aiForecastTargetSeries.has(item));
+  if (!changed) return false;
+  aiForecastTargetSeries = next;
+  if (visible) aiForecastDeferredSeries.add(key);
+  else aiForecastDeferredSeries.delete(key);
+  aiForecastTargetRevision += 1;
+  cancelAiForecastCalculations();
+  return true;
+}
+
+function activeAiAnalysisTickers() {
+  return [...aiForecastTargetSeries]
+    .filter((ticker) => /^\d{6}\.(KS|KQ)$/.test(ticker));
+}
+
 async function loadAiMarketModel() {
   if (aiMarketModel) return aiMarketModel;
   if (aiMarketModelPromise) return aiMarketModelPromise;
@@ -4464,7 +5435,9 @@ async function loadAiMarketModel() {
 
 function setAiForecastProgress(value, label = "AI 계산") {
   if (!aiForecastProgressActive) return;
-  const progress = Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+  const requested = Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+  aiForecastProgressValue = Math.max(aiForecastProgressValue, requested);
+  const progress = aiForecastProgressValue;
   const wrap = document.getElementById("aiForecastProgress");
   const text = document.getElementById("aiForecastProgressText");
   const bar = document.getElementById("aiForecastProgressBar");
@@ -4474,9 +5447,25 @@ function setAiForecastProgress(value, label = "AI 계산") {
   bar.style.width = `${progress}%`;
 }
 
+function resetAiForecastProgress(label = "AI 계산 준비") {
+  if (!aiForecastProgressActive) return;
+  aiForecastProgressValue = 0;
+  setAiForecastProgress(0, label);
+}
+
+function waitForAiProgressPaint(delay = 0) {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      if (delay > 0) setTimeout(resolve, delay);
+      else resolve();
+    });
+  });
+}
+
 function startAiForecastProgress() {
   if (aiForecastProgressHideTimer) clearTimeout(aiForecastProgressHideTimer);
   aiForecastProgressHideTimer = 0;
+  aiForecastProgressValue = 0;
   aiForecastProgressActive = true;
   setAiForecastProgress(0, "AI 자료 준비");
 }
@@ -4493,6 +5482,7 @@ function finishAiForecastProgress() {
 
 function stopAiForecastProgress() {
   aiForecastProgressActive = false;
+  aiForecastProgressValue = 0;
   if (aiForecastProgressHideTimer) clearTimeout(aiForecastProgressHideTimer);
   aiForecastProgressHideTimer = 0;
   const wrap = document.getElementById("aiForecastProgress");
@@ -4567,6 +5557,7 @@ async function requestAiAnalysisForTicker(ticker) {
   if (aiAnalysisPromises.has(target)) return aiAnalysisPromises.get(target);
 
   aiAnalysisPendingTickers.add(target);
+  if (showAiForecast) setAiForecastProgress(20, `${labelName(target)} 저장 분석 확인`);
   syncAiForecastToggleButton();
 
   const task = (async () => {
@@ -4578,6 +5569,7 @@ async function requestAiAnalysisForTicker(ticker) {
     }
     if (!canUseDartGateway()) return cached;
 
+    if (showAiForecast) setAiForecastProgress(26, `${labelName(target)} 실적·컨센서스 수집`);
     const response = await fetchWithTimeout(`${AI_ANALYSIS_ENDPOINT}?ticker=${encodeURIComponent(target)}`, {
       cache: "no-store",
       headers: { Authorization: `Bearer ${getDartGatewayAccessToken()}` },
@@ -4587,6 +5579,7 @@ async function requestAiAnalysisForTicker(ticker) {
     const analysis = normalizeAnalysisRecord(target, payload, cached, Date.now());
     if (!analysis) return cached;
     aiAnalysisByTicker.set(target, analysis);
+    if (showAiForecast) setAiForecastProgress(33, `${labelName(target)} 분석 자료 저장`);
     await saveAiAnalysisCacheForTicker(target, analysis);
     return analysis;
   })().catch(() => memoryAnalysis).finally(() => {
@@ -4599,12 +5592,62 @@ async function requestAiAnalysisForTicker(ticker) {
   return task;
 }
 
+function aiRotationCandidatesForForecast() {
+  return AI_ROTATION_LEADER_TICKERS.map((ticker) => {
+    const points = aiRotationSeriesByTicker.get(ticker) || getTickerPricePointsFromPayload(ticker);
+    return {
+      series: ticker,
+      dates: points.map((point) => point.date),
+      prices: points.map((point) => point.close),
+    };
+  }).filter((candidate) => candidate.dates.length > 20);
+}
+
+async function loadAiRotationLeaderSeries() {
+  if (aiRotationSeriesPromise) return aiRotationSeriesPromise;
+  aiRotationSeriesPromise = (async () => {
+    for (let index = 0; index < AI_ROTATION_LEADER_TICKERS.length; index += 1) {
+      const ticker = AI_ROTATION_LEADER_TICKERS[index];
+      if (showAiForecast) {
+        setAiForecastProgress(28 + (index * 3), "시장 주도력 비교자료 확인");
+      }
+      let points = mergePriceSeries(
+        getTickerPricePointsFromPayload(ticker),
+        aiRotationSeriesByTicker.get(ticker),
+      );
+      const cached = await readTickerPriceCache(ticker);
+      points = mergePriceSeries(points, cached?.points);
+      if (points.length < 504) {
+        try {
+          const fetched = await fetchTickerHistorySeries(ticker);
+          points = mergePriceSeries(points, fetched);
+          if (points.length) await writeTickerPriceCache(ticker, points, labelName(ticker));
+        } catch (_) {
+          // The forecast remains usable with one leader or cached history.
+        }
+      }
+      if (points.length) aiRotationSeriesByTicker.set(ticker, points);
+    }
+    return aiRotationSeriesByTicker.size;
+  })().finally(() => {
+    aiRotationSeriesPromise = null;
+    syncAiForecastToggleButton();
+    if (showAiForecast) requestChartRender(lastAiForecastTraceCount > 0);
+  });
+  syncAiForecastToggleButton();
+  return aiRotationSeriesPromise;
+}
+
 async function refreshAiAnalysisForVisibleSeries() {
   if (!showAiForecast) return 0;
-  const tickers = visibleAiAnalysisTickers();
-  if (!tickers.length) return 0;
+  const tickers = activeAiAnalysisTickers();
   const before = aiAnalysisByTicker.size;
-  await mapWithConcurrency(tickers, 2, requestAiAnalysisForTicker);
+  await Promise.all([
+    tickers.length
+      ? mapWithConcurrency(tickers, 2, requestAiAnalysisForTicker)
+      : Promise.resolve([]),
+    loadAiRotationLeaderSeries(),
+  ]);
   setAiForecastProgress(35, "실적·컨센서스 준비");
   return Math.max(0, aiAnalysisByTicker.size - before);
 }
@@ -4720,7 +5763,7 @@ async function fetchDartDisclosuresForTickerLive(apiKey, ticker, options = {}) {
     throw new Error("DART 회사코드를 찾지 못했습니다. 배포 데이터 갱신 후 다시 시도해 주세요.");
   }
   const accessToken = getDartGatewayAccessToken();
-  if (!IS_LOCAL_RUNTIME && !accessToken) throw new Error("API 설정에서 DART 개인 접속 코드를 먼저 저장해 주세요.");
+  if (!IS_LOCAL_RUNTIME && !accessToken) throw new Error("API 설정에서 Think Stock 접속 코드를 먼저 저장해 주세요.");
   const query = new URLSearchParams({ ticker: targetTicker, corpCode, progressive: "1" });
   const latestDate = disclosureRowsForTicker(targetTicker).at(-1)?.date || "";
   if (latestDate) query.set("since", latestDate);
@@ -4744,7 +5787,7 @@ async function fetchDartDisclosuresForTickerLive(apiKey, ticker, options = {}) {
     const payload = await response.json().catch(() => null);
     if (response.status === 401) {
       clearInvalidDartGatewayAccessToken();
-      const error = new Error("개인 접속 코드가 만료되었거나 올바르지 않습니다. API 설정에서 다시 저장해 주세요.");
+      const error = new Error("Think Stock 접속 코드가 만료되었거나 올바르지 않습니다. API 설정에서 다시 저장해 주세요.");
       error.status = 401;
       throw error;
     }
@@ -4791,7 +5834,7 @@ async function requestInsiderTradesForTicker(ticker, options = {}) {
       throw new Error("DART 회사코드를 찾지 못했습니다. 배포 데이터 갱신 후 다시 시도해 주세요.");
     }
     const accessToken = getDartGatewayAccessToken();
-    if (!IS_LOCAL_RUNTIME && !accessToken) throw new Error("API 설정에서 DART 개인 접속 코드를 먼저 저장해 주세요.");
+    if (!IS_LOCAL_RUNTIME && !accessToken) throw new Error("API 설정에서 Think Stock 접속 코드를 먼저 저장해 주세요.");
     const query = new URLSearchParams({ ticker: target, corpCode });
     if (options.forceNetwork) query.set("force", "1");
     let response;
@@ -4809,7 +5852,7 @@ async function requestInsiderTradesForTicker(ticker, options = {}) {
     const payload = await response.json().catch(() => null);
     if (response.status === 401) {
       clearInvalidDartGatewayAccessToken();
-      const error = new Error("개인 접속 코드가 만료되었거나 올바르지 않습니다. API 설정에서 다시 저장해 주세요.");
+      const error = new Error("Think Stock 접속 코드가 만료되었거나 올바르지 않습니다. API 설정에서 다시 저장해 주세요.");
       error.status = 401;
       throw error;
     }
@@ -4861,8 +5904,11 @@ function syncAiForecastToggleButton(traceCount = lastAiForecastTraceCount) {
   const button = document.getElementById("aiForecastToggle");
   if (!button) return;
   const count = Number(traceCount) || 0;
-  const pendingCount = visibleAiAnalysisTickers()
-    .filter((ticker) => aiAnalysisPendingTickers.has(ticker)).length;
+  const pendingTickers = new Set([
+    ...activeAiAnalysisTickers().filter((ticker) => aiAnalysisPendingTickers.has(ticker)),
+    ...aiContextPendingTickers,
+  ]);
+  const pendingCount = pendingTickers.size + (aiRotationSeriesPromise ? 1 : 0);
   button.classList.toggle("is-active", showAiForecast);
   button.setAttribute("aria-pressed", showAiForecast ? "true" : "false");
   button.setAttribute("aria-busy", pendingCount > 0 ? "true" : "false");
@@ -5161,7 +6207,7 @@ async function refreshDartDisclosuresForVisibleTickersFromApi(apiKey, options = 
     added: Math.max(0, disclosureRows.length - beforeCount),
     latestDate,
     failed: authFailure
-      ? ["개인 접속 코드가 올바르지 않습니다. API 설정에서 다시 저장해 주세요."]
+      ? ["Think Stock 접속 코드가 올바르지 않습니다. API 설정에서 다시 저장해 주세요."]
       : failed,
     cached,
   };
@@ -5188,6 +6234,11 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
           onBatch: async (_batch, progress) => {
             // Coalesce streamed pages until the current line render has finished.
             if (currentMainChartModel?.seriesModels?.length) queueDisclosureTraceRefresh();
+            if (showAiForecast && aiContextPendingTickers.has(target)) {
+              const ratio = Math.max(0, Math.min(1,
+                Number(progress.page || 0) / Math.max(1, Number(progress.totalPages || 1))));
+              setAiForecastProgress(20 + (ratio * 10), `${name} 최신 공시 확인`);
+            }
             const pageText = progress.cached
               ? "저장된 공시를 불러왔습니다."
               : `최신 공시 확인 중 ${progress.page}/${progress.totalPages}`;
@@ -5246,11 +6297,11 @@ function flushQueuedDisclosureTraceRefresh() {
 function preloadTickerDartData(ticker, msgEl) {
   const target = String(ticker || "").trim().toUpperCase();
   const disclosureTask = requestDartDisclosureRefreshForTicker(target, msgEl);
-  if (!canUseDartGateway()) return;
+  const disclosureReady = Promise.resolve(disclosureTask).catch(() => undefined);
+  if (!canUseDartGateway()) return disclosureReady;
   // Prioritize the visible disclosure markers. The quieter insider-data request
   // begins immediately afterward, avoiding competing gateway authentication.
-  Promise.resolve(disclosureTask)
-    .catch(() => undefined)
+  disclosureReady
     .then(() => requestInsiderTradesForTicker(target))
     .then(() => {
       if (showInsiderTrades) requestChartRender();
@@ -5258,6 +6309,34 @@ function preloadTickerDartData(ticker, msgEl) {
     .catch(() => {
       // The chart remains usable when a newly added ticker has no DART trade records.
     });
+  return disclosureReady;
+}
+
+function aiForecastInputsPending() {
+  return Boolean(
+    aiRotationSeriesPromise
+    || aiContextPendingTickers.size
+    || aiForecastDeferredSeries.size
+    || activeAiAnalysisTickers().some((ticker) => aiAnalysisPendingTickers.has(ticker))
+  );
+}
+
+function scheduleDeferredAiForecastRender(seriesModels) {
+  if (!showAiForecast || aiForecastDeferredRenderId) return false;
+  const available = new Set((seriesModels || []).map((model) => String(model?.series || "").toUpperCase()));
+  const ready = [...aiForecastDeferredSeries].filter((series) => (
+    aiForecastTargetSeries.has(series)
+    && available.has(series)
+    && !aiContextPendingTickers.has(series)
+    && (!aiAnalysisPendingTickers.has(series) || aiAnalysisByTicker.has(series))
+  ));
+  if (!ready.length) return false;
+  aiForecastDeferredRenderId = requestAnimationFrame(() => {
+    aiForecastDeferredRenderId = 0;
+    ready.forEach((series) => aiForecastDeferredSeries.delete(series));
+    if (showAiForecast) requestChartRender(true, { deferDuringInteraction: false });
+  });
+  return true;
 }
 
 /* Main chart */
@@ -5326,22 +6405,44 @@ function renderChartWhenIdleOrNow(preserveZoom = true) {
 }
 
 async function runMainChartRender(preserveZoom = true) {
-  mainChartRenderInFlight += 1;
-  try {
-    await renderChart(preserveZoom);
-    if (pendingAutoChartFit && !pendingChartRenderAfterFlight) {
-      pendingAutoChartFit = false;
-      if (autoChartReset) fitCurrentChartRatio();
-    }
-  } finally {
-    mainChartRenderInFlight = Math.max(0, mainChartRenderInFlight - 1);
-    if (mainChartRenderInFlight) return;
-    if (pendingChartRenderAfterFlight) {
-      pendingChartRenderAfterFlight = false;
-      requestChartRender(pendingRenderPreserveZoom, { deferDuringInteraction: false });
-    }
-    flushQueuedDisclosureTraceRefresh();
+  pendingRenderPreserveZoom = pendingRenderPreserveZoom && preserveZoom;
+  if (mainChartRenderPromise) {
+    pendingChartRenderAfterFlight = true;
+    return mainChartRenderPromise;
   }
+
+  const firstPreserveZoom = pendingRenderPreserveZoom;
+  pendingRenderPreserveZoom = true;
+  mainChartRenderInFlight = 1;
+  mainChartRenderPromise = (async () => {
+    let nextPreserveZoom = firstPreserveZoom;
+    try {
+      while (true) {
+        pendingChartRenderAfterFlight = false;
+        await renderChart(nextPreserveZoom);
+        if (!pendingChartRenderAfterFlight) {
+          if (pendingAutoChartFit) {
+            pendingAutoChartFit = false;
+            if (autoChartReset) fitCurrentChartRatio();
+          }
+          break;
+        }
+        nextPreserveZoom = pendingRenderPreserveZoom;
+        pendingRenderPreserveZoom = true;
+      }
+    } finally {
+      mainChartRenderInFlight = 0;
+      mainChartRenderPromise = null;
+      if (pendingChartRenderAfterFlight) {
+        const retryPreserveZoom = pendingRenderPreserveZoom;
+        pendingChartRenderAfterFlight = false;
+        pendingRenderPreserveZoom = true;
+        requestChartRender(retryPreserveZoom, { deferDuringInteraction: false });
+      }
+      flushQueuedDisclosureTraceRefresh();
+    }
+  })();
+  return mainChartRenderPromise;
 }
 
 function aiForecastHistoryRows(series) {
@@ -5362,23 +6463,19 @@ async function buildAiForecastTraces(rows, seriesModels) {
   }
   const traces = [];
   let forecastCount = 0;
+  const targetRevisionAtStart = aiForecastTargetRevision;
   const forecastCandidates = (seriesModels || []).filter((model) => {
     const series = String(model?.series || "").toUpperCase();
-    return isForecastSeries(series) && !hiddenSeries.has(series);
+    return aiForecastTargetSeries.has(series);
   });
-  const stockCandidates = forecastCandidates.filter((model) => (
-    /^\d{6}\.(KS|KQ)$/.test(String(model?.series || "").toUpperCase())
-  ));
-  const eligibleModels = stockCandidates.length ? stockCandidates : forecastCandidates;
-  setAiForecastProgress(40, "AI 계산 준비");
-  let completedModels = 0;
-  for (const model of eligibleModels) {
+  const workItems = forecastCandidates.flatMap((model) => {
     const series = String(model?.series || "").toUpperCase();
     const analysis = aiAnalysisByTicker.get(series) || null;
-    if (aiAnalysisPendingTickers.has(series) && !analysis) continue;
-    const macdModel = getMacdModelForSeries(series);
+    if (aiContextPendingTickers.has(series)) return [];
+    if (aiAnalysisPendingTickers.has(series) && !analysis) return [];
     const historyRows = aiForecastHistoryRows(series);
-    const forecast = await runAiForecast({
+    const macdModel = getMacdModelForSeries(series);
+    const options = {
       series,
       dates: historyRows.map((row) => row.date),
       prices: historyRows.map((row) => row[series]),
@@ -5392,20 +6489,65 @@ async function buildAiForecastTraces(rows, seriesModels) {
         dates: historyRows.map((row) => row.date),
         prices: historyRows.map((row) => row[marketSeries]),
       })),
-      disclosures: disclosureRows,
+      rotationCandidates: aiRotationCandidatesForForecast(),
+      crisisRows,
+      disclosures: disclosureRowsForTicker(series),
       consensus: analysis?.consensus || null,
       financials: analysis?.financials || [],
       marketModel: aiMarketModel,
       macdSignal: macdModel?.signal || 0,
       horizon: 126,
-    });
-    completedModels += 1;
-    setAiForecastProgress(
-      40 + ((completedModels / Math.max(1, eligibleModels.length)) * 55),
-      `${labelName(series)} 계산`,
-    );
+    };
+    const inputKey = getAiForecastInputKey(options);
+    const cached = aiForecastResultBySeries.get(series);
+    return [{
+      model,
+      series,
+      historyRows,
+      options,
+      inputKey,
+      cached: inputKey && cached?.inputKey === inputKey ? cached : null,
+    }];
+  });
+  const calculationItems = workItems.filter((item) => (
+    !item.cached && !aiForecastDeferredSeries.has(item.series)
+  ));
+  const reportCalculationProgress = calculationItems.length > 0 && !aiForecastInputsPending();
+  let completedCalculations = 0;
+  for (const item of workItems) {
+    if (targetRevisionAtStart !== aiForecastTargetRevision) return [];
+    const { series, historyRows, options } = item;
+    let forecast = item.cached
+      ? applyAiForecastChartTransform(item.cached.forecast, options)
+      : null;
+    let calculatedNow = false;
+    if (!forecast) {
+      if (aiForecastDeferredSeries.has(series)) continue;
+      const seriesProgressLabel = `${labelName(series)} (${completedCalculations + 1}/${calculationItems.length})`;
+      if (reportCalculationProgress) {
+        resetAiForecastProgress(`${seriesProgressLabel} 준비`);
+        await waitForAiProgressPaint();
+        setAiForecastProgress(25, `${seriesProgressLabel} 계산`);
+      }
+      forecast = await runAiForecast(options);
+      calculatedNow = true;
+      aiForecastCalculationCounts.set(series, (aiForecastCalculationCounts.get(series) || 0) + 1);
+      completedCalculations += 1;
+      if (forecast && item.inputKey) {
+        aiForecastResultBySeries.delete(series);
+        aiForecastResultBySeries.set(series, { inputKey: item.inputKey, forecast });
+        while (aiForecastResultBySeries.size > 24) {
+          aiForecastResultBySeries.delete(aiForecastResultBySeries.keys().next().value);
+        }
+      }
+      if (reportCalculationProgress) {
+        setAiForecastProgress(85, `${seriesProgressLabel} 차트 생성`);
+        await waitForAiProgressPaint();
+      }
+    }
+    if (targetRevisionAtStart !== aiForecastTargetRevision) return [];
     if (!forecast) continue;
-    if (aiMarketModelLoadSettled && /^\d{6}\.(KS|KQ)$/.test(series)) {
+    if (calculatedNow && aiMarketModelLoadSettled && /^\d{6}\.(KS|KQ)$/.test(series)) {
       queueAiForecastJournalSync(series, forecast, historyRows);
     }
     forecastCount += 1;
@@ -5428,59 +6570,69 @@ async function buildAiForecastTraces(rows, seriesModels) {
       backtestConfidence: confidence,
       modelName: String(forecast.model?.name || ""),
     };
-    traces.push({
-      x: forecast.dates,
-      y: forecast.lowerChartValues,
-      type: MAIN_LINE_TRACE_TYPE,
-      mode: "lines",
-      name: `${labelName(series)} AI 예상 범위 하단`,
-      showlegend: false,
-      connectgaps: false,
-      hoverinfo: "skip",
-      line: { color: "rgba(190, 190, 190, 0)", width: 0, shape: "linear" },
-      meta: { ...commonMeta, isAiForecastBand: true, aiTraceRole: "lower" },
+    const scenarioStyles = {
+      upside: { color: "rgba(220, 220, 220, 0.88)", width: 2.1, textposition: "top left" },
+      sideways: { color: "rgba(178, 178, 178, 0.78)", width: 1.9, textposition: "middle left" },
+      downside: { color: "rgba(142, 142, 142, 0.82)", width: 1.8, textposition: "bottom left" },
+    };
+    const scenarioKeys = ["upside", "sideways", "downside"];
+    const highestScenarioProbability = Math.max(...scenarioKeys.map((scenarioKey) => (
+      Number(forecast.scenarios?.[scenarioKey]?.probability) || 0
+    )));
+    scenarioKeys.forEach((scenarioKey) => {
+      const scenario = forecast.scenarios?.[scenarioKey];
+      if (!scenario?.prices?.length || !scenario?.chartValues?.length) return;
+      const style = scenarioStyles[scenarioKey];
+      const isPrimaryScenario = Number(scenario.probability) === highestScenarioProbability;
+      const lineColor = isPrimaryScenario ? "rgba(248, 248, 248, 0.98)" : style.color;
+      const lineWidth = isPrimaryScenario ? 2.9 : style.width;
+      const endpointText = `${scenario.label} ${scenario.probability}% · ${scenario.reason}`;
+      const labels = forecast.dates.map((_, index) => (
+        index === forecast.dates.length - 1 ? endpointText : ""
+      ));
+      traces.push({
+        x: forecast.dates,
+        y: scenario.chartValues,
+        text: labels,
+        hovertext: scenario.prices.map((value) => formatActualValue(value)),
+        customdata: scenario.prices,
+        type: MAIN_LINE_TRACE_TYPE,
+        mode: "lines+text",
+        name: `${labelName(series)} AI ${scenario.label}`,
+        showlegend: false,
+        connectgaps: false,
+        cliponaxis: false,
+        hoverinfo: hoverShowPopup ? undefined : "skip",
+        hovertemplate: hoverShowPopup
+          ? `AI ${scenario.label} 시나리오 ${scenario.probability}%<br>%{x|%Y.%-m.%-d}<br>%{hovertext}<br>${escapeHtml(scenario.reason)}${backtestSummary}${confidenceSummary}${marketWeight > 0 ? "<br>시장 관계 학습" : ""}${consensusUsed ? "<br>컨센서스 반영" : ""}${fundamentalsUsed ? "<br>실적 추세 반영" : ""}<extra>${escapeHtml(labelName(series))}</extra>`
+          : undefined,
+        textposition: style.textposition,
+        textfont: { color: lineColor, size: isPrimaryScenario ? 12 : 11 },
+        line: { color: lineColor, width: lineWidth, dash: "dot", shape: "linear" },
+        meta: {
+          ...commonMeta,
+          isAiForecastTrace: scenarioKey === "sideways",
+          isAiForecastScenarioTrace: true,
+          aiTraceRole: scenarioKey,
+          scenarioProbability: scenario.probability,
+          isPrimaryAiScenario: isPrimaryScenario,
+          scenarioReason: scenario.reason,
+          patternMatches: forecast.patternMatches,
+          marketWeight,
+          marketSeries: String(forecast.marketRelationship?.series || ""),
+          marketDownsideBeta: Number(forecast.marketRelationship?.downsideBeta) || 0,
+          marketEnvironment: Number(forecast.marketEnvironment?.combined) || 0,
+          forecastMode: String(forecast.signals?.forecastMode || "stock"),
+          consensusUsed,
+          fundamentalsUsed,
+        },
+      });
     });
-    traces.push({
-      x: forecast.dates,
-      y: forecast.upperChartValues,
-      type: MAIN_LINE_TRACE_TYPE,
-      mode: "lines",
-      name: `${labelName(series)} AI 예상 범위`,
-      showlegend: false,
-      connectgaps: false,
-      hoverinfo: "skip",
-      fill: "tonexty",
-      fillcolor: "rgba(190, 190, 190, 0.10)",
-      line: { color: "rgba(190, 190, 190, 0)", width: 0, shape: "linear" },
-      meta: { ...commonMeta, isAiForecastBand: true, aiTraceRole: "upper" },
-    });
-    traces.push({
-      x: forecast.dates,
-      y: forecast.chartValues,
-      text: forecast.prices.map((value) => formatActualValue(value)),
-      customdata: forecast.prices,
-      type: MAIN_LINE_TRACE_TYPE,
-      mode: "lines",
-      name: `${labelName(series)} AI 예상 흐름`,
-      showlegend: false,
-      connectgaps: false,
-      hoverinfo: hoverShowPopup ? undefined : "skip",
-      hovertemplate: hoverShowPopup
-        ? `AI 예상 흐름<br>%{x|%Y.%-m.%-d}<br>%{text}${backtestSummary}${confidenceSummary}${marketWeight > 0 ? "<br>시장 관계 학습" : ""}${consensusUsed ? "<br>컨센서스 제한 반영" : ""}${fundamentalsUsed ? "<br>실적 추세 제한 반영" : ""}<extra>${escapeHtml(labelName(series))}</extra>`
-        : undefined,
-      line: { color: "rgba(190, 190, 190, 0.7)", width: 2, dash: "dot", shape: "linear" },
-      meta: {
-        ...commonMeta,
-        isAiForecastTrace: true,
-        patternMatches: forecast.patternMatches,
-        marketWeight,
-        marketSeries: String(forecast.marketRelationship?.series || ""),
-        marketDownsideBeta: Number(forecast.marketRelationship?.downsideBeta) || 0,
-        marketEnvironment: Number(forecast.marketEnvironment?.combined) || 0,
-        consensusUsed,
-        fundamentalsUsed,
-      },
-    });
+    if (reportCalculationProgress && calculatedNow) {
+      const seriesProgressLabel = `${labelName(series)} (${completedCalculations}/${calculationItems.length})`;
+      setAiForecastProgress(100, `${seriesProgressLabel} 완료`);
+      if (completedCalculations < calculationItems.length) await waitForAiProgressPaint(160);
+    }
   }
   lastAiForecastTraceCount = forecastCount;
   syncAiForecastToggleButton(forecastCount);
@@ -5489,9 +6641,15 @@ async function buildAiForecastTraces(rows, seriesModels) {
 
 async function renderChart(preserveZoom = true) {
   const perfStartedAt = startPerfSample();
+  const aiToggleRevisionAtStart = aiForecastToggleRevision;
   if (!preserveZoom) useViewportEventMarkerGap = false;
   const el = document.getElementById("chart");
   const msgEl = document.getElementById("messageArea");
+  const currentYRange = el?._fullLayout?.yaxis?.range;
+  const lockedYRangeForRender = !autoChartReset
+    && Array.isArray(lockedHistoryYRange || currentYRange)
+    ? [...(lockedHistoryYRange || currentYRange)].map(Number)
+    : null;
   if (!window.Plotly) {
     try {
       await ensurePlotlyReady();
@@ -5501,7 +6659,7 @@ async function renderChart(preserveZoom = true) {
     }
   }
   const renderGeneration = ++chartRenderGeneration;
-  const priceRows = pricePayload.records || [];
+  const priceRows = pricePayload?.records || [];
   const today = new Date().toISOString().slice(0, 10);
 
   const minCandidates = [];
@@ -5527,9 +6685,17 @@ async function renderChart(preserveZoom = true) {
     ? minCandidates.reduce((mn, d) => (d < mn ? d : mn), minCandidates[0])
     : maxDate;
 
-  const end = maxDate;
-  let start = shiftMonths(end, activeMonths);
-  if (start < minDate) start = minDate;
+  const historyWindow = appUiBindingsModule.resolveHistoryWindow({
+    minDate,
+    maxDate,
+    months: activeMonths,
+    position: chartHistoryPosition,
+  });
+  chartHistoryPosition = historyWindow.position;
+  const end = historyWindow.end;
+  const start = historyWindow.start;
+  lastHistoryWindowState = historyWindow;
+  chartHistorySliderController?.sync(historyWindow);
 
   const allowedSeries = new Set([
     ...CORE_SERIES,
@@ -5543,6 +6709,7 @@ async function renderChart(preserveZoom = true) {
   if (!model || renderGeneration !== chartRenderGeneration) return;
   const { rows, allSeries, selected, seriesModels } = model;
   currentMainChartModel = model;
+  captureLockedChartFrame(model);
   currentRows = rows;
   currentStart = start;
   currentEnd = end;
@@ -5598,8 +6765,17 @@ async function renderChart(preserveZoom = true) {
   });
 
   const aiForecastTraces = await buildAiForecastTraces(rows, seriesModels);
-  if (renderGeneration !== chartRenderGeneration) return;
+  if (renderGeneration !== chartRenderGeneration
+    || aiToggleRevisionAtStart !== aiForecastToggleRevision) return;
   traces.push(...aiForecastTraces);
+
+  const crisisSignalTrace = buildCrisisSignalTrace(selected, seriesModels, start, end);
+  if (crisisSignalTrace) traces.push(crisisSignalTrace);
+  const marketTimingBuyTrace = buildMarketTimingBuyTrace(selected, seriesModels, start, end);
+  if (marketTimingBuyTrace) traces.push(marketTimingBuyTrace);
+  const marketTimingSellTrace = buildMarketTimingSellTrace(selected, seriesModels, start, end);
+  if (marketTimingSellTrace) traces.push(marketTimingSellTrace);
+  syncRecessionToggleButton();
 
   if (!showInsiderTrades) {
     lastInsiderTradeTraceStats = { total: insiderTradeRows.length, candidates: 0, markers: 0 };
@@ -5622,14 +6798,51 @@ async function renderChart(preserveZoom = true) {
   // Preserve zoom while reapplying handle transforms and updated traces.
 
   if (!preserveZoom) pinnedXRange = null;
-  const savedXRange = preserveZoom
+  let savedXRange = preserveZoom
     ? (pinnedXRange ? [...pinnedXRange] : (el._fullLayout?.xaxis?.range?.slice() || null))
     : null;
-  const savedYRange = preserveZoom ? (el._fullLayout?.yaxis?.range?.slice() || null) : null;
+  const savedYRange = preserveZoom
+    ? (el._fullLayout?.yaxis?.range?.slice() || lockedYRangeForRender)
+    : lockedYRangeForRender;
   const forecastEnd = aiForecastTraces
     .map((trace) => trace.x?.at(-1) || "")
     .reduce((latest, date) => date > latest ? date : latest, end);
+  if (revealAiForecastRangeOnNextRender && showAiForecast && aiForecastTraces.length) {
+    const observedEndMs = toMsSafe(end);
+    const forecastEndMs = toMsSafe(forecastEnd);
+    const savedStartMs = toMsSafe(savedXRange?.[0]);
+    const nextStartMs = Number.isFinite(savedStartMs) && savedStartMs < observedEndMs
+      ? savedStartMs
+      : toMsSafe(start);
+    if (Number.isFinite(nextStartMs) && Number.isFinite(forecastEndMs)
+      && forecastEndMs > observedEndMs) {
+      savedXRange = [
+        new Date(nextStartMs).toISOString(),
+        new Date(forecastEndMs).toISOString(),
+      ];
+      pinnedXRange = [...savedXRange];
+    }
+    revealAiForecastRangeOnNextRender = false;
+  }
+  if (trimAiForecastRangeOnNextRender && !showAiForecast) {
+    const observedEndMs = toMsSafe(end);
+    const savedEndMs = toMsSafe(savedXRange?.[1]);
+    if (Number.isFinite(observedEndMs) && Number.isFinite(savedEndMs) && savedEndMs > observedEndMs) {
+      const savedStartMs = toMsSafe(savedXRange?.[0]);
+      const nextStartMs = Number.isFinite(savedStartMs) && savedStartMs < observedEndMs
+        ? savedStartMs
+        : toMsSafe(start);
+      savedXRange = [new Date(nextStartMs).toISOString(), new Date(observedEndMs).toISOString()];
+      pinnedXRange = [...savedXRange];
+    }
+    trimAiForecastRangeOnNextRender = false;
+  }
   const defaultXRange = [start, forecastEnd];
+  const fittedDefaultYRange = savedYRange ? null : fitRangeForTraces(
+    traces.filter((trace) => Number.isFinite(trace?.meta?.sourcePointCount)),
+    defaultXRange,
+    { paddingRatio: 0.08, minimumPadding: 0.6 },
+  );
   const longRangeTicks = (() => {
     if (activeMonths < 360) return null;
     const startYear = Number(String(start).slice(0, 4));
@@ -5669,27 +6882,50 @@ async function renderChart(preserveZoom = true) {
       ...(longRangeTicks || {}),
       ...(savedXRange ? { range: savedXRange } : { range: defaultXRange, autorange: false }),
     },
-    yaxis: { showticklabels: false, title: "", showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, fixedrange: true, ...(savedYRange ? { range: savedYRange, autorange: false } : {}) },
+    yaxis: {
+      showticklabels: false,
+      title: "",
+      showgrid: true,
+      gridcolor: "rgba(255,255,255,0.06)",
+      gridwidth: 1,
+      zeroline: false,
+      fixedrange: true,
+      ...(savedYRange
+        ? { range: savedYRange, autorange: false }
+        : (fittedDefaultYRange ? { range: fittedDefaultYRange, autorange: false } : {})),
+    },
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
     hoverlabel: plotlyHoverLabel(),
     dragmode: false,
   };
   const renderMode = await applyMainChartRender(el, traces, layout);
+  scheduleDeferredAiForecastRender(seriesModels);
+  if (aiToggleRevisionAtStart !== aiForecastToggleRevision) {
+    requestChartRender(true, { deferDuringInteraction: false });
+    return;
+  }
+  if (!autoChartReset && !lockedHistoryYRange) captureLockedHistoryYRange();
 
   if (!legendHandlerSet) {
     el.on("plotly_legendclick", (evtData) => {
       const idx = evtData.curveNumber;
       const key = currentSelected[idx];
       if (key) {
-        if (hiddenSeries.has(key)) hiddenSeries.delete(key);
-        else hiddenSeries.add(key);
+        const becomingVisible = hiddenSeries.has(key);
+        if (hiddenSeries.has(key)) {
+          hiddenSeries.delete(key);
+          clearAutoResetSeriesTransforms(key);
+        } else hiddenSeries.add(key);
         noteStockVisibilityChange(key);
+        setAiForecastTargetVisibility(key, becomingVisible);
       }
       requestChartCompositionUpdate();
       return false;
     });
     el.on("plotly_legenddoubleclick", () => {
       hiddenSeries.clear();
+      clearAutoResetSeriesTransforms();
+      refreshAiForecastTargets();
       requestChartCompositionUpdate();
       return false;
     });
@@ -5705,6 +6941,7 @@ async function renderChart(preserveZoom = true) {
       // Otherwise a slow background render can replace a user's fresh zoom.
       if (!isHandleDragging && hasRange && r0 != null && r1 != null) {
         pinnedXRange = [r0, r1];
+        syncHistorySliderToViewport(r0, r1);
       }
       if (chartSyncing || isHandleDragging) return;
       if (cursorSyncing && !hasRange && !hasAuto) return;
@@ -5756,6 +6993,7 @@ async function renderChart(preserveZoom = true) {
     el.on("plotly_click", (evtData) => {
       if (Date.now() < suppressPlotlyClickUntil) return;
       if (handleDisclosureClick(evtData)) return;
+      if (handleTimingSignalClick(evtData)) return;
       // iPhone Safari sends click after touchend; if we auto-reset here,
       // double-tap zoom is immediately cancelled when the finger is lifted.
       if (isTouchDevice()) return;
@@ -5779,7 +7017,7 @@ async function renderChart(preserveZoom = true) {
     renderMode,
   });
   const aiInputsReady = aiMarketModelLoadSettled
-    && visibleAiAnalysisTickers().every((ticker) => !aiAnalysisPendingTickers.has(ticker));
+    && !aiForecastInputsPending();
   if (showAiForecast && aiInputsReady) finishAiForecastProgress();
 }
 
@@ -5823,6 +7061,8 @@ async function renderMacdChart(xRange) {
     .filter((series) => MACD_STOCK_PATTERN.test(series) && !hiddenSeries.has(series));
   const renderKey = [
     activeMonths,
+    currentStart,
+    currentEnd,
     hoverShowPopup ? 1 : 0,
     dataRevisionSignature("price"),
     visibleSeries.join(","),
@@ -6084,8 +7324,16 @@ async function renderAdrChart(xRange) {
   const latestNewsDate = findLatestAuxiliaryDate(macroRows, "news_sentiment");
   if (!el || (!latestAdrDate && !latestNewsDate)) return;
 
+  const maxDate = [latestAdrDate, latestNewsDate].filter(Boolean).sort().slice(-1)[0];
+  const requestedStart = Array.isArray(xRange) && xRange.length === 2
+    ? String(xRange[0] || "").slice(0, 10)
+    : "";
+  const startDate = /^\d{4}-\d{2}-\d{2}$/.test(requestedStart)
+    ? requestedStart
+    : shiftMonths(maxDate, activeMonths);
   const renderKey = [
     activeMonths,
+    startDate,
     hoverShowPopup ? 1 : 0,
     [...hiddenAuxiliarySeries].sort().join(","),
     dataRevisionSignature("adr", "macro"),
@@ -6104,8 +7352,6 @@ async function renderAdrChart(xRange) {
     return;
   }
 
-  const maxDate = [latestAdrDate, latestNewsDate].filter(Boolean).sort().slice(-1)[0];
-  const startDate = shiftMonths(maxDate, activeMonths);
   const renderGeneration = ++auxiliaryChartRenderGeneration;
   const model = await getAuxiliaryChartModel(renderKey, startDate);
   if (!model || renderGeneration !== auxiliaryChartRenderGeneration) return;
@@ -6488,6 +7734,22 @@ function normalizeNewsSentimentRows(rows) {
   return [...map.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 
+function normalizeMacroIndicatorRows(rows, keys) {
+  const map = new Map();
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const date = String(row?.date || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+    const previous = map.get(date) || { date };
+    const next = { ...previous };
+    keys.forEach((key) => {
+      const value = toNum(row?.[key]);
+      if (Number.isFinite(value) && value > 0) next[key] = value;
+    });
+    if (keys.some((key) => Number.isFinite(next[key]))) map.set(date, next);
+  });
+  return [...map.values()].sort((left, right) => left.date.localeCompare(right.date));
+}
+
 function normalizeCreditRows(rows) {
   const map = new Map();
   (rows || []).forEach((row) => {
@@ -6777,6 +8039,26 @@ function applyNewsSentimentLiveRows(liveRows) {
   return { updated, latestDate: normalized[normalized.length - 1].date };
 }
 
+function applyMacroIndicatorLiveRows(liveRows, keys) {
+  const normalized = normalizeMacroIndicatorRows(liveRows, keys);
+  if (!normalized.length) return { updated: 0, latestDate: "" };
+  const byDate = new Map((macroRows || []).map((row) => [row.date, { ...row }]));
+  let updated = 0;
+  normalized.forEach((row) => {
+    const previous = byDate.get(row.date) || { date: row.date };
+    keys.forEach((key) => {
+      const value = toNum(row?.[key]);
+      if (!Number.isFinite(value)) return;
+      if (!sameNullableNumber(previous[key], value)) updated += 1;
+      previous[key] = value;
+    });
+    byDate.set(row.date, previous);
+  });
+  macroRows = [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
+  if (updated > 0) markDataChanged("macro");
+  return { updated, latestDate: normalized.at(-1)?.date || "" };
+}
+
 function applyCreditLiveRows(liveRows) {
   const normalized = normalizeCreditRows(liveRows);
   if (!normalized.length) return { updated: 0, latestDate: "" };
@@ -6811,6 +8093,44 @@ function applyCreditLiveRows(liveRows) {
     ? String(creditRows[creditRows.length - 1].date || "").slice(0, 10)
     : normalized[normalized.length - 1].date;
   return { updated, latestDate };
+}
+
+function normalizeCrisisSignalRows(rows) {
+  const stages = new Set(["stable", "caution", "warning", "crisis"]);
+  return (Array.isArray(rows) ? rows : []).map((row) => {
+    const date = String(row?.date || "").slice(0, 10);
+    const score = toNum(row?.score);
+    if (!date || score === null || score < 0 || score > 100) return null;
+    const normalized = { date, score: Math.round(score) };
+    ["curve", "labor", "credit", "t10y2y", "t10y3m", "unemployment", "initialClaims4w", "creditSpread", "sahm", "fedFunds", "fedFundsChange6m"]
+      .forEach((key) => {
+        const value = toNum(row?.[key]);
+        if (value !== null) normalized[key] = value;
+      });
+    normalized.stage = stages.has(row?.stage)
+      ? row.stage
+      : (score >= 75 ? "crisis" : score >= 50 ? "warning" : score >= 25 ? "caution" : "stable");
+    normalized.uninversion = row?.uninversion === true || row?.uninversion === 1;
+    return normalized;
+  }).filter(Boolean).sort((left, right) => left.date.localeCompare(right.date));
+}
+
+function applyCrisisSignalRows(liveRows) {
+  const normalized = normalizeCrisisSignalRows(liveRows);
+  if (!normalized.length) return { updated: 0, latestDate: "" };
+  const fingerprint = (rows) => JSON.stringify((rows || []).slice(-8).map((row) => [
+    row.date,
+    row.score,
+    row.stage,
+    row.curve,
+    row.labor,
+    row.credit,
+  ]));
+  const changed = crisisRows.length !== normalized.length
+    || fingerprint(crisisRows) !== fingerprint(normalized);
+  crisisRows = normalized;
+  if (changed) markDataChanged("crisis");
+  return { updated: changed ? 1 : 0, latestDate: normalized.at(-1)?.date || "" };
 }
 
 function medianCreditScaleFactor(existingRows, liveRows, key) {
@@ -6882,9 +8202,13 @@ async function refreshEcosMacroFromGateway(signal = null, forceNetwork = false) 
   }
   const leading = applyLeadingCycleLiveRows(payload.leadingRows);
   const news = applyNewsSentimentLiveRows(payload.newsRows);
+  const policyRate = applyMacroIndicatorLiveRows(payload.policyRateRows, ["policy_rate"]);
+  const trade = applyMacroIndicatorLiveRows(payload.tradeRows, ["export_value", "import_value"]);
   const applied = [];
   if (leading.updated) applied.push(`선행순환변동 ${leading.updated}건 반영(~ ${leading.latestDate})`);
   if (news.updated) applied.push(`뉴스심리 ${news.updated}건 반영(~ ${news.latestDate})`);
+  if (policyRate.updated) applied.push(`기준금리 ${policyRate.updated}건 반영(~ ${policyRate.latestDate})`);
+  if (trade.updated) applied.push(`수출입 ${trade.updated}건 반영(~ ${trade.latestDate})`);
   return { applied, warnings: payload.warning ? [payload.warning] : [] };
 }
 
@@ -6910,6 +8234,34 @@ async function refreshCreditFromGateway(signal = null) {
   const result = applyCreditLiveRows(scaleCreditRowsToExisting(payload.rows, creditRows));
   return {
     applied: result.updated ? [`신용·예탁금 ${result.updated}건 반영(~ ${result.latestDate})`] : [],
+    warnings: payload.warning ? [payload.warning] : [],
+  };
+}
+
+async function refreshCrisisSignalFromGateway(signal = null, forceNetwork = false) {
+  if (!IS_LOCAL_RUNTIME && !canUseDartGateway()) return { applied: [], warnings: [] };
+  const baseEndpoint = IS_LOCAL_RUNTIME ? "./api/crisis-signal" : CRISIS_SIGNAL_GATEWAY_ENDPOINT;
+  const endpoint = forceNetwork ? `${baseEndpoint}?refresh=1` : baseEndpoint;
+  const response = await fetchWithTimeout(endpoint, {
+    cache: "no-store",
+    headers: IS_LOCAL_RUNTIME ? {} : { Authorization: `Bearer ${getDartGatewayAccessToken()}` },
+    signal,
+  }, DART_GATEWAY_REQUEST_TIMEOUT_MS);
+  const rawPayload = await response.json().catch(() => null);
+  if (!response.ok) {
+    if (response.status === 401) clearInvalidDartGatewayAccessToken();
+    throw new Error(rawPayload?.error || `FRED HTTP ${response.status}`);
+  }
+  let payload;
+  try {
+    payload = runtimeDataContract.normalizeCrisisSignalPayload(rawPayload);
+  } catch (error) {
+    recordRuntimeError("crisis-signal-contract", error);
+    throw error;
+  }
+  const result = applyCrisisSignalRows(payload.records);
+  return {
+    applied: result.updated ? [`침체 위기신호 반영(~ ${result.latestDate})`] : [],
     warnings: payload.warning ? [payload.warning] : [],
   };
 }
@@ -7201,7 +8553,7 @@ async function ensureHistoricalDataLoaded(forceNetwork = false) {
 
 async function applyRuntimeRefreshChanges(revisionsBefore, options = {}) {
   const revisionsAfter = getDataRevisions();
-  const mainDataChanged = ["price", "macro", "credit"]
+  const mainDataChanged = ["price", "macro", "credit", "crisis"]
     .some((name) => revisionsAfter[name] !== revisionsBefore[name]);
   const adrDataChanged = revisionsAfter.adr !== revisionsBefore.adr;
   const disclosureDataChanged = revisionsAfter.disclosure !== revisionsBefore.disclosure;
@@ -7268,6 +8620,10 @@ async function runRuntimeDataRefresh(msgEl, options = {}) {
       .catch((error) => ({ info: [], warnings: [`신용·예탁금 불러오기 오류: ${error.message}`] }));
   };
 
+  const crisisTask = () => refreshCrisisSignalFromGateway(signal, forceNetwork)
+    .then((result) => ({ info: result.applied || [], warnings: result.warnings || [] }))
+    .catch((error) => ({ info: [], warnings: [`침체 위기신호 불러오기 오류: ${error.message}`] }));
+
   const dartTask = () => {
     if (!forceNetwork || !canUseDartGateway()) {
       return Promise.resolve({ info: [], warnings: [], refreshed: false });
@@ -7306,7 +8662,7 @@ async function runRuntimeDataRefresh(msgEl, options = {}) {
 
   await runRefreshPhases({
     criticalTasks: [coreIndexTask, preloadTask, liveTask],
-    supplementalTasks: [adrTask, fearGreedTask, dartTask, ecosTask, creditTask],
+    supplementalTasks: [adrTask, fearGreedTask, dartTask, ecosTask, creditTask, crisisTask],
     onCritical: async (results) => {
       throwIfAborted(signal);
       collectResults(results);
@@ -7406,7 +8762,9 @@ async function boot() {
   setStartupLoaderProgress(4, "Preparing");
   initPerfDebugAccess();
   initE2eDebugAccess();
+  loadAdminAccessState();
   loadState();
+  enforceGeneralModeState();
   clearLegacyBrowserApiSettings();
   renderCustomStockButtons();
   bindSeriesToggleBoard();
@@ -7415,9 +8773,11 @@ async function boot() {
   syncApiOptionsButton();
   renderAppVersionLabel();
   syncChartResetToggleButton();
+  syncRecessionToggleButton();
   syncCoMovementToggleButton();
   syncAiForecastToggleButton();
   syncMacdToggleButton();
+  syncAdminFeatureAccess();
   bindRuntimeSnapshotExitSave();
   scheduleGranularCacheCleanup();
   setStartupLoaderProgress(10, "Preparing");
@@ -7432,7 +8792,7 @@ async function boot() {
       await loadData(true);
       setStartupLoaderProgress(45, "Loading saved data");
     }
-    if (activeMonths > RECENT_DATA_MONTHS && !historicalDataLoaded) {
+    if ((activeMonths > RECENT_DATA_MONTHS || chartHistoryPosition < 0.999) && !historicalDataLoaded) {
       setStartupLoaderProgress(50, "Loading historical data");
       try {
         await ensureHistoricalDataLoaded(true);
@@ -7455,38 +8815,77 @@ async function boot() {
       getActiveMonths: () => activeMonths,
       setActiveMonths: (value) => { activeMonths = value; },
       clearPinnedRange: () => { pinnedXRange = null; },
+      anchorLatest: () => { chartHistoryPosition = 1; },
       recentDataMonths: RECENT_DATA_MONTHS,
       isHistoricalDataLoaded: () => historicalDataLoaded,
       ensureHistoricalDataLoaded,
       setMessage: (message, isError) => setMessage(msgEl, message, isError),
       saveState,
-      requestChartRender: (preserveZoom) => runMainChartRender(preserveZoom),
+      requestChartRender: (preserveZoom) => {
+        applyChartResetPolicy("composition");
+        return runMainChartRender(preserveZoom);
+      },
     });
 
+    chartHistorySliderController = appUiBindingsModule.bindHistorySlider({
+      slider: document.getElementById("chartHistorySlider"),
+      getPosition: () => chartHistoryPosition,
+      setPosition: (value) => { chartHistoryPosition = Math.max(0, Math.min(1, value)); },
+      clearPinnedRange: () => { pinnedXRange = null; },
+      panViewport: panZoomedViewportFromSlider,
+      isHistoricalDataLoaded: () => historicalDataLoaded,
+      ensureHistoricalDataLoaded,
+      setMessage: (message, isError) => setMessage(msgEl, message, isError),
+      saveState,
+      requestChartRender: (preserveZoom) => {
+        useViewportEventMarkerGap = false;
+        applyChartResetPolicy("composition");
+        requestChartRender(preserveZoom, { deferDuringInteraction: false });
+      },
+    });
+    if (lastHistoryWindowState) chartHistorySliderController?.sync(lastHistoryWindowState);
+
     document.getElementById("resetHandles").addEventListener("click", () => {
-      autoChartReset = !autoChartReset;
-      pendingAutoChartFit = false;
+      setAutoChartReset(!autoChartReset);
       syncChartResetToggleButton();
       saveState();
-      if (autoChartReset) fitCurrentChartRatio();
+      if (autoChartReset) requestChartRender(false, { deferDuringInteraction: false });
     });
     document.getElementById("coMovementToggle").addEventListener("click", () => {
+      if (!adminAccessGranted) return;
       showCoMovement = !showCoMovement;
       saveState();
       syncCoMovementToggleButton();
       renderCoMovementPanel();
     });
+    document.getElementById("recessionToggle")?.addEventListener("click", () => {
+      if (!adminAccessGranted) return;
+      showRecessionSignals = !showRecessionSignals;
+      syncRecessionToggleButton();
+      requestChartCompositionUpdate();
+    });
     document.getElementById("aiForecastToggle").addEventListener("click", () => {
+      if (!adminAccessGranted) return;
+      aiForecastToggleRevision += 1;
       showAiForecast = !showAiForecast;
+      refreshAiForecastTargets();
       syncAiForecastToggleButton();
       if (showAiForecast) {
+        revealAiForecastRangeOnNextRender = true;
+        trimAiForecastRangeOnNextRender = false;
         startAiForecastProgress();
         refreshAiAnalysisForVisibleSeries().catch(() => {});
         loadAiMarketModel().catch(() => {});
-      } else stopAiForecastProgress();
+      } else {
+        revealAiForecastRangeOnNextRender = false;
+        stopAiForecastProgress();
+        trimAiForecastRangeOnNextRender = true;
+        clampChartViewportToObservedData();
+      }
       requestChartCompositionUpdate();
     });
     document.getElementById("macdToggle").addEventListener("click", () => {
+      if (!adminAccessGranted) return;
       showMacdOscillator = !showMacdOscillator;
       syncMacdToggleButton();
       requestChartCompositionUpdate();
@@ -7513,7 +8912,7 @@ async function boot() {
     appUiBindingsModule.bindDisclosureToggle({
       button: document.getElementById("disclosureToggle"),
       getEnabled: () => showDisclosures,
-      setEnabled: (value) => { showDisclosures = value; },
+      setEnabled: (value) => { showDisclosures = adminAccessGranted && value; },
       markerCount: () => lastDisclosureTraceStats.markers,
       syncButton: syncDisclosureToggleButton,
       hidePopover: hideDisclosurePopover,
@@ -7524,32 +8923,36 @@ async function boot() {
 
     const insiderTradeToggle = document.getElementById("insiderTradeToggle");
     syncInsiderTradeToggleButton(lastInsiderTradeTraceStats.markers);
-    insiderTradeToggle?.addEventListener("click", async () => {
-      if (insiderTradeToggle.getAttribute("aria-busy") === "true") return;
-      if (showInsiderTrades) {
-        showInsiderTrades = false;
+    if (insiderTradeToggle) {
+      insiderTradeToggle.onclick = async () => {
+        if (!adminAccessGranted) return;
+        if (insiderTradeToggle.getAttribute("aria-busy") === "true") return;
+        if (showInsiderTrades) {
+          showInsiderTrades = false;
+          syncInsiderTradeToggleButton(0);
+          saveState();
+          requestChartRender();
+          return;
+        }
+        if (!canUseDartGateway()) {
+          setMessage(msgEl, ["내부거래를 보려면 API 설정에서 Think Stock 접속 코드를 먼저 저장해 주세요."], true);
+          return;
+        }
+        showInsiderTrades = true;
         syncInsiderTradeToggleButton(0);
         saveState();
+        try {
+          const count = await refreshInsiderTradesForVisibleSeries();
+          setMessage(msgEl, count > 0
+            ? [`DART 최근 3년 내부거래 ${count}건을 표시했습니다.`]
+            : ["현재 표시 종목에는 최근 3년 내부거래가 없습니다."]);
+        } catch (error) {
+          setMessage(msgEl, [`내부거래 조회 오류: ${error.message}`], true);
+        }
         requestChartRender();
-        return;
-      }
-      if (!canUseDartGateway()) {
-        setMessage(msgEl, ["내부거래를 보려면 API 설정에서 DART 개인 접속 코드를 먼저 저장해 주세요."], true);
-        return;
-      }
-      showInsiderTrades = true;
-      syncInsiderTradeToggleButton(0);
-      saveState();
-      try {
-        const count = await refreshInsiderTradesForVisibleSeries();
-        setMessage(msgEl, count > 0
-          ? [`DART 최근 3년 내부거래 ${count}건을 표시했습니다.`]
-          : ["현재 표시 종목에는 최근 3년 내부거래가 없습니다."]);
-      } catch (error) {
-        setMessage(msgEl, [`내부거래 조회 오류: ${error.message}`], true);
-      }
-      requestChartRender();
-    });
+      };
+      insiderTradeToggle.dataset.bound = "1";
+    }
 
     appUiBindingsModule.bindCreditOffsetInput({
       input: document.getElementById("creditOffset"),

@@ -64,9 +64,9 @@ test("builds red upward buy markers and blue downward sell markers", () => {
 
   assert.equal(traces.length, 2);
   assert.equal(traces[0].marker.symbol, "triangle-up");
-  assert.equal(traces[0].marker.color, "#ef4444");
+  assert.equal(traces[0].marker.color, "#b91c1c");
   assert.equal(traces[1].marker.symbol, "triangle-down");
-  assert.equal(traces[1].marker.color, "#3b82f6");
+  assert.equal(traces[1].marker.color, "#1d4ed8");
   assert.equal(traces[0].yaxis, "y");
   assert.equal(traces[1].yaxis, "y");
   assert.equal(traces[0].x[0], traces[1].x[0]);
@@ -74,10 +74,10 @@ test("builds red upward buy markers and blue downward sell markers", () => {
   assert.equal(traces[0].customdata[0][2], true);
   assert.equal(traces[1].customdata[0][2], true);
   assert.equal(traces.every((trace) => trace.meta.isInsiderTradeTrace), true);
-  assert.match(traces[0].hovertemplate[0], /color:#ef4444/);
+  assert.match(traces[0].hovertemplate[0], /color:#b91c1c/);
   assert.match(traces[0].hovertemplate[0], /내부자거래 : 매수/);
   assert.match(traces[0].hovertemplate[0], /장내매수\(\+\)/);
-  assert.match(traces[1].hovertemplate[0], /color:#3b82f6/);
+  assert.match(traces[1].hovertemplate[0], /color:#1d4ed8/);
   assert.match(traces[1].hovertemplate[0], /내부자거래 : 매도/);
   assert.doesNotMatch(traces[1].hovertemplate[0], /기타\(-\)/);
   assert.doesNotMatch(traces[0].hovertemplate[0], /RFHIC|2026-07-31/);

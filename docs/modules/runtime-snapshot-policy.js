@@ -128,6 +128,7 @@
       macroRows: (components.macro || []).slice(-maxRows),
       creditRows: (components.credit || []).slice(-maxRows),
       adrRows: (components.adr || []).slice(-maxRows),
+      crisisRows: (components.crisis || []).slice(-maxRows),
       disclosureRows: (components.disclosure || []).slice(-maxDisclosures),
     };
   }

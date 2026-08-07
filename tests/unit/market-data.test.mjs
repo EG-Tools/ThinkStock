@@ -167,3 +167,19 @@ test("sanitizes columnar price payloads in the shared module", () => {
   ]);
   assert.deepEqual(payload.display_names, { AAA: "Example" });
 });
+
+test("keeps normalization and scale references fixed while navigating history", () => {
+  const rows = [
+    { date: "2026-01-01", calm: 100, volatile: 100 },
+    { date: "2026-01-02", calm: 102, volatile: 140 },
+    { date: "2026-01-03", calm: 101, volatile: 70 },
+  ];
+  const bases = marketData.resolveNormalizationBases(rows, ["calm", "volatile"], { volatile: 250 });
+  const scales = marketData.mergeFixedAutoScales(
+    marketData.autoFitScales(rows, ["calm", "volatile"], bases),
+    { volatile: 80 },
+  );
+
+  assert.equal(bases.volatile, 250);
+  assert.equal(scales.volatile, 80);
+});

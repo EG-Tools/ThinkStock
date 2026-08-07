@@ -1,11 +1,27 @@
 (function initThinkStockAiForecastJournal(globalScope) {
   "use strict";
 
-  const SCHEMA_VERSION = 1;
-  const FORECAST_HORIZONS = Object.freeze([20, 63, 126]);
+  const SCHEMA_VERSION = 2;
+  const FORECAST_HORIZONS = Object.freeze([5, 10, 20, 63, 126]);
   const MAX_RECORDS = 60;
   const TICKER_PATTERN = /^\d{6}\.(KS|KQ)$/;
   const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+  const AUDIT_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+  const ATTRIBUTION_COMPONENTS = new Set([
+    "localModel",
+    "top400Blend",
+    "empiricalGuardrail",
+    "corporateRiskGate",
+    "consensus",
+    "fundamentals",
+    "marketRegime",
+    "corporateRisk",
+    "rotation",
+    "rangeMeanReversion",
+    "terminalRisk",
+    "finalClamp",
+    "analogPath",
+  ]);
 
   function finitePositive(value) {
     const number = Number(value);
@@ -36,6 +52,38 @@
     return Number.isFinite(timestamp) && timestamp > 0 ? Math.trunc(timestamp) : fallback;
   }
 
+  function normalizeNumericMap(value, { maxEntries = 128, maxAbs = 1e12, allowedKeys = null } = {}) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).flatMap(([key, rawValue]) => {
+      if (!AUDIT_KEY_PATTERN.test(key) || (allowedKeys && !allowedKeys.has(key))) return [];
+      const number = Number(rawValue);
+      return Number.isFinite(number) && Math.abs(number) <= maxAbs ? [[key, number]] : [];
+    }).slice(0, maxEntries));
+  }
+
+  function normalizeAudit(value) {
+    if (!value || value.format !== "ai-audit-v1") return null;
+    const features = normalizeNumericMap(value.features);
+    const sources = normalizeNumericMap(value.sources, { maxEntries: 24, maxAbs: 1e9 });
+    const scenarioWeights = normalizeNumericMap(value.scenarioWeights, { maxEntries: 3, maxAbs: 100 });
+    if (!Object.keys(features).length) return null;
+    return { format: "ai-audit-v1", features, sources, scenarioWeights };
+  }
+
+  function normalizeAttribution(value, expectedDays) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const days = Number(value.days ?? expectedDays);
+    const expectedLogReturn = Number(value.expectedLogReturn);
+    const components = normalizeNumericMap(value.components, {
+      maxEntries: ATTRIBUTION_COMPONENTS.size,
+      maxAbs: 10,
+      allowedKeys: ATTRIBUTION_COMPONENTS,
+    });
+    if (days !== expectedDays || !Number.isFinite(expectedLogReturn) || Math.abs(expectedLogReturn) > 10) return null;
+    if (!Object.keys(components).length) return null;
+    return { days: expectedDays, expectedLogReturn, components };
+  }
+
   function forecastRecordId(ticker, asOf, modelVersion) {
     const normalizedTicker = normalizeTicker(ticker);
     const normalizedAsOf = normalizeDate(asOf);
@@ -52,13 +100,18 @@
     const actualLogReturn = Number(value.actualLogReturn);
     const predictedLogReturn = Number(value.predictedLogReturn);
     const absLogError = Number(value.absLogError);
+    const signedLogError = Number(value.signedLogError ?? (actualLogReturn - predictedLogReturn));
+    const squaredLogError = Number(value.squaredLogError ?? (signedLogError ** 2));
     if (
       !actualDate
       || actualPrice === null
       || !Number.isFinite(actualLogReturn)
       || !Number.isFinite(predictedLogReturn)
       || !Number.isFinite(absLogError)
+      || !Number.isFinite(signedLogError)
+      || !Number.isFinite(squaredLogError)
       || absLogError < 0
+      || squaredLogError < 0
       || typeof value.directionCorrect !== "boolean"
       || typeof value.intervalCovered !== "boolean"
     ) return null;
@@ -68,6 +121,8 @@
       actualLogReturn,
       predictedLogReturn,
       absLogError,
+      signedLogError,
+      squaredLogError,
       directionCorrect: value.directionCorrect,
       intervalCovered: value.intervalCovered,
       scoredAt: timestampOr(value.scoredAt, 0),
@@ -100,6 +155,8 @@
         finitePositive(basePrice) ? Math.log(predictedPrice / Number(basePrice)) : 0
       ),
       absLogError: value.absLogError ?? value.absoluteLogError,
+      signedLogError: value.signedLogError,
+      squaredLogError: value.squaredLogError,
       directionCorrect: value.directionCorrect,
       intervalCovered: value.intervalCovered ?? value.covered,
       scoredAt: value.scoredAt,
@@ -110,6 +167,7 @@
       predictedPrice,
       lowerPrice: Math.min(lowerPrice, upperPrice),
       upperPrice: Math.max(lowerPrice, upperPrice),
+      attribution: normalizeAttribution(value.attribution, expectedDays),
       score,
     };
   }
@@ -122,6 +180,8 @@
         predictedPrice: source.prices[horizon],
         lowerPrice: source.lowerPrices?.[horizon],
         upperPrice: source.upperPrices?.[horizon],
+        attribution: source.attribution?.horizons?.[horizon]
+          || source.attribution?.horizons?.[String(horizon)],
       };
     }
     return source?.horizons?.[horizon]
@@ -142,7 +202,7 @@
       if (!normalized || normalized.targetDate <= asOf) return null;
       horizons[horizon] = normalized;
     }
-    return { asOf, basePrice, horizons };
+    return { asOf, basePrice, horizons, audit: normalizeAudit(value.audit) };
   }
 
   function buildForecastRecord(options = {}) {
@@ -167,6 +227,7 @@
       createdAt,
       updatedAt: timestampOr(options.updatedAt, createdAt),
       horizons: forecast.horizons,
+      audit: forecast.audit,
     };
   }
 
@@ -196,6 +257,7 @@
       createdAt,
       updatedAt: timestampOr(value.updatedAt, createdAt),
       horizons,
+      audit: normalizeAudit(value.audit),
     };
   }
 
@@ -234,8 +296,13 @@
         horizons[horizon] = result;
         return;
       }
+      if (result.score?.actualDate === actual.date && result.score?.actualPrice === actual.close) {
+        horizons[horizon] = result;
+        return;
+      }
       const actualLogReturn = Math.log(actual.close / record.basePrice);
       const predictedLogReturn = Math.log(result.predictedPrice / record.basePrice);
+      const signedLogError = actualLogReturn - predictedLogReturn;
       horizons[horizon] = {
         ...result,
         score: {
@@ -243,7 +310,9 @@
           actualPrice: actual.close,
           actualLogReturn,
           predictedLogReturn,
-          absLogError: Math.abs(actualLogReturn - predictedLogReturn),
+          absLogError: Math.abs(signedLogError),
+          signedLogError,
+          squaredLogError: signedLogError ** 2,
           directionCorrect: direction(actualLogReturn) === direction(predictedLogReturn),
           intervalCovered: actual.close >= result.lowerPrice && actual.close <= result.upperPrice,
           scoredAt: timestampOr(now, Date.now()),
@@ -262,15 +331,19 @@
     const horizons = {};
     FORECAST_HORIZONS.forEach((horizon) => {
       const selected = preferred.horizons[horizon];
-      horizons[horizon] = selected.score
-        ? selected
-        : { ...selected, score: other.horizons[horizon].score };
+      const otherHorizon = other.horizons[horizon];
+      horizons[horizon] = {
+        ...selected,
+        attribution: selected.attribution || otherHorizon.attribution,
+        score: selected.score || otherHorizon.score,
+      };
     });
     return {
       ...preferred,
       createdAt: Math.min(existing.createdAt, incoming.createdAt),
       updatedAt: Math.max(existing.updatedAt, incoming.updatedAt),
       horizons,
+      audit: preferred.audit || other.audit,
     };
   }
 

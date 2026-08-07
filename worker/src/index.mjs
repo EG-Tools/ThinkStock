@@ -14,6 +14,7 @@ import {
 } from "./company-analysis.mjs";
 
 import { matchRequestRoute, queryFlag } from "./request-router.mjs";
+import { buildCrisisSignalRows, fetchCrisisSignalSeries } from "./crisis-signal.mjs";
 
 export {
   mergeFinancialRecords,
@@ -45,10 +46,28 @@ const ANALYSIS_CACHE_FRESH_MS = 30 * 24 * 60 * 60 * 1000;
 const ANALYSIS_SNAPSHOT_LIMIT = 60;
 const FORECAST_JOURNAL_SCHEMA = 1;
 const FORECAST_JOURNAL_LIMIT = 120;
-const FORECAST_JOURNAL_BODY_LIMIT = 256 * 1024;
+// A full 60-record audit journal is roughly 375 KB; keep room for JSON overhead
+// while still rejecting unexpectedly large authenticated writes.
+const FORECAST_JOURNAL_BODY_LIMIT = 512 * 1024;
 const FORECAST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,120}$/;
 const FORECAST_MODEL_PATTERN = /^[A-Za-z0-9._:+/-]{1,80}$/;
 const FORECAST_HORIZON_PATTERN = /^[1-9]\d{0,3}$/;
+const FORECAST_AUDIT_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+const FORECAST_ATTRIBUTION_COMPONENTS = new Set([
+  "localModel",
+  "top400Blend",
+  "empiricalGuardrail",
+  "corporateRiskGate",
+  "consensus",
+  "fundamentals",
+  "marketRegime",
+  "corporateRisk",
+  "rotation",
+  "rangeMeanReversion",
+  "terminalRisk",
+  "finalClamp",
+  "analogPath",
+]);
 const MAX_PAGES = 100;
 const PAGE_SIZE = 100;
 const PROGRESSIVE_PAGE_BATCH_SIZE = 4;
@@ -64,14 +83,21 @@ const NAVER_PRICE_LOOKBACK_DAYS = 21;
 const MAX_NAVER_PRICE_BYTES = 1024 * 1024;
 const NAVER_KRX_OVERLAP_MAX_DIVERGENCE = 1.05;
 const PRICE_MOVE_WARNING_RATIO = 1.35;
-const ECOS_CACHE_SCHEMA = 1;
+const ECOS_CACHE_SCHEMA = 2;
 const ECOS_CACHE_KEY = `ecos-macro:${ECOS_CACHE_SCHEMA}`;
 const ECOS_LEADING_STAT_CODE = "901Y067";
 const ECOS_LEADING_ITEM_CODE = "I16E";
 const ECOS_NEWS_STAT_CODE = "521Y001";
 const ECOS_NEWS_ITEM_CODE = "A001";
+const ECOS_POLICY_RATE_STAT_CODE = "722Y001";
+const ECOS_POLICY_RATE_ITEM_CODE = "0101000";
+const ECOS_TRADE_STAT_CODE = "901Y118";
+const ECOS_EXPORT_ITEM_CODE = "T002";
+const ECOS_IMPORT_ITEM_CODE = "T004";
 const CREDIT_CACHE_SCHEMA = 4;
 const CREDIT_CACHE_KEY = `credit-macro:${CREDIT_CACHE_SCHEMA}`;
+const CRISIS_CACHE_SCHEMA = 2;
+const CRISIS_CACHE_KEY = `fred-crisis-signal:${CRISIS_CACHE_SCHEMA}`;
 const KOFIA_CREDIT_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getGrantingOfCreditBalanceInfo";
 const KOFIA_MARKET_FUNDS_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getSecuritiesMarketTotalCapitalInfo";
 const FREESIS_CREDIT_URL = "https://freesis.kofia.or.kr/meta/getMetaDataList.do";
@@ -178,10 +204,26 @@ function mergeEcosRows(existing, incoming, key) {
   return [...rows.values()].sort((left, right) => left.date.localeCompare(right.date));
 }
 
-async function fetchEcosRows(env, { frequency, statCode, itemCode, start, key }) {
+function mergeEcosFieldRows(...groups) {
+  const rows = new Map();
+  groups.flat().forEach((row) => {
+    const date = String(row?.date || "").slice(0, 10);
+    if (!isValidIsoDate(date)) return;
+    const next = { ...(rows.get(date) || { date }) };
+    Object.entries(row || {}).forEach(([key, rawValue]) => {
+      if (key === "date") return;
+      const value = finiteNumber(rawValue);
+      if (value !== null) next[key] = value;
+    });
+    rows.set(date, next);
+  });
+  return [...rows.values()].sort((left, right) => left.date.localeCompare(right.date));
+}
+
+async function fetchEcosRows(env, { frequency, statCode, itemCode, start, key, limit = null }) {
   const end = ecosDateCode(0, frequency === "M");
-  const limit = frequency === "M" ? 120 : 500;
-  const url = `https://ecos.bok.or.kr/api/StatisticSearch/${env.ECOS_API_KEY}/json/kr/1/${limit}/${statCode}/${frequency}/${start}/${end}/${itemCode}`;
+  const rowLimit = Math.max(1, Number(limit) || (frequency === "M" ? 120 : 500));
+  const url = `https://ecos.bok.or.kr/api/StatisticSearch/${env.ECOS_API_KEY}/json/kr/1/${rowLimit}/${statCode}/${frequency}/${start}/${end}/${itemCode}`;
   const response = await fetch(url);
   if (!response.ok) throw new Error(`ECOS HTTP ${response.status}`);
   const payload = await response.json();
@@ -205,22 +247,103 @@ async function ecosMacroResponse(env, origin, refresh = false) {
     || cached?.lastCheckedDate !== checkDate;
   if (!needsRefresh) return jsonResponse({ ok: true, cached: true, ...cached }, 200, origin);
   try {
-    const [leading, news] = await Promise.all([
+    const requests = await Promise.allSettled([
       fetchEcosRows(env, { frequency: "M", statCode: ECOS_LEADING_STAT_CODE, itemCode: ECOS_LEADING_ITEM_CODE, start: ecosDateCode(730, true), key: "leading_cycle" }),
       fetchEcosRows(env, { frequency: "D", statCode: ECOS_NEWS_STAT_CODE, itemCode: ECOS_NEWS_ITEM_CODE, start: ecosDateCode(90), key: "news_sentiment" }),
+      fetchEcosRows(env, {
+        frequency: "M",
+        statCode: ECOS_POLICY_RATE_STAT_CODE,
+        itemCode: ECOS_POLICY_RATE_ITEM_CODE,
+        start: ecosDateCode(365 * 26, true),
+        key: "policy_rate",
+        limit: 500,
+      }),
+      fetchEcosRows(env, {
+        frequency: "M",
+        statCode: ECOS_TRADE_STAT_CODE,
+        itemCode: ECOS_EXPORT_ITEM_CODE,
+        start: ecosDateCode(365 * 26, true),
+        key: "export_value",
+        limit: 500,
+      }),
+      fetchEcosRows(env, {
+        frequency: "M",
+        statCode: ECOS_TRADE_STAT_CODE,
+        itemCode: ECOS_IMPORT_ITEM_CODE,
+        start: ecosDateCode(365 * 26, true),
+        key: "import_value",
+        limit: 500,
+      }),
     ]);
+    if (requests[0].status !== "fulfilled" || requests[1].status !== "fulfilled") {
+      const reason = requests.find((item, index) => index < 2 && item.status === "rejected")?.reason;
+      throw reason || new Error("ECOS core macro series failed");
+    }
+    const leading = requests[0].value;
+    const news = requests[1].value;
+    const policyRate = requests[2].status === "fulfilled" ? requests[2].value : [];
+    const exports = requests[3].status === "fulfilled" ? requests[3].value : [];
+    const imports = requests[4].status === "fulfilled" ? requests[4].value : [];
+    const optionalFailures = requests.slice(2).filter((item) => item.status === "rejected").length;
     const payload = {
       schema: ECOS_CACHE_SCHEMA,
       savedAt: Date.now(),
       lastCheckedDate: checkDate,
       leadingRows: mergeEcosRows(cached?.leadingRows, leading, "leading_cycle").slice(-36),
       newsRows: mergeEcosRows(cached?.newsRows, news, "news_sentiment").slice(-180),
+      policyRateRows: mergeEcosRows(cached?.policyRateRows, policyRate, "policy_rate").slice(-360),
+      tradeRows: mergeEcosFieldRows(cached?.tradeRows, exports, imports).slice(-360),
+      warning: optionalFailures
+        ? `ECOS 선택 거시지표 ${optionalFailures}개는 마지막 정상값을 사용합니다.`
+        : "",
     };
     if (env.DISCLOSURE_CACHE) await env.DISCLOSURE_CACHE.put(ECOS_CACHE_KEY, JSON.stringify(payload));
     return jsonResponse({ ok: true, cached: false, ...payload }, 200, origin);
   } catch (error) {
     if (cached?.schema === ECOS_CACHE_SCHEMA) return jsonResponse({ ok: true, cached: true, stale: true, warning: "ECOS 연결 실패로 마지막 저장 지표를 사용했습니다.", ...cached }, 200, origin);
     return jsonResponse({ ok: false, error: `ECOS 조회 실패: ${error?.message || error}` }, 503, origin);
+  }
+}
+
+async function crisisSignalResponse(env, origin, refresh = false) {
+  if (!env.FRED_API_KEY) {
+    return jsonResponse({ ok: false, error: "FRED API key is not configured" }, 503, origin);
+  }
+  const cached = env.DISCLOSURE_CACHE
+    ? await env.DISCLOSURE_CACHE.get(CRISIS_CACHE_KEY, "json")
+    : null;
+  const checkDate = koreanDateText();
+  const needsRefresh = refresh
+    || cached?.schema !== CRISIS_CACHE_SCHEMA
+    || cached?.lastCheckedDate !== checkDate;
+  if (!needsRefresh) return jsonResponse({ ok: true, cached: true, ...cached }, 200, origin);
+  try {
+    const series = await fetchCrisisSignalSeries(fetch, String(env.FRED_API_KEY).trim());
+    const records = buildCrisisSignalRows(series);
+    if (!records.length) throw new Error("FRED crisis signal contains no usable records");
+    const payload = {
+      schema: CRISIS_CACHE_SCHEMA,
+      savedAt: Date.now(),
+      lastCheckedDate: checkDate,
+      latestDate: records.at(-1)?.date || "",
+      source: "FRED",
+      records,
+    };
+    if (env.DISCLOSURE_CACHE) {
+      await env.DISCLOSURE_CACHE.put(CRISIS_CACHE_KEY, JSON.stringify(payload));
+    }
+    return jsonResponse({ ok: true, cached: false, ...payload }, 200, origin);
+  } catch (error) {
+    if (cached?.schema === CRISIS_CACHE_SCHEMA) {
+      return jsonResponse({
+        ok: true,
+        cached: true,
+        stale: true,
+        warning: "FRED refresh failed; using the last saved crisis signal.",
+        ...cached,
+      }, 200, origin);
+    }
+    return jsonResponse({ ok: false, error: `FRED crisis signal failed: ${error?.message || error}` }, 503, origin);
   }
 }
 
@@ -1518,7 +1641,39 @@ function journalValidationError(message) {
   return error;
 }
 
-function normalizeForecastHorizon(value, key, { strict = false } = {}) {
+function normalizeForecastNumericMap(value, { maxEntries = 128, maxAbs = 1e12, allowedKeys = null } = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).flatMap(([key, rawValue]) => {
+    if (!FORECAST_AUDIT_KEY_PATTERN.test(key) || (allowedKeys && !allowedKeys.has(key))) return [];
+    const number = finiteNumber(rawValue, { min: -maxAbs, max: maxAbs });
+    return number === null ? [] : [[key, number]];
+  }).slice(0, maxEntries));
+}
+
+function normalizeForecastAudit(value) {
+  if (!value || value.format !== "ai-audit-v1") return null;
+  const features = normalizeForecastNumericMap(value.features);
+  const sources = normalizeForecastNumericMap(value.sources, { maxEntries: 24, maxAbs: 1e9 });
+  const scenarioWeights = normalizeForecastNumericMap(value.scenarioWeights, { maxEntries: 3, maxAbs: 100 });
+  return Object.keys(features).length
+    ? { format: "ai-audit-v1", features, sources, scenarioWeights }
+    : null;
+}
+
+function normalizeForecastAttribution(value, key) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const days = finiteNumber(value.days ?? key, { min: 1, max: 3650 });
+  const expectedLogReturn = finiteNumber(value.expectedLogReturn, { min: -10, max: 10 });
+  const components = normalizeForecastNumericMap(value.components, {
+    maxEntries: FORECAST_ATTRIBUTION_COMPONENTS.size,
+    maxAbs: 10,
+    allowedKeys: FORECAST_ATTRIBUTION_COMPONENTS,
+  });
+  if (days !== Number(key) || expectedLogReturn === null || !Object.keys(components).length) return null;
+  return { days, expectedLogReturn, components };
+}
+
+function normalizeForecastHorizon(value, key, { strict = false, basePrice = null } = {}) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     if (strict) throw journalValidationError(`Invalid forecast horizon: ${key}`);
     return null;
@@ -1532,12 +1687,23 @@ function normalizeForecastHorizon(value, key, { strict = false } = {}) {
     if (strict) throw journalValidationError(`Invalid forecast values for horizon ${key}`);
     return null;
   }
-  const result = { targetDate, predictedPrice, lowerPrice, upperPrice };
+  const attribution = normalizeForecastAttribution(value.attribution, key);
+  const result = {
+    targetDate,
+    predictedPrice,
+    lowerPrice,
+    upperPrice,
+    ...(attribution ? { attribution } : {}),
+  };
   const nestedScore = value.score && typeof value.score === "object" ? value.score : null;
   const evaluation = nestedScore ? {
     actualDate: nestedScore.actualDate,
     actualPrice: nestedScore.actualPrice,
+    actualLogReturn: nestedScore.actualLogReturn,
+    predictedLogReturn: nestedScore.predictedLogReturn,
     absoluteLogError: nestedScore.absLogError ?? nestedScore.absoluteLogError,
+    signedLogError: nestedScore.signedLogError,
+    squaredLogError: nestedScore.squaredLogError,
     directionCorrect: nestedScore.directionCorrect,
     covered: nestedScore.intervalCovered ?? nestedScore.covered,
     scoredAt: nestedScore.scoredAt,
@@ -1555,11 +1721,43 @@ function normalizeForecastHorizon(value, key, { strict = false } = {}) {
 
   const actualDate = String(evaluation.actualDate || "").slice(0, 10);
   const actualPrice = finiteNumber(evaluation.actualPrice, { min: Number.MIN_VALUE, max: 1e15 });
-  const absoluteLogError = finiteNumber(evaluation.absoluteLogError, { min: 0, max: 100 });
+  const normalizedBasePrice = finiteNumber(basePrice, { min: Number.MIN_VALUE, max: 1e15 });
+  const actualLogReturn = finiteNumber(
+    evaluation.actualLogReturn ?? (
+      actualPrice && normalizedBasePrice ? Math.log(actualPrice / normalizedBasePrice) : null
+    ),
+    { min: -100, max: 100 },
+  );
+  const predictedLogReturn = finiteNumber(
+    evaluation.predictedLogReturn ?? (
+      normalizedBasePrice ? Math.log(predictedPrice / normalizedBasePrice) : null
+    ),
+    { min: -100, max: 100 },
+  );
+  const signedLogError = finiteNumber(
+    evaluation.signedLogError ?? (
+      actualLogReturn !== null && predictedLogReturn !== null
+        ? actualLogReturn - predictedLogReturn
+        : null
+    ),
+    { min: -100, max: 100 },
+  );
+  const absoluteLogError = finiteNumber(
+    evaluation.absoluteLogError ?? (signedLogError === null ? null : Math.abs(signedLogError)),
+    { min: 0, max: 100 },
+  );
+  const squaredLogError = finiteNumber(
+    evaluation.squaredLogError ?? (signedLogError === null ? null : signedLogError ** 2),
+    { min: 0, max: 10000 },
+  );
   const scoredAt = timestamp(evaluation.scoredAt);
   const validEvaluation = isValidIsoDate(actualDate)
     && actualPrice
+    && actualLogReturn !== null
+    && predictedLogReturn !== null
+    && signedLogError !== null
     && absoluteLogError !== null
+    && squaredLogError !== null
     && typeof evaluation.directionCorrect === "boolean"
     && typeof evaluation.covered === "boolean"
     && scoredAt;
@@ -1571,7 +1769,11 @@ function normalizeForecastHorizon(value, key, { strict = false } = {}) {
     ...result,
     actualDate,
     actualPrice,
+    actualLogReturn,
+    predictedLogReturn,
+    signedLogError,
     absoluteLogError,
+    squaredLogError,
     directionCorrect: evaluation.directionCorrect,
     covered: evaluation.covered,
     scoredAt,
@@ -1606,7 +1808,7 @@ function normalizeForecastRecord(value, ticker, { strict = false } = {}) {
       if (strict) throw journalValidationError(`Invalid forecast horizon key: ${key}`);
       continue;
     }
-    const normalized = normalizeForecastHorizon(horizon, key, { strict });
+    const normalized = normalizeForecastHorizon(horizon, key, { strict, basePrice });
     if (normalized?.targetDate < asOf) {
       if (strict) throw journalValidationError(`Forecast target precedes its base date: ${key}`);
       continue;
@@ -1614,7 +1816,18 @@ function normalizeForecastRecord(value, ticker, { strict = false } = {}) {
     if (normalized) horizons[key] = normalized;
   }
   if (!Object.keys(horizons).length) return fail("At least one forecast horizon is required");
-  return { id, ticker, asOf, basePrice, modelVersion, createdAt, updatedAt, horizons };
+  const audit = normalizeForecastAudit(value.audit);
+  return {
+    id,
+    ticker,
+    asOf,
+    basePrice,
+    modelVersion,
+    createdAt,
+    updatedAt,
+    horizons,
+    ...(audit ? { audit } : {}),
+  };
 }
 
 export function mergeForecastJournalRecords(existing, incoming, ticker, { strictIncoming = false } = {}) {
@@ -1630,12 +1843,20 @@ export function mergeForecastJournalRecords(existing, incoming, ticker, { strict
       }
       const previousScoreTime = timestamp(previousHorizon.scoredAt) || 0;
       const incomingScoreTime = timestamp(horizon.scoredAt) || 0;
-      if (incomingScoreTime > previousScoreTime) horizons[key] = horizon;
+      if (incomingScoreTime > previousScoreTime) {
+        horizons[key] = {
+          ...horizon,
+          attribution: horizon.attribution || previousHorizon.attribution,
+        };
+      } else if (!previousHorizon.attribution && horizon.attribution) {
+        horizons[key] = { ...previousHorizon, attribution: horizon.attribution };
+      }
     });
     return {
       ...previous,
       updatedAt: Math.max(previous.updatedAt, record.updatedAt),
       horizons,
+      audit: previous.audit || record.audit,
     };
   };
   (existing || []).forEach((value) => {
@@ -1761,6 +1982,7 @@ export async function handleRequest(request, env, ctx = null) {
       dartConfigured: Boolean(env.DART_API_KEY),
       krxConfigured: Boolean(env.KRX_API_KEY),
       ecosConfigured: Boolean(env.ECOS_API_KEY),
+      fredConfigured: Boolean(env.FRED_API_KEY),
       accessTokenConfigured: Boolean(env.THINKSTOCK_ACCESS_TOKEN),
       cacheConfigured: Boolean(env.DISCLOSURE_CACHE),
     }, 200, origin);
@@ -1777,6 +1999,10 @@ export async function handleRequest(request, env, ctx = null) {
   if (route.id === "credit") {
     const refresh = queryFlag(url.searchParams.get("refresh"));
     return creditMacroResponse(env, origin, refresh);
+  }
+  if (route.id === "crisis-signal") {
+    const refresh = queryFlag(url.searchParams.get("refresh"));
+    return crisisSignalResponse(env, origin, refresh);
   }
   if (route.id === "indices") return krxCoreIndexResponse(env, origin);
   const ticker = String(url.searchParams.get("ticker") || "").trim().toUpperCase();

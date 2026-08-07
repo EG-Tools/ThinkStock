@@ -66,14 +66,16 @@ export function normalizeMacroPayload(payload) {
   const source = requireSuccess(payload, "Macro");
   const leadingRows = normalizeRows(source.leadingRows, ["leading_cycle"], { positiveOnly: true });
   const newsRows = normalizeRows(source.newsRows, ["news_sentiment"], { positiveOnly: true });
-  if (!leadingRows.length && !newsRows.length) {
+  const policyRateRows = normalizeRows(source.policyRateRows, ["policy_rate"], { positiveOnly: true });
+  const tradeRows = normalizeRows(source.tradeRows, ["export_value", "import_value"], { positiveOnly: true });
+  if (!leadingRows.length && !newsRows.length && !policyRateRows.length && !tradeRows.length) {
     throw new Error("Macro response contains no usable rows");
   }
   requirePlausibleContinuity(leadingRows, "leading_cycle", {
     maxRelativeChange: 0.01,
     maxAbsoluteChange: 0.8,
   });
-  return { ...source, leadingRows, newsRows };
+  return { ...source, leadingRows, newsRows, policyRateRows, tradeRows };
 }
 
 export function normalizePricePayload(payload) {
@@ -95,12 +97,41 @@ export function normalizeEventPayload(payload, label = "Event") {
   return { ...source, records };
 }
 
+export function normalizeCrisisSignalPayload(payload) {
+  const source = requireSuccess(payload, "Crisis signal");
+  const byDate = new Map();
+  (Array.isArray(source.records) ? source.records : []).forEach((row) => {
+    const date = String(row?.date || "").slice(0, 10);
+    const score = finiteNumber(row?.score);
+    if (!DATE_PATTERN.test(date) || score === null || score < 0 || score > 100) return;
+    const normalized = { date, score: Math.round(score) };
+    ["curve", "labor", "credit", "t10y2y", "t10y3m", "unemployment", "initialClaims4w", "creditSpread", "sahm", "fedFunds", "fedFundsChange6m"]
+      .forEach((key) => {
+        const value = finiteNumber(row?.[key]);
+        if (value !== null) normalized[key] = value;
+      });
+    normalized.stage = ["stable", "caution", "warning", "crisis"].includes(row?.stage)
+      ? row.stage
+      : (score >= 75 ? "crisis" : score >= 50 ? "warning" : score >= 25 ? "caution" : "stable");
+    normalized.uninversion = row?.uninversion === true;
+    byDate.set(date, normalized);
+  });
+  const records = [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
+  requireUsableRows(source.records, records, "Crisis signal");
+  return {
+    ...source,
+    latestDate: String(source.latestDate || records.at(-1)?.date || "").slice(0, 10),
+    records,
+  };
+}
+
 export function normalizeRuntimePayload(kind, payload) {
   if (kind === "credit") return normalizeCreditPayload(payload);
   if (kind === "macro") return normalizeMacroPayload(payload);
   if (kind === "price") return normalizePricePayload(payload);
   if (kind === "disclosure") return normalizeEventPayload(payload, "Disclosure");
   if (kind === "insider") return normalizeEventPayload(payload, "Insider trade");
+  if (kind === "crisis") return normalizeCrisisSignalPayload(payload);
   return requireSuccess(payload, "Runtime data");
 }
 
@@ -109,6 +140,7 @@ const api = Object.freeze({
   normalizeMacroPayload,
   normalizePricePayload,
   normalizeEventPayload,
+  normalizeCrisisSignalPayload,
   normalizeRuntimePayload,
 });
 
