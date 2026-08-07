@@ -242,7 +242,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "2.24";
+const APP_VERSION = "2.25";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -6500,13 +6500,27 @@ async function buildAiForecastTraces(rows, seriesModels) {
     };
     const inputKey = getAiForecastInputKey(options);
     const cached = aiForecastResultBySeries.get(series);
+    const preserveExistingForecast = Boolean(
+      cached
+      && aiForecastDeferredSeries.size
+      && !aiForecastDeferredSeries.has(series)
+    );
+    const reusableCache = inputKey && cached
+      && (cached.inputKey === inputKey || preserveExistingForecast)
+      ? (cached.inputKey === inputKey ? cached : { ...cached, inputKey })
+      : null;
+    if (preserveExistingForecast && reusableCache !== cached) {
+      // A newly enabled target must not make already visible forecasts recalculate.
+      // Re-anchor the cached result to the latest shared context for this render.
+      aiForecastResultBySeries.set(series, reusableCache);
+    }
     return [{
       model,
       series,
       historyRows,
       options,
       inputKey,
-      cached: inputKey && cached?.inputKey === inputKey ? cached : null,
+      cached: reusableCache,
     }];
   });
   const calculationItems = workItems.filter((item) => (

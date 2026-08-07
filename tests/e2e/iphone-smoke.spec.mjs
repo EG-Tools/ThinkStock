@@ -1009,6 +1009,7 @@ test("AI forecasts survive repeated KOSPI and KOSDAQ toggle cycles", async ({ pa
     new MutationObserver(capture).observe(text, { childList: true, subtree: true });
   });
 
+  let calculationCountsAfterInitial = null;
   for (let cycle = 0; cycle < 5; cycle += 1) {
     await page.locator("#aiForecastToggle").click();
     await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-pressed", "true");
@@ -1017,6 +1018,14 @@ test("AI forecasts survive repeated KOSPI and KOSDAQ toggle cycles", async ({ pa
         .filter((trace) => trace?.meta?.isAiForecastScenarioTrace)
         .map((trace) => trace?.meta?.seriesKey)).size
     )), { message: `AI cycle ${cycle + 1} did not render both indices` }).toBe(2);
+    if (cycle === 0) {
+      // The first visible forecast can be refined once the background market
+      // model and rotation inputs settle. Measure cache reuse after that pass.
+      await expect(page.locator("#aiForecastProgress")).toBeHidden({ timeout: 15000 });
+      calculationCountsAfterInitial = await page.evaluate(() => (
+        window.ThinkStockE2E.getAiForecastState().calculationCounts
+      ));
+    }
 
     await page.locator("#aiForecastToggle").click();
     await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-pressed", "false");
@@ -1036,13 +1045,11 @@ test("AI forecasts survive repeated KOSPI and KOSDAQ toggle cycles", async ({ pa
       .map((trace) => trace?.meta?.seriesKey)).size
   )), { message: "rapid AI toggles did not preserve the final ON state" }).toBe(2);
   const progressSamples = await page.evaluate(() => window.__aiProgressSamples || []);
-  expect(progressSamples.some((sample) => sample.value === 0)).toBe(true);
-  expect(progressSamples.some((sample) => sample.value === 25)).toBe(true);
-  expect(progressSamples.some((sample) => sample.value === 85)).toBe(true);
   expect(progressSamples.some((sample) => sample.value === 100)).toBe(true);
-  expect(progressSamples.some((sample, index) => (
-    sample.value === 0 && progressSamples.slice(0, index).some((prior) => prior.value === 100)
-  ))).toBe(true);
+  const finalCalculationCounts = await page.evaluate(() => (
+    window.ThinkStockE2E.getAiForecastState().calculationCounts
+  ));
+  expect(finalCalculationCounts).toEqual(calculationCountsAfterInitial);
 });
 
 test("enabling KOSDAQ while AI is active calculates only the new index", async ({ page }) => {
@@ -1675,7 +1682,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     element._fullLayout.yaxis.autorange
   ))).toBe(false);
-  const fittedRangeCoversVisibleLines = await page.locator("#chart").evaluate((element) => {
+  const fittedRangeCoversVisibleLines = () => page.locator("#chart").evaluate((element) => {
     const xRange = element._fullLayout.xaxis.range.map((value) => Date.parse(value));
     const yRange = element._fullLayout.yaxis.range;
     const values = (element.data || [])
@@ -1694,7 +1701,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
     const maximum = Math.max(...values.map((point) => point.y));
     return yRange[0] < minimum && yRange[1] > maximum;
   });
-  expect(fittedRangeCoversVisibleLines).toBe(true);
+  await expect.poll(fittedRangeCoversVisibleLines).toBe(true);
   });
 
   await test.step("limit event hover to exact dates and update visible tickers", async () => {
