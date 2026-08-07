@@ -5698,7 +5698,14 @@ async function renderChart(preserveZoom = true) {
       const hasRange = (eventData["xaxis.range[0]"] != null && eventData["xaxis.range[1]"] != null)
         || (Array.isArray(rangePair) && rangePair.length === 2);
       const hasAuto = eventData["xaxis.autorange"] === true;
+      const r0 = eventData["xaxis.range[0]"] ?? (Array.isArray(rangePair) ? rangePair[0] : null);
+      const r1 = eventData["xaxis.range[1]"] ?? (Array.isArray(rangePair) ? rangePair[1] : null);
       if (eventData["yaxis.autorange"] === true) useViewportEventMarkerGap = false;
+      // Capture the visible range before returning from a concurrent chart sync.
+      // Otherwise a slow background render can replace a user's fresh zoom.
+      if (!isHandleDragging && hasRange && r0 != null && r1 != null) {
+        pinnedXRange = [r0, r1];
+      }
       if (chartSyncing || isHandleDragging) return;
       if (cursorSyncing && !hasRange && !hasAuto) return;
       scheduleHandleUpdate();
@@ -5708,10 +5715,7 @@ async function renderChart(preserveZoom = true) {
         document.getElementById("chart-adr"),
       ].filter((target) => target?.data && !target.hidden);
       if (syncedCharts.length) {
-        const r0 = eventData["xaxis.range[0]"] ?? (Array.isArray(rangePair) ? rangePair[0] : null);
-        const r1 = eventData["xaxis.range[1]"] ?? (Array.isArray(rangePair) ? rangePair[1] : null);
         if (r0 != null && r1 != null) {
-          pinnedXRange = [r0, r1];
           syncedCharts.forEach((target) => {
             scheduleViewportRangeSync(target, { "xaxis.range[0]": r0, "xaxis.range[1]": r1 });
           });

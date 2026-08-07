@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from datetime import date, timedelta
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -23,10 +24,16 @@ from check_pages_data_regression import (
 )
 
 
-def write_payload(root: Path, file_name: str, dates: list[str], values: list[float | None]) -> Path:
+def write_payload(
+    root: Path,
+    file_name: str,
+    dates: list[str],
+    values: list[float | None],
+    series: str = "sample",
+) -> Path:
     path = root / file_name
     path.write_text(
-        json.dumps({"dates": dates, "series": ["sample"], "columns": {"sample": values}}),
+        json.dumps({"dates": dates, "series": [series], "columns": {series: values}}),
         encoding="utf-8",
     )
     return path
@@ -48,6 +55,55 @@ class PagesDataRegressionTests(unittest.TestCase):
             current = write_payload(root, "current.json", ["2026-01-01"], [1])
             with self.assertRaisesRegex(DataRegressionError, "latest date regressed"):
                 compare_core_dataset("sample", baseline, current)
+
+    def test_allows_monthly_leading_cycle_endpoint_to_contract_within_same_month(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            history_dates = [
+                (date(2022, 1, 1) + timedelta(days=index)).isoformat()
+                for index in range(1500)
+            ]
+            month_dates = [f"2026-06-{day:02d}" for day in range(1, 31)]
+            dates = history_dates + month_dates
+            baseline = write_payload(
+                root,
+                "baseline.json",
+                dates,
+                [100.0] * len(history_dates) + [105.7] * 30,
+                "leading_cycle",
+            )
+            current = write_payload(
+                root,
+                "current.json",
+                dates,
+                [100.0] * len(history_dates) + [105.7] + [None] * 29,
+                "leading_cycle",
+            )
+
+            messages = compare_core_dataset("macro", baseline, current)
+
+            self.assertEqual(len(messages), 1)
+
+    def test_rejects_monthly_leading_cycle_endpoint_from_older_month(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            baseline = write_payload(
+                root,
+                "baseline.json",
+                ["2026-05-01", "2026-06-01"],
+                [104.8, 105.7],
+                "leading_cycle",
+            )
+            current = write_payload(
+                root,
+                "current.json",
+                ["2026-05-01"],
+                [104.8],
+                "leading_cycle",
+            )
+
+            with self.assertRaisesRegex(DataRegressionError, "latest date regressed"):
+                compare_core_dataset("macro", baseline, current)
 
     def test_rejects_lost_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

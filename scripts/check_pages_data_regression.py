@@ -16,6 +16,7 @@ CORE_DATASETS = {
 }
 MIN_POINT_RETENTION = 0.98
 MIN_CORP_CODE_RETENTION = 0.98
+MONTHLY_ENDPOINT_SERIES = {("macro", "leading_cycle")}
 
 
 class DataRegressionError(AssertionError):
@@ -104,7 +105,11 @@ def compare_core_dataset(name: str, baseline_path: Path, current_path: Path) -> 
             raise DataRegressionError(
                 f"{name}: {key} history starts later ({before.earliest} -> {after.earliest})"
             )
-        if after.latest < before.latest:
+        same_month_endpoint = (
+            (name, key) in MONTHLY_ENDPOINT_SERIES
+            and after.latest[:7] == before.latest[:7]
+        )
+        if after.latest < before.latest and not same_month_endpoint:
             raise DataRegressionError(
                 f"{name}: {key} latest date regressed ({before.latest} -> {after.latest})"
             )
