@@ -1070,7 +1070,11 @@ test("enabling KOSDAQ while AI is active calculates only the new index", async (
       trace?.meta?.isAiForecastScenarioTrace && trace?.meta?.seriesKey === "^KS11"
     )).length
   ))).toBe(3);
-  await expect(page.locator("#aiForecastProgress")).toBeHidden({ timeout: 5000 });
+  await expect.poll(() => page.evaluate(() => {
+    const state = window.ThinkStockE2E.getAiForecastState();
+    return state.marketModelSettled && !state.inputsPending;
+  }), { timeout: 20000 }).toBe(true);
+  await expect(page.locator("#aiForecastProgress")).toBeHidden({ timeout: 10000 });
   const countsBeforeKOSDAQ = await page.evaluate(() => (
     window.ThinkStockE2E.getAiForecastState().calculationCounts
   ));

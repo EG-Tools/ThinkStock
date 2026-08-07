@@ -578,6 +578,7 @@ let aiForecastTargetSeries = new Set();
 let aiForecastTargetRevision = 0;
 let aiForecastResultBySeries = new Map();
 let aiForecastDeferredSeries = new Set();
+let aiForecastProtectedCachedSeries = new Set();
 let aiForecastCalculationCounts = new Map();
 let aiForecastDeferredRenderId = 0;
 let aiForecastProgressActive = false;
@@ -715,6 +716,8 @@ function initE2eDebugAccess() {
           deferredTargets: [...aiForecastDeferredSeries].sort(),
           cachedTargets: [...aiForecastResultBySeries.keys()].sort(),
           calculationCounts: Object.fromEntries(aiForecastCalculationCounts),
+          inputsPending: aiForecastInputsPending(),
+          marketModelSettled: aiMarketModelLoadSettled,
           analysisPending: activeAiAnalysisTickers()
             .filter((ticker) => aiAnalysisPendingTickers.has(ticker))
             .sort(),
@@ -5397,6 +5400,9 @@ function setAiForecastTargetVisibility(series, visible) {
   const changed = next.size !== aiForecastTargetSeries.size
     || [...next].some((item) => !aiForecastTargetSeries.has(item));
   if (!changed) return false;
+  aiForecastProtectedCachedSeries = visible
+    ? new Set([...aiForecastTargetSeries].filter((seriesKey) => seriesKey !== key))
+    : new Set();
   aiForecastTargetSeries = next;
   if (visible) aiForecastDeferredSeries.add(key);
   else aiForecastDeferredSeries.delete(key);
@@ -6502,8 +6508,7 @@ async function buildAiForecastTraces(rows, seriesModels) {
     const cached = aiForecastResultBySeries.get(series);
     const preserveExistingForecast = Boolean(
       cached
-      && aiForecastDeferredSeries.size
-      && !aiForecastDeferredSeries.has(series)
+      && aiForecastProtectedCachedSeries.has(series)
     );
     const reusableCache = inputKey && cached
       && (cached.inputKey === inputKey || preserveExistingForecast)
@@ -6649,6 +6654,7 @@ async function buildAiForecastTraces(rows, seriesModels) {
     }
   }
   lastAiForecastTraceCount = forecastCount;
+  aiForecastProtectedCachedSeries.clear();
   syncAiForecastToggleButton(forecastCount);
   return traces;
 }
