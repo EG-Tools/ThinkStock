@@ -48,13 +48,14 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractio
   stat(path.join(root, "docs", "vendor", "plotly-thinkstock-2.35.2.min.js")),
   stat(path.join(root, "docs", "assets", "app.bundle.min.js")),
 ]);
-const [deferredDiagnostics, dataHealth, pagesEntry, styles, insiderTrades, workerIndex] = await Promise.all([
+const [deferredDiagnostics, dataHealth, pagesEntry, styles, insiderTrades, workerIndex, workerRouter] = await Promise.all([
   readFile(path.join(root, "docs", "modules", "deferred-diagnostics.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "data-health.js"), "utf8"),
   readFile(path.join(root, "scripts", "pages-entry.mjs"), "utf8"),
   readFile(path.join(root, "docs", "styles.css"), "utf8"),
   readFile(path.join(root, "docs", "modules", "insider-trades.js"), "utf8"),
   readFile(path.join(root, "worker", "src", "index.mjs"), "utf8"),
+  readFile(path.join(root, "worker", "src", "request-router.mjs"), "utf8"),
 ]);
 const precacheAssetsSource = sw.match(/const PRECACHE_ASSETS = \[([\s\S]*?)\];/)?.[1] || "";
 
@@ -67,7 +68,7 @@ assert.ok(
   "KRX data attribution is missing",
 );
 assert.ok(
-  html.includes('class="main-chart-wrap"') && html.includes('class="reset-btn chart-reset-btn"'),
+  html.includes('class="main-chart-wrap"') && html.includes('class="reset-btn chart-reset-btn'),
   "chart reset button is not positioned in the main chart",
 );
 assert.ok(
@@ -88,6 +89,9 @@ const requiredIds = [
   "disclosureToggle",
   "insiderTradeToggle",
   "refreshData",
+  "chartRangeStepper",
+  "rangeExpand",
+  "rangeContract",
   "apiSettingsModal",
   "dartGatewayTokenInput",
   "dartGatewayTokenSaveBtn",
@@ -96,6 +100,7 @@ const requiredIds = [
   "performanceDiagnosticsSummary",
 ];
 requiredIds.forEach((id) => assert.ok(ids.includes(id), `required UI element is missing: ${id}`));
+assert.ok(!html.includes('class="range-btn"'), "legacy month range buttons must be removed");
 
 assert.ok(
   html.indexOf('id="disclosureToggle"') < html.indexOf('id="insiderTradeToggle"'),
@@ -117,7 +122,8 @@ assert.ok(!/(^|\n)\.cartesianlayer \.point \{ display: none !important; \}/.test
   && styles.includes(".chart-frame-adr .cartesianlayer .point { display: none !important; }"),
 "global point-marker hiding must not suppress insider trade triangles");
 assert.ok(workerIndex.includes("DART_ELESTOCK_URL")
-  && workerIndex.includes('pathname === "/api/dart/insider-trades"')
+  && workerIndex.includes('route.id === "insider-trades"')
+  && workerRouter.includes('path: "/api/dart/insider-trades"')
   && workerIndex.includes("LOOKBACK_YEARS")
   && workerIndex.includes("`insider:${ticker}`"),
 "DART insider trade gateway or three-year cache policy is incomplete");
@@ -293,18 +299,21 @@ assert.ok(!app.includes("function dateSpanForRows(") && !app.includes("function 
   "data health logic still lives in app.js");
 assert.ok(app.includes("ThinkStockAppUiBindings")
   && appUiBindings.includes("bindManualRefresh")
-  && appUiBindings.includes("bindRangeButtons"),
+  && appUiBindings.includes("bindRangeStepper"),
   "boot UI event bindings are not separated from app.js");
 assert.ok(app.includes("ThinkStockRuntimeSnapshotPolicy")
   && runtimeSnapshotPolicy.includes("createRevisionTracker")
-  && runtimeSnapshotPolicy.includes("isSnapshotUsable"),
+  && runtimeSnapshotPolicy.includes("isSnapshotUsable")
+  && runtimeSnapshotPolicy.includes("hasCoreHistoricalCoverage"),
   "runtime snapshot policy module is incomplete");
 assert.ok(performanceMonitor.includes("gap < frameGapIgnoreMs"), "suspended tabs still pollute frame timing diagnostics");
 assert.ok(performanceMonitor.includes('observe({ type: "longtask", buffered: true })'),
   "browser long-task diagnostics are missing");
 assert.ok(!app.includes("let perfSamples") && !app.includes("function startPerfFrameMonitor("), "performance diagnostics still live in app.js");
 assert.ok(app.includes("ThinkStockAppStorage"), "app storage module is not wired into the app");
-assert.ok(appStorage.includes("createApiSettingsStore") && appStorage.includes("createIndexedCacheStore"), "app storage module is incomplete");
+assert.ok(appStorage.includes("createApiSettingsStore")
+  && appStorage.includes("createIndexedCacheStore")
+  && appStorage.includes("createJsonStore"), "app storage module is incomplete");
 assert.ok(!app.includes("function openRuntimeCacheDb(") && !app.includes("function sanitizeApiSettings("), "storage implementation still lives in app.js");
 assert.ok(app.includes("ThinkStockStartupLoader"), "startup loader module is not wired into the app");
 assert.ok(startupLoader.includes("createStartupLoader") && startupLoader.includes("requestAnimationFrame"), "startup loader module is incomplete");
@@ -312,7 +321,9 @@ assert.ok(!app.includes("function ensureStartupLoader(") && !app.includes("start
 assert.ok(app.includes("runtimeRefreshController.abort"), "superseded runtime refreshes are not cancelled");
 assert.ok(app.includes("function cancelStaleChartModelWorkerRequest()"), "stale chart worker cancellation is missing");
 assert.ok(app.includes("getChartInteractionGeometry(sourceEl)"), "pointer geometry is not shared per frame");
-assert.ok(app.includes('addEventListener("pointermove"') && app.includes("getCoalescedEvents"),
+assert.ok(app.includes("bindPointerDrag")
+  && chartInteractionController.includes('addEventListener("pointermove"')
+  && chartInteractionController.includes("getCoalescedEvents"),
   "chart input is not using the unified pointer pipeline");
 assert.ok(!app.includes('addEventListener("touchmove"') && !app.includes('addEventListener("mousedown"'),
   "legacy chart input listeners remain");

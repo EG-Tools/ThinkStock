@@ -13,6 +13,8 @@ import {
   parseFinancialSummaryHtml,
 } from "./company-analysis.mjs";
 
+import { matchRequestRoute, queryFlag } from "./request-router.mjs";
+
 export {
   mergeFinancialRecords,
   parseConsensusHtml,
@@ -25,6 +27,7 @@ const DART_ELESTOCK_URL = "https://opendart.fss.or.kr/api/elestock.json";
 const DART_MAJORSTOCK_URL = "https://opendart.fss.or.kr/api/majorstock.json";
 const DART_DOCUMENT_URL = "https://opendart.fss.or.kr/api/document.xml";
 const KRX_STOCK_BASE_URL = "https://data-dbg.krx.co.kr/svc/apis/sto";
+const KRX_INDEX_BASE_URL = "https://data-dbg.krx.co.kr/svc/apis/idx";
 const NAVER_STOCK_PRICE_URL = "https://api.finance.naver.com/siseJson.naver";
 const TICKER_PATTERN = /^(\d{6})\.(KS|KQ)$/;
 const CORP_CODE_PATTERN = /^\d{8}$/;
@@ -55,6 +58,8 @@ const KRX_LATEST_LOOKBACK_DAYS = 10;
 const KRX_MARKET_CACHE_SCHEMA = 1;
 const KRX_MARKET_CACHE_TTL_SECONDS = 15 * 24 * 60 * 60;
 const KRX_EMPTY_MARKET_CACHE_TTL_SECONDS = 10 * 60;
+const KRX_INDEX_CACHE_SCHEMA = 1;
+const KRX_INDEX_CACHE_TTL_SECONDS = 24 * 60 * 60;
 const NAVER_PRICE_LOOKBACK_DAYS = 21;
 const MAX_NAVER_PRICE_BYTES = 1024 * 1024;
 const NAVER_KRX_OVERLAP_MAX_DIVERGENCE = 1.05;
@@ -194,7 +199,11 @@ async function fetchEcosRows(env, { frequency, statCode, itemCode, start, key })
 async function ecosMacroResponse(env, origin, refresh = false) {
   if (!env.ECOS_API_KEY) return jsonResponse({ ok: false, error: "Cloudflare에 ECOS 키가 설정되지 않았습니다." }, 503, origin);
   const cached = env.DISCLOSURE_CACHE ? await env.DISCLOSURE_CACHE.get(ECOS_CACHE_KEY, "json") : null;
-  if (!refresh && cached?.schema === ECOS_CACHE_SCHEMA) return jsonResponse({ ok: true, cached: true, ...cached }, 200, origin);
+  const checkDate = koreanDateText();
+  const needsRefresh = refresh
+    || cached?.schema !== ECOS_CACHE_SCHEMA
+    || cached?.lastCheckedDate !== checkDate;
+  if (!needsRefresh) return jsonResponse({ ok: true, cached: true, ...cached }, 200, origin);
   try {
     const [leading, news] = await Promise.all([
       fetchEcosRows(env, { frequency: "M", statCode: ECOS_LEADING_STAT_CODE, itemCode: ECOS_LEADING_ITEM_CODE, start: ecosDateCode(730, true), key: "leading_cycle" }),
@@ -203,6 +212,7 @@ async function ecosMacroResponse(env, origin, refresh = false) {
     const payload = {
       schema: ECOS_CACHE_SCHEMA,
       savedAt: Date.now(),
+      lastCheckedDate: checkDate,
       leadingRows: mergeEcosRows(cached?.leadingRows, leading, "leading_cycle").slice(-36),
       newsRows: mergeEcosRows(cached?.newsRows, news, "news_sentiment").slice(-180),
     };
@@ -472,6 +482,103 @@ export function krxStockPointFromRows(rows, ticker) {
   const snapshot = krxMarketSnapshotFromRows(rows, match[2], "");
   const close = snapshot?.prices?.[match[1]];
   return Number.isFinite(close) ? { date: snapshot.marketDate, close } : null;
+}
+
+export function krxIndexPointFromRows(rows, market) {
+  const marketName = String(market || "").toUpperCase();
+  const expectedNames = marketName === "KOSPI"
+    ? ["KOSPI", "\uCF54\uC2A4\uD53C"]
+    : ["KOSDAQ", "\uCF54\uC2A4\uB2E5"];
+  let best = null;
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const rawDate = String(row?.BAS_DD || "");
+    const date = /^\d{8}$/.test(rawDate)
+      ? `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`
+      : "";
+    const close = krxNumber(row?.CLSPRC_IDX ?? row?.TDD_CLSPRC ?? row?.CLSPRC);
+    const name = String(row?.IDX_NM ?? row?.IDX_NM_KOR ?? row?.IDX_NM_ENG ?? "")
+      .toUpperCase()
+      .replace(/\s+/g, "");
+    if (!date || !Number.isFinite(close) || close <= 0) return;
+    const exact = expectedNames.some((value) => name === value);
+    const partial = expectedNames.some((value) => name.includes(value));
+    const score = exact ? 100 : (partial ? 50 : 0);
+    if (!score) return;
+    if (!best || score > best.score) best = { date, close, score };
+  });
+  return best ? { date: best.date, close: best.close } : null;
+}
+
+async function fetchLatestKrxIndexPoint(env, market, endpoint, expectedDate) {
+  let lastError = null;
+  for (let offset = 0; offset <= KRX_LATEST_LOOKBACK_DAYS; offset += 1) {
+    const baseDate = shiftDate(expectedDate, -offset);
+    try {
+      const response = await fetch(`${KRX_INDEX_BASE_URL}/${endpoint}?basDd=${apiDate(baseDate)}`, {
+        headers: { AUTH_KEY: env.KRX_API_KEY },
+      });
+      if (!response.ok) throw new Error(`KRX index HTTP ${response.status}`);
+      const payload = await response.json();
+      const point = krxIndexPointFromRows(payload?.OutBlock_1, market);
+      if (point) return point;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (lastError) throw lastError;
+  return null;
+}
+
+async function krxCoreIndexResponse(env, origin) {
+  if (!env.KRX_API_KEY) {
+    return jsonResponse({ ok: false, error: "Cloudflare\uC5D0 KRX \uD0A4\uAC00 \uC124\uC815\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4." }, 503, origin);
+  }
+  const expectedDate = expectedLatestKoreanTradingDate(new Date());
+  const cacheKey = `krx-core-indices:${KRX_INDEX_CACHE_SCHEMA}:${expectedDate}`;
+  const latestKey = `krx-core-indices:${KRX_INDEX_CACHE_SCHEMA}:latest`;
+  const cached = env.DISCLOSURE_CACHE ? await env.DISCLOSURE_CACHE.get(cacheKey, "json") : null;
+  if (cached?.schema === KRX_INDEX_CACHE_SCHEMA && Array.isArray(cached.records) && cached.records.length) {
+    return jsonResponse({ ok: true, cached: true, ...cached }, 200, origin);
+  }
+  try {
+    const targets = [
+      { market: "KOSPI", ticker: "^KS11", endpoint: "kospi_dd_trd" },
+      { market: "KOSDAQ", ticker: "^KQ11", endpoint: "kosdaq_dd_trd" },
+    ];
+    const points = await Promise.all(targets.map(async (target) => {
+      const point = await fetchLatestKrxIndexPoint(env, target.market, target.endpoint, expectedDate);
+      return point ? { ticker: target.ticker, ...point } : null;
+    }));
+    const records = points.filter(Boolean);
+    if (records.length !== targets.length) throw new Error("KRX core index response is incomplete");
+    const payload = {
+      schema: KRX_INDEX_CACHE_SCHEMA,
+      source: "KRX",
+      savedAt: Date.now(),
+      expectedDate,
+      latestDate: records.reduce((latest, row) => row.date > latest ? row.date : latest, ""),
+      records,
+    };
+    if (env.DISCLOSURE_CACHE) {
+      await Promise.all([
+        env.DISCLOSURE_CACHE.put(cacheKey, JSON.stringify(payload), { expirationTtl: KRX_INDEX_CACHE_TTL_SECONDS }),
+        env.DISCLOSURE_CACHE.put(latestKey, JSON.stringify(payload)),
+      ]);
+    }
+    return jsonResponse({ ok: true, cached: false, ...payload }, 200, origin);
+  } catch (error) {
+    const stale = env.DISCLOSURE_CACHE ? await env.DISCLOSURE_CACHE.get(latestKey, "json") : null;
+    if (stale?.schema === KRX_INDEX_CACHE_SCHEMA && Array.isArray(stale.records) && stale.records.length) {
+      return jsonResponse({
+        ok: true,
+        cached: true,
+        stale: true,
+        warning: "KRX \uC5F0\uACB0 \uC2E4\uD328\uB85C \uB9C8\uC9C0\uB9C9 \uC800\uC7A5 \uC9C0\uC218\uB97C \uC0AC\uC6A9\uD588\uC2B5\uB2C8\uB2E4.",
+        ...stale,
+      }, 200, origin);
+    }
+    return jsonResponse({ ok: false, error: `KRX index failed: ${error?.message || error}` }, 503, origin);
+  }
 }
 
 function krxMarketCacheKey(market, baseDate) {
@@ -1646,7 +1753,9 @@ export async function handleRequest(request, env, ctx = null) {
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(origin) });
 
   const url = new URL(request.url);
-  if (url.pathname === "/health") {
+  const route = matchRequestRoute(url.pathname, request.method);
+  if (!route) return jsonResponse({ ok: false, error: "Not found" }, 404, origin);
+  if (route.id === "health") {
     return jsonResponse({
       ok: true,
       dartConfigured: Boolean(env.DART_API_KEY),
@@ -1656,52 +1765,39 @@ export async function handleRequest(request, env, ctx = null) {
       cacheConfigured: Boolean(env.DISCLOSURE_CACHE),
     }, 200, origin);
   }
-  const isDartRequest = url.pathname === "/api/dart/disclosures" && request.method === "GET";
-  const isInsiderRequest = url.pathname === "/api/dart/insider-trades" && request.method === "GET";
-  const isAuthCheckRequest = url.pathname === "/api/auth/check" && request.method === "GET";
-  const isConsensusRequest = url.pathname === "/api/consensus" && request.method === "GET";
-  const isAnalysisRequest = url.pathname === "/api/analysis" && request.method === "GET";
-  const isPriceRequest = url.pathname === "/api/prices" && request.method === "GET";
-  const isMacroRequest = url.pathname === "/api/macro" && request.method === "GET";
-  const isCreditRequest = url.pathname === "/api/credit" && request.method === "GET";
-  const isJournalRequest = url.pathname === "/api/forecast-journal"
-    && ["GET", "POST"].includes(request.method);
-  if (!isDartRequest && !isInsiderRequest && !isAuthCheckRequest
-    && !isConsensusRequest && !isAnalysisRequest && !isPriceRequest && !isMacroRequest && !isCreditRequest && !isJournalRequest) {
-    return jsonResponse({ ok: false, error: "Not found" }, 404, origin);
-  }
   if (!env.THINKSTOCK_ACCESS_TOKEN
     || !await tokensMatch(bearerToken(request), env.THINKSTOCK_ACCESS_TOKEN)) {
     return jsonResponse({ ok: false, error: "개인 접속 코드가 올바르지 않습니다." }, 401, origin);
   }
-  if (isAuthCheckRequest) return jsonResponse({ ok: true }, 200, origin);
-  if (isMacroRequest) {
-    const refresh = ["1", "true", "yes"].includes(String(url.searchParams.get("refresh") || "").toLowerCase());
+  if (route.id === "auth-check") return jsonResponse({ ok: true }, 200, origin);
+  if (route.id === "macro") {
+    const refresh = queryFlag(url.searchParams.get("refresh"));
     return ecosMacroResponse(env, origin, refresh);
   }
-  if (isCreditRequest) {
-    const refresh = ["1", "true", "yes"].includes(String(url.searchParams.get("refresh") || "").toLowerCase());
+  if (route.id === "credit") {
+    const refresh = queryFlag(url.searchParams.get("refresh"));
     return creditMacroResponse(env, origin, refresh);
   }
+  if (route.id === "indices") return krxCoreIndexResponse(env, origin);
   const ticker = String(url.searchParams.get("ticker") || "").trim().toUpperCase();
-  if (!TICKER_PATTERN.test(ticker)) {
+  if (route.ticker && !TICKER_PATTERN.test(ticker)) {
     return jsonResponse({ ok: false, error: "종목코드 형식이 올바르지 않습니다." }, 400, origin);
   }
-  if (isPriceRequest) return krxPriceResponse(env, ticker, origin);
-  if (isJournalRequest) return forecastJournalResponse(request, env, ticker, origin);
-  if (isConsensusRequest || isAnalysisRequest) {
-    return analysisResponse(env, ctx, ticker, origin, { requireFinancials: isAnalysisRequest });
+  if (route.id === "prices") return krxPriceResponse(env, ticker, origin);
+  if (route.id === "forecast-journal") return forecastJournalResponse(request, env, ticker, origin);
+  if (["consensus", "analysis"].includes(route.id)) {
+    return analysisResponse(env, ctx, ticker, origin, { requireFinancials: route.id === "analysis" });
   }
   if (!env.DART_API_KEY) return jsonResponse({ ok: false, error: "Cloudflare에 DART 키가 설정되지 않았습니다." }, 503, origin);
 
   const corpCode = String(url.searchParams.get("corpCode") || "").trim();
-  if (!CORP_CODE_PATTERN.test(corpCode)) {
+  if (route.corpCode && !CORP_CODE_PATTERN.test(corpCode)) {
     return jsonResponse({ ok: false, error: "종목 또는 DART 회사코드 형식이 올바르지 않습니다." }, 400, origin);
   }
 
-  const force = ["1", "true", "yes"].includes(String(url.searchParams.get("force") || "").toLowerCase());
-  if (isInsiderRequest) return insiderTradeResponse(env, ctx, ticker, corpCode, origin, force);
-  const progressive = ["1", "true", "yes"].includes(String(url.searchParams.get("progressive") || "").toLowerCase());
+  const force = queryFlag(url.searchParams.get("force"));
+  if (route.id === "insider-trades") return insiderTradeResponse(env, ctx, ticker, corpCode, origin, force);
+  const progressive = queryFlag(url.searchParams.get("progressive"));
   const requestedPage = Math.min(MAX_PAGES, Math.max(1, Number(url.searchParams.get("page")) || 1));
   const cached = await readCache(env, ticker);
   if (!force && requestedPage === 1 && cached?.complete !== false

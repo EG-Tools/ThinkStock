@@ -7,6 +7,80 @@
   );
   const toUtcMs = (date) => Date.parse(`${String(date || "").slice(0, 10)}T00:00:00Z`);
 
+  const DEFAULT_SERIES_POLICIES = Object.freeze({
+    leading_cycle: Object.freeze({
+      minValue: 80,
+      maxValue: 120,
+      rejectZero: true,
+      maxRelativeChange: 0.01,
+      maxAbsoluteChange: 0.8,
+      maxGapDays: 62,
+      scanPoints: 120,
+    }),
+    news_sentiment: Object.freeze({
+      minValue: 0,
+      maxValue: 200,
+      rejectZero: true,
+      maxRelativeChange: 0.35,
+      maxAbsoluteChange: 20,
+      maxGapDays: 14,
+      scanPoints: 120,
+    }),
+    customer_deposit: Object.freeze({
+      minValue: 0,
+      maxValue: 500,
+      rejectZero: true,
+      maxRelativeChange: 0.2,
+      maxAbsoluteChange: 25,
+      maxGapDays: 14,
+      scanPoints: 120,
+    }),
+    kospi_credit: Object.freeze({
+      minValue: 0,
+      maxValue: 100,
+      rejectZero: true,
+      maxRelativeChange: 0.15,
+      maxAbsoluteChange: 3,
+      maxGapDays: 14,
+      scanPoints: 120,
+    }),
+    kosdaq_credit: Object.freeze({
+      minValue: 0,
+      maxValue: 100,
+      rejectZero: true,
+      maxRelativeChange: 0.15,
+      maxAbsoluteChange: 1,
+      maxGapDays: 14,
+      scanPoints: 120,
+    }),
+    adr_kospi: Object.freeze({
+      minValue: 0,
+      maxValue: 300,
+      rejectZero: true,
+      maxRelativeChange: 0.5,
+      maxAbsoluteChange: 40,
+      maxGapDays: 14,
+      scanPoints: 120,
+    }),
+    adr_kosdaq: Object.freeze({
+      minValue: 0,
+      maxValue: 300,
+      rejectZero: true,
+      maxRelativeChange: 0.5,
+      maxAbsoluteChange: 40,
+      maxGapDays: 14,
+      scanPoints: 120,
+    }),
+    fear_greed: Object.freeze({
+      minValue: 0,
+      maxValue: 100,
+      maxRelativeChange: 0.5,
+      maxAbsoluteChange: 30,
+      maxGapDays: 14,
+      scanPoints: 120,
+    }),
+  });
+
   function dateSpanForRows(rows, keys = []) {
     if (!Array.isArray(rows)) return { first: "", latest: "" };
     const targetKeys = Array.isArray(keys) ? keys : [];
@@ -45,25 +119,53 @@
         if (date && value !== null) byDate.set(date, value);
       });
       const points = [...byDate.entries()].sort(([left], [right]) => left.localeCompare(right));
-      if (points.length < 2) return;
-      const [previousDate, previousValue] = points[points.length - 2];
-      const [latestDate, latestValue] = points[points.length - 1];
-      const gapDays = Math.max(1, Math.round((toUtcMs(latestDate) - toUtcMs(previousDate)) / DAY_MS));
+      if (!points.length) return;
       const maxGapDays = Math.max(1, Number(policy.maxGapDays) || 14);
-      if (gapDays > maxGapDays || previousValue === 0) return;
-      const relativeChange = Math.abs(latestValue / previousValue - 1);
-      const absoluteChange = Math.abs(latestValue - previousValue);
       const maxRelativeChange = Math.max(0, Number(policy.maxRelativeChange) || 0);
       const maxAbsoluteChange = Math.max(0, Number(policy.maxAbsoluteChange) || 0);
-      if (relativeChange > maxRelativeChange && absoluteChange > maxAbsoluteChange) {
-        anomalies.push({
-          key,
-          previousDate,
-          latestDate,
-          previousValue,
-          latestValue,
-          relativeChange,
-        });
+      const scanPoints = Math.max(2, Number(policy.scanPoints) || 2);
+      const recentPoints = points.slice(-scanPoints);
+      const isInvalidValue = (value) => (
+        (Number.isFinite(policy.minValue) && value < Number(policy.minValue))
+        || (Number.isFinite(policy.maxValue) && value > Number(policy.maxValue))
+        || (policy.rejectZero === true && value === 0)
+      );
+      for (const [date, value] of recentPoints) {
+        const belowMinimum = Number.isFinite(policy.minValue) && value < Number(policy.minValue);
+        const aboveMaximum = Number.isFinite(policy.maxValue) && value > Number(policy.maxValue);
+        const rejectedZero = policy.rejectZero === true && value === 0;
+        if (belowMinimum || aboveMaximum || rejectedZero) {
+          anomalies.push({
+            key,
+            latestDate: date,
+            latestValue: value,
+            kind: rejectedZero ? "zero" : "range",
+          });
+          if (anomalies.length >= 3) return;
+        }
+      }
+      if (points.length < 2) return;
+      const firstPairIndex = Math.max(1, points.length - scanPoints + 1);
+      for (let index = firstPairIndex; index < points.length; index += 1) {
+        const [previousDate, previousValue] = points[index - 1];
+        const [latestDate, latestValue] = points[index];
+        const gapDays = Math.max(1, Math.round((toUtcMs(latestDate) - toUtcMs(previousDate)) / DAY_MS));
+        if (gapDays > maxGapDays || previousValue === 0
+          || isInvalidValue(previousValue) || isInvalidValue(latestValue)) continue;
+        const relativeChange = Math.abs(latestValue / previousValue - 1);
+        const absoluteChange = Math.abs(latestValue - previousValue);
+        if (relativeChange > maxRelativeChange && absoluteChange > maxAbsoluteChange) {
+          anomalies.push({
+            key,
+            previousDate,
+            latestDate,
+            previousValue,
+            latestValue,
+            relativeChange,
+            kind: "change",
+          });
+          if (anomalies.length >= 3) return;
+        }
       }
     });
     return anomalies;
@@ -89,6 +191,7 @@
   }
 
   globalScope.ThinkStockDataHealth = Object.freeze({
+    DEFAULT_SERIES_POLICIES,
     dateSpanForRows,
     daysSinceDate,
     detectRecentChanges,

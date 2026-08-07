@@ -13,6 +13,7 @@ function fakeElement(dataset = {}) {
     dataset,
     disabled: false,
     value: "",
+    title: "",
     classList: {
       add: (name) => classes.add(name),
       remove: (name) => classes.delete(name),
@@ -22,23 +23,30 @@ function fakeElement(dataset = {}) {
         else classes.delete(name);
       },
     },
+    setAttribute(name, value) {
+      this[name] = String(value);
+    },
     addEventListener: (name, listener) => listeners.set(name, listener),
     dispatch: (name) => listeners.get(name)?.(),
   };
 }
 
 
-test("range binding restores the previous range after history failure", async () => {
-  const button = fakeElement({ months: "360" });
+test("range stepper restores the previous range after history failure", async () => {
+  const stepper = fakeElement();
+  const expandButton = fakeElement();
+  const contractButton = fakeElement();
   let activeMonths = 120;
   let rendered = 0;
   const messages = [];
-  bindings.bindRangeButtons({
-    buttons: [button],
+  bindings.bindRangeStepper({
+    stepper,
+    expandButton,
+    contractButton,
+    presets: [6, 12, 36, 60, 120, 180, 240, 360],
     getActiveMonths: () => activeMonths,
     setActiveMonths: (value) => { activeMonths = value; },
     clearPinnedRange: () => {},
-    syncButtons: () => {},
     recentDataMonths: 120,
     isHistoricalDataLoaded: () => false,
     ensureHistoricalDataLoaded: async () => { throw new Error("offline"); },
@@ -47,11 +55,119 @@ test("range binding restores the previous range after history failure", async ()
     requestChartRender: () => { rendered += 1; },
   });
 
-  await button.dispatch("click");
+  await expandButton.dispatch("click");
   assert.equal(activeMonths, 120);
-  assert.equal(button.disabled, false);
+  assert.equal(expandButton.disabled, false);
+  assert.equal(stepper.dataset.months, "120");
   assert.equal(rendered, 0);
   assert.match(messages.at(-1)[0], /offline/);
+});
+
+
+test("range stepper expands, contracts, and disables the reached boundary", async () => {
+  const stepper = fakeElement();
+  const expandButton = fakeElement();
+  const contractButton = fakeElement();
+  let activeMonths = 6;
+  let rendered = 0;
+  bindings.bindRangeStepper({
+    stepper,
+    expandButton,
+    contractButton,
+    presets: [6, 12, 36],
+    getActiveMonths: () => activeMonths,
+    setActiveMonths: (value) => { activeMonths = value; },
+    clearPinnedRange: () => {},
+    recentDataMonths: 120,
+    isHistoricalDataLoaded: () => true,
+    ensureHistoricalDataLoaded: async () => {},
+    setMessage: () => {},
+    saveState: () => {},
+    requestChartRender: () => { rendered += 1; },
+  });
+
+  assert.equal(contractButton.disabled, true);
+  assert.equal(expandButton.dataset.targetMonths, "12");
+  await expandButton.dispatch("click");
+  assert.equal(activeMonths, 12);
+  assert.equal(stepper.dataset.months, "12");
+  await contractButton.dispatch("click");
+  assert.equal(activeMonths, 6);
+  assert.equal(contractButton.disabled, true);
+  assert.equal(rendered, 2);
+});
+
+
+test("range stepper stays busy until the requested chart range finishes rendering", async () => {
+  const stepper = fakeElement();
+  const expandButton = fakeElement();
+  const contractButton = fakeElement();
+  let activeMonths = 240;
+  let finishRender;
+  const renderFinished = new Promise((resolve) => { finishRender = resolve; });
+  bindings.bindRangeStepper({
+    stepper,
+    expandButton,
+    contractButton,
+    presets: [120, 240, 360],
+    getActiveMonths: () => activeMonths,
+    setActiveMonths: (value) => { activeMonths = value; },
+    clearPinnedRange: () => {},
+    recentDataMonths: 120,
+    isHistoricalDataLoaded: () => true,
+    ensureHistoricalDataLoaded: async () => {},
+    setMessage: () => {},
+    saveState: () => {},
+    requestChartRender: () => renderFinished,
+  });
+
+  const movePromise = expandButton.dispatch("click");
+  await Promise.resolve();
+  assert.equal(activeMonths, 360);
+  assert.equal(expandButton.disabled, true);
+  assert.equal(contractButton.disabled, false);
+  finishRender();
+  await movePromise;
+  assert.equal(contractButton.disabled, false);
+});
+
+
+test("range stepper keeps rapid clicks and renders the final requested period", async () => {
+  const stepper = fakeElement();
+  const expandButton = fakeElement();
+  const contractButton = fakeElement();
+  let activeMonths = 120;
+  let finishRender;
+  let renderCalls = 0;
+  const firstRender = new Promise((resolve) => { finishRender = resolve; });
+  bindings.bindRangeStepper({
+    stepper,
+    expandButton,
+    contractButton,
+    presets: [120, 180, 240, 360],
+    getActiveMonths: () => activeMonths,
+    setActiveMonths: (value) => { activeMonths = value; },
+    clearPinnedRange: () => {},
+    recentDataMonths: 120,
+    isHistoricalDataLoaded: () => true,
+    ensureHistoricalDataLoaded: async () => {},
+    setMessage: () => {},
+    saveState: () => {},
+    requestChartRender: () => {
+      renderCalls += 1;
+      return renderCalls === 1 ? firstRender : Promise.resolve();
+    },
+  });
+
+  const firstMove = expandButton.dispatch("click");
+  await Promise.resolve();
+  await expandButton.dispatch("click");
+  await expandButton.dispatch("click");
+  assert.equal(activeMonths, 360);
+  finishRender();
+  await firstMove;
+  assert.equal(stepper.dataset.months, "360");
+  assert.equal(renderCalls, 2);
 });
 
 

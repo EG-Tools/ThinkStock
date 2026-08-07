@@ -57,6 +57,11 @@
       hovermode: layout.hovermode,
       "xaxis.autorange": false,
       "xaxis.range": [...layout.xaxis.range],
+      "xaxis.tickmode": layout.xaxis.tickmode || "auto",
+      "xaxis.tickvals": Array.isArray(layout.xaxis.tickvals) ? [...layout.xaxis.tickvals] : null,
+      "xaxis.ticktext": Array.isArray(layout.xaxis.ticktext) ? [...layout.xaxis.ticktext] : null,
+      "xaxis.tick0": layout.xaxis.tick0 ?? null,
+      "xaxis.dtick": layout.xaxis.dtick ?? null,
     };
     if (Array.isArray(layout.yaxis.range) && layout.yaxis.range.length === 2) {
       payload["yaxis.autorange"] = false;

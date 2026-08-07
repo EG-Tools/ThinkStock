@@ -1,9 +1,13 @@
 import { createReadStream } from "node:fs";
-import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { normalizeRuntimePayload } from "../shared/runtime-data-contract.mjs";
+import { expectedLatestKoreanTradingDate } from "../shared/market-calendar.mjs";
 
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -22,6 +26,7 @@ const DISCLOSURE_TTL_MS = 6 * 60 * 60 * 1000;
 const STALE_CACHE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 const MAX_DART_PAGES = 100;
 const TICKER_PATTERN = /^(\d{6})\.(KS|KQ)$/;
+const KRX_INDEX_BASE_URL = "https://data-dbg.krx.co.kr/svc/apis/idx";
 const IMPORTANT_DISCLOSURE_PATTERN = /반기보고서|분기보고서|사업보고서|영업\(잠정\)실적|잠정실적|매출액.?또는.?손익구조|감사보고서제출|배당|현금ㆍ현물배당|단일판매|공급계약|수주|유상증자|무상증자|감자|증권신고서\(지분증권\)|전환사채|신주인수권|신주인수권부사채|교환사채|사채권|자기주식(취득|처분)결정|주식소각|합병|분할|영업양수|영업양도|타법인주식|출자증권|신규시설투자|시설투자|최대주주변경|대표이사.*변경|영업정지|거래정지|상장폐지|관리종목|소송|횡령|배임|회생|파산|부도|공개매수|장래사업|경영계획/;
 const MIME_TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -95,6 +100,78 @@ function todayApiDate() {
   return new Date().toISOString().slice(0, 10).replaceAll("-", "");
 }
 
+function shiftIsoDate(dateText, days) {
+  const time = Date.parse(`${String(dateText || "").slice(0, 10)}T00:00:00Z`);
+  if (!Number.isFinite(time)) return "";
+  return new Date(time + Number(days || 0) * 86400000).toISOString().slice(0, 10);
+}
+
+function krxIndexNumber(value) {
+  const number = Number(String(value ?? "").replaceAll(",", "").trim());
+  return Number.isFinite(number) ? number : null;
+}
+
+export function localKrxIndexPointFromRows(rows, market) {
+  const expected = String(market || "").toUpperCase() === "KOSPI"
+    ? ["KOSPI", "\uCF54\uC2A4\uD53C"]
+    : ["KOSDAQ", "\uCF54\uC2A4\uB2E5"];
+  let best = null;
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const rawDate = String(row?.BAS_DD || "");
+    const date = /^\d{8}$/.test(rawDate)
+      ? `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`
+      : "";
+    const close = krxIndexNumber(row?.CLSPRC_IDX ?? row?.TDD_CLSPRC ?? row?.CLSPRC);
+    const name = String(row?.IDX_NM ?? row?.IDX_NM_KOR ?? row?.IDX_NM_ENG ?? "")
+      .toUpperCase()
+      .replace(/\s+/g, "");
+    if (!date || close === null || close <= 0) return;
+    const exact = expected.some((value) => name === value);
+    const partial = expected.some((value) => name.includes(value));
+    const score = exact ? 100 : (partial ? 50 : 0);
+    if (!score) return;
+    if (!best || score > best.score) best = { date, close, score };
+  });
+  return best ? { date: best.date, close: best.close } : null;
+}
+
+export async function fetchLocalKrxCoreIndices(fetchImpl, apiKey, now = new Date()) {
+  const key = String(apiKey || "").trim();
+  if (!key) throw new Error("KRX API key is missing");
+  const expectedDate = expectedLatestKoreanTradingDate(now);
+  const targets = [
+    { market: "KOSPI", ticker: "^KS11", endpoint: "kospi_dd_trd" },
+    { market: "KOSDAQ", ticker: "^KQ11", endpoint: "kosdaq_dd_trd" },
+  ];
+  const records = await Promise.all(targets.map(async (target) => {
+    let lastError = null;
+    for (let offset = 0; offset <= 10; offset += 1) {
+      const baseDate = shiftIsoDate(expectedDate, -offset).replaceAll("-", "");
+      try {
+        const response = await fetchImpl(`${KRX_INDEX_BASE_URL}/${target.endpoint}?basDd=${baseDate}`, {
+          headers: { AUTH_KEY: key },
+          signal: AbortSignal.timeout(30000),
+        });
+        if (!response.ok) throw new Error(`KRX index HTTP ${response.status}`);
+        const payload = await response.json();
+        const point = localKrxIndexPointFromRows(payload?.OutBlock_1, target.market);
+        if (point) return { ticker: target.ticker, ...point };
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (lastError) throw lastError;
+    throw new Error(`${target.market} index data is empty`);
+  }));
+  return {
+    ok: true,
+    source: "KRX",
+    expectedDate,
+    latestDate: records.reduce((latest, row) => row.date > latest ? row.date : latest, ""),
+    records,
+  };
+}
+
 async function readJson(filePath) {
   try {
     const payload = JSON.parse(await readFile(filePath, "utf8"));
@@ -139,6 +216,60 @@ export function parseAdrChartRows(html) {
   return [...rowsByDate.values()].sort((left, right) => left.date.localeCompare(right.date));
 }
 
+function pagesManifestEntries(manifest) {
+  const entries = new Map();
+  Object.values(manifest?.datasets || {}).forEach((dataset) => {
+    [dataset?.recent, dataset?.history].forEach((descriptor) => {
+      const file = String(descriptor?.file || "");
+      const rows = Number(descriptor?.rows);
+      const sha256 = String(descriptor?.sha256 || "").toLowerCase();
+      if (!/^[a-z0-9_-]+\.json$/i.test(file)) throw new Error("Pages data manifest file is invalid");
+      if (!Number.isInteger(rows) || rows < 0) throw new Error(`Pages data ${file} row count is invalid`);
+      if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error(`Pages data ${file} hash is invalid`);
+      const previous = entries.get(file);
+      if (previous && (previous.rows !== rows || previous.sha256 !== sha256)) {
+        throw new Error(`Pages data ${file} has conflicting manifest entries`);
+      }
+      entries.set(file, { file, rows, sha256 });
+    });
+  });
+  if (!entries.size) throw new Error("Pages data manifest contains no files");
+  return [...entries.values()];
+}
+
+function pagesPayloadRowCount(payload) {
+  if (Array.isArray(payload?.dates)) return payload.dates.length;
+  if (Array.isArray(payload?.records)) return payload.records.length;
+  return null;
+}
+
+function validatePagesDataText(text, descriptor) {
+  const payload = JSON.parse(text);
+  const rows = pagesPayloadRowCount(payload);
+  if (rows !== descriptor.rows) {
+    throw new Error(`Pages data ${descriptor.file} row count mismatch: ${rows} != ${descriptor.rows}`);
+  }
+  const sha256 = createHash("sha256").update(text, "utf8").digest("hex");
+  if (sha256 !== descriptor.sha256) throw new Error(`Pages data ${descriptor.file} hash mismatch`);
+  return payload;
+}
+
+async function pagesMirrorMatches(cacheDir, manifest, entries) {
+  const currentManifest = await readJson(path.join(cacheDir, "data_manifest.json"));
+  const incomingRevision = String(manifest?.revision || manifest?.generated_at || "");
+  const currentRevision = String(currentManifest?.revision || currentManifest?.generated_at || "");
+  if (!incomingRevision || incomingRevision !== currentRevision) return false;
+  try {
+    await Promise.all(entries.map(async (descriptor) => {
+      const text = await readFile(path.join(cacheDir, descriptor.file), "utf8");
+      validatePagesDataText(text, descriptor);
+    }));
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 export async function syncPagesDataMirror(options = {}) {
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   const cacheDir = options.cacheDir || PAGES_DATA_CACHE_DIR;
@@ -152,24 +283,46 @@ export async function syncPagesDataMirror(options = {}) {
   if (manifest?.format !== "segmented-data-v1" || !manifest?.datasets) {
     throw new Error("Pages data manifest format is invalid");
   }
-  const files = new Set();
-  Object.values(manifest.datasets).forEach((dataset) => {
-    [dataset?.recent?.file, dataset?.history?.file].forEach((file) => {
-      if (/^[a-z0-9_-]+\.json$/i.test(String(file || ""))) files.add(String(file));
-    });
-  });
-  await mkdir(cacheDir, { recursive: true });
-  await Promise.all([...files].map(async (file) => {
-    const response = await fetchImpl(`${baseUrl}${file}?_=${Date.now()}`, {
-      signal: AbortSignal.timeout(30000),
-    });
-    if (!response.ok) throw new Error(`Pages data ${file} HTTP ${response.status}`);
-    const text = await response.text();
-    JSON.parse(text);
-    await writeTextAtomic(path.join(cacheDir, file), text);
-  }));
-  await writeTextAtomic(path.join(cacheDir, "data_manifest.json"), manifestText);
-  return { generatedAt: String(manifest.generated_at || ""), files: files.size };
+  const entries = pagesManifestEntries(manifest);
+  if (await pagesMirrorMatches(cacheDir, manifest, entries)) {
+    return { generatedAt: String(manifest.generated_at || ""), files: entries.length, unchanged: true };
+  }
+
+  const parentDir = path.dirname(cacheDir);
+  const generationId = `${process.pid}-${Date.now()}`;
+  const stagingDir = path.join(parentDir, `${path.basename(cacheDir)}.next-${generationId}`);
+  const backupDir = path.join(parentDir, `${path.basename(cacheDir)}.previous-${generationId}`);
+  await mkdir(parentDir, { recursive: true });
+  await mkdir(stagingDir, { recursive: true });
+  let movedCurrent = false;
+  try {
+    await Promise.all(entries.map(async (descriptor) => {
+      const response = await fetchImpl(`${baseUrl}${descriptor.file}?_=${Date.now()}`, {
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!response.ok) throw new Error(`Pages data ${descriptor.file} HTTP ${response.status}`);
+      const text = await response.text();
+      validatePagesDataText(text, descriptor);
+      await writeFile(path.join(stagingDir, descriptor.file), text, "utf8");
+    }));
+    await writeFile(path.join(stagingDir, "data_manifest.json"), manifestText, "utf8");
+
+    if (await stat(cacheDir).then(() => true).catch(() => false)) {
+      await rename(cacheDir, backupDir);
+      movedCurrent = true;
+    }
+    try {
+      await rename(stagingDir, cacheDir);
+    } catch (error) {
+      if (movedCurrent) await rename(backupDir, cacheDir).catch(() => {});
+      throw error;
+    }
+    if (movedCurrent) await rm(backupDir, { recursive: true, force: true });
+    return { generatedAt: String(manifest.generated_at || ""), files: entries.length, unchanged: false };
+  } catch (error) {
+    await rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 export class DartGateway {
@@ -361,6 +514,7 @@ export async function createThinkStockServer(options = {}) {
   const envText = await readFile(ENV_FILE, "utf8").catch(() => "");
   const envValues = parseEnvText(envText);
   const apiKey = String(options.apiKey || process.env.DART_API_KEY || envValues.DART_API_KEY || "").trim();
+  const krxApiKey = String(options.krxApiKey || process.env.KRX_API_KEY || envValues.KRX_API_KEY || "").trim();
   const workerAccessToken = String(
     options.workerAccessToken || process.env.THINKSTOCK_ACCESS_TOKEN || envValues.THINKSTOCK_ACCESS_TOKEN || "",
   ).trim();
@@ -375,6 +529,7 @@ export async function createThinkStockServer(options = {}) {
     }));
   const gateway = options.gateway || new DartGateway(apiKey);
   await gateway.initialize();
+  let coreIndexCache = null;
   const server = createServer(async (request, response) => {
     const requestUrl = new URL(request.url || "/", `http://${request.headers.host || "127.0.0.1"}`);
     if (request.method === "OPTIONS" && requestUrl.pathname.startsWith("/api/")) {
@@ -399,6 +554,7 @@ export async function createThinkStockServer(options = {}) {
       sendJson(request, response, 200, {
         ok: true,
         dartConfigured: Boolean(gateway.apiKey),
+        krxConfigured: Boolean(krxApiKey),
         workerConfigured: Boolean(workerAccessToken),
         pagesDataGeneratedAt: mirrorStatus.generatedAt,
         pagesDataWarning: mirrorStatus.warning || "",
@@ -433,7 +589,19 @@ export async function createThinkStockServer(options = {}) {
       }
       return;
     }
-    if (["/api/macro", "/api/credit", "/api/dart/insider-trades"].includes(requestUrl.pathname)) {
+    if (requestUrl.pathname === "/api/indices" && krxApiKey) {
+      try {
+        const expectedDate = expectedLatestKoreanTradingDate(new Date());
+        if (!coreIndexCache || coreIndexCache.expectedDate !== expectedDate) {
+          coreIndexCache = await fetchLocalKrxCoreIndices(fetchImpl, krxApiKey);
+        }
+        sendJson(request, response, 200, { ...coreIndexCache, cached: true });
+      } catch (error) {
+        sendJson(request, response, 503, { ok: false, error: error?.message || String(error) });
+      }
+      return;
+    }
+    if (["/api/macro", "/api/credit", "/api/indices", "/api/dart/insider-trades"].includes(requestUrl.pathname)) {
       if (!workerAccessToken) {
         sendJson(request, response, 503, { ok: false, error: ".env.local에 THINKSTOCK_ACCESS_TOKEN이 없습니다." });
         return;
@@ -444,7 +612,19 @@ export async function createThinkStockServer(options = {}) {
           signal: AbortSignal.timeout(90000),
         });
         const payload = await upstream.json();
-        sendJson(request, response, upstream.ok ? 200 : upstream.status, payload);
+        if (!upstream.ok) {
+          sendJson(request, response, upstream.status, payload);
+          return;
+        }
+        const kind = requestUrl.pathname === "/api/macro"
+          ? "macro"
+          : (requestUrl.pathname === "/api/credit" ? "credit" : "insider");
+        sendJson(
+          request,
+          response,
+          200,
+          requestUrl.pathname === "/api/indices" ? payload : normalizeRuntimePayload(kind, payload),
+        );
       } catch (error) {
         sendJson(request, response, 503, { ok: false, error: error?.message || String(error) });
       }

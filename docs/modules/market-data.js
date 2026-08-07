@@ -95,6 +95,20 @@
     return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
   }
 
+  function mergeRowsPreferIncoming(existingRows, incomingRows) {
+    const byDate = new Map();
+    normalizePayloadRecords(existingRows).forEach((row) => byDate.set(row.date, { ...row }));
+    normalizePayloadRecords(incomingRows).forEach((row) => {
+      const merged = { ...(byDate.get(row.date) || { date: row.date }) };
+      Object.entries(row).forEach(([key, value]) => {
+        const number = toNum(value);
+        if (key !== "date" && number !== null) merged[key] = number;
+      });
+      byDate.set(row.date, merged);
+    });
+    return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
+  }
+
   function mergePricePayloadPreservingExisting(existingPayload, incomingPayload) {
     const existing = sanitizePricePayload(existingPayload);
     const incoming = sanitizePricePayload(incomingPayload);
@@ -112,6 +126,28 @@
       display_names: {
         ...(incoming.display_names || {}),
         ...(existing.display_names || {}),
+      },
+    };
+  }
+
+  function mergePricePayloadPreferIncoming(existingPayload, incomingPayload) {
+    const existing = sanitizePricePayload(existingPayload);
+    const incoming = sanitizePricePayload(incomingPayload);
+    if (!existing) return incoming;
+    if (!incoming) return existing;
+    const records = mergeRowsPreferIncoming(existing.records, incoming.records);
+    return {
+      ...existing,
+      ...incoming,
+      records,
+      series: [...new Set([
+        ...(incoming.series || []),
+        ...(existing.series || []),
+        ...getSeriesColumns(records),
+      ])],
+      display_names: {
+        ...(existing.display_names || {}),
+        ...(incoming.display_names || {}),
       },
     };
   }
@@ -172,6 +208,54 @@
     if (!Number.isFinite(baseTime)) return String(date || "").slice(0, 10);
     const shiftDays = Number(days) || 0;
     return new Date(baseTime + shiftDays * DEFAULT_DAY_MS).toISOString().slice(0, 10);
+  }
+
+  function buildDenseMacroRows(sourceRows, targetDates, options = {}) {
+    const sorted = [...(Array.isArray(sourceRows) ? sourceRows : [])]
+      .sort((left, right) => String(left?.date || "").localeCompare(String(right?.date || "")));
+    const columns = getSeriesColumns(sorted);
+    if (!sorted.length || !Array.isArray(targetDates) || !targetDates.length || !columns.length) {
+      return sorted;
+    }
+    const carryForwardAfterLast = options.carryForwardAfterLast === true;
+    const targets = targetDates.map((date) => ({ date, time: toUtcMs(date) }));
+    const dense = targets.map(({ date }) => ({ date }));
+
+    columns.forEach((column) => {
+      const points = sorted
+        .map((row) => ({ time: toUtcMs(row.date), value: toNum(row[column]) }))
+        .filter((point) => Number.isFinite(point.time) && point.value !== null)
+        .sort((left, right) => left.time - right.time);
+      if (!points.length) {
+        targets.forEach((_, index) => { dense[index][column] = null; });
+        return;
+      }
+      let pointer = 0;
+      targets.forEach(({ time }, index) => {
+        if (!Number.isFinite(time) || time < points[0].time) {
+          dense[index][column] = null;
+          return;
+        }
+        if (time > points.at(-1).time) {
+          dense[index][column] = carryForwardAfterLast ? points.at(-1).value : null;
+          return;
+        }
+        while (pointer + 1 < points.length && points[pointer + 1].time < time) pointer += 1;
+        const left = points[pointer];
+        const right = points[pointer + 1];
+        if (!right || left.time === time || left.time === right.time) {
+          dense[index][column] = left.value;
+          return;
+        }
+        if (right.time === time) {
+          dense[index][column] = right.value;
+          return;
+        }
+        const ratio = (time - left.time) / (right.time - left.time);
+        dense[index][column] = left.value + (right.value - left.value) * ratio;
+      });
+    });
+    return dense.filter((row) => columns.some((column) => toNum(row[column]) !== null));
   }
 
   function buildCreditInterpolator(creditRows, creditCols) {
@@ -362,12 +446,15 @@
     copyDisplayNames,
     sanitizePricePayload,
     mergeRowsPreservingExisting,
+    mergeRowsPreferIncoming,
     mergePricePayloadPreservingExisting,
+    mergePricePayloadPreferIncoming,
     normalizeTickerPricePoints,
     priceDivergenceRatio,
     dateDistanceDays,
     findTickerPriceRebaseSignal,
     shiftIsoDateByDays,
+    buildDenseMacroRows,
     buildCreditInterpolator,
     mergeSources,
     normalizeSeries,

@@ -109,6 +109,14 @@ function seriesBoundaryIndexes(targets, bySeries) {
     while (last >= 0 && !Number.isFinite(values[last])) last -= 1;
     if (first >= 0) boundaries.add(first);
     if (last >= 0) boundaries.add(last);
+    for (let index = Math.max(1, first + 1); index <= last; index += 1) {
+      const previousFinite = Number.isFinite(values[index - 1]);
+      const currentFinite = Number.isFinite(values[index]);
+      if (previousFinite !== currentFinite) {
+        boundaries.add(index - 1);
+        boundaries.add(index);
+      }
+    }
   });
   return [...boundaries];
 }

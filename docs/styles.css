@@ -204,24 +204,94 @@ body {
   -webkit-backdrop-filter: blur(8px);
 }
 
-.chart-refresh-btn {
+.chart-refresh-tools {
   position: absolute;
   z-index: 120;
   top: 14px;
   right: 34px;
   width: 28px;
+  height: 92px;
+}
+
+.chart-refresh-btn {
+  position: static;
+  width: 28px;
   height: 28px;
-  background: rgba(18, 18, 18, 0.78);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  border-color: rgba(255, 255, 255, 0.32);
+  background: transparent;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.62);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.chart-refresh-btn:hover {
+  border-color: rgba(74, 222, 128, 0.7);
+  background: transparent;
+  color: var(--accent);
+}
+
+.chart-range-stepper {
+  position: absolute;
+  top: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chart-range-step-btn {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.62);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+  touch-action: manipulation;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.range-triangle {
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+}
+
+.range-triangle-left { border-right: 8px solid currentColor; }
+.range-triangle-right { border-left: 8px solid currentColor; }
+
+.chart-range-step-btn:hover:not(:disabled) {
+  border-color: rgba(74, 222, 128, 0.7);
+  background: transparent;
+  color: var(--accent);
+}
+
+.chart-range-step-btn:disabled {
+  opacity: 0.58;
+  border-color: rgba(255, 255, 255, 0.24);
+  color: rgba(255, 255, 255, 0.42);
+  cursor: default;
 }
 
 .runtime-refresh-status {
   position: absolute;
   z-index: 120;
-  top: 48px;
-  right: 34px;
-  max-width: min(260px, calc(100% - 100px));
+  top: 16px;
+  right: 72px;
+  max-width: min(260px, calc(100% - 120px));
   padding: 4px 8px;
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -308,6 +378,7 @@ body {
   -webkit-backdrop-filter: blur(8px);
 }
 
+.chart-reset-btn.is-active,
 .chart-co-movement-btn.is-active,
 .chart-ai-btn.is-active,
 .chart-macd-btn.is-active {
@@ -815,23 +886,7 @@ body {
   margin-left: 6px;
 }
 
-.range-row { display: flex; align-items: center; gap: 6px; padding: 8px 20px; flex-wrap: nowrap; }
-
-.range-btn {
-  padding: 6px 12px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.15s;
-  white-space: nowrap;
-}
-
-.range-btn:hover { background: rgba(255, 255, 255, 0.1); }
-.range-btn.is-active { background: var(--accent-soft); color: var(--accent); border-color: rgba(74, 222, 128, 0.25); }
+.source-row { display: flex; align-items: center; gap: 6px; padding: 8px 20px; flex-wrap: nowrap; }
 
 .chart-frame {
   position: relative;
@@ -1133,6 +1188,7 @@ body {
 .legend .legendlines { display: none !important; }
 .hoverlayer .legendpoints { display: none !important; }
 .no-hover-popup .hoverlayer > g { display: none !important; }
+.chart-frame.is-line-dragging .hoverlayer > g { display: none !important; }
 
 .message-area { margin-top: 12px; }
 .message { padding: 12px 14px; border-radius: 18px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border); color: var(--muted); }
@@ -1155,7 +1211,7 @@ body {
     gap: 8px;
     justify-content: start;
   }
-  .range-row {
+  .source-row {
     flex-wrap: wrap;
     align-items: flex-start;
     row-gap: 8px;

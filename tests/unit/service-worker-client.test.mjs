@@ -29,6 +29,55 @@ test("registers the service worker once after window load", async () => {
 });
 
 
+test("removes stale service worker caches instead of registering on localhost", async () => {
+  let unregistered = 0;
+  let registrations = 0;
+  let reloads = 0;
+  const deletedCaches = [];
+  const session = new Map();
+  const scope = {
+    document: { readyState: "complete" },
+    location: { hostname: "127.0.0.1", reload: () => { reloads += 1; } },
+    navigator: {
+      serviceWorker: {
+        controller: {},
+        getRegistrations: async () => [{ unregister: async () => { unregistered += 1; } }],
+        register: async () => { registrations += 1; },
+      },
+    },
+    caches: {
+      keys: async () => ["thinkstock-dev-1.92", "unrelated-cache"],
+      delete: async (name) => { deletedCaches.push(name); },
+    },
+    sessionStorage: {
+      getItem: (key) => session.get(key) || null,
+      setItem: (key, value) => session.set(key, value),
+    },
+  };
+
+  const client = createServiceWorkerClient(scope);
+  assert.equal(client.scheduleRegistration(), true);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(registrations, 0);
+  assert.equal(unregistered, 1);
+  assert.deepEqual(deletedCaches, ["thinkstock-dev-1.92"]);
+  assert.equal(reloads, 1);
+});
+
+test("allows the service worker on localhost only for the explicit e2e switch", async () => {
+  let registrations = 0;
+  const scope = {
+    document: { readyState: "complete" },
+    location: { hostname: "127.0.0.1", search: "?e2e=1&sw=1" },
+    navigator: { serviceWorker: { register: async () => { registrations += 1; } } },
+  };
+
+  createServiceWorkerClient(scope).scheduleRegistration();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(registrations, 1);
+});
+
+
 test("returns the atomic refresh result from the active controller", async () => {
   class FakeMessageChannel {
     constructor() {

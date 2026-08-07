@@ -158,6 +158,33 @@ test("chart worker preserves each visible series latest valid point while thinni
   assert.ok(response.result.displayIndexes.includes(59));
 });
 
+test("chart worker preserves internal missing-data boundaries while thinning", () => {
+  const dates = Array.from({ length: 60 }, (_, index) => (
+    new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10)
+  ));
+  const response = runWorker({
+    priceRows: dates.map((date, index) => ({
+      date,
+      AAA: index >= 20 && index <= 29 ? null : 100 + index,
+    })),
+    macroRows: [],
+    creditRows: [],
+    creditCols: [],
+    start: dates[0],
+    end: dates.at(-1),
+    allowedSeries: ["AAA"],
+    priorityOrder: ["AAA"],
+    displayNames: {},
+    hiddenSeries: [],
+    seriesOffsets: {},
+    seriesScales: {},
+    displayBudget: 12,
+  });
+
+  assert.equal(response.ok, true);
+  [19, 20, 29, 30].forEach((index) => assert.ok(response.result.displayIndexes.includes(index)));
+});
+
 
 test("chart worker reuses cached sources for configuration-only requests", () => {
   const harness = createWorkerHarness();

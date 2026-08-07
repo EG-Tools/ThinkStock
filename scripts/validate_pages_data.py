@@ -69,6 +69,13 @@ STRICT_VALUE_ANOMALY_SERIES = (
     *CREDIT_COLUMNS,
     *ADR_COLUMNS,
 )
+RECENT_SERIES_QUALITY = {
+    "leading_cycle": (80.0, 120.0, 0.01, 0.8, 62, True),
+    "news_sentiment": (0.0, 200.0, 0.35, 20.0, 14, True),
+    "adr_kospi": (0.0, 300.0, 0.5, 40.0, 14, True),
+    "adr_kosdaq": (0.0, 300.0, 0.5, 40.0, 14, True),
+    "fear_greed": (0.0, 100.0, 0.5, 30.0, 14, False),
+}
 
 
 def fail(message: str) -> None:
@@ -642,11 +649,40 @@ def validate_macro_columns(payload: dict, rows: list[dict]) -> None:
         fail(f"macro: duplicated series should live in dedicated payloads: {sorted(forbidden)}")
 
 
+def validate_recent_series_quality(dataset: str, rows: list[dict], keys: tuple[str, ...]) -> None:
+    for key in keys:
+        policy = RECENT_SERIES_QUALITY.get(key)
+        if policy is None:
+            continue
+        minimum, maximum, max_relative, max_absolute, max_gap_days, reject_zero = policy
+        points: list[tuple[date, float]] = []
+        for row in rows:
+            value = row.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)):
+                points.append((parse_date(row.get("date"), f"{dataset} {key}"), float(value)))
+        points = points[-120:]
+        for point_date, value in points:
+            if value < minimum or value > maximum or (reject_zero and value == 0):
+                fail(f"{dataset}: invalid {key} value on {point_date.isoformat()}: {value}")
+        for (previous_date, previous), (current_date, current) in zip(points, points[1:]):
+            gap_days = (current_date - previous_date).days
+            if gap_days <= 0 or gap_days > max_gap_days or previous == 0:
+                continue
+            relative_change = abs(current / previous - 1)
+            absolute_change = abs(current - previous)
+            if relative_change > max_relative and absolute_change > max_absolute:
+                fail(
+                    f"{dataset}: implausible {key} jump "
+                    f"{previous_date.isoformat()} {previous} -> {current_date.isoformat()} {current}"
+                )
+
+
+def validate_macro_continuity(rows: list[dict]) -> None:
+    validate_recent_series_quality("macro", rows, ("leading_cycle", "news_sentiment"))
+
+
 def validate_auxiliary(rows: list[dict]) -> None:
-    for row in rows:
-        value = row.get("fear_greed")
-        if value is not None and not 0 <= float(value) <= 100:
-            fail(f"adr: fear_greed out of range on {row.get('date')}: {value}")
+    validate_recent_series_quality("adr", rows, ADR_COLUMNS)
 
 
 def validate_disclosures(payload: dict) -> list[dict]:
@@ -733,6 +769,7 @@ def main() -> int:
             validate_freshness(name, rows, numeric_columns_from_payload(payload, rows), PRICE_MAX_FRESH_DAYS)
         elif name == "macro":
             validate_macro_columns(payload, rows)
+            validate_macro_continuity(rows)
             validate_freshness(name, rows, ("leading_cycle",), LEADING_MAX_FRESH_DAYS)
             macro_columns = set(numeric_columns_from_payload(payload, rows))
             if "news_sentiment" in macro_columns:

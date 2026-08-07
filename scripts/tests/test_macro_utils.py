@@ -15,7 +15,7 @@ from macro_utils import densify_macro
 
 
 class MacroUtilsTests(unittest.TestCase):
-    def test_month_start_holiday_keeps_latest_value_through_month(self) -> None:
+    def test_month_start_holiday_uses_only_the_next_market_day(self) -> None:
         macro = pd.DataFrame(
             {"leading_cycle": [104.1, 104.8]},
             index=pd.to_datetime(["2026-04-01", "2026-05-01"]),
@@ -24,9 +24,9 @@ class MacroUtilsTests(unittest.TestCase):
 
         dense = densify_macro(macro, prices)
 
-        self.assertEqual(dense.index.max(), pd.Timestamp("2026-05-29"))
+        self.assertEqual(dense.index.max(), pd.Timestamp("2026-05-04"))
         self.assertEqual(dense.loc[pd.Timestamp("2026-05-04"), "leading_cycle"], 104.8)
-        self.assertEqual(dense.loc[pd.Timestamp("2026-05-29"), "leading_cycle"], 104.8)
+        self.assertNotIn(pd.Timestamp("2026-05-29"), dense.index)
         self.assertNotIn(pd.Timestamp("2026-06-01"), dense.index)
 
     def test_daily_endpoint_is_not_extended(self) -> None:
@@ -53,7 +53,8 @@ class MacroUtilsTests(unittest.TestCase):
 
         dense = densify_macro(macro, prices)
 
-        self.assertEqual(dense.loc[pd.Timestamp("2026-05-29"), "leading_cycle"], 104.8)
+        self.assertEqual(dense.loc[pd.Timestamp("2026-05-01"), "leading_cycle"], 104.8)
+        self.assertTrue(pd.isna(dense.loc[pd.Timestamp("2026-05-29"), "leading_cycle"]))
         self.assertTrue(pd.isna(dense.loc[pd.Timestamp("2026-06-01"), "leading_cycle"]))
         self.assertGreater(dense.loc[pd.Timestamp("2026-07-10"), "news_sentiment"], 102.9)
         self.assertEqual(dense.loc[pd.Timestamp("2026-07-13"), "news_sentiment"], 103.0)

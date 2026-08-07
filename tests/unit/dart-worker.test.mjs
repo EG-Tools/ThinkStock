@@ -9,6 +9,7 @@ import {
   creditRefreshWindowDate,
   insiderRecordFromItem,
   isAllowedOrigin,
+  krxIndexPointFromRows,
   krxStockPointFromRows,
   krxMarketSnapshotFromRows,
   mergeAnalysisSnapshots,
@@ -253,6 +254,38 @@ test("returns the latest authenticated KRX close for a stock", async () => {
     assert.deepEqual(payload.records, [{ date: "2026-08-03", close: 61800 }]);
     assert.equal(authKey, "krx-secret");
     assert.equal(requestedPaths.includes("/svc/apis/sto/stk_bydd_trd"), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("returns both authenticated KRX core indices", async () => {
+  assert.deepEqual(krxIndexPointFromRows([
+    { IDX_NM: "KOSPI 200", BAS_DD: "20260805", CLSPRC_IDX: "500.1" },
+    { IDX_NM: "KOSPI", BAS_DD: "20260805", CLSPRC_IDX: "3,210.5" },
+  ], "KOSPI"), { date: "2026-08-05", close: 3210.5 });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options = {}) => {
+    const target = new URL(url);
+    assert.equal(String(new Headers(options.headers).get("AUTH_KEY") || ""), "krx-secret");
+    const kosdaq = target.pathname.includes("kosdaq_dd_trd");
+    return new Response(JSON.stringify({
+      OutBlock_1: [{
+        IDX_NM: kosdaq ? "KOSDAQ" : "KOSPI",
+        BAS_DD: target.searchParams.get("basDd"),
+        CLSPRC_IDX: kosdaq ? "1,012.3" : "3,210.5",
+      }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const response = await handleRequest(
+      request("/api/indices", { token: "private" }),
+      { KRX_API_KEY: "krx-secret", THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: memoryKv() },
+    );
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.deepEqual(payload.records.map((row) => row.ticker), ["^KS11", "^KQ11"]);
   } finally {
     globalThis.fetch = originalFetch;
   }

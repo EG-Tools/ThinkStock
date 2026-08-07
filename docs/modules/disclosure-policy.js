@@ -37,6 +37,7 @@
     const refreshCacheKey = String(options.refreshCacheKey || "");
     const refreshCacheTtlMs = Math.max(1, Number(options.refreshCacheTtlMs) || 86400000);
     const getStorage = options.getStorage || (() => null);
+    const refreshStore = options.refreshStore || null;
     const now = options.now || (() => Date.now());
 
     function sanitizeRows(records) {
@@ -90,6 +91,10 @@
     }
 
     function readRefreshCache() {
+      if (refreshStore?.read) {
+        const value = refreshStore.read({});
+        return value && typeof value === "object" ? value : {};
+      }
       try {
         const raw = getStorage()?.getItem(refreshCacheKey);
         const parsed = raw ? JSON.parse(raw) : {};
@@ -118,7 +123,11 @@
         added: Number(info?.added || 0),
         latestDate: String(info?.latestDate || ""),
       };
-      try { getStorage()?.setItem(refreshCacheKey, JSON.stringify(cache)); } catch (_) {}
+      if (refreshStore?.write) {
+        try { refreshStore.write(cache); } catch (_) {}
+      } else {
+        try { getStorage()?.setItem(refreshCacheKey, JSON.stringify(cache)); } catch (_) {}
+      }
     }
 
     return Object.freeze({

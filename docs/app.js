@@ -15,6 +15,8 @@ if (!runtimeRefreshModule) throw new Error("Runtime refresh module failed to loa
 const { runRefreshPhases } = runtimeRefreshModule;
 const dataSeedLoaderModule = globalThis.ThinkStockDataSeedLoader;
 if (!dataSeedLoaderModule) throw new Error("Data seed loader module failed to load");
+const runtimeDataContract = globalThis.ThinkStockRuntimeDataContract;
+if (!runtimeDataContract) throw new Error("Runtime data contract module failed to load");
 const marketCalendarModule = globalThis.ThinkStockMarketCalendar;
 if (!marketCalendarModule) throw new Error("Market calendar module failed to load");
 const { expectedLatestKoreanTradingDate } = marketCalendarModule;
@@ -25,7 +27,9 @@ const {
   copyDisplayNames,
   sanitizePricePayload: sanitizePricePayloadForSnapshot,
   mergeRowsPreservingExisting,
+  mergeRowsPreferIncoming,
   mergePricePayloadPreservingExisting,
+  mergePricePayloadPreferIncoming,
   normalizeTickerPricePoints,
   findTickerPriceRebaseSignal,
   mergeSources: mergeMarketDataSources,
@@ -33,6 +37,7 @@ const {
   centeredScale,
   autoFitScales,
   shiftIsoDateByDays,
+  buildDenseMacroRows,
 } = marketDataModule;
 const chartInteractionMath = globalThis.ThinkStockChartInteractionMath;
 if (!chartInteractionMath) throw new Error("Chart interaction math module failed to load");
@@ -49,7 +54,13 @@ const {
 } = chartInteractionMath;
 const chartInteractionControllerModule = globalThis.ThinkStockChartInteractionController;
 if (!chartInteractionControllerModule) throw new Error("Chart interaction controller module failed to load");
-const { createPointerFrameController } = chartInteractionControllerModule;
+const {
+  bindPointerDrag,
+  createPointerFrameController,
+  latestPointerSample,
+} = chartInteractionControllerModule;
+const chartVisualFrameModule = globalThis.ThinkStockChartVisualFrame;
+if (!chartVisualFrameModule) throw new Error("Chart visual frame module failed to load");
 const tickerPriceRuntimeModule = globalThis.ThinkStockTickerPriceRuntime;
 if (!tickerPriceRuntimeModule) throw new Error("Ticker price runtime module failed to load");
 const chartEventLayerModule = globalThis.ThinkStockChartEventLayer;
@@ -62,7 +73,6 @@ const {
   transformValues: transformSeriesValues,
   offsetFromDrag,
   scaleFromDrag,
-  resetTransforms,
   fitRangeForTraces,
 } = chartAdjustmentsModule;
 const browserMarketClientModule = globalThis.ThinkStockBrowserMarketClient;
@@ -112,11 +122,14 @@ const startPerfSample = () => performanceMonitor.startSample();
 const recordPerfSample = (label, startedAt, meta = {}) => (
   performanceMonitor.recordSample(label, startedAt, meta)
 );
+const recordRuntimeError = (source, error, meta = {}) => (
+  performanceMonitor.recordError(source, error, meta)
+);
 const deferredDiagnosticsModule = globalThis.ThinkStockDeferredDiagnostics;
 if (!deferredDiagnosticsModule) throw new Error("Deferred diagnostics module failed to load");
 const dataHealthModule = globalThis.ThinkStockDataHealth;
 if (!dataHealthModule) throw new Error("Data health module failed to load");
-const { buildFreshnessItems } = dataHealthModule;
+const { buildFreshnessItems, DEFAULT_SERIES_POLICIES } = dataHealthModule;
 const appStorageModule = globalThis.ThinkStockAppStorage;
 if (!appStorageModule) throw new Error("App storage module failed to load");
 const runtimeSnapshotPolicyModule = globalThis.ThinkStockRuntimeSnapshotPolicy;
@@ -184,7 +197,7 @@ const DATA_CACHE_DB_VERSION = 4;
 const DATA_CACHE_STORE_NAME = "snapshots";
 const DATA_CACHE_RECORD_KEY = "latest";
 const DATA_CACHE_LOCAL_KEY = "thinkstock-runtime-cache-v1";
-const DATA_CACHE_SCHEMA_VERSION = 8;
+const DATA_CACHE_SCHEMA_VERSION = 9;
 const DATA_CACHE_MAX_AGE_DAYS = 7;
 const RUNTIME_SNAPSHOT_FORMAT = "component-v1";
 const RUNTIME_SNAPSHOT_COMPONENT_KEYS = Object.freeze({
@@ -207,7 +220,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "1.84";
+const APP_VERSION = "2.01";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -262,11 +275,20 @@ const IS_LOCAL_RUNTIME = typeof window !== "undefined"
     || /^172\.(1[6-9]|2\d|3[01])\./.test(window.location.hostname));
 const DART_DISCLOSURE_CACHE_KEY = "thinkstock-dart-disclosure-cache-v1";
 const DART_DISCLOSURE_CACHE_TTL_DAYS = 1;
+const appStateStore = appStorageModule.createJsonStore(globalThis, { key: STATE_KEY });
+const runtimeSnapshotLocalStore = appStorageModule.createJsonStore(globalThis, { key: DATA_CACHE_LOCAL_KEY });
+const disclosureRefreshStore = appStorageModule.createJsonStore(globalThis, { key: DART_DISCLOSURE_CACHE_KEY });
+const legacyApiSettingsStore = appStorageModule.createJsonStore(globalThis, { key: API_SETTINGS_KEY });
+const legacyApiSessionStore = appStorageModule.createJsonStore(globalThis, {
+  key: API_SETTINGS_SESSION_KEY,
+  storage: globalThis.sessionStorage,
+});
 const DART_GATEWAY_URL = "https://thinkstock-api.keg0320.workers.dev";
 const DART_GATEWAY_AUTH_CHECK_ENDPOINT = `${DART_GATEWAY_URL}/api/auth/check`;
 const DART_GATEWAY_DISCLOSURE_ENDPOINT = `${DART_GATEWAY_URL}/api/dart/disclosures`;
 const DART_GATEWAY_INSIDER_ENDPOINT = `${DART_GATEWAY_URL}/api/dart/insider-trades`;
 const KRX_GATEWAY_PRICE_ENDPOINT = `${DART_GATEWAY_URL}/api/prices`;
+const KRX_GATEWAY_INDEX_ENDPOINT = `${DART_GATEWAY_URL}/api/indices`;
 const ECOS_GATEWAY_MACRO_ENDPOINT = `${DART_GATEWAY_URL}/api/macro`;
 const CREDIT_GATEWAY_ENDPOINT = `${DART_GATEWAY_URL}/api/credit`;
 const AI_ANALYSIS_ENDPOINT = `${DART_GATEWAY_URL}/api/analysis`;
@@ -279,6 +301,7 @@ const DART_GATEWAY_REQUEST_TIMEOUT_MS = 90000;
 const DART_EMPTY_RESULT_RETRY_DELAY_MS = 1200;
 const CHART_WORKER_STALE_CANCEL_MS = 40;
 const RECENT_DATA_MONTHS = 132;
+const RANGE_MONTH_PRESETS = Object.freeze([1, 3, 6, 12, 36, 60, 120, 180, 240, 360]);
 function appendCacheBust(url) {
   const stamp = `_=${Date.now()}`;
   return url.includes("?") ? `${url}&${stamp}` : `${url}?${stamp}`;
@@ -451,7 +474,7 @@ let baseTraceValues = {};
 let legendHandlerSet = false;
 let adrHandlerSet = false;
 let lastAdrRenderKey = "";
-let dragRafId = null;
+let chartVisualFrameCoordinator = null;
 let cursorRafId = 0;
 let pendingCursorState = null;
 let hoverSyncRafId = 0;
@@ -513,6 +536,8 @@ let macdModelCache = new Map();
 let macdHandlerSet = false;
 let isHandleDragging = false;
 let pinnedXRange = null;
+let autoChartReset = true;
+let pendingAutoChartFit = false;
 let hoverSyncing = false;
 let cursorSyncing = false;
 let cursorMoveBound = false;
@@ -530,7 +555,6 @@ let pendingViewportSync = new Map();
 let disclosureHoverTimer = 0;
 let pendingDisclosureHoverData = null;
 let disclosureGroupStore = new Map();
-let disclosureGroupStoreSeq = 0;
 let lineHitIndexCache = new WeakMap();
 let pointerMoveController = null;
 const CURSOR_LINE_CLASS = "synced-cursor-line";
@@ -710,7 +734,7 @@ function applyCustomStockDisplayNames() {
 
 function saveState() {
   try {
-    localStorage.setItem(STATE_KEY, JSON.stringify({
+    appStateStore.write({
       activeMonths,
       hiddenSeries: [...hiddenSeries],
       hiddenAuxiliarySeries: [...hiddenAuxiliarySeries],
@@ -724,15 +748,15 @@ function saveState() {
       showCoMovement,
       showAiForecast,
       showMacdOscillator,
-    }));
+      autoChartReset,
+    });
   } catch (_) {}
 }
 
 function loadState() {
   try {
-    const raw = localStorage.getItem(STATE_KEY);
-    if (!raw) return;
-    const p = JSON.parse(raw);
+    const p = appStateStore.read(null);
+    if (!p) return;
     if (typeof p.activeMonths === "number") activeMonths = p.activeMonths;
     if (Array.isArray(p.hiddenSeries)) hiddenSeries = new Set(p.hiddenSeries);
     if (Array.isArray(p.hiddenAuxiliarySeries)) {
@@ -747,14 +771,15 @@ function loadState() {
     if (typeof p.showCoMovement === "boolean") showCoMovement = p.showCoMovement;
     if (typeof p.showAiForecast === "boolean") showAiForecast = p.showAiForecast;
     if (typeof p.showMacdOscillator === "boolean") showMacdOscillator = p.showMacdOscillator;
+    if (typeof p.autoChartReset === "boolean") autoChartReset = p.autoChartReset;
     if (Array.isArray(p.customStocks)) customStocks = sanitizeCustomStocks(p.customStocks);
     applyCustomStockDisplayNames();
   } catch (_) {}
 }
 
 function clearLegacyBrowserApiSettings() {
-  try { localStorage.removeItem(API_SETTINGS_KEY); } catch (_) {}
-  try { sessionStorage.removeItem(API_SETTINGS_SESSION_KEY); } catch (_) {}
+  legacyApiSettingsStore.remove();
+  legacyApiSessionStore.remove();
 }
 
 const disclosureDataService = createDisclosureDataService({
@@ -763,7 +788,7 @@ const disclosureDataService = createDisclosureDataService({
   labelName,
   refreshCacheKey: DART_DISCLOSURE_CACHE_KEY,
   refreshCacheTtlMs: DART_DISCLOSURE_CACHE_TTL_DAYS * DAY_MS,
-  getStorage: () => localStorage,
+  refreshStore: disclosureRefreshStore,
 });
 let dartDisclosureServicePromise = null;
 
@@ -1006,7 +1031,7 @@ function applyRuntimeDataSnapshot(snapshot) {
   runtimeSnapshotPersistedRevisions = snapshot._persistedRevisions
     ? { ...snapshot._persistedRevisions }
     : {};
-  historicalDataLoaded = snapshot.historical_data_loaded === true || hasHistoricalDataCoverage();
+  historicalDataLoaded = hasHistoricalDataCoverage();
   runtimeSnapshotSavedSignature = getRuntimeDataSignature();
   return true;
 }
@@ -1079,20 +1104,15 @@ function scheduleGranularCacheCleanup() {
 }
 
 function readRuntimeSnapshotFromLocalStorage() {
-  try {
-    const raw = localStorage.getItem(DATA_CACHE_LOCAL_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch (_) {
-    return null;
-  }
+  return runtimeSnapshotLocalStore.read(null);
 }
 
 function writeRuntimeSnapshotToLocalStorage(snapshot) {
-  localStorage.setItem(DATA_CACHE_LOCAL_KEY, JSON.stringify(snapshot));
+  runtimeSnapshotLocalStore.write(snapshot);
 }
 
 function deleteRuntimeSnapshotFromLocalStorage() {
-  localStorage.removeItem(DATA_CACHE_LOCAL_KEY);
+  runtimeSnapshotLocalStore.remove();
 }
 
 async function readLastRuntimeSnapshot() {
@@ -1167,7 +1187,13 @@ async function saveLastRuntimeSnapshot() {
 
 let runtimeSnapshotSaveTimer = 0;
 function isChartInteractionBusy() {
-  return Boolean(isViewportDragging || isHandleDragging || dragRafId || cursorRafId || viewportSyncTimer);
+  return Boolean(
+    isViewportDragging
+    || isHandleDragging
+    || chartVisualFrameCoordinator?.hasPending?.()
+    || cursorRafId
+    || viewportSyncTimer
+  );
 }
 
 function cancelRuntimeSnapshotIdleSave() {
@@ -1283,9 +1309,14 @@ async function fetchLatestKrxTickerSeries(ticker, options = {}) {
       },
       NETWORK_REQUEST_TIMEOUT_MS,
     );
-    const payload = await response.json().catch(() => null);
-    if (!response.ok || payload?.ok !== true) {
-      throw new Error(payload?.error || `KRX price HTTP ${response.status}`);
+    const rawPayload = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(rawPayload?.error || `KRX price HTTP ${response.status}`);
+    let payload;
+    try {
+      payload = runtimeDataContract.normalizePricePayload(rawPayload);
+    } catch (error) {
+      recordRuntimeError("price-contract", error, { ticker: key });
+      throw error;
     }
     setTickerPriceStatus(key, {
       source: payload.source,
@@ -1412,7 +1443,7 @@ function renderDataFreshness() {
       keys: ["leading_cycle"],
       staleDays: 75,
       changePolicies: {
-        leading_cycle: { maxRelativeChange: 0.05, maxAbsoluteChange: 3, maxGapDays: 62 },
+        leading_cycle: DEFAULT_SERIES_POLICIES.leading_cycle,
       },
     },
     {
@@ -1421,7 +1452,7 @@ function renderDataFreshness() {
       keys: ["news_sentiment"],
       staleDays: 10,
       changePolicies: {
-        news_sentiment: { maxRelativeChange: 0.35, maxAbsoluteChange: 20, maxGapDays: 14 },
+        news_sentiment: DEFAULT_SERIES_POLICIES.news_sentiment,
       },
     },
     {
@@ -1430,9 +1461,9 @@ function renderDataFreshness() {
       keys: CREDIT_COLS,
       staleDays: 14,
       changePolicies: {
-        customer_deposit: { maxRelativeChange: 0.2, maxAbsoluteChange: 25, maxGapDays: 14 },
-        kospi_credit: { maxRelativeChange: 0.15, maxAbsoluteChange: 3, maxGapDays: 14 },
-        kosdaq_credit: { maxRelativeChange: 0.15, maxAbsoluteChange: 1, maxGapDays: 14 },
+        customer_deposit: DEFAULT_SERIES_POLICIES.customer_deposit,
+        kospi_credit: DEFAULT_SERIES_POLICIES.kospi_credit,
+        kosdaq_credit: DEFAULT_SERIES_POLICIES.kosdaq_credit,
       },
     },
     {
@@ -1441,8 +1472,8 @@ function renderDataFreshness() {
       keys: ADR_SERIES,
       staleDays: 10,
       changePolicies: {
-        adr_kospi: { maxRelativeChange: 0.5, maxAbsoluteChange: 40, maxGapDays: 14 },
-        adr_kosdaq: { maxRelativeChange: 0.5, maxAbsoluteChange: 40, maxGapDays: 14 },
+        adr_kospi: DEFAULT_SERIES_POLICIES.adr_kospi,
+        adr_kosdaq: DEFAULT_SERIES_POLICIES.adr_kosdaq,
       },
     },
     {
@@ -1451,7 +1482,7 @@ function renderDataFreshness() {
       keys: FEAR_GREED_SERIES,
       staleDays: 10,
       changePolicies: {
-        fear_greed: { maxRelativeChange: 0.5, maxAbsoluteChange: 30, maxGapDays: 14 },
+        fear_greed: DEFAULT_SERIES_POLICIES.fear_greed,
       },
     },
   ]);
@@ -1579,7 +1610,7 @@ function setupApiSettingsPanel(msgEl) {
     if (!accessToken) {
       try {
         dartGatewaySettingsStore.clear();
-        localStorage.removeItem(DART_DISCLOSURE_CACHE_KEY);
+        disclosureRefreshStore.remove();
       } catch (_) {}
       syncApiOptionsButton();
       close();
@@ -1598,7 +1629,7 @@ function setupApiSettingsPanel(msgEl) {
         return;
       }
       dartGatewaySettingsStore.save({ accessToken });
-      localStorage.removeItem(DART_DISCLOSURE_CACHE_KEY);
+      disclosureRefreshStore.remove();
       if (dartGatewayTokenInput) dartGatewayTokenInput.value = accessToken;
       syncApiOptionsButton();
       close();
@@ -1628,17 +1659,12 @@ function shiftDays(dateStr, days) {
   return d.toISOString().slice(0, 10);
 }
 
-function rowsCoverMoreThanRecentWindow(rows) {
-  if (!Array.isArray(rows) || rows.length < 2) return false;
-  const first = String(rows[0]?.date || "").slice(0, 10);
-  const last = String(rows[rows.length - 1]?.date || "").slice(0, 10);
-  if (!first || !last) return false;
-  return first < shiftMonths(last, RECENT_DATA_MONTHS);
-}
-
 function hasHistoricalDataCoverage() {
-  const sources = [macroRows, creditRows].filter((rows) => Array.isArray(rows) && rows.length > 1);
-  return sources.length > 0 && sources.every(rowsCoverMoreThanRecentWindow);
+  return runtimeSnapshotPolicyModule.hasCoreHistoricalCoverage({
+    price: pricePayload?.records,
+    macro: macroRows,
+    credit: creditRows,
+  }, RECENT_DATA_MONTHS);
 }
 
 
@@ -2143,6 +2169,16 @@ function selectCoMovementTarget(seriesKey) {
   renderCoMovementPanel();
 }
 
+function syncChartResetToggleButton() {
+  const button = document.getElementById("resetHandles");
+  if (!button) return;
+  button.classList.toggle("is-active", autoChartReset);
+  button.setAttribute("aria-pressed", autoChartReset ? "true" : "false");
+  button.title = autoChartReset
+    ? "차트 변경 시 자동으로 세로 범위를 맞춥니다."
+    : "차트 변경 시 현재 화면 비율을 유지합니다.";
+}
+
 function syncCoMovementToggleButton() {
   const button = document.getElementById("coMovementToggle");
   if (!button) return;
@@ -2221,12 +2257,17 @@ function beginLineOffsetDrag(el, target, startClientY, pointerId) {
 
   const startOffset = seriesOffsets[target.seriesKey] || 0;
   const lockedXRange = getCurrentMainXRange();
+  const draggedHandles = [...document.querySelectorAll("#y-handles .y-handle")]
+    .filter((handle) => handle.dataset.seriesKey === target.seriesKey)
+    .map((handle) => ({ handle, startTop: Number.parseFloat(handle.style.top) }))
+    .filter((item) => Number.isFinite(item.startTop));
   let moved = false;
 
   suppressPlotlyClickUntil = Date.now() + 500;
   isHandleDragging = true;
   setActiveLineTarget(target);
   el.classList.add("is-line-dragging");
+  clearHoverOnChart(el);
   hideDragZoomOverlay(el);
   lockCurrentYAxisRange();
 
@@ -2234,10 +2275,14 @@ function beginLineOffsetDrag(el, target, startClientY, pointerId) {
     const dy = clientY - startClientY;
     if (Math.abs(dy) >= 3) moved = true;
     seriesOffsets[target.seriesKey] = offsetFromDrag(startOffset, startClientY, clientY, ya);
+    draggedHandles.forEach(({ handle, startTop }) => {
+      handle.style.top = `${startTop + dy}px`;
+    });
     restyleLive(target.traceIndex, target.seriesKey);
   }
 
   function onEnd(clientY) {
+    clearHoverOnChart(el);
     el.classList.remove("is-line-dragging");
     isHandleDragging = false;
     setActiveLineTarget(null);
@@ -2270,13 +2315,6 @@ function bindCursorMoveSync() {
 
   let touchStartPoint = null;
   let dragState = null;
-
-  const latestPointerSample = (event) => {
-    const samples = typeof event.getCoalescedEvents === "function"
-      ? event.getCoalescedEvents()
-      : null;
-    return samples?.length ? samples[samples.length - 1] : event;
-  };
 
   const moveAt = (sourceEl, clientX, geometry = null) => {
     const xValue = axisPixelToXValue(sourceEl, clientX, false, geometry);
@@ -2611,7 +2649,7 @@ function bindSeriesToggleBoard() {
       if (hiddenSeries.has(key)) hiddenSeries.delete(key);
       else hiddenSeries.add(key);
       noteStockVisibilityChange(key);
-      resetHandles();
+      requestChartCompositionUpdate();
     });
   });
 }
@@ -2660,7 +2698,7 @@ function removeCustomStock(ticker) {
   loadingCustomStocks.delete(ticker);
   clearTickerSeriesFromPricePayload(ticker);
   renderCustomStockButtons();
-  resetHandles();
+  requestChartCompositionUpdate();
 }
 
 function clearTickerSeriesFromPricePayload(ticker) {
@@ -2977,29 +3015,37 @@ async function refreshCoreIndexSeries(options = {}) {
   const applied = [];
   const warnings = [];
 
-  const yahooResults = await Promise.allSettled(
-    tickers.map(async (ticker) => {
-      const points = await fetchTickerHistorySeries(ticker, { sinceDate: beforeLatest[ticker], signal });
-      if (!points.length) throw new Error("price history is empty");
-      throwIfAborted(signal);
-      mergeTickerSeriesIntoPricePayload(ticker, points);
-      return { ticker, latestDate: points[points.length - 1]?.date || "" };
-    }),
-  );
-
-  throwIfAborted(signal);
-  yahooResults.forEach((result, idx) => {
-    const ticker = tickers[idx];
-    if (result.status === "fulfilled") {
-      const latestDate = String(result.value?.latestDate || "");
-      if (latestDate && latestDate !== beforeLatest[ticker]) {
-        applied.push(`${labelName(ticker)} 반영(${latestDate})`);
-      }
-      return;
+  if (!IS_LOCAL_RUNTIME && !canUseDartGateway()) return { applied, warnings };
+  const endpoint = IS_LOCAL_RUNTIME ? "./api/indices" : KRX_GATEWAY_INDEX_ENDPOINT;
+  try {
+    const response = await fetchWithTimeout(endpoint, {
+      cache: "no-store",
+      headers: IS_LOCAL_RUNTIME ? {} : { Authorization: `Bearer ${getDartGatewayAccessToken()}` },
+      signal,
+    }, NETWORK_REQUEST_TIMEOUT_MS);
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || payload?.ok !== true) {
+      throw new Error(payload?.error || `KRX index HTTP ${response.status}`);
     }
-    const reason = result.reason?.message || String(result.reason || "unknown error");
-    warnings.push(`${labelName(ticker)} 갱신 오류: ${reason}`);
-  });
+    const records = Array.isArray(payload.records) ? payload.records : [];
+    tickers.forEach((ticker) => {
+      const points = records
+        .filter((row) => row?.ticker === ticker)
+        .map((row) => ({ date: String(row?.date || "").slice(0, 10), close: toNum(row?.close) }))
+        .filter((row) => /^\d{4}-\d{2}-\d{2}$/.test(row.date) && Number.isFinite(row.close) && row.close > 0);
+      if (!points.length) {
+        warnings.push(`${labelName(ticker)} 갱신 오류: KRX index data is empty`);
+        return;
+      }
+      mergeTickerSeriesIntoPricePayload(ticker, points);
+      const latestDate = points[points.length - 1].date;
+      if (latestDate && latestDate !== beforeLatest[ticker]) applied.push(`${labelName(ticker)} 반영(${latestDate})`);
+    });
+    if (payload.warning) warnings.push(String(payload.warning));
+  } catch (error) {
+    if (isAbortError(error) || signal?.aborted) throw error;
+    warnings.push(`KRX 지수 갱신 오류: ${error?.message || error}`);
+  }
 
   return { applied, warnings };
 }
@@ -3034,7 +3080,7 @@ async function addCustomStock(candidate, msgEl) {
     renderCustomStockButtons();
     saveState();
     if (showAiForecast) requestAiAnalysisForTicker(candidate.ticker).catch(() => {});
-    resetHandles();
+    requestChartCompositionUpdate();
     setMessage(msgEl, [`${candidate.name} 종목이 추가되었습니다.`]);
     preloadTickerDartData(candidate.ticker, msgEl);
   } catch (err) {
@@ -3209,30 +3255,6 @@ async function preloadCustomStocks(options = {}) {
   saveState();
   return { failedNames };
 }
-function buildDenseMacroRows(sourceRows, targetDates) {
-  const sorted = [...sourceRows].sort((a, b) => a.date.localeCompare(b.date));
-  const cols = getSeriesColumns(sorted);
-  if (!sorted.length || !targetDates.length || !cols.length) return sorted;
-  const targets = targetDates.map((d) => ({ date: d, time: toUtcMs(d) }));
-  const dense = targets.map(({ date }) => ({ date }));
-  cols.forEach((col) => {
-    const pts = sorted.map((r) => ({ time: toUtcMs(r.date), value: toNum(r[col]) })).filter((p) => p.value !== null).sort((a, b) => a.time - b.time);
-    if (!pts.length) { targets.forEach((_, i) => { dense[i][col] = null; }); return; }
-    let ptr = 0;
-    targets.forEach(({ time }, i) => {
-      if (time < pts[0].time || time > pts[pts.length - 1].time) { dense[i][col] = null; return; }
-      while (ptr + 1 < pts.length && pts[ptr + 1].time < time) ptr += 1;
-      const L = pts[ptr], R = pts[ptr + 1];
-      if (!L) { dense[i][col] = null; return; }
-      if (!R || L.time === time || L.time === R.time) { dense[i][col] = L.value; return; }
-      if (R.time === time) { dense[i][col] = R.value; return; }
-      const t = (time - L.time) / (R.time - L.time);
-      dense[i][col] = L.value + (R.value - L.value) * t;
-    });
-  });
-  return dense.filter((r) => cols.some((c) => toNum(r[c]) !== null));
-}
-
 let CREDIT_OFFSET_DAYS = 2;  // Fund-data publication-lag alignment in days (UI uses negative sign for display)
 const CREDIT_COLS = ["customer_deposit", "kospi_credit", "kosdaq_credit"];
 
@@ -3570,16 +3592,19 @@ function pickByIndexes(values, indexes) {
 }
 
 function keepFiniteTracePoints(xValues, yValues, textValues, baseValues) {
+  const firstFinite = yValues.findIndex(Number.isFinite);
+  let lastFinite = yValues.length - 1;
+  while (lastFinite >= 0 && !Number.isFinite(yValues[lastFinite])) lastFinite -= 1;
+  if (firstFinite < 0 || lastFinite < firstFinite) return { x: [], y: [], text: [], base: [] };
   const x = [];
   const y = [];
   const text = [];
   const base = [];
-  for (let index = 0; index < yValues.length; index += 1) {
-    if (!Number.isFinite(yValues[index])) continue;
+  for (let index = firstFinite; index <= lastFinite; index += 1) {
     x.push(xValues[index]);
-    y.push(yValues[index]);
+    y.push(Number.isFinite(yValues[index]) ? yValues[index] : null);
     text.push(textValues[index]);
-    base.push(baseValues[index]);
+    base.push(Number.isFinite(baseValues[index]) ? baseValues[index] : null);
   }
   return { x, y, text, base };
 }
@@ -3606,6 +3631,14 @@ function seriesBoundaryIndexes(targets, bySeries) {
     while (last >= 0 && !Number.isFinite(values[last])) last -= 1;
     if (first >= 0) boundaries.add(first);
     if (last >= 0) boundaries.add(last);
+    for (let index = Math.max(1, first + 1); index <= last; index += 1) {
+      const previousFinite = Number.isFinite(values[index - 1]);
+      const currentFinite = Number.isFinite(values[index]);
+      if (previousFinite !== currentFinite) {
+        boundaries.add(index - 1);
+        boundaries.add(index);
+      }
+    }
   });
   return [...boundaries];
 }
@@ -3697,6 +3730,7 @@ function updateHandles() {
     leftHandle.style.top = leftPixelY - 7 + "px";
     leftHandle.style.backgroundColor = color;
     leftHandle.title = labelName(key) + " (위치)";
+    leftHandle.dataset.seriesKey = key;
     container.appendChild(leftHandle);
 
     const rightHandle = document.createElement("div");
@@ -3705,6 +3739,7 @@ function updateHandles() {
     rightHandle.style.left = rightX + "px";
     rightHandle.style.backgroundColor = color;
     rightHandle.title = labelName(key) + " (스케일)";
+    rightHandle.dataset.seriesKey = key;
     container.appendChild(rightHandle);
 
     setupOffsetDrag(leftHandle, i, key, leftPixelY, ya, rightHandle, rightPixelY);
@@ -3722,72 +3757,143 @@ function computeFinalValues(seriesKey) {
   );
 }
 
-function restyleLive(traceIndex, seriesKey) {
-  if (dragRafId) return;
-  dragRafId = requestAnimationFrame(() => {
-    dragRafId = null;
-    const el = document.getElementById("chart");
-    const newY = computeFinalValues(seriesKey);
-    if (newY) {
-      lineHitIndexCache.delete(el);
-      const traceIndexes = [traceIndex];
-      const yUpdates = [newY];
-      const hasEventMarkers = showInsiderTrades || showDisclosures;
-      const eventModelUpdated = hasEventMarkers
-        ? updateCurrentMainChartSeriesTransform(seriesKey)
-        : false;
-      if (showInsiderTrades && eventModelUpdated) {
-        const nextInsiderTraces = buildInsiderTradeTraces(
-          currentMainChartModel.selected,
-          currentMainChartModel.seriesModels,
-          currentStart,
-          currentEnd,
-        );
-        (el?.data || []).forEach((trace, index) => {
-          const side = trace?.meta?.insiderTradeSide;
-          if (!trace?.meta?.isInsiderTradeTrace || !side) return;
-          const nextTrace = nextInsiderTraces.find((candidate) => (
-            candidate?.meta?.insiderTradeSide === side
-          ));
-          if (!nextTrace) return;
-          traceIndexes.push(index);
-          yUpdates.push(nextTrace.y);
-        });
+function mainSeriesTraceIndex(el, seriesKey, preferredIndex = null) {
+  const preferred = Number.isInteger(preferredIndex) ? el?.data?.[preferredIndex] : null;
+  if (
+    preferred?.meta?.seriesKey === seriesKey
+    && !preferred?.meta?.isAiForecastTrace
+    && !preferred?.meta?.isAiForecastBand
+  ) return preferredIndex;
+  return (el?.data || []).findIndex((trace) => (
+    trace?.meta?.seriesKey === seriesKey
+    && !trace?.meta?.isAiForecastTrace
+    && !trace?.meta?.isAiForecastBand
+  ));
+}
+
+function positionSeriesHandles(el, seriesKey, values) {
+  const yAxis = el?._fullLayout?.yaxis;
+  if (!yAxis || !Array.isArray(values)) return;
+  const first = values.find((value) => Number.isFinite(value));
+  const last = [...values].reverse().find((value) => Number.isFinite(value));
+  if (!Number.isFinite(first) || !Number.isFinite(last)) return;
+  const toTop = (value) => {
+    if (typeof yAxis.l2p === "function") return yAxis._offset + yAxis.l2p(value) - 7;
+    const span = yAxis.range?.[1] - yAxis.range?.[0];
+    if (!Number.isFinite(span) || Math.abs(span) < 1e-9) return Number.NaN;
+    return yAxis._offset + yAxis._length * (1 - ((value - yAxis.range[0]) / span)) - 7;
+  };
+  const leftTop = toTop(first);
+  const rightTop = toTop(last);
+  [...document.querySelectorAll("#y-handles .y-handle")]
+    .filter((handle) => handle.dataset.seriesKey === seriesKey)
+    .forEach((handle) => {
+      const top = handle.classList.contains("y-handle-left") ? leftTop : rightTop;
+      if (Number.isFinite(top)) handle.style.top = `${top}px`;
+    });
+}
+
+function appendEventMarkerYUpdates(el, traceIndexes, yUpdates) {
+  let structureChanged = false;
+  let disclosureUpdated = false;
+  if (showInsiderTrades) {
+    const nextInsiderTraces = buildInsiderTradeTraces(
+      currentMainChartModel.selected,
+      currentMainChartModel.seriesModels,
+      currentStart,
+      currentEnd,
+    );
+    const currentInsiderIndexes = (el?.data || []).flatMap((trace, index) => (
+      trace?.meta?.isInsiderTradeTrace ? [index] : []
+    ));
+    currentInsiderIndexes.forEach((index) => {
+      const side = el.data[index]?.meta?.insiderTradeSide;
+      const nextTrace = nextInsiderTraces.find((trace) => trace?.meta?.insiderTradeSide === side);
+      if (!nextTrace) {
+        structureChanged = true;
+        return;
       }
-      if (showDisclosures && eventModelUpdated) {
-        const nextDisclosureTrace = buildDisclosureTrace(
-          currentMainChartModel.selected,
-          currentMainChartModel.seriesModels,
-          currentStart,
-          currentEnd,
-        );
-        const disclosureTraceIndex = (el?.data || []).findIndex((trace) => (
-          trace?.meta?.isDisclosureTrace
-        ));
-        if (nextDisclosureTrace && disclosureTraceIndex >= 0) {
-          traceIndexes.push(disclosureTraceIndex);
-          yUpdates.push(nextDisclosureTrace.y);
-        }
-      }
-      chartEventLayerModule.invalidateMarkerPixels(el);
-      Plotly.restyle(el, { y: yUpdates }, traceIndexes);
+      traceIndexes.push(index);
+      yUpdates.push(nextTrace.y);
+    });
+    if (nextInsiderTraces.length !== currentInsiderIndexes.length) structureChanged = true;
+  }
+  if (showDisclosures) {
+    const nextDisclosureTrace = buildDisclosureTrace(
+      currentMainChartModel.selected,
+      currentMainChartModel.seriesModels,
+      currentStart,
+      currentEnd,
+    );
+    const disclosureTraceIndex = (el?.data || []).findIndex((trace) => trace?.meta?.isDisclosureTrace);
+    if (nextDisclosureTrace && disclosureTraceIndex >= 0) {
+      traceIndexes.push(disclosureTraceIndex);
+      yUpdates.push(nextDisclosureTrace.y);
+      disclosureUpdated = true;
+    } else if (Boolean(nextDisclosureTrace) !== (disclosureTraceIndex >= 0)) {
+      structureChanged = true;
     }
+  }
+  return { structureChanged, disclosureUpdated };
+}
+
+function applyChartVisualFrame(frame) {
+  const el = document.getElementById("chart");
+  if (!el?.data || !window.Plotly) return;
+  const traceIndexes = [];
+  const yUpdates = [];
+  (frame.series || []).forEach(({ seriesKey, traceIndex: preferredIndex }) => {
+    const traceIndex = mainSeriesTraceIndex(el, seriesKey, preferredIndex);
+    const newY = computeFinalValues(seriesKey);
+    if (traceIndex < 0 || !newY) return;
+    traceIndexes.push(traceIndex);
+    yUpdates.push(newY);
+    updateCurrentMainChartSeriesTransform(seriesKey);
+    positionSeriesHandles(el, seriesKey, newY);
+  });
+
+  const eventUpdate = frame.markers && currentMainChartModel?.seriesModels?.length
+    ? appendEventMarkerYUpdates(el, traceIndexes, yUpdates)
+    : { structureChanged: false, disclosureUpdated: false };
+  if (eventUpdate.disclosureUpdated) partialDisclosureUpdateCount += 1;
+  if (traceIndexes.length) {
+    lineHitIndexCache.delete(el);
+    chartEventLayerModule.invalidateMarkerPixels(el);
+    Plotly.restyle(el, { y: yUpdates }, traceIndexes);
+  }
+  if (frame.handles && !(frame.series || []).length) updateHandles();
+  if (eventUpdate.structureChanged) requestChartRender(true, { reason: "event-structure" });
+}
+
+function getChartVisualFrameCoordinator() {
+  if (!chartVisualFrameCoordinator) {
+    chartVisualFrameCoordinator = chartVisualFrameModule.createCoordinator(window, {
+      applyFrame: applyChartVisualFrame,
+    });
+  }
+  return chartVisualFrameCoordinator;
+}
+
+function restyleLive(traceIndex, seriesKey) {
+  getChartVisualFrameCoordinator().schedule({
+    seriesKey,
+    traceIndex,
+    markers: showInsiderTrades || showDisclosures,
+    handles: true,
+    reason: "series-transform",
   });
 }
 
 function finishTraceYEdit(rebuildForDisclosures = true, seriesKey = "") {
+  getChartVisualFrameCoordinator().flush();
   saveState();
-  if (showAiForecast || showInsiderTrades) {
-    requestAnimationFrame(() => requestChartRender());
-    return;
-  }
-  if (showDisclosures && rebuildForDisclosures) {
-    requestAnimationFrame(() => {
-      if (!refreshDisclosureTraceFast(seriesKey)) requestChartRender();
-    });
+  if (showAiForecast) {
+    pendingAutoChartFit = autoChartReset;
+    requestAnimationFrame(() => requestChartRender(true));
     return;
   }
   updateHandles();
+  if (autoChartReset) requestAnimationFrame(fitCurrentChartRatio);
   saveLastRuntimeSnapshot().catch(() => {});
 }
 
@@ -3841,7 +3947,7 @@ function setupOffsetDrag(handle, traceIndex, seriesKey, basePixelY, ya, pairedHa
         if (hiddenSeries.has(seriesKey)) hiddenSeries.delete(seriesKey);
         else hiddenSeries.add(seriesKey);
         noteStockVisibilityChange(seriesKey);
-        resetHandles();
+        requestChartCompositionUpdate();
         return;
       }
       finishTraceYEdit(true, seriesKey);
@@ -3892,43 +3998,13 @@ function setupScaleDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
 }
 
 function addDragListeners(pointerId, onMove, onEnd) {
-  let lastClientY = Number.NaN;
-  const cleanup = () => {
-    document.removeEventListener("pointermove", pointerMove);
-    document.removeEventListener("pointerup", pointerEnd);
-    document.removeEventListener("pointercancel", pointerCancel);
-  };
-  const pointerMove = (event) => {
-    if (event.pointerId !== pointerId) return;
-    event.preventDefault();
-    const samples = typeof event.getCoalescedEvents === "function" ? event.getCoalescedEvents() : null;
-    const sample = samples?.length ? samples[samples.length - 1] : event;
-    lastClientY = sample.clientY;
-    onMove(lastClientY);
-  };
-  const pointerEnd = (event) => {
-    if (event.pointerId !== pointerId) return;
-    cleanup();
-    onEnd(event.clientY);
-  };
-  const pointerCancel = (event) => {
-    if (event.pointerId !== pointerId) return;
-    cleanup();
-    onEnd(Number.isFinite(lastClientY) ? lastClientY : event.clientY);
-  };
-  document.addEventListener("pointermove", pointerMove, { passive: false });
-  document.addEventListener("pointerup", pointerEnd);
-  document.addEventListener("pointercancel", pointerCancel);
+  return bindPointerDrag(document, { pointerId, onMove, onEnd });
 }
 
-function resetHandles() {
-  const transforms = resetTransforms();
-  seriesOffsets = transforms.offsets;
-  seriesScales = transforms.scales;
-  pinnedXRange = null;
-  useViewportEventMarkerGap = false;
+function requestChartCompositionUpdate() {
+  pendingAutoChartFit = autoChartReset;
   saveState();
-  requestChartRender(false);
+  requestChartRender(true);
 }
 
 function fitCurrentChartRatio() {
@@ -3952,7 +4028,11 @@ function fitCurrentChartRatio() {
     "yaxis.range[1]": yRange[1],
     "yaxis.autorange": false,
   })).then(() => {
-    updateHandles();
+    getChartVisualFrameCoordinator().schedule({
+      markers: showDisclosures || showInsiderTrades,
+      handles: true,
+      reason: "axis-range",
+    });
     saveLastRuntimeSnapshot().catch(() => {});
   });
 }
@@ -4012,7 +4092,7 @@ function buildDisclosureTrace(selected, seriesModels, start, end) {
   disclosureGroupStore = new Map();
   if (!groups.length) return null;
   const groupIds = groups.map((group) => {
-    const id = `d${++disclosureGroupStoreSeq}`;
+    const id = `d|${group.ticker}|${group.plotDate}`;
     disclosureGroupStore.set(id, group);
     return id;
   });
@@ -5249,6 +5329,10 @@ async function runMainChartRender(preserveZoom = true) {
   mainChartRenderInFlight += 1;
   try {
     await renderChart(preserveZoom);
+    if (pendingAutoChartFit && !pendingChartRenderAfterFlight) {
+      pendingAutoChartFit = false;
+      if (autoChartReset) fitCurrentChartRatio();
+    }
   } finally {
     mainChartRenderInFlight = Math.max(0, mainChartRenderInFlight - 1);
     if (mainChartRenderInFlight) return;
@@ -5546,6 +5630,19 @@ async function renderChart(preserveZoom = true) {
     .map((trace) => trace.x?.at(-1) || "")
     .reduce((latest, date) => date > latest ? date : latest, end);
   const defaultXRange = [start, forecastEnd];
+  const longRangeTicks = (() => {
+    if (activeMonths < 360) return null;
+    const startYear = Number(String(start).slice(0, 4));
+    const endYear = Number(String(forecastEnd).slice(0, 4));
+    if (!Number.isFinite(startYear) || !Number.isFinite(endYear)) return null;
+    const tickvals = [start];
+    const ticktext = [String(startYear)];
+    for (let year = Math.ceil((startYear + 1) / 5) * 5; year <= endYear; year += 5) {
+      tickvals.push(`${year}-01-01`);
+      ticktext.push(String(year));
+    }
+    return { tickmode: "array", tickvals, ticktext };
+  })();
 
   clearDisclosureHoverTimer();
   currentDisclosureHighlight = null;
@@ -5559,7 +5656,19 @@ async function renderChart(preserveZoom = true) {
     hovermode: hoverShowPopup ? "x unified" : false,
     showlegend: false,
     legend: { orientation: "h", x: 0, y: 1.08, font: { color: "rgba(255,255,255,0.7)", size: 11 } },
-    xaxis: { showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, color: "#666", tickfont: { size: 10 }, fixedrange: false, showspikes: false, hoverformat: "%Y.%-m.%-d", ...(savedXRange ? { range: savedXRange } : { range: defaultXRange, autorange: false }) },
+    xaxis: {
+      showgrid: true,
+      gridcolor: "rgba(255,255,255,0.06)",
+      gridwidth: 1,
+      zeroline: false,
+      color: "#666",
+      tickfont: { size: 10 },
+      fixedrange: false,
+      showspikes: false,
+      hoverformat: "%Y.%-m.%-d",
+      ...(longRangeTicks || {}),
+      ...(savedXRange ? { range: savedXRange } : { range: defaultXRange, autorange: false }),
+    },
     yaxis: { showticklabels: false, title: "", showgrid: true, gridcolor: "rgba(255,255,255,0.06)", gridwidth: 1, zeroline: false, fixedrange: true, ...(savedYRange ? { range: savedYRange, autorange: false } : {}) },
     font: { color: "#ccc", family: "Apple SD Gothic Neo, Pretendard, sans-serif" },
     hoverlabel: plotlyHoverLabel(),
@@ -5576,12 +5685,12 @@ async function renderChart(preserveZoom = true) {
         else hiddenSeries.add(key);
         noteStockVisibilityChange(key);
       }
-      resetHandles();
+      requestChartCompositionUpdate();
       return false;
     });
     el.on("plotly_legenddoubleclick", () => {
       hiddenSeries.clear();
-      resetHandles();
+      requestChartCompositionUpdate();
       return false;
     });
     el.on("plotly_relayout", (eventData) => {
@@ -6270,7 +6379,7 @@ async function renderAdrChart(xRange) {
       if (!key) return true;
       if (hiddenAuxiliarySeries.has(key)) hiddenAuxiliarySeries.delete(key);
       else hiddenAuxiliarySeries.add(key);
-      resetHandles();
+      requestChartCompositionUpdate();
       return false;
     });
     el.on("plotly_legenddoubleclick", () => false);
@@ -6332,12 +6441,6 @@ async function renderAdrChart(xRange) {
     newsRows: newsRowCount,
     cacheHit: false,
     modelSource: lastAuxiliaryChartModelSource,
-  });
-}
-
-function syncButtons() {
-  document.querySelectorAll(".range-btn").forEach((btn) => {
-    btn.classList.toggle("is-active", Number(btn.dataset.months) === activeMonths);
   });
 }
 
@@ -6622,8 +6725,8 @@ function applyLeadingCycleLiveRows(monthlyRows) {
   const priceDates = (pricePayload.records || []).map((r) => r.date).filter(Boolean);
   if (!priceDates.length) return { updated: 0, latestDate: normalized[normalized.length - 1].date };
 
+  const latestDate = normalized[normalized.length - 1].date;
   const dense = buildDenseMacroRows(normalized, priceDates);
-  if (!dense.length) return { updated: 0, latestDate: normalized[normalized.length - 1].date };
 
   const byDate = new Map((macroRows || []).map((row) => [row.date, { ...row }]));
   priceDates.forEach((date) => {
@@ -6641,9 +6744,17 @@ function applyLeadingCycleLiveRows(monthlyRows) {
     byDate.set(date, prev);
   });
 
+  // A monthly observation is not a forecast. Remove any previously carried value
+  // after the latest ECOS observation so the line ends on the publication date.
+  byDate.forEach((row, date) => {
+    if (date <= latestDate || toNum(row.leading_cycle) === null) return;
+    row.leading_cycle = null;
+    updated += 1;
+  });
+
   macroRows = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
   if (updated > 0) markDataChanged("macro");
-  return { updated, latestDate: normalized[normalized.length - 1].date };
+  return { updated, latestDate };
 }
 
 function applyNewsSentimentLiveRows(liveRows) {
@@ -6744,18 +6855,26 @@ async function refreshLiveApiData(signal = null) {
   return { applied: [], warnings: [] };
 }
 
-async function refreshEcosMacroFromGateway(signal = null) {
+async function refreshEcosMacroFromGateway(signal = null, forceNetwork = false) {
   if (!IS_LOCAL_RUNTIME && !canUseDartGateway()) return { applied: [], warnings: [] };
-  const endpoint = IS_LOCAL_RUNTIME ? "./api/macro?refresh=1" : `${ECOS_GATEWAY_MACRO_ENDPOINT}?refresh=1`;
+  const baseEndpoint = IS_LOCAL_RUNTIME ? "./api/macro" : ECOS_GATEWAY_MACRO_ENDPOINT;
+  const endpoint = forceNetwork ? `${baseEndpoint}?refresh=1` : baseEndpoint;
   const response = await fetchWithTimeout(endpoint, {
     cache: "no-store",
     headers: IS_LOCAL_RUNTIME ? {} : { Authorization: `Bearer ${getDartGatewayAccessToken()}` },
     signal,
   }, DART_GATEWAY_REQUEST_TIMEOUT_MS);
-  const payload = await response.json().catch(() => null);
-  if (!response.ok || payload?.ok !== true) {
+  const rawPayload = await response.json().catch(() => null);
+  if (!response.ok) {
     if (response.status === 401) clearInvalidDartGatewayAccessToken();
-    throw new Error(payload?.error || `ECOS HTTP ${response.status}`);
+    throw new Error(rawPayload?.error || `ECOS HTTP ${response.status}`);
+  }
+  let payload;
+  try {
+    payload = runtimeDataContract.normalizeMacroPayload(rawPayload);
+  } catch (error) {
+    recordRuntimeError("macro-contract", error);
+    throw error;
   }
   const leading = applyLeadingCycleLiveRows(payload.leadingRows);
   const news = applyNewsSentimentLiveRows(payload.newsRows);
@@ -6772,10 +6891,17 @@ async function refreshCreditFromGateway(signal = null) {
     headers: IS_LOCAL_RUNTIME ? {} : { Authorization: `Bearer ${getDartGatewayAccessToken()}` },
     signal,
   }, DART_GATEWAY_REQUEST_TIMEOUT_MS);
-  const payload = await response.json().catch(() => null);
-  if (!response.ok || payload?.ok !== true) {
+  const rawPayload = await response.json().catch(() => null);
+  if (!response.ok) {
     if (response.status === 401) clearInvalidDartGatewayAccessToken();
-    throw new Error(payload?.error || `credit HTTP ${response.status}`);
+    throw new Error(rawPayload?.error || `credit HTTP ${response.status}`);
+  }
+  let payload;
+  try {
+    payload = runtimeDataContract.normalizeCreditPayload(rawPayload);
+  } catch (error) {
+    recordRuntimeError("credit-contract", error);
+    throw error;
   }
   const result = applyCreditLiveRows(scaleCreditRowsToExisting(payload.rows, creditRows));
   return {
@@ -6991,7 +7117,7 @@ async function loadData(forceNetwork = false, options = {}) {
   const parsed = await parseSeedBundleInWorker({ priceText, macroText, creditText, adrText, disclosureText });
   if (parsed.pricePayload?.records?.length) {
     pricePayload = mergeWithExisting
-      ? mergePricePayloadPreservingExisting(pricePayload, parsed.pricePayload)
+      ? mergePricePayloadPreferIncoming(pricePayload, parsed.pricePayload)
       : parsed.pricePayload;
     Object.assign(DISPLAY_NAMES, pricePayload.display_names || {});
     markDataChanged("price");
@@ -6999,21 +7125,21 @@ async function loadData(forceNetwork = false, options = {}) {
 
   if (parsed.macroRows?.length) {
     macroRows = mergeWithExisting
-      ? mergeRowsPreservingExisting(macroRows, parsed.macroRows)
+      ? mergeRowsPreferIncoming(macroRows, parsed.macroRows)
       : parsed.macroRows;
     markDataChanged("macro");
   }
 
   if (parsed.creditRows?.length) {
     creditRows = mergeWithExisting
-      ? normalizeCreditRows(mergeRowsPreservingExisting(creditRows, parsed.creditRows))
+      ? normalizeCreditRows(mergeRowsPreferIncoming(creditRows, parsed.creditRows))
       : normalizeCreditRows(parsed.creditRows);
     markDataChanged("credit");
   }
 
   if (parsed.adrRows?.length) {
     adrRows = mergeWithExisting
-      ? mergeRowsPreservingExisting(adrRows, parsed.adrRows)
+      ? mergeRowsPreferIncoming(adrRows, parsed.adrRows)
       : parsed.adrRows;
     markDataChanged("adr");
   }
@@ -7041,13 +7167,14 @@ async function loadData(forceNetwork = false, options = {}) {
     || parsed.adrRows?.length
   );
   if (loadedAny && ((segment === "history" && allCoreSeedsLoaded) || allUsedFullFallback)) {
-    historicalDataLoaded = true;
+    historicalDataLoaded = hasHistoricalDataCoverage();
   }
   return { segment, loadedAny, historicalDataLoaded, usedFullFallback: allUsedFullFallback };
 }
 
 async function ensureHistoricalDataLoaded(forceNetwork = false) {
-  if (historicalDataLoaded) return true;
+  if (historicalDataLoaded && hasHistoricalDataCoverage()) return true;
+  historicalDataLoaded = false;
   if (historicalDataLoadPromise) return historicalDataLoadPromise;
 
   historicalDataLoadPromise = loadData(forceNetwork, {
@@ -7127,7 +7254,7 @@ async function runRuntimeDataRefresh(msgEl, options = {}) {
     }))
     .catch((error) => ({ info: [], warnings: [`공포탐욕 불러오기 오류: ${error.message}`] }));
 
-  const ecosTask = () => refreshEcosMacroFromGateway(signal)
+  const ecosTask = () => refreshEcosMacroFromGateway(signal, forceNetwork)
     .then((result) => ({ info: result.applied || [], warnings: result.warnings || [] }))
     .catch((error) => ({ info: [], warnings: [`ECOS 지표 불러오기 오류: ${error.message}`] }));
 
@@ -7280,10 +7407,10 @@ async function boot() {
   renderCustomStockButtons();
   bindSeriesToggleBoard();
   setupStockAddPanel(msgEl);
-  syncButtons();
   setupApiSettingsPanel(msgEl);
   syncApiOptionsButton();
   renderAppVersionLabel();
+  syncChartResetToggleButton();
   syncCoMovementToggleButton();
   syncAiForecastToggleButton();
   syncMacdToggleButton();
@@ -7307,7 +7434,6 @@ async function boot() {
         await ensureHistoricalDataLoaded(true);
       } catch (_) {
         activeMonths = 120;
-        syncButtons();
         setMessage(msgEl, ["과거 데이터 로딩에 실패해 10년 범위로 시작합니다."], true);
       }
     }
@@ -7317,21 +7443,29 @@ async function boot() {
     await runMainChartRender(false);
     setStartupLoaderProgress(72, restoredLastSnapshot ? "Rendering last view" : "Rendering saved data");
 
-    appUiBindingsModule.bindRangeButtons({
-      buttons: document.querySelectorAll(".range-btn"),
+    appUiBindingsModule.bindRangeStepper({
+      stepper: document.getElementById("chartRangeStepper"),
+      expandButton: document.getElementById("rangeExpand"),
+      contractButton: document.getElementById("rangeContract"),
+      presets: RANGE_MONTH_PRESETS,
       getActiveMonths: () => activeMonths,
       setActiveMonths: (value) => { activeMonths = value; },
       clearPinnedRange: () => { pinnedXRange = null; },
-      syncButtons,
       recentDataMonths: RECENT_DATA_MONTHS,
       isHistoricalDataLoaded: () => historicalDataLoaded,
       ensureHistoricalDataLoaded,
       setMessage: (message, isError) => setMessage(msgEl, message, isError),
       saveState,
-      requestChartRender,
+      requestChartRender: (preserveZoom) => runMainChartRender(preserveZoom),
     });
 
-    document.getElementById("resetHandles").addEventListener("click", fitCurrentChartRatio);
+    document.getElementById("resetHandles").addEventListener("click", () => {
+      autoChartReset = !autoChartReset;
+      pendingAutoChartFit = false;
+      syncChartResetToggleButton();
+      saveState();
+      if (autoChartReset) fitCurrentChartRatio();
+    });
     document.getElementById("coMovementToggle").addEventListener("click", () => {
       showCoMovement = !showCoMovement;
       saveState();
@@ -7346,12 +7480,12 @@ async function boot() {
         refreshAiAnalysisForVisibleSeries().catch(() => {});
         loadAiMarketModel().catch(() => {});
       } else stopAiForecastProgress();
-      resetHandles();
+      requestChartCompositionUpdate();
     });
     document.getElementById("macdToggle").addEventListener("click", () => {
       showMacdOscillator = !showMacdOscillator;
       syncMacdToggleButton();
-      resetHandles();
+      requestChartCompositionUpdate();
     });
     if (showAiForecast) {
       startAiForecastProgress();

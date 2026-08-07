@@ -1,34 +1,99 @@
 (function initThinkStockAppUiBindings(globalScope) {
   "use strict";
 
-  function bindRangeButtons(options) {
-    const buttons = [...(options.buttons || [])];
-    buttons.forEach((button) => {
-      button.addEventListener("click", async () => {
-        const previousMonths = options.getActiveMonths();
-        const nextMonths = Number(button.dataset.months);
-        options.setActiveMonths(nextMonths);
-        options.clearPinnedRange();
-        options.syncButtons();
-        if (nextMonths > options.recentDataMonths && !options.isHistoricalDataLoaded()) {
-          buttons.forEach((item) => { item.disabled = true; });
-          options.setMessage(["과거 데이터를 불러오는 중입니다."]);
-          try {
+  function rangeLabel(months) {
+    const value = Math.max(1, Number(months) || 1);
+    return value >= 12 && value % 12 === 0 ? `${value / 12}년` : `${value}개월`;
+  }
+
+  function bindRangeStepper(options) {
+    const stepper = options.stepper;
+    const expandButton = options.expandButton;
+    const contractButton = options.contractButton;
+    const controls = [expandButton, contractButton].filter(Boolean);
+    const presets = [...new Set((options.presets || []).map(Number).filter(Number.isFinite))]
+      .sort((left, right) => left - right);
+    let busy = false;
+    let rangeChangedWhileBusy = false;
+
+    function nextMonths(direction) {
+      const current = Number(options.getActiveMonths());
+      if (direction > 0) return presets.find((months) => months > current) ?? current;
+      return [...presets].reverse().find((months) => months < current) ?? current;
+    }
+
+    function sync() {
+      const current = Number(options.getActiveMonths());
+      const expandMonths = nextMonths(1);
+      const contractMonths = nextMonths(-1);
+      if (stepper) {
+        stepper.dataset.months = String(current);
+        stepper.title = `현재 차트 범위: ${rangeLabel(current)}`;
+      }
+      if (expandButton) {
+        expandButton.disabled = expandMonths === current;
+        expandButton.dataset.targetMonths = String(expandMonths);
+        expandButton.title = expandMonths === current
+          ? `최대 ${rangeLabel(presets.at(-1))} 범위입니다.`
+          : `과거 범위 확대: ${rangeLabel(expandMonths)}`;
+        expandButton.setAttribute?.("aria-label", expandButton.title);
+      }
+      if (contractButton) {
+        contractButton.disabled = contractMonths === current;
+        contractButton.dataset.targetMonths = String(contractMonths);
+        contractButton.title = contractMonths === current
+          ? `최소 ${rangeLabel(presets[0])} 범위입니다.`
+          : `차트 범위 축소: ${rangeLabel(contractMonths)}`;
+        contractButton.setAttribute?.("aria-label", contractButton.title);
+      }
+    }
+
+    async function move(direction) {
+      const previousMonths = Number(options.getActiveMonths());
+      const targetMonths = nextMonths(direction);
+      if (!Number.isFinite(targetMonths) || targetMonths === previousMonths) {
+        sync();
+        return;
+      }
+
+      options.setActiveMonths(targetMonths);
+      options.clearPinnedRange();
+      sync();
+      if (busy) {
+        rangeChangedWhileBusy = true;
+        return;
+      }
+
+      const fallbackMonths = previousMonths;
+      busy = true;
+      try {
+        while (true) {
+          const requestedMonths = Number(options.getActiveMonths());
+          if (requestedMonths > options.recentDataMonths && !options.isHistoricalDataLoaded()) {
+            options.setMessage(["과거 데이터를 불러오는 중입니다."]);
             await options.ensureHistoricalDataLoaded();
             options.setMessage([]);
-          } catch (error) {
-            options.setActiveMonths(previousMonths);
-            options.syncButtons();
-            options.setMessage([`과거 데이터 로딩 오류: ${error.message}`], true);
-            return;
-          } finally {
-            buttons.forEach((item) => { item.disabled = false; });
           }
+          const renderingMonths = Number(options.getActiveMonths());
+          rangeChangedWhileBusy = false;
+          options.saveState();
+          await options.requestChartRender(false);
+          if (!rangeChangedWhileBusy && Number(options.getActiveMonths()) === renderingMonths) break;
         }
-        options.saveState();
-        options.requestChartRender(false);
-      });
-    });
+      } catch (error) {
+        options.setActiveMonths(fallbackMonths);
+        options.setMessage([`과거 데이터 로딩 오류: ${error.message}`], true);
+      } finally {
+        busy = false;
+        rangeChangedWhileBusy = false;
+        sync();
+      }
+    }
+
+    expandButton?.addEventListener("click", () => move(1));
+    contractButton?.addEventListener("click", () => move(-1));
+    sync();
+    return Object.freeze({ move, sync });
   }
 
   function bindHoverToggle(options) {
@@ -112,6 +177,7 @@
     bindDisclosureToggle,
     bindHoverToggle,
     bindManualRefresh,
-    bindRangeButtons,
+    bindRangeStepper,
+    rangeLabel,
   });
 }(typeof self !== "undefined" ? self : globalThis));

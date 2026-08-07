@@ -19,13 +19,12 @@ def densify_macro(macro: pd.DataFrame, price_index: pd.DatetimeIndex) -> pd.Data
             continue
         source_start = pd.Timestamp(valid.index.min()).normalize()
         source_end = pd.Timestamp(valid.index.max()).normalize()
-        # Monthly statistics use the first day as their timestamp. If that day
-        # is a holiday, keep that observation through the same month.
         effective_end = source_end
-        if source_end.is_month_start:
+        if source_end.is_month_start and column != "leading_cycle":
             effective_end = (source_end + pd.offsets.MonthEnd(0)).normalize()
-        elif column == "news_sentiment" and source_end not in target_index:
-            # Weekend news sentiment becomes actionable on the next market day.
+        elif column in {"leading_cycle", "news_sentiment"} and source_end not in target_index:
+            # A non-trading-day observation becomes visible on the next market day,
+            # but leading_cycle must not extend beyond that single effective date.
             following_market_days = target_index[target_index > source_end]
             if not following_market_days.empty:
                 effective_end = pd.Timestamp(following_market_days[0]).normalize()

@@ -38,6 +38,26 @@ test("combines compatible trace and viewport updates into one Plotly call", asyn
   assert.deepEqual(calls[0][4], [0]);
   assert.deepEqual(calls[0][2].name, [""]);
   assert.deepEqual(calls[0][2].line, [null]);
+  assert.equal(calls[0][3]["xaxis.tickmode"], "auto");
+  assert.equal(calls[0][3]["xaxis.tickvals"], null);
+});
+
+
+test("carries explicit long-range date ticks through a partial update", () => {
+  const payload = renderer.relayoutPayload({
+    hovermode: false,
+    xaxis: {
+      range: ["1996-12-11", "2026-08-06"],
+      tickmode: "array",
+      tickvals: ["1996-12-11", "2000-01-01"],
+      ticktext: ["1996", "2000"],
+    },
+    yaxis: {},
+  });
+
+  assert.equal(payload["xaxis.tickmode"], "array");
+  assert.deepEqual(payload["xaxis.tickvals"], ["1996-12-11", "2000-01-01"]);
+  assert.deepEqual(payload["xaxis.ticktext"], ["1996", "2000"]);
 });
 
 

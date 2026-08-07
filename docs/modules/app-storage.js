@@ -1,4 +1,32 @@
 (function initThinkStockAppStorage(globalScope) {
+  function createJsonStore(scope = globalScope, options = {}) {
+    const storage = options.storage || scope.localStorage;
+    const key = String(options.key || "");
+    const sanitize = typeof options.sanitize === "function" ? options.sanitize : (value) => value;
+    if (!key) throw new Error("JSON storage key is required");
+
+    function read(fallback = null) {
+      try {
+        const raw = storage?.getItem(key);
+        return raw ? sanitize(JSON.parse(raw)) : fallback;
+      } catch (_) {
+        return fallback;
+      }
+    }
+
+    function write(value) {
+      const sanitized = sanitize(value);
+      storage?.setItem(key, JSON.stringify(sanitized));
+      return sanitized;
+    }
+
+    function remove() {
+      try { storage?.removeItem(key); } catch (_) {}
+    }
+
+    return Object.freeze({ read, write, remove, key });
+  }
+
   function createApiSettingsStore(scope = globalScope, options = {}) {
     const defaults = Object.freeze({ ...(options.defaults || {}) });
     const localKey = String(options.localKey || "thinkstock-api-v1");
@@ -244,6 +272,7 @@
   globalScope.ThinkStockAppStorage = Object.freeze({
     createApiSettingsStore,
     createIndexedCacheStore,
+    createJsonStore,
     planPruneKeys,
   });
 }(typeof self !== "undefined" ? self : globalThis));

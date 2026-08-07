@@ -106,6 +106,8 @@ test("records samples and uses percentile frame timing", () => {
     p95AppStartup: 0,
     slowOperations: 0,
     latestSlowOperation: "",
+    recentErrors: 0,
+    latestError: "",
   });
 });
 
@@ -182,7 +184,26 @@ test("records bounded browser long tasks with attribution", () => {
     p95AppStartup: 0,
     slowOperations: 0,
     latestSlowOperation: "",
+    recentErrors: 0,
+    latestError: "",
   });
+});
+
+test("keeps a bounded local error trail", () => {
+  const harness = createScope();
+  const monitor = createPerformanceMonitor(harness.scope, { errorSampleLimit: 2 });
+  const api = monitor.init();
+
+  monitor.recordError("macro", new Error("first"));
+  monitor.recordError("credit", new Error("second"));
+  monitor.recordError("price", new Error("third"), { ticker: "005930.KS" });
+
+  assert.deepEqual(api.getRecentErrors().map((item) => item.source), ["credit", "price"]);
+  assert.equal(api.getRecentErrors()[1].ticker, "005930.KS");
+  assert.equal(api.summary().recentErrors, 2);
+  assert.equal(api.summary().latestError, "price");
+  api.clear();
+  assert.deepEqual(api.getRecentErrors(), []);
 });
 
 

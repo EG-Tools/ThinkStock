@@ -9,10 +9,12 @@
     const slowOperationMs = Number(options.slowOperationMs) || 80;
     const slowSampleLimit = Number(options.slowSampleLimit) || 30;
     const diagnosticSampleLimit = Number(options.diagnosticSampleLimit) || 120;
+    const errorSampleLimit = Number(options.errorSampleLimit) || 30;
     const autoObserveLongTasks = options.autoObserveLongTasks !== false;
     let samples = [];
     let diagnosticSamples = [];
     let slowSamples = [];
+    let errorSamples = [];
     let enabled = false;
     let frameRafId = 0;
     let lastFrameAt = 0;
@@ -112,6 +114,7 @@
       samples = [];
       diagnosticSamples = [];
       slowSamples = [];
+      errorSamples = [];
       lastFrameAt = 0;
       frameStats = { frames: 0, longFrames: 0, maxFrameGap: 0 };
       frameGaps = [];
@@ -166,7 +169,23 @@
         p95AppStartup: percentileDuration(startupSamples, 0.95),
         slowOperations: slowSamples.length,
         latestSlowOperation: slowSamples[slowSamples.length - 1]?.label || "",
+        recentErrors: errorSamples.length,
+        latestError: errorSamples[errorSamples.length - 1]?.source || "",
       };
+    }
+
+    function recordError(source, error, meta = {}) {
+      const sample = {
+        source: String(source || "unknown"),
+        message: String(error?.message || error || "Unknown error").slice(0, 300),
+        at: new Date().toISOString(),
+        ...meta,
+      };
+      errorSamples.push(sample);
+      if (errorSamples.length > errorSampleLimit) {
+        errorSamples.splice(0, errorSamples.length - errorSampleLimit);
+      }
+      return sample;
     }
 
     const api = Object.freeze({
@@ -176,6 +195,8 @@
       getLatestOperations: () => ({ ...latestOperations }),
       getSlowOperations: () => [...slowSamples],
       getLongTasks: () => [...longTasks],
+      getRecentErrors: () => [...errorSamples],
+      recordError,
       clear,
       summary,
     });
@@ -234,6 +255,7 @@
       isEnabled: () => enabled,
       startSample,
       recordSample,
+      recordError,
       startFrameMonitor,
       stopFrameMonitor,
       startLongTaskMonitor,

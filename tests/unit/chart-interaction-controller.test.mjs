@@ -48,3 +48,32 @@ test("coalesces pointer moves and reuses geometry within the cache window", () =
   assert.equal(frames[2].runHitTest, true);
   assert.equal(geometryReads, 2);
 });
+
+test("pointer drag uses the latest coalesced sample and cleans up on cancel", () => {
+  const listeners = new Map();
+  const target = {
+    addEventListener: (type, listener) => listeners.set(type, listener),
+    removeEventListener: (type, listener) => {
+      if (listeners.get(type) === listener) listeners.delete(type);
+    },
+  };
+  const moves = [];
+  const endings = [];
+  const session = controllerModule.bindPointerDrag(target, {
+    pointerId: 9,
+    onMove: (clientY) => moves.push(clientY),
+    onEnd: (clientY, event, cancelled) => endings.push({ clientY, cancelled }),
+  });
+
+  listeners.get("pointermove")({
+    pointerId: 9,
+    preventDefault() {},
+    getCoalescedEvents: () => [{ clientY: 10 }, { clientY: 24 }],
+  });
+  listeners.get("pointercancel")({ pointerId: 9, clientY: 30 });
+
+  assert.deepEqual(moves, [24]);
+  assert.deepEqual(endings, [{ clientY: 24, cancelled: true }]);
+  assert.equal(session.isActive(), false);
+  assert.equal(listeners.size, 0);
+});

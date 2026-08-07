@@ -80,6 +80,18 @@ test("API settings fall back to session storage when persistent data is invalid"
   assert.deepEqual({ ...store.load() }, { token: "fallback", enabled: false });
 });
 
+test("JSON storage returns a fallback for damaged data and centralizes removal", () => {
+  const storage = createStorage({ state: "not-json" });
+  const module = loadModule({ localStorage: storage });
+  const store = module.createJsonStore({ localStorage: storage }, { key: "state" });
+
+  assert.deepEqual({ ...store.read({ safe: true }) }, { safe: true });
+  assert.deepEqual({ ...store.write({ active: 1 }) }, { active: 1 });
+  assert.deepEqual(JSON.parse(storage.values.get("state")), { active: 1 });
+  store.remove();
+  assert.equal(storage.values.has("state"), false);
+});
+
 test("cache pruning removes idle records before least-recent overflow", () => {
   const module = loadModule();
   const deleteKeys = module.planPruneKeys([

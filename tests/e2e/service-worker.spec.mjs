@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 
 test("service worker registers and precaches the offline shell", async ({ context, page }) => {
   await context.route("https://**/*", (route) => route.abort("internetdisconnected"));
-  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await page.goto("/?e2e=1&sw=1", { waitUntil: "domcontentloaded" });
   await page.evaluate(() => navigator.serviceWorker.ready.then(() => true));
   if (!(await page.evaluate(() => Boolean(navigator.serviceWorker.controller)))) {
     await page.reload({ waitUntil: "domcontentloaded" });

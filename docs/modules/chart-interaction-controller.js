@@ -1,6 +1,54 @@
 (function initChartInteractionController(globalScope) {
   "use strict";
 
+  function latestPointerSample(event) {
+    const samples = typeof event?.getCoalescedEvents === "function"
+      ? event.getCoalescedEvents()
+      : null;
+    return samples?.length ? samples[samples.length - 1] : event;
+  }
+
+  function bindPointerDrag(target, options = {}) {
+    if (!target?.addEventListener || !target?.removeEventListener) {
+      throw new TypeError("pointer drag target is required");
+    }
+    const pointerId = options.pointerId;
+    const onMove = typeof options.onMove === "function" ? options.onMove : () => {};
+    const onEnd = typeof options.onEnd === "function" ? options.onEnd : () => {};
+    let lastClientY = Number.NaN;
+    let active = true;
+
+    const cleanup = () => {
+      if (!active) return;
+      active = false;
+      target.removeEventListener("pointermove", pointerMove);
+      target.removeEventListener("pointerup", pointerEnd);
+      target.removeEventListener("pointercancel", pointerCancel);
+    };
+    const pointerMove = (event) => {
+      if (event.pointerId !== pointerId) return;
+      event.preventDefault?.();
+      const sample = latestPointerSample(event);
+      lastClientY = Number(sample?.clientY);
+      onMove(lastClientY, sample);
+    };
+    const pointerEnd = (event) => {
+      if (event.pointerId !== pointerId) return;
+      cleanup();
+      onEnd(Number(event.clientY), event, false);
+    };
+    const pointerCancel = (event) => {
+      if (event.pointerId !== pointerId) return;
+      cleanup();
+      onEnd(Number.isFinite(lastClientY) ? lastClientY : Number(event.clientY), event, true);
+    };
+
+    target.addEventListener("pointermove", pointerMove, { passive: false });
+    target.addEventListener("pointerup", pointerEnd);
+    target.addEventListener("pointercancel", pointerCancel);
+    return Object.freeze({ cancel: cleanup, isActive: () => active });
+  }
+
   function createPointerFrameController(scope = globalScope, options = {}) {
     const requestFrame = options.requestFrame || scope.requestAnimationFrame?.bind(scope);
     const cancelFrame = options.cancelFrame || scope.cancelAnimationFrame?.bind(scope);
@@ -87,6 +135,8 @@
   }
 
   globalScope.ThinkStockChartInteractionController = Object.freeze({
+    bindPointerDrag,
     createPointerFrameController,
+    latestPointerSample,
   });
 }(typeof self !== "undefined" ? self : globalThis));

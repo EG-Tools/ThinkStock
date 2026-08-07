@@ -1,8 +1,10 @@
 import "../docs/modules/data-payload.js";
 import "../shared/market-calendar.mjs";
+import "../shared/runtime-data-contract.mjs";
 import "../docs/modules/market-data.js";
 import "../docs/modules/chart-interaction-math.js";
 import "../docs/modules/chart-interaction-controller.js";
+import "../docs/modules/chart-visual-frame.js";
 import "../docs/modules/ticker-price-runtime.js";
 import "../docs/modules/chart-event-layer.js";
 import "../docs/modules/chart-adjustments.js";

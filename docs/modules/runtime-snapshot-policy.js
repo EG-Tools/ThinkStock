@@ -66,6 +66,39 @@
     ].join("::");
   }
 
+  function rowsCoverMonths(rows, months, valueColumns = []) {
+    const columns = (Array.isArray(valueColumns) ? valueColumns : [])
+      .map(String)
+      .filter(Boolean);
+    const dates = (Array.isArray(rows) ? rows : [])
+      .filter((row) => (
+        !columns.length
+        || columns.some((column) => {
+          const value = row?.[column];
+          return value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value));
+        })
+      ))
+      .map((row) => String(row?.date || "").slice(0, 10))
+      .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date));
+    if (dates.length < 2) return false;
+    const first = dates.reduce((minimum, date) => (date < minimum ? date : minimum));
+    const last = dates.reduce((maximum, date) => (date > maximum ? date : maximum));
+    const cutoff = new Date(`${last}T00:00:00Z`);
+    const originalDay = cutoff.getUTCDate();
+    cutoff.setUTCMonth(cutoff.getUTCMonth() - Math.max(1, Number(months) || 1));
+    if (cutoff.getUTCDate() !== originalDay) cutoff.setUTCDate(0);
+    return first < cutoff.toISOString().slice(0, 10);
+  }
+
+  function hasCoreHistoricalCoverage(components, months) {
+    const source = components && typeof components === "object" ? components : {};
+    return (
+      rowsCoverMonths(source.price, months, ["^KS11", "^KQ11"])
+      && rowsCoverMonths(source.macro, months, ["leading_cycle"])
+      && rowsCoverMonths(source.credit, months, ["customer_deposit", "kospi_credit", "kosdaq_credit"])
+    );
+  }
+
   function isSnapshotUsable(snapshot, options = {}) {
     if (!snapshot || typeof snapshot !== "object") return false;
     if (snapshot.version !== options.schemaVersion) return false;
@@ -103,6 +136,8 @@
     buildCompactSnapshot,
     buildSignature,
     createRevisionTracker,
+    hasCoreHistoricalCoverage,
     isSnapshotUsable,
+    rowsCoverMonths,
   });
 }(typeof self !== "undefined" ? self : globalThis));

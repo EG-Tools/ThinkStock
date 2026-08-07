@@ -64,6 +64,7 @@
         performance: performanceApi?.summary?.() || {},
         latestOperations: performanceApi?.getLatestOperations?.() || {},
         slowOperations: (performanceApi?.getSlowOperations?.() || []).slice(-5),
+        recentErrors: (performanceApi?.getRecentErrors?.() || []).slice(-5),
         storage: await readStorageState(),
       };
       const history = readHistory().filter((item) => item?.id !== report.id);
@@ -165,6 +166,8 @@
           `이전 ${comparison.previous.appVersion || "-"} · ${comparison.previous.sessions}회 · 부팅 느린 ${formatMilliseconds(comparison.previous.startupP95)}`,
         );
       }
+      const latestError = report.recentErrors?.at(-1);
+      if (latestError) lines.push(`최근 오류 ${latestError.source}: ${latestError.message}`);
       return lines;
     }
 
