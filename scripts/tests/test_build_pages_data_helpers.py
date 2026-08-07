@@ -59,6 +59,27 @@ class BuildPagesDataHelperTests(unittest.TestCase):
         self.assertEqual(list(leading.columns), ["leading_cycle"])
         self.assertEqual(float(leading.loc[pd.Timestamp("2026-05-01"), "leading_cycle"]), 104.8)
 
+    def test_official_leading_cycle_replaces_cached_interpolated_tail(self) -> None:
+        cached = pd.DataFrame(
+            {
+                "leading_cycle": [102.9, 103.056601, 103.1],
+                "news_sentiment": [100.0, 101.0, 102.0],
+            },
+            index=pd.to_datetime(["2026-05-01", "2026-05-29", "2026-07-01"]),
+        )
+        official = pd.DataFrame(
+            {"leading_cycle": [104.8, 105.7]},
+            index=pd.to_datetime(["2026-05-01", "2026-06-01"]),
+        )
+
+        merged = build_pages_data.merge_macro_with_leading_cycle(cached, official)
+
+        self.assertEqual(float(merged.loc[pd.Timestamp("2026-05-01"), "leading_cycle"]), 104.8)
+        self.assertTrue(pd.isna(merged.loc[pd.Timestamp("2026-05-29"), "leading_cycle"]))
+        self.assertEqual(float(merged.loc[pd.Timestamp("2026-06-01"), "leading_cycle"]), 105.7)
+        self.assertTrue(pd.isna(merged.loc[pd.Timestamp("2026-07-01"), "leading_cycle"]))
+        self.assertEqual(float(merged.loc[pd.Timestamp("2026-07-01"), "news_sentiment"]), 102.0)
+
     def test_dart_corp_payload_contains_only_compact_code_mapping(self) -> None:
         payload = build_dart_corp_code_payload({
             "005930": {"corp_code": "00126380", "corp_name": "Samsung Electronics"},

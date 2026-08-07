@@ -96,7 +96,6 @@ from provider_sources import (
     fetch_ecos_news_sentiment as fetch_ecos_news_sentiment_source,
     fetch_kosis_leading_cycle as fetch_kosis_leading_cycle_source,
     fetch_krx_universe as fetch_krx_universe_source,
-    fetch_oecd_leading_cycle_from_fred as fetch_oecd_leading_cycle_from_fred_source,
     normalize_krx_universe_rows as normalize_krx_universe_rows_source,
     read_env_key,
     resolve_api_key,
@@ -151,8 +150,6 @@ ECOS_NEWS_ITEM_CODE = "A001"
 ECOS_NEWS_START = "20050101"
 KOSIS_LEADING_URL = "https://kosis.kr/openapi/Param/statisticsParameterData.do"
 KOSIS_START = "199601"
-OECD_FRED_SERIES_ID = "KORLOLITOAASTSAM"  # OECD CLI (AA, STSA) mirrored by FRED
-OECD_FRED_URL = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={OECD_FRED_SERIES_ID}"
 LOCAL_ENV_FILE = ROOT / ".env.local"
 KOFIA_CREDIT_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getGrantingOfCreditBalanceInfo"
 KOFIA_MARKET_FUNDS_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getSecuritiesMarketTotalCapitalInfo"
@@ -178,7 +175,6 @@ SOURCE_STALE_AFTER_DAYS = {
     "ecos_leading_cycle": 150,
     "ecos_news_sentiment": 14,
     "kosis_leading_cycle": 150,
-    "oecd_leading_cycle": 150,
     "kofia_credit": 14,
     "freesis_credit": 14,
     "adr": 10,
@@ -350,59 +346,32 @@ def merge_macro_frame(macro: pd.DataFrame, incoming: pd.DataFrame) -> pd.DataFra
 
 
 def merge_macro_with_leading_cycle(macro: pd.DataFrame, leading_cycle: pd.DataFrame) -> pd.DataFrame:
-    return merge_macro_frame(macro, leading_cycle)
+    if leading_cycle.empty or "leading_cycle" not in leading_cycle.columns:
+        return macro
 
-
-def fetch_oecd_leading_cycle_from_fred() -> pd.DataFrame:
-    return fetch_oecd_leading_cycle_from_fred_source(
-        http_client(),
-        OECD_FRED_URL,
-        OECD_FRED_SERIES_ID,
-    )
-
-
-def apply_recent_oecd_tail(
-    macro: pd.DataFrame,
-    oecd: pd.DataFrame,
-    months: int = 2,
-    after_month: pd.Timestamp | None = None,
-) -> tuple[pd.DataFrame, int]:
-    if oecd.empty or "leading_cycle" not in oecd.columns:
-        return macro, 0
-
-    series = pd.to_numeric(oecd["leading_cycle"], errors="coerce").dropna()
-    if after_month is not None:
-        cutoff = pd.Timestamp(after_month).normalize()
-        series = series[series.index > cutoff]
-
-    tail = series.tail(months)
-    if tail.empty:
-        return macro, 0
+    official = pd.to_numeric(leading_cycle["leading_cycle"], errors="coerce").dropna()
+    if official.empty:
+        return macro
 
     if macro.empty:
-        merged = tail.to_frame(name="leading_cycle")
+        merged = official.to_frame(name="leading_cycle")
         merged.index.name = "date"
-        return merged, len(tail)
+        return merged
 
     merged = macro.copy()
     if "leading_cycle" not in merged.columns:
         merged["leading_cycle"] = pd.NA
 
-    # Fill only the months after latest ECOS month (or latest 2 if ECOS missing).
-    applied = 0
-    for month_start, value in tail.items():
-        month_end = (month_start + pd.offsets.MonthEnd(1)).normalize()
-        mask = (merged.index >= month_start) & (merged.index <= month_end)
-        if mask.any():
-            merged.loc[mask, "leading_cycle"] = float(value)
-            applied += 1
-        else:
-            merged.loc[month_start, "leading_cycle"] = float(value)
-            applied += 1
+    # The cached payload is daily/interpolated output, not raw monthly input.
+    # Remove its overlap and tail before rebuilding from official observations.
+    refresh_start = pd.Timestamp(official.index.min()).normalize()
+    merged.loc[merged.index >= refresh_start, "leading_cycle"] = pd.NA
+    for idx, value in official.items():
+        merged.loc[pd.Timestamp(idx).normalize(), "leading_cycle"] = float(value)
 
-    merged = merged.sort_index()
+    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
     merged.index.name = "date"
-    return merged, applied
+    return merged
 
 
 
@@ -1387,23 +1356,6 @@ def main() -> None:
             )
     else:
         build_report["events"].append("ECOS_API_KEY is not configured.")
-
-    oecd_leading_cycle = pipeline.run(
-        "oecd_leading_cycle",
-        fetch_oecd_leading_cycle_from_fred,
-        frame_summary,
-    )
-    if not oecd_leading_cycle.empty:
-        macro_source, applied_months = apply_recent_oecd_tail(
-            macro_source,
-            oecd_leading_cycle,
-            months=2,
-            after_month=latest_official_month,
-        )
-        if applied_months:
-            latest = oecd_leading_cycle.index.max().strftime("%Y-%m")
-            print(f"Applied OECD leading_cycle tail months: {applied_months} (latest={latest})")
-            build_report["events"].append(f"Applied OECD leading_cycle tail months: {applied_months} latest={latest}")
 
     historical_credit_seed = extract_credit_seed_from_macro(macro_source)
     public_macro_source = extract_public_macro_source(macro_source)
