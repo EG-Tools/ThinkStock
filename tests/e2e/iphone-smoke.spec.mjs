@@ -52,6 +52,24 @@ async function waitForBoundingBox(locator) {
   return box;
 }
 
+async function visibleTracePixelSpan(page, seriesKey) {
+  return page.locator("#chart").evaluate((element, targetSeries) => {
+    const trace = (element.data || []).find((item) => item?.meta?.seriesKey === targetSeries);
+    const xAxis = element._fullLayout?.xaxis;
+    const yAxis = element._fullLayout?.yaxis;
+    if (!trace || !xAxis || !yAxis || typeof yAxis.d2p !== "function") return 0;
+    const range = (xAxis.range || []).map(Date.parse);
+    const pixels = (trace.x || []).flatMap((date, index) => {
+      const time = Date.parse(date);
+      const value = Number(trace.y?.[index]);
+      return time >= range[0] && time <= range[1] && Number.isFinite(value)
+        ? [yAxis.d2p(value)]
+        : [];
+    });
+    return pixels.length ? Math.max(...pixels) - Math.min(...pixels) : 0;
+  }, seriesKey);
+}
+
 function columnar(series, dates, columns) {
   return {
     generated_at: "2026-07-15T00:00:00Z",
@@ -591,14 +609,18 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   expect(rangeControlLayout?.expandTop).toBeGreaterThanOrEqual(rangeControlLayout?.contractBottom || 0);
   expect(rangeControlLayout?.centerSpread).toBeLessThanOrEqual(1);
   expect(rangeControlLayout?.statusRight).toBeLessThanOrEqual(rangeControlLayout?.refreshLeft || 0);
-  const [chartBox, resetBox, refreshBox] = await Promise.all([
+  const [chartBox, resetBox, refreshBox, historySliderBox] = await Promise.all([
     page.locator("#chart").boundingBox(),
     page.locator("#resetHandles").boundingBox(),
     page.locator("#refreshData").boundingBox(),
+    page.locator("#chartHistorySlider").boundingBox(),
   ]);
   expect(chartBox).not.toBeNull();
   expect(resetBox).not.toBeNull();
   expect(refreshBox).not.toBeNull();
+  expect(historySliderBox).not.toBeNull();
+  const compactViewport = await page.evaluate(() => window.innerWidth <= 820);
+  expect(historySliderBox.height).toBeGreaterThanOrEqual(compactViewport ? 44 : 30);
   expect(resetBox.x).toBeGreaterThanOrEqual(chartBox.x);
   expect(resetBox.y).toBeGreaterThanOrEqual(chartBox.y);
   expect(resetBox.x + resetBox.width).toBeLessThan(chartBox.x + chartBox.width);
@@ -633,7 +655,7 @@ test("bundled recent data boots through the chart worker", async ({ page }) => {
   expect(pageErrors).toEqual([]);
 });
 
-test("auto chart reset ignores saved series transforms", async ({ page }) => {
+test("auto chart reset ignores saved transforms and fits live scale and position edits", async ({ page }) => {
   await stubExternalRefreshes(page);
   await page.addInitScript(() => {
     localStorage.setItem("thinkstock-v5", JSON.stringify({
@@ -706,6 +728,7 @@ test("auto chart reset ignores saved series transforms", async ({ page }) => {
   const autoResetXRange = await page.locator("#chart").evaluate((element) => (
     [...element._fullLayout.xaxis.range]
   ));
+  const scaleSpanBefore = await visibleTracePixelSpan(page, "^KS11");
   const autoResetScaleHandle = page.locator('.y-handle-right[data-series-key="^KS11"]');
   const autoResetHandleBox = await waitForBoundingBox(autoResetScaleHandle);
   await page.mouse.move(
@@ -715,19 +738,76 @@ test("auto chart reset ignores saved series transforms", async ({ page }) => {
   await page.mouse.down();
   await page.mouse.move(
     autoResetHandleBox.x + autoResetHandleBox.width / 2,
-    autoResetHandleBox.y + autoResetHandleBox.height / 2 - 35,
+    autoResetHandleBox.y + autoResetHandleBox.height / 2 + 35,
   );
   await expect.poll(() => page.evaluate(() => (
     Object.keys(window.ThinkStockE2E.getSeriesTransforms().scales).length
   ))).toBeGreaterThan(0);
+  const scaleSpanDuringDrag = await visibleTracePixelSpan(page, "^KS11");
   await page.mouse.up();
+  await expect.poll(() => page.evaluate(() => (
+    Object.keys(window.ThinkStockE2E.getSeriesTransforms().scales).length
+  ))).toBeGreaterThan(0);
+  await expect.poll(() => visibleTracePixelSpan(page, "^KS11")).toBeLessThan(scaleSpanBefore * 0.9);
+  await expect.poll(async () => Math.abs(
+    (await visibleTracePixelSpan(page, "^KS11")) - scaleSpanDuringDrag,
+  )).toBeLessThan(2);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const [start, end] = element._fullLayout.xaxis.range.map(Date.parse);
+    const yRange = element._fullLayout.yaxis.range.map(Number);
+    const values = (element.data || []).flatMap((trace) => {
+      if (!trace?.meta?.seriesKey || trace.visible === "legendonly") return [];
+      return (trace.x || []).flatMap((date, index) => {
+        const time = Date.parse(date);
+        const value = Number(trace.y?.[index]);
+        return time >= start && time <= end && Number.isFinite(value) ? [value] : [];
+      });
+    });
+    return values.length > 0
+      && yRange[0] < Math.min(...values)
+      && yRange[1] > Math.max(...values);
+  })).toBe(true);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    [...element._fullLayout.xaxis.range]
+  ))).toEqual(autoResetXRange);
+  const autoResetOffsetHandle = page.locator('.y-handle-left[data-series-key="^KS11"]');
+  const autoResetOffsetHandleBox = await waitForBoundingBox(autoResetOffsetHandle);
+  await page.mouse.move(
+    autoResetOffsetHandleBox.x + autoResetOffsetHandleBox.width / 2,
+    autoResetOffsetHandleBox.y + autoResetOffsetHandleBox.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    autoResetOffsetHandleBox.x + autoResetOffsetHandleBox.width / 2,
+    autoResetOffsetHandleBox.y + autoResetOffsetHandleBox.height / 2 + 35,
+  );
+  await page.mouse.up();
+  await expect.poll(() => page.evaluate(() => (
+    Object.keys(window.ThinkStockE2E.getSeriesTransforms().offsets).length
+  ))).toBeGreaterThan(0);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const [start, end] = element._fullLayout.xaxis.range.map(Date.parse);
+    const yRange = element._fullLayout.yaxis.range.map(Number);
+    const values = (element.data || []).flatMap((trace) => {
+      if (!trace?.meta?.seriesKey || trace.visible === "legendonly") return [];
+      return (trace.x || []).flatMap((date, index) => {
+        const time = Date.parse(date);
+        const value = Number(trace.y?.[index]);
+        return time >= start && time <= end && Number.isFinite(value) ? [value] : [];
+      });
+    });
+    return values.length > 0
+      && yRange[0] < Math.min(...values)
+      && yRange[1] > Math.max(...values);
+  })).toBe(true);
+  await page.locator("#resetHandles").click();
+  await expect(page.locator("#resetHandles")).toHaveAttribute("aria-pressed", "false");
+  await page.locator("#resetHandles").click();
+  await expect(page.locator("#resetHandles")).toHaveAttribute("aria-pressed", "true");
   await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getSeriesTransforms())).toEqual({
     offsets: {},
     scales: {},
   });
-  await expect.poll(() => page.locator("#chart").evaluate((element) => (
-    [...element._fullLayout.xaxis.range]
-  ))).toEqual(autoResetXRange);
 });
 
 test("locked chart frame stays fixed and scale handles follow the visible endpoint", async ({ page }) => {

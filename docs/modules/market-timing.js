@@ -367,13 +367,35 @@
         && result.priceDrawdown60 !== null && result.priceDrawdown60 <= broadDrawdownLimit;
       const deepCorrection = result.price20d !== null && result.price20d <= deepReturnLimit
         && result.priceDrawdown60 !== null && result.priceDrawdown60 <= deepDrawdownLimit;
+      // Defensive or low-beta stocks can form a useful bottom without reaching
+      // broad-market capitulation. This path still requires weak market breadth.
+      const stockMediumCorrection = isIndividualStock && (
+        (result.price20d !== null && result.price20d <= -8
+          && result.priceDrawdown60 !== null && result.priceDrawdown60 <= -15
+          && result.adrMin !== null && result.adrMin <= 80)
+        || (result.price20d !== null && result.price20d <= -5
+          && result.price60d !== null && result.price60d <= -8
+          && result.priceDrawdown120 !== null && result.priceDrawdown120 <= -14
+          && result.adrMin !== null && result.adrMin <= 90)
+      );
+      const stockRelativeWashout = isIndividualStock
+        && result.price20d !== null && result.price20d <= -1
+        && result.priceDrawdown120 !== null && result.priceDrawdown120 <= -5
+        && result.relative20d !== null && result.relative20d <= -10
+        && result.adrMin !== null && result.adrMin <= 75
+        && (result.marketCorrelation60 === null
+          || result.marketCorrelation60 <= 0.35
+          || result.marketBeta60 === null
+          || result.marketBeta60 <= 0.35)
+        && result.oscillator !== null && result.oscillator < 0;
       const broadWashoutReasons = [
         breadthWashedOut ? "시장폭 과매도" : "",
         creditReset ? "신용 정리" : "",
       ].filter(Boolean);
       const strongBuyArm = priceCapitulation && stressReasons.length >= 2;
       const moderateSupportCount = isKosdaqSeries ? 2 : 1;
-      const moderateBuyArm = shockCapitulation || (moderateCapitulation
+      const moderateBuyArm = shockCapitulation || stockMediumCorrection || stockRelativeWashout
+        || (moderateCapitulation
         && moderateStressReasons.length >= moderateSupportCount);
       const broadBuyArm = broadCorrection && creditReset
         && (breadthWashedOut || deepCorrection);
@@ -407,9 +429,11 @@
             lowPrice: result.price,
             signalSlot: null,
             signalLocked: false,
-            confirmationDays: strongBuyArm ? 3 : 5,
+            confirmationDays: strongBuyArm ? 3
+              : ((stockMediumCorrection || stockRelativeWashout) ? 6 : 5),
             strong: strongBuyArm,
             shock: shockCapitulation,
+            relativeWashout: stockRelativeWashout,
             broad: broadBuyArm && !strongBuyArm && !moderateBuyArm,
             setupReasons: strongBuyArm
               ? [shortCapitulation ? "20일 급락" : "장기 급락", ...stressReasons]
@@ -417,6 +441,12 @@
                 ? ["중간급 조정", ...moderateStressReasons]
                 : ["복합 과매도", ...broadWashoutReasons],
           };
+          if (stockMediumCorrection) {
+            buyEpisode.setupReasons.unshift("\uAC1C\uBCC4\uC885\uBAA9 \uC911\uAE30 \uC870\uC815");
+          }
+          if (stockRelativeWashout) {
+            buyEpisode.setupReasons.unshift("\uC800\uBCA0\uD0C0 \uC0C1\uB300 \uACFC\uB9E4\uB3C4");
+          }
           if (shockCapitulation) {
             buyEpisode.setupReasons = ["5일 충격 급락", ...buyEpisode.setupReasons];
           }
@@ -428,6 +458,15 @@
           } else if (moderateBuyArm) {
             buyEpisode.broad = false;
             buyEpisode.shock = buyEpisode.shock || shockCapitulation;
+            if (stockMediumCorrection) {
+              buyEpisode.confirmationDays = Math.max(6, buyEpisode.confirmationDays || 0);
+              buyEpisode.setupReasons.unshift("\uAC1C\uBCC4\uC885\uBAA9 \uC911\uAE30 \uC870\uC815");
+            }
+            if (stockRelativeWashout) {
+              buyEpisode.relativeWashout = true;
+              buyEpisode.confirmationDays = Math.max(6, buyEpisode.confirmationDays || 0);
+              buyEpisode.setupReasons.unshift("\uC800\uBCA0\uD0C0 \uC0C1\uB300 \uACFC\uB9E4\uB3C4");
+            }
           }
           buyEpisode.setupReasons = [...new Set([
             ...buyEpisode.setupReasons,
@@ -450,10 +489,14 @@
         && macdDivergence) {
         const candidateIndex = buyEpisode.lowIndex;
         saveEpisodeSignal(signals, buyEpisode, {
-          date: buyEpisode.broad ? dates[index] : dates[candidateIndex],
+          date: (buyEpisode.broad || buyEpisode.relativeWashout)
+            ? dates[index]
+            : dates[candidateIndex],
           setupDate: dates[candidateIndex],
           confirmationDate: dates[index],
-          entryMode: buyEpisode.broad ? "confirmation" : "turning-point",
+          entryMode: (buyEpisode.broad || buyEpisode.relativeWashout)
+            ? "confirmation"
+            : "turning-point",
           indexKey,
           ...result,
           setupReasons: [...buyEpisode.setupReasons],
@@ -463,7 +506,7 @@
             : buyEpisode.setupReasons.filter((reason) => reason !== "중간급 조정").slice(-2),
           triggerReasons: ["MACD 상승 다이버전스"],
         });
-        if (buyEpisode.broad || buyEpisode.shock) {
+        if (buyEpisode.broad || buyEpisode.shock || buyEpisode.relativeWashout) {
           buyEpisode.signalLocked = true;
           buyEpisode.signalConfirmedAt = index;
           buyEpisode.signalLowPrice = buyEpisode.lowPrice;
@@ -604,8 +647,11 @@
         const episodeDrawdown = result.price !== null && sellEpisode.peakPrice > 0
           ? ((result.price / sellEpisode.peakPrice) - 1) * 100
           : null;
-        const meaningfulCorrection = (result.priceDrawdown60 !== null && result.priceDrawdown60 <= -12)
-          || (result.price20d !== null && result.price20d <= -10 && result.oscillator < 0);
+        const episodeWasConfirmed = Number.isInteger(sellEpisode.signalConfirmedAt);
+        const canResetOnCorrection = !sellEpisode.reacceleration || episodeWasConfirmed;
+        const meaningfulCorrection = canResetOnCorrection
+          && ((result.priceDrawdown60 !== null && result.priceDrawdown60 <= -12)
+            || (result.price20d !== null && result.price20d <= -10 && result.oscillator < 0));
         const completedRecentCycle = !sellEpisode.historical
           && Number.isInteger(sellEpisode.signalConfirmedAt)
           && index > sellEpisode.signalConfirmedAt
@@ -626,6 +672,17 @@
           sellEpisode = null;
         }
       }
+      const exceptionalStockReacceleration = isIndividualStock
+        && sellArm
+        && sellEpisode
+        && Number.isInteger(sellEpisode.signalConfirmedAt)
+        && index - sellEpisode.signalConfirmedAt >= SELL_SIGNAL_COOLDOWN_DAYS
+        && result.price !== null && (sellEpisode.confirmedPeakPrice || sellEpisode.peakPrice) > 0
+        && result.price >= (sellEpisode.confirmedPeakPrice || sellEpisode.peakPrice) * 1.05
+        && result.price20d !== null && result.price20d >= 20
+        && volumeClimax
+        && (creditDrivenSellArm || breadthDivergence || priceStronglyExtended);
+      if (exceptionalStockReacceleration) sellEpisode = null;
       if (sellArm) {
         const setupReasons = [
           creditDrivenSellArm
@@ -664,6 +721,7 @@
             distribution: stockDistributionArm,
             matureTop: stockMatureTopArm,
             fearRotation: fearRotationTopArm,
+            reacceleration: exceptionalStockReacceleration,
             historical: historicalSellArm,
             signalLocked: false,
           };
@@ -742,6 +800,7 @@
           setupRelative20d: sellEpisode.setupRelative20d ?? null,
           setupBenchmark20d: sellEpisode.setupBenchmark20d ?? null,
           setupMarketCorrelation60: sellEpisode.setupMarketCorrelation60 ?? null,
+          reacceleration: Boolean(sellEpisode.reacceleration),
           sellSetupReasons: [...sellEpisode.setupReasons],
           sellDeteriorationReasons: breadthDivergence
             ? ["상승 중 시장폭 급락"]
@@ -753,6 +812,7 @@
           ].filter(Boolean),
         });
         sellEpisode.signalConfirmedAt = index;
+        sellEpisode.confirmedPeakPrice = sellEpisode.peakPrice;
         sellEpisode.signalLocked = sellEpisode.historical;
         lastSellSignalIndex = index;
         if (sellEpisode.historical) lastHistoricalSellSignalIndex = index;
@@ -760,7 +820,7 @@
     }
 
     const covered = scores.filter(Number.isFinite).length;
-    return { signals, sellSignals, scores, coverage: covered / count, strategy: "episode-extreme-v10" };
+    return { signals, sellSignals, scores, coverage: covered / count, strategy: "episode-extreme-v12" };
   }
 
   globalScope.ThinkStockMarketTiming = Object.freeze({

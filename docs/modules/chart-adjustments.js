@@ -68,6 +68,17 @@
     return [minimum - padding, maximum + padding];
   }
 
+  function expandRangeToContain(currentRange, requiredRange) {
+    const current = Array.isArray(currentRange) ? currentRange.slice(0, 2).map(Number) : [];
+    const required = Array.isArray(requiredRange) ? requiredRange.slice(0, 2).map(Number) : [];
+    if (required.length < 2 || !required.every(Number.isFinite)) return null;
+    if (current.length < 2 || !current.every(Number.isFinite)) return required;
+    return [
+      Math.min(current[0], required[0]),
+      Math.max(current[1], required[1]),
+    ];
+  }
+
   globalScope.ThinkStockChartAdjustments = Object.freeze({
     defaultScale,
     resolveScale,
@@ -76,5 +87,6 @@
     scaleFromDrag,
     resetTransforms,
     fitRangeForTraces,
+    expandRangeToContain,
   });
 }(typeof self !== "undefined" ? self : globalThis));

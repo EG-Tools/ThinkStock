@@ -33,3 +33,10 @@ test("fits the visible viewport without changing transformed trace values", () =
   );
   assert.equal(JSON.stringify(traces), before);
 });
+
+test("manual chart edits only expand the current viewport when a trace would be clipped", () => {
+  assert.deepEqual(adjustments.expandRangeToContain([60, 140], [80, 120]), [60, 140]);
+  assert.deepEqual(adjustments.expandRangeToContain([60, 140], [40, 155]), [40, 155]);
+  assert.deepEqual(adjustments.expandRangeToContain(null, [75, 125]), [75, 125]);
+  assert.equal(adjustments.expandRangeToContain([60, 140], null), null);
+});

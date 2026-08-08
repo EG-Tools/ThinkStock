@@ -76,6 +76,7 @@ const {
   offsetFromDrag,
   scaleFromDrag,
   fitRangeForTraces,
+  expandRangeToContain,
 } = chartAdjustmentsModule;
 const browserMarketClientModule = globalThis.ThinkStockBrowserMarketClient;
 if (!browserMarketClientModule) throw new Error("Browser market client module failed to load");
@@ -244,7 +245,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "2.27";
+const APP_VERSION = "2.28";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -603,6 +604,7 @@ let autoChartReset = true;
 let lockedChartFrame = null;
 let lockedHistoryYRange = null;
 let pendingAutoChartFit = false;
+let pendingAutoChartFitExpandOnly = false;
 let hoverSyncing = false;
 let cursorSyncing = false;
 let cursorMoveBound = false;
@@ -2430,6 +2432,7 @@ function applyChartResetPolicy(change, delay = 100) {
   viewportAutoFitTimer = 0;
   if (change === "manual") {
     pendingAutoChartFit = false;
+    pendingAutoChartFitExpandOnly = false;
     if (!autoChartReset) return false;
     clearAutoResetSeriesTransforms();
     pendingAutoChartFit = true;
@@ -2441,6 +2444,7 @@ function applyChartResetPolicy(change, delay = 100) {
   }
   if (change === "composition") {
     pendingAutoChartFit = true;
+    pendingAutoChartFitExpandOnly = false;
     return true;
   }
   viewportAutoFitTimer = setTimeout(() => {
@@ -2466,6 +2470,7 @@ function clearAutoResetSeriesTransforms(seriesKey = "") {
 function setAutoChartReset(enabled) {
   autoChartReset = Boolean(enabled);
   pendingAutoChartFit = false;
+  pendingAutoChartFitExpandOnly = false;
   if (viewportAutoFitTimer) clearTimeout(viewportAutoFitTimer);
   viewportAutoFitTimer = 0;
   if (autoChartReset) {
@@ -2739,11 +2744,11 @@ function beginLineOffsetDrag(el, target, startClientY, pointerId) {
     if (!moved || Math.abs(clientY - startClientY) < 3) {
       seriesOffsets[target.seriesKey] = startOffset;
       restyleLive(target.traceIndex, target.seriesKey);
-      finishTraceYEdit(false, target.seriesKey);
+      finishTraceYEdit(false, target.seriesKey, { preserveTransform: true });
       selectCoMovementTarget(target.seriesKey);
       return;
     }
-    finishTraceYEdit(true, target.seriesKey);
+    finishTraceYEdit(true, target.seriesKey, { preserveTransform: true });
   }
 
   addDragListeners(pointerId, onMove, onEnd);
@@ -4475,9 +4480,16 @@ function restyleLive(traceIndex, seriesKey) {
   });
 }
 
-function finishTraceYEdit(rebuildForDisclosures = true, seriesKey = "") {
+function finishTraceYEdit(rebuildForDisclosures = true, seriesKey = "", options = {}) {
   getChartVisualFrameCoordinator().flush();
   saveState();
+  if (autoChartReset && options.preserveTransform === true) {
+    // Preserve the visible amplitude; grow the viewport only when the edit would clip a trace.
+    pendingAutoChartFit = true;
+    pendingAutoChartFitExpandOnly = true;
+    requestChartRender(true, { deferDuringInteraction: false });
+    return;
+  }
   if (applyChartResetPolicy("manual")) {
     requestChartRender(true, { deferDuringInteraction: false });
     return;
@@ -4543,7 +4555,7 @@ function setupOffsetDrag(handle, traceIndex, seriesKey, basePixelY, ya, pairedHa
         requestChartCompositionUpdate();
         return;
       }
-      finishTraceYEdit(true, seriesKey);
+      finishTraceYEdit(true, seriesKey, { preserveTransform: true });
     }
 
     addDragListeners(pointerId, onMove, onEnd);
@@ -4576,7 +4588,7 @@ function setupScaleDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
       handle.classList.remove("dragging");
       isHandleDragging = false;
       if (lockedXRange) pinnedXRange = [...lockedXRange];
-      finishTraceYEdit(true, seriesKey);
+      finishTraceYEdit(true, seriesKey, { preserveTransform: true });
     }
 
     addDragListeners(pointerId, onMove, onEnd);
@@ -4600,17 +4612,20 @@ function requestChartCompositionUpdate() {
   requestChartRender(true);
 }
 
-function fitCurrentChartRatio() {
+function fitCurrentChartRatio(options = {}) {
   const el = document.getElementById("chart");
   if (!el?._fullLayout?.yaxis || !window.Plotly) return;
   const xRange = getCurrentMainXRange();
   const primaryTraces = (el.data || []).filter((trace) => (
     trace?.meta?.seriesKey && !trace?.meta?.isDisclosureTrace && !trace?.meta?.isInsiderTradeTrace
   ));
-  const yRange = fitRangeForTraces(primaryTraces, xRange, {
+  const fittedYRange = fitRangeForTraces(primaryTraces, xRange, {
     paddingRatio: 0.08,
     minimumPadding: 0.6,
   });
+  const yRange = options.expandOnly
+    ? expandRangeToContain(el._fullLayout.yaxis.range, fittedYRange)
+    : fittedYRange;
   if (!yRange) return;
   if (xRange) pinnedXRange = [...xRange];
   useViewportEventMarkerGap = true;
@@ -6512,8 +6527,10 @@ async function runMainChartRender(preserveZoom = true) {
         await renderChart(nextPreserveZoom);
         if (!pendingChartRenderAfterFlight) {
           if (pendingAutoChartFit) {
+            const expandOnly = pendingAutoChartFitExpandOnly;
             pendingAutoChartFit = false;
-            if (autoChartReset) fitCurrentChartRatio();
+            pendingAutoChartFitExpandOnly = false;
+            if (autoChartReset) fitCurrentChartRatio({ expandOnly });
           }
           break;
         }

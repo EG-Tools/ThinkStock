@@ -48,7 +48,7 @@ test("as-of alignment never uses a future observation", () => {
 test("emits one high-confidence buy signal after an oversold reversal", () => {
   const model = buildMarketTimingSignals({ indexKey: "^KS11", ...timingFixture() });
 
-  assert.equal(model.strategy, "episode-extreme-v10");
+  assert.equal(model.strategy, "episode-extreme-v12");
   assert.equal(model.signals.length, 1);
   assert.ok(model.signals[0].setupReasons.length > 0);
   assert.ok(model.signals[0].stabilizationReasons.length > 0);
@@ -79,6 +79,128 @@ test("routes KOSDAQ stock timing through KOSDAQ breadth and thresholds", () => {
   assert.equal(kospiStock.signals.length, 1);
   assert.equal(kospiStock.signals[0].adrMin, 100);
   assert.equal(kospiStock.signals[0].setupReasons.includes("ADR 과매도"), false);
+});
+
+test("detects a medium stock correction below the market capitulation limit", () => {
+  const dates = Array.from({ length: 230 }, (_, index) => dateAt(index));
+  const prices = dates.map((_, index) => {
+    if (index < 150) return 100;
+    if (index <= 180) return 100 - ((index - 150) * 0.32);
+    if (index <= 190) return 90.4 - ((index - 180) * 0.74);
+    return 83 + ((index - 190) * 0.55);
+  });
+  const oscillator = dates.map((_, index) => {
+    if (index < 188) return -0.4;
+    if (index === 188) return -0.7;
+    if (index === 189) return -0.82;
+    if (index === 190) return -0.9;
+    return -0.68 + ((index - 191) * 0.12);
+  });
+  const adrRows = dates.map((date, index) => ({
+    date,
+    adr_kospi: index >= 175 && index <= 200 ? 72 : 100,
+  }));
+  const model = buildMarketTimingSignals({
+    indexKey: "207940.KS",
+    dates,
+    prices,
+    oscillator,
+    adrRows,
+  });
+
+  assert.equal(model.signals.length, 1);
+  assert.ok(model.signals[0].setupReasons.includes("\uAC1C\uBCC4\uC885\uBAA9 \uC911\uAE30 \uC870\uC815"));
+  assert.ok(model.signals[0].price20d > -12);
+  assert.ok(model.signals[0].confirmationDate >= model.signals[0].date);
+
+  const noBreadthStress = buildMarketTimingSignals({
+    indexKey: "207940.KS",
+    dates,
+    prices,
+    oscillator,
+    adrRows: dates.map((date) => ({ date, adr_kospi: 100 })),
+  });
+  assert.deepEqual(noBreadthStress.signals, []);
+});
+
+test("detects a slow stock base only after its MACD turns upward", () => {
+  const dates = Array.from({ length: 250 }, (_, index) => dateAt(index));
+  const prices = dates.map((_, index) => {
+    if (index < 155) return 102;
+    if (index <= 170) return 102 + ((index - 155) * (8 / 15));
+    if (index <= 220) return 110 - ((index - 170) * (17 / 50));
+    return 93 + ((index - 220) * 0.45);
+  });
+  const oscillator = dates.map((_, index) => {
+    if (index < 217) return -0.35;
+    if (index === 217) return -0.55;
+    if (index === 218) return -0.7;
+    if (index === 219) return -0.78;
+    if (index === 220) return -0.8;
+    return -0.6 + ((index - 221) * 0.12);
+  });
+  const adrRows = dates.map((date, index) => ({
+    date,
+    adr_kospi: index >= 205 && index <= 230 ? 84 : 100,
+  }));
+  const model = buildMarketTimingSignals({
+    indexKey: "207940.KS",
+    dates,
+    prices,
+    oscillator,
+    adrRows,
+  });
+
+  assert.equal(model.signals.length, 1);
+  assert.ok(model.signals[0].setupReasons.includes("\uAC1C\uBCC4\uC885\uBAA9 \uC911\uAE30 \uC870\uC815"));
+  assert.ok(model.signals[0].price60d > -20);
+  assert.ok(model.signals[0].confirmationDate > model.signals[0].date);
+});
+
+test("detects a low-beta stock washout relative to a rising market", () => {
+  const dates = Array.from({ length: 260 }, (_, index) => dateAt(index));
+  const prices = dates.map((_, index) => {
+    if (index < 210) return 100 + (Math.sin(index / 5) * 0.5);
+    if (index <= 230) return 100 - ((index - 210) * 0.3);
+    return 94 + ((index - 230) * 0.45);
+  });
+  const benchmarkPrices = dates.map((_, index) => (
+    index < 210 ? 100 + (Math.cos(index / 4) * 0.7) : 100 + ((index - 210) * 0.65)
+  ));
+  const oscillator = dates.map((_, index) => {
+    if (index < 228) return -0.3;
+    if (index === 228) return -0.55;
+    if (index === 229) return -0.7;
+    if (index === 230) return -0.78;
+    return -0.58 + ((index - 231) * 0.12);
+  });
+  const adrRows = dates.map((date, index) => ({
+    date,
+    adr_kospi: index >= 215 && index <= 240 ? 70 : 100,
+  }));
+  const model = buildMarketTimingSignals({
+    indexKey: "017670.KS",
+    dates,
+    prices,
+    oscillator,
+    benchmarkPrices,
+    adrRows,
+  });
+
+  assert.equal(model.signals.length, 1);
+  assert.equal(model.signals[0].entryMode, "confirmation");
+  assert.ok(model.signals[0].setupReasons.includes("\uC800\uBCA0\uD0C0 \uC0C1\uB300 \uACFC\uB9E4\uB3C4"));
+  assert.ok(model.signals[0].relative20d <= -10);
+
+  const noRelativeWashout = buildMarketTimingSignals({
+    indexKey: "017670.KS",
+    dates,
+    prices,
+    oscillator,
+    benchmarkPrices: [...prices],
+    adrRows,
+  });
+  assert.deepEqual(noRelativeWashout.signals, []);
 });
 
 test("rejects a buy signal when the index remains near its recent high", () => {
@@ -215,6 +337,49 @@ test("confirms a mature stock top after a slower medium-term rollover", () => {
   assert.equal(model.sellSignals[0].date, dates[290]);
   assert.ok(model.sellSignals[0].confirmationDate <= dates[310]);
   assert.ok(model.sellSignals[0].sellSetupReasons.includes("개별종목 중기 고점 둔화"));
+});
+
+test("starts a new stock sell episode after exceptional reacceleration", () => {
+  const dates = Array.from({ length: 340 }, (_, index) => dateAt(index));
+  const prices = dates.map((_, index) => {
+    if (index < 250) return 100 + (Math.sin(index / 5) * 0.4);
+    if (index <= 270) return 100 + ((index - 250) * 1.25);
+    if (index <= 278) return 125 - ((index - 270) * 1.25);
+    if (index <= 292) return 115 + ((index - 278) * 2.5);
+    return 150 - ((index - 292) * 3.5);
+  });
+  const oscillator = dates.map((_, index) => {
+    if (index < 266) return 0.35;
+    if (index <= 270) return 0.35 + ((index - 265) * 0.12);
+    if (index <= 278) return 0.95 - ((index - 270) * 0.16);
+    if (index <= 292) return -0.33 + ((index - 278) * 0.095);
+    return 1 - ((index - 292) * 0.24);
+  });
+  const volumes = dates.map((_, index) => (
+    index === 270 || index === 292 ? 3000 : 1000
+  ));
+  const creditRows = dates.map((date, index) => ({
+    date,
+    kospi_credit: index < 265 ? 100 : 100 * Math.exp((index - 265) * 0.01),
+  }));
+  const adrRows = dates.map((date, index) => ({
+    date,
+    adr_kospi: index >= 280 ? 55 : 100,
+  }));
+  const model = buildMarketTimingSignals({
+    indexKey: "017670.KS",
+    dates,
+    prices,
+    oscillator,
+    volumes,
+    creditRows,
+    adrRows,
+  });
+
+  assert.equal(model.sellSignals.length, 2);
+  assert.equal(model.sellSignals[0].date, dates[270]);
+  assert.equal(model.sellSignals[1].date, dates[292]);
+  assert.ok(model.sellSignals[1].confirmationDate > model.sellSignals[1].date);
 });
 
 test("detects a short refuge-flow top while the broad market is fearful", () => {
