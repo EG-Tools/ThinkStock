@@ -245,7 +245,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "2.30";
+const APP_VERSION = "2.31";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -4664,6 +4664,20 @@ function fitCurrentChartRatio(options = {}) {
   });
 }
 
+function tracesExceedVisibleYRange(traces, xRange, yRange) {
+  const current = Array.isArray(yRange) ? yRange.slice(0, 2).map(Number) : [];
+  if (current.length < 2 || !current.every(Number.isFinite)) return false;
+  const required = fitRangeForTraces(traces, xRange, {
+    paddingRatio: 0.08,
+    minimumPadding: 0.6,
+  });
+  if (!required) return false;
+  const low = Math.min(...current);
+  const high = Math.max(...current);
+  const tolerance = Math.max(0.05, (high - low) * 0.002);
+  return required[0] < low - tolerance || required[1] > high + tolerance;
+}
+
 function buildDisclosurePointIndex(seriesModels, tickers) {
   return chartEventLayerModule.buildPointIndex(seriesModels, tickers, toUtcMs);
 }
@@ -7067,6 +7081,15 @@ async function renderChart(preserveZoom = true) {
     dragmode: false,
   };
   const renderMode = await applyMainChartRender(el, traces, layout);
+  if (autoChartReset && aiForecastTraces.length && tracesExceedVisibleYRange(
+    aiForecastTraces,
+    el?._fullLayout?.xaxis?.range,
+    el?._fullLayout?.yaxis?.range,
+  )) {
+    // AI context often completes after the initial composition fit has already been consumed.
+    pendingAutoChartFit = true;
+    pendingAutoChartFitExpandOnly = false;
+  }
   scheduleDeferredAiForecastRender(seriesModels);
   if (aiToggleRevisionAtStart !== aiForecastToggleRevision) {
     requestChartRender(true, { deferDuringInteraction: false });

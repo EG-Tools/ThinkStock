@@ -972,6 +972,20 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page }
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length
   ))).toBeGreaterThan(0);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const [rangeStart, rangeEnd] = (element?._fullLayout?.xaxis?.range || []).map(Date.parse);
+    const [rangeLow, rangeHigh] = (element?._fullLayout?.yaxis?.range || []).map(Number);
+    const tolerance = Math.max(0.05, Math.abs(rangeHigh - rangeLow) * 0.002);
+    return (element.data || [])
+      .filter((trace) => trace?.meta?.isAiForecastScenarioTrace)
+      .flatMap((trace) => (trace.x || []).flatMap((date, index) => {
+        const time = Date.parse(date);
+        const value = Number(trace.y?.[index]);
+        if (!Number.isFinite(time) || !Number.isFinite(value)
+          || time < rangeStart || time > rangeEnd) return [];
+        return value < rangeLow - tolerance || value > rangeHigh + tolerance ? [value] : [];
+      })).length;
+  }), { message: "AI forecast remained outside the auto-fitted chart range" }).toBe(0);
   const scenarioSummary = await page.locator("#chart").evaluate((element) => {
     const traces = (element.data || []).filter((trace) => trace?.meta?.isAiForecastScenarioTrace);
     return {
