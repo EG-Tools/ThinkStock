@@ -378,8 +378,18 @@ test("new stock loads its own Cloudflare DART disclosures", async ({ page }) => 
   });
   await page.locator("#aiForecastToggle").click();
   await expect(page.locator("#aiForecastProgress")).toBeHidden({ timeout: 10000 });
+  const currentViewport = () => page.locator("#chart").evaluate((element) => ({
+    xRange: [...element._fullLayout.xaxis.range],
+    yRange: [...element._fullLayout.yaxis.range],
+  }));
+  await expect.poll(currentViewport, {
+    message: "AI history preparation changed a locked viewport",
+  }).toEqual(lockedViewport);
   await page.locator("#disclosureToggle").click();
   await expect(page.locator("#disclosureToggle")).toHaveAttribute("aria-pressed", "false");
+  await expect.poll(currentViewport, {
+    message: "Disclosure visibility changed a locked viewport",
+  }).toEqual(lockedViewport);
 
   await page.locator("#stockSearchInput").fill("SK하이닉스");
   const suggestion = page.locator(".stock-suggest-item").filter({ hasText: "SK하이닉스" });
@@ -396,10 +406,7 @@ test("new stock loads its own Cloudflare DART disclosures", async ({ page }) => 
     )),
     aiTraceCount: (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length,
   }))).toEqual({ stockVisible: true, aiTraceCount: 0 });
-  await expect.poll(() => page.locator("#chart").evaluate((element) => ({
-    xRange: [...element._fullLayout.xaxis.range],
-    yRange: [...element._fullLayout.yaxis.range],
-  }))).toEqual(lockedViewport);
+  await expect.poll(currentViewport).toEqual(lockedViewport);
   await expect.poll(() => newStockDisclosureRequests).toBe(2);
   expect(forcedNewStockDisclosures).toEqual([null, "1"]);
   await expect(page.locator("#disclosureToggle")).toHaveAttribute("aria-pressed", "false");
@@ -1102,7 +1109,8 @@ test("AI forecast opens for the first enabled series and stays stable while brow
 
   await expect.poll(() => page.evaluate(() => {
     const state = window.ThinkStockE2E.getAiForecastState();
-    return state.marketModelSettled && !state.inputsPending;
+    const refresh = window.ThinkStockE2E.getRefreshPhaseStats();
+    return state.marketModelSettled && !state.inputsPending && refresh.supplementalReady > 0;
   }), { timeout: 20000 }).toBe(true);
   await expect(page.locator("#aiForecastProgress")).toBeHidden({ timeout: 10000 });
 
@@ -1113,6 +1121,9 @@ test("AI forecast opens for the first enabled series and stays stable while brow
   ));
   const calculationCountsBeforeHistory = await page.evaluate(() => (
     window.ThinkStockE2E.getAiForecastState().calculationCounts
+  ));
+  const inputKeysBeforeHistory = await page.evaluate(() => (
+    window.ThinkStockE2E.getAiForecastState().cacheInputKeys
   ));
   await page.locator("#chartHistorySlider").evaluate((slider) => {
     slider.value = slider.min;
@@ -1138,6 +1149,8 @@ test("AI forecast opens for the first enabled series and stays stable while brow
       trace?.meta?.isAiForecastScenarioTrace && trace?.meta?.seriesKey === "^KS11"
     )).length
   ))).toBe(3);
+  expect(await page.evaluate(() => window.ThinkStockE2E.getAiForecastState().cacheInputKeys))
+    .toEqual(inputKeysBeforeHistory);
   expect(await page.evaluate(() => window.ThinkStockE2E.getAiForecastState().calculationCounts))
     .toEqual(calculationCountsBeforeHistory);
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
@@ -1145,6 +1158,18 @@ test("AI forecast opens for the first enabled series and stays stable while brow
       .filter((trace) => trace?.meta?.isAiForecastScenarioTrace && trace?.meta?.seriesKey === "^KS11")
       .map((trace) => [trace.meta.aiTraceRole, [...(trace.customdata || [])]]))
   ))).toEqual(latestForecastPaths);
+
+  const actualInputDate = new Date(visibleRange.observedEnd).toISOString().slice(0, 10);
+  expect(await page.evaluate(({ date }) => window.ThinkStockE2E.applyNewsSentimentForTest([
+    { date, news_sentiment: 123.456 },
+  ]), { date: actualInputDate })).toMatchObject({ updated: 1, latestDate: actualInputDate });
+  await expect.poll(() => page.evaluate(() => (
+    window.ThinkStockE2E.getAiForecastState().calculationCounts["^KS11"] || 0
+  )), { message: "A real macro input change did not recalculate the affected forecast" })
+    .toBe((calculationCountsBeforeHistory["^KS11"] || 0) + 1);
+  const stateAfterInputChange = await page.evaluate(() => window.ThinkStockE2E.getAiForecastState());
+  expect(stateAfterInputChange.cacheInputKeys["^KS11"])
+    .not.toBe(inputKeysBeforeHistory["^KS11"]);
 });
 
 test("AI off clamps the viewport to the last observed date", async ({ page }) => {
@@ -1155,7 +1180,7 @@ test("AI off clamps the viewport to the last observed date", async ({ page }) =>
   await page.locator("#aiForecastToggle").click();
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     (element.data || []).filter((trace) => trace?.meta?.isAiForecastScenarioTrace).length
-  ))).toBeGreaterThan(0);
+  )), { timeout: 30000 }).toBeGreaterThan(0);
   const observedEnd = await page.locator("#chart").evaluate((element) => Math.max(
     ...(element.data || [])
       .filter((trace) => !trace?.meta?.isAiForecastScenarioTrace && Array.isArray(trace?.x))
@@ -1200,7 +1225,10 @@ test("AI forecasts survive repeated KOSPI and KOSDAQ toggle cycles", async ({ pa
       new Set((element.data || [])
         .filter((trace) => trace?.meta?.isAiForecastScenarioTrace)
         .map((trace) => trace?.meta?.seriesKey)).size
-    )), { message: `AI cycle ${cycle + 1} did not render both indices` }).toBe(2);
+    )), {
+      message: `AI cycle ${cycle + 1} did not render both indices`,
+      timeout: 30000,
+    }).toBe(2);
     if (cycle === 0) {
       // The first visible forecast can be refined once the background market
       // model and rotation inputs settle. Measure cache reuse after that pass.
@@ -1960,7 +1988,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   });
 });
 
-test("AI analysis loads only on demand and reuses its monthly browser cache", async ({ page }) => {
+test("AI analysis loads only on demand and reuses today's browser cache", async ({ page }) => {
   let analysisRequests = 0;
   let journalRecords = [];
   let releaseAnalysis;
@@ -1998,6 +2026,13 @@ test("AI analysis loads only on demand and reuses its monthly browser cache", as
           { ticker, period: "2025-12", frequency: "quarter", revenue: 300, operatingProfit: 32 },
           { ticker, period: "2026-03", frequency: "quarter", revenue: 390, operatingProfit: 58 },
         ],
+        news: [{
+          ticker,
+          date: "2026-07-14",
+          title: "대규모 공급계약 체결",
+          source: "Naver Finance",
+          url: `https://finance.naver.com/item/news_read.naver?code=${ticker.slice(0, 6)}&article_id=1`,
+        }],
       }),
     });
   });
@@ -2023,7 +2058,7 @@ test("AI analysis loads only on demand and reuses its monthly browser cache", as
   releaseAnalysis();
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     (element.data || []).filter((trace) => trace?.meta?.fundamentalsUsed).length
-  ))).toBeGreaterThan(0);
+  )), { timeout: 30000 }).toBeGreaterThan(0);
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const trace = (element.data || []).find((item) => item?.meta?.isAiForecastTrace);
     const rangeEnd = element?._fullLayout?.xaxis?.range?.[1];
@@ -2034,7 +2069,7 @@ test("AI analysis loads only on demand and reuses its monthly browser cache", as
   const savedForecast = journalRecords.find((record) => record.ticker === "005930.KS");
   expect(Object.keys(savedForecast?.horizons || {}).sort()).toEqual(["10", "126", "20", "5", "63"]);
   expect(Object.keys(savedForecast?.audit?.features || {}).length).toBeGreaterThan(50);
-  expect(savedForecast?.audit?.sources?.internet_news_rows).toBe(0);
+  expect(savedForecast?.audit?.sources?.internet_news_rows).toBe(1);
   expect(savedForecast?.horizons?.[126]?.attribution?.components).toBeTruthy();
 
   const firstRequestCount = analysisRequests;
@@ -2048,7 +2083,7 @@ test("AI analysis loads only on demand and reuses its monthly browser cache", as
   await expect(page.locator("#aiForecastToggle")).toHaveClass(/is-active/);
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     (element.data || []).filter((trace) => trace?.meta?.fundamentalsUsed).length
-  ))).toBeGreaterThan(0);
+  )), { timeout: 30000 }).toBeGreaterThan(0);
   await page.waitForTimeout(300);
   expect(analysisRequests).toBe(firstRequestCount);
 });

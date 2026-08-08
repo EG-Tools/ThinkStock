@@ -45,11 +45,29 @@ test("preserves accumulated financial periods while applying new analysis", () =
   assert.equal(result.lastAccessed, now);
 });
 
-test("refreshes analysis only after its configured monthly age", () => {
+test("checks analysis age without discarding today's cached record", () => {
   const now = Date.UTC(2026, 6, 23);
   const record = { schema: SCHEMA_VERSION, savedAt: now - (29 * 24 * 60 * 60 * 1000) };
   assert.equal(isAnalysisFresh(record, 30 * 24 * 60 * 60 * 1000, now), true);
   assert.equal(isAnalysisFresh(record, 28 * 24 * 60 * 60 * 1000, now), false);
+});
+
+test("normalizes and replaces the current stock-news snapshot", () => {
+  const existing = normalizeAnalysisRecord("005930.KS", {
+    savedAt: 10,
+    news: [{ date: "2026-08-07", title: "old", source: "Naver", url: "https://example.com/old" }],
+  }, null, 10);
+  const result = normalizeAnalysisRecord("005930.KS", {
+    savedAt: 20,
+    news: [
+      { date: "2026-08-08", title: "new", source: "Naver", url: "https://example.com/new" },
+      { date: "2026-08-08", title: "new", source: "Naver", url: "https://example.com/new" },
+    ],
+  }, existing, 20);
+
+  assert.equal(result.news.length, 1);
+  assert.equal(result.news[0].title, "new");
+  assert.equal(result.news[0].ticker, "005930.KS");
 });
 
 test("keeps one point-in-time analysis snapshot per month", () => {

@@ -34,7 +34,10 @@ if ($LASTEXITCODE -ne 1) { throw "Unable to inspect staged release changes." }
 
 Invoke-Checked git @("commit", "-m", $Message)
 Invoke-Checked git @("push", "origin", "main")
-Invoke-Checked gh @("workflow", "run", "deploy-pages.yml", "--ref", "main")
+Invoke-Checked gh @(
+  "workflow", "run", "deploy-pages.yml", "--ref", "main",
+  "-f", "release_title=$Message"
+)
 
 Start-Sleep -Seconds 2
 & gh run list --workflow deploy-pages.yml --limit 1 --json url,status --jq '.[0] | "\(.status) \(.url)"'

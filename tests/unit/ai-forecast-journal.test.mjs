@@ -182,6 +182,7 @@ test("preserves compact model inputs and per-horizon numeric attribution", () =>
       components: {
         localModel: days / 1200,
         marketRegime: days / 6000,
+        internetNews: days / 12000,
       },
     }])),
   };
@@ -204,6 +205,7 @@ test("preserves compact model inputs and per-horizon numeric attribution", () =>
   assert.equal(record.audit.sources.internet_news_rows, 0);
   assert.equal(record.horizons[10].attribution.expectedLogReturn, 0.01);
   assert.equal(record.horizons[10].attribution.components.marketRegime, 0.01 / 6);
+  assert.equal(record.horizons[10].attribution.components.internetNews, 0.01 / 12);
 
   const cloudLike = {
     ...record,

@@ -24,6 +24,7 @@ import {
   parseConsensusHtml,
   parseEarningsTrendHtml,
   parseFinancialSummaryHtml,
+  parseNaverNewsHtml,
 } from "../../worker/src/index.mjs";
 
 
@@ -711,6 +712,27 @@ test("parses Naver WiseReport consensus values", () => {
   assert.equal(result.institutions, 5);
 });
 
+test("parses recent Naver stock news with dates and deduplicated links", () => {
+  const html = `<div class="sub_section news_section"><ul>
+    <li><span class="txt"><a href="/item/news_read.naver?article_id=1&amp;office_id=2&amp;code=005930">사상 최대 실적&amp;수주</a></span><em> 08/08</em></li>
+    <li><span class="txt"><a href="/item/news_read.naver?article_id=1&amp;office_id=2&amp;code=005930">사상 최대 실적&amp;수주</a></span><em> 08/08</em></li>
+    <li><span class="txt"><a href="/item/news_read.naver?article_id=3&amp;office_id=4&amp;code=005930">목표가 하향</a></span><em> 12/31</em></li>
+  </ul></div>`;
+  const result = parseNaverNewsHtml(html, "005930.KS", new Date("2026-01-03T00:00:00Z"));
+  assert.equal(result.length, 2);
+  assert.equal(result[0].date, "2025-12-31");
+  assert.equal(result[1].title, "사상 최대 실적&수주");
+  assert.match(result[1].url, /code=005930/);
+
+  const newYearHtml = `<li><a href="/item/news_read.naver?article_id=4&amp;office_id=5&amp;code=005930">새해 뉴스</a><em>01/01</em></li>`;
+  const newYearResult = parseNaverNewsHtml(
+    newYearHtml,
+    "005930.KS",
+    new Date("2025-12-31T15:30:00Z"),
+  );
+  assert.equal(newYearResult[0].date, "2026-01-01");
+});
+
 test("parses annual and quarterly WiseReport financial summaries", () => {
   const html = `<table><thead><tr>
     <th class="r02c00">2024/12</th><th class="r02c01">2025/12</th>
@@ -787,7 +809,7 @@ test("returns a fresh consensus KV cache without requiring the DART key", async 
   assert.deepEqual(payload.consensus, consensus);
 });
 
-test("returns a fresh accumulated analysis cache without an upstream request", async () => {
+test("returns today's accumulated analysis cache without an upstream request", async () => {
   const financials = [{
     ticker: "218410.KQ",
     period: "2025-12",
@@ -797,11 +819,12 @@ test("returns a fresh accumulated analysis cache without an upstream request", a
   }];
   const cache = memoryKv({
     "analysis:218410.KQ": JSON.stringify({
-      schema: 2,
+      schema: 4,
       ticker: "218410.KQ",
       savedAt: Date.now(),
       consensus: null,
       financials,
+      news: [],
     }),
   });
   const response = await handleRequest(
@@ -814,9 +837,91 @@ test("returns a fresh accumulated analysis cache without an upstream request", a
   assert.deepEqual(payload.financials, financials);
   assert.equal(payload.snapshots.length, 1);
   const migrated = JSON.parse(cache.values.get("analysis:218410.KQ"));
-  assert.equal(migrated.schema, 3);
+  assert.equal(migrated.schema, 4);
   assert.equal(migrated.snapshots.length, 1);
   assert.deepEqual(migrated.snapshots[0].financials, financials);
+});
+
+test("refreshes today's company analysis only when explicitly requested", async () => {
+  const originalFetch = globalThis.fetch;
+  const cache = memoryKv({
+    "analysis:218410.KQ": JSON.stringify({
+      schema: 4,
+      ticker: "218410.KQ",
+      savedAt: Date.now(),
+      consensus: null,
+      financials: [{ ticker: "218410.KQ", period: "2025-12", frequency: "annual", revenue: 1300 }],
+      news: [],
+      snapshots: [],
+    }),
+  });
+  let calls = 0;
+  globalThis.fetch = async (url) => {
+    calls += 1;
+    const target = String(url);
+    const body = target.includes("navercomp.wisereport.co.kr")
+      ? `<table id="cTB15"><tr><th>opinion</th></tr><tr><td><b>4.00</b></td><td>132,600</td><td>1,665</td><td>26.16</td><td>5</td></tr></table>`
+      : `<li><a href="/item/news_read.naver?article_id=4&amp;office_id=5&amp;code=218410">대규모 공급계약 체결</a><em>08/08</em></li>`;
+    return new Response(body, {
+      status: 200,
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
+  };
+  try {
+    const response = await handleRequest(
+      request("/api/analysis?ticker=218410.KQ&refresh=1", { token: "private" }),
+      { THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: cache },
+    );
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.cached, false);
+    assert.equal(payload.news[0].title, "대규모 공급계약 체결");
+    assert.equal(calls, 2);
+    assert.equal(JSON.parse(cache.values.get("analysis:218410.KQ")).news.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("preserves the last valid company news when only the news upstream fails", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousNews = [{
+    ticker: "218410.KQ",
+    date: "2026-08-07",
+    title: "기존 정상 뉴스",
+    source: "Naver Finance",
+    url: "https://finance.naver.com/item/news_read.naver?code=218410&article_id=1",
+  }];
+  const cache = memoryKv({
+    "analysis:218410.KQ": JSON.stringify({
+      schema: 4,
+      ticker: "218410.KQ",
+      savedAt: Date.now(),
+      consensus: null,
+      financials: [{ ticker: "218410.KQ", period: "2025-12", frequency: "annual", revenue: 1300 }],
+      news: previousNews,
+      snapshots: [],
+    }),
+  });
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("finance.naver.com")) return new Response("", { status: 503 });
+    return new Response(
+      `<table id="cTB15"><tr><th>opinion</th></tr><tr><td><b>4.00</b></td><td>132,600</td><td>1,665</td><td>26.16</td><td>5</td></tr></table>`,
+      { status: 200, headers: { "Content-Type": "text/html; charset=utf-8" } },
+    );
+  };
+  try {
+    const response = await handleRequest(
+      request("/api/analysis?ticker=218410.KQ&refresh=1", { token: "private" }),
+      { THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: cache },
+    );
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.deepEqual(payload.news, previousNews);
+    assert.deepEqual(JSON.parse(cache.values.get("analysis:218410.KQ")).news, previousNews);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("keeps the latest point-in-time analysis snapshot per month and caps history at 60", () => {

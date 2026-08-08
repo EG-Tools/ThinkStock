@@ -19,7 +19,7 @@ const runtimeDataContract = globalThis.ThinkStockRuntimeDataContract;
 if (!runtimeDataContract) throw new Error("Runtime data contract module failed to load");
 const marketCalendarModule = globalThis.ThinkStockMarketCalendar;
 if (!marketCalendarModule) throw new Error("Market calendar module failed to load");
-const { expectedLatestKoreanTradingDate } = marketCalendarModule;
+const { expectedLatestKoreanTradingDate, koreanDateText } = marketCalendarModule;
 const marketDataModule = globalThis.ThinkStockMarketData;
 if (!marketDataModule) throw new Error("Market data module failed to load");
 const {
@@ -242,10 +242,10 @@ const GRANULAR_CACHE_SCHEMA_VERSION = 1;
 const TICKER_DISCLOSURE_CACHE_SCHEMA_VERSION = 2;
 const GRANULAR_CACHE_MAX_IDLE_DAYS = 120;
 const GRANULAR_CACHE_MAX_TICKERS = 60;
-const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
+const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "2.29";
+const APP_VERSION = "2.30";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -725,6 +725,8 @@ function initE2eDebugAccess() {
           targets: [...aiForecastTargetSeries].sort(),
           deferredTargets: [...aiForecastDeferredSeries].sort(),
           cachedTargets: [...aiForecastResultBySeries.keys()].sort(),
+          cacheInputKeys: Object.fromEntries([...aiForecastResultBySeries.entries()]
+            .map(([series, entry]) => [series, entry?.inputKey || ""])),
           calculationCounts: Object.fromEntries(aiForecastCalculationCounts),
           inputsPending: aiForecastInputsPending(),
           marketModelSettled: aiMarketModelLoadSettled,
@@ -3183,9 +3185,13 @@ function removeCustomStock(ticker) {
 
 function clearTickerSeriesFromPricePayload(ticker) {
   if (!ticker || !pricePayload || typeof pricePayload !== "object") return;
+  const key = String(ticker).toUpperCase();
+  const hadSeries = (pricePayload.series || []).includes(key)
+    || (pricePayload.records || []).some((row) => toNum(row?.[key]) !== null);
   pricePayload = tickerPriceRuntimeModule.clearSeries(pricePayload, ticker);
-  tickerVolumeSeriesByTicker.delete(String(ticker).toUpperCase());
-  markDataChanged("price");
+  tickerVolumeSeriesByTicker.delete(key);
+  aiForecastResultBySeries.delete(key);
+  if (hadSeries) markDataChanged("price");
 }
 
 let krxUniversePromise = null;
@@ -3309,20 +3315,32 @@ function renderStockSuggestList(items) {
 
 function mergeTickerSeriesIntoPricePayload(ticker, points) {
   const key = String(ticker || "").trim().toUpperCase();
+  const sourcePoints = Array.isArray(points) ? points : [];
+  const existingByDate = new Map((pricePayload?.records || []).map((row) => [
+    String(row?.date || "").slice(0, 10),
+    row,
+  ]));
   const volumes = new Map(tickerVolumeSeriesByTicker.get(key) || []);
-  (Array.isArray(points) ? points : []).forEach((point) => {
+  let changed = !(pricePayload?.series || []).includes(key);
+  sourcePoints.forEach((point) => {
     const date = String(point?.date || "").slice(0, 10);
+    const close = toNum(point?.close);
     const volume = toNum(point?.volume);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date) && close !== null
+      && !sameNullableNumber(existingByDate.get(date)?.[key], close)) changed = true;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date) && volume !== null && volume >= 0
+      && !sameNullableNumber(volumes.get(date), volume)) changed = true;
     if (/^\d{4}-\d{2}-\d{2}$/.test(date) && volume !== null && volume >= 0) volumes.set(date, volume);
   });
   if (volumes.size) tickerVolumeSeriesByTicker.set(key, volumes);
   pricePayload = tickerPriceRuntimeModule.mergeSeries(
     pricePayload,
     key,
-    points,
+    sourcePoints,
     DISPLAY_NAMES[ticker],
   );
-  markDataChanged("price");
+  if (changed) markDataChanged("price");
+  return changed;
 }
 
 function getLatestTickerDateFromPricePayload(ticker) {
@@ -5642,14 +5660,17 @@ async function saveAiAnalysisCacheForTicker(ticker, analysis) {
 }
 
 function aiAnalysisIsFresh(analysis) {
-  return isAnalysisFresh(analysis, TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS * DAY_MS);
+  const savedAt = Number(analysis?.savedAt);
+  return isAnalysisFresh(analysis, TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS * DAY_MS)
+    && koreanDateText(new Date(savedAt)) === koreanDateText();
 }
 
-async function requestAiAnalysisForTicker(ticker) {
+async function requestAiAnalysisForTicker(ticker, options = {}) {
   const target = String(ticker || "").trim().toUpperCase();
+  const forceNetwork = Boolean(options.forceNetwork);
   if (!/^\d{6}\.(KS|KQ)$/.test(target)) return null;
   const memoryAnalysis = aiAnalysisByTicker.get(target) || null;
-  if (aiAnalysisIsFresh(memoryAnalysis)) return memoryAnalysis;
+  if (!forceNetwork && aiAnalysisIsFresh(memoryAnalysis)) return memoryAnalysis;
   if (aiAnalysisPromises.has(target)) return aiAnalysisPromises.get(target);
 
   aiAnalysisPendingTickers.add(target);
@@ -5661,12 +5682,13 @@ async function requestAiAnalysisForTicker(ticker) {
     if (cached) {
       aiAnalysisByTicker.set(target, cached);
       if (showAiForecast) requestChartRender(lastAiForecastTraceCount > 0);
-      if (aiAnalysisIsFresh(cached)) return cached;
+      if (!forceNetwork && aiAnalysisIsFresh(cached)) return cached;
     }
     if (!canUseDartGateway()) return cached;
 
     if (showAiForecast) setAiForecastProgress(26, `${labelName(target)} 실적·컨센서스 수집`);
-    const response = await fetchWithTimeout(`${AI_ANALYSIS_ENDPOINT}?ticker=${encodeURIComponent(target)}`, {
+    const refreshQuery = forceNetwork ? "&refresh=1" : "";
+    const response = await fetchWithTimeout(`${AI_ANALYSIS_ENDPOINT}?ticker=${encodeURIComponent(target)}${refreshQuery}`, {
       cache: "no-store",
       headers: { Authorization: `Bearer ${getDartGatewayAccessToken()}` },
     }, 25000);
@@ -5738,13 +5760,13 @@ async function loadAiRotationLeaderSeries() {
   return aiRotationSeriesPromise;
 }
 
-async function refreshAiAnalysisForVisibleSeries() {
+async function refreshAiAnalysisForVisibleSeries(options = {}) {
   if (!showAiForecast) return 0;
   const tickers = activeAiAnalysisTickers();
   const before = aiAnalysisByTicker.size;
   await Promise.all([
     tickers.length
-      ? mapWithConcurrency(tickers, 2, requestAiAnalysisForTicker)
+      ? mapWithConcurrency(tickers, 2, (ticker) => requestAiAnalysisForTicker(ticker, options))
       : Promise.resolve([]),
     loadAiRotationLeaderSeries(),
   ]);
@@ -6384,7 +6406,7 @@ function queueDisclosureTraceRefresh() {
     // Plotly cannot safely restyle an event trace while the line traces are being rebuilt.
     if (mainChartRenderInFlight || renderChartRafId) return;
     disclosureTraceRefreshQueued = false;
-    if (!applyDisclosureStateFast()) requestChartRender(false);
+    if (!applyDisclosureStateFast()) requestChartRender(true);
   });
 }
 
@@ -6412,7 +6434,8 @@ function preloadTickerDartData(ticker, msgEl) {
 
 function aiForecastInputsPending() {
   return Boolean(
-    aiRotationSeriesPromise
+    historicalDataLoadPromise
+    || aiRotationSeriesPromise
     || aiContextPendingTickers.size
     || aiForecastDeferredSeries.size
     || activeAiAnalysisTickers().some((ticker) => aiAnalysisPendingTickers.has(ticker))
@@ -6422,7 +6445,8 @@ function aiForecastInputsPending() {
 function aiForecastContextPendingForSeries(series) {
   const key = String(series || "").toUpperCase();
   return Boolean(
-    !aiMarketModelLoadSettled
+    historicalDataLoadPromise
+    || !aiMarketModelLoadSettled
     || aiMarketModelPromise
     || aiRotationSeriesPromise
     || aiContextPendingTickers.has(key)
@@ -6609,6 +6633,7 @@ async function buildAiForecastTraces(rows, seriesModels) {
       disclosures: disclosureRowsForTicker(series),
       consensus: analysis?.consensus || null,
       financials: analysis?.financials || [],
+      internetNews: analysis?.news || [],
       marketModel: aiMarketModel,
       macdSignal: macdModel?.signal || 0,
       horizon: 126,
@@ -6616,9 +6641,12 @@ async function buildAiForecastTraces(rows, seriesModels) {
     const inputKey = getAiForecastInputKey(options);
     const cached = aiForecastResultBySeries.get(series);
     const contextPending = aiForecastContextPendingForSeries(series);
-    // Viewport, period, visibility, and AI toggle changes only re-anchor cached output.
-    // A newly enabled series has no entry and therefore calculates exactly once per session.
-    const reusableCache = cached || null;
+    // Rendering changes never alter inputKey. Real price, event, analysis, or macro
+    // changes do, so only the affected forecast is recalculated.
+    const reusableCache = inputKey && cached
+      && (cached.inputKey === inputKey || contextPending)
+      ? cached
+      : null;
     return [{
       model,
       series,
@@ -6634,6 +6662,7 @@ async function buildAiForecastTraces(rows, seriesModels) {
     && !item.contextPending
     && !aiForecastDeferredSeries.has(item.series)
   ));
+  if (calculationItems.length && !aiForecastProgressActive) startAiForecastProgress();
   const reportCalculationProgress = calculationItems.length > 0 && !aiForecastInputsPending();
   let completedCalculations = 0;
   for (const item of workItems) {
@@ -6932,8 +6961,12 @@ async function renderChart(preserveZoom = true) {
 
   // Preserve zoom while reapplying handle transforms and updated traces.
 
-  if (!preserveZoom) pinnedXRange = null;
-  let savedXRange = preserveZoom
+  const preserveLockedXRange = !autoChartReset
+    && Array.isArray(pinnedXRange)
+    && pinnedXRange.length === 2;
+  const preserveVisibleXRange = preserveZoom || preserveLockedXRange;
+  if (!preserveVisibleXRange) pinnedXRange = null;
+  let savedXRange = preserveVisibleXRange
     ? (pinnedXRange ? [...pinnedXRange] : (el._fullLayout?.xaxis?.range?.slice() || null))
     : null;
   const savedYRange = preserveZoom
@@ -8686,6 +8719,19 @@ async function ensureHistoricalDataLoaded(forceNetwork = false) {
   return historicalDataLoadPromise;
 }
 
+function prepareHistoricalDataForAiForecast() {
+  if (historicalDataLoaded && hasHistoricalDataCoverage()) return Promise.resolve(true);
+  const lockedViewportRange = !autoChartReset ? getCurrentMainXRange() : null;
+  setAiForecastProgress(8, "전체 과거 학습 데이터 준비");
+  return ensureHistoricalDataLoaded(false)
+    .catch(() => false)
+    .finally(() => {
+      // Loading AI training history must not replace a viewport the user explicitly locked.
+      if (!autoChartReset && lockedViewportRange) pinnedXRange = [...lockedViewportRange];
+      if (showAiForecast) requestChartRender(!autoChartReset, { deferDuringInteraction: false });
+    });
+}
+
 async function applyRuntimeRefreshChanges(revisionsBefore, options = {}) {
   const revisionsAfter = getDataRevisions();
   const mainDataChanged = ["price", "macro", "credit", "crisis"]
@@ -9017,6 +9063,7 @@ async function boot() {
         revealAiForecastRangeOnNextRender = true;
         trimAiForecastRangeOnNextRender = false;
         startAiForecastProgress();
+        prepareHistoricalDataForAiForecast().catch(() => {});
         refreshAiAnalysisForVisibleSeries().catch(() => {});
         loadAiMarketModel().catch(() => {});
       } else {
@@ -9035,6 +9082,7 @@ async function boot() {
     });
     if (showAiForecast) {
       startAiForecastProgress();
+      prepareHistoricalDataForAiForecast().catch(() => {});
       refreshAiAnalysisForVisibleSeries().catch(() => {});
       loadAiMarketModel().catch(() => {});
     }
@@ -9116,6 +9164,12 @@ async function boot() {
       renderChart,
       refreshRuntimeData: async (options) => {
         await refreshRuntimeData(msgEl, options);
+        if (showAiForecast) {
+          const needsDailyAnalysis = activeAiAnalysisTickers()
+            .some((ticker) => !aiAnalysisIsFresh(aiAnalysisByTicker.get(ticker)));
+          if (needsDailyAnalysis) startAiForecastProgress();
+          await refreshAiAnalysisForVisibleSeries({ forceNetwork: true });
+        }
         if (showInsiderTrades && canUseDartGateway()) {
           await refreshInsiderTradesForVisibleSeries({ forceNetwork: true });
           requestChartRender();

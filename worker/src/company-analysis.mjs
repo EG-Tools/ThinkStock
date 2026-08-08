@@ -1,15 +1,28 @@
 const COMPANY_OVERVIEW_URL = "https://navercomp.wisereport.co.kr/v2/company/c1010001.aspx";
+const COMPANY_NEWS_URL = "https://finance.naver.com/item/main.naver";
 const MAX_OVERVIEW_BYTES = 900_000;
+const MAX_NEWS_BYTES = 600_000;
+
+function decodeHtmlEntities(value) {
+  const named = {
+    amp: "&", apos: "'", gt: ">", hellip: "…", ldquo: "“", lsquo: "‘",
+    lt: "<", middot: "·", nbsp: " ", quot: '"', rdquo: "”", rsquo: "’",
+  };
+  return String(value || "")
+    .replace(/&#(x[0-9a-f]+|\d+);/gi, (match, code) => {
+      const number = String(code).toLowerCase().startsWith("x")
+        ? Number.parseInt(String(code).slice(1), 16)
+        : Number.parseInt(code, 10);
+      return Number.isFinite(number) ? String.fromCodePoint(number) : match;
+    })
+    .replace(/&([a-z]+);/gi, (match, name) => named[String(name).toLowerCase()] ?? match);
+}
 
 function htmlText(value) {
-  return String(value || "")
+  return decodeHtmlEntities(String(value || ""))
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
     .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;|&#160;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&quot;/gi, '"')
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -35,13 +48,19 @@ function attributeValue(attributes, name) {
 async function boundedText(response, maxBytes) {
   const declared = Number(response.headers.get("Content-Length"));
   if (Number.isFinite(declared) && declared > maxBytes) throw new Error("Upstream response is too large");
+  const charset = response.headers.get("Content-Type")?.match(/charset\s*=\s*([^;\s]+)/i)?.[1] || "utf-8";
+  let decoder;
+  try {
+    decoder = new TextDecoder(charset.replace(/["']/g, ""));
+  } catch (_) {
+    decoder = new TextDecoder();
+  }
   if (!response.body?.getReader) {
-    const value = await response.text();
-    if (new TextEncoder().encode(value).byteLength > maxBytes) throw new Error("Upstream response is too large");
-    return value;
+    const value = new Uint8Array(await response.arrayBuffer());
+    if (value.byteLength > maxBytes) throw new Error("Upstream response is too large");
+    return decoder.decode(value);
   }
   const reader = response.body.getReader();
-  const decoder = new TextDecoder();
   let total = 0;
   let output = "";
   while (true) {
@@ -55,6 +74,50 @@ async function boundedText(response, maxBytes) {
     output += decoder.decode(value, { stream: true });
   }
   return output + decoder.decode();
+}
+
+function newsDate(month, day, now = new Date()) {
+  const current = new Date(now);
+  if (!Number.isFinite(current.getTime())) return "";
+  const monthNumber = Number(month);
+  const dayNumber = Number(day);
+  if (!Number.isInteger(monthNumber) || monthNumber < 1 || monthNumber > 12
+    || !Number.isInteger(dayNumber) || dayNumber < 1 || dayNumber > 31) return "";
+  const koreanNow = new Date(current.getTime() + (9 * 60 * 60 * 1000));
+  let year = koreanNow.getUTCFullYear();
+  const candidate = new Date(Date.UTC(year, monthNumber - 1, dayNumber));
+  if (candidate.getUTCMonth() !== monthNumber - 1 || candidate.getUTCDate() !== dayNumber) return "";
+  const koreanToday = Date.UTC(year, koreanNow.getUTCMonth(), koreanNow.getUTCDate());
+  if (candidate.getTime() > koreanToday + (7 * 24 * 60 * 60 * 1000)) year -= 1;
+  return `${year}-${String(monthNumber).padStart(2, "0")}-${String(dayNumber).padStart(2, "0")}`;
+}
+
+export function parseNaverNewsHtml(html, ticker, now = new Date()) {
+  const target = String(ticker || "").trim().toUpperCase();
+  const code = target.slice(0, 6);
+  const records = [];
+  const seen = new Set();
+  [...String(html || "").matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/gi)].forEach((match) => {
+    const row = match[1];
+    const anchor = row.match(/<a\b([^>]*href\s*=\s*(["'])([^"']*news_read\.naver[^"']*)\2[^>]*)>([\s\S]*?)<\/a>/i);
+    const dateMatch = row.match(/<em\b[^>]*>\s*(\d{2})\/(\d{2})\s*<\/em>/i);
+    if (!anchor || !dateMatch) return;
+    const title = htmlText(anchor[4]).slice(0, 240);
+    const date = newsDate(dateMatch[1], dateMatch[2], now);
+    if (!title || !date) return;
+    const relativeUrl = decodeHtmlEntities(anchor[3]);
+    const url = relativeUrl.startsWith("http")
+      ? relativeUrl
+      : `https://finance.naver.com${relativeUrl.startsWith("/") ? "" : "/"}${relativeUrl}`;
+    const key = `${date}|${title}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    records.push({ ticker: target, date, title, source: "Naver Finance", url });
+  });
+  return records
+    .filter((row) => row.ticker === target && row.url.includes(`code=${code}`))
+    .sort((left, right) => right.date.localeCompare(left.date))
+    .slice(0, 20);
 }
 
 export function parseConsensusHtml(html, ticker) {
@@ -241,16 +304,30 @@ export function mergeFinancialRecords(existing, incoming) {
 export async function fetchCompanyAnalysis(ticker, fetchImpl = fetch) {
   const code = String(ticker || "").slice(0, 6);
   const overviewUrl = `${COMPANY_OVERVIEW_URL}?cmp_cd=${encodeURIComponent(code)}`;
-  const overviewResponse = await fetchImpl(overviewUrl, {
+  const newsUrl = `${COMPANY_NEWS_URL}?code=${encodeURIComponent(code)}`;
+  const request = (url) => fetchImpl(url, {
     headers: { Accept: "text/html", "Accept-Language": "ko-KR,ko;q=0.9" },
     signal: AbortSignal.timeout(20000),
   });
-  if (!overviewResponse.ok) throw new Error(`Company analysis HTTP ${overviewResponse.status}`);
-  const overviewHtml = await boundedText(overviewResponse, MAX_OVERVIEW_BYTES);
-  const consensus = parseConsensusHtml(overviewHtml, ticker);
-  const financials = parseEarningsTrendHtml(overviewHtml, ticker);
+  const [overviewResult, newsResult] = await Promise.allSettled([
+    request(overviewUrl).then(async (response) => {
+      if (!response.ok) throw new Error(`Company analysis HTTP ${response.status}`);
+      return boundedText(response, MAX_OVERVIEW_BYTES);
+    }),
+    request(newsUrl).then(async (response) => {
+      if (!response.ok) throw new Error(`Company news HTTP ${response.status}`);
+      return boundedText(response, MAX_NEWS_BYTES);
+    }),
+  ]);
+  if (overviewResult.status === "rejected" && newsResult.status === "rejected") {
+    throw overviewResult.reason;
+  }
+  const overviewHtml = overviewResult.status === "fulfilled" ? overviewResult.value : "";
+  const newsHtml = newsResult.status === "fulfilled" ? newsResult.value : "";
   return {
-    consensus,
-    financials,
+    consensus: parseConsensusHtml(overviewHtml, ticker),
+    financials: parseEarningsTrendHtml(overviewHtml, ticker),
+    news: parseNaverNewsHtml(newsHtml, ticker),
+    newsFetched: newsResult.status === "fulfilled",
   };
 }

@@ -11,6 +11,7 @@ import {
   parseConsensusHtml,
   parseEarningsTrendHtml,
   parseFinancialSummaryHtml,
+  parseNaverNewsHtml,
 } from "./company-analysis.mjs";
 
 import { matchRequestRoute, queryFlag } from "./request-router.mjs";
@@ -21,6 +22,7 @@ export {
   parseConsensusHtml,
   parseEarningsTrendHtml,
   parseFinancialSummaryHtml,
+  parseNaverNewsHtml,
 };
 
 const DART_LIST_URL = "https://opendart.fss.or.kr/api/list.json";
@@ -41,8 +43,7 @@ const MAJOR_HOLDER_DOCUMENT_CONCURRENCY = 4;
 const MAX_MAJOR_HOLDER_DOCUMENTS = 40;
 const MAX_DART_DOCUMENT_ARCHIVE_BYTES = 5 * 1024 * 1024;
 const MAX_DART_DOCUMENT_XML_BYTES = 12 * 1024 * 1024;
-const ANALYSIS_CACHE_SCHEMA = 3;
-const ANALYSIS_CACHE_FRESH_MS = 30 * 24 * 60 * 60 * 1000;
+const ANALYSIS_CACHE_SCHEMA = 4;
 const ANALYSIS_SNAPSHOT_LIMIT = 60;
 const FORECAST_JOURNAL_SCHEMA = 1;
 const FORECAST_JOURNAL_LIMIT = 120;
@@ -58,8 +59,10 @@ const FORECAST_ATTRIBUTION_COMPONENTS = new Set([
   "top400Blend",
   "empiricalGuardrail",
   "corporateRiskGate",
+  "criticalNewsGate",
   "consensus",
   "fundamentals",
+  "internetNews",
   "marketRegime",
   "corporateRisk",
   "rotation",
@@ -939,6 +942,26 @@ function timestamp(value) {
   return finiteNumber(value, { min: 1, max: 8_640_000_000_000_000 });
 }
 
+function sanitizeAnalysisNews(rows, ticker) {
+  const target = String(ticker || "").trim().toUpperCase();
+  const seen = new Set();
+  return (Array.isArray(rows) ? rows : []).flatMap((row) => {
+    const rowTicker = String(row?.ticker || "").trim().toUpperCase();
+    const recordTicker = TICKER_PATTERN.test(target)
+      ? target
+      : (TICKER_PATTERN.test(rowTicker) ? rowTicker : "");
+    const date = String(row?.date || "").slice(0, 10);
+    const title = String(row?.title || "").replace(/\s+/g, " ").trim().slice(0, 240);
+    const source = String(row?.source || "").replace(/\s+/g, " ").trim().slice(0, 80);
+    const url = String(row?.url || "").trim().slice(0, 500);
+    if (!isValidIsoDate(date) || !title || !/^https:\/\//i.test(url)) return [];
+    const key = `${date}|${title}`;
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [{ ticker: recordTicker, date, title, source, url }];
+  }).sort((left, right) => right.date.localeCompare(left.date)).slice(0, 40);
+}
+
 function snapshotFromAnalysis(analysis) {
   const savedAt = timestamp(analysis?.savedAt);
   if (!savedAt) return null;
@@ -947,6 +970,7 @@ function snapshotFromAnalysis(analysis) {
     savedAt,
     consensus: analysis?.consensus || null,
     financials: Array.isArray(analysis?.financials) ? analysis.financials : [],
+    news: sanitizeAnalysisNews(analysis?.news, analysis?.ticker),
   };
 }
 
@@ -959,6 +983,7 @@ function sanitizeAnalysisSnapshot(snapshot) {
     savedAt,
     consensus: snapshot?.consensus || null,
     financials: Array.isArray(snapshot?.financials) ? snapshot.financials : [],
+    news: sanitizeAnalysisNews(snapshot?.news, snapshot?.ticker),
   };
 }
 
@@ -977,7 +1002,8 @@ export function mergeAnalysisSnapshots(existing, incoming) {
 }
 
 function normalizeAnalysisCache(value, ticker) {
-  if (!value || value.ticker !== ticker || ![2, ANALYSIS_CACHE_SCHEMA].includes(value.schema)) return null;
+  if (!value || value.ticker !== ticker || ![2, 3, ANALYSIS_CACHE_SCHEMA].includes(value.schema)) return null;
+  const hasNews = Array.isArray(value.news);
   const currentSnapshot = snapshotFromAnalysis(value);
   const storedSnapshots = mergeAnalysisSnapshots(value.snapshots, []);
   const snapshots = mergeAnalysisSnapshots(storedSnapshots, currentSnapshot ? [currentSnapshot] : []);
@@ -989,7 +1015,9 @@ function normalizeAnalysisCache(value, ticker) {
     savedAt: timestamp(value.savedAt) || 0,
     consensus: value.consensus || null,
     financials: Array.isArray(value.financials) ? value.financials : [],
+    news: sanitizeAnalysisNews(value.news, ticker),
     snapshots,
+    hasNews,
     needsMigration: value.schema !== ANALYSIS_CACHE_SCHEMA
       || !Array.isArray(value.snapshots)
       || storedSnapshots.length !== value.snapshots.length
@@ -1019,6 +1047,7 @@ async function writeAnalysisCache(env, ticker, analysis) {
     savedAt: analysis.savedAt,
     consensus: analysis.consensus || null,
     financials: analysis.financials || [],
+    news: sanitizeAnalysisNews(analysis.news, ticker),
     snapshots: mergeAnalysisSnapshots(analysis.snapshots, []),
   }));
 }
@@ -1030,6 +1059,7 @@ function analysisPayload(cached, extra = {}) {
     savedAt: cached.savedAt,
     consensus: cached.consensus || null,
     financials: cached.financials || [],
+    news: cached.news || [],
     snapshots: cached.snapshots || [],
     ...extra,
   };
@@ -1037,8 +1067,12 @@ function analysisPayload(cached, extra = {}) {
 
 async function analysisResponse(env, ctx, ticker, origin, options = {}) {
   const cached = await readAnalysisCache(env, ticker);
-  const fresh = cached && Date.now() - Number(cached.savedAt || 0) <= ANALYSIS_CACHE_FRESH_MS;
-  if (fresh && (!options.requireFinancials || cached.financials?.length)) {
+  const fresh = cached
+    && koreanDateText(new Date(Number(cached.savedAt || 0))) === koreanDateText();
+  if (!options.forceRefresh
+    && fresh
+    && (!options.requireNews || cached.hasNews)
+    && (!options.requireFinancials || cached.financials?.length)) {
     if (cached.needsMigration) {
       const write = writeAnalysisCache(env, ticker, cached);
       if (ctx?.waitUntil) ctx.waitUntil(write);
@@ -1048,7 +1082,10 @@ async function analysisResponse(env, ctx, ticker, origin, options = {}) {
   }
   try {
     const incoming = await fetchCompanyAnalysis(ticker);
-    if (options.requireFinancials && !incoming.financials?.length) {
+    if (options.requireFinancials
+      && !incoming.financials?.length
+      && !incoming.consensus
+      && !incoming.news?.length) {
       throw new Error("Embedded earnings data is empty");
     }
     const analysis = {
@@ -1057,6 +1094,9 @@ async function analysisResponse(env, ctx, ticker, origin, options = {}) {
       savedAt: Date.now(),
       consensus: incoming.consensus || cached?.consensus || null,
       financials: mergeFinancialRecords(cached?.financials || [], incoming.financials || []),
+      news: incoming.newsFetched
+        ? sanitizeAnalysisNews(incoming.news, ticker)
+        : (cached?.news || []),
     };
     const currentSnapshot = snapshotFromAnalysis(analysis);
     analysis.snapshots = mergeAnalysisSnapshots(
@@ -1068,7 +1108,7 @@ async function analysisResponse(env, ctx, ticker, origin, options = {}) {
     else await write;
     return jsonResponse(analysisPayload(analysis, { cached: false }), 200, origin);
   } catch (error) {
-    if (cached?.consensus || cached?.financials?.length) {
+    if (cached?.consensus || cached?.financials?.length || cached?.news?.length) {
       return jsonResponse(analysisPayload(cached, {
         cached: true,
         stale: true,
@@ -2011,7 +2051,11 @@ export async function handleRequest(request, env, ctx = null) {
   if (route.id === "prices") return krxPriceResponse(env, ticker, origin);
   if (route.id === "forecast-journal") return forecastJournalResponse(request, env, ticker, origin);
   if (["consensus", "analysis"].includes(route.id)) {
-    return analysisResponse(env, ctx, ticker, origin, { requireFinancials: route.id === "analysis" });
+    return analysisResponse(env, ctx, ticker, origin, {
+      requireFinancials: route.id === "analysis",
+      requireNews: route.id === "analysis",
+      forceRefresh: queryFlag(url.searchParams.get("refresh")),
+    });
   }
   if (!env.DART_API_KEY) return jsonResponse({ ok: false, error: "Cloudflare에 DART 키가 설정되지 않았습니다." }, 503, origin);
 

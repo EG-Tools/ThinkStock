@@ -15,11 +15,13 @@ const {
   buildContextSignal,
   buildCorporateRiskSignal,
   buildForecast,
+  buildInternetNewsSignal,
   buildLeadingCyclePhase,
   buildMarketRegimeSignal,
   buildPriceRegimeProfile,
   buildRotationSignal,
   globalMarketSeriesFor,
+  getForecastInputKey,
   marketModelForHorizon,
   nextBusinessDates,
   parseFeatureTransform,
@@ -110,7 +112,7 @@ test("trains deterministic 20, 63, and 126-day models with uncertainty bands", (
   assert.ok(standardDeviation(forecastReturns) <= standardDeviation(recentReturns) * 1.2);
   assert.deepEqual(first.prices, second.prices);
   assert.equal(first.model.horizons.map((item) => item.days).join(","), "20,63,126");
-  assert.equal(first.model.pathVersion, "path-v10");
+  assert.equal(first.model.pathVersion, "path-v12");
   const [month, quarter, halfYear] = first.model.horizons;
   assert.equal(month.calibration.localScale, 0.33);
   assert.equal(month.calibration.regimeScale, 1);
@@ -203,6 +205,98 @@ test("keeps the learned prices independent from the visible chart range", () => 
   assert.notDeepEqual(shortView.chartValues, longView.chartValues);
   assert.equal(shortView.chartValues[0], 10 + (prices.at(-1) * 0.2));
   assert.equal(longView.chartValues[0], 80 + (prices.at(-1) * 0.5));
+});
+
+test("keeps the forecast input key independent from viewport transforms", () => {
+  const { dates, prices, kospi } = syntheticHistory(1000);
+  const common = {
+    series: "005930.KS",
+    dates,
+    prices,
+    marketCandidates: [{ series: "^KS11", dates, prices: kospi }],
+  };
+  const shortViewKey = getForecastInputKey({
+    ...common,
+    transformPrices: prices.slice(-63),
+    transformChartValues: prices.slice(-63).map((price) => price * 0.2),
+  });
+  const longViewKey = getForecastInputKey({
+    ...common,
+    transformPrices: prices,
+    transformChartValues: prices.map((price) => price * 0.8),
+  });
+
+  assert.equal(shortViewKey, longViewKey);
+  assert.notEqual(getForecastInputKey({
+    ...common,
+    internetNews: [{ date: dates.at(-1), title: "대규모 공급계약" }],
+  }), longViewKey);
+});
+
+test("uses bounded recent company-news evidence in the forecast attribution", () => {
+  const { dates, prices, kospi } = syntheticHistory(1000);
+  const lastDate = dates.at(-1);
+  const positiveNews = [{ date: lastDate, title: "사상 최대 실적과 대규모 공급계약 체결" }];
+  const negativeNews = [{ date: lastDate, title: "실적 부진으로 목표가 하향" }];
+  assert.ok(buildInternetNewsSignal(positiveNews, lastDate).signal > 0);
+  assert.ok(buildInternetNewsSignal(negativeNews, lastDate).signal < 0);
+
+  const common = {
+    series: "005930.KS",
+    dates,
+    prices,
+    marketCandidates: [{ series: "^KS11", dates, prices: kospi }],
+  };
+  const positive = buildForecast({ ...common, internetNews: positiveNews });
+  const negative = buildForecast({ ...common, internetNews: negativeNews });
+  assert.equal(positive.audit.sources.internet_news_rows, 1);
+  assert.ok(positive.attribution.horizons[126].components.internetNews > 0);
+  assert.ok(negative.attribution.horizons[126].components.internetNews < 0);
+  assert.ok(positive.attribution.horizons[126].expectedLogReturn
+    > negative.attribution.horizons[126].expectedLogReturn);
+});
+
+test("hard-gates an optimistic forecast when fresh company news reports a critical event", () => {
+  const { dates, prices, kospi } = syntheticHistory(1100);
+  const lastDate = dates.at(-1);
+  const criticalNews = [{ date: lastDate, title: "기업 파산 및 상장폐지 절차 개시" }];
+  const relievedNews = [{ date: lastDate, title: "유상증자 결정 철회" }];
+  const ambiguousSplit = buildInternetNewsSignal(
+    [{ date: lastDate, title: "기업분할 결정" }],
+    lastDate,
+  );
+  const positiveSplit = buildInternetNewsSignal(
+    [{ date: lastDate, title: "인적분할로 주주가치 제고" }],
+    lastDate,
+  );
+  const negativeSplit = buildInternetNewsSignal(
+    [{ date: lastDate, title: "물적분할 후 중복상장 우려와 주주가치 훼손" }],
+    lastDate,
+  );
+  const criticalSignal = buildInternetNewsSignal(criticalNews, lastDate);
+  assert.equal(criticalSignal.criticalRisk, true);
+  assert.equal(criticalSignal.criticalSeverity, 1);
+  assert.equal(buildInternetNewsSignal(relievedNews, lastDate).criticalRisk, false);
+  assert.equal(ambiguousSplit.signal, 0);
+  assert.equal(ambiguousSplit.ambiguousCount, 1);
+  assert.ok(positiveSplit.signal > 0);
+  assert.ok(negativeSplit.signal < 0);
+
+  const forecast = buildForecast({
+    series: "005930.KS",
+    dates,
+    prices,
+    marketCandidates: [{ series: "^KS11", dates, prices: kospi }],
+    consensus: { targetPrice: prices.at(-1) * 1.5, opinion: 5, institutions: 12 },
+    internetNews: criticalNews,
+  });
+  assert.equal(forecast.signals.internetNewsCriticalRisk, true);
+  assert.ok(forecast.prices.at(-1) < forecast.prices[0]);
+  assert.equal(forecast.scenarios.upside.probability, 0);
+  assert.ok(forecast.scenarios.downside.probability >= 85);
+  assert.ok(forecast.attribution.horizons[126].components.criticalNewsGate < 0);
+  assert.equal(forecast.audit.features.internet_news_critical_risk, 1);
+  assert.match(forecast.scenarios.downside.reason, /초대형 악재/);
 });
 
 test("anchors the forecast to the latest valid chart point when the newest row is empty", () => {
@@ -373,8 +467,8 @@ test("blends a validated top-400 market model without replacing the local guardr
 
   assert.equal(blended.model.marketModelUsed, true);
   assert.match(blended.model.name, /top-400/);
-  assert.equal(blended.model.version, "2026-07-23|path-v10");
-  assert.equal(blended.model.pathVersion, "path-v10");
+  assert.equal(blended.model.version, "2026-07-23|path-v12");
+  assert.equal(blended.model.pathVersion, "path-v12");
   assert.equal(blended.scenarios.calibration.probabilitySignalStrength, 0.5);
   assert.equal(blended.scenarios.calibration.sidewaysProbabilityScale, 0.7);
   assert.equal(blended.model.globalMarketSeries, "^KS11");
@@ -432,6 +526,18 @@ test("gates optimistic forecasts when recent disclosures and losses show termina
   assert.ok(risky.scenarios.downside.probability > clean.scenarios.downside.probability);
   assert.match(risky.scenarios.downside.reason, /상장|적자|손실/);
   assert.ok(buildCorporateRiskSignal({ disclosures: [] }, "005930.KS", dates.at(-1)).score === 0);
+
+  const dilution = buildForecast({
+    ...common,
+    disclosures: [{ ticker: "005930.KS", date: dates.at(-1), title: "유상증자 결정" }],
+  });
+  assert.equal(dilution.signals.corporateRisk.recentDilutionRisk, true);
+  assert.ok(dilution.prices.at(-1) < dilution.prices[0]);
+  assert.equal(dilution.scenarios.upside.probability, 0);
+  assert.ok(dilution.scenarios.downside.probability >= 70);
+  assert.equal(buildCorporateRiskSignal({
+    disclosures: [{ ticker: "005930.KS", date: dates.at(-1), title: "유상증자 결정 철회" }],
+  }, "005930.KS", dates.at(-1)).recentDilutionRisk, false);
 });
 
 test("uses a macro-first model for KOSPI and reacts to rates, trade, and recession risk", () => {

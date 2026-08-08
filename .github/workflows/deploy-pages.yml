@@ -1,7 +1,14 @@
-name: Deploy GitHub Pages
+name: ThinkStock 배포
+run-name: ${{ inputs.release_title }}
 
 on:
   workflow_dispatch:
+    inputs:
+      release_title:
+        description: 무엇을 보강했는지 간단히 입력하세요
+        required: true
+        default: ThinkStock 기능 개선
+        type: string
 
 permissions:
   contents: read

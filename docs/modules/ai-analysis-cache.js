@@ -1,7 +1,7 @@
 (function initThinkStockAiAnalysisCache(globalScope) {
   "use strict";
 
-  const SCHEMA_VERSION = 2;
+  const SCHEMA_VERSION = 3;
   const TICKER_PATTERN = /^\d{6}\.(KS|KQ)$/;
 
   function finiteOrNull(value) {
@@ -64,6 +64,22 @@
       : null;
   }
 
+  function sanitizeNewsRecords(values, ticker) {
+    const target = String(ticker || "").trim().toUpperCase();
+    const seen = new Set();
+    return (Array.isArray(values) ? values : []).flatMap((value) => {
+      const date = String(value?.date || "").slice(0, 10);
+      const title = String(value?.title || "").replace(/\s+/g, " ").trim().slice(0, 240);
+      const source = String(value?.source || "").replace(/\s+/g, " ").trim().slice(0, 80);
+      const url = String(value?.url || "").trim().slice(0, 500);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !title || !/^https:\/\//i.test(url)) return [];
+      const key = `${date}|${title}`;
+      if (seen.has(key)) return [];
+      seen.add(key);
+      return [{ ticker: target, date, title, source, url }];
+    }).sort((left, right) => right.date.localeCompare(left.date)).slice(0, 40);
+  }
+
   function mergeFinancialRecords(existing, incoming) {
     const merged = new Map();
     [...(existing || []), ...(incoming || [])].forEach((value) => {
@@ -82,7 +98,8 @@
     if (!/^\d{4}-\d{2}-\d{2}$/.test(asOf)) return null;
     const consensus = sanitizeConsensus(value.consensus);
     const financials = mergeFinancialRecords([], value.financials);
-    if (!consensus && !financials.length) return null;
+    const news = sanitizeNewsRecords(value.news, ticker);
+    if (!consensus && !financials.length && !news.length) return null;
     const savedAt = Number(value.savedAt ?? value.saved_at);
     return {
       asOf,
@@ -90,6 +107,7 @@
       ticker,
       consensus,
       financials,
+      news,
     };
   }
 
@@ -114,8 +132,11 @@
     const prior = existing && typeof existing === "object" ? existing : {};
     const consensus = sanitizeConsensus(source.consensus) || sanitizeConsensus(prior.consensus);
     const financials = mergeFinancialRecords(prior.financials, source.financials);
+    const news = Object.prototype.hasOwnProperty.call(source, "news")
+      ? sanitizeNewsRecords(source.news, target)
+      : sanitizeNewsRecords(prior.news, target);
     const snapshots = mergeSnapshots(prior.snapshots, source.snapshots, target);
-    if (!consensus && !financials.length && !snapshots.length) return null;
+    if (!consensus && !financials.length && !news.length && !snapshots.length) return null;
     const suppliedSavedAt = Number(source.savedAt);
     const priorSavedAt = Number(prior.savedAt);
     return {
@@ -127,6 +148,7 @@
       lastAccessed: now,
       consensus,
       financials,
+      news,
       snapshots,
     };
   }
@@ -147,6 +169,7 @@
     mergeSnapshots,
     normalizeAnalysisRecord,
     sanitizeFinancialRecord,
+    sanitizeNewsRecords,
     sanitizeSnapshot,
   });
 }(typeof self !== "undefined" ? self : globalThis));
