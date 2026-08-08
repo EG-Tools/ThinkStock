@@ -743,12 +743,12 @@ test("auto chart reset ignores saved transforms and fits live scale and position
   await expect.poll(() => page.evaluate(() => (
     Object.keys(window.ThinkStockE2E.getSeriesTransforms().scales).length
   ))).toBeGreaterThan(0);
+  await expect.poll(() => visibleTracePixelSpan(page, "^KS11")).toBeLessThan(scaleSpanBefore * 0.9);
   const scaleSpanDuringDrag = await visibleTracePixelSpan(page, "^KS11");
   await page.mouse.up();
   await expect.poll(() => page.evaluate(() => (
     Object.keys(window.ThinkStockE2E.getSeriesTransforms().scales).length
   ))).toBeGreaterThan(0);
-  await expect.poll(() => visibleTracePixelSpan(page, "^KS11")).toBeLessThan(scaleSpanBefore * 0.9);
   await expect.poll(async () => Math.abs(
     (await visibleTracePixelSpan(page, "^KS11")) - scaleSpanDuringDrag,
   )).toBeLessThan(2);
@@ -1051,7 +1051,7 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page }
   ))).toBeLessThanOrEqual(observedEnd);
 });
 
-test("AI forecast renders when KOSPI is the first series enabled after an empty boot", async ({ page }) => {
+test("AI forecast opens for the first enabled series and stays stable while browsing history", async ({ page }) => {
   const pageUrl = process.env.THINKSTOCK_AI_EMPTY_BOOT_URL || "/?e2e=1";
   await stubExternalRefreshes(page);
   await page.addInitScript(() => {
@@ -1072,10 +1072,10 @@ test("AI forecast renders when KOSPI is the first series enabled after an empty 
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator('.series-toggle-btn[data-series="^KS11"]')).toHaveClass(/is-off/);
 
-  await page.locator('.series-toggle-btn[data-series="^KS11"]').click();
   await page.locator("#aiForecastToggle").click();
-  await expect(page.locator('.series-toggle-btn[data-series="^KS11"]')).toHaveClass(/is-on/);
   await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-pressed", "true");
+  await page.locator('.series-toggle-btn[data-series="^KS11"]').click();
+  await expect(page.locator('.series-toggle-btn[data-series="^KS11"]')).toHaveClass(/is-on/);
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     (element.data || []).filter((trace) => (
       trace?.meta?.isAiForecastScenarioTrace && trace?.meta?.seriesKey === "^KS11"
@@ -1099,6 +1099,52 @@ test("AI forecast renders when KOSPI is the first series enabled after an empty 
   });
   expect(visibleRange.viewportEnd).toBeGreaterThan(visibleRange.observedEnd);
   expect(visibleRange.viewportEnd).toBeGreaterThanOrEqual(visibleRange.forecastEnd);
+
+  await expect.poll(() => page.evaluate(() => {
+    const state = window.ThinkStockE2E.getAiForecastState();
+    return state.marketModelSettled && !state.inputsPending;
+  }), { timeout: 20000 }).toBe(true);
+  await expect(page.locator("#aiForecastProgress")).toBeHidden({ timeout: 10000 });
+
+  const latestForecastPaths = await page.locator("#chart").evaluate((element) => (
+    Object.fromEntries((element.data || [])
+      .filter((trace) => trace?.meta?.isAiForecastScenarioTrace && trace?.meta?.seriesKey === "^KS11")
+      .map((trace) => [trace.meta.aiTraceRole, [...(trace.customdata || [])]]))
+  ));
+  const calculationCountsBeforeHistory = await page.evaluate(() => (
+    window.ThinkStockE2E.getAiForecastState().calculationCounts
+  ));
+  await page.locator("#chartHistorySlider").evaluate((slider) => {
+    slider.value = slider.min;
+    slider.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.isAiForecastScenarioTrace).length
+  ))).toBe(0);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const viewportEnd = Date.parse(element?._fullLayout?.xaxis?.range?.[1]);
+    const observedEnd = Math.max(...(element.data || [])
+      .filter((trace) => trace?.meta?.seriesKey === "^KS11" && !trace?.meta?.isAiForecastScenarioTrace)
+      .flatMap((trace) => (trace.x || []).map(Date.parse).filter(Number.isFinite)));
+    return viewportEnd <= observedEnd;
+  })).toBe(true);
+
+  await page.locator("#chartHistorySlider").evaluate((slider) => {
+    slider.value = slider.max;
+    slider.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => (
+      trace?.meta?.isAiForecastScenarioTrace && trace?.meta?.seriesKey === "^KS11"
+    )).length
+  ))).toBe(3);
+  expect(await page.evaluate(() => window.ThinkStockE2E.getAiForecastState().calculationCounts))
+    .toEqual(calculationCountsBeforeHistory);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    Object.fromEntries((element.data || [])
+      .filter((trace) => trace?.meta?.isAiForecastScenarioTrace && trace?.meta?.seriesKey === "^KS11")
+      .map((trace) => [trace.meta.aiTraceRole, [...(trace.customdata || [])]]))
+  ))).toEqual(latestForecastPaths);
 });
 
 test("AI off clamps the viewport to the last observed date", async ({ page }) => {

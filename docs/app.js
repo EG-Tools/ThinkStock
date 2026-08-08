@@ -245,7 +245,7 @@ const GRANULAR_CACHE_MAX_TICKERS = 60;
 const TICKER_AI_ANALYSIS_CACHE_FRESH_DAYS = 30;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "2.28";
+const APP_VERSION = "2.29";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -328,6 +328,7 @@ const AI_MARKET_MODEL_URL = "./data/ai_market_model.json";
 const AI_ROTATION_LEADER_TICKERS = Object.freeze(["005930.KS", "000660.KS"]);
 const DART_VISIBLE_REFRESH_CONCURRENCY = 2;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const LATEST_HISTORY_POSITION_THRESHOLD = 0.999;
 const NETWORK_REQUEST_TIMEOUT_MS = 12000;
 const DART_GATEWAY_REQUEST_TIMEOUT_MS = 90000;
 const DART_EMPTY_RESULT_RETRY_DELAY_MS = 1200;
@@ -587,7 +588,6 @@ let aiForecastTargetSeries = new Set();
 let aiForecastTargetRevision = 0;
 let aiForecastResultBySeries = new Map();
 let aiForecastDeferredSeries = new Set();
-let aiForecastProtectedCachedSeries = new Set();
 let aiForecastCalculationCounts = new Map();
 let aiForecastDeferredRenderId = 0;
 let aiForecastProgressActive = false;
@@ -2223,6 +2223,7 @@ function panZoomedViewportFromSlider(position) {
   const dataSpan = dataRange?.[1] - dataRange?.[0];
   const travel = dataSpan - viewSpan;
   if (!(viewSpan > 0) || !(dataSpan > 0) || !(travel > dataSpan * 0.005)) return false;
+  if (position < LATEST_HISTORY_POSITION_THRESHOLD) revealAiForecastRangeOnNextRender = false;
   const start = dataRange[0] + travel * Math.max(0, Math.min(1, position));
   applySyncedXRangeMs(start, start + viewSpan);
   scheduleHandleUpdate();
@@ -5485,11 +5486,14 @@ function setAiForecastTargetVisibility(series, visible) {
   const changed = next.size !== aiForecastTargetSeries.size
     || [...next].some((item) => !aiForecastTargetSeries.has(item));
   if (!changed) return false;
-  aiForecastProtectedCachedSeries = visible
-    ? new Set([...aiForecastTargetSeries].filter((seriesKey) => seriesKey !== key))
-    : new Set();
   aiForecastTargetSeries = next;
-  if (visible) aiForecastDeferredSeries.add(key);
+  if (visible) {
+    aiForecastDeferredSeries.add(key);
+    if (chartHistoryPosition >= LATEST_HISTORY_POSITION_THRESHOLD) {
+      revealAiForecastRangeOnNextRender = true;
+      trimAiForecastRangeOnNextRender = false;
+    }
+  }
   else aiForecastDeferredSeries.delete(key);
   aiForecastTargetRevision += 1;
   cancelAiForecastCalculations();
@@ -6556,7 +6560,6 @@ function aiForecastHistoryRows(series) {
   const source = Array.isArray(pricePayload?.records) ? pricePayload.records : [];
   return source.filter((row) => (
     /^\d{4}-\d{2}-\d{2}$/.test(String(row?.date || "").slice(0, 10))
-    && (!currentEnd || row.date <= currentEnd)
     && Number.isFinite(toNum(row?.[series]))
     && toNum(row?.[series]) > 0
   ));
@@ -6564,6 +6567,11 @@ function aiForecastHistoryRows(series) {
 
 async function buildAiForecastTraces(rows, seriesModels) {
   if (!showAiForecast) {
+    lastAiForecastTraceCount = 0;
+    syncAiForecastToggleButton(0);
+    return [];
+  }
+  if (chartHistoryPosition < LATEST_HISTORY_POSITION_THRESHOLD) {
     lastAiForecastTraceCount = 0;
     syncAiForecastToggleButton(0);
     return [];
@@ -6608,19 +6616,9 @@ async function buildAiForecastTraces(rows, seriesModels) {
     const inputKey = getAiForecastInputKey(options);
     const cached = aiForecastResultBySeries.get(series);
     const contextPending = aiForecastContextPendingForSeries(series);
-    const preserveExistingForecast = Boolean(
-      cached
-      && aiForecastProtectedCachedSeries.has(series)
-    );
-    const reusableCache = inputKey && cached
-      && (cached.inputKey === inputKey || preserveExistingForecast || contextPending)
-      ? (cached.inputKey === inputKey ? cached : { ...cached, inputKey })
-      : null;
-    if (preserveExistingForecast && !contextPending && reusableCache !== cached) {
-      // A newly enabled target must not make already visible forecasts recalculate.
-      // Re-anchor the cached result to the latest shared context for this render.
-      aiForecastResultBySeries.set(series, reusableCache);
-    }
+    // Viewport, period, visibility, and AI toggle changes only re-anchor cached output.
+    // A newly enabled series has no entry and therefore calculates exactly once per session.
+    const reusableCache = cached || null;
     return [{
       model,
       series,
@@ -6769,11 +6767,6 @@ async function buildAiForecastTraces(rows, seriesModels) {
     }
   }
   lastAiForecastTraceCount = forecastCount;
-  const allTargetsCached = [...aiForecastTargetSeries]
-    .every((series) => aiForecastResultBySeries.has(series));
-  if (!aiForecastDeferredSeries.size && allTargetsCached) {
-    aiForecastProtectedCachedSeries.clear();
-  }
   syncAiForecastToggleButton(forecastCount);
   return traces;
 }
@@ -8972,7 +8965,12 @@ async function boot() {
     chartHistorySliderController = appUiBindingsModule.bindHistorySlider({
       slider: document.getElementById("chartHistorySlider"),
       getPosition: () => chartHistoryPosition,
-      setPosition: (value) => { chartHistoryPosition = Math.max(0, Math.min(1, value)); },
+      setPosition: (value) => {
+        chartHistoryPosition = Math.max(0, Math.min(1, value));
+        if (chartHistoryPosition < LATEST_HISTORY_POSITION_THRESHOLD) {
+          revealAiForecastRangeOnNextRender = false;
+        }
+      },
       clearPinnedRange: () => { pinnedXRange = null; },
       panViewport: panZoomedViewportFromSlider,
       isHistoricalDataLoaded: () => historicalDataLoaded,
@@ -9010,6 +9008,9 @@ async function boot() {
       if (!adminAccessGranted) return;
       aiForecastToggleRevision += 1;
       showAiForecast = !showAiForecast;
+      if (showAiForecast) {
+        aiForecastDeferredSeries.clear();
+      }
       refreshAiForecastTargets();
       syncAiForecastToggleButton();
       if (showAiForecast) {
