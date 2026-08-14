@@ -1,0 +1,702 @@
+"""
+ThinkStock 로컬 데이터 갱신 스크립트
+=====================================
+전략:
+  - 전체 히스토리: yfinance (KRX는 하루 단위 호출만 지원)
+  - 최근 N일 갱신: KRX Open API (공식 데이터로 덮어쓰기)
+  - RFHIC(코스닥 개별): yfinance (코스닥 일별매매 미승인)
+  - 신용융자 잔고: 금융투자협회 종합통계정보 API (data.go.kr)
+
+사용법:
+    python scripts/fetch_local.py           # 전체 재빌드 (yfinance + KRX 최근 30일)
+    python scripts/fetch_local.py --days 5  # 최근 5일만 KRX 갱신
+
+API keys:
+    .env.local (DART_API_KEY, KOFIA_API_KEY, KOSIS_API_KEY, KRX_API_KEY)
+
+KRX 승인된 서비스:
+    idx/kospi_dd_trd   - KOSPI 시리즈 일별시세
+    idx/kosdaq_dd_trd  - KOSDAQ 시리즈 일별시세
+    sto/stk_bydd_trd   - 유가증권 일별매매 (삼성전자 포함)
+    sto/stk_isu_base_info, sto/ksq_isu_base_info  - 종목기본정보
+
+금융투자협회 API:
+    GetKofiaStatisticsInfoService/getGrantingOfCreditBalanceInfo
+      - crdTrFingScrs   : 코스피 신용융자 잔고 (원)
+      - crdTrFingKosdaq : 코스닥 신용융자 잔고 (원)
+"""
+
+import argparse
+import json
+import os
+import sys
+from datetime import date, timedelta
+from pathlib import Path
+
+import pandas as pd
+
+ROOT      = Path(__file__).resolve().parents[1]
+DATA_DIR  = ROOT / "docs" / "data"
+LOCAL_ENV_FILE = ROOT / ".env.local"
+SAMPLE_MACRO = ROOT / "sample_macro_data.csv"
+
+KRX_BASE     = "http://data-dbg.krx.co.kr/svc/apis"
+LOOKBACK_YRS = 30
+DEFAULT_UPDATE_DAYS = 30   # 기본 KRX 갱신 범위
+
+DISPLAY_NAMES = {
+    "leading_cycle": "선행지수 순환변동치",
+    "kospi_credit":  "코스피 신용잔고",
+    "kosdaq_credit": "코스닥 신용잔고",
+    "^KS11":         "코스피",
+    "^KQ11":         "코스닥",
+    "005930.KS":     "삼성전자",
+    "218410.KQ":     "RFHIC",
+    "adr_kospi":     "ADR K",
+    "adr_kosdaq":    "ADR KQ",
+}
+
+YFINANCE_TICKERS = ["^KS11", "^KQ11", "005930.KS", "218410.KQ"]
+MACRO_SERIES = ["leading_cycle"]
+CREDIT_SERIES = ["kospi_credit", "kosdaq_credit"]
+
+# KRX 설정: (endpoint, IDX_NM or ISU_CD filter, value column)
+KRX_CONFIG = {
+    "^KS11":     ("idx/kospi_dd_trd", "IDX_NM", "코스피",  "CLSPRC_IDX", "BAS_DD"),
+    "^KQ11":     ("idx/kosdaq_dd_trd","IDX_NM", "코스닥",  "CLSPRC_IDX", "BAS_DD"),
+    "005930.KS": ("sto/stk_bydd_trd", "ISU_CD", "005930", "TDD_CLSPRC", "BAS_DD"),
+    "218410.KQ": ("sto/ksq_bydd_trd", "ISU_CD", "218410", "TDD_CLSPRC", "BAS_DD"),
+}
+
+
+KOFIA_CREDIT_URL = (
+    "https://apis.data.go.kr/1160100/service"
+    "/GetKofiaStatisticsInfoService/getGrantingOfCreditBalanceInfo"
+)
+
+# ── Helpers ────────────────────────────────────────────────────────────────
+
+def _read_env_key(path: Path, key: str) -> str | None:
+    if not path.exists():
+        return None
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except Exception:
+        return None
+    for line in lines:
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        k, v = s.split("=", 1)
+        if k.strip().lstrip("\ufeff") == key:
+            value = v.strip().strip('"').strip("'")
+            return value if value else None
+    return None
+
+
+def resolve_api_key(*keys: str) -> str | None:
+    for key in keys:
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    for key in keys:
+        value = _read_env_key(LOCAL_ENV_FILE, key)
+        if value:
+            return value
+    return None
+
+
+def load_key() -> str | None:
+    return resolve_api_key("KRX_API_KEY", "KRX_AUTH_KEY")
+
+
+def load_kofia_key() -> str | None:
+    return resolve_api_key("KOFIA_API_KEY")
+
+
+def load_kosis_key() -> str | None:
+    return resolve_api_key("KOSIS_API_KEY")
+
+
+def years_before(ref: date, y: int) -> date:
+    try:
+        return ref.replace(year=ref.year - y)
+    except ValueError:
+        return ref.replace(year=ref.year - y, month=2, day=28)
+
+
+def trading_days_between(start: date, end: date) -> list[date]:
+    """월~금 날짜 목록 (공휴일 미제외, KRX 빈 응답은 skip)."""
+    days = []
+    cur = start
+    while cur <= end:
+        if cur.weekday() < 5:   # 월(0)~금(4)
+            days.append(cur)
+        cur += timedelta(days=1)
+    return days
+
+
+# ── yfinance (히스토리 전체) ───────────────────────────────────────────────
+
+def fetch_yfinance(tickers: list[str], start: date, end: date) -> pd.DataFrame:
+    try:
+        import yfinance as yf
+    except ImportError:
+        print("  yfinance 미설치: pip install yfinance")
+        return pd.DataFrame(columns=tickers)
+
+    frames = []
+    for ticker in tickers:
+        print(f"  yfinance {ticker} ...", end=" ", flush=True)
+        data = yf.download(
+            ticker,
+            start=start,
+            end=end + timedelta(days=1),
+            auto_adjust=False,
+            progress=False,
+            threads=False,
+        )
+        if data is None or data.empty:
+            print("빈 데이터")
+            continue
+        s = None
+        for col in ("Close", "Adj Close"):
+            if isinstance(data.columns, pd.MultiIndex):
+                if (col, ticker) in data.columns:
+                    s = data[(col, ticker)].dropna().rename(ticker); break
+            elif col in data.columns:
+                s = data[col].dropna().rename(ticker); break
+        if s is None:
+            print("컬럼 없음")
+            continue
+        idx = pd.to_datetime(s.index)
+        try: idx = idx.tz_localize(None)
+        except Exception: idx = idx.tz_convert(None)
+        s.index = idx
+        frames.append(s.to_frame())
+        print(f"{len(s)}행")
+
+    if not frames:
+        return pd.DataFrame(columns=tickers)
+    return pd.concat(frames, axis=1).sort_index()
+
+
+# ── KRX (최근 N일 갱신) ────────────────────────────────────────────────────
+
+def fetch_krx_day(key: str, ticker: str, d: date) -> float | None:
+    """특정 날짜 종가 1개 반환. 공휴일/비거래일이면 None."""
+    try:
+        import requests
+    except ImportError:
+        return None
+
+    ep, filter_col, filter_val, val_col, date_col = KRX_CONFIG[ticker]
+    r = requests.get(
+        f"{KRX_BASE}/{ep}",
+        headers={"AUTH_KEY": key},
+        params={"basDd": d.strftime("%Y%m%d")},
+        timeout=15,
+    )
+    d_json = r.json()
+    rows = d_json.get("OutBlock_1", [])
+    for row in rows:
+        if row.get(filter_col, "") == filter_val:
+            raw = row.get(val_col, "")
+            try:
+                return float(str(raw).replace(",", ""))
+            except (ValueError, TypeError):
+                return None
+    return None
+
+
+def update_with_krx(key: str, existing: pd.DataFrame, update_days: int) -> pd.DataFrame:
+    """
+    최근 update_days 일치 데이터를 KRX API 로 갱신.
+    기존 데이터에 없는 날짜는 추가, 있는 날짜는 덮어쓰기.
+    """
+    today = date.today()
+    start = today - timedelta(days=update_days)
+    days  = trading_days_between(start, today)
+    krx_tickers = list(KRX_CONFIG.keys())
+
+    print(f"\nKRX 갱신: {start} ~ {today} ({len(days)}일 조회)")
+    new_rows: dict[str, dict[str, float]] = {}
+
+    for d in days:
+        row: dict[str, float] = {}
+        for t in krx_tickers:
+            val = fetch_krx_day(key, t, d)
+            if val is not None:
+                row[t] = val
+        if row:
+            new_rows[d.strftime("%Y-%m-%d")] = row
+            print(f"  {d}: {list(row.keys())}")
+        # else: 비거래일 (공휴일 등) → skip
+
+    if not new_rows:
+        print("  갱신 데이터 없음")
+        return existing
+
+    new_df = pd.DataFrame.from_dict(new_rows, orient="index")
+    new_df.index = pd.to_datetime(new_df.index)
+    new_df.index.name = "date"
+
+    if existing.empty:
+        return new_df
+
+    merged = existing.copy()
+    for col in new_df.columns:
+        if col not in merged.columns:
+            merged[col] = float("nan")
+    for idx_val, row_data in new_df.iterrows():
+        for col, val in row_data.items():
+            merged.loc[idx_val, col] = val
+
+    return merged.sort_index()
+
+
+# ── KOSIS 선행지수 순환변동치 ──────────────────────────────────────────────
+
+def fetch_kosis_leading_cycle() -> list[dict]:
+    """
+    KOSIS Open API 에서 선행종합지수 순환변동치(월별)를 가져온다.
+    반환: [{'date': 'YYYY-MM-01', 'leading_cycle': float}, ...]
+    """
+    api_key = load_kosis_key()
+    if not api_key:
+        print("KOSIS_API_KEY missing in .env.local - skip")
+        return []
+
+    try:
+        import requests as _req
+    except ImportError:
+        print("  requests 미설치")
+        return []
+
+    print("  KOSIS 선행지수 순환변동치 조회 ...", end=" ", flush=True)
+    try:
+        r = _req.get(
+            "https://kosis.kr/openapi/Param/statisticsParameterData.do",
+            params={
+                "method": "getList",
+                "apiKey": api_key,
+                "format": "json",
+                "jsonVD": "Y",
+                "orgId": "101",
+                "tblId": "DT_1C8015",
+                "itmId": "T1",
+                "objL1": "A03",
+                "prdSe": "M",
+                "startPrdDe": "199601",
+                "endPrdDe": "203012",
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        raw = r.json()
+    except Exception as e:
+        print(f"오류: {e}")
+        return []
+
+    if not isinstance(raw, list):
+        print(f"오류 응답: {raw}")
+        return []
+
+    records = []
+    for row in raw:
+        prd = str(row.get("PRD_DE", ""))   # e.g. "202602"
+        val = row.get("DT")
+        if len(prd) == 6 and val not in (None, "", "-"):
+            try:
+                date_str = f"{prd[:4]}-{prd[4:6]}-01"
+                records.append({"date": date_str, "leading_cycle": float(val)})
+            except (ValueError, TypeError):
+                continue
+
+    records.sort(key=lambda x: x["date"])
+    if records:
+        print(f"{len(records)}개  최신: {records[-1]['date']} = {records[-1]['leading_cycle']}")
+    return records
+
+
+def update_macro_with_kosis(kosis_records: list[dict]) -> None:
+    """
+    KOSIS 월별 선행지수 데이터로 sample_macro_data.csv를 갱신한다.
+    leading_cycle 컬럼: 모두 NaN으로 초기화 후 KOSIS 월별 기준점만 설정.
+    → load_macro의 time 보간이 일별 값을 정확하게 채움.
+    """
+    if not kosis_records:
+        return
+
+    kosis_df = pd.DataFrame(kosis_records).set_index("date")
+    kosis_df.index = pd.to_datetime(kosis_df.index)
+
+    if SAMPLE_MACRO.exists():
+        macro = pd.read_csv(SAMPLE_MACRO)
+        macro["date"] = pd.to_datetime(macro["date"], errors="coerce")
+        macro = macro.dropna(subset=["date"]).set_index("date")
+    else:
+        macro = pd.DataFrame()
+
+    if macro.empty:
+        macro = kosis_df
+    else:
+        macro = macro.copy()
+        # ① 기존 leading_cycle 전체를 NaN으로 초기화
+        macro["leading_cycle"] = float("nan")
+        # ② KOSIS 월별 기준점만 설정
+        for dt, row in kosis_df.iterrows():
+            macro.loc[dt, "leading_cycle"] = row["leading_cycle"]
+        macro.sort_index(inplace=True)
+
+    macro.index.name = "date"
+    macro.reset_index().to_csv(SAMPLE_MACRO, index=False, float_format="%.4f")
+    print(f"  sample_macro_data.csv 갱신 완료 ({len(macro)}행, leading_cycle 기준점: {len(kosis_records)}개)")
+
+
+# ── Macro ──────────────────────────────────────────────────────────────────
+
+def load_macro(price_index: pd.DatetimeIndex) -> pd.DataFrame:
+    if not SAMPLE_MACRO.exists():
+        return pd.DataFrame()
+    macro = pd.read_csv(SAMPLE_MACRO)
+    if macro.empty or "date" not in macro.columns:
+        return pd.DataFrame()
+    macro["date"] = pd.to_datetime(macro["date"], errors="coerce")
+    macro = macro.dropna(subset=["date"]).sort_values("date").set_index("date")
+    for col in macro.columns:
+        macro[col] = pd.to_numeric(macro[col], errors="coerce")
+
+    target = pd.DatetimeIndex(price_index).sort_values().unique()
+    target = target[(target >= macro.index.min()) & (target <= macro.index.max())]
+    if target.empty:
+        return macro
+    expanded = macro.reindex(macro.index.union(target)).sort_index()
+    dense = expanded.interpolate(method="time", limit_area="inside").reindex(target)
+    dense.index.name = "date"
+    return dense
+
+
+# ── Payload ────────────────────────────────────────────────────────────────
+
+def build_payload(df: pd.DataFrame, series: list[str]) -> dict:
+    dates: list[str] = []
+    columns: dict[str, list[float | None]] = {key: [] for key in series}
+    if not df.empty:
+        keep = [column for column in series if column in df.columns]
+        clean = df[keep].copy()
+        for key in series:
+            if key not in clean.columns:
+                clean[key] = pd.NA
+        clean = clean[series].reset_index().copy()
+        clean["date"] = pd.to_datetime(clean["date"]).dt.strftime("%Y-%m-%d")
+        dates = clean["date"].tolist()
+        for col in series:
+            clean[col] = pd.to_numeric(clean[col], errors="coerce").round(6)
+            columns[col] = clean[col].astype(object).where(pd.notna(clean[col]), None).tolist()
+    return {
+        "generated_at": pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "format": "columnar-v1",
+        "series": series,
+        "display_names": {k: v for k, v in DISPLAY_NAMES.items() if k in series},
+        "dates": dates,
+        "columns": columns,
+    }
+
+
+# ── adrinfo.kr ADR 데이터 ──────────────────────────────────────────────────
+
+def fetch_adr_data() -> list[dict]:
+    """
+    adrinfo.kr/chart 에서 코스피·코스닥 ADR 데이터를 스크래핑한다.
+    반환: [{'date': 'YYYY-MM-DD', 'adr_kospi': float|None, 'adr_kosdaq': float|None}, ...]
+    단위: % (100=균형, <80=과매도, >120=과매수)
+    """
+    import re as _re
+    try:
+        import requests as _req
+    except ImportError:
+        print("  requests 미설치: pip install requests")
+        return []
+
+    print("  adrinfo.kr ADR 스크래핑 ...", end=" ", flush=True)
+    try:
+        r = _req.get(
+            "http://www.adrinfo.kr/chart",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=20,
+        )
+        r.raise_for_status()
+        html = r.text
+    except Exception as e:
+        print(f"오류: {e}")
+        return []
+
+    def extract_array(html: str, var_name: str):
+        pos = html.find(f"const {var_name}=")
+        if pos < 0:
+            return []
+        end = html.find("];", pos) + 1
+        raw = _re.sub(r",\s*\]", "]", html[pos + len(var_name) + 7: end])
+        return json.loads(raw)
+
+    import json as _json
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+
+    _KST = _tz(_td(hours=9))
+
+    def ts_to_date(ts_ms):
+        return _dt.fromtimestamp(ts_ms / 1000, tz=_KST).strftime("%Y-%m-%d")
+
+    try:
+        kospi_raw  = extract_array(html, "kospi_adr")
+        kosdaq_raw = extract_array(html, "kosdaq_adr")
+    except Exception as e:
+        print(f"파싱 오류: {e}")
+        return []
+
+    kospi_map  = {ts_to_date(it[0]): it[1] for it in kospi_raw}
+    kosdaq_map = {ts_to_date(it[0]): it[1] for it in kosdaq_raw}
+    all_dates  = sorted(set(kospi_map) | set(kosdaq_map))
+
+    records = [
+        {"date": d, "adr_kospi": kospi_map.get(d), "adr_kosdaq": kosdaq_map.get(d)}
+        for d in all_dates
+        if kospi_map.get(d) is not None or kosdaq_map.get(d) is not None
+    ]
+    # 마지막 유효 날짜
+    last = next((r for r in reversed(records) if r["adr_kospi"] is not None), None)
+    print(f"{len(records)}행  최신: {last['date']} KOSPI={last['adr_kospi']} KOSDAQ={records[-1].get('adr_kosdaq')}")
+    return records
+
+
+def save_adr_data(records: list[dict]) -> None:
+    if not records:
+        print("  ADR 데이터 없음 — 저장 건너뜀")
+        return
+    payload = {
+        "generated_at": pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "description": "ADR (Advance-Decline Ratio) — KOSPI / KOSDAQ",
+        "source": "adrinfo.kr",
+        "note": "Values are percentages. 100=balanced, >120=overbought, <80=oversold",
+        "series": ["adr_kospi", "adr_kosdaq"],
+        "records": records,
+    }
+    frame = pd.DataFrame.from_records(records)
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    frame = frame.dropna(subset=["date"]).set_index("date").sort_index()
+    payload = build_payload(frame, ["adr_kospi", "adr_kosdaq"])
+    payload.update({
+        "description": "ADR (Advance-Decline Ratio) - KOSPI / KOSDAQ",
+        "source": "adrinfo.kr",
+        "note": "Values are percentages. 100=balanced, >120=overbought, <80=oversold",
+    })
+    out = DATA_DIR / "adr_data.json"
+    out.write_text(json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
+    print(f"  adr_data.json 저장: {len(records)}행  {records[0]['date']} ~ {records[-1]['date']}")
+
+
+# ── KOFIA 신용융자 잔고 ────────────────────────────────────────────────────
+
+def fetch_kofia_credit(key: str) -> list[dict]:
+    """
+    금융투자협회 API 에서 코스피·코스닥 신용융자 잔고 전체 히스토리를 가져온다.
+    반환: [{'date': 'YYYY-MM-DD', 'kospi_credit': float, 'kosdaq_credit': float}, ...]
+    단위: 조원 (10^12 KRW)
+    """
+    try:
+        import requests
+    except ImportError:
+        print("  requests 미설치: pip install requests")
+        return []
+
+    print(f"  KOFIA 신용융자 잔고 조회 ...", end=" ", flush=True)
+    try:
+        r = requests.get(
+            KOFIA_CREDIT_URL,
+            params={"serviceKey": key, "numOfRows": 5000, "pageNo": 1, "resultType": "json"},
+            timeout=30,
+            verify=False,
+        )
+        r.raise_for_status()
+        body = r.json()["response"]["body"]
+        items = body["items"]["item"]
+        total = body["totalCount"]
+        print(f"{len(items)}행 / 전체 {total}행")
+    except Exception as e:
+        print(f"오류: {e}")
+        return []
+
+    records = []
+    for it in reversed(items):   # 오래된 날짜부터
+        d = str(it["basDt"])
+        date_str = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+        try:
+            kospi_c  = round(int(it["crdTrFingScrs"])   / 1e12, 4)
+            kosdaq_c = round(int(it["crdTrFingKosdaq"]) / 1e12, 4)
+        except (KeyError, ValueError):
+            continue
+        records.append({"date": date_str, "kospi_credit": kospi_c, "kosdaq_credit": kosdaq_c})
+    return records
+
+
+def normalize_credit_records(records: list[dict]) -> list[dict]:
+    by_date: dict[str, dict] = {}
+    for row in records:
+        date_key = str(row.get("date", ""))[:10]
+        if not date_key:
+            continue
+        out = {"date": date_key}
+        has_value = False
+        for column in CREDIT_SERIES:
+            value = pd.to_numeric(row.get(column), errors="coerce")
+            if pd.notna(value):
+                out[column] = round(float(value), 6)
+                has_value = True
+            else:
+                out[column] = None
+        if has_value:
+            by_date[date_key] = out
+    return [by_date[key] for key in sorted(by_date)]
+
+
+def records_from_payload(payload: dict) -> list[dict]:
+    records = payload.get("records", []) if isinstance(payload, dict) else []
+    if isinstance(records, list) and records:
+        return records
+    dates = payload.get("dates", []) if isinstance(payload, dict) else []
+    columns = payload.get("columns", {}) if isinstance(payload, dict) else {}
+    if not isinstance(dates, list) or not isinstance(columns, dict):
+        return []
+    raw_series = payload.get("series", [])
+    series = [str(value).strip() for value in raw_series if str(value).strip()] if isinstance(raw_series, list) else list(columns)
+    out: list[dict] = []
+    for idx, raw_date in enumerate(dates):
+        row = {"date": raw_date}
+        for key in series:
+            values = columns.get(key)
+            row[key] = values[idx] if isinstance(values, list) and idx < len(values) else None
+        out.append(row)
+    return out
+
+
+def load_existing_credit_records() -> list[dict]:
+    path = DATA_DIR / "credit_data.json"
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    return records_from_payload(payload)
+
+
+def save_credit_data(records: list[dict]) -> None:
+    if not records:
+        print("  신용 데이터 없음 — 저장 건너뜀")
+        return
+    records = normalize_credit_records(load_existing_credit_records() + records)
+    payload = {
+        "generated_at": pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "description": "코스피·코스닥 신용융자 잔고",
+        "source": "금융투자협회 종합통계정보 API (data.go.kr)",
+        "unit": "조원 (10^12 KRW)",
+        "series": CREDIT_SERIES,
+        "records": records,
+    }
+    frame = pd.DataFrame.from_records(records)
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    frame = frame.dropna(subset=["date"]).set_index("date").sort_index()
+    payload = build_payload(frame, CREDIT_SERIES)
+    payload.update({
+        "description": "코스피·코스닥 신용융자 잔고",
+        "source": "금융투자협회 종합통계정보 API (data.go.kr)",
+        "unit": "조원 (10^12 KRW)",
+    })
+    out = DATA_DIR / "credit_data.json"
+    out.write_text(json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
+    print(f"  credit_data.json 저장: {len(records)}행  {records[0]['date']} ~ {records[-1]['date']}")
+
+
+# ── Main ───────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description="ThinkStock 데이터 갱신")
+    parser.add_argument("--days", type=int, default=DEFAULT_UPDATE_DAYS,
+                        help=f"KRX 로 갱신할 최근 일수 (기본: {DEFAULT_UPDATE_DAYS})")
+    args = parser.parse_args()
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    key = load_key()
+    if key:
+        print("KRX API key configured.")
+    else:
+        print("KRX API 키 없음 — yfinance 만 사용합니다.")
+
+    kofia_key = load_kofia_key()
+    if kofia_key:
+        print("KOFIA API key configured.")
+    else:
+        print("KOFIA_API_KEY missing in .env.local.")
+
+    today = date.today()
+    hist_start = years_before(today, LOOKBACK_YRS)
+
+    # ── Step 1: yfinance 전체 히스토리 ────────────────────────────────────
+    print(f"\n[1/3] yfinance 히스토리 ({hist_start} ~ {today})")
+    prices = fetch_yfinance(YFINANCE_TICKERS, hist_start, today)
+    if prices.empty:
+        print("오류: yfinance 데이터를 가져오지 못했습니다.")
+        sys.exit(1)
+    prices.index = pd.to_datetime(prices.index)
+    prices.index.name = "date"
+
+    # ── Step 2: KRX 로 최근 N일 덮어쓰기 ─────────────────────────────────
+    if key:
+        print(f"\n[2/3] KRX 최근 {args.days}일 갱신")
+        prices = update_with_krx(key, prices, args.days)
+    else:
+        print("\n[2/3] KRX 갱신 건너뜀 (API 키 없음)")
+
+    # ── Step 3: KOSIS 선행지수 갱신 ──────────────────────────────────────────
+    print("\n[3/5] KOSIS 선행지수 순환변동치")
+    kosis_records = fetch_kosis_leading_cycle()
+    update_macro_with_kosis(kosis_records)
+
+    # ── Step 4: 매크로 데이터 로드 ────────────────────────────────────────
+    print("\n[4/5] 매크로 데이터 로드")
+    macro = load_macro(prices.index)
+    print(f"  {len(macro)}행  컬럼: {list(macro.columns)}")
+
+    # ── Step 5: adrinfo.kr ADR ────────────────────────────────────────────
+    print("\n[5/7] adrinfo.kr ADR 스크래핑")
+    adr_records = fetch_adr_data()
+    save_adr_data(adr_records)
+
+    # ── Step 6: KOFIA 신용융자 잔고 ───────────────────────────────────────
+    print("\n[6/7] KOFIA 신용융자 잔고")
+    if kofia_key:
+        credit_records = fetch_kofia_credit(kofia_key)
+        save_credit_data(credit_records)
+    else:
+        print("  건너뜀 (KOFIA API 키 없음)")
+
+    # ── 저장 ──────────────────────────────────────────────────────────────
+    price_payload = build_payload(prices, list(prices.columns))
+    macro_payload = build_payload(macro, MACRO_SERIES)
+
+    out_p = DATA_DIR / "prices.json"
+    out_m = DATA_DIR / "macro_data.json"
+
+    out_p.write_text(json.dumps(price_payload, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
+    out_m.write_text(json.dumps(macro_payload, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
+
+    print(f"\n완료!")
+    print(f"  prices.json     {len(price_payload['dates'])}행  시리즈: {price_payload['series']}")
+    print(f"  macro_data.json {len(macro_payload['dates'])}행  시리즈: {macro_payload['series']}")
+    print(f"\n다음 단계: git add docs/data/ && git commit -m '데이터 갱신' && git push")
+
+
+if __name__ == "__main__":
+    main()

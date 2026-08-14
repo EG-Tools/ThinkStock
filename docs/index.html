@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+    <meta name="theme-color" content="#0a0a0a">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <title>Think Stock</title>
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="icon" href="./icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="./styles.css">
+    <script defer src="./assets/app.bundle.min.js?v=dev&amp;build=2.77"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="hero">
+        <div class="hero-title-row">
+          <h1>Think Stock</h1>
+          <div class="stock-add-panel stock-add-panel-inline" id="stockAddPanel">
+            <div class="stock-search-wrap">
+              <input id="stockSearchInput" class="stock-search-input" type="text" autocomplete="off" spellcheck="false" placeholder="종목추가">
+              <div id="stockSuggestList" class="stock-suggest-list" hidden></div>
+            </div>
+          </div>
+        </div>
+        <div class="top-controls">
+          <button id="hoverToggle" class="chart-toggle hover-toggle-btn top-control-toggle top-info-btn" title="정보창 ON/OFF">정보창</button>
+          <button id="chartToolsToggle" class="chart-toggle reset-btn top-control-toggle top-chart-tools-btn is-active" type="button" title="메인차트 도구를 숨깁니다." aria-pressed="true">도구</button>
+          <button id="chartHandlesToggle" class="chart-toggle reset-btn top-control-toggle top-chart-handles-btn is-active" type="button" title="차트 좌우 조절 핸들 ON/OFF" aria-pressed="true">핸들</button>
+          <label class="credit-offset-wrap" title="예탁금·신용 발표 시차 보정(일)">
+            <span class="credit-offset-label">자금옵셋</span>
+            <input id="creditOffset" class="credit-offset-input" type="number" value="-2" step="1" min="-30" max="30">
+          </label>
+          <button id="stockResearchBtn" class="stock-research-btn" type="button" title="시총 상위 종목의 연속 매수·반전 후보 탐구" aria-disabled="true" disabled>종목탐구</button>
+          <button id="apiOptionsBtn" class="icon-btn" title="설정" aria-label="설정">⚙</button>
+        </div>
+        <div class="series-toggle-board" id="seriesToggleBoard">
+          <div class="series-row base-row">
+            <button class="series-toggle-btn" data-series="leading_cycle">선행순환변동</button>
+            <button class="series-toggle-btn" data-series="^KS11">코스피</button>
+            <button class="series-toggle-btn" data-series="^KQ11">코스닥</button>
+          </div>
+          <div class="series-row base-row">
+            <button class="series-toggle-btn" data-series="customer_deposit">고객예탁금</button>
+            <button class="series-toggle-btn" data-series="kospi_credit">코스피신용</button>
+            <button class="series-toggle-btn" data-series="kosdaq_credit">코스닥신용</button>
+          </div>
+          <div class="series-row custom-series-row" id="customStockButtons"></div>
+        </div>
+      </header>
+      <div class="main-chart-wrap">
+        <div id="chart" class="chart-frame"></div>
+        <button id="resetHandles" class="chart-toggle reset-btn chart-reset-btn is-active" type="button" title="차트 변경 시 자동으로 세로 범위를 맞춥니다." aria-pressed="true">스케일</button>
+        <button id="coMovementToggle" class="chart-toggle reset-btn chart-side-btn chart-co-movement-btn" type="button" title="마지막 표시 종목 동행율" aria-pressed="false" aria-disabled="true" disabled>동행율</button>
+        <button id="insiderTradeToggle" class="chart-toggle hover-toggle-btn insider-trade-toggle-btn chart-side-btn chart-insider-btn" title="DART 내부거래 ON/OFF" aria-pressed="false" aria-disabled="true" disabled>내부거래</button>
+        <button id="disclosureToggle" class="chart-toggle hover-toggle-btn disclosure-toggle-btn chart-side-btn chart-disclosure-btn" title="공시 마커 ON/OFF" aria-disabled="true" disabled>공시</button>
+        <div id="disclosureProgress" class="chart-progress disclosure-progress" role="status" aria-live="polite" hidden>
+          <span id="disclosureProgressText">공시 0%</span>
+          <span class="chart-progress-track disclosure-progress-track"><i id="disclosureProgressBar"></i></span>
+        </div>
+        <button id="recessionToggle" class="chart-toggle reset-btn chart-recession-btn" type="button" title="복합 매수 타이밍과 경기침체 위기신호" aria-pressed="false" aria-disabled="true" disabled>신호</button>
+        <div class="chart-refresh-tools">
+          <button id="refreshData" class="refresh-btn chart-refresh-btn" type="button" title="최신 데이터 새로고침" aria-label="최신 데이터 새로고침">&#x21BB;</button>
+          <button id="chartCursorModeBtn" class="chart-range-btn chart-cursor-mode-btn" type="button" data-chart-cursor-mode="vertical" title="세로 차트선 방식 사용 중. 눌러서 변경" aria-label="세로 차트선 방식 사용 중. 눌러서 변경"><span class="cursor-line-glyph" aria-hidden="true"></span></button>
+          <div id="chartRangeControls" class="chart-range-controls" aria-label="차트 기간과 최신 구간 이동">
+            <button id="chartRange6Months" class="chart-range-btn" type="button" data-months="6" title="최신 6개월 보기"><span class="chart-range-label">6<span class="chart-range-unit">m</span></span></button>
+            <button id="chartRange1Year" class="chart-range-btn" type="button" data-months="12" title="최신 1년 보기"><span class="chart-range-label">1<span class="chart-range-unit">y</span></span></button>
+            <button id="chartRange3Years" class="chart-range-btn" type="button" data-months="36" title="최신 3년 보기"><span class="chart-range-label">3<span class="chart-range-unit">y</span></span></button>
+            <button id="chartJumpLatest" class="chart-range-btn chart-latest-btn" type="button" title="현재 기간 폭을 유지하고 최신 구간으로 이동" aria-label="현재 기간 폭을 유지하고 최신 구간으로 이동"><span class="chart-latest-symbol" aria-hidden="true"></span></button>
+          </div>
+        </div>
+        <div id="runtimeRefreshStatus" class="chart-help-message runtime-refresh-status" role="status" aria-live="polite" hidden>최신 데이터 확인 대기</div>
+        <div id="chartNavigationMessage" class="chart-help-message chart-navigation-message" role="status" aria-live="polite" hidden></div>
+        <div id="coMovementPanel" class="co-movement-panel" role="status" aria-live="polite" hidden></div>
+        <button id="aiForecastToggle" class="chart-toggle reset-btn chart-ai-btn" type="button" title="6개월 AI 가상 흐름 (투자 판단용 아님)" aria-pressed="false" aria-disabled="true" disabled>AI</button>
+        <div id="aiForecastProgress" class="chart-progress ai-forecast-progress" role="status" aria-live="polite" hidden>
+          <span id="aiForecastProgressText">AI 0%</span>
+          <span class="chart-progress-track ai-forecast-progress-track"><i id="aiForecastProgressBar"></i></span>
+        </div>
+      </div>
+      <div id="chart-macd" class="chart-frame chart-frame-macd" hidden></div>
+      <div id="chart-adr" class="chart-frame chart-frame-adr"></div>
+      <div id="dataFreshness" class="data-freshness" aria-live="polite"></div>
+      <div id="messageArea" class="message-area"></div>
+      <footer class="data-attribution" aria-label="데이터 출처">
+        <strong class="data-attribution-title">정보 제공 출처</strong>
+        <nav class="data-source-links" aria-label="정보 제공 출처 링크">
+          <a href="http://www.adrinfo.kr/chart" target="_blank" rel="noopener">ADR</a>
+          <a href="https://kospi.feargreedchart.com/" target="_blank" rel="noopener">공포탐욕</a>
+          <a href="https://ecos.bok.or.kr/" target="_blank" rel="noopener">한국은행 ECOS</a>
+          <a href="https://data.krx.co.kr/" target="_blank" rel="noopener">한국거래소</a>
+          <a href="https://www.stockplus.com/m/stocks/KOREA-O2901P" target="_blank" rel="noopener">증권플러스</a>
+          <a href="https://freesis.kofia.or.kr/" target="_blank" rel="noopener">금융투자협회</a>
+          <a href="https://www.data.go.kr/" target="_blank" rel="noopener">공공데이터포털</a>
+          <a href="https://opendart.fss.or.kr/" target="_blank" rel="noopener">OpenDART</a>
+          <a href="https://fred.stlouisfed.org/" target="_blank" rel="noopener">FRED</a>
+          <a href="https://finance.naver.com/" target="_blank" rel="noopener">네이버 금융</a>
+          <a href="https://finance.yahoo.com/" target="_blank" rel="noopener">Yahoo Finance</a>
+        </nav>
+        <p class="data-attribution-note">
+          본 서비스는 한국거래소 통계정보를 사용합니다.<br>
+          This product uses the FRED&reg; API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.
+        </p>
+        <p id="mainAppMeta" class="app-company-line app-company-line-main">
+          <span>Version : <span data-app-version-copy>2.77</span></span>
+          <span>회사 : Life User</span>
+          <span>이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a></span>
+        </p>
+      </footer>
+    </div>
+
+    <div id="stockResearchModal" class="stock-research-modal" hidden>
+      <div class="stock-research-backdrop"></div>
+      <section class="stock-research-panel" role="dialog" aria-modal="true" aria-labelledby="stockResearchTitle">
+        <header class="stock-research-header">
+          <h2 id="stockResearchTitle">종목탐구</h2>
+          <div class="stock-research-filters" role="group" aria-label="종목탐구 신호 필터">
+            <button id="stockResearchBuyFilter" type="button" aria-pressed="true">매수</button>
+            <button id="stockResearchSellFilter" type="button" aria-pressed="false">매도</button>
+            <button id="stockResearchTodayFilter" type="button" aria-pressed="false">당일</button>
+          </div>
+          <button id="stockResearchModalBlockedClearBtn" class="stock-research-header-blocked-btn" type="button" disabled>차단 0 종목</button>
+          <button id="stockResearchCloseBtn" class="stock-research-close-btn" type="button" aria-label="종목탐구 닫기">×</button>
+        </header>
+        <p id="stockResearchAsOf" class="stock-research-as-of">마지막 탐구 결과가 없습니다.</p>
+        <p id="stockResearchDisclaimer" class="stock-research-disclaimer">시총 상위 200+200 중 상대적 안정성 필터를 통과한 공부 후보입니다. 매수 추천이 아닙니다.</p>
+        <div id="stockResearchProgress" class="stock-research-progress" role="status" aria-live="polite" hidden>
+          <div class="stock-research-progress-copy">
+            <span id="stockResearchProgressText">탐구 준비 0%</span>
+            <span id="stockResearchProgressCount"></span>
+          </div>
+          <span class="stock-research-progress-track"><i id="stockResearchProgressBar"></i></span>
+        </div>
+        <div class="stock-research-results">
+          <div id="stockResearchList" class="stock-research-list"></div>
+          <p id="stockResearchEmpty" class="stock-research-empty">검색을 누르면 최신 조건으로 탐구합니다.</p>
+        </div>
+        <div class="stock-research-actions">
+          <div id="stockResearchSignalStepper" class="stock-research-signal-stepper" aria-label="최소 신호 횟수">
+            <span id="stockResearchSignalLabel">매수신호</span>
+            <button id="stockResearchMinimumDecrease" type="button" aria-label="최소 신호 감소">−</button>
+            <output id="stockResearchMinimumValue">5</output>
+            <button id="stockResearchMinimumIncrease" type="button" aria-label="최소 신호 증가">+</button>
+          </div>
+          <div class="stock-research-page-controls" aria-label="종목탐구 목록 이동">
+            <button id="stockResearchPreviousBtn" type="button" aria-label="이전 5개 종목">&lt;</button>
+            <button id="stockResearchNextBtn" type="button" aria-label="다음 5개 종목">&gt;</button>
+          </div>
+          <button id="stockResearchRefreshBtn" class="stock-research-refresh-btn" type="button">검색</button>
+        </div>
+      </section>
+    </div>
+
+    <div id="apiSettingsModal" class="api-settings-modal" hidden>
+      <div class="api-settings-backdrop" data-api-close="1"></div>
+      <section class="api-settings-panel" role="dialog" aria-modal="true" aria-labelledby="apiSettingsTitle">
+        <header class="api-settings-header">
+          <h2 id="apiSettingsTitle">설정</h2>
+          <button id="apiSettingsCloseBtn" class="api-close-btn" type="button" aria-label="닫기">×</button>
+        </header>
+        <div class="settings-control-group">
+          <div class="cursor-line-setting">
+            <span class="cursor-line-setting-label">차트선 방식</span>
+            <div class="cursor-line-mode-options" role="group" aria-label="차트선 방식">
+              <button class="cursor-line-mode-btn" type="button" data-chart-cursor-mode="vertical" aria-label="세로 차트선 방식" aria-pressed="true"><span class="cursor-line-glyph" aria-hidden="true"></span></button>
+              <button class="cursor-line-mode-btn" type="button" data-chart-cursor-mode="horizontal" aria-label="가로 차트선 방식" aria-pressed="false"><span class="cursor-line-glyph" aria-hidden="true"></span></button>
+              <button class="cursor-line-mode-btn" type="button" data-chart-cursor-mode="cross" aria-label="십자 차트선 방식" aria-pressed="false"><span class="cursor-line-glyph" aria-hidden="true"></span></button>
+            </div>
+          </div>
+          <div class="cursor-line-setting news-moving-average-setting" title="보조차트 표시만 변경하며 신호·AI 계산에는 영향을 주지 않습니다.">
+            <span class="cursor-line-setting-label">뉴스심리 이동평균선</span>
+            <div class="settings-number-stepper" role="group" aria-label="뉴스심리 이동평균 기간">
+              <button id="newsSentimentMovingAverageDecrease" class="settings-stepper-btn" type="button" aria-label="뉴스심리 이동평균 기간 줄이기">-</button>
+              <output id="newsSentimentMovingAverageValue" class="settings-stepper-value" aria-live="polite">1</output>
+              <button id="newsSentimentMovingAverageIncrease" class="settings-stepper-btn" type="button" aria-label="뉴스심리 이동평균 기간 늘리기">+</button>
+            </div>
+          </div>
+          <div class="cursor-line-setting stock-research-universe-setting" title="재검색할 때 코스피·코스닥을 절반씩 탐구합니다.">
+            <span class="cursor-line-setting-label">종목탐구 검색수</span>
+            <div class="settings-number-stepper" role="group" aria-label="종목탐구 검색 종목 수">
+              <button id="stockResearchUniverseDecrease" class="settings-stepper-btn" type="button" aria-label="종목탐구 검색수 줄이기">-</button>
+              <output id="stockResearchUniverseValue" class="settings-stepper-value stock-research-universe-value" aria-live="polite">400</output>
+              <button id="stockResearchUniverseIncrease" class="settings-stepper-btn" type="button" aria-label="종목탐구 검색수 늘리기">+</button>
+            </div>
+          </div>
+        </div>
+        <div class="api-local-server-field">
+          <label for="dartGatewayTokenInput">Think Stock 접속 코드</label>
+          <div class="api-local-server-row">
+            <input id="dartGatewayTokenInput" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="Think Stock 접속 코드">
+            <button id="dartGatewayTokenSaveBtn" class="api-action-btn" type="button">저장</button>
+          </div>
+          <small id="dartGatewayTokenStatus" class="api-access-status" role="status" aria-live="polite" hidden></small>
+        </div>
+        <div class="api-local-server-field admin-access-field">
+          <label for="adminAccessCodeInput">관리자 접속 코드</label>
+          <div class="api-local-server-row">
+            <input id="adminAccessCodeInput" type="password" inputmode="numeric" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="10" pattern="[0-9]*" placeholder="10자리 관리자 접속 코드">
+            <button id="adminAccessCodeBtn" class="api-action-btn" type="button">인증</button>
+          </div>
+          <small id="adminAccessStatus">일반 모드: 공시·내부거래·동행율·신호·AI·MACD 기능이 잠겨 있습니다.</small>
+        </div>
+        <div class="api-settings-actions">
+          <button id="releaseNotesBtn" class="api-action-btn api-settings-view-btn release-notes-open-btn" type="button" aria-pressed="false" aria-expanded="false">업데이트내역</button>
+          <button id="apiPeriodBtn" class="api-action-btn api-settings-view-btn api-period-open-btn" type="button" aria-pressed="false" aria-expanded="false">API 기간</button>
+          <button id="appCacheBtn" class="api-action-btn api-settings-view-btn cache-summary-open-btn" type="button" aria-pressed="false" aria-expanded="false" disabled>캐시 계산 중</button>
+          <button id="diagnosticsExportBtn" class="api-action-btn" type="button" hidden aria-hidden="true" tabindex="-1">진단내보내기</button>
+          <button id="appStateResetBtn" class="api-action-btn" type="button">전체초기화</button>
+        </div>
+        <section id="releaseNotesPanel" class="performance-diagnostics release-notes-panel" hidden>
+          <div class="performance-diagnostics-header release-notes-header">
+            <strong id="releaseNotesVersion">v2.77</strong>
+            <div class="release-notes-navigation" aria-label="업데이트 내역 이동">
+              <button id="releaseNotesNewerBtn" class="api-action-btn" type="button" aria-label="최신 업데이트 내역">&lt;</button>
+              <span id="releaseNotesPosition" aria-live="polite">1 / 1</span>
+              <button id="releaseNotesOlderBtn" class="api-action-btn" type="button" aria-label="과거 업데이트 내역">&gt;</button>
+            </div>
+          </div>
+          <ul id="releaseNotesList" class="release-notes-list"></ul>
+        </section>
+        <section id="apiPeriodPanel" class="performance-diagnostics api-period-panel" hidden>
+          <div id="apiPeriodRows" class="api-period-rows" role="table" aria-label="API 기간"></div>
+        </section>
+        <section id="appCachePanel" class="performance-diagnostics app-cache-panel" hidden>
+          <div class="performance-diagnostics-header app-cache-header">
+            <strong id="appCachePanelTotal">캐시 0B</strong>
+            <button id="appCacheDeleteBtn" class="api-action-btn app-cache-delete-btn" type="button" disabled>캐시삭제</button>
+          </div>
+          <div id="appCacheRows" class="app-cache-rows" role="table" aria-label="ThinkStock 캐시 종류별 용량">
+            <div class="app-cache-row" role="row">
+              <span class="app-cache-kind" role="cell"><strong>앱 파일</strong><small>· 화면·차트 실행 파일</small></span>
+              <span id="appCacheBrowserSize" class="app-cache-size" role="cell">0B</span>
+            </div>
+            <div class="app-cache-row" role="row">
+              <span class="app-cache-kind" role="cell"><strong>데이터</strong><small>· 가격·지표·공시·AI·종목탐구</small></span>
+              <span id="appCacheIndexedSize" class="app-cache-size" role="cell">0B</span>
+            </div>
+            <div class="app-cache-row" role="row">
+              <span class="app-cache-kind" role="cell"><strong>부팅 저장</strong><small>· 마지막 데이터·탐구 요약</small></span>
+              <span id="appCacheLocalSize" class="app-cache-size" role="cell">0B</span>
+            </div>
+            <div class="app-cache-row" role="row">
+              <span class="app-cache-kind" role="cell"><strong>현재 세션</strong><small>· 실행 중 임시 데이터</small></span>
+              <span id="appCacheSessionSize" class="app-cache-size" role="cell">0B</span>
+            </div>
+          </div>
+          <p id="appCacheEmpty" class="app-cache-empty" hidden>저장된 캐시가 없습니다.</p>
+        </section>
+        <p id="settingsAppMeta" class="app-company-line">
+          <span class="api-settings-version">Version : <span id="appVersionText">2.77</span></span>
+          <span>회사 : Life User</span>
+          <span>이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a></span>
+        </p>
+      </section>
+    </div>
+
+    <div id="apiExpiryReminderModal" class="api-settings-modal api-expiry-reminder-modal" hidden>
+      <div class="api-settings-backdrop"></div>
+      <section class="api-settings-panel api-expiry-reminder-panel" role="dialog" aria-modal="true" aria-labelledby="apiExpiryReminderTitle">
+        <header class="api-settings-header">
+          <h2 id="apiExpiryReminderTitle">KRX API 기간 알림</h2>
+          <button id="apiExpiryReminderCloseBtn" class="api-close-btn" type="button" aria-label="닫기">×</button>
+        </header>
+        <p id="apiExpiryReminderMessage" class="api-expiry-reminder-message"></p>
+        <div id="apiExpiryReminderRows" class="api-period-rows api-expiry-reminder-rows" role="table" aria-label="만료 예정 KRX API"></div>
+        <label class="api-check-field api-expiry-snooze-field" for="apiExpiryReminderSnooze">
+          <input id="apiExpiryReminderSnooze" type="checkbox">
+          <span>7일간 보지 않기</span>
+        </label>
+      </section>
+    </div>
+  </body>
+</html>

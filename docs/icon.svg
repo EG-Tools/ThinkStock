@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="ThinkStock icon">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#183729"/>
+      <stop offset="100%" stop-color="#1d5f4a"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <path d="M24 84 L46 61 L63 73 L92 38 L104 49" fill="none" stroke="#f4c88e" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M24 94 H104" fill="none" stroke="#fff5e6" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="46" cy="61" r="6" fill="#fff5e6"/>
+  <circle cx="63" cy="73" r="6" fill="#fff5e6"/>
+  <circle cx="92" cy="38" r="6" fill="#fff5e6"/>
+</svg>

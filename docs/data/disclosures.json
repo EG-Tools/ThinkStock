@@ -1,0 +1,25 @@
+{
+  "generated_at": "2026-07-14T14:05:50Z",
+  "source": "OpenDART",
+  "format": "by-ticker-v1",
+  "series": [
+    "disclosures"
+  ],
+  "tickers": [
+    "005930.KS",
+    "218410.KQ"
+  ],
+  "files": {
+    "005930.KS": "./data/disclosures/005930.KS.json",
+    "218410.KQ": "./data/disclosures/218410.KQ.json"
+  },
+  "counts": {
+    "005930.KS": 82,
+    "218410.KQ": 55
+  },
+  "latest": {
+    "005930.KS": "2026-07-13",
+    "218410.KQ": "2026-06-19"
+  },
+  "total": 137
+}

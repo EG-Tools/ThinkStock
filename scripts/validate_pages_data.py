@@ -1,0 +1,823 @@
+import json
+import math
+import os
+import re
+import subprocess
+import sys
+from hashlib import sha256
+from datetime import date, datetime
+from pathlib import Path
+
+from split_pages_data import MANIFEST_FILE, SEGMENTED_FILES
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = ROOT / "docs" / "data"
+BUILD_REPORT_JSON = DATA_DIR / "build_report.json"
+DART_CORP_CODES_JSON = DATA_DIR / "dart_corp_codes.json"
+KRX_UNIVERSE_JSON = DATA_DIR / "krx_universe.json"
+AI_MARKET_MODEL_JSON = DATA_DIR / "ai_market_model.json"
+AI_MODEL_FORMAT = "thinkstock-ai-market-model-v2"
+AI_FEATURE_FORMAT = "ai-market-features-v1"
+AI_FEATURE_COUNT = 17
+AI_NONLINEAR_FEATURE_COUNTS = {8, 16}
+
+DATASETS = {
+    "prices": DATA_DIR / "prices.json",
+    "macro": DATA_DIR / "macro_data.json",
+    "credit": DATA_DIR / "credit_data.json",
+    "adr": DATA_DIR / "adr_data.json",
+    "disclosures": DATA_DIR / "disclosures.json",
+}
+
+CREDIT_COLUMNS = ("customer_deposit", "kospi_credit", "kosdaq_credit")
+ADR_COLUMNS = ("adr_kospi", "adr_kosdaq", "fear_greed")
+# Freesis historical KOSDAQ credit starts with very small positive values.
+# True zero or negative source values are normalized to null during build.
+CREDIT_LIMITS = {
+    "customer_deposit": (0.0001, 300.0),
+    "kospi_credit": (0.0001, 80.0),
+    "kosdaq_credit": (0.0001, 50.0),
+}
+CREDIT_MAX_DAILY_PCT_CHANGE = 0.12
+CREDIT_MAX_DAILY_ABS_CHANGE = {
+    "customer_deposit": 25.0,
+    "kospi_credit": 3.0,
+    "kosdaq_credit": 1.0,
+}
+CREDIT_MAX_FRESH_DAYS = 14
+PRICE_MAX_FRESH_DAYS = 10
+ADR_MAX_FRESH_DAYS = 10
+LEADING_MAX_FRESH_DAYS = 150
+NEWS_SENTIMENT_MAX_FRESH_DAYS = 14
+NEWS_SENTIMENT_HISTORY_START_LIMIT = date(2005, 1, 10)
+NEWS_SENTIMENT_MIN_HISTORY_POINTS = 5000
+STRICT_FRESHNESS = os.environ.get("PAGES_STRICT_FRESHNESS", "").strip() == "1"
+
+SOURCE_OUTPUT_RULES = (
+    ("ecos_leading_cycle", "macro", ("leading_cycle",), True),
+    ("kosis_leading_cycle", "macro", ("leading_cycle",), True),
+    ("ecos_news_sentiment", "macro", ("news_sentiment",), True),
+    ("kofia_credit", "credit", CREDIT_COLUMNS, False),
+    ("freesis_credit", "credit", CREDIT_COLUMNS, False),
+    ("adr", "adr", ("adr_kospi", "adr_kosdaq"), False),
+    ("fear_greed", "adr", ("fear_greed",), False),
+)
+STRICT_VALUE_ANOMALY_SERIES = (
+    "^KS11",
+    "^KQ11",
+    "leading_cycle",
+    "news_sentiment",
+    *CREDIT_COLUMNS,
+    *ADR_COLUMNS,
+)
+RECENT_SERIES_QUALITY = {
+    "leading_cycle": (80.0, 120.0, 0.01, 0.8, 62, True),
+    "news_sentiment": (0.0, 200.0, 0.35, 20.0, 14, True),
+    "adr_kospi": (0.0, 300.0, 0.5, 40.0, 14, True),
+    "adr_kosdaq": (0.0, 300.0, 0.5, 40.0, 14, True),
+    "fear_greed": (0.0, 100.0, 0.5, 30.0, 14, False),
+}
+
+
+def fail(message: str) -> None:
+    raise AssertionError(message)
+
+def emit_github_error(message: str) -> None:
+    if os.environ.get("GITHUB_ACTIONS", "").lower() != "true":
+        return
+    escaped = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::error file=scripts/validate_pages_data.py,line=1::{escaped}")
+
+
+def validate_segmented_payloads() -> list[str]:
+    summaries: list[str] = []
+    manifest_path = DATA_DIR / MANIFEST_FILE
+    if not manifest_path.exists():
+        fail("segmented data manifest is missing")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    datasets = manifest.get("datasets")
+    if manifest.get("format") != "segmented-data-v1" or not isinstance(datasets, dict):
+        fail("segmented data manifest is invalid")
+    revision = str(manifest.get("revision") or "")
+    if len(revision) != 24 or any(character not in "0123456789abcdef" for character in revision):
+        fail("segmented data manifest revision is invalid")
+    for filename in SEGMENTED_FILES:
+        source_path = DATA_DIR / filename
+        stem = source_path.stem
+        recent_path = DATA_DIR / f"{stem}_recent.json"
+        history_path = DATA_DIR / f"{stem}_history.json"
+        if not recent_path.exists() or not history_path.exists():
+            fail(f"segmented payload is missing for {filename}")
+        dataset = datasets.get(stem)
+        if not isinstance(dataset, dict):
+            fail(f"segmented data manifest is missing {stem}")
+
+        full = json.loads(source_path.read_text(encoding="utf-8"))
+        recent = json.loads(recent_path.read_text(encoding="utf-8"))
+        history = json.loads(history_path.read_text(encoding="utf-8"))
+        full_dates = list(full.get("dates") or [])
+        recent_dates = list(recent.get("dates") or [])
+        history_dates = list(history.get("dates") or [])
+        if history_dates + recent_dates != full_dates:
+            fail(f"segmented dates do not reconstruct {filename}")
+        for segment_name, segment_path, segment_dates in (
+            ("recent", recent_path, recent_dates),
+            ("history", history_path, history_dates),
+        ):
+            segment = dataset.get(segment_name)
+            if not isinstance(segment, dict):
+                fail(f"manifest is missing {stem}.{segment_name}")
+            if segment.get("file") != segment_path.name:
+                fail(f"manifest filename mismatch for {stem}.{segment_name}")
+            if segment.get("rows") != len(segment_dates):
+                fail(f"manifest row count mismatch for {stem}.{segment_name}")
+            digest = sha256(segment_path.read_bytes()).hexdigest()
+            if segment.get("sha256") != digest:
+                fail(f"manifest digest mismatch for {stem}.{segment_name}")
+
+        full_columns = full.get("columns") or {}
+        recent_columns = recent.get("columns") or {}
+        history_columns = history.get("columns") or {}
+        for series, values in full_columns.items():
+            rebuilt = list(history_columns.get(series) or []) + list(recent_columns.get(series) or [])
+            if rebuilt != list(values or []):
+                fail(f"segmented column {series} does not reconstruct {filename}")
+        summaries.append(f"{stem} segments: recent {len(recent_dates)}, history {len(history_dates)}")
+    return summaries
+
+
+def warn(message: str) -> None:
+    print(f"Pages data validation warning: {message}", file=sys.stderr)
+
+
+def fail_or_warn_freshness(message: str) -> None:
+    if STRICT_FRESHNESS:
+        fail(message)
+    warn(message)
+
+def actionable_output_anomalies(anomalies: list[object]) -> list[str]:
+    actionable: list[str] = []
+    for raw_value in anomalies:
+        value = str(raw_value)
+        structural = any(
+            phrase in value
+            for phrase in ("latest regressed", "rows dropped", "points dropped")
+        )
+        critical_value_jump = (
+            "latest value changed" in value
+            and any(f"/{series}:" in value for series in STRICT_VALUE_ANOMALY_SERIES)
+        )
+        if structural or critical_value_jump:
+            actionable.append(value)
+    return actionable
+
+
+def parse_date(raw: object, label: str) -> date:
+    text = str(raw or "").strip()[:10]
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise AssertionError(f"{label}: invalid date {raw!r}") from exc
+
+
+def load_payload(name: str) -> dict:
+    path = DATASETS[name]
+    if not path.exists():
+        fail(f"{name}: missing {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise AssertionError(f"{name}: invalid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        fail(f"{name}: payload must be an object")
+    return payload
+
+
+def load_build_report() -> dict:
+    if not BUILD_REPORT_JSON.exists():
+        return {}
+    try:
+        payload = json.loads(BUILD_REPORT_JSON.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise AssertionError(f"build report: invalid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        fail("build report: payload must be an object")
+    return payload
+
+
+def validate_dart_corp_codes() -> str:
+    if not DART_CORP_CODES_JSON.exists():
+        fail("dart corp codes: payload is missing")
+    try:
+        payload = json.loads(DART_CORP_CODES_JSON.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise AssertionError(f"dart corp codes: invalid JSON: {exc}") from exc
+    files = payload.get("files")
+    counts = payload.get("counts")
+    if (
+        payload.get("format") != "stock-to-corp-shards-v1"
+        or not isinstance(files, dict)
+        or not isinstance(counts, dict)
+    ):
+        fail("dart corp codes: stock-to-corp-shards-v1 manifest is required")
+    codes: dict[str, str] = {}
+    for prefix, relative_path in files.items():
+        path = ROOT / "docs" / str(relative_path).lstrip("./").replace("/", os.sep)
+        if not path.exists():
+            fail(f"dart corp codes: missing shard {relative_path}")
+        shard = json.loads(path.read_text(encoding="utf-8"))
+        shard_codes = shard.get("codes")
+        if shard.get("format") != "stock-to-corp-shard-v1" or not isinstance(shard_codes, dict):
+            fail(f"dart corp codes: invalid shard {relative_path}")
+        if int(counts.get(prefix) or 0) != len(shard_codes):
+            fail(f"dart corp codes: count mismatch for shard {prefix}")
+        for stock_code, corp_code in shard_codes.items():
+            if not str(stock_code).startswith(str(prefix)):
+                fail(f"dart corp codes: misplaced mapping {stock_code!r}")
+            if len(str(stock_code)) != 6 or not str(corp_code).isdigit():
+                fail(f"dart corp codes: invalid mapping {stock_code!r}")
+            codes[str(stock_code)] = str(corp_code)
+    if len(codes) < 1000 or int(payload.get("total") or 0) != len(codes):
+        fail(f"dart corp codes: unexpectedly small or incomplete mapping ({len(codes)})")
+    return f"dart corp codes: {len(codes)} mappings in {len(files)} shards"
+
+
+def validate_krx_universe() -> str:
+    if not KRX_UNIVERSE_JSON.exists():
+        fail("krx universe: payload is missing")
+    try:
+        payload = json.loads(KRX_UNIVERSE_JSON.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise AssertionError(f"krx universe: invalid JSON: {exc}") from exc
+    records = payload.get("records")
+    if payload.get("format") != "krx-universe-v1" or not isinstance(records, list):
+        fail("krx universe: krx-universe-v1 payload is required")
+    tickers = {
+        str(record.get("ticker") or "")
+        for record in records
+        if isinstance(record, dict)
+        and re.fullmatch(r"\d{6}\.(?:KS|KQ)", str(record.get("ticker") or ""))
+        and str(record.get("name") or "").strip()
+    }
+    if len(tickers) != len(records) or len(tickers) < 2_000:
+        fail(f"krx universe: invalid or incomplete records ({len(tickers)})")
+    if int(payload.get("total") or 0) != len(records):
+        fail("krx universe: total does not match records")
+    return f"krx universe: {len(records)} stocks ({payload.get('base_date') or 'unknown'})"
+
+
+def validate_ai_market_model(path: Path = AI_MARKET_MODEL_JSON) -> str:
+    if not path.exists():
+        fail("ai market model: payload is missing")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise AssertionError(f"ai market model: invalid JSON: {exc}") from exc
+    if payload.get("format") != AI_MODEL_FORMAT:
+        fail(f"ai market model: {AI_MODEL_FORMAT} payload is required")
+    try:
+        generated = datetime.fromisoformat(str(payload.get("generated_at") or "").replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise AssertionError("ai market model: generated_at is invalid") from exc
+    age_days = (datetime.now(generated.tzinfo).date() - generated.date()).days
+    if age_days < -1:
+        fail("ai market model: generated_at is in the future")
+    if STRICT_FRESHNESS and age_days > 45:
+        fail(f"ai market model: payload is stale ({age_days} days old)")
+
+    training_window = payload.get("training_window")
+    if (
+        not isinstance(training_window, dict)
+        or training_window.get("candidate_lookback_years") != [5, 10, 15, 25]
+        or int(training_window.get("requested_max_calendar_years") or 0) != 25
+        or not isinstance(training_window.get("available_calendar_years"), (int, float))
+        or float(training_window["available_calendar_years"]) <= 0
+    ):
+        fail("ai market model: 5/10/15/25-year training window metadata is invalid")
+
+    universe = payload.get("universe")
+    if not isinstance(universe, dict):
+        fail("ai market model: universe metadata is missing")
+    selection = universe.get("selection")
+    tickers = universe.get("tickers")
+    if selection != {"KOSPI": 200, "KOSDAQ": 200} or not isinstance(tickers, dict):
+        fail("ai market model: KOSPI/KOSDAQ top-200 selection is required")
+    all_tickers: list[str] = []
+    for market, suffix in (("KOSPI", "KS"), ("KOSDAQ", "KQ")):
+        market_tickers = tickers.get(market)
+        if not isinstance(market_tickers, list) or len(market_tickers) != 200:
+            fail(f"ai market model: {market} ticker selection is incomplete")
+        if any(not re.fullmatch(rf"\d{{6}}\.{suffix}", str(ticker)) for ticker in market_tickers):
+            fail(f"ai market model: {market} contains an invalid ticker")
+        all_tickers.extend(market_tickers)
+    if len(set(all_tickers)) != 400:
+        fail("ai market model: selected tickers must be unique")
+
+    feature_schema = payload.get("feature_schema")
+    names = feature_schema.get("names") if isinstance(feature_schema, dict) else None
+    if (
+        not isinstance(feature_schema, dict)
+        or feature_schema.get("format") != AI_FEATURE_FORMAT
+        or not isinstance(names, list)
+        or len(names) != AI_FEATURE_COUNT
+        or len(set(names)) != AI_FEATURE_COUNT
+    ):
+        fail("ai market model: feature schema is invalid")
+
+    horizons = payload.get("horizons")
+    if not isinstance(horizons, dict) or set(horizons) != {"20", "63", "126"}:
+        fail("ai market model: 20/63/126-day models are required")
+    for horizon, model in horizons.items():
+        if not isinstance(model, dict) or int(model.get("horizon_days") or 0) != int(horizon):
+            fail(f"ai market model: {horizon}-day model metadata is invalid")
+        transform = model.get("feature_transform")
+        hidden_size = 0
+        if transform is not None:
+            if not isinstance(transform, dict) or transform.get("format") != "random-tanh-v1":
+                fail(f"ai market model: {horizon}-day feature transform is invalid")
+            input_size = int(transform.get("input_size") or 0)
+            hidden_size = int(transform.get("hidden_size") or 0)
+            weights = transform.get("weights")
+            biases = transform.get("biases")
+            if (
+                input_size != AI_FEATURE_COUNT
+                or hidden_size not in AI_NONLINEAR_FEATURE_COUNTS
+                or not isinstance(weights, list)
+                or len(weights) != input_size
+                or any(not isinstance(row, list) or len(row) != hidden_size for row in weights)
+                or not isinstance(biases, list)
+                or len(biases) != hidden_size
+            ):
+                fail(f"ai market model: {horizon}-day feature transform shape is invalid")
+            transform_values = [value for row in weights for value in row] + biases
+            if any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in transform_values):
+                fail(f"ai market model: {horizon}-day feature transform contains invalid values")
+        expected_feature_count = AI_FEATURE_COUNT + hidden_size
+        for key in ("coefficients", "means", "standard_deviations"):
+            values = model.get(key)
+            if (
+                not isinstance(values, list)
+                or len(values) != expected_feature_count
+                or any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in values)
+            ):
+                fail(f"ai market model: {horizon}-day {key} is invalid")
+        if any(value <= 0 for value in model["standard_deviations"]):
+            fail(f"ai market model: {horizon}-day standard deviations must be positive")
+        if int(model.get("training_samples") or 0) < 200:
+            fail(f"ai market model: {horizon}-day training sample count is too small")
+        if int(model.get("selected_lookback_years") or 0) not in (5, 10, 15, 25):
+            fail(f"ai market model: {horizon}-day selected lookback is invalid")
+        candidates = model.get("lookback_candidates")
+        if not isinstance(candidates, list) or not candidates:
+            fail(f"ai market model: {horizon}-day lookback candidates are missing")
+        if any(int(candidate.get("years") or 0) not in (5, 10, 15, 25) for candidate in candidates):
+            fail(f"ai market model: {horizon}-day lookback candidate is invalid")
+        if int(model.get("validation_samples") or 0) <= 0 or int(model.get("validation_folds") or 0) < 2:
+            fail(f"ai market model: {horizon}-day purged validation is incomplete")
+        metrics = model.get("metrics")
+        interval = model.get("residual_interval_80")
+        if not isinstance(metrics, dict) or any(
+            not isinstance(metrics.get(key), (int, float)) or not math.isfinite(metrics[key])
+            for key in ("mae", "baseline_mae", "improvement", "direction_accuracy")
+        ):
+            fail(f"ai market model: {horizon}-day performance metrics are invalid")
+        if not 0 <= float(metrics["direction_accuracy"]) <= 1:
+            fail(f"ai market model: {horizon}-day direction accuracy is invalid")
+        if (
+            not isinstance(interval, dict)
+            or not all(isinstance(interval.get(key), (int, float)) for key in ("lower", "upper", "coverage"))
+            or float(interval["lower"]) > float(interval["upper"])
+            or not 0 <= float(interval["coverage"]) <= 1
+        ):
+            fail(f"ai market model: {horizon}-day residual interval is invalid")
+        reliability = model.get("reliability")
+        if not isinstance(reliability, (int, float)) or not 0 <= float(reliability) <= 1:
+            fail(f"ai market model: {horizon}-day reliability is invalid")
+        blend_weight = model.get("blend_weight")
+        if not isinstance(blend_weight, (int, float)) or float(blend_weight) not in (0.6, 0.8, 1.0):
+            fail(f"ai market model: {horizon}-day blend weight is invalid")
+    return (
+        "ai market model: 400 stocks, "
+        f"{sum(int(model['validation_samples']) for model in horizons.values())} validation samples"
+    )
+
+
+def validate_build_health(build_report: dict) -> list[str]:
+    health = build_report.get("health")
+    if not isinstance(health, dict):
+        fail("build health: summary is missing")
+    total_duration = health.get("total_duration_ms")
+    if not isinstance(total_duration, int) or total_duration < 0:
+        fail("build health: total_duration_ms is invalid")
+    http = health.get("http")
+    if not isinstance(http, dict):
+        fail("build health: HTTP metrics are missing")
+    for key in ("requests", "retries", "failures"):
+        if not isinstance(http.get(key), int) or int(http[key]) < 0:
+            fail(f"build health: HTTP metric {key} is invalid")
+
+    sources = build_report.get("sources")
+    if not isinstance(sources, dict):
+        fail("build health: source summaries are missing")
+    monitored = 0
+    alerts: list[str] = []
+    for name, summary in sources.items():
+        if not isinstance(summary, dict) or "status" not in summary:
+            continue
+        monitored += 1
+        if not isinstance(summary.get("duration_ms"), int) or int(summary["duration_ms"]) < 0:
+            fail(f"build health: {name} duration is invalid")
+        status = str(summary.get("status") or "")
+        if status in {"empty", "stale", "error", "degraded"}:
+            alerts.append(f"{name}={status}")
+    if monitored < 5:
+        fail(f"build health: too few monitored sources ({monitored})")
+    warning_values = health.get("warnings")
+    if not isinstance(warning_values, list):
+        fail("build health: warnings must be a list")
+    anomaly_values = health.get("anomalies", [])
+    if not isinstance(anomaly_values, list):
+        fail("build health: anomalies must be a list")
+    actionable_anomalies = actionable_output_anomalies(anomaly_values)
+    if STRICT_FRESHNESS and actionable_anomalies:
+        fail(f"build health: output anomalies detected: {'; '.join(actionable_anomalies[:8])}")
+    return [
+        f"build health: {monitored} sources, {total_duration} ms, "
+        f"HTTP {http['requests']} requests/{http['retries']} retries/{http['failures']} failures",
+        f"build alerts: {', '.join(alerts) if alerts else 'none'}",
+        f"output anomalies: {len(anomaly_values)}",
+    ]
+
+
+def records_from_payload(payload: dict) -> list[dict]:
+    rows = payload.get("records")
+    if isinstance(rows, list) and rows:
+        return rows
+
+    dates = payload.get("dates")
+    columns = payload.get("columns")
+    if not isinstance(dates, list) or not isinstance(columns, dict):
+        return []
+
+    raw_series = payload.get("series")
+    series = [str(value).strip() for value in raw_series if str(value).strip()] if isinstance(raw_series, list) else list(columns)
+    out: list[dict] = []
+    for idx, raw_date in enumerate(dates):
+        row = {"date": raw_date}
+        for key in series:
+            values = columns.get(key)
+            row[key] = values[idx] if isinstance(values, list) and idx < len(values) else None
+        out.append(row)
+    return out
+
+
+def validate_records(name: str, payload: dict) -> list[dict]:
+    rows = records_from_payload(payload)
+    if not isinstance(rows, list) or not rows:
+        fail(f"{name}: records must be a non-empty list")
+
+    prev_date: date | None = None
+    seen: set[date] = set()
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            fail(f"{name}: row {idx} must be an object")
+        row_date = parse_date(row.get("date"), f"{name} row {idx}")
+        if prev_date and row_date <= prev_date:
+            fail(f"{name}: dates must be strictly increasing near {row_date.isoformat()}")
+        if row_date in seen:
+            fail(f"{name}: duplicate date {row_date.isoformat()}")
+        seen.add(row_date)
+        prev_date = row_date
+
+        numeric_values = 0
+        for key, value in row.items():
+            if key == "date" or value is None:
+                continue
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(float(value)):
+                fail(f"{name}: {key} on {row_date.isoformat()} must be a finite number")
+            numeric_values += 1
+        if numeric_values == 0:
+            fail(f"{name}: row {row_date.isoformat()} has no numeric values")
+
+    return rows
+
+
+def numeric_columns_from_payload(payload: dict, rows: list[dict]) -> tuple[str, ...]:
+    raw_series = payload.get("series")
+    if isinstance(raw_series, list):
+        columns = tuple(str(value).strip() for value in raw_series if str(value).strip())
+        if columns:
+            return columns
+
+    seen: set[str] = set()
+    columns: list[str] = []
+    for row in rows:
+        for key, value in row.items():
+            if key == "date" or key in seen:
+                continue
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)):
+                seen.add(key)
+                columns.append(key)
+    return tuple(columns)
+
+
+def latest_numeric_date(name: str, rows: list[dict], columns: tuple[str, ...]) -> date:
+    if not columns:
+        fail(f"{name}: no numeric columns available for freshness validation")
+
+    latest: date | None = None
+    for row in rows:
+        row_date = parse_date(row.get("date"), name)
+        for key in columns:
+            value = row.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)):
+                if latest is None or row_date > latest:
+                    latest = row_date
+                break
+
+    if latest is None:
+        fail(f"{name}: no numeric values available for freshness validation")
+    return latest
+
+
+def validate_freshness(name: str, rows: list[dict], columns: tuple[str, ...], max_days: int) -> None:
+    latest = latest_numeric_date(name, rows, columns)
+    age_days = (date.today() - latest).days
+    if age_days < -1:
+        fail(f"{name}: latest date {latest.isoformat()} is in the future")
+    if age_days > max_days:
+        fail_or_warn_freshness(f"{name}: latest date {latest.isoformat()} is stale ({age_days} days old)")
+
+
+def validate_source_output_alignment(build_report: dict, rows_by_dataset: dict[str, list[dict]]) -> list[str]:
+    sources = build_report.get("sources")
+    if not isinstance(sources, dict):
+        return []
+
+    price_rows = rows_by_dataset.get("prices", [])
+    price_dates = [parse_date(row.get("date"), "prices") for row in price_rows]
+    summaries: list[str] = []
+    for source_name, output_name, columns, align_to_market_day in SOURCE_OUTPUT_RULES:
+        source = sources.get(source_name)
+        if not isinstance(source, dict) or int(source.get("rows") or 0) <= 0:
+            continue
+        source_latest = parse_date(source.get("latest"), f"build report source {source_name}")
+        expected_latest = source_latest
+        if align_to_market_day:
+            market_dates = [value for value in price_dates if value >= source_latest]
+            if not market_dates:
+                summaries.append(
+                    f"source/output {source_name}: waiting for a market date after {source_latest.isoformat()}"
+                )
+                continue
+            expected_latest = market_dates[0]
+
+        output_rows = rows_by_dataset.get(output_name, [])
+        actual_latest = latest_numeric_date(output_name, output_rows, columns)
+        if actual_latest < expected_latest:
+            fail(
+                "source/output mismatch: "
+                f"{source_name} latest {source_latest.isoformat()} requires "
+                f"{output_name}/{','.join(columns)} through {expected_latest.isoformat()}, "
+                f"got {actual_latest.isoformat()}"
+            )
+        summaries.append(
+            f"source/output {source_name}: {source_latest.isoformat()} -> {actual_latest.isoformat()}"
+        )
+    return summaries
+
+
+def validate_credit(rows: list[dict]) -> None:
+    last_seen = {key: None for key in CREDIT_COLUMNS}
+    for row in rows:
+        row_date = parse_date(row.get("date"), "credit")
+        for key in CREDIT_COLUMNS:
+            value = row.get(key)
+            if value is None:
+                continue
+            value = float(value)
+            lower, upper = CREDIT_LIMITS[key]
+            if not lower <= value <= upper:
+                fail(f"credit: {key} on {row_date.isoformat()} out of expected range: {value}")
+
+            prev = last_seen[key]
+            if prev is not None:
+                prev_date, prev_value = prev
+                if prev_value > 0:
+                    pct_change = abs(value / prev_value - 1.0)
+                    day_span = max(1, (row_date - prev_date).days)
+                    daily_pct_change = pct_change / day_span
+                    daily_abs_change = abs(value - prev_value) / day_span
+                    if (
+                        daily_pct_change > CREDIT_MAX_DAILY_PCT_CHANGE
+                        and daily_abs_change > CREDIT_MAX_DAILY_ABS_CHANGE[key]
+                    ):
+                        fail(
+                            "credit: "
+                            f"{key} changed {pct_change:.2%} over {day_span} day(s) from {prev_date.isoformat()} "
+                            f"to {row_date.isoformat()} ({prev_value} -> {value})"
+                        )
+            last_seen[key] = (row_date, value)
+
+    missing_columns = [key for key, latest in last_seen.items() if latest is None]
+    if missing_columns:
+        fail(f"credit: missing numeric series: {missing_columns}")
+
+    has_live_credit_source = (
+        os.environ.get("KOFIA_API_KEY", "").strip()
+        or os.environ.get("ENABLE_FREESIS_CREDIT_TAIL", "").strip() == "1"
+    )
+    if has_live_credit_source:
+        latest = parse_date(rows[-1].get("date"), "credit latest")
+        age_days = (date.today() - latest).days
+        if age_days > CREDIT_MAX_FRESH_DAYS:
+            fail_or_warn_freshness(f"credit: latest date {latest.isoformat()} is stale ({age_days} days old)")
+    else:
+        committed_latest = read_committed_credit_latest()
+        if committed_latest:
+            latest = parse_date(rows[-1].get("date"), "credit latest")
+            if latest > committed_latest:
+                fail(
+                    "credit: latest date advanced without KOFIA_API_KEY "
+                    f"({committed_latest.isoformat()} -> {latest.isoformat()})"
+                )
+
+
+def validate_macro_columns(payload: dict, rows: list[dict]) -> None:
+    columns = set(numeric_columns_from_payload(payload, rows))
+    forbidden = columns.intersection((*CREDIT_COLUMNS, *ADR_COLUMNS))
+    if forbidden:
+        fail(f"macro: duplicated series should live in dedicated payloads: {sorted(forbidden)}")
+
+
+def validate_recent_series_quality(dataset: str, rows: list[dict], keys: tuple[str, ...]) -> None:
+    for key in keys:
+        policy = RECENT_SERIES_QUALITY.get(key)
+        if policy is None:
+            continue
+        minimum, maximum, max_relative, max_absolute, max_gap_days, reject_zero = policy
+        points: list[tuple[date, float]] = []
+        for row in rows:
+            value = row.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)):
+                points.append((parse_date(row.get("date"), f"{dataset} {key}"), float(value)))
+        points = points[-120:]
+        for point_date, value in points:
+            if value < minimum or value > maximum or (reject_zero and value == 0):
+                fail(f"{dataset}: invalid {key} value on {point_date.isoformat()}: {value}")
+        for (previous_date, previous), (current_date, current) in zip(points, points[1:]):
+            gap_days = (current_date - previous_date).days
+            if gap_days <= 0 or gap_days > max_gap_days or previous == 0:
+                continue
+            relative_change = abs(current / previous - 1)
+            absolute_change = abs(current - previous)
+            if relative_change > max_relative and absolute_change > max_absolute:
+                fail(
+                    f"{dataset}: implausible {key} jump "
+                    f"{previous_date.isoformat()} {previous} -> {current_date.isoformat()} {current}"
+                )
+
+
+def validate_macro_continuity(rows: list[dict]) -> None:
+    validate_recent_series_quality("macro", rows, ("leading_cycle", "news_sentiment"))
+
+
+def validate_news_sentiment_history(rows: list[dict]) -> None:
+    points = [
+        (parse_date(row.get("date"), "macro news_sentiment"), float(row["news_sentiment"]))
+        for row in rows
+        if isinstance(row.get("news_sentiment"), (int, float))
+        and not isinstance(row.get("news_sentiment"), bool)
+        and math.isfinite(float(row["news_sentiment"]))
+        and float(row["news_sentiment"]) > 0
+    ]
+    if len(points) < NEWS_SENTIMENT_MIN_HISTORY_POINTS:
+        fail(
+            "macro: bundled news_sentiment history is incomplete "
+            f"({len(points)} < {NEWS_SENTIMENT_MIN_HISTORY_POINTS})"
+        )
+    if points[0][0] > NEWS_SENTIMENT_HISTORY_START_LIMIT:
+        fail(
+            "macro: bundled news_sentiment starts too late "
+            f"({points[0][0].isoformat()})"
+        )
+
+
+def validate_auxiliary(rows: list[dict]) -> None:
+    validate_recent_series_quality("adr", rows, ADR_COLUMNS)
+
+
+def validate_disclosures(payload: dict) -> list[dict]:
+    rows = payload.get("records")
+    if not isinstance(rows, list) and payload.get("format") == "by-ticker-v1":
+        rows = []
+        files = payload.get("files")
+        if not isinstance(files, dict) or not files:
+            fail("disclosures: by-ticker manifest must include files")
+        for rel_path in files.values():
+            path = ROOT / "docs" / str(rel_path).lstrip("./").replace("/", os.sep)
+            if not path.exists():
+                fail(f"disclosures: missing ticker file {path}")
+            try:
+                ticker_payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                raise AssertionError(f"disclosures: invalid ticker JSON {path}: {exc}") from exc
+            ticker_rows = ticker_payload.get("records", [])
+            if not isinstance(ticker_rows, list):
+                fail(f"disclosures: ticker file records must be a list {path}")
+            rows.extend(ticker_rows)
+
+    if not isinstance(rows, list):
+        fail("disclosures: records must be a list")
+    rows = sorted(rows, key=lambda row: (
+        str(row.get("date") or ""),
+        str(row.get("ticker") or ""),
+        str(row.get("title") or ""),
+    ))
+
+    prev_key: tuple[str, str, str] | None = None
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            fail(f"disclosures: row {idx} must be an object")
+        ticker = str(row.get("ticker") or "")
+        title = str(row.get("title") or "")
+        row_date = parse_date(row.get("date"), f"disclosures row {idx}")
+        if not ticker.endswith((".KS", ".KQ")):
+            fail(f"disclosures: invalid ticker on row {idx}: {ticker!r}")
+        if not title:
+            fail(f"disclosures: row {idx} missing title")
+        key = (row_date.isoformat(), ticker, title)
+        if prev_key and key < prev_key:
+            fail(f"disclosures: rows must be sorted near {key}")
+        prev_key = key
+    return rows
+
+
+def read_committed_credit_latest() -> date | None:
+    try:
+        raw = subprocess.check_output(
+            ["git", "show", "HEAD:docs/data/credit_data.json"],
+            cwd=ROOT,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+        )
+        payload = json.loads(raw)
+        rows = records_from_payload(payload)
+        if not rows:
+            return None
+        return parse_date(rows[-1].get("date"), "committed credit latest")
+    except Exception:
+        return None
+
+
+def main() -> int:
+    summaries: list[str] = validate_segmented_payloads()
+    summaries.append(validate_dart_corp_codes())
+    summaries.append(validate_krx_universe())
+    summaries.append(validate_ai_market_model())
+    rows_by_dataset: dict[str, list[dict]] = {}
+    for name in ("prices", "macro", "credit", "adr", "disclosures"):
+        payload = load_payload(name)
+        if name == "disclosures":
+            rows = validate_disclosures(payload)
+            latest = rows[-1]["date"] if rows else "empty"
+            summaries.append(f"{name}: {len(rows)} rows, latest {latest}")
+            continue
+        rows = validate_records(name, payload)
+        rows_by_dataset[name] = rows
+        summaries.append(f"{name}: {len(rows)} rows, latest {rows[-1]['date']}")
+        if name == "prices":
+            validate_freshness(name, rows, numeric_columns_from_payload(payload, rows), PRICE_MAX_FRESH_DAYS)
+        elif name == "macro":
+            validate_macro_columns(payload, rows)
+            validate_macro_continuity(rows)
+            validate_news_sentiment_history(rows)
+            validate_freshness(name, rows, ("leading_cycle",), LEADING_MAX_FRESH_DAYS)
+            macro_columns = set(numeric_columns_from_payload(payload, rows))
+            validate_freshness(name, rows, ("news_sentiment",), NEWS_SENTIMENT_MAX_FRESH_DAYS)
+        elif name == "adr":
+            validate_auxiliary(rows)
+            validate_freshness(name, rows, ADR_COLUMNS, ADR_MAX_FRESH_DAYS)
+        if name == "credit":
+            validate_credit(rows)
+
+    build_report = load_build_report()
+    summaries.extend(validate_source_output_alignment(build_report, rows_by_dataset))
+    summaries.extend(validate_build_health(build_report))
+
+    print("Pages data validation passed:")
+    for summary in summaries:
+        print(f"- {summary}")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except AssertionError as exc:
+        message = f"Pages data validation failed: {exc}"
+        print(message, file=sys.stderr)
+        emit_github_error(message)
+        raise SystemExit(1)

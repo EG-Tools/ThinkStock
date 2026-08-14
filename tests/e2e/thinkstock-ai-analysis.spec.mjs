@@ -1,0 +1,1511 @@
+import {
+  expect,
+  test,
+  recentDates,
+  historyDates,
+  DESKTOP_PERF_BUDGET,
+  setChartRangeMonths,
+  waitForBoundingBox,
+  waitForChartRenderIdle,
+  visibleTracePixelSpan,
+  columnar,
+  stubExternalRefreshes,
+  installDataRoutes,
+} from "./helpers/thinkstock-fixture.mjs";
+
+test("AI toggle draws and removes a six-month virtual forecast", async ({ page, isMobile }) => {
+  await stubExternalRefreshes(page);
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+
+  await page.locator("#aiForecastToggle").click();
+  await expect(page.locator("#aiForecastToggle")).toHaveClass(/is-active/);
+  await expect(page.locator("#aiForecastProgress")).toBeVisible();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length
+  )), { timeout: 30000 }).toBeGreaterThan(0);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const [rangeStart, rangeEnd] = (element?._fullLayout?.xaxis?.range || []).map(Date.parse);
+    const [rangeLow, rangeHigh] = (element?._fullLayout?.yaxis?.range || []).map(Number);
+    const tolerance = Math.max(0.05, Math.abs(rangeHigh - rangeLow) * 0.002);
+    return (element.data || [])
+      .filter((trace) => trace?.meta?.isAiForecastScenarioTrace)
+      .flatMap((trace) => (trace.x || []).flatMap((date, index) => {
+        const time = Date.parse(date);
+        const value = Number(trace.y?.[index]);
+        if (!Number.isFinite(time) || !Number.isFinite(value)
+          || time < rangeStart || time > rangeEnd) return [];
+        return value < rangeLow - tolerance || value > rangeHigh + tolerance ? [value] : [];
+      })).length;
+  }), { message: "AI forecast remained outside the auto-fitted chart range" }).toBe(0);
+  const scenarioSummary = await page.locator("#chart").evaluate((element) => {
+    const traces = (element.data || []).filter((trace) => trace?.meta?.isAiForecastScenarioTrace);
+    return {
+      count: traces.length,
+      roles: [...new Set(traces.map((trace) => trace.meta.aiTraceRole))].sort(),
+      endpoints: traces.map((trace) => String(trace.text?.at(-1) || "")),
+      hoverTemplates: traces.map((trace) => String(trace.hovertemplate || "")),
+      hasMacroIndex: traces.some((trace) => trace.meta.forecastMode === "macro-index"),
+      styles: traces.map((trace) => ({
+        series: trace.meta.seriesKey,
+        probability: Number(trace.meta.scenarioProbability),
+        weight: Number(trace.meta.scenarioWeight),
+        calibratedProbability: trace.meta.calibratedProbability,
+        primary: trace.meta.isPrimaryAiScenario === true,
+        rawPrimary: trace.meta.isRawPrimaryAiScenario === true,
+        decisive: trace.meta.isDecisiveAiScenario === true,
+        scenarioLead: Number(trace.meta.aiScenarioLead),
+        expectedDirection: String(trace.meta.aiExpectedDirection || ""),
+        role: String(trace.meta.aiTraceRole || ""),
+        width: Number(trace.line?.width),
+        color: String(trace.line?.color || ""),
+        reason: String(trace.meta.scenarioReason || ""),
+        patternKey: String(trace.meta.scenarioPatternKey || ""),
+        pathSource: String(trace.meta.scenarioPathSource || ""),
+      })),
+    };
+  });
+  expect(scenarioSummary.count).toBeGreaterThanOrEqual(3);
+  expect(scenarioSummary.count % 3).toBe(0);
+  expect(scenarioSummary.roles).toEqual(["downside", "sideways", "upside"]);
+  expect(scenarioSummary.endpoints.every((text) => /^.+ \d+%$/.test(text))).toBe(true);
+  expect(scenarioSummary.endpoints.every((text) => text.includes("가중치"))).toBe(true);
+  expect(scenarioSummary.hoverTemplates
+    .filter(Boolean)
+    .every((text) => text.includes("실제 확률 아님"))).toBe(true);
+  expect(scenarioSummary.hoverTemplates.every((text) => (
+    !text.includes("%{x")
+    && !text.includes("검증 예상범위")
+    && !text.includes("시장 관계 학습")
+    && !text.includes("컨센서스 반영")
+    && !text.includes("실적 추세 반영")
+  ))).toBe(true);
+  expect(scenarioSummary.hasMacroIndex).toBe(true);
+  const scenarioStyleGroups = Map.groupBy(scenarioSummary.styles, (style) => style.series);
+  scenarioStyleGroups.forEach((styles) => {
+    expect(new Set(styles.map((style) => style.reason)).size).toBe(3);
+    expect(new Set(styles.map((style) => style.patternKey)).size).toBe(3);
+    expect(styles.every((style) => [
+      "conditional-analogs",
+      "regime-fallback",
+      "short-term-shock-regime",
+    ].includes(
+      style.pathSource,
+    ))).toBe(true);
+    const highestProbability = Math.max(...styles.map((style) => style.probability));
+    expect(styles.every((style) => style.weight === style.probability)).toBe(true);
+    expect(styles.every((style) => style.calibratedProbability === false)).toBe(true);
+    const rawPrimaryStyles = styles.filter((style) => style.rawPrimary);
+    expect(rawPrimaryStyles.length).toBeGreaterThan(0);
+    expect(rawPrimaryStyles.every((style) => style.probability === highestProbability)).toBe(true);
+    const primaryStyles = styles.filter((style) => style.primary);
+    expect(primaryStyles.length).toBe(1);
+    const [primaryStyle] = primaryStyles;
+    if (primaryStyle.decisive) {
+      expect(primaryStyle.probability).toBe(highestProbability);
+      expect(primaryStyle.width).toBe(2.9);
+      expect(primaryStyle.color).toContain("248, 248, 248");
+    } else {
+      expect(primaryStyle.width).toBe(2.45);
+      expect(primaryStyle.color).toContain("232, 232, 232");
+      expect([primaryStyle.expectedDirection, "sideways"]).toContain(primaryStyle.role);
+    }
+    expect(styles.filter((style) => !style.primary)
+      .every((style) => style.width < primaryStyle.width)).toBe(true);
+  });
+  const horizonPoints = await page.locator("#chart").evaluate((element) => (
+    (element.data || []).find((trace) => trace?.meta?.isAiForecastTrace)?.x?.length || 0
+  ));
+  expect(horizonPoints).toBe(127);
+  const observedEnd = await page.locator("#chart").evaluate((element) => Math.max(
+    ...(element.data || [])
+      .filter((trace) => !trace?.meta?.isAiForecastScenarioTrace && Array.isArray(trace?.x))
+      .flatMap((trace) => trace.x.map((date) => Date.parse(date)).filter(Number.isFinite)),
+  ));
+  await expect(page.locator("#aiForecastProgress")).toBeHidden({ timeout: 5000 });
+
+  const forecastPrices = () => page.locator("#chart").evaluate((element) => (
+    (element.data || []).find((trace) => trace?.meta?.isAiForecastTrace)?.customdata || []
+  ));
+  const baselineForecast = await forecastPrices();
+
+  await page.locator("#chartRange1Year").click();
+  await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getActiveMonths())).toBe(12);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const range = (element?._fullLayout?.xaxis?.range || []).map(Date.parse);
+    return (range[1] - range[0]) / (24 * 60 * 60 * 1000);
+  })).toBeLessThanOrEqual(370);
+  const panState = await page.locator("#chart").evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const xAxis = element?._fullLayout?.xaxis;
+    const yAxis = element?._fullLayout?.yaxis;
+    const forecastDates = (element.data || [])
+      .filter((trace) => trace?.meta?.isAiForecastScenarioTrace)
+      .flatMap((trace) => trace.x || [])
+      .map(Date.parse)
+      .filter(Number.isFinite);
+    const observedDates = (element.data || [])
+      .filter((trace) => trace?.meta?.seriesKey && !trace?.meta?.isAiForecastScenarioTrace)
+      .flatMap((trace) => trace.x || [])
+      .map(Date.parse)
+      .filter(Number.isFinite);
+    return {
+      earlierX: rect.left + xAxis._offset + xAxis._length * 0.2,
+      laterX: rect.left + xAxis._offset + xAxis._length * 0.9,
+      y: rect.top + yAxis._offset + yAxis._length * 0.94,
+      forecastEnd: Math.max(...forecastDates),
+      observedEnd: Math.max(...observedDates),
+      traceCount: (element.data || []).filter((trace) => trace?.meta?.isAiForecastScenarioTrace).length,
+    };
+  });
+  const panChart = async (fromX, toX) => {
+    const previousStart = await page.locator("#chart").evaluate((element) => (
+      Date.parse(element?._fullLayout?.xaxis?.range?.[0])
+    ));
+    await page.mouse.move(fromX, panState.y);
+    await page.mouse.down();
+    await page.mouse.move(toX, panState.y, { steps: 6 });
+    await page.mouse.up();
+    await expect.poll(() => page.locator("#chart").evaluate((element) => (
+      Date.parse(element?._fullLayout?.xaxis?.range?.[0])
+    ))).not.toBe(previousStart);
+    await waitForChartRenderIdle(page);
+  };
+
+  await panChart(panState.earlierX, panState.laterX);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    Date.parse(element?._fullLayout?.xaxis?.range?.[1])
+  ))).toBeLessThan(panState.observedEnd);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.isAiForecastScenarioTrace).length
+  ))).toBe(panState.traceCount);
+
+  await panChart(panState.laterX, panState.earlierX);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    Date.parse(element?._fullLayout?.xaxis?.range?.[1])
+  ))).toBeGreaterThanOrEqual(panState.forecastEnd - (24 * 60 * 60 * 1000));
+  await expect.poll(forecastPrices).toEqual(baselineForecast);
+
+  const latestZoom = await page.locator("#chart").evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const xAxis = element._fullLayout.xaxis;
+    const yAxis = element._fullLayout.yaxis;
+    const range = xAxis.range.map(Date.parse);
+    return {
+      x: rect.left + xAxis._offset + (xAxis._length * 0.25),
+      y: rect.top + yAxis._offset + (yAxis._length * 0.5),
+      span: range[1] - range[0],
+    };
+  });
+  if (isMobile) {
+    await page.locator("#chart").evaluate((element, point) => {
+      const send = (type, pointerId, x, primary, buttons) => element.dispatchEvent(new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        pointerId,
+        pointerType: "touch",
+        isPrimary: primary,
+        buttons,
+        clientX: x,
+        clientY: point.y,
+      }));
+      send("pointerdown", 191, point.x - 35, true, 1);
+      send("pointerdown", 192, point.x + 35, false, 1);
+      send("pointermove", 191, point.x - 70, true, 1);
+      send("pointermove", 192, point.x + 70, false, 1);
+      send("pointerup", 191, point.x - 70, true, 0);
+      send("pointerup", 192, point.x + 70, false, 0);
+    }, latestZoom);
+  } else {
+    await page.locator("#chart").dispatchEvent("wheel", {
+      deltaY: -120,
+      clientX: latestZoom.x,
+      clientY: latestZoom.y,
+    });
+  }
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const range = element._fullLayout.xaxis.range.map(Date.parse);
+    return range[1] - range[0];
+  })).toBeLessThan(latestZoom.span * 0.9);
+  await expect.poll(() => page.locator("#chart").evaluate((element, forecastEnd) => (
+    Math.abs(Date.parse(element._fullLayout.xaxis.range[1]) - forecastEnd)
+  ), panState.forecastEnd)).toBeLessThanOrEqual(2 * 24 * 60 * 60 * 1000);
+
+  for (const months of [3, 6, 12, 360]) {
+    await setChartRangeMonths(page, months);
+    await expect.poll(forecastPrices).toEqual(baselineForecast);
+  }
+
+  await page.locator("#aiForecastToggle").click();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length
+  ))).toBe(0);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    Date.parse(element?._fullLayout?.xaxis?.range?.[1])
+  ))).toBeLessThanOrEqual(observedEnd);
+});
+
+test("AI toggle restores an unchanged wheel-zoomed viewport", async ({ page, isMobile }) => {
+  test.skip(isMobile, "Mouse wheel behavior is desktop-only.");
+  await stubExternalRefreshes(page);
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+
+  const initial = await page.locator("#chart").evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const xAxis = element._fullLayout.xaxis;
+    const yAxis = element._fullLayout.yaxis;
+    const range = xAxis.range.map(Date.parse);
+    return {
+      x: rect.left + xAxis._offset + (xAxis._length * 0.25),
+      y: rect.top + yAxis._offset + (yAxis._length * 0.5),
+      span: range[1] - range[0],
+    };
+  });
+  await page.locator("#chart").dispatchEvent("wheel", {
+    deltaY: -120,
+    clientX: initial.x,
+    clientY: initial.y,
+  });
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const range = element._fullLayout.xaxis.range.map(Date.parse);
+    return range[1] - range[0];
+  })).toBeLessThan(initial.span * 0.9);
+  await page.waitForTimeout(220);
+  const zoomedRange = await page.locator("#chart").evaluate((element) => (
+    element._fullLayout.xaxis.range.map(Date.parse)
+  ));
+
+  await page.locator("#aiForecastToggle").click();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length
+  )), { timeout: 30000 }).toBeGreaterThan(0);
+  await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-busy", "false", {
+    timeout: 30000,
+  });
+  await page.locator("#aiForecastToggle").click();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length
+  ))).toBe(0);
+  await waitForChartRenderIdle(page);
+  await expect.poll(() => page.locator("#chart").evaluate((element, expected) => {
+    const actual = element._fullLayout.xaxis.range.map(Date.parse);
+    return Math.max(Math.abs(actual[0] - expected[0]), Math.abs(actual[1] - expected[1]));
+  }, zoomedRange)).toBeLessThanOrEqual(1000);
+});
+
+test("AI forecast opens for the first enabled series and stays stable while browsing history", async ({ page }) => {
+  const pageUrl = process.env.THINKSTOCK_AI_EMPTY_BOOT_URL || "/?e2e=1";
+  await stubExternalRefreshes(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 120,
+      hiddenSeries: [
+        "leading_cycle",
+        "^KS11",
+        "^KQ11",
+        "customer_deposit",
+        "kospi_credit",
+        "kosdaq_credit",
+      ],
+      customStocks: [],
+    }));
+  });
+  await page.goto(pageUrl, { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await expect(page.locator('.series-toggle-btn[data-series="^KS11"]')).toHaveClass(/is-off/);
+
+  await page.locator("#aiForecastToggle").click();
+  await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-pressed", "true");
+  await page.locator('.series-toggle-btn[data-series="^KS11"]').click();
+  await expect(page.locator('.series-toggle-btn[data-series="^KS11"]')).toHaveClass(/is-on/);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => (
+      trace?.meta?.isAiForecastScenarioTrace && trace?.meta?.seriesKey === "^KS11"
+    )).length
+  )), {
+    message: "KOSPI AI forecast did not render after an empty boot",
+    timeout: 30000,
+  }).toBe(3);
+  const visibleRange = await page.locator("#chart").evaluate((element) => {
+    const observedEnd = Math.max(
+      ...(element.data || [])
+        .filter((trace) => !trace?.meta?.isAiForecastScenarioTrace && Array.isArray(trace?.x))
+        .flatMap((trace) => trace.x.map((date) => Date.parse(date)).filter(Number.isFinite)),
+    );
+    return {
+      observedEnd,
+      forecastEnd: Math.max(
+        ...(element.data || [])
+          .filter((trace) => trace?.meta?.isAiForecastScenarioTrace && Array.isArray(trace?.x))
+          .flatMap((trace) => trace.x.map((date) => Date.parse(date)).filter(Number.isFinite)),
+      ),
+      viewportEnd: Date.parse(element?._fullLayout?.xaxis?.range?.[1]),
+    };
+  });
+  expect(visibleRange.viewportEnd).toBeGreaterThan(visibleRange.observedEnd);
+  expect(visibleRange.viewportEnd).toBeGreaterThanOrEqual(visibleRange.forecastEnd);
+
+  await expect.poll(() => page.evaluate(() => {
+    const state = window.ThinkStockE2E.getAiForecastState();
+    const refresh = window.ThinkStockE2E.getRefreshPhaseStats();
+    return state.marketModelSettled && !state.inputsPending && refresh.supplementalReady > 0;
+  }), { timeout: 20000 }).toBe(true);
+  await expect(page.locator("#aiForecastProgress")).toBeHidden({ timeout: 10000 });
+
+  const latestForecastPaths = await page.locator("#chart").evaluate((element) => (
+    Object.fromEntries((element.data || [])
+      .filter((trace) => trace?.meta?.isAiForecastScenarioTrace && trace?.meta?.seriesKey === "^KS11")
+      .map((trace) => [trace.meta.aiTraceRole, [...(trace.customdata || [])]]))
+  ));
+  const calculationCountsBeforeHistory = await page.evaluate(() => (
+    window.ThinkStockE2E.getAiForecastState().calculationCounts
+  ));
+  const inputKeysBeforeHistory = await page.evaluate(() => (
+    window.ThinkStockE2E.getAiForecastState().cacheInputKeys
+  ));
+  const actualInputDate = new Date(visibleRange.observedEnd).toISOString().slice(0, 10);
+  expect(await page.evaluate(({ date }) => window.ThinkStockE2E.applyNewsSentimentForTest([
+    { date, news_sentiment: 123.456 },
+  ]), { date: actualInputDate })).toMatchObject({ updated: 1, latestDate: actualInputDate });
+  await expect.poll(() => page.evaluate(() => (
+    window.ThinkStockE2E.getAiForecastState().calculationCounts["^KS11"] || 0
+  )), {
+    message: "A real macro input change did not recalculate the affected forecast",
+    timeout: 30000,
+  })
+    .toBe((calculationCountsBeforeHistory["^KS11"] || 0) + 1);
+  const stateAfterInputChange = await page.evaluate(() => window.ThinkStockE2E.getAiForecastState());
+  expect(stateAfterInputChange.cacheInputKeys["^KS11"])
+    .not.toBe(inputKeysBeforeHistory["^KS11"]);
+});
+
+test("AI off clamps the viewport to the last observed date", async ({ page }) => {
+  await stubExternalRefreshes(page);
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+
+  await page.locator("#aiForecastToggle").click();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.isAiForecastScenarioTrace).length
+  )), { timeout: 30000 }).toBeGreaterThan(0);
+  const observedEnd = await page.locator("#chart").evaluate((element) => Math.max(
+    ...(element.data || [])
+      .filter((trace) => !trace?.meta?.isAiForecastScenarioTrace && Array.isArray(trace?.x))
+      .flatMap((trace) => trace.x.map((date) => Date.parse(date)).filter(Number.isFinite)),
+  ));
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    Date.parse(element?._fullLayout?.xaxis?.range?.[1])
+  ))).toBeGreaterThan(observedEnd);
+
+  await page.locator("#aiForecastToggle").click();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.isAiForecastScenarioTrace).length
+  ))).toBe(0);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    Date.parse(element?._fullLayout?.xaxis?.range?.[1])
+  ))).toBeLessThanOrEqual(observedEnd);
+});
+
+test("AI forecasts survive repeated KOSPI and KOSDAQ toggle cycles", async ({ page }) => {
+  await stubExternalRefreshes(page);
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  const kosdaqButton = page.locator('.series-toggle-btn[data-series="^KQ11"]');
+  if (await kosdaqButton.getAttribute("aria-pressed") !== "true") await kosdaqButton.click();
+  await page.evaluate(() => {
+    const bar = document.getElementById("aiForecastProgressBar");
+    const text = document.getElementById("aiForecastProgressText");
+    window.__aiProgressSamples = [];
+    const capture = () => window.__aiProgressSamples.push({
+      value: Number.parseFloat(bar?.style?.width || "0"),
+      text: text?.textContent || "",
+    });
+    new MutationObserver(capture).observe(bar, { attributes: true, attributeFilter: ["style"] });
+    new MutationObserver(capture).observe(text, { childList: true, subtree: true });
+  });
+
+  let calculationCountsAfterInitial = null;
+  for (let cycle = 0; cycle < 5; cycle += 1) {
+    await page.locator("#aiForecastToggle").click();
+    await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-pressed", "true");
+    await expect.poll(() => page.locator("#chart").evaluate((element) => (
+      new Set((element.data || [])
+        .filter((trace) => trace?.meta?.isAiForecastScenarioTrace)
+        .map((trace) => trace?.meta?.seriesKey)).size
+    )), {
+      message: `AI cycle ${cycle + 1} did not render both indices`,
+      timeout: 30000,
+    }).toBe(2);
+    if (cycle === 0) {
+      // The first visible forecast can be refined once the background market
+      // model and rotation inputs settle. Measure cache reuse after that pass.
+      await expect(page.locator("#aiForecastProgress")).toBeHidden({ timeout: 15000 });
+      calculationCountsAfterInitial = await page.evaluate(() => (
+        window.ThinkStockE2E.getAiForecastState().calculationCounts
+      ));
+    }
+
+    await page.locator("#aiForecastToggle").click();
+    await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-pressed", "false");
+    await expect.poll(() => page.locator("#chart").evaluate((element) => (
+      (element.data || []).filter((trace) => trace?.meta?.isAiForecastScenarioTrace).length
+    ))).toBe(0);
+  }
+
+  for (let click = 0; click < 5; click += 1) {
+    await page.locator("#aiForecastToggle").click();
+    await page.waitForTimeout(40);
+  }
+  await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    new Set((element.data || [])
+      .filter((trace) => trace?.meta?.isAiForecastScenarioTrace)
+      .map((trace) => trace?.meta?.seriesKey)).size
+  )), {
+    message: "rapid AI toggles did not preserve the final ON state",
+    timeout: 30000,
+  }).toBe(2);
+  const progressSamples = await page.evaluate(() => window.__aiProgressSamples || []);
+  expect(progressSamples.some((sample) => sample.value === 100)).toBe(true);
+  const finalCalculationCounts = await page.evaluate(() => (
+    window.ThinkStockE2E.getAiForecastState().calculationCounts
+  ));
+  expect(finalCalculationCounts).toEqual(calculationCountsAfterInitial);
+});
+
+test("enabling KOSDAQ while AI is active calculates only the new index", async ({ page }) => {
+  await stubExternalRefreshes(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 12,
+      hiddenSeries: ["^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit"],
+      customStocks: [],
+    }));
+  });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+
+  await page.locator("#aiForecastToggle").click();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => (
+      trace?.meta?.isAiForecastScenarioTrace && trace?.meta?.seriesKey === "^KS11"
+    )).length
+  )), { timeout: 30000 }).toBe(3);
+  await expect.poll(() => page.evaluate(() => {
+    const state = window.ThinkStockE2E.getAiForecastState();
+    return state.marketModelSettled && !state.inputsPending;
+  }), { timeout: 20000 }).toBe(true);
+  await expect(page.locator("#aiForecastProgress")).toBeHidden({ timeout: 10000 });
+  const countsBeforeKOSDAQ = await page.evaluate(() => (
+    window.ThinkStockE2E.getAiForecastState().calculationCounts
+  ));
+  expect(countsBeforeKOSDAQ["^KS11"]).toBe(1);
+
+  await page.evaluate(() => {
+    const wrap = document.getElementById("aiForecastProgress");
+    window.__kosdaqAiProgressVisibility = [];
+    const capture = () => window.__kosdaqAiProgressVisibility.push(!wrap?.hidden);
+    new MutationObserver(capture).observe(wrap, { attributes: true, attributeFilter: ["hidden"] });
+  });
+  await page.locator('.series-toggle-btn[data-series="^KQ11"]').click();
+  await expect(page.locator("#aiForecastProgress")).toBeVisible();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => (
+      trace?.meta?.isAiForecastScenarioTrace && trace?.meta?.seriesKey === "^KQ11"
+    )).length
+  )), { timeout: 30000 }).toBe(3);
+  await expect(page.locator("#aiForecastProgress")).toBeHidden({ timeout: 5000 });
+  expect(await page.evaluate(() => window.__kosdaqAiProgressVisibility || [])).toContain(true);
+  const stateAfterKOSDAQ = await page.evaluate(() => window.ThinkStockE2E.getAiForecastState());
+  expect(stateAfterKOSDAQ.calculationCounts["^KS11"]).toBe(countsBeforeKOSDAQ["^KS11"]);
+  expect(stateAfterKOSDAQ.calculationCounts["^KQ11"]).toBe(1);
+  expect(stateAfterKOSDAQ.cachedTargets).toEqual(expect.arrayContaining(["^KS11", "^KQ11"]));
+});
+
+test("AI requests analysis only for stock toggles that are on", async ({ page }) => {
+  await installDataRoutes(page);
+  const stockSeries = ["005930.KS", "000660.KS", "035420.KS", "035720.KS"];
+  await page.route("**/data/prices_recent.json*", async (route) => {
+    await route.fulfill({ json: columnar(
+      ["^KS11", "^KQ11", ...stockSeries],
+      recentDates,
+      {
+        "^KS11": [2800, 2900, 3000, 3100, 3200],
+        "^KQ11": [780, 800, 820, 840, 860],
+        "005930.KS": [70000, 72000, 74000, 76000, 78000],
+        "000660.KS": [90000, 88000, 91000, 93000, 95000],
+        "035420.KS": [180000, 185000, 183000, 190000, 195000],
+        "035720.KS": [45000, 47000, 46000, 48000, 50000],
+      },
+    ) });
+  });
+  await page.route("**/data/prices_history.json*", async (route) => {
+    await route.fulfill({ json: columnar(
+      ["^KS11", "^KQ11", ...stockSeries],
+      historyDates,
+      {
+        "^KS11": [300, 900, 1800],
+        "^KQ11": [80, 400, 550],
+        "005930.KS": [8000, 15000, 28000],
+        "000660.KS": [12000, 28000, 52000],
+        "035420.KS": [25000, 60000, 110000],
+        "035720.KS": [10000, 22000, 35000],
+      },
+    ) });
+  });
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "private" }));
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 12,
+      hiddenSeries: [
+        "leading_cycle", "^KS11", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit",
+        "000660.KS", "035720.KS",
+      ],
+      customStocks: [
+        { ticker: "005930.KS", name: "삼성전자", code: "005930", market: "KOSPI" },
+        { ticker: "000660.KS", name: "SK하이닉스", code: "000660", market: "KOSPI" },
+        { ticker: "035420.KS", name: "NAVER", code: "035420", market: "KOSPI" },
+        { ticker: "035720.KS", name: "카카오", code: "035720", market: "KOSPI" },
+      ],
+    }));
+  });
+  const analysisRequests = [];
+  await page.route("**/api/analysis**", async (route) => {
+    const ticker = new URL(route.request().url()).searchParams.get("ticker") || "";
+    analysisRequests.push(ticker);
+    await route.fulfill({ json: { ok: true, ticker, savedAt: Date.now(), financials: [] } });
+  });
+
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await page.locator("#aiForecastToggle").click();
+
+  await expect.poll(() => [...new Set(analysisRequests)].sort())
+    .toEqual(["005930.KS", "035420.KS"]);
+  await page.waitForTimeout(300);
+  expect([...new Set(analysisRequests)].sort()).toEqual(["005930.KS", "035420.KS"]);
+  await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getAiForecastState().targets))
+    .toEqual(["005930.KS", "035420.KS"]);
+});
+
+test("market timing applies to a visible stock series", async ({ page }) => {
+  await stubExternalRefreshes(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 360,
+      customStocks: [
+        { ticker: "005930.KS", name: "삼성전자", code: "005930", market: "KOSPI" },
+      ],
+      showRecessionSignals: true,
+    }));
+  });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || [])
+      .filter((trace) => trace?.meta?.isMarketTimingBuyTrace || trace?.meta?.isMarketTimingSellTrace)
+      .flatMap((trace) => trace.customdata || [])
+      .some((row) => row?.[0] === "삼성전자")
+  ))).toBe(true);
+  const timingMarkerStyles = await page.locator("#chart").evaluate((element) => (
+    (element.data || [])
+      .filter((trace) => trace?.meta?.isMarketTimingBuyTrace || trace?.meta?.isMarketTimingSellTrace)
+      .map((trace) => ({ symbol: trace.marker?.symbol, size: trace.marker?.size }))
+  ));
+  expect(timingMarkerStyles.length).toBeGreaterThan(0);
+  expect(timingMarkerStyles.every(({ symbol, size }) => (
+    ["triangle-up", "triangle-down"].includes(symbol) && size >= 13
+  ))).toBe(true);
+
+  const maximumTimingMarkerGap = async () => {
+    const gaps = await page.evaluate(() => window.ThinkStockE2E.getTimingMarkerPixelGaps());
+    return gaps.length ? Math.max(...gaps) : Number.POSITIVE_INFINITY;
+  };
+
+  await page.locator("#aiForecastToggle").click();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length
+  )), { timeout: 20000 }).toBeGreaterThan(0);
+  await expect.poll(maximumTimingMarkerGap).toBeLessThan(24);
+
+  const kospiToggle = page.locator('.series-toggle-btn[data-series="^KS11"]');
+  await kospiToggle.click();
+  await expect.poll(maximumTimingMarkerGap).toBeLessThan(24);
+  await kospiToggle.click();
+  await expect.poll(maximumTimingMarkerGap).toBeLessThan(24);
+});
+
+test("co-movement toggle shows only the last visible stock for the selected period", async ({ page }) => {
+  await installDataRoutes(page);
+  await page.route("**/data/prices_recent.json*", async (route) => {
+    await route.fulfill({ json: columnar(
+      ["^KS11", "^KQ11", "005930.KS", "000660.KS"],
+      recentDates,
+      {
+        "^KS11": [2800, 2900, 3000, 3100, 3200],
+        "^KQ11": [780, 800, 820, 840, 860],
+        "005930.KS": [70000, 72000, 74000, 76000, 78000],
+        "000660.KS": [90000, 88000, 91000, 93000, 95000],
+      },
+    ) });
+  });
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 12,
+      customStocks: [
+        { ticker: "005930.KS", name: "삼성전자", code: "005930", market: "KOSPI" },
+        { ticker: "000660.KS", name: "SK하이닉스", code: "000660", market: "KOSPI" },
+      ],
+      showCoMovement: false,
+    }));
+  });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+
+  const chartButtonOrder = await Promise.all([
+    page.locator("#resetHandles").boundingBox(),
+    page.locator("#coMovementToggle").boundingBox(),
+    page.locator("#insiderTradeToggle").boundingBox(),
+    page.locator("#disclosureToggle").boundingBox(),
+    page.locator("#recessionToggle").boundingBox(),
+    page.locator("#aiForecastToggle").boundingBox(),
+  ]);
+  expect(chartButtonOrder.every(Boolean)).toBe(true);
+  chartButtonOrder.slice(1).forEach((box, index) => {
+    expect(chartButtonOrder[index].y).toBeLessThan(box.y);
+  });
+
+  const topControlOrder = await page.locator(".top-controls").evaluate((container) => (
+    [...container.children].map((element) => element.id || element.querySelector("#creditOffset")?.id)
+  ));
+  expect(topControlOrder).toEqual([
+    "hoverToggle",
+    "chartToolsToggle",
+    "chartHandlesToggle",
+    "creditOffset",
+    "stockResearchBtn",
+    "apiOptionsBtn",
+  ]);
+
+  await expect(page.locator("#coMovementPanel")).toBeHidden();
+  await page.locator("#coMovementToggle").click();
+  await expect(page.locator("#coMovementToggle")).toHaveClass(/is-active/);
+  await expect(page.locator("#coMovementPanel")).toBeVisible();
+  const coMovementLayout = await page.locator("#coMovementPanel").evaluate((panel) => {
+    const chart = document.getElementById("chart");
+    const panelRect = panel.getBoundingClientRect();
+    const chartRect = chart.getBoundingClientRect();
+    const style = getComputedStyle(panel);
+    return {
+      centerDelta: Math.abs((panelRect.left + panelRect.right) / 2 - (chartRect.left + chartRect.right) / 2),
+      topOffset: panelRect.top - chartRect.top,
+      borderWidth: style.borderTopWidth,
+      backgroundColor: style.backgroundColor,
+    };
+  });
+  expect(coMovementLayout.centerDelta).toBeLessThanOrEqual(1);
+  expect(coMovementLayout.topOffset).toBeGreaterThanOrEqual(10);
+  expect(coMovementLayout.topOffset).toBeLessThanOrEqual(18);
+  expect(coMovementLayout.borderWidth).toBe("0px");
+  expect(coMovementLayout.backgroundColor).toBe("rgba(0, 0, 0, 0)");
+  await expect(page.locator("#coMovementPanel")).toContainText("SK하이닉스 1년");
+  await expect(page.locator("#coMovementPanel")).toContainText("코스피 75%");
+  await expect(page.locator("#coMovementPanel")).toContainText("코스닥 75%");
+  await expect(page.locator("#coMovementPanel .co-movement-metric")).toHaveCount(2);
+
+  const clickStockLine = async (ticker, date) => {
+    const point = await page.locator("#chart").evaluate((element, target) => {
+      const trace = (element.data || []).find((item) => item?.meta?.seriesKey === target.ticker);
+      const pointIndex = trace?.x?.indexOf(target.date) ?? -1;
+      const xAxis = element?._fullLayout?.xaxis;
+      const yAxis = element?._fullLayout?.yaxis;
+      const rect = element.getBoundingClientRect();
+      if (pointIndex < 0 || !xAxis || !yAxis) return null;
+      return {
+        x: rect.left + Number(xAxis._offset || 0) + xAxis.d2p(trace.x[pointIndex]),
+        y: rect.top + Number(yAxis._offset || 0) + yAxis.l2p(Number(trace.y[pointIndex])),
+      };
+    }, { ticker, date });
+    expect(point).not.toBeNull();
+    await page.mouse.click(point.x, point.y);
+  };
+  await clickStockLine("005930.KS", "2026-01-14");
+  await expect(page.locator("#coMovementPanel")).toContainText("삼성전자 1년");
+  await clickStockLine("000660.KS", "2026-01-14");
+  await expect(page.locator("#coMovementPanel")).toContainText("SK하이닉스 1년");
+
+  await page.locator('[data-series="000660.KS"]').click();
+  await expect(page.locator("#coMovementPanel")).toContainText("삼성전자 1년");
+  await page.locator('[data-series="000660.KS"]').click();
+  await expect(page.locator("#coMovementPanel")).toContainText("SK하이닉스 1년");
+
+  await setChartRangeMonths(page, 3);
+  await expect(page.locator("#coMovementPanel")).toContainText("SK하이닉스 3개월");
+  await page.locator("#coMovementToggle").click();
+  await expect(page.locator("#coMovementPanel")).toBeHidden();
+});
+
+test("co-movement recalculates from the five sessions currently visible", async ({ page }) => {
+  const dates = ["2026-01-08", "2026-01-09", "2026-01-12", "2026-01-13", "2026-01-14"];
+  await installDataRoutes(page);
+  await page.route("**/data/prices_recent.json*", async (route) => {
+    await route.fulfill({ json: columnar(
+      ["^KS11", "^KQ11", "000660.KS"],
+      dates,
+      {
+        "^KS11": [2800, 2900, 3000, 3100, 3200],
+        "^KQ11": [780, 800, 820, 840, 860],
+        "000660.KS": [90000, 88000, 91000, 93000, 95000],
+      },
+    ) });
+  });
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 12,
+      customStocks: [
+        { ticker: "000660.KS", name: "SK하이닉스", code: "000660", market: "KOSPI" },
+      ],
+      showCoMovement: false,
+    }));
+  });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await page.locator("#coMovementToggle").click();
+  await expect(page.locator("#coMovementPanel")).toBeVisible();
+  await page.locator("#chart").evaluate(async (element, visibleDates) => {
+    await globalThis.Plotly.relayout(element, {
+      "xaxis.range[0]": `${visibleDates[0]}T00:00:00.000Z`,
+      "xaxis.range[1]": `${visibleDates.at(-1)}T23:59:59.999Z`,
+    });
+  }, dates);
+  await expect(page.locator("#coMovementPanel")).toContainText("SK하이닉스 5일");
+  await expect(page.locator("#coMovementPanel")).toContainText("코스피 75%");
+  await expect(page.locator("#coMovementPanel")).toContainText("코스닥 75%");
+});
+
+test("insider trade toggle draws DART buy and sell triangles for three years", async ({ page }) => {
+  await installDataRoutes(page);
+  await stubExternalRefreshes(page);
+  await page.route("**/data/disclosures/005930.KS.json*", async (route) => {
+    await route.fulfill({ json: {
+      generated_at: "2026-07-15T00:00:00Z",
+      source: "OpenDART",
+      records: [
+        {
+          date: "2026-04-14",
+          ticker: "005930.KS",
+          name: "삼성전자",
+          title: "유상증자 결정",
+          url: "https://dart.fss.or.kr/example",
+          source: "OpenDART",
+        },
+        {
+          date: "2026-04-13",
+          ticker: "005930.KS",
+          name: "삼성전자",
+          title: "전일 공시",
+          url: "https://dart.fss.or.kr/previous",
+          source: "OpenDART",
+        },
+      ],
+    } });
+  });
+  let authorization = "";
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "private" }));
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 36,
+      hiddenSeries: ["leading_cycle", "^KS11", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit"],
+      customStocks: [{ ticker: "005930.KS", name: "삼성전자", code: "005930", market: "KOSPI" }],
+      hoverShowPopup: true,
+      showDisclosures: true,
+      showInsiderTrades: false,
+    }));
+  });
+  await page.route("https://thinkstock-api.keg0320.workers.dev/api/dart/insider-trades?*", async (route) => {
+    authorization = route.request().headers().authorization || "";
+    const ticker = new URL(route.request().url()).searchParams.get("ticker") || "";
+    const records = ticker === "000660.KS"
+      ? [{
+          ticker,
+          date: "2026-04-14",
+          side: "buy",
+          reporter: "박임원",
+          role: "대표이사",
+          sharesChanged: 300,
+          receiptNo: "20260414000456",
+        }]
+      : [
+          {
+            ticker: "005930.KS",
+            date: "2026-04-14",
+            side: "buy",
+            reporter: "홍길동",
+            role: "대표이사",
+            sharesChanged: 1250,
+            receiptNo: "20260114000123",
+          },
+          {
+            ticker: "005930.KS",
+            date: "2026-04-14",
+            side: "sell",
+            reporter: "김주주",
+            role: "등기임원",
+            sharesChanged: -500,
+            receiptNo: "20260414000123",
+          },
+          {
+            ticker: "005930.KS",
+            date: "2026-04-13",
+            side: "buy",
+            reporter: "전일임원",
+            role: "임원",
+            sharesChanged: 100,
+            receiptNo: "20260413000123",
+          },
+        ];
+    await route.fulfill({
+      status: 200,
+      headers: { "access-control-allow-origin": "*", "content-type": "application/json" },
+      body: JSON.stringify({
+        ok: true,
+        ticker,
+        checkedFrom: "2023-08-03",
+        records,
+      }),
+    });
+  });
+  await page.route("https://query2.finance.yahoo.com/v8/finance/chart/000660.KS**", async (route) => {
+    await route.fulfill({ json: {
+      chart: {
+        result: [{
+          meta: { gmtoffset: 0 },
+          timestamp: [1768348800, 1776124800, 1783987200],
+          indicators: { quote: [{ close: [180000, 210000, 240000] }] },
+        }],
+        error: null,
+      },
+    } });
+  });
+
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (
+    window.ThinkStockE2E?.getRefreshPhaseStats?.().criticalReady || 0
+  ))).toBeGreaterThan(0);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const xRange = element?._fullLayout?.xaxis?.range?.map(Date.parse);
+    const yRange = element?._fullLayout?.yaxis?.range?.map(Number);
+    const stock = (element?.data || []).find((trace) => trace?.meta?.seriesKey === "005930.KS");
+    if (!xRange?.every(Number.isFinite) || !yRange?.every(Number.isFinite) || !stock) return false;
+    const lowX = Math.min(...xRange);
+    const highX = Math.max(...xRange);
+    const lowY = Math.min(...yRange);
+    const highY = Math.max(...yRange);
+    const visibleValues = (stock.x || []).flatMap((date, index) => {
+      const time = Date.parse(date);
+      const value = Number(stock.y?.[index]);
+      return Number.isFinite(time) && Number.isFinite(value) && time >= lowX && time <= highX
+        ? [value]
+        : [];
+    });
+    return visibleValues.length > 0 && visibleValues.every((value) => value >= lowY && value <= highY);
+  })).toBe(true);
+  await expect(page.locator("#insiderTradeToggle")).toHaveAttribute("data-bound", "1");
+  await expect.poll(() => page.locator("#chart").evaluate((element) => element._fullLayout?.hovermode)).toBe("x unified");
+  await test.step("render and style disclosure and insider markers", async () => {
+  await expect(page.locator("#insiderTradeToggle")).toHaveText("내부거래");
+  await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getInsiderTradeState())).toMatchObject({
+    enabled: false,
+  });
+  expect(await page.locator("#insiderTradeToggle").evaluate((element) => typeof element.onclick)).toBe("function");
+  await page.locator("#insiderTradeToggle").click();
+  await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getInsiderTradeState())).toMatchObject({
+    enabled: true,
+    rows: 3,
+    loadedTickers: ["005930.KS"],
+    pendingTickers: [],
+    visibleTickers: ["005930.KS"],
+    gatewayReady: true,
+  });
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.isInsiderTradeTrace).map((trace) => ({
+      side: trace.meta.insiderTradeSide,
+      symbol: trace.marker.symbol,
+      color: trace.marker.color,
+      yaxis: trace.yaxis,
+      paired: trace.customdata?.[0]?.[2],
+      dates: trace.x,
+    }))
+  ))).toEqual([
+    { side: "buy", symbol: "triangle-up", color: "#b91c1c", yaxis: "y", paired: true, dates: ["2026-04-14"] },
+    { side: "sell", symbol: "triangle-down", color: "#1d4ed8", yaxis: "y", paired: true, dates: ["2026-04-14"] },
+  ]);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const disclosure = (element.data || []).find((trace) => trace?.meta?.isDisclosureTrace);
+    const insiders = (element.data || []).filter((trace) => trace?.meta?.isInsiderTradeTrace);
+    return {
+      disclosure: disclosure?.hovertemplate?.[0] || "",
+      buy: insiders.find((trace) => trace.meta.insiderTradeSide === "buy")?.hovertemplate?.[0] || "",
+      sell: insiders.find((trace) => trace.meta.insiderTradeSide === "sell")?.hovertemplate?.[0] || "",
+    };
+  })).toEqual({
+    disclosure: expect.stringContaining('<span style="color:#f59e0b"><b>공시</b></span>'),
+    buy: expect.stringContaining('<span style="color:#b91c1c"><b>내부자거래 : 매수</b></span>'),
+    sell: expect.stringContaining('<span style="color:#1d4ed8"><b>내부자거래 : 매도</b></span>'),
+  });
+  const eventHoverTemplates = await page.locator("#chart").evaluate((element) => (
+    (element.data || [])
+      .filter((trace) => trace?.meta?.isDisclosureTrace || trace?.meta?.isInsiderTradeTrace)
+      .flatMap((trace) => trace.hovertemplate || [])
+  ));
+  expect(eventHoverTemplates.every((template) => !template.includes("삼성전자"))).toBe(true);
+  expect(eventHoverTemplates.every((template) => !template.includes("2026-04-14"))).toBe(true);
+  expect(await page.evaluate(() => {
+    const hoverLayer = document.createElement("div");
+    hoverLayer.className = "hoverlayer";
+    const legendPoints = document.createElement("div");
+    legendPoints.className = "legendpoints";
+    hoverLayer.append(legendPoints);
+    document.body.append(hoverLayer);
+    const display = getComputedStyle(legendPoints).display;
+    hoverLayer.remove();
+    return display;
+  })).toBe("none");
+  await expect(page.locator("#insiderTradeToggle")).toHaveText("내부거래");
+  await expect.poll(() => page.evaluate(() => {
+    const resetStyle = getComputedStyle(document.getElementById("resetHandles"));
+    const disclosureStyle = getComputedStyle(document.getElementById("disclosureToggle"));
+    const insiderStyle = getComputedStyle(document.getElementById("insiderTradeToggle"));
+    const reset = [resetStyle.backgroundColor, resetStyle.borderColor, resetStyle.color];
+    const disclosure = [disclosureStyle.backgroundColor, disclosureStyle.borderColor, disclosureStyle.color];
+    const insider = [insiderStyle.backgroundColor, insiderStyle.borderColor, insiderStyle.color];
+    return disclosure.every((value, index) => value === reset[index])
+      && insider.every((value, index) => value === reset[index]);
+  })).toBe(true);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const disclosure = (element.data || []).find((trace) => trace?.meta?.isDisclosureTrace);
+    const insiders = (element.data || []).filter((trace) => trace?.meta?.isInsiderTradeTrace);
+    const stock = (element.data || []).find((trace) => trace?.meta?.seriesKey === "005930.KS");
+    const stockYAt = (date) => {
+      const index = stock?.x?.indexOf(date) ?? -1;
+      return index >= 0 ? Number(stock.y[index]) : Number.NaN;
+    };
+    return {
+      disclosureAxis: disclosure?.yaxis,
+      disclosureDates: disclosure?.x,
+      pairedDiamond: Number(insiders[0]?.y?.[0]) > Number(insiders[1]?.y?.[0]),
+      disclosureAboveLine: (disclosure?.x || []).every((date, index) => (
+        Number(disclosure.y[index]) > stockYAt(date)
+      )),
+      insiderBelowLine: insiders.every((trace) => (trace.x || []).every((date, index) => (
+        Number(trace.y[index]) < stockYAt(date)
+      ))),
+    };
+  })).toEqual({
+    disclosureAxis: "y",
+    disclosureDates: ["2026-04-14"],
+    pairedDiamond: true,
+    disclosureAboveLine: true,
+    insiderBelowLine: true,
+  });
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    [...element.querySelectorAll(".scatterlayer path.point")]
+      .filter((point) => ["rgb(185, 28, 28)", "rgb(29, 78, 216)"].includes(point.style.fill))
+      .map((point) => getComputedStyle(point).display)
+  ))).toEqual(["inline", "inline"]);
+  });
+
+  const readPairedMarkerGeometry = () => page.locator("#chart").evaluate((element) => {
+    const points = [...element.querySelectorAll(".scatterlayer path.point")]
+      .filter((point) => ["rgb(185, 28, 28)", "rgb(29, 78, 216)"].includes(point.style.fill));
+    const buy = points.find((point) => point.style.fill === "rgb(185, 28, 28)")?.getBoundingClientRect();
+    const sell = points.find((point) => point.style.fill === "rgb(29, 78, 216)")?.getBoundingClientRect();
+    if (!buy || !sell) return null;
+    const stock = (element.data || []).find((trace) => trace?.meta?.seriesKey === "005930.KS");
+    const stockIndex = stock?.x?.indexOf("2026-04-14") ?? -1;
+    const axis = element?._fullLayout?.yaxis;
+    const chartTop = element.getBoundingClientRect().top;
+    const stockLineY = stockIndex >= 0 && axis
+      ? chartTop + axis._offset + axis.l2p(Number(stock.y[stockIndex]))
+      : Number.NaN;
+    return {
+      horizontallyAligned: Math.abs((buy.left + buy.right) - (sell.left + sell.right)) < 1,
+      buyAboveSell: buy.top < sell.top,
+      lineClearance: buy.top - stockLineY,
+      verticalClearance: sell.top - buy.bottom,
+    };
+  });
+  const pairedMarkerGeometry = await test.step("align same-day insider markers around the stock line", async () => {
+    const geometry = await readPairedMarkerGeometry();
+    expect(geometry).toMatchObject({
+      horizontallyAligned: true,
+      buyAboveSell: true,
+      lineClearance: expect.any(Number),
+      verticalClearance: expect.any(Number),
+    });
+    expect(geometry.lineClearance).toBeGreaterThanOrEqual(1);
+    expect(geometry.verticalClearance).toBeGreaterThanOrEqual(0);
+    expect(geometry.verticalClearance).toBeLessThanOrEqual(4);
+    return geometry;
+  });
+
+  await test.step("keep handles and event markers synchronized during transforms", async () => {
+    if (!await page.locator("#y-handles").count()) return;
+    const chartResetButton = page.locator("#resetHandles");
+    if (await chartResetButton.getAttribute("aria-pressed") === "true") {
+      await chartResetButton.click();
+    }
+    await expect(chartResetButton).toHaveAttribute("aria-pressed", "false");
+    const offsetHandle = page.locator('.y-handle-left[title="삼성전자 (위치)"]');
+    const pairedScaleHandle = page.locator('.y-handle-right[title="삼성전자 (스케일)"]');
+    await expect(offsetHandle).toBeVisible();
+    await expect(pairedScaleHandle).toBeVisible();
+    const offsetBefore = await waitForBoundingBox(offsetHandle);
+    const handleTopsBefore = await page.locator("#y-handles").evaluate(() => ({
+      offset: Number.parseFloat(document.querySelector('.y-handle-left[title="삼성전자 (위치)"]').style.top),
+      scale: Number.parseFloat(document.querySelector('.y-handle-right[title="삼성전자 (스케일)"]').style.top),
+    }));
+  await offsetHandle.hover();
+  await page.mouse.down();
+  await page.mouse.move(
+    offsetBefore.x + offsetBefore.width / 2,
+    offsetBefore.y + offsetBefore.height / 2 + 30,
+  );
+  const handleTopsDuring = await page.locator("#y-handles").evaluate(() => ({
+    offset: Number.parseFloat(document.querySelector('.y-handle-left[title="삼성전자 (위치)"]').style.top),
+    scale: Number.parseFloat(document.querySelector('.y-handle-right[title="삼성전자 (스케일)"]').style.top),
+  }));
+  const offsetDelta = handleTopsDuring.offset - handleTopsBefore.offset;
+  const scaleDelta = handleTopsDuring.scale - handleTopsBefore.scale;
+  expect(Math.abs(offsetDelta - 30)).toBeLessThanOrEqual(1);
+  expect(Math.abs(scaleDelta - offsetDelta)).toBeLessThanOrEqual(1);
+  await page.mouse.up();
+
+  const scaleHandle = page.locator('.y-handle-right[title="삼성전자 (스케일)"]');
+  await expect(scaleHandle).toBeVisible();
+  const scaleHandleBox = await waitForBoundingBox(scaleHandle);
+  const scaleYRangeBefore = await page.locator("#chart").evaluate((element) => (
+    [...element._fullLayout.yaxis.range]
+  ));
+  await scaleHandle.hover();
+  await page.mouse.down();
+  await expect(scaleHandle).toHaveClass(/dragging/);
+  await page.mouse.move(
+    scaleHandleBox.x + scaleHandleBox.width / 2,
+    scaleHandleBox.y + scaleHandleBox.height / 2 - 45,
+    { steps: 3 },
+  );
+  await expect.poll(() => page.evaluate(() => (
+    Object.keys(window.ThinkStockE2E.getSeriesTransforms().scales).length
+  ))).toBeGreaterThan(0);
+  await expect.poll(async () => Math.abs(
+    (await readPairedMarkerGeometry()).lineClearance - pairedMarkerGeometry.lineClearance,
+  )).toBeLessThanOrEqual(2);
+  await page.mouse.up();
+  await page.waitForTimeout(150);
+  const scaleYRangeAfter = await page.locator("#chart").evaluate((element) => (
+    [...element._fullLayout.yaxis.range]
+  ));
+  expect(scaleYRangeAfter[0]).toBeCloseTo(scaleYRangeBefore[0], 6);
+  expect(scaleYRangeAfter[1]).toBeCloseTo(scaleYRangeBefore[1], 6);
+  await expect.poll(async () => Math.abs(
+    (await readPairedMarkerGeometry()).lineClearance - pairedMarkerGeometry.lineClearance,
+  )).toBeLessThanOrEqual(2);
+  await expect.poll(async () => Math.abs(
+    (await readPairedMarkerGeometry()).verticalClearance - pairedMarkerGeometry.verticalClearance,
+  )).toBeLessThanOrEqual(2);
+
+  const transformsBeforeFit = await page.evaluate(() => window.ThinkStockE2E.getSeriesTransforms());
+  expect(Object.keys(transformsBeforeFit.offsets).length).toBeGreaterThan(0);
+  expect(Object.keys(transformsBeforeFit.scales).length).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getSeriesTransforms())).toEqual(
+    transformsBeforeFit,
+  );
+  await expect.poll(async () => Math.abs(
+    (await readPairedMarkerGeometry()).lineClearance - pairedMarkerGeometry.lineClearance,
+  )).toBeLessThanOrEqual(2);
+  await expect.poll(async () => Math.abs(
+    (await readPairedMarkerGeometry()).verticalClearance - pairedMarkerGeometry.verticalClearance,
+  )).toBeLessThanOrEqual(2);
+  await waitForChartRenderIdle(page);
+  const lineDragStart = await page.locator("#chart").evaluate((element) => {
+    const trace = (element.data || []).find((item) => item?.meta?.seriesKey === "005930.KS");
+    const xAxis = element?._fullLayout?.xaxis;
+    const yAxis = element?._fullLayout?.yaxis;
+    const rect = element.getBoundingClientRect();
+    const validIndexes = Array.from(trace?.y || [], (value, index) => (
+      Number.isFinite(Number(value)) ? index : -1
+    )).filter((index) => index >= 0);
+    const pointIndex = validIndexes[Math.floor(validIndexes.length / 2)] ?? -1;
+    if (!trace || !xAxis || !yAxis || pointIndex < 0) return null;
+    return {
+      x: rect.left + xAxis._offset + xAxis.d2p(trace.x[pointIndex]),
+      y: rect.top + yAxis._offset + yAxis.l2p(Number(trace.y[pointIndex])),
+      ySpan: Math.abs(yAxis.range[1] - yAxis.range[0]),
+    };
+  });
+  expect(lineDragStart).not.toBeNull();
+  const lineHandleTopsBefore = await page.locator("#y-handles").evaluate(() => ({
+    left: Number.parseFloat(document.querySelector('.y-handle-left[data-series-key="005930.KS"]').style.top),
+    right: Number.parseFloat(document.querySelector('.y-handle-right[data-series-key="005930.KS"]').style.top),
+  }));
+  await page.mouse.move(lineDragStart.x, lineDragStart.y);
+  await page.mouse.down();
+  await page.mouse.move(lineDragStart.x, lineDragStart.y + 24);
+  await expect.poll(async () => Object.keys(
+    (await page.evaluate(() => window.ThinkStockE2E.getSeriesTransforms())).offsets,
+  ).length).toBeGreaterThan(0);
+  await expect.poll(() => page.locator("#y-handles").evaluate((container, before) => {
+    const left = Number.parseFloat(container.querySelector('.y-handle-left[data-series-key="005930.KS"]').style.top);
+    const right = Number.parseFloat(container.querySelector('.y-handle-right[data-series-key="005930.KS"]').style.top);
+    return Math.abs((left - before.left) - 24) <= 1
+      && Math.abs((right - before.right) - 24) <= 1;
+  }, lineHandleTopsBefore)).toBe(true);
+  const lineDragYSpan = await page.locator("#chart").evaluate((element) => (
+    Math.abs(element._fullLayout.yaxis.range[1] - element._fullLayout.yaxis.range[0])
+  ));
+  expect(Math.abs(lineDragYSpan - lineDragStart.ySpan)).toBeLessThanOrEqual(0.01);
+  await page.mouse.up();
+  const transformsBeforeFinalFit = await page.evaluate(() => window.ThinkStockE2E.getSeriesTransforms());
+  expect(Object.keys(transformsBeforeFinalFit.offsets).length).toBeGreaterThan(0);
+  expect(Object.keys(transformsBeforeFinalFit.scales).length).toBeGreaterThan(0);
+  await page.locator("#resetHandles").click();
+  await expect(page.locator("#resetHandles")).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getSeriesTransforms())).toEqual(
+    { offsets: {}, scales: {} },
+  );
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    element._fullLayout.yaxis.autorange
+  ))).toBe(false);
+  const fittedRangeCoversVisibleLines = () => page.locator("#chart").evaluate((element) => {
+    const xRange = element._fullLayout.xaxis.range.map((value) => Date.parse(value));
+    const yRange = element._fullLayout.yaxis.range;
+    const values = (element.data || [])
+      .filter((trace) => trace?.meta?.seriesKey && trace.visible !== "legendonly")
+      .flatMap((trace) => Array.from(trace.y || [], (value, index) => ({
+        x: Date.parse(trace.x[index]),
+        y: Number(value),
+      })))
+      .filter((point) => (
+        Number.isFinite(point.x)
+        && Number.isFinite(point.y)
+        && point.x >= Math.min(...xRange)
+        && point.x <= Math.max(...xRange)
+      ));
+    const minimum = Math.min(...values.map((point) => point.y));
+    const maximum = Math.max(...values.map((point) => point.y));
+    return yRange[0] < minimum && yRange[1] > maximum;
+  });
+  await expect.poll(fittedRangeCoversVisibleLines).toBe(true);
+  });
+
+  await test.step("limit event hover to exact dates and update visible tickers", async () => {
+  const moveNativeHoverToDate = async (date) => {
+    const point = await page.locator("#chart").evaluate((element, targetDate) => {
+      const xAxis = element?._fullLayout?.xaxis;
+      const yAxis = element?._fullLayout?.yaxis;
+      const rect = element.getBoundingClientRect();
+      return {
+        x: rect.left + Number(xAxis?._offset || 0) + xAxis.d2p(targetDate),
+        y: rect.top + Number(yAxis?._offset || 0) + Number(yAxis?._length || 0) / 2,
+      };
+    }, date);
+    await page.mouse.move(point.x - 4, point.y);
+    await page.mouse.move(point.x, point.y);
+  };
+  const eventHoverInfo = () => page.locator("#chart").evaluate((element) => (
+    (element.data || [])
+      .filter((trace) => trace?.meta?.isInsiderTradeTrace || trace?.meta?.isDisclosureTrace)
+      .map((trace) => trace.hoverinfo)
+  ));
+  await moveNativeHoverToDate("2026-01-14");
+  await expect.poll(eventHoverInfo).toEqual(["skip", "skip", "skip"]);
+  await moveNativeHoverToDate("2026-04-14");
+  await expect.poll(eventHoverInfo).toEqual(["all", "all", "all"]);
+  expect(authorization).toBe("Bearer private");
+
+  const insiderMarkerTickers = () => page.locator("#chart").evaluate((element) => (
+    [...new Set((element.data || [])
+      .filter((trace) => trace?.meta?.isInsiderTradeTrace)
+      .flatMap((trace) => trace.customdata || [])
+      .map((item) => item?.[0])
+      .filter(Boolean))].sort()
+  ));
+  await expect.poll(insiderMarkerTickers).toEqual(["005930.KS"]);
+
+  const zoomedRange = await page.locator("#chart").evaluate(async (element) => {
+    await window.Plotly.relayout(element, { "xaxis.range": ["2026-01-14", "2026-04-14"] });
+    return element._fullLayout.xaxis.range.map(Date.parse);
+  });
+
+  await page.locator("#stockSearchInput").fill("SK하이닉스");
+  await page.locator(".stock-suggest-item").filter({ hasText: "SK하이닉스" }).click();
+  await expect(page.locator('[data-series="000660.KS"]')).toBeVisible();
+  await expect.poll(insiderMarkerTickers).toEqual(["000660.KS", "005930.KS"]);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || [])
+      .filter((trace) => trace?.meta?.isInsiderTradeTrace)
+      .flatMap((trace) => trace.customdata || [])
+      .find((item) => item?.[0] === "000660.KS")?.[2]
+  ))).toBe(false);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    element._fullLayout.xaxis.range.map(Date.parse)
+  ))).toEqual(zoomedRange);
+
+  await page.locator('[data-series="005930.KS"]').click();
+  await expect.poll(insiderMarkerTickers).toEqual(["000660.KS"]);
+  await page.locator('[data-series="005930.KS"]').click();
+  await expect.poll(insiderMarkerTickers).toEqual(["000660.KS", "005930.KS"]);
+
+  await page.locator("#insiderTradeToggle").click();
+  await expect(page.locator("#insiderTradeToggle")).toHaveText("내부거래");
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.isInsiderTradeTrace).length
+  ))).toBe(0);
+  });
+});
+
+test("AI analysis loads only on demand and reuses today's browser cache", async ({ page }) => {
+  let analysisRequests = 0;
+  let journalRecords = [];
+  let releaseAnalysis;
+  const analysisGate = new Promise((resolve) => { releaseAnalysis = resolve; });
+  await stubExternalRefreshes(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "private" }));
+    if (!localStorage.getItem("thinkstock-v5")) {
+      localStorage.setItem("thinkstock-v5", JSON.stringify({
+        showAiForecast: true,
+        customStocks: [{
+          ticker: "005930.KS",
+          name: "삼성전자",
+          code: "005930",
+          market: "KOSPI",
+        }],
+      }));
+    }
+  });
+  await page.route("https://thinkstock-api.keg0320.workers.dev/api/analysis**", async (route) => {
+    analysisRequests += 1;
+    const ticker = new URL(route.request().url()).searchParams.get("ticker");
+    await analysisGate;
+    await route.fulfill({
+      status: 200,
+      headers: { "access-control-allow-origin": "*", "content-type": "application/json" },
+      body: JSON.stringify({
+        ok: true,
+        ticker,
+        savedAt: Date.now(),
+        consensus: { ticker, targetPrice: 150000, opinion: 4.2, institutions: 6 },
+        financials: [
+          { ticker, period: "2024-12", frequency: "annual", revenue: 1000, operatingProfit: 80 },
+          { ticker, period: "2025-12", frequency: "annual", revenue: 1300, operatingProfit: 160 },
+          { ticker, period: "2025-12", frequency: "quarter", revenue: 300, operatingProfit: 32 },
+          { ticker, period: "2026-03", frequency: "quarter", revenue: 390, operatingProfit: 58 },
+        ],
+        news: [{
+          ticker,
+          date: "2026-07-14",
+          title: "대규모 공급계약 체결",
+          source: "Naver Finance",
+          url: `https://finance.naver.com/item/news_read.naver?code=${ticker.slice(0, 6)}&article_id=1`,
+        }],
+      }),
+    });
+  });
+  await page.route("https://thinkstock-api.keg0320.workers.dev/api/forecast-journal**", async (route) => {
+    if (route.request().method() === "POST") {
+      journalRecords = route.request().postDataJSON()?.records || [];
+    }
+    await route.fulfill({
+      status: 200,
+      headers: { "access-control-allow-origin": "*", "content-type": "application/json" },
+      body: JSON.stringify({ ok: true, ticker: "005930.KS", records: journalRecords }),
+    });
+  });
+
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#aiForecastToggle")).toBeEnabled();
+  expect(analysisRequests).toBe(0);
+
+  await page.locator("#aiForecastToggle").click();
+  await expect.poll(() => analysisRequests).toBeGreaterThan(0);
+  await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-busy", "true");
+  releaseAnalysis();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.fundamentalsUsed).length
+  )), { timeout: 30000 }).toBeGreaterThan(0);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const trace = (element.data || []).find((item) => item?.meta?.isAiForecastTrace);
+    const rangeEnd = element?._fullLayout?.xaxis?.range?.[1];
+    return Boolean(trace?.x?.at(-1) && rangeEnd && String(rangeEnd).slice(0, 10) >= trace.x.at(-1));
+  })).toBe(true);
+  await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-busy", "false");
+  await expect.poll(() => journalRecords.length).toBeGreaterThan(0);
+  const savedForecast = journalRecords.find((record) => record.ticker === "005930.KS");
+  expect(Object.keys(savedForecast?.horizons || {}).sort()).toEqual(["10", "126", "20", "5", "63"]);
+  expect(Object.keys(savedForecast?.audit?.features || {}).length).toBeGreaterThan(50);
+  expect(savedForecast?.audit?.sources?.internet_news_rows).toBe(1);
+  expect(savedForecast?.horizons?.[126]?.attribution?.components).toBeTruthy();
+
+  const firstRequestCount = analysisRequests;
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#aiForecastToggle")).not.toHaveClass(/is-active/);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length
+  ))).toBe(0);
+  await expect(page.locator("#aiForecastToggle")).toBeEnabled();
+  await page.locator("#aiForecastToggle").click();
+  await expect(page.locator("#aiForecastToggle")).toHaveClass(/is-active/);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.fundamentalsUsed).length
+  )), { timeout: 30000 }).toBeGreaterThan(0);
+  await page.waitForTimeout(300);
+  expect(analysisRequests).toBe(firstRequestCount);
+});
+
+test("MACD automatically follows visible stock charts", async ({ page }) => {
+  await stubExternalRefreshes(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      customStocks: [{
+        ticker: "005930.KS",
+        name: "삼성전자",
+        code: "005930",
+        market: "KOSPI",
+      }],
+    }));
+  });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await expect(page.locator("#chart-macd .main-svg").first()).toBeVisible();
+  await expect.poll(() => page.locator("#chart-macd").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.macdSeriesKey).length
+  ))).toBeGreaterThan(0);
+
+  const macdPresentation = await page.evaluate(() => {
+    const mainTraces = document.getElementById("chart")?.data || [];
+    const macdElement = document.getElementById("chart-macd");
+    const macdTraces = (macdElement?.data || []).filter((trace) => trace?.meta?.macdSeriesKey);
+    return {
+      labels: macdTraces.map((trace) => trace.name),
+      macroVisible: mainTraces.some((trace) => trace?.meta?.seriesKey === "^KS11"),
+      colorsMatch: macdTraces.every((trace) => {
+        const mainTrace = mainTraces.find((candidate) => (
+          candidate?.meta?.seriesKey === trace.meta.macdSeriesKey
+        ));
+        return mainTrace?.line?.color === trace?.marker?.color;
+      }),
+      indicatorLabel: (macdElement?.layout?.annotations || []).some((annotation) => (
+        annotation?.text === "MACD" && annotation?.xanchor === "left"
+      )),
+    };
+  });
+  expect(macdPresentation.macroVisible).toBe(true);
+  expect(macdPresentation.labels).toContain("삼성전자");
+  expect(macdPresentation.labels.every((label) => !label.endsWith(" MACD"))).toBe(true);
+  expect(macdPresentation.colorsMatch).toBe(true);
+  expect(macdPresentation.indicatorLabel).toBe(true);
+
+  const positions = await page.evaluate(() => {
+    const shell = document.querySelector(".app-shell").getBoundingClientRect();
+    const macd = document.getElementById("chart-macd").getBoundingClientRect();
+    return {
+      main: document.getElementById("chart").getBoundingClientRect().bottom,
+      macdTop: macd.top,
+      macdBottom: macd.bottom,
+      macdInsideShell: macd.left >= shell.left && macd.right <= shell.right,
+      adr: document.getElementById("chart-adr").getBoundingClientRect().top,
+    };
+  });
+  expect(positions.macdTop).toBeGreaterThanOrEqual(positions.main);
+  expect(positions.adr).toBeGreaterThanOrEqual(positions.macdBottom);
+  expect(positions.macdInsideShell).toBe(true);
+
+  await page.locator('.series-toggle-btn[data-series="005930.KS"]').click();
+  await expect(page.locator("#chart-macd")).toBeHidden();
+});
+
+test("auxiliary charts retain available history while the viewport pans", async ({ page }) => {
+  await stubExternalRefreshes(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      customStocks: [{
+        ticker: "005930.KS",
+        name: "삼성전자",
+        code: "005930",
+        market: "KOSPI",
+      }],
+    }));
+  });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await expect(page.locator("#chart-macd .main-svg").first()).toBeVisible();
+  await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
+
+  const targetRange = await page.evaluate(() => {
+    const main = document.getElementById("chart");
+    const macd = document.getElementById("chart-macd");
+    const auxiliary = document.getElementById("chart-adr");
+    const initialStart = Date.parse(main?._fullLayout?.xaxis?.range?.[0]);
+    const macdDates = (macd?.data || [])
+      .filter((trace) => trace?.meta?.macdSeriesKey)
+      .flatMap((trace) => trace.x || [])
+      .map(Date.parse)
+      .filter(Number.isFinite);
+    const auxiliaryDates = (auxiliary?.data || [])
+      .filter((trace) => trace?.meta?.auxiliarySeriesKey)
+      .flatMap((trace) => trace.x || [])
+      .map(Date.parse)
+      .filter(Number.isFinite);
+    const start = Math.max(Math.min(...macdDates), Math.min(...auxiliaryDates));
+    const end = start + (180 * 24 * 60 * 60 * 1000);
+    return {
+      initialStart,
+      start: new Date(start).toISOString(),
+      end: new Date(end).toISOString(),
+      isEarlier: end < initialStart,
+    };
+  });
+  expect(targetRange.isEarlier).toBe(true);
+
+  await page.locator("#chart").evaluate(async (element, range) => {
+    await window.Plotly.relayout(element, { "xaxis.range": [range.start, range.end] });
+  }, targetRange);
+  await expect.poll(() => page.locator("#chart-macd").evaluate((element) => (
+    Date.parse(element?._fullLayout?.xaxis?.range?.[0] || "")
+  ))).toBe(Date.parse(targetRange.start));
+
+  const visiblePoints = await page.evaluate((range) => {
+    const count = (element, predicate) => (element?.data || [])
+      .filter(predicate)
+      .reduce((total, trace) => total + (trace.x || []).reduce((sum, date, index) => {
+        const timestamp = Date.parse(date);
+        return sum + (
+          timestamp >= Date.parse(range.start)
+          && timestamp <= Date.parse(range.end)
+          && Number.isFinite(Number(trace.y?.[index]))
+            ? 1
+            : 0
+        );
+      }, 0), 0);
+    return {
+      macd: count(
+        document.getElementById("chart-macd"),
+        (trace) => Boolean(trace?.meta?.macdSeriesKey),
+      ),
+      auxiliary: count(
+        document.getElementById("chart-adr"),
+        (trace) => Boolean(trace?.meta?.auxiliarySeriesKey),
+      ),
+    };
+  }, targetRange);
+  expect(visiblePoints.macd).toBeGreaterThan(0);
+  expect(visiblePoints.auxiliary).toBeGreaterThan(0);
+});
