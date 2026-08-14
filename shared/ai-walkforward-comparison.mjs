@@ -328,9 +328,73 @@ function metricDelta(previous, current) {
   };
 }
 
-function compareSegment(previous, current, options) {
-  const before = summarizeWalkforwardReport(previous, options);
-  const after = summarizeWalkforwardReport(current, options);
+function observationPairKey(row) {
+  return [
+    String(row?.series || ""),
+    String(row?.targetType || "stock"),
+    String(row?.horizon || ""),
+    String(row?.cutoff || ""),
+    String(row?.targetDate || ""),
+  ].join("|");
+}
+
+function pairWalkforwardObservations(previous, current) {
+  const currentBuckets = new Map();
+  (current?.observations || []).forEach((row) => {
+    const key = observationPairKey(row);
+    if (!currentBuckets.has(key)) currentBuckets.set(key, []);
+    currentBuckets.get(key).push(row);
+  });
+  const pairs = [];
+  let unmatchedPrevious = 0;
+  (previous?.observations || []).forEach((before) => {
+    const bucket = currentBuckets.get(observationPairKey(before));
+    const after = bucket?.shift();
+    if (!after) {
+      unmatchedPrevious += 1;
+      return;
+    }
+    pairs.push(Object.freeze({ before, after, context: classifyWalkforwardContext(before) }));
+  });
+  const unmatchedCurrent = [...currentBuckets.values()]
+    .reduce((sum, bucket) => sum + bucket.length, 0);
+  return Object.freeze({
+    pairs: Object.freeze(pairs),
+    unmatchedPrevious,
+    unmatchedCurrent,
+  });
+}
+
+function pairMatchesOptions(pair, options = {}) {
+  const row = pair?.before;
+  const context = pair?.context || classifyWalkforwardContext(row);
+  const targetType = String(options.targetType || "stock");
+  if (row?.targetType !== targetType || row?.horizon !== options.horizon) return false;
+  if (options.series instanceof Set && !options.series.has(row?.series)) return false;
+  if (options.market && row?.market !== options.market) return false;
+  return (!options.regime || context.regime === options.regime)
+    && (!options.volatilityGroup || context.volatilityGroup === options.volatilityGroup)
+    && (!options.behavior || context.behavior === options.behavior)
+    && (!options.cycle || context.cycle === options.cycle)
+    && (!options.archetype || context.archetypes.includes(options.archetype))
+    && (!options.probabilisticRegime
+      || context.probabilisticRegime === options.probabilisticRegime);
+}
+
+function compareSegment(previous, current, options, matched) {
+  const pairs = matched.pairs.filter((pair) => pairMatchesOptions(pair, options));
+  const summaryOptions = {
+    horizon: options.horizon,
+    targetType: options.targetType || "stock",
+  };
+  const before = summarizeWalkforwardReport(
+    { observations: pairs.map((pair) => pair.before) },
+    summaryOptions,
+  );
+  const after = summarizeWalkforwardReport(
+    { observations: pairs.map((pair) => pair.after) },
+    summaryOptions,
+  );
   return { before, after, delta: metricDelta(before, after) };
 }
 
@@ -339,11 +403,15 @@ export function compareWalkforwardReports(previous, current) {
     throw new Error("Backtest selections differ; the reports are not directly comparable.");
   }
   const cohorts = walkforwardCohortSets(current.selection);
+  const matched = pairWalkforwardObservations(previous, current);
   const comparison = {
-    format: "thinkstock-ai-walkforward-comparison-v5",
+    format: "thinkstock-ai-walkforward-comparison-v6",
     generatedAt: new Date().toISOString(),
     previousVersion: previous.enginePathVersion,
     currentVersion: current.enginePathVersion,
+    matchedObservations: matched.pairs.length,
+    unmatchedPrevious: matched.unmatchedPrevious,
+    unmatchedCurrent: matched.unmatchedCurrent,
     cohorts: {},
     markets: {},
     indices: {},
@@ -358,56 +426,56 @@ export function compareWalkforwardReports(previous, current) {
   for (const [cohort, series] of Object.entries(cohorts)) {
     comparison.cohorts[cohort] = Object.fromEntries(WALKFORWARD_HORIZONS.map((horizon) => [
       horizon,
-      compareSegment(previous, current, { horizon, series }),
+      compareSegment(previous, current, { horizon, series }, matched),
     ]));
   }
   for (const market of ["KOSPI", "KOSDAQ"]) {
     comparison.markets[market] = Object.fromEntries(WALKFORWARD_HORIZONS.map((horizon) => [
       horizon,
-      compareSegment(previous, current, { horizon, market }),
+      compareSegment(previous, current, { horizon, market }, matched),
     ]));
   }
   for (const market of ["KOSPI", "KOSDAQ"]) {
     comparison.indices[market] = Object.fromEntries(WALKFORWARD_HORIZONS.map((horizon) => [
       horizon,
-      compareSegment(previous, current, { horizon, market, targetType: "index" }),
+      compareSegment(previous, current, { horizon, market, targetType: "index" }, matched),
     ]));
   }
   for (const regime of WALKFORWARD_REGIMES) {
     comparison.regimes[regime] = Object.fromEntries(WALKFORWARD_HORIZONS.map((horizon) => [
       horizon,
-      compareSegment(previous, current, { horizon, regime }),
+      compareSegment(previous, current, { horizon, regime }, matched),
     ]));
   }
   for (const volatilityGroup of WALKFORWARD_VOLATILITY_GROUPS) {
     comparison.volatilityGroups[volatilityGroup] = Object.fromEntries(WALKFORWARD_HORIZONS.map((horizon) => [
       horizon,
-      compareSegment(previous, current, { horizon, volatilityGroup }),
+      compareSegment(previous, current, { horizon, volatilityGroup }, matched),
     ]));
   }
   for (const behavior of WALKFORWARD_BEHAVIORS) {
     comparison.behaviors[behavior] = Object.fromEntries(WALKFORWARD_HORIZONS.map((horizon) => [
       horizon,
-      compareSegment(previous, current, { horizon, behavior }),
+      compareSegment(previous, current, { horizon, behavior }, matched),
     ]));
   }
   for (const cycle of WALKFORWARD_CYCLES) {
     comparison.cycles[cycle] = Object.fromEntries(WALKFORWARD_HORIZONS.map((horizon) => [
       horizon,
-      compareSegment(previous, current, { horizon, cycle }),
+      compareSegment(previous, current, { horizon, cycle }, matched),
     ]));
   }
   for (const archetype of WALKFORWARD_ARCHETYPES) {
     comparison.archetypes[archetype] = Object.fromEntries(WALKFORWARD_HORIZONS.map((horizon) => [
       horizon,
-      compareSegment(previous, current, { horizon, archetype }),
+      compareSegment(previous, current, { horizon, archetype }, matched),
     ]));
   }
   for (const probabilisticRegime of WALKFORWARD_PROBABILISTIC_REGIMES) {
     comparison.probabilisticRegimes[probabilisticRegime] = Object.fromEntries(
       WALKFORWARD_HORIZONS.map((horizon) => [
         horizon,
-        compareSegment(previous, current, { horizon, probabilisticRegime }),
+        compareSegment(previous, current, { horizon, probabilisticRegime }, matched),
       ]),
     );
   }

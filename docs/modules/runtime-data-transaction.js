@@ -27,6 +27,32 @@
     return [issue?.key, issue?.kind, issue?.previousDate || "", issue?.latestDate || ""].join(":");
   }
 
+  function summarizeSeriesQuality(rows, keys = [], detail = {}) {
+    const sourceRows = Array.isArray(rows) ? rows : [];
+    const sourceKeys = [...new Set((keys || []).map(String).filter(Boolean))];
+    const series = Object.freeze(Object.fromEntries(sourceKeys.map((key) => [
+      key,
+      Object.freeze(seriesStats(sourceRows, key)),
+    ])));
+    const covered = Object.values(series).filter((value) => value.count > 0);
+    const firstDate = covered.reduce((first, value) => (
+      !first || value.first < first ? value.first : first
+    ), "");
+    const latestDate = covered.reduce((latest, value) => (
+      value.latest > latest ? value.latest : latest
+    ), "");
+    return Object.freeze({
+      firstDate,
+      latestDate,
+      isEmpty: covered.length === 0,
+      isStale: detail.isStale === true,
+      anomalyCount: Math.max(0, Number(detail.anomalyCount) || 0),
+      gapCount: Math.max(0, Number(detail.gapCount) || 0),
+      revision: String(detail.revision || "").slice(0, 120),
+      series,
+    });
+  }
+
   function incomingValueIssues(rows, policies) {
     const issues = [];
     (Array.isArray(rows) ? rows : []).forEach((row) => {
@@ -58,14 +84,20 @@
     const gapPolicies = options.gapPolicies || {};
     const allowLatestRegression = new Set(options.allowLatestRegressionKeys || []);
     const allowCountDecrease = new Set(options.allowCountDecreaseKeys || []);
+    const quality = (detail = {}) => summarizeSeriesQuality(candidateRows, keys, detail);
 
     if (!candidateRows.length && currentRows.length) {
-      return { ok: false, reason: "candidate-empty", issues: [] };
+      return { ok: false, reason: "candidate-empty", issues: [], quality: quality() };
     }
 
     const directIssues = incomingValueIssues(incomingRows, policies);
     if (directIssues.length) {
-      return { ok: false, reason: "incoming-range", issues: directIssues };
+      return {
+        ok: false,
+        reason: "incoming-range",
+        issues: directIssues,
+        quality: quality({ anomalyCount: directIssues.length }),
+      };
     }
 
     const detect = health?.detectRecentChanges;
@@ -74,7 +106,12 @@
     const beforeKeys = new Set(beforeIssues.map(anomalyKey));
     const introducedIssues = afterIssues.filter((issue) => !beforeKeys.has(anomalyKey(issue)));
     if (introducedIssues.length) {
-      return { ok: false, reason: "introduced-anomaly", issues: introducedIssues };
+      return {
+        ok: false,
+        reason: "introduced-anomaly",
+        issues: introducedIssues,
+        quality: quality({ anomalyCount: afterIssues.length }),
+      };
     }
 
     const detectGaps = health?.detectSeriesGaps;
@@ -93,24 +130,34 @@
     const beforeGapKeys = new Set(beforeGaps.map(anomalyKey));
     const introducedGaps = afterGaps.filter((issue) => !beforeGapKeys.has(anomalyKey(issue)));
     if (introducedGaps.length) {
-      return { ok: false, reason: "introduced-gap", issues: introducedGaps };
+      return {
+        ok: false,
+        reason: "introduced-gap",
+        issues: introducedGaps,
+        quality: quality({ anomalyCount: afterIssues.length, gapCount: afterGaps.length }),
+      };
     }
 
     for (const key of keys) {
       const before = seriesStats(currentRows, key);
       const after = seriesStats(candidateRows, key);
       if (before.count > 0 && after.count === 0) {
-        return { ok: false, reason: `series-lost:${key}`, issues: [] };
+        return { ok: false, reason: `series-lost:${key}`, issues: [], quality: quality() };
       }
       if (before.latest && after.latest < before.latest && !allowLatestRegression.has(key)) {
-        return { ok: false, reason: `latest-regressed:${key}`, issues: [] };
+        return { ok: false, reason: `latest-regressed:${key}`, issues: [], quality: quality() };
       }
       if (before.count > after.count && !allowCountDecrease.has(key)) {
-        return { ok: false, reason: `coverage-regressed:${key}`, issues: [] };
+        return { ok: false, reason: `coverage-regressed:${key}`, issues: [], quality: quality() };
       }
     }
 
-    return { ok: true, reason: "", issues: [] };
+    return {
+      ok: true,
+      reason: "",
+      issues: [],
+      quality: quality({ anomalyCount: afterIssues.length, gapCount: afterGaps.length }),
+    };
   }
 
   function assertSeriesRows(options = {}) {
@@ -181,6 +228,7 @@
     assertSeriesRows,
     createLastGoodLedger,
     seriesStats,
+    summarizeSeriesQuality,
     validateSeriesRows,
   });
 }(typeof self !== "undefined" ? self : globalThis));

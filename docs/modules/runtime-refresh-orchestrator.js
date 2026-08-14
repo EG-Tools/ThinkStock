@@ -86,10 +86,14 @@
         return Promise.resolve()
           .then(task)
           .then((result) => {
-            runtimeDataApp.noteSourceSuccess?.(source, {
-              latestDate: result?.latestDate || result?.sourceLatestDate || "",
-              detail: (result?.applied || result?.info || []).join?.(" · ") || "",
-            });
+            if (typeof runtimeDataApp.noteSourceResult === "function") {
+              runtimeDataApp.noteSourceResult(source, result);
+            } else {
+              runtimeDataApp.noteSourceSuccess?.(source, {
+                latestDate: result?.latestDate || result?.sourceLatestDate || "",
+                detail: (result?.applied || result?.info || []).join?.(" · ") || "",
+              });
+            }
             recordPerfSample(`runtimeSource:${source}`, sourceStartedAt, { ok: true });
             return result;
           }, (error) => {

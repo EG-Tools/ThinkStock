@@ -166,6 +166,52 @@ test("quality gate rejects signals without enough honest holdout evidence", () =
   assert.ok(gate.reasons.includes("insufficient-holdout-samples"));
 });
 
+test("quality gate rejects a weak side even when the combined result looks healthy", () => {
+  const gate = evaluation.evaluateMarketTimingQualityGate({
+    pointInTimeSafe: true,
+    overfitRisk: false,
+    validation: {
+      holdout: {
+        buy: { horizons: { 20: {
+          samples: 20,
+          hits: 18,
+          hitRate: 0.9,
+          meanDirectionalReturn: 0.08,
+        } } },
+        sell: { horizons: { 20: {
+          samples: 8,
+          hits: 1,
+          hitRate: 0.125,
+          meanDirectionalReturn: -0.04,
+        } } },
+      },
+    },
+  });
+
+  assert.equal(gate.metrics.hitRate > 0.65, true);
+  assert.equal(gate.eligible, false);
+  assert.ok(gate.reasons.includes("sell-weak-hit-rate-lower-bound"));
+  assert.ok(gate.reasons.includes("sell-non-positive-holdout-return"));
+});
+
+test("records holdout timing quality by entry mode", () => {
+  const dates = Array.from({ length: 120 }, (_, index) => (
+    new Date(Date.UTC(2026, 0, 1 + index)).toISOString().slice(0, 10)
+  ));
+  const prices = dates.map((_, index) => 100 + index);
+  const quality = evaluation.evaluateMarketTimingModel({
+    signals: [80, 100].map((index, offset) => ({
+      date: dates[index],
+      confirmationDate: dates[index],
+      entryMode: offset ? "extreme-daily" : "standard",
+    })),
+    sellSignals: [],
+  }, { dates, prices, horizons: [5], holdoutRatio: 0.4 });
+
+  assert.equal(quality.validation.holdoutByEntryMode.buy.standard.horizons[5].samples, 1);
+  assert.equal(quality.validation.holdoutByEntryMode.buy["extreme-daily"].horizons[5].samples, 1);
+});
+
 test("promotes a timing challenger only when holdout quality improves", () => {
   const quality = (hits, directionalReturn, adverseReturn = -0.03) => ({
     pointInTimeSafe: true,

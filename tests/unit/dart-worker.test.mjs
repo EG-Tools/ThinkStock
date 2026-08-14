@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import test from "node:test";
 import { strToU8, zipSync } from "fflate";
 
@@ -117,16 +116,13 @@ test("checks the personal access token without requiring a ticker", async () => 
   assert.equal(invalid.status, 401);
 });
 
-test("issues, renews, and silently migrates server-signed admin sessions", async () => {
+test("issues and renews server-signed admin sessions while rejecting retired codes", async () => {
   const cache = memoryKv();
   const legacyCode = "0987654321";
-  const legacyHash = createHash("sha256").update(legacyCode).digest("hex");
   const env = {
     THINKSTOCK_ACCESS_TOKEN: "private",
     THINKSTOCK_ADMIN_CODE: "1234567890",
     THINKSTOCK_ADMIN_SESSION_SECRET: "test-session-secret-that-is-longer-than-thirty-two-characters",
-    THINKSTOCK_LEGACY_ADMIN_HASH: legacyHash,
-    THINKSTOCK_ADMIN_MIGRATION_UNTIL: "2999-01-01T00:00:00Z",
     DISCLOSURE_CACHE: cache,
   };
   const deviceId = "device-12345678";
@@ -154,17 +150,17 @@ test("issues, renews, and silently migrates server-signed admin sessions", async
     body: { action: "login", code: legacyCode, deviceId: "legacy-login-device" },
   }), env);
   const legacyLoginPayload = await legacyLogin.json();
-  assert.equal(legacyLogin.status, 200);
-  assert.equal(legacyLoginPayload.migrated, true);
+  assert.equal(legacyLogin.status, 401);
+  assert.equal(legacyLoginPayload.ok, false);
   assert.equal(JSON.stringify(legacyLoginPayload).includes(legacyCode), false);
 
   const migration = await handleRequest(request("/api/admin/session", {
     method: "POST",
     token: "private",
-    body: { action: "migrate", legacyProof: legacyHash, deviceId: "legacy-device-123" },
+    body: { action: "migrate", legacyProof: "a".repeat(64), deviceId: "legacy-device-123" },
   }), env);
-  assert.equal(migration.status, 200);
-  assert.equal((await migration.json()).migrated, true);
+  assert.equal(migration.status, 400);
+  assert.equal((await migration.json()).ok, false);
 
   const rejected = await handleRequest(request("/api/admin/session", {
     method: "POST",
@@ -175,13 +171,11 @@ test("issues, renews, and silently migrates server-signed admin sessions", async
   assert.equal((await rejected.json()).error, "접속코드가 틀렸습니다.");
 });
 
-test("admin sessions require the private gateway token and close legacy migration on schedule", async () => {
+test("admin sessions require the private gateway token and reject migration requests", async () => {
   const env = {
     THINKSTOCK_ACCESS_TOKEN: "private",
     THINKSTOCK_ADMIN_CODE: "1234567890",
     THINKSTOCK_ADMIN_SESSION_SECRET: "test-session-secret-that-is-longer-than-thirty-two-characters",
-    THINKSTOCK_LEGACY_ADMIN_HASH: "b".repeat(64),
-    THINKSTOCK_ADMIN_MIGRATION_UNTIL: "2000-01-01T00:00:00Z",
     DISCLOSURE_CACHE: memoryKv(),
   };
   const unauthorized = await handleRequest(request("/api/admin/session", {
@@ -190,12 +184,12 @@ test("admin sessions require the private gateway token and close legacy migratio
   }), env);
   assert.equal(unauthorized.status, 401);
 
-  const expiredMigration = await handleRequest(request("/api/admin/session", {
+  const retiredMigration = await handleRequest(request("/api/admin/session", {
     method: "POST",
     token: "private",
     body: { action: "migrate", legacyProof: "b".repeat(64), deviceId: "device-12345678" },
   }), env);
-  assert.equal(expiredMigration.status, 401);
+  assert.equal(retiredMigration.status, 400);
 });
 
 test("serves cached public VIX data without a personal access token or forced upstream refresh", async () => {

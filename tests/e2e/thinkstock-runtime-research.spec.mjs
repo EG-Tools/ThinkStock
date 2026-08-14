@@ -845,9 +845,9 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await expect(page.locator("#apiPeriodBtn")).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator("#apiSettingsModal .settings-control-group")).toBeVisible();
   await expect(page.locator("#releaseNotesPanel")).toBeVisible();
-  await expect(page.locator("#releaseNotesVersion")).toHaveText("v2.78");
-  await expect(page.locator("#releaseNotesList")).toContainText("지수 6종 색상 고정 및 종목 색상 자동 배정");
-  await expect(page.locator("#releaseNotesList")).toContainText("AI 계산 불가 사유 중앙 안내");
+  await expect(page.locator("#releaseNotesVersion")).toHaveText("v2.79");
+  await expect(page.locator("#releaseNotesList")).toContainText("AI 동일 표본 워크포워드·배포 안전장치 강화");
+  await expect(page.locator("#releaseNotesList")).toContainText("구형 관리자 인증 이관 경로 정리");
   await expect(page.locator("#releaseNotesList > li")).toHaveCount(7);
   await expect(page.locator("#releaseNotesList")).toHaveClass(/is-two-column/);
   const latestReleaseLayout = await page.locator("#releaseNotesList").evaluate((element) => ({
@@ -858,6 +858,10 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   const chartRangeBeforeReleaseNavigation = await page.locator("#chart").evaluate((element) => (
     [...(element.layout?.xaxis?.range || [])]
   ));
+  await page.locator("#releaseNotesOlderBtn").click();
+  await expect(page.locator("#releaseNotesVersion")).toHaveText("v2.78");
+  await expect(page.locator("#releaseNotesList")).toContainText("지수 6종 색상 고정 및 종목 색상 자동 배정");
+  await expect(page.locator("#releaseNotesList > li")).toHaveCount(7);
   await page.locator("#releaseNotesOlderBtn").click();
   await expect(page.locator("#releaseNotesVersion")).toHaveText("v2.77");
   await expect(page.locator("#releaseNotesList")).toContainText("로컬·Cloudflare 공시 처리 규칙 통합");

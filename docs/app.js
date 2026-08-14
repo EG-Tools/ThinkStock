@@ -43,6 +43,8 @@ const runtimeIndexRefreshModule = globalThis.ThinkStockRuntimeIndexRefresh;
 if (!runtimeIndexRefreshModule) throw new Error("Runtime index refresh module failed to load");
 const dataFreshnessViewModule = globalThis.ThinkStockDataFreshnessView;
 if (!dataFreshnessViewModule) throw new Error("Data freshness view module failed to load");
+const dataFreshnessControllerModule = globalThis.ThinkStockDataFreshnessController;
+if (!dataFreshnessControllerModule) throw new Error("Data freshness controller module failed to load");
 const dataSeedLoaderModule = globalThis.ThinkStockDataSeedLoader;
 if (!dataSeedLoaderModule) throw new Error("Data seed loader module failed to load");
 const runtimeDataContract = globalThis.ThinkStockRuntimeDataContract;
@@ -252,7 +254,6 @@ const deferredDiagnosticsModule = globalThis.ThinkStockDeferredDiagnostics;
 if (!deferredDiagnosticsModule) throw new Error("Deferred diagnostics module failed to load");
 const dataHealthModule = globalThis.ThinkStockDataHealth;
 if (!dataHealthModule) throw new Error("Data health module failed to load");
-const { buildFreshnessItems, DEFAULT_SERIES_POLICIES } = dataHealthModule;
 const runtimeDataTransactionModule = globalThis.ThinkStockRuntimeDataTransaction;
 if (!runtimeDataTransactionModule) throw new Error("Runtime data transaction module failed to load");
 const runtimeSeriesQualityGateModule = globalThis.ThinkStockRuntimeSeriesQualityGate;
@@ -372,7 +373,6 @@ const API_SETTINGS_KEY = "thinkstock-api-v1";
 const API_SETTINGS_SESSION_KEY = "thinkstock-api-session-v1";
 const DART_GATEWAY_SETTINGS_KEY = "thinkstock-dart-gateway-v1";
 const DART_GATEWAY_SETTINGS_SESSION_KEY = "thinkstock-dart-gateway-session-v1";
-const ADMIN_ACCESS_STORAGE_KEY = "thinkstock-admin-access-v1";
 const ADMIN_SESSION_STORAGE_KEY = "thinkstock-admin-session-v1";
 const ADMIN_DEVICE_STORAGE_KEY = "thinkstock-device-id-v1";
 const ADMIN_ACCESS_MASK = "0".repeat(10);
@@ -415,7 +415,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "2.78";
+const APP_VERSION = "2.79";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -480,6 +480,12 @@ const runtimeDataApp = runtimeDataAppModule.createRuntimeDataApp(globalThis, {
   isAbortError,
   runRefresh: (messageElement, options) => runRuntimeDataRefresh(messageElement, options),
   sourceLedger: runtimeSourceHealthModule.createRuntimeSourceHealth(globalThis),
+});
+const dataFreshnessController = dataFreshnessControllerModule.createDataFreshnessController({
+  dataHealth: dataHealthModule,
+  view: dataFreshnessViewModule,
+  runtimeDataApp,
+  labelName,
 });
 const deferredPerformanceDiagnostics = deferredDiagnosticsModule.createDeferredDiagnostics(globalThis, {
   scriptUrl: `./modules/performance-diagnostics.js?v=${encodeURIComponent(APP_BUILD_VERSION)}`,
@@ -1008,7 +1014,6 @@ let tickerCacheInvalidator = null;
 let lineHighlightDomUpdateCount = 0;
 let disclosureHighlightDomUpdateCount = 0;
 let dataFreshnessRenderFrame = 0;
-let dataFreshnessRenderSignature = "";
 function initE2eDebugAccess() {
   if (!ENABLE_E2E_DIAGNOSTICS) return;
   try {
@@ -1645,7 +1650,6 @@ function getAdminFeatureAccess() {
   if (adminFeatureAccess) return adminFeatureAccess;
   adminFeatureAccess = adminFeatureAccessModule.createAdminFeatureAccess(globalThis, {
     sessionKey: ADMIN_SESSION_STORAGE_KEY,
-    legacyKey: ADMIN_ACCESS_STORAGE_KEY,
     deviceKey: ADMIN_DEVICE_STORAGE_KEY,
     requestSession: requestAdminSession,
     buttonIds: ADMIN_FEATURE_BUTTON_IDS,
@@ -1945,103 +1949,18 @@ function renderDataFreshness() {
     dataRevisionSignature("price", "macro", "credit", "adr", "crisis"),
     JSON.stringify(selectedPriceStatus || null),
   ].join("|");
-  if (renderSignature === dataFreshnessRenderSignature) return;
-  dataFreshnessRenderSignature = renderSignature;
-  const priceKeys = Array.isArray(pricePayload?.series) ? pricePayload.series : [];
-  const items = buildFreshnessItems([
-    {
-      label: "가격",
-      rows: pricePayload?.records || [],
-      keys: priceKeys,
-      gapPolicies: Object.fromEntries(priceKeys.map((key) => [key, { maxMissingWeekdays: 10, scanPoints: 120 }])),
-    },
-    {
-      label: "선행",
-      rows: macroRows,
-      keys: ["leading_cycle"],
-      changePolicies: {
-        leading_cycle: DEFAULT_SERIES_POLICIES.leading_cycle,
-      },
-    },
-    {
-      label: "뉴스심리",
-      rows: macroRows,
-      keys: ["news_sentiment"],
-      gapPolicies: { news_sentiment: { maxMissingWeekdays: 10, scanPoints: 120 } },
-      changePolicies: {
-        news_sentiment: DEFAULT_SERIES_POLICIES.news_sentiment,
-      },
-    },
-    {
-      label: "예탁·신용",
-      rows: creditRows,
-      keys: CREDIT_COLS,
-      gapPolicies: Object.fromEntries(CREDIT_COLS.map((key) => [key, { maxMissingWeekdays: 10, scanPoints: 120 }])),
-      changePolicies: {
-        customer_deposit: DEFAULT_SERIES_POLICIES.customer_deposit,
-        kospi_credit: DEFAULT_SERIES_POLICIES.kospi_credit,
-        kosdaq_credit: DEFAULT_SERIES_POLICIES.kosdaq_credit,
-      },
-    },
-    {
-      label: "ADR",
-      rows: adrRows,
-      keys: ADR_SERIES,
-      gapPolicies: Object.fromEntries(ADR_SERIES.map((key) => [key, { maxMissingWeekdays: 10, scanPoints: 120 }])),
-      changePolicies: {
-        adr_kospi: DEFAULT_SERIES_POLICIES.adr_kospi,
-        adr_kosdaq: DEFAULT_SERIES_POLICIES.adr_kosdaq,
-      },
-    },
-    {
-      label: "공포탐욕",
-      rows: adrRows,
-      keys: FEAR_GREED_SERIES,
-      gapPolicies: { fear_greed: { maxMissingWeekdays: 10, scanPoints: 120 } },
-      changePolicies: {
-        fear_greed: DEFAULT_SERIES_POLICIES.fear_greed,
-      },
-    },
-    {
-      label: "변동성",
-      rows: adrRows,
-      keys: VOLATILITY_SERIES,
-      gapPolicies: {
-        vkospi: DEFAULT_SERIES_POLICIES.vkospi,
-        vix: DEFAULT_SERIES_POLICIES.vix,
-      },
-      changePolicies: {
-        vkospi: DEFAULT_SERIES_POLICIES.vkospi,
-        vix: DEFAULT_SERIES_POLICIES.vix,
-      },
-      gapLookbackDays: 45,
-    },
-    {
-      label: "침체신호",
-      rows: crisisRows,
-      keys: ["score"],
-    },
-  ]);
-
-  dataFreshnessViewModule.render(el, items, {
-    labelName,
+  dataFreshnessController.render(el, {
+    renderSignature,
     priceStatus: selectedPriceStatus,
-  });
-  const qualityBySource = dataFreshnessViewModule.summarizeQuality(items, {
-    "가격": "prices",
-    "선행": "macro",
-    "뉴스심리": "macro",
-    "예탁·신용": "credit",
-    "ADR": "adr",
-    "공포탐욕": "adr",
-    "변동성": "adr",
-    "침체신호": "crisis",
-  });
-  Object.entries(qualityBySource).forEach(([source, quality]) => {
-    runtimeDataApp.noteSourceQuality(source, {
-      ...quality,
-      revision: renderSignature,
-    });
+    pricePayload,
+    macroRows,
+    creditRows,
+    adrRows,
+    crisisRows,
+    creditKeys: CREDIT_COLS,
+    adrKeys: ADR_SERIES,
+    fearGreedKeys: FEAR_GREED_SERIES,
+    volatilityKeys: VOLATILITY_SERIES,
   });
 }
 

@@ -122,6 +122,7 @@ test("runtime app exposes per-source last-good refresh state", () => {
     canAttempt: (source, options) => ({ allowed: options?.force === true, source, waitMs: 123 }),
     success: (source, detail) => states.set(source, { state: "ready", ...detail, at: now }),
     failure: (source, error) => states.set(source, { state: "stale", error: error.message, at: now }),
+    observe: (source, detail) => states.set(source, { ...states.get(source), ...detail, observedAt: now }),
     snapshot: () => Object.fromEntries(states),
   };
   const app = createRuntimeDataApp(createScope(), { sourceLedger: ledger, runRefresh: async () => ({}) });
@@ -135,4 +136,29 @@ test("runtime app exposes per-source last-good refresh state", () => {
   });
   assert.equal(app.canAttemptSource("credit").allowed, false);
   assert.equal(app.canAttemptSource("credit", { force: true }).allowed, true);
+});
+
+test("runtime app records refresh coverage and quality in one transaction", () => {
+  const calls = [];
+  const ledger = {
+    success: (source, detail) => { calls.push(["success", source, detail]); return detail; },
+    observe: (source, detail) => { calls.push(["observe", source, detail]); return detail; },
+    snapshot: () => ({}),
+  };
+  const app = createRuntimeDataApp(createScope(), { sourceLedger: ledger, runRefresh: async () => ({}) });
+  app.noteSourceResult("credit", {
+    stale: true,
+    revision: "credit-42",
+    quality: {
+      firstDate: "2021-01-01",
+      latestDate: "2026-08-12",
+      anomalyCount: 0,
+      gapCount: 2,
+    },
+  });
+
+  assert.deepEqual(calls.map(([name]) => name), ["success", "observe"]);
+  assert.equal(calls[1][2].latestDate, "2026-08-12");
+  assert.equal(calls[1][2].gapCount, 2);
+  assert.equal(calls[1][2].isStale, true);
 });

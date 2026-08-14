@@ -1,5 +1,9 @@
 import { WALKFORWARD_HORIZONS } from "./ai-walkforward-comparison.mjs";
 
+export const MINIMUM_POINT_IN_TIME_SNAPSHOT_ANCHORS = 30;
+export const MINIMUM_POINT_IN_TIME_SNAPSHOT_RATE = 0.2;
+export const MINIMUM_POINT_IN_TIME_FAMILY_RATE = 0.1;
+
 function finiteOrNull(value) {
   if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
@@ -35,22 +39,42 @@ function pointInTimeCoverage(report = {}) {
   const sourceCoverage = report.sourceCoverage || {};
   const coverage = sourceCoverage.pointInTimeFeatureCoverage || {};
   const analysisSnapshots = Math.max(0, Math.trunc(Number(sourceCoverage.analysisSnapshots) || 0));
+  const eligibleAnchors = Math.max(0, Math.trunc(Number(coverage.eligibleAnchors) || 0));
   const snapshotAnchors = Math.max(0, Math.trunc(Number(coverage.snapshotAnchors) || 0));
   const snapshotRate = finiteOrNull(coverage.snapshotRate) || 0;
+  const consensusRate = finiteOrNull(coverage.consensusRate) || 0;
+  const financialRate = finiteOrNull(coverage.financialRate) || 0;
+  const newsRate = finiteOrNull(coverage.newsRate) || 0;
   const companyEvidenceExpected = analysisSnapshots > 0
     || sourceCoverage.pointInTimeConsensus === true
     || sourceCoverage.pointInTimeFinancials === true
     || sourceCoverage.pointInTimeDisclosures === true;
+  const minimumSnapshotAnchors = eligibleAnchors > 0
+    ? Math.min(
+      MINIMUM_POINT_IN_TIME_SNAPSHOT_ANCHORS,
+      Math.max(3, Math.ceil(eligibleAnchors * MINIMUM_POINT_IN_TIME_SNAPSHOT_RATE)),
+    )
+    : MINIMUM_POINT_IN_TIME_SNAPSHOT_ANCHORS;
+  const familyRate = Math.max(consensusRate, financialRate, newsRate);
+  const familyEvidenceReady = familyRate >= MINIMUM_POINT_IN_TIME_FAMILY_RATE;
   const companyEvidenceReady = !companyEvidenceExpected
-    || (snapshotAnchors > 0 && snapshotRate > 0);
+    || (
+      snapshotAnchors >= minimumSnapshotAnchors
+      && snapshotRate >= MINIMUM_POINT_IN_TIME_SNAPSHOT_RATE
+      && familyEvidenceReady
+    );
   return Object.freeze({
-    eligibleAnchors: Math.max(0, Math.trunc(Number(coverage.eligibleAnchors) || 0)),
+    eligibleAnchors,
     snapshotAnchors,
     snapshotRate,
-    consensusRate: finiteOrNull(coverage.consensusRate) || 0,
-    financialRate: finiteOrNull(coverage.financialRate) || 0,
-    newsRate: finiteOrNull(coverage.newsRate) || 0,
+    consensusRate,
+    financialRate,
+    newsRate,
     analysisSnapshots,
+    minimumSnapshotAnchors,
+    minimumSnapshotRate: MINIMUM_POINT_IN_TIME_SNAPSHOT_RATE,
+    minimumFamilyRate: MINIMUM_POINT_IN_TIME_FAMILY_RATE,
+    familyEvidenceReady,
     companyEvidenceExpected,
     companyEvidenceReady,
   });
@@ -69,10 +93,14 @@ export function buildAiValidationSummary(options = {}) {
   const promotionAllowed = promotionRecommended
     && regressionPassed
     && auditPassed
+    && evaluation.benchmarkOutperformanceConfirmed === true
     && coverage.companyEvidenceReady;
   let releaseDecision = String(evaluation.decision || "keep-champion");
   if (baselineCreated) releaseDecision = "baseline-created";
   else if (!regressionPassed || !auditPassed) releaseDecision = "keep-champion";
+  else if (promotionRecommended && evaluation.benchmarkOutperformanceConfirmed !== true) {
+    releaseDecision = "hold-for-benchmark";
+  }
   else if (promotionRecommended && !coverage.companyEvidenceReady) releaseDecision = "hold-for-evidence";
   else if (promotionAllowed) releaseDecision = "promote-challenger";
 

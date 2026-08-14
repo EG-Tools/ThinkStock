@@ -79,6 +79,33 @@ test("validation summary blocks promotion when historical company evidence is ab
   assert.match(summary.warnings.at(-1), /point-in-time company evidence/);
 });
 
+test("validation summary requires meaningful point-in-time coverage", () => {
+  const input = validationInput();
+  input.report.sourceCoverage.pointInTimeFeatureCoverage = {
+    eligibleAnchors: 100,
+    snapshotAnchors: 1,
+    snapshotRate: 0.01,
+    consensusRate: 0.01,
+    financialRate: 0,
+    newsRate: 0,
+  };
+  const summary = buildAiValidationSummary(input);
+
+  assert.equal(summary.pointInTime.coverage.minimumSnapshotAnchors, 20);
+  assert.equal(summary.pointInTime.coverage.familyEvidenceReady, false);
+  assert.equal(summary.pointInTime.coverage.companyEvidenceReady, false);
+  assert.equal(summary.promotionAllowed, false);
+});
+
+test("validation summary cannot promote without beating simple benchmarks", () => {
+  const input = validationInput();
+  input.evaluation.benchmarkOutperformanceConfirmed = false;
+  const summary = buildAiValidationSummary(input);
+
+  assert.equal(summary.releaseDecision, "hold-for-benchmark");
+  assert.equal(summary.promotionAllowed, false);
+});
+
 test("validation summary keeps the champion after any regression", () => {
   const input = validationInput();
   input.evaluation = {

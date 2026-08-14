@@ -41,6 +41,23 @@
       if (Object.hasOwn(phaseStats, name)) phaseStats[name] += 1;
     }
 
+    function noteSourceResult(source, result = {}) {
+      const quality = result?.quality && typeof result.quality === "object" ? result.quality : {};
+      const detail = {
+        firstDate: quality.firstDate || result.firstDate || result.sourceFirstDate || "",
+        latestDate: quality.latestDate || result.latestDate || result.sourceLatestDate || "",
+        anomalyCount: quality.anomalyCount ?? result.anomalyCount ?? 0,
+        gapCount: quality.gapCount ?? result.gapCount ?? 0,
+        isEmpty: quality.isEmpty === true || result.isEmpty === true,
+        isStale: quality.isStale === true || result.stale === true || result.isStale === true,
+        revision: quality.revision || result.revision || "",
+        detail: (result.applied || result.info || []).join?.(" · ") || result.detail || "",
+      };
+      const success = sourceLedger?.success?.(source, detail) || null;
+      sourceLedger?.observe?.(source, detail);
+      return success;
+    }
+
     function isAbort(error, signal) {
       return signal?.aborted || error?.name === "AbortError" || options.isAbortError?.(error) === true;
     }
@@ -136,6 +153,7 @@
       getStatus: () => ({ ...status }),
       noteSourceFailure: (source, error) => sourceLedger?.failure?.(source, error) || null,
       noteSourceQuality: (source, detail) => sourceLedger?.observe?.(source, detail) || null,
+      noteSourceResult,
       noteSourceSuccess: (source, detail) => sourceLedger?.success?.(source, detail) || null,
       notePhase,
       prepareInitialData,

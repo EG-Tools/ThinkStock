@@ -7,7 +7,6 @@ import {
 
 const BODY_LIMIT_BYTES = 4096;
 const LOGIN_CODE_PATTERN = /^\d{10}$/;
-const LEGACY_PROOF_PATTERN = /^[a-f0-9]{64}$/i;
 const RATE_LIMIT_WINDOW_SECONDS = 15 * 60;
 const RATE_LIMIT_MAX_FAILURES = 8;
 const AUTH_ERROR = "접속코드가 틀렸습니다.";
@@ -91,28 +90,10 @@ async function clearFailures(cache, key) {
   try { await cache.delete(key); } catch (_) {}
 }
 
-function migrationIsOpen(env, now) {
-  const deadline = Date.parse(String(env.THINKSTOCK_ADMIN_MIGRATION_UNTIL || ""));
-  return Number.isFinite(deadline) && now < deadline;
-}
-
-async function sha256Hex(value) {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(String(value || "")),
-  );
-  return [...new Uint8Array(digest)]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-async function loginCodeSource(payload, env, tokensMatch, now) {
+async function loginCodeIsValid(payload, env, tokensMatch) {
   const code = String(payload.code || "");
-  if (!LOGIN_CODE_PATTERN.test(code)) return "";
-  if (await tokensMatch(code, env.THINKSTOCK_ADMIN_CODE)) return "current";
-  if (!migrationIsOpen(env, now) || !env.THINKSTOCK_LEGACY_ADMIN_HASH) return "";
-  const legacyProof = await sha256Hex(code);
-  return await tokensMatch(legacyProof, env.THINKSTOCK_LEGACY_ADMIN_HASH) ? "legacy" : "";
+  return LOGIN_CODE_PATTERN.test(code)
+    && await tokensMatch(code, env.THINKSTOCK_ADMIN_CODE);
 }
 
 function configured(env) {
@@ -140,7 +121,7 @@ export async function adminSessionResponse(request, env, origin, dependencies = 
     const payload = await readPayload(request);
     const action = String(payload.action || "").trim().toLowerCase();
     const deviceId = normalizeAdminDeviceId(payload.deviceId);
-    if (!deviceId || !["login", "migrate", "refresh"].includes(action)) {
+    if (!deviceId || !["login", "refresh"].includes(action)) {
       return jsonResponse({ ok: false, error: AUTH_ERROR }, 400, origin);
     }
 
@@ -159,7 +140,6 @@ export async function adminSessionResponse(request, env, origin, dependencies = 
         ok: true,
         sessionToken: session.token,
         expiresAt: session.expiresAt,
-        migrated: false,
         renewed: true,
       }, 200, origin);
     }
@@ -170,15 +150,7 @@ export async function adminSessionResponse(request, env, origin, dependencies = 
       return jsonResponse({ ok: false, error: AUTH_ERROR }, 429, origin);
     }
 
-    const loginSource = action === "login"
-      ? await loginCodeSource(payload, env, tokensMatch, now)
-      : "";
-    const valid = action === "login"
-      ? Boolean(loginSource)
-      : migrationIsOpen(env, now)
-        && LEGACY_PROOF_PATTERN.test(String(payload.legacyProof || ""))
-        && Boolean(env.THINKSTOCK_LEGACY_ADMIN_HASH)
-        && await tokensMatch(payload.legacyProof, env.THINKSTOCK_LEGACY_ADMIN_HASH);
+    const valid = await loginCodeIsValid(payload, env, tokensMatch);
     if (!valid) {
       await recordFailure(env.DISCLOSURE_CACHE, limiterKey, failures + 1);
       return jsonResponse({ ok: false, error: AUTH_ERROR }, 401, origin);
@@ -193,7 +165,6 @@ export async function adminSessionResponse(request, env, origin, dependencies = 
       ok: true,
       sessionToken: session.token,
       expiresAt: session.expiresAt,
-      migrated: action === "migrate" || loginSource === "legacy",
       renewed: false,
     }, 200, origin);
   } catch (error) {

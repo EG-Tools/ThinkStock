@@ -32,6 +32,7 @@ if ($PreparedCommit -and $HeadCommit -ne $RemoteCommit) {
   throw "Prepared releases require HEAD to match origin/main."
 }
 $GitHubVerificationScope = "smoke"
+Invoke-Checked npm @("run", "check:ai-validation")
 if (-not $SkipVerification) {
   Invoke-Checked npm @("run", "verify:release")
 }

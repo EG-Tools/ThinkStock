@@ -922,12 +922,16 @@ assert.ok(workerRouter.includes('path: "/api/admin/session"')
 [
   "THINKSTOCK_ADMIN_CODE",
   "THINKSTOCK_ADMIN_SESSION_SECRET",
-  "THINKSTOCK_LEGACY_ADMIN_HASH",
-  "THINKSTOCK_ADMIN_MIGRATION_UNTIL",
 ].forEach((secretName) => {
   assert.ok(workerConfig.includes(`\"${secretName}\"`), `Worker secret is not declared: ${secretName}`);
 });
-assert.ok(!/\"(?:THINKSTOCK_ADMIN_CODE|THINKSTOCK_ADMIN_SESSION_SECRET|THINKSTOCK_LEGACY_ADMIN_HASH)\"\s*:\s*\"[^\"]+\"/.test(workerConfig),
+assert.ok(!/\"(?:THINKSTOCK_ADMIN_CODE|THINKSTOCK_ADMIN_SESSION_SECRET)\"\s*:\s*\"[^\"]+\"/.test(workerConfig),
   "Worker administrator secret values must not be committed");
+assert.ok(!/THINKSTOCK_LEGACY_ADMIN_HASH|THINKSTOCK_ADMIN_MIGRATION_UNTIL/.test(
+  `${app}\n${adminFeatureAccess}\n${adminSessionHandler}\n${workerConfig}`,
+), "retired administrator migration secrets remain in the active product");
+assert.ok(!/request\([\"']migrate[\"']|action\s*===\s*[\"']migrate[\"']/.test(
+  `${adminFeatureAccess}\n${adminSessionHandler}`,
+), "retired administrator migration requests remain active");
 
 console.log(`Pages app validation passed (version ${appVersion}, ${ids.length} unique IDs).`);

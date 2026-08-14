@@ -34,6 +34,7 @@
     "backtest:ai:verify": "node scripts/run_ai_walkforward_validation.mjs",
     "backtest:ai:summary": "node scripts/run_ai_walkforward_validation.mjs --summary-only",
     "backtest:ai:accept": "node scripts/run_ai_walkforward_validation.mjs --accept",
+    "check:ai-validation": "node scripts/check_ai_validation_status.mjs",
     "worker:deploy": "wrangler deploy --keep-vars --config worker/wrangler.jsonc",
     "worker:check": "wrangler deploy --dry-run --config worker/wrangler.jsonc",
     "verify:release": "npm run build:web && npm run test:unit:built && npm run test:webkit:built",

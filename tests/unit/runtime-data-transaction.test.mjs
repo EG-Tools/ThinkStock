@@ -40,6 +40,10 @@ test("accepts a valid append and preserves historical coverage", () => {
   });
 
   assert.equal(result.ok, true);
+  assert.equal(result.quality.firstDate, "2026-01-01");
+  assert.equal(result.quality.latestDate, "2026-01-03");
+  assert.equal(result.quality.isEmpty, false);
+  assert.equal(result.quality.series.customer_deposit.count, 3);
 });
 
 test("permits an explicit publication-end trim but rejects accidental history loss", () => {
@@ -137,4 +141,5 @@ test("rejects a candidate that introduces a missing trusted market date", () => 
   assert.equal(result.ok, false);
   assert.equal(result.reason, "introduced-gap");
   assert.equal(result.issues[0].latestDate, "2026-08-11");
+  assert.equal(result.quality.gapCount, 1);
 });

@@ -49,7 +49,6 @@ test("admin access persists only a signed session and gates controls until ready
   const access = createAdminFeatureAccess({}, {
     storage,
     sessionKey: "admin-session",
-    legacyKey: "admin-legacy",
     deviceKey: "admin-device",
     createDeviceId: () => "device-12345678",
     requestSession: async ({ action }) => action === "login" ? sessionPayload() : { ok: false, status: 401 },
@@ -76,29 +75,21 @@ test("admin access persists only a signed session and gates controls until ready
   assert.equal(button.classList.contains("is-admin-locked"), true);
 });
 
-test("legacy devices migrate silently and remove the old browser grant", async () => {
-  const legacyProof = "a".repeat(64);
-  const storage = createStorage({ "admin-legacy": legacyProof });
-  const requests = [];
+test("old browser grants are ignored after migration support is retired", async () => {
+  const storage = createStorage({ "admin-legacy": "a".repeat(64) });
   const access = createAdminFeatureAccess({}, {
     storage,
     sessionKey: "admin-session",
-    legacyKey: "admin-legacy",
     deviceKey: "admin-device",
     createDeviceId: () => "legacy-device-123",
-    requestSession: async (payload) => {
-      requests.push(payload);
-      return sessionPayload();
-    },
+    requestSession: async () => sessionPayload(),
   });
 
   assert.equal(access.load(), false);
   const result = await access.restore();
-  assert.deepEqual({ ok: result.ok, migrated: result.migrated }, { ok: true, migrated: true });
-  assert.equal(requests[0].action, "migrate");
-  assert.equal(requests[0].legacyProof, legacyProof);
-  assert.equal(storage.records.has("admin-legacy"), false);
-  assert.equal(access.isGranted(), true);
+  assert.deepEqual(result, { ok: false, status: 0 });
+  assert.equal(storage.records.has("admin-legacy"), true);
+  assert.equal(access.isGranted(), false);
 });
 
 test("cached sessions remain usable during a temporary refresh outage", async () => {
@@ -114,7 +105,6 @@ test("cached sessions remain usable during a temporary refresh outage", async ()
   const access = createAdminFeatureAccess({}, {
     storage,
     sessionKey: "admin-session",
-    legacyKey: "admin-legacy",
     deviceKey: "admin-device",
     requestSession: async () => ({ ok: false, status: 503 }),
   });

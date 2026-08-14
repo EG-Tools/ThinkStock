@@ -2,13 +2,11 @@
   "use strict";
 
   const SESSION_TOKEN_PATTERN = /^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
-  const LEGACY_PROOF_PATTERN = /^[a-f0-9]{64}$/i;
   const DEVICE_ID_PATTERN = /^[A-Za-z0-9._:-]{8,128}$/;
 
   function createAdminFeatureAccess(scope = globalScope, options = {}) {
     const storage = options.storage || scope.localStorage;
     const sessionKey = String(options.sessionKey || "");
-    const legacyKey = String(options.legacyKey || "");
     const deviceKey = String(options.deviceKey || "");
     const buttonIds = Object.freeze([...(options.buttonIds || [])]);
     const now = () => Number(options.now?.() ?? Date.now());
@@ -83,7 +81,6 @@
       if (!value) return false;
       session = value;
       write(sessionKey, JSON.stringify(value));
-      remove(legacyKey);
       granted = true;
       publish();
       return true;
@@ -93,7 +90,6 @@
       session = null;
       granted = false;
       remove(sessionKey);
-      remove(legacyKey);
       return publish();
     }
 
@@ -130,20 +126,9 @@
           return Object.freeze({ ok: granted, cached: granted, status: Number(refreshed.status) || 0 });
         }
 
-        const legacyProof = read(legacyKey);
-        if (!LEGACY_PROOF_PATTERN.test(legacyProof)) {
-          granted = false;
-          publish();
-          return Object.freeze({ ok: false, status: 0 });
-        }
-        const migrated = await request("migrate", { legacyProof });
-        if (migrated.ok && storeSession(migrated)) {
-          return Object.freeze({ ok: true, migrated: true });
-        }
-        if ([400, 401, 403, 410].includes(Number(migrated.status))) remove(legacyKey);
         granted = false;
         publish();
-        return Object.freeze({ ok: false, status: Number(migrated.status) || 0 });
+        return Object.freeze({ ok: false, status: 0 });
       })().finally(() => { restorePromise = null; });
       return restorePromise;
     }

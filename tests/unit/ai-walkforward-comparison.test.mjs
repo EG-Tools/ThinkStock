@@ -51,6 +51,31 @@ test("walk-forward comparison separates market regime results", () => {
   assert.equal(comparison.cohorts.all[126].after.improvementVsMomentum, 0.4545);
 });
 
+test("walk-forward comparison keeps both models in the champion cohort", () => {
+  const selection = { KOSPI: ["DEV.KS", "HOLD.KS"], KOSDAQ: [] };
+  const previousRows = Array.from({ length: 24 }, (_, index) => observation({
+    series: "HOLD.KS",
+    cutoff: `2025-01-${String(index + 1).padStart(2, "0")}`,
+    targetDate: `2025-07-${String(index + 1).padStart(2, "0")}`,
+    audit: { features: { regime_support: 0.8, regime_risk: 0.1 } },
+  }));
+  const currentRows = previousRows.map((row) => observation({
+    ...row,
+    absoluteError: 0.06,
+    audit: { features: { regime_support: 0.1, regime_risk: 0.8 } },
+  }));
+  const comparison = compareWalkforwardReports(
+    { selection, observations: previousRows },
+    { selection, observations: currentRows },
+  );
+
+  assert.equal(comparison.matchedObservations, 24);
+  assert.equal(comparison.regimes["risk-on"][126].before.samples, 24);
+  assert.equal(comparison.regimes["risk-on"][126].after.samples, 24);
+  assert.equal(comparison.regimes["risk-off"][126].before.samples, 0);
+  assert.equal(comparison.regimes["risk-off"][126].after.samples, 0);
+});
+
 test("walk-forward comparison reports index forecasts separately from stocks", () => {
   const selection = { KOSPI: ["005930.KS", "000660.KS"], KOSDAQ: [] };
   const indexRow = observation({

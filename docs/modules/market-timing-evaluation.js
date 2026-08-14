@@ -208,11 +208,30 @@
   function holdoutQualityMetrics(value, options = {}) {
     const quality = value?.quality || value || {};
     const horizon = String(Number(options.horizon) || 20);
-    const rows = ["buy", "sell"].flatMap((side) => {
-      const row = quality?.validation?.holdout?.[side]?.horizons?.[horizon];
-      const samples = Math.max(0, Number(row?.samples) || 0);
-      return samples ? [{ ...row, samples }] : [];
-    });
+    const bySide = Object.freeze(Object.fromEntries(["buy", "sell"].map((side) => {
+      const row = quality?.validation?.holdout?.[side]?.horizons?.[horizon] || {};
+      const samples = Math.max(0, Number(row.samples) || 0);
+      const hits = Number.isFinite(Number(row.hits))
+        ? Number(row.hits)
+        : ((Number(row.hitRate) || 0) * samples);
+      return [side, Object.freeze({
+        horizon: Number(horizon),
+        samples,
+        hits,
+        hitRate: samples ? rounded(hits / samples) : null,
+        hitRateLowerBound: wilsonLowerBound(hits, samples),
+        meanDirectionalReturn: Number.isFinite(Number(row.meanDirectionalReturn))
+          ? rounded(Number(row.meanDirectionalReturn))
+          : null,
+        meanMaxAdverseReturn: Number.isFinite(Number(row.meanMaxAdverseReturn))
+          ? rounded(Number(row.meanMaxAdverseReturn))
+          : null,
+        meanMaxFavorableReturn: Number.isFinite(Number(row.meanMaxFavorableReturn))
+          ? rounded(Number(row.meanMaxFavorableReturn))
+          : null,
+      })];
+    })));
+    const rows = Object.values(bySide).filter((row) => row.samples > 0);
     const samples = rows.reduce((sum, row) => sum + row.samples, 0);
     const weighted = (key) => samples
       ? rows.reduce((sum, row) => sum + ((Number(row?.[key]) || 0) * row.samples), 0) / samples
@@ -224,6 +243,7 @@
     ), 0);
     return Object.freeze({
       horizon: Number(horizon),
+      bySide,
       samples,
       hitRate: samples ? rounded(hits / samples) : null,
       hitRateLowerBound: wilsonLowerBound(hits, samples),
@@ -237,11 +257,13 @@
     const quality = value?.quality || value || {};
     const metrics = holdoutQualityMetrics(quality, options);
     const minimumSamples = Math.max(1, Number(options.minimumSamples) || 8);
+    const minimumSideSamples = Math.max(2, Number(options.minimumSideSamples) || 5);
     const minimumHitLowerBound = Math.max(0, Number(options.minimumHitLowerBound) || 0.2);
     const minimumDirectionalReturn = Number.isFinite(Number(options.minimumDirectionalReturn))
       ? Number(options.minimumDirectionalReturn)
       : 0;
     const reasons = [];
+    const sideReasons = { buy: [], sell: [] };
     if (quality.pointInTimeSafe === false) reasons.push("point-in-time-unsafe");
     if (quality.overfitRisk === true) reasons.push("development-holdout-gap");
     if (metrics.samples < minimumSamples) reasons.push("insufficient-holdout-samples");
@@ -251,13 +273,29 @@
     if (metrics.samples >= minimumSamples && Number(metrics.meanDirectionalReturn) <= minimumDirectionalReturn) {
       reasons.push("non-positive-holdout-return");
     }
+    Object.entries(metrics.bySide).forEach(([side, row]) => {
+      if (row.samples < minimumSideSamples) return;
+      if (Number(row.hitRateLowerBound) < minimumHitLowerBound) {
+        sideReasons[side].push("weak-hit-rate-lower-bound");
+        reasons.push(`${side}-weak-hit-rate-lower-bound`);
+      }
+      if (Number(row.meanDirectionalReturn) <= minimumDirectionalReturn) {
+        sideReasons[side].push("non-positive-holdout-return");
+        reasons.push(`${side}-non-positive-holdout-return`);
+      }
+    });
     return Object.freeze({
-      format: "market-timing-quality-gate-v1",
+      format: "market-timing-quality-gate-v2",
       eligible: reasons.length === 0,
       metrics,
       minimumSamples,
+      minimumSideSamples,
       minimumHitLowerBound,
       minimumDirectionalReturn,
+      sideReasons: Object.freeze({
+        buy: Object.freeze(sideReasons.buy),
+        sell: Object.freeze(sideReasons.sell),
+      }),
       reasons: Object.freeze(reasons),
     });
   }
@@ -267,6 +305,7 @@
     const challengerMetrics = holdoutQualityMetrics(challenger, options);
     const challengerGate = evaluateMarketTimingQualityGate(challenger, options);
     const minimumSamples = Math.max(1, Number(options.minimumSamples) || 8);
+    const minimumSideSamples = Math.max(2, Number(options.minimumSideSamples) || 5);
     if (championMetrics.samples < minimumSamples || challengerMetrics.samples < minimumSamples) {
       return Object.freeze({
         decision: "insufficient-evidence",
@@ -297,6 +336,19 @@
     if (deltas.meanMaxAdverseReturn < -(Number(options.maximumAdverseDrop) || 0.015)) {
       reasons.push("adverse-return-regression");
     }
+    ["buy", "sell"].forEach((side) => {
+      const before = championMetrics.bySide[side];
+      const after = challengerMetrics.bySide[side];
+      if (before.samples < minimumSideSamples || after.samples < minimumSideSamples) return;
+      if (Number(after.hitRateLowerBound) - Number(before.hitRateLowerBound)
+        < -(Number(options.maximumHitRateDrop) || 0.03)) {
+        reasons.push(`${side}-hit-rate-regression`);
+      }
+      if (Number(after.meanDirectionalReturn) - Number(before.meanDirectionalReturn)
+        < -(Number(options.maximumReturnDrop) || 0.005)) {
+        reasons.push(`${side}-directional-return-regression`);
+      }
+    });
     const meaningfulImprovement = deltas.hitRateLowerBound >= (Number(options.minimumHitRateGain) || 0.02)
       || deltas.meanDirectionalReturn >= (Number(options.minimumReturnGain) || 0.005);
     if (!meaningfulImprovement) reasons.push("no-material-improvement");
@@ -337,6 +389,10 @@
       holdout: Object.freeze({
         buy: evaluateSignalSide(buySplit.holdout, "buy", dates, prices, options.horizons),
         sell: evaluateSignalSide(sellSplit.holdout, "sell", dates, prices, options.horizons),
+      }),
+      holdoutByEntryMode: Object.freeze({
+        buy: evaluateSignalsByEntryMode(buySplit.holdout, "buy", dates, prices, options.horizons),
+        sell: evaluateSignalsByEntryMode(sellSplit.holdout, "sell", dates, prices, options.horizons),
       }),
     });
     const matureSamples = Object.values(buy.horizons).reduce((sum, row) => sum + row.samples, 0)

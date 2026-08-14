@@ -80,5 +80,6 @@ import "../docs/modules/shared-request-registry.js";
 import "../docs/modules/runtime-gateway-client.js";
 import "../docs/modules/runtime-index-refresh.js";
 import "../docs/modules/data-freshness-view.js";
+import "../docs/modules/data-freshness-controller.js";
 import "../docs/modules/data-seed-loader.js";
 import "../docs/app.js";

@@ -3,6 +3,18 @@
 
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "2.79",
+      items: Object.freeze([
+        "AI 동일 표본 워크포워드·배포 안전장치 강화",
+        "과거 시점 기업 근거 충족 기준 강화",
+        "매수·매도 방향별 신호 품질 검증",
+        "데이터 최신일·공백·이상치 상태 기록 통합",
+        "앱 데이터 최신성 처리 추가 모듈화",
+        "Worker 공통 HTTP·캐시 처리 모듈화",
+        "구형 관리자 인증 이관 경로 정리",
+      ]),
+    }),
+    Object.freeze({
       version: "2.78",
       items: Object.freeze([
         "지수 6종 색상 고정 및 종목 색상 자동 배정",
