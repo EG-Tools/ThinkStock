@@ -65,6 +65,35 @@
     return deduplicated.slice(-historyLimit);
   }
 
+  function getForecastAvailability(options = {}) {
+    const points = cleanPriceHistory(options);
+    if (!isForecastSeries(options.series)) {
+      return {
+        available: false,
+        reasonCode: "unsupported-series",
+        historyDays: points.length,
+        minimumHistoryDays: MIN_HISTORY,
+        minimumHistoryYears: MIN_HISTORY / TRADING_DAYS,
+      };
+    }
+    if (points.length < MIN_HISTORY) {
+      return {
+        available: false,
+        reasonCode: "insufficient-history",
+        historyDays: points.length,
+        minimumHistoryDays: MIN_HISTORY,
+        minimumHistoryYears: MIN_HISTORY / TRADING_DAYS,
+      };
+    }
+    return {
+      available: true,
+      reasonCode: "",
+      historyDays: points.length,
+      minimumHistoryDays: MIN_HISTORY,
+      minimumHistoryYears: MIN_HISTORY / TRADING_DAYS,
+    };
+  }
+
   function logarithmicReturns(prices) {
     const output = [];
     for (let index = 1; index < prices.length; index += 1) {
@@ -2156,6 +2185,7 @@
     buildRotationSignal,
     buildShortTermShockProfile,
     globalMarketSeriesFor,
+    getForecastAvailability,
     getForecastInputKey,
     isForecastSeries,
     isMarketIndexSeries,

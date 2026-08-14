@@ -25,6 +25,7 @@
       resetAiForecastProgress,
       runAiForecast,
       setAiForecastProgress,
+      showAiForecastUnavailable,
       startAiForecastProgress,
       state,
       syncAiForecastToggleButton,
@@ -47,6 +48,7 @@
         throw new Error("AI scenario presentation dependency is unavailable");
       }
       const traces = [];
+      const unavailableForecasts = [];
       let forecastCount = 0;
       const targetRevisionAtStart = state.aiForecastTargetRevision;
       const forecastCandidates = (seriesModels || []).filter((model) => {
@@ -99,6 +101,9 @@
           horizon: 126,
         };
         const inputKey = state.aiFeature.forecast.getForecastInputKey(options);
+        const availability = inputKey
+          ? null
+          : state.aiFeature.forecast.getForecastAvailability?.(options) || null;
         const cached = state.aiForecastResultBySeries.get(series);
         const contextPending = aiForecastContextPendingForSeries(series);
         // Rendering changes never alter inputKey. Real price, event, analysis, or macro
@@ -115,6 +120,7 @@
           inputKey,
           cached: reusableCache,
           contextPending,
+          availability,
         }];
       });
       const forecastCache = getAiForecastCacheService();
@@ -126,6 +132,7 @@
       const calculationItems = workItems.filter((item) => (
         !item.cached
         && !item.contextPending
+        && item.availability?.available !== false
         && !state.aiForecastDeferredSeries.has(item.series)
       ));
       if (calculationItems.length && !aiForecastApp.isProgressActive()) startAiForecastProgress();
@@ -134,6 +141,10 @@
       for (const item of workItems) {
         if (targetRevisionAtStart !== state.aiForecastTargetRevision) return [];
         const { series, historyRows, options } = item;
+        if (item.availability?.available === false) {
+          unavailableForecasts.push({ series, ...item.availability });
+          continue;
+        }
         let forecast = item.cached
           ? state.aiFeature.forecast.applyChartTransform(item.cached.forecast, options)
           : null;
@@ -162,7 +173,15 @@
           }
         }
         if (targetRevisionAtStart !== state.aiForecastTargetRevision) return [];
-        if (!forecast) continue;
+        if (!forecast) {
+          unavailableForecasts.push({
+            series,
+            available: false,
+            reasonCode: "model-training-failed",
+            historyDays: historyRows.length,
+          });
+          continue;
+        }
         forecast = await applyAiForecastJournalCalibration(series, forecast, historyRows, options);
         if (targetRevisionAtStart !== state.aiForecastTargetRevision) return [];
         if (calculatedNow && state.aiMarketModelLoadSettled && /^\d{6}\.(KS|KQ)$/.test(series)) {
@@ -273,6 +292,7 @@
       }
       state.lastAiForecastTraceCount = forecastCount;
       syncAiForecastToggleButton(forecastCount);
+      if (unavailableForecasts.length) showAiForecastUnavailable?.(unavailableForecasts);
       return traces;
     }
 

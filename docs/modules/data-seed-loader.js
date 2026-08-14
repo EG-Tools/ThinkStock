@@ -81,5 +81,82 @@
     });
   }
 
-  globalScope.ThinkStockDataSeedLoader = Object.freeze({ createDataSeedLoader });
+  function createSeedBundleParser(scope = globalScope, options = {}) {
+    const workerUrl = String(options.workerUrl || "./modules/data-worker.js?v=dev");
+    const parseSync = options.parseSync;
+    const timeoutMs = Math.max(1000, Number(options.timeoutMs) || 8000);
+    const createWorker = options.createWorker || ((url) => new scope.Worker(url));
+    const pending = new Map();
+    let worker = null;
+    let sequence = 0;
+
+    function parseFallback(texts, error) {
+      if (typeof parseSync !== "function") return Promise.reject(error);
+      return Promise.resolve().then(() => parseSync(texts));
+    }
+
+    function discardWorker(error = null) {
+      const activeWorker = worker;
+      worker = null;
+      try { activeWorker?.terminate(); } catch (_) {}
+      if (!error) return;
+      pending.forEach((request) => {
+        clearTimeout(request.timer);
+        request.reject(error);
+      });
+      pending.clear();
+    }
+
+    function ensureWorker() {
+      if (worker) return worker;
+      if (typeof createWorker !== "function"
+        || (!options.createWorker && typeof scope.Worker !== "function")) return null;
+      const nextWorker = createWorker(workerUrl);
+      nextWorker.onmessage = (event) => {
+        const id = String(event.data?.id || "");
+        const request = pending.get(id);
+        if (!request) return;
+        pending.delete(id);
+        clearTimeout(request.timer);
+        if (event.data?.ok) request.resolve(event.data?.result || {});
+        else request.reject(new Error(event.data?.error || "seed parse worker failed"));
+      };
+      nextWorker.onerror = (event) => {
+        discardWorker(new Error(event?.message || "seed parse worker failed"));
+      };
+      worker = nextWorker;
+      return worker;
+    }
+
+    async function parse(texts) {
+      const activeWorker = ensureWorker();
+      if (!activeWorker) return parseFallback(texts, new Error("seed parse worker is unavailable"));
+      const id = `${Date.now()}-${++sequence}`;
+      try {
+        return await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            pending.delete(id);
+            const error = new Error("seed parse worker timeout");
+            reject(error);
+            discardWorker(error);
+          }, timeoutMs);
+          pending.set(id, { resolve, reject, timer });
+          activeWorker.postMessage({ id, type: "parseSeedBundle", texts });
+        });
+      } catch (error) {
+        return parseFallback(texts, error);
+      }
+    }
+
+    return Object.freeze({
+      dispose: () => discardWorker(new Error("seed parser disposed")),
+      parse,
+      stats: () => Object.freeze({ active: Boolean(worker), pending: pending.size }),
+    });
+  }
+
+  globalScope.ThinkStockDataSeedLoader = Object.freeze({
+    createDataSeedLoader,
+    createSeedBundleParser,
+  });
 }(typeof self !== "undefined" ? self : globalThis));

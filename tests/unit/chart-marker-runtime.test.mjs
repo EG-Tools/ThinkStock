@@ -18,6 +18,8 @@ function createRuntime(overrides = {}) {
   const chartSession = {
     hiddenSeries: new Set(),
     hoverShowPopup: true,
+    seriesOffsets: {},
+    seriesScales: {},
     showDisclosures: true,
     showInsiderTrades: true,
     showRecessionSignals: true,
@@ -133,6 +135,28 @@ test("one marker frame shares its date index and spacing across every marker lay
     disclosure.groups.get("d|005930.KS|2026-08-04").events[0].title,
     "분기보고서",
   );
+});
+
+test("reuses marker point indexes while the chart model identity is unchanged", () => {
+  const { chartSession, counters, runtime } = createRuntime();
+  const seriesModels = [{ series: "005930.KS" }];
+  const frameOptions = {
+    selected: ["005930.KS"],
+    seriesModels,
+    start: "2026-08-01",
+    end: "2026-08-08",
+  };
+
+  runtime.createFrame(frameOptions);
+  runtime.createFrame(frameOptions);
+  assert.equal(counters.index, 1);
+
+  chartSession.seriesScales["005930.KS"] = 1.25;
+  runtime.createFrame(frameOptions);
+  assert.equal(counters.index, 2);
+
+  runtime.createFrame({ ...frameOptions, seriesModels: [...seriesModels] });
+  assert.equal(counters.index, 3);
 });
 
 test("crisis entries are emitted only when the stage rises into warning or crisis", () => {
@@ -272,4 +296,41 @@ test("timing preparation excludes inactive custom stocks and reuses relevant fin
     "^KS11",
   ]);
   assert.equal(prepared.sources.pricesByTicker["000660.KS"], undefined);
+});
+
+test("skips repeated timing preparation until a data revision changes", async () => {
+  let revision = 1;
+  let signature = "";
+  let prepareCount = 0;
+  const preparedTickers = new Set();
+  const service = {
+    has: (ticker) => preparedTickers.has(ticker),
+    stats: () => ({ signature, modelCount: preparedTickers.size }),
+    prepare: async (payload) => {
+      prepareCount += 1;
+      signature = payload.signature;
+      payload.targets.forEach((ticker) => preparedTickers.add(ticker));
+    },
+  };
+  const { runtime } = createRuntime({
+    dataRevisionSignature: () => `revision-${revision}`,
+    getMarketTimingService: () => service,
+    getPricePayload: () => ({
+      records: [
+        { date: "2026-08-11", "^KS11": 3200, "^KQ11": 800, "005930.KS": 70000 },
+        { date: "2026-08-12", "^KS11": 3210, "^KQ11": 805, "005930.KS": 71000 },
+      ],
+    }),
+    isForecastSeries: (ticker) => ticker.startsWith("^") || ticker.endsWith(".KS"),
+  });
+  const selected = ["005930.KS"];
+  const seriesModels = [{ series: "005930.KS" }];
+
+  await runtime.prepareMarketTimingModels(selected, seriesModels);
+  await runtime.prepareMarketTimingModels(selected, seriesModels);
+  assert.equal(prepareCount, 1);
+
+  revision += 1;
+  await runtime.prepareMarketTimingModels(selected, seriesModels);
+  assert.equal(prepareCount, 2);
 });

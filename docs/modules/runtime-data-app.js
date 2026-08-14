@@ -33,8 +33,8 @@
           element.hidden = true;
           element.classList.remove("is-fading");
           statusFadeTimer = 0;
-        }, 450);
-      }, 5000);
+        }, 2000);
+      }, 3000);
     }
 
     function notePhase(name) {

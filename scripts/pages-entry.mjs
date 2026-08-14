@@ -37,8 +37,6 @@ import "../docs/modules/main-chart-renderer.js";
 import "../docs/modules/main-chart-events.js";
 import "../docs/modules/co-movement.js";
 import "../docs/modules/macd-oscillator.js";
-import "../docs/modules/ai-forecast-math.js";
-import "../docs/modules/ai-context-profile.js";
 import "../docs/modules/optional-feature-runtime.js";
 import "../docs/modules/progress-view.js";
 import "../docs/modules/ai-forecast-app.js";

@@ -61,3 +61,61 @@ test("falls back to the stable full payload after refresh failures", async () =>
     "./data/prices.json",
   ]);
 });
+
+
+test("reuses one seed parsing worker across recent and history payloads", async () => {
+  const workers = [];
+  class FakeWorker {
+    constructor(url) {
+      this.url = url;
+      this.terminated = false;
+      workers.push(this);
+    }
+
+    postMessage(message) {
+      queueMicrotask(() => this.onmessage?.({
+        data: {
+          id: message.id,
+          ok: true,
+          result: { segment: message.texts.segment },
+        },
+      }));
+    }
+
+    terminate() {
+      this.terminated = true;
+    }
+  }
+
+  const parser = loaderModule.createSeedBundleParser({}, {
+    workerUrl: "./modules/data-worker.js?v=2.78",
+    createWorker: (url) => new FakeWorker(url),
+    parseSync: (texts) => ({ fallback: texts.segment }),
+  });
+
+  assert.deepEqual(await parser.parse({ segment: "recent" }), { segment: "recent" });
+  assert.deepEqual(await parser.parse({ segment: "history" }), { segment: "history" });
+  assert.equal(workers.length, 1);
+  assert.deepEqual(parser.stats(), { active: true, pending: 0 });
+  parser.dispose();
+  assert.equal(workers[0].terminated, true);
+});
+
+
+test("falls back to synchronous parsing when a worker response fails", async () => {
+  class FailingWorker {
+    postMessage(message) {
+      queueMicrotask(() => this.onmessage?.({
+        data: { id: message.id, ok: false, error: "bad payload" },
+      }));
+    }
+    terminate() {}
+  }
+  const parser = loaderModule.createSeedBundleParser({}, {
+    createWorker: () => new FailingWorker(),
+    parseSync: (texts) => ({ recovered: texts.value }),
+  });
+
+  assert.deepEqual(await parser.parse({ value: 7 }), { recovered: 7 });
+  parser.dispose();
+});

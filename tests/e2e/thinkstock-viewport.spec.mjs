@@ -46,12 +46,38 @@ test("main chart allows more than five visible stocks and indices", async ({ pag
     JSON.parse(localStorage.getItem("thinkstock-v5") || "{}").customStocks || []
   ));
   expect(storedStocks.map((item) => item.ticker)).toContain("005930.KS");
+  const firstStockColor = storedStocks.find((item) => item.ticker === "005930.KS")?.color;
+  expect(firstStockColor).toMatch(/^#[0-9a-f]{6}$/);
+  expect([
+    "#999999", "#f59e0b", "#4ade80", "#60a5fa", "#f87171", "#a78bfa",
+  ]).not.toContain(firstStockColor);
 
   await page.locator('[data-series="^KQ11"]').click();
   await expect.poll(visibleMainSeriesCount).toBe(6);
   await samsungToggle.click();
   await expect(samsungToggle).toHaveClass(/is-off/);
   await expect.poll(visibleMainSeriesCount).toBe(5);
+
+  await page.locator('.stock-remove-btn[data-remove-series="005930.KS"]').click();
+  await expect(samsungToggle).toHaveCount(0);
+  await page.route("https://query2.finance.yahoo.com/**", async (route) => {
+    await route.fulfill({ json: {
+      chart: { result: [{
+        meta: { gmtoffset: 0 },
+        timestamp: [Date.parse(`${recentDates.at(-1)}T00:00:00Z`) / 1000],
+        indicators: { quote: [{ close: [78000], volume: [123456] }] },
+      }] },
+    } });
+  });
+  await page.locator("#stockSearchInput").fill("005930");
+  await page.locator(".stock-suggest-item").first().click();
+  await expect(samsungToggle).toBeVisible();
+  const readdedStockColor = await page.evaluate(() => (
+    (JSON.parse(localStorage.getItem("thinkstock-v5") || "{}").customStocks || [])
+      .find((item) => item.ticker === "005930.KS")?.color
+  ));
+  expect(readdedStockColor).toMatch(/^#[0-9a-f]{6}$/);
+  expect(readdedStockColor).not.toBe(firstStockColor);
 });
 
 test("mobile stock remove control keeps a forgiving touch target", async ({ page }, testInfo) => {
@@ -1002,7 +1028,7 @@ test("desktop wheel anchors the latest edge and keeps pointer anchoring in histo
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     element._fullLayout.xaxis.range.map(Date.parse)
   ))).toEqual(fullRange);
-  await expect(page.locator("#chartNavigationMessage")).toBeHidden({ timeout: 4000 });
+  await expect(page.locator("#chartNavigationMessage")).toBeHidden({ timeout: 6000 });
 
   await page.locator("#chart").dispatchEvent("wheel", { deltaY: -120, clientX: wheelPoint });
   await expect.poll(() => page.locator("#chart").evaluate((element) => {

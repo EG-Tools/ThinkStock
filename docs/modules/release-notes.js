@@ -3,6 +3,18 @@
 
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "2.78",
+      items: Object.freeze([
+        "지수 6종 색상 고정 및 종목 색상 자동 배정",
+        "AI 계산 불가 사유 중앙 안내",
+        "차트 마커 좌표 계산 캐시 개선",
+        "매수·매도 신호 중복 계산 축소",
+        "AI 전용 계산 모듈 지연 로딩",
+        "데이터 파싱 Worker 재사용",
+        "종목 제거 UI 개선",
+      ]),
+    }),
+    Object.freeze({
       version: "2.77",
       items: Object.freeze([
         "로컬·Cloudflare 공시 처리 규칙 통합",

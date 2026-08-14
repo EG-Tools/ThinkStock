@@ -338,25 +338,30 @@ const SUPPLEMENTAL_SERIES = [
   ...VIX_SERIES,
 ];
 const CORE_SERIES = ["leading_cycle", "^KS11", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit"];
-const SERIES_COLORS = {
+const FIXED_CORE_SERIES_COLORS = Object.freeze({
   leading_cycle: "#999999",
-  news_sentiment: "#22d3ee",
   customer_deposit: "#f59e0b",
   "^KS11": "#4ade80",
   kospi_credit: "#60a5fa",
   "^KQ11": "#f87171",
   kosdaq_credit: "#a78bfa",
+});
+const SERIES_COLORS = Object.freeze({
+  ...FIXED_CORE_SERIES_COLORS,
+  news_sentiment: "#22d3ee",
   adr_kospi: "#facc15",
   adr_kosdaq: "#f472b6",
   fear_greed: "#fb923c",
   vkospi: "#e5e7eb",
   vix: "#60a5fa",
-};
+});
+const CUSTOM_RESERVED_COLORS = Object.freeze(CORE_SERIES.map((key) => FIXED_CORE_SERIES_COLORS[key]));
+const CUSTOM_COLOR_MIN_FIXED_DISTANCE = 85;
 const CUSTOM_COLOR_PALETTE = [
-  "#2dd4bf", "#fb923c", "#22d3ee", "#facc15", "#f472b6",
-  "#84cc16", "#c084fc", "#38bdf8", "#f59e0b", "#10b981",
-  "#e879f9", "#f43f5e", "#a3e635", "#06b6d4", "#f97316",
-  "#818cf8", "#14b8a6", "#eab308", "#ec4899", "#8b5cf6",
+  "#d41111", "#d44211", "#a4d411", "#73d411", "#11d411", "#0da559",
+  "#11d4d4", "#1173d4", "#1142d4", "#1111d4", "#4211d4", "#7311d4",
+  "#a411d4", "#d411d4", "#d411a4", "#d41173", "#d41142", "#eeee2b",
+  "#bdee2b", "#2beeee", "#2b2bee", "#ee2bee", "#f2f25a", "#89f5da",
 ];
 const MAX_CUSTOM_STOCKS = 20;
 const MAX_VISIBLE_MAIN_SERIES = 10;
@@ -410,7 +415,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "2.77";
+const APP_VERSION = "2.78";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -630,6 +635,10 @@ const dataSeedLoader = dataSeedLoaderModule.createDataSeedLoader({
   fetchWithTimeout,
   appendCacheBust,
 });
+const seedBundleParser = dataSeedLoaderModule.createSeedBundleParser(globalThis, {
+  workerUrl: `./modules/data-worker.js?v=${encodeURIComponent(APP_BUILD_VERSION || "dev")}`,
+  parseSync: parseSeedBundleSync,
+});
 const {
   fetchSeedText,
   fetchSegmentedSeedText,
@@ -702,10 +711,34 @@ const POPUP_NUMBER_FORMAT = new Intl.NumberFormat("ko-KR", { maximumFractionDigi
 const formatActualValue = (v) => (Number.isFinite(v) ? POPUP_NUMBER_FORMAT.format(v) : "N/A");
 const escapeHtml = (v) => String(v ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 const labelName = (key) => DISPLAY_NAMES[key] || key;
+function customStockColorRandom() {
+  try {
+    const values = new Uint32Array(1);
+    globalThis.crypto?.getRandomValues?.(values);
+    if (values[0] > 0) return values[0] / 4294967296;
+  } catch (_) {
+    // Math.random is sufficient when secure browser randomness is unavailable.
+  }
+  return Math.random();
+}
+function assignColorsToCustomStocks(stocks) {
+  return appStateControllerModule.assignCustomStockColors(stocks, {
+    palette: CUSTOM_COLOR_PALETTE,
+    reservedColors: CUSTOM_RESERVED_COLORS,
+    minimumDistance: CUSTOM_COLOR_MIN_FIXED_DISTANCE,
+    previousColorsByTicker: recentlyRemovedCustomStockColors,
+    random: customStockColorRandom,
+  });
+}
+function fallbackCustomColor(ticker) {
+  const hash = [...String(ticker || "")]
+    .reduce((value, character) => ((value * 31) + character.charCodeAt(0)) >>> 0, 0);
+  return CUSTOM_COLOR_PALETTE[hash % CUSTOM_COLOR_PALETTE.length];
+}
 function customColorForTicker(key) {
-  const idx = customStocks.findIndex((item) => item.ticker === key);
-  if (idx < 0) return null;
-  return CUSTOM_COLOR_PALETTE[idx % CUSTOM_COLOR_PALETTE.length];
+  const stock = customStocks.find((item) => item.ticker === key);
+  if (!stock) return null;
+  return appStateControllerModule.normalizeHexColor(stock.color) || fallbackCustomColor(key);
 }
 const seriesColor = (key) => SERIES_COLORS[key] || customColorForTicker(key) || "#888";
 const toUtcMs = (d) => Date.parse(`${d}T00:00:00Z`);
@@ -791,6 +824,7 @@ let dartCorpCodeLoadedShards = new Set();
 let dartCorpCodeMapPromises = new Map();
 let dartDisclosureTickerRefreshPromises = new Map();
 let customStocks = [];
+const recentlyRemovedCustomStockColors = new Map();
 let runtimeBootstrapService = null;
 let stockResearchApp = null;
 let krxUniverse = [];
@@ -865,6 +899,7 @@ let aiForecastQualityRuntime = null;
 let aiForecastCacheService = null;
 let aiForecastDeferredSeries = new Set();
 let aiForecastCalculationCounts = new Map();
+let aiForecastUnavailableMessageKeys = new Set();
 let aiForecastDeferredRenderId = 0;
 let macdModelCache = new Map();
 let isHandleDragging = false;
@@ -1235,7 +1270,14 @@ function saveState() {
 }
 
 function loadState() {
-  return getAppStateController().load({ allowActiveMonths: IS_E2E_RUNTIME });
+  const controller = getAppStateController();
+  const loaded = controller.load({ allowActiveMonths: IS_E2E_RUNTIME });
+  if (!loaded || !customStocks.length) return loaded;
+  const coloredStocks = assignColorsToCustomStocks(customStocks);
+  const colorsChanged = coloredStocks.some((stock, index) => stock.color !== customStocks[index]?.color);
+  customStocks = coloredStocks;
+  if (colorsChanged) controller.save();
+  return loaded;
 }
 
 const disclosureDataService = createDisclosureDataService({
@@ -2207,6 +2249,34 @@ function showChartNavigationMessage(message, durationMs = 3000) {
   return getChartNavigationController().showMessage(message, durationMs);
 }
 
+function showAiForecastUnavailable(items = []) {
+  const unavailable = (Array.isArray(items) ? items : [items])
+    .filter((item) => item?.series && item?.available === false);
+  if (!unavailable.length || !chartSession.showAiForecast) return;
+  const key = [
+    aiForecastToggleRevision,
+    aiForecastTargetRevision,
+    ...unavailable
+      .map((item) => `${item.series}:${item.reasonCode || "unknown"}`)
+      .sort(),
+  ].join("|");
+  if (aiForecastUnavailableMessageKeys.has(key)) return;
+  aiForecastUnavailableMessageKeys.add(key);
+  if (aiForecastUnavailableMessageKeys.size > 48) {
+    aiForecastUnavailableMessageKeys = new Set([...aiForecastUnavailableMessageKeys].slice(-24));
+  }
+
+  const first = unavailable[0];
+  const subject = unavailable.length > 1
+    ? `${labelName(first.series)} 외 ${unavailable.length - 1}종`
+    : labelName(first.series);
+  const reasonCodes = new Set(unavailable.map((item) => item.reasonCode));
+  let reason = "학습 데이터 품질 부족";
+  if (reasonCodes.size === 1 && reasonCodes.has("insufficient-history")) reason = "가격 이력 3년 미만";
+  else if (reasonCodes.size === 1 && reasonCodes.has("unsupported-series")) reason = "지원하지 않는 차트";
+  showChartNavigationMessage(`${subject} · AI 계산 불가: ${reason}`, 3000);
+}
+
 function ensureFullHistoryDataReady() {
   return getChartNavigationController().ensureHistoryReady();
 }
@@ -3043,7 +3113,7 @@ function renderCustomStockButtons() {
     return `
       <div class="custom-stock-chip" data-custom-series="${escapeHtml(ticker)}">
         <button class="series-toggle-btn custom-stock-toggle-btn" data-series="${escapeHtml(ticker)}" style="--series-color:${escapeHtml(color)}">${escapeHtml(name)}</button>
-        <button class="stock-remove-btn" type="button" data-remove-series="${escapeHtml(ticker)}" aria-label="${escapeHtml(name)} remove">-</button>
+        <button class="stock-remove-btn" type="button" data-remove-series="${escapeHtml(ticker)}" aria-label="${escapeHtml(name)} remove">&times;</button>
       </div>
     `;
   }).join("");
@@ -3066,9 +3136,18 @@ function bindCustomStockRemoveButtons() {
 }
 
 function removeCustomStock(ticker) {
+  const removedStock = customStocks.find((item) => item.ticker === ticker);
   const before = customStocks.length;
   customStocks = customStocks.filter((item) => item.ticker !== ticker);
   if (customStocks.length === before) return;
+  const removedColor = appStateControllerModule.normalizeHexColor(removedStock?.color);
+  if (removedColor) {
+    recentlyRemovedCustomStockColors.delete(ticker);
+    recentlyRemovedCustomStockColors.set(ticker, removedColor);
+    if (recentlyRemovedCustomStockColors.size > 100) {
+      recentlyRemovedCustomStockColors.delete(recentlyRemovedCustomStockColors.keys().next().value);
+    }
+  }
   if (lastVisibleStockSeriesKey === ticker) lastVisibleStockSeriesKey = "";
   chartSession.hiddenSeries.delete(ticker);
   delete chartSession.seriesOffsets[ticker];
@@ -3673,12 +3752,15 @@ async function addCustomStock(candidate, msgEl) {
     }
 
     const activateOnAdd = visibleMainChartSeriesKeys().length < MAX_VISIBLE_MAIN_SERIES;
-    customStocks.push({
-      ticker: candidate.ticker,
-      name: candidate.name,
-      code: candidate.code,
-      market: candidate.market,
-    });
+    customStocks = assignColorsToCustomStocks([
+      ...customStocks,
+      {
+        ticker: candidate.ticker,
+        name: candidate.name,
+        code: candidate.code,
+        market: candidate.market,
+      },
+    ]);
 
     if (activateOnAdd) {
       chartSession.hiddenSeries.delete(candidate.ticker);
@@ -5744,7 +5826,7 @@ function syncAiForecastToggleButton(traceCount = lastAiForecastTraceCount) {
         ? `종목 실적 분석 준비 중 - ${pendingCount}개`
         : (count > 0
         ? `6개월 AI 가상 흐름 켜짐 - ${count}개 종목 (상대 가중치·실제 확률 아님)`
-        : "AI 분석에는 종목별로 최소 90거래일이 필요합니다."))
+        : "AI 분석에는 종목별로 최소 3년의 가격 이력이 필요합니다."))
       : "6개월 AI 가상 흐름 (실험 상대 가중치·투자 판단용 아님)",
   });
 }
@@ -6292,6 +6374,7 @@ function getAiForecastTracesRuntime() {
     resetAiForecastProgress,
     runAiForecast,
     setAiForecastProgress,
+    showAiForecastUnavailable,
     startAiForecastProgress,
     state,
     syncAiForecastToggleButton,
@@ -7508,35 +7591,6 @@ async function refreshFearGreedFromWeb(signal = null) {
   return { added: result.updated, latestDate: result.latestDate };
 }
 
-function parseSeedBundleInWorker(texts) {
-  if (typeof Worker === "undefined") return Promise.resolve(parseSeedBundleSync(texts));
-
-  return new Promise((resolve, reject) => {
-    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const workerUrl = `./modules/data-worker.js?v=${encodeURIComponent(APP_BUILD_VERSION || "dev")}`;
-    const worker = new Worker(workerUrl);
-    const timeoutId = setTimeout(() => {
-      worker.terminate();
-      reject(new Error("seed parse worker timeout"));
-    }, 8000);
-
-    worker.onmessage = (event) => {
-      const message = event.data || {};
-      if (message.id !== id) return;
-      clearTimeout(timeoutId);
-      worker.terminate();
-      if (message.ok) resolve(message.result || {});
-      else reject(new Error(message.error || "seed parse worker failed"));
-    };
-    worker.onerror = (event) => {
-      clearTimeout(timeoutId);
-      worker.terminate();
-      reject(new Error(event?.message || "seed parse worker failed"));
-    };
-    worker.postMessage({ id, type: "parseSeedBundle", texts });
-  }).catch(() => parseSeedBundleSync(texts));
-}
-
 async function loadData(forceNetwork = false, options = {}) {
   const mergeWithExisting = Boolean(options?.mergeWithExisting);
   const preserveExisting = Boolean(options?.preserveExisting);
@@ -7569,7 +7623,7 @@ async function loadData(forceNetwork = false, options = {}) {
   const creditText = creditSeed.text;
   const adrText = adrSeed.text;
 
-  const parsed = await parseSeedBundleInWorker({
+  const parsed = await seedBundleParser.parse({
     priceText,
     macroText,
     creditText,

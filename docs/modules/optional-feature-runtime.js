@@ -13,6 +13,7 @@
       if (ai) return ai;
       await loader.loadFeature("ai-forecast", [
         "./modules/ai-forecast-math.js",
+        "./modules/ai-context-profile.js",
         "./modules/ai-forecast-model.js",
         "./modules/ai-scenario-paths.js",
         "./modules/ai-forecast-scenarios.js",
@@ -41,6 +42,8 @@
     async function ensureMarketTiming() {
       if (marketTimingService) return marketTimingService;
       await loader.loadFeature("market-timing", [
+        "./modules/ai-forecast-math.js",
+        "./modules/ai-context-profile.js",
         "./modules/market-timing-evaluation.js",
         "./modules/market-timing.js",
         "./modules/market-timing-service.js",

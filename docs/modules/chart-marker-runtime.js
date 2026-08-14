@@ -1,8 +1,6 @@
 (function initThinkStockChartMarkerRuntime(globalScope) {
   "use strict";
 
-  const seriesIntegrity = globalScope.ThinkStockSeriesIntegrity;
-
   const DAY_MS = 24 * 60 * 60 * 1000;
 
   function collectCrisisSignalEntries(rows) {
@@ -95,6 +93,37 @@
     const pairedInsiderSellOffsetRatio = Number(constants.pairedInsiderSellOffsetRatio) || 0.95;
     const insiderTimingCollisionDistanceRatio = Number(constants.insiderTimingCollisionDistanceRatio) || 0.9;
     const insiderTimingCollisionOffsetRatio = Number(constants.insiderTimingCollisionOffsetRatio) || 2.2;
+    const pointIndexCache = new WeakMap();
+    let lastTimingPreparationKey = "";
+
+    function transformSignature(indexedTickers) {
+      return [...indexedTickers]
+        .map(String)
+        .sort()
+        .map((ticker) => {
+          const offset = Number(chartSession.seriesOffsets?.[ticker]);
+          const scale = Number(chartSession.seriesScales?.[ticker]);
+          return `${ticker}:${Number.isFinite(offset) ? offset : 0}:${Number.isFinite(scale) ? scale : 1}`;
+        })
+        .join("|");
+    }
+
+    function cachedPointIndex(seriesModels, indexedTickers) {
+      if (!Array.isArray(seriesModels)) {
+        return chartEventLayer.buildPointIndex(seriesModels || [], indexedTickers, toUtcMs);
+      }
+      const key = [...indexedTickers].map(String).sort().join("|");
+      const geometryKey = transformSignature(indexedTickers);
+      let cached = pointIndexCache.get(seriesModels);
+      if (!cached || cached.geometryKey !== geometryKey) {
+        cached = { geometryKey, entries: new Map() };
+        pointIndexCache.set(seriesModels, cached);
+      }
+      if (cached.entries.has(key)) return cached.entries.get(key);
+      const value = chartEventLayer.buildPointIndex(seriesModels, indexedTickers, toUtcMs);
+      cached.entries.set(key, value);
+      return value;
+    }
 
     function visibleTimingSeries(selected, seriesModels) {
       const available = new Set((seriesModels || [])
@@ -148,7 +177,7 @@
           ? collectCrisisSignalEntries(getCrisisRows?.() || [])
           : [],
         pointIndex: hasIndexedMarkers
-          ? chartEventLayer.buildPointIndex(seriesModels || [], indexedTickers, toUtcMs)
+          ? cachedPointIndex(seriesModels || [], indexedTickers)
           : {},
         markerGap: hasIndexedMarkers
           ? chartEventLayer.markerGap(seriesModels || [], markerStart, markerEnd, {
@@ -517,29 +546,22 @@
         "^KQ11",
         ...targets,
       ].filter(isForecastSeries))].sort();
-      const volumeMaps = getTickerVolumeSeriesByTicker?.() || new Map();
-      const volumeSignature = sourceTickers.map((ticker) => {
-        const entries = [...(volumeMaps.get(ticker)?.entries() || [])]
-          .sort((left, right) => String(left[0]).localeCompare(String(right[0])))
-          .slice(-64);
-        return `${ticker}:${JSON.stringify(entries)}`;
-      }).join(",");
+      const sourceRevision = dataRevisionSignature("price", "macro", "credit", "adr", "crisis");
       const first = records[0] || {};
       const latest = records.at(-1) || {};
       const signature = [
-        typeof seriesIntegrity?.fingerprintDatedSeries === "function"
-          ? seriesIntegrity.fingerprintDatedSeries(records, sourceTickers, {
-            tail: 520,
-            logicVersion: "market-timing-v3",
-          })
-          : dataRevisionSignature("price"),
-        dataRevisionSignature("macro", "credit", "adr", "crisis"),
+        "market-timing-v4",
+        sourceRevision,
+        sourceTickers.join(","),
         first.date || "",
         latest.date || "",
-        volumeSignature,
       ].join("|");
+      const preparationKey = `${signature}|${targets.join(",")}`;
+      if (lastTimingPreparationKey === preparationKey
+        && targets.every((ticker) => service.has?.(ticker))) return;
       let sources;
       if (service.stats().signature !== signature) {
+        const volumeMaps = getTickerVolumeSeriesByTicker?.() || new Map();
         const dates = records.map((row) => String(row?.date || "").slice(0, 10));
         const pricesByTicker = Object.fromEntries(sourceTickers.map((ticker) => [
           ticker,
@@ -569,6 +591,7 @@
           targets,
           ...(sources ? { sources } : {}),
         });
+        lastTimingPreparationKey = preparationKey;
         recordPerfSample("prepareMarketTimingModels", startedAt, {
           targets: targets.length,
           models: service.stats().modelCount,

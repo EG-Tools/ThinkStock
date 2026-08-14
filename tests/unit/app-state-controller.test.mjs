@@ -49,6 +49,44 @@ test("sanitizes and deduplicates persisted custom stocks", () => {
 });
 
 
+test("preserves only safe persisted custom stock colors", () => {
+  assert.deepEqual(module.sanitizeCustomStocks([
+    { ticker: "005930.KS", name: "Samsung", color: "#D41111" },
+    { ticker: "000660.KS", name: "SK Hynix", color: "not-a-color" },
+  ]), [
+    { ticker: "005930.KS", name: "Samsung", code: "", market: "", color: "#d41111" },
+    { ticker: "000660.KS", name: "SK Hynix", code: "", market: "" },
+  ]);
+});
+
+
+test("assigns unique random stock colors away from fixed series and the last removed color", () => {
+  const options = {
+    palette: ["#4ade80", "#d41111", "#2beeee"],
+    reservedColors: ["#4ade80"],
+    minimumDistance: 85,
+    random: () => 0,
+  };
+  const assigned = module.assignCustomStockColors([
+    { ticker: "005930.KS", name: "Samsung" },
+    { ticker: "000660.KS", name: "SK Hynix" },
+  ], options);
+
+  assert.equal(assigned[0].color, "#d41111");
+  assert.equal(assigned[1].color, "#2beeee");
+  assert.notEqual(assigned[0].color, options.reservedColors[0]);
+  assert.notEqual(assigned[0].color, assigned[1].color);
+
+  const readded = module.assignCustomStockColors([
+    { ticker: "005930.KS", name: "Samsung" },
+  ], {
+    ...options,
+    previousColorsByTicker: new Map([["005930.KS", assigned[0].color]]),
+  });
+  assert.equal(readded[0].color, "#2beeee");
+});
+
+
 test("loads legacy auxiliary visibility and keeps AI disabled at boot", () => {
   const chartState = state();
   let customStocks = [];

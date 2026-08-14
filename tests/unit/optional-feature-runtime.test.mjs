@@ -5,6 +5,7 @@ await import("../../docs/modules/optional-feature-runtime.js");
 
 test("loads each optional feature only once and creates one timing service", async () => {
   const loaded = [];
+  const featurePaths = new Map();
   const scope = {
     ThinkStockAiForecast: { buildForecast() {} },
     ThinkStockAiAnalysisCache: { SCHEMA_VERSION: 1 },
@@ -29,8 +30,9 @@ test("loads each optional feature only once and creates one timing service", asy
     version: "2.34",
     buildMacdOscillator() {},
     loader: {
-      loadFeature: async (name, _paths, validate) => {
+      loadFeature: async (name, paths, validate) => {
         loaded.push(name);
+        featurePaths.set(name, paths);
         assert.equal(validate(), true);
       },
     },
@@ -40,4 +42,6 @@ test("loads each optional feature only once and creates one timing service", asy
   assert.equal(await runtime.ensureMarketTiming(), await runtime.ensureMarketTiming());
   assert.equal(await runtime.ensureStockResearch(), await runtime.ensureStockResearch());
   assert.deepEqual(loaded, ["ai-forecast", "market-timing", "stock-research"]);
+  assert.equal(featurePaths.get("ai-forecast").includes("./modules/ai-context-profile.js"), true);
+  assert.equal(featurePaths.get("market-timing").includes("./modules/ai-context-profile.js"), true);
 });

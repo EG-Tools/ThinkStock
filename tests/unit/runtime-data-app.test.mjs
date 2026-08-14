@@ -20,6 +20,39 @@ function createScope() {
   };
 }
 
+test("completed runtime status stays solid for three seconds and fades for two", () => {
+  const classes = new Set();
+  const timers = [];
+  const status = {
+    hidden: true,
+    textContent: "",
+    dataset: {},
+    classList: {
+      add: (name) => classes.add(name),
+      remove: (name) => classes.delete(name),
+      toggle: (name, enabled) => (enabled ? classes.add(name) : classes.delete(name)),
+    },
+  };
+  const app = createRuntimeDataApp({
+    document: { getElementById: () => status },
+    setTimeout: (callback, delay) => {
+      timers.push({ callback, delay });
+      return timers.length;
+    },
+    clearTimeout() {},
+  });
+
+  app.setStatus("ready", "최신 데이터 확인 완료");
+
+  assert.equal(status.hidden, false);
+  assert.equal(timers[0].delay, 3000);
+  timers[0].callback();
+  assert.equal(classes.has("is-fading"), true);
+  assert.equal(timers[1].delay, 2000);
+  timers[1].callback();
+  assert.equal(status.hidden, true);
+});
+
 test("runtime refresh shares one in-flight request until a forced refresh supersedes it", async () => {
   const pending = [];
   const app = createRuntimeDataApp(createScope(), {

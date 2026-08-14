@@ -1,6 +1,65 @@
 (function initThinkStockAppStateController(globalScope) {
   "use strict";
 
+  const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
+
+  function normalizeHexColor(value) {
+    const color = String(value || "").trim().toLowerCase();
+    return HEX_COLOR_PATTERN.test(color) ? color : "";
+  }
+
+  function colorDistance(first, second) {
+    const left = normalizeHexColor(first);
+    const right = normalizeHexColor(second);
+    if (!left || !right) return 0;
+    const channel = (color, offset) => Number.parseInt(color.slice(offset, offset + 2), 16);
+    return Math.hypot(
+      channel(left, 1) - channel(right, 1),
+      channel(left, 3) - channel(right, 3),
+      channel(left, 5) - channel(right, 5),
+    );
+  }
+
+  function assignCustomStockColors(rawStocks, options = {}) {
+    if (!Array.isArray(rawStocks)) return [];
+    const reserved = [...new Set((options.reservedColors || []).map(normalizeHexColor).filter(Boolean))];
+    const minimumDistance = Math.max(0, Number(options.minimumDistance) || 0);
+    const palette = [...new Set((options.palette || []).map(normalizeHexColor).filter(Boolean))]
+      .filter((color) => (
+        !reserved.includes(color)
+        && reserved.every((fixedColor) => colorDistance(color, fixedColor) >= minimumDistance)
+      ));
+    if (!palette.length) return rawStocks.map((stock) => ({ ...stock }));
+
+    const previousColors = options.previousColorsByTicker instanceof Map
+      ? options.previousColorsByTicker
+      : new Map(Object.entries(options.previousColorsByTicker || {}));
+    const random = typeof options.random === "function" ? options.random : Math.random;
+    const used = new Set();
+
+    return rawStocks.map((stock) => {
+      const ticker = String(stock?.ticker || "").trim().toUpperCase();
+      const existing = normalizeHexColor(stock?.color);
+      const existingIsSafe = existing
+        && !used.has(existing)
+        && !reserved.includes(existing)
+        && reserved.every((fixedColor) => colorDistance(existing, fixedColor) >= minimumDistance);
+      if (existingIsSafe) {
+        used.add(existing);
+        return { ...stock, color: existing };
+      }
+
+      const previous = normalizeHexColor(previousColors.get(ticker));
+      let candidates = palette.filter((color) => !used.has(color) && color !== previous);
+      if (!candidates.length) candidates = palette.filter((color) => color !== previous);
+      if (!candidates.length) candidates = palette;
+      const randomValue = Math.max(0, Math.min(0.999999999, Number(random()) || 0));
+      const color = candidates[Math.floor(randomValue * candidates.length)];
+      used.add(color);
+      return { ...stock, color };
+    });
+  }
+
   function sanitizeCustomStocks(raw, maxStocks = 20) {
     if (!Array.isArray(raw)) return [];
     const output = [];
@@ -13,7 +72,8 @@
       const market = String(item.market || "").trim().toUpperCase();
       if (!/^[0-9]{6}\.(KS|KQ)$/.test(ticker) || !name || seen.has(ticker)) return;
       seen.add(ticker);
-      output.push({ ticker, name, code, market });
+      const color = normalizeHexColor(item.color);
+      output.push({ ticker, name, code, market, ...(color ? { color } : {}) });
     });
     return output.slice(0, Math.max(1, Number(maxStocks) || 20));
   }
@@ -142,8 +202,11 @@
   }
 
   globalScope.ThinkStockAppStateController = Object.freeze({
+    assignCustomStockColors,
+    colorDistance,
     createAppStateController,
     migrateAuxiliaryVisibility,
+    normalizeHexColor,
     sanitizeCustomStocks,
   });
 }(typeof self !== "undefined" ? self : globalThis));

@@ -245,6 +245,36 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
   ))).toBeLessThanOrEqual(observedEnd);
 });
 
+test("AI explains insufficient price history and fades the message", async ({ page }) => {
+  await installDataRoutes(page, { shortStockHistory: true });
+  await stubExternalRefreshes(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 12,
+      hiddenSeries: [
+        "leading_cycle", "^KS11", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit",
+      ],
+      customStocks: [{
+        ticker: "005930.KS",
+        name: "삼성전자",
+        code: "005930",
+        market: "KOSPI",
+      }],
+    }));
+  });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+
+  await page.locator("#aiForecastToggle").click();
+  const message = page.locator("#chartNavigationMessage");
+  await expect(message).toHaveText("삼성전자 · AI 계산 불가: 가격 이력 3년 미만", { timeout: 30000 });
+  await expect(message).toBeVisible();
+  await expect.poll(() => message.evaluate((element) => element.classList.contains("is-fading")), {
+    timeout: 4000,
+  }).toBe(true);
+  await expect(message).toBeHidden({ timeout: 2500 });
+});
+
 test("AI toggle restores an unchanged wheel-zoomed viewport", async ({ page, isMobile }) => {
   test.skip(isMobile, "Mouse wheel behavior is desktop-only.");
   await stubExternalRefreshes(page);

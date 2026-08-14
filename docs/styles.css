@@ -18,7 +18,7 @@
   --chart-ui-help-bg: rgba(10, 10, 10, 0.82);
   --chart-ui-help-border: rgba(255, 255, 255, 0.16);
   --chart-ui-help-color: rgba(255, 255, 255, 0.78);
-  --chart-ui-help-duration: 450ms;
+  --chart-ui-help-duration: 2000ms;
 }
 
 * { box-sizing: border-box; }
@@ -1430,7 +1430,7 @@ body {
 }
 
 .series-toggle-btn.custom-stock-toggle-btn {
-  padding-right: 46px;
+  padding-right: 38px;
 }
 
 .series-toggle-btn {
@@ -2259,7 +2259,7 @@ body {
     line-height: 1.2;
   }
   .series-row.base-row .series-toggle-btn:first-child { white-space: normal; }
-  .custom-stock-chip .series-toggle-btn { padding: 7px 32px 7px 8px; }
+  .custom-stock-chip .series-toggle-btn { padding: 7px 28px 7px 8px; }
   .stock-remove-btn { width: 16px; height: 16px; font-size: 11px; right: 7px; }
   .chart-frame { border-radius: 22px; min-height: 350px; }
   #chart.chart-frame { min-height: 366px; }

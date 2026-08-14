@@ -31,6 +31,7 @@ const {
   buildRotationSignal,
   buildShortTermShockProfile,
   globalMarketSeriesFor,
+  getForecastAvailability,
   getForecastInputKey,
   marketModelForHorizon,
   nextBusinessDates,
@@ -197,7 +198,28 @@ test("trains deterministic 20, 63, and 126-day models with uncertainty bands", (
 test("does not forecast when three years of history are unavailable", () => {
   const dates = tradingDates(755);
   const prices = dates.map((_, index) => 100 + index);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(getForecastAvailability({ series: "005930.KS", dates, prices }))),
+    {
+      available: false,
+      reasonCode: "insufficient-history",
+      historyDays: 755,
+      minimumHistoryDays: 756,
+      minimumHistoryYears: 3,
+    },
+  );
   assert.equal(buildForecast({ series: "005930.KS", dates, prices }), null);
+});
+
+test("reports forecast availability once three years of valid prices exist", () => {
+  const dates = tradingDates(756);
+  const prices = dates.map((_, index) => 100 + index);
+  const status = getForecastAvailability({ series: "005930.KS", dates, prices });
+
+  assert.equal(status.available, true);
+  assert.equal(status.historyDays, 756);
+  assert.equal(status.minimumHistoryDays, 756);
+  assert.equal(getForecastInputKey({ series: "005930.KS", dates, prices }).length > 0, true);
 });
 
 test("keeps the learned prices independent from the visible chart range", () => {

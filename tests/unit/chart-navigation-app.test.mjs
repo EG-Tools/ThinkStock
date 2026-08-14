@@ -95,6 +95,32 @@ test("wheel input discards a queued range after an external viewport change", ()
   assert.equal(message.textContent, "기간을 더 이상 줄일 수 없습니다.");
 });
 
+test("chart messages stay solid for three seconds and fade for two", () => {
+  const message = { ...fakeElement(), textContent: "", hidden: true };
+  const timers = [];
+  const navigation = createChartNavigation({}, {
+    viewport,
+    getElement: fakeElement,
+    getMessageElement: () => message,
+    getCurrentRange: () => [0, 1000],
+    applyRange: () => {},
+    setTimer: (callback, delay) => {
+      timers.push({ callback, delay });
+      return timers.length;
+    },
+    clearTimer: () => {},
+  });
+
+  navigation.showMessage("AI 계산 불가");
+
+  assert.equal(message.hidden, false);
+  assert.deepEqual(timers.map(({ delay }) => delay), [3000, 5000]);
+  timers[0].callback();
+  assert.equal(message.classList.contains("is-fading"), true);
+  timers[1].callback();
+  assert.equal(message.hidden, true);
+});
+
 test("full-history preparation is shared by concurrent navigation requests", async () => {
   let loads = 0;
   let release;

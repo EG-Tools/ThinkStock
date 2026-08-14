@@ -1,6 +1,8 @@
 (function initThinkStockChartNavigationApp(globalScope) {
   "use strict";
 
+  const MESSAGE_FADE_DURATION_MS = 2000;
+
   function createChartNavigation(scope = globalScope, options = {}) {
     const viewport = options.viewport;
     if (!viewport?.centeredZoomRange || !viewport?.latestRange) {
@@ -76,16 +78,16 @@
       element.hidden = !element.textContent;
       element.classList.remove("is-fading");
       if (!element.textContent) return;
-      const visibleDuration = Math.max(450, Number(durationMs) || 3000);
+      const solidDuration = Math.max(0, Number(durationMs) || 3000);
       messageFadeTimer = setTimer?.(() => {
         messageFadeTimer = 0;
         element.classList.add("is-fading");
-      }, Math.max(0, visibleDuration - 450));
+      }, solidDuration);
       messageTimer = setTimer?.(() => {
         messageTimer = 0;
         element.hidden = true;
         element.classList.remove("is-fading");
-      }, visibleDuration);
+      }, solidDuration + MESSAGE_FADE_DURATION_MS);
     }
 
     function historyReady() {
