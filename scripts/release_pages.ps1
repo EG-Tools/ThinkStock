@@ -51,6 +51,7 @@ Invoke-Checked git @(
   "package-lock.json",
   "playwright.config.mjs",
   "requirements-pages.txt",
+  "requirements-qlib.txt",
   "run_local_pages.bat",
   "scripts",
   "shared",

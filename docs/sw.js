@@ -1,6 +1,6 @@
 importScripts("./modules/cache-refresh-policy.js?v=dev");
 
-const CACHE_NAME = "thinkstock-dev-2.79";
+const CACHE_NAME = "thinkstock-dev-2.88";
 const NETWORK_FIRST_TIMEOUT_MS = 3500;
 const DATA_REFRESH_CONCURRENCY = 3;
 const DATA_MANIFEST_PATH = "./data/data_manifest.json";
@@ -77,6 +77,14 @@ const CORE_ASSET_PATHS = [
   "/modules/stock-research-controller.js",
   "/modules/stock-research-worker.js",
   "/modules/market-timing-worker.js",
+  "/modules/ai-forecast-app.js",
+  "/modules/broker-report-parser.js",
+  "/modules/broker-report-worker-client.js",
+  "/modules/broker-report-worker.js",
+  "/modules/broker-research-cache.js",
+  "/modules/broker-research-runtime.js",
+  "/modules/ai-forecast-cache.js",
+  "/modules/ai-forecast-traces.js",
   "/modules/ai-forecast-math.js",
   "/modules/ai-context-profile.js",
   "/modules/ai-forecast-model.js",
@@ -89,7 +97,12 @@ const CORE_ASSET_PATHS = [
   "/modules/ai-forecast-calibration.js",
   "/modules/ai-forecast-quality-runtime.js",
   "/modules/performance-diagnostics.js",
+  "/modules/api-periods.js",
+  "/modules/release-notes.js",
+  "/modules/settings-panel-runtime.js",
   "/vendor/plotly-thinkstock-2.35.2.min.js",
+  "/vendor/pdf.min.mjs",
+  "/vendor/pdf.worker.min.mjs",
 ];
 
 function isDataUrl(url) {

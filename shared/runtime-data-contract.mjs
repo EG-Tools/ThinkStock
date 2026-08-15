@@ -1,11 +1,9 @@
+import { finiteOrNull } from "./runtime-foundation.mjs";
+
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const CREDIT_KEYS = Object.freeze(["customer_deposit", "kospi_credit", "kosdaq_credit"]);
 
-function finiteNumber(value) {
-  if (value === null || value === undefined || value === "") return null;
-  const number = Number(value);
-  return Number.isFinite(number) ? number : null;
-}
+const finiteNumber = finiteOrNull;
 
 function requireSuccess(payload, label) {
   if (!payload || typeof payload !== "object" || payload.ok !== true) {

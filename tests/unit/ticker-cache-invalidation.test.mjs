@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+await import("../../shared/runtime-foundation.mjs");
 await import("../../docs/modules/cache-lifecycle-policy.js");
 await import("../../docs/modules/ticker-cache-invalidation.js");
 const cache = globalThis.ThinkStockTickerCacheInvalidation;

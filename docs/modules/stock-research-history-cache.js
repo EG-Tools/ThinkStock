@@ -5,6 +5,8 @@
   if (!contract) throw new Error("stock research contract failed to load");
   const { HISTORY_CACHE_SCHEMA } = contract;
   const MINIMUM_HISTORY_ROWS = contract.RECENT_SIGNAL_WINDOW;
+  const cacheLifecycle = globalScope.ThinkStockCacheLifecyclePolicy;
+  if (!cacheLifecycle?.withCacheMetadata) throw new Error("cache lifecycle policy is required");
 
   function normalizeResearchHistoryRows(rows) {
     const byDate = new Map();
@@ -27,13 +29,39 @@
     if (!value || value.schema !== HISTORY_CACHE_SCHEMA || value.ticker !== key) return null;
     const rows = normalizeResearchHistoryRows(value.rows);
     if (rows.length < MINIMUM_HISTORY_ROWS) return null;
-    return {
+    const latestDate = rows.at(-1)?.date || "";
+    const fingerprint = cacheLifecycle.contentFingerprint(rows);
+    const issue = cacheLifecycle.cacheMetadataIssue(value, {
+      source: "stock-research-history",
+      revision: String(HISTORY_CACHE_SCHEMA),
+      contentFingerprint: fingerprint,
+      allowMissingTimestamp: true,
+    });
+    if (issue) return null;
+    return cacheLifecycle.withCacheMetadata({
       ...value,
       schema: HISTORY_CACHE_SCHEMA,
       ticker: key,
-      latestDate: rows.at(-1)?.date || "",
+      latestDate,
       rows,
-    };
+    }, {
+      source: "stock-research-history",
+      asOf: latestDate,
+      revision: String(HISTORY_CACHE_SCHEMA),
+      contentFingerprint: fingerprint,
+    });
+  }
+
+  function withHistoryMetadata(record, now = Date.now()) {
+    return cacheLifecycle.withCacheMetadata(record, {
+      source: "stock-research-history",
+      asOf: record?.latestDate,
+      revision: String(HISTORY_CACHE_SCHEMA),
+      contentFingerprint: cacheLifecycle.contentFingerprint(record?.rows || []),
+      now,
+      savedAt: now,
+      touch: true,
+    });
   }
 
   function mergeResearchHistoryPayload(cachedValue, payload, ticker) {
@@ -45,7 +73,7 @@
       ? normalizeResearchHistoryRows([...cachedRecord.rows, ...incoming])
       : incoming;
     if (rows.length < MINIMUM_HISTORY_ROWS) return null;
-    return {
+    return withHistoryMetadata({
       schema: HISTORY_CACHE_SCHEMA,
       ticker: key,
       asOfDate: String(payload?.asOfDate || rows.at(-1)?.date || "").slice(0, 10),
@@ -54,7 +82,7 @@
       savedAt: Date.now(),
       lastAccessed: Date.now(),
       rows,
-    };
+    });
   }
 
   function mergeUniversePointIntoHistoryCache(cachedValue, item, options = {}) {
@@ -75,14 +103,14 @@
       const rows = [...record.rows.slice(0, -1), { date, close, volume: normalizedVolume }];
       return {
         changed: true,
-        record: {
+        record: withHistoryMetadata({
           ...record,
           asOfDate: date,
           latestDate: date,
           savedAt: Date.now(),
           lastAccessed: Date.now(),
           rows,
-        },
+        }),
       };
     }
 
@@ -97,14 +125,14 @@
     }
     return {
       changed: true,
-      record: {
+      record: withHistoryMetadata({
         ...record,
         asOfDate: date,
         latestDate: date,
         savedAt: Date.now(),
         lastAccessed: Date.now(),
         rows: [...record.rows, { date, close, volume: normalizedVolume }],
-      },
+      }),
     };
   }
 

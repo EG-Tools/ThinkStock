@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   analysisEvidenceFingerprint,
   analysisFeatureManifest,
+  historicalFinancialSnapshotsFromRecord,
   koreanDateFromTimestamp,
   mergePointInTimeAnalysisSnapshots,
   selectAnalysisEvidenceAsOf,
@@ -112,4 +113,36 @@ test("selects only evidence captured and published by the forecast cutoff", () =
   assert.equal(earlyJune.financials.length, 1);
   assert.equal(earlyJune.news[0].title, "second");
   assert.equal(selectAnalysisEvidenceAsOf(record, "2026-04-30"), null);
+});
+
+test("reconstructs actual financial evidence only after its report date", () => {
+  const snapshots = historicalFinancialSnapshotsFromRecord({
+    financials: [
+      { period: "2025-12", frequency: "quarter", estimate: false, reportDate: "2026-02-11", operatingProfit: 10 },
+      { period: "2026-03", frequency: "quarter", estimate: false, reportDate: "2026-04-30", operatingProfit: 20 },
+      { period: "2026-06", frequency: "quarter", estimate: true, reportDate: "2026-07-30", operatingProfit: 30 },
+    ],
+  });
+
+  assert.deepEqual(snapshots.map((item) => item.asOf), ["2026-02-12", "2026-05-01"]);
+  assert.equal(snapshots[0].financials.length, 1);
+  assert.equal(snapshots[1].financials.length, 2);
+  assert.equal(selectAnalysisEvidenceAsOf({ snapshots }, "2026-02-11"), null);
+  assert.equal(selectAnalysisEvidenceAsOf({ snapshots }, "2026-02-12").financials.length, 1);
+});
+
+test("replaces an amended period only from the amendment report date", () => {
+  const snapshots = historicalFinancialSnapshotsFromRecord({
+    financials: [
+      { period: "2025-12", frequency: "annual", estimate: false, reportDate: "2026-02-11", revenue: 100 },
+      { period: "2025-12", frequency: "annual", estimate: false, reportDate: "2026-03-05", revenue: 110 },
+      { period: "2026-03", frequency: "quarter", estimate: false, reportDate: "2026-05-15", revenue: 30 },
+    ],
+  });
+
+  assert.deepEqual(snapshots.map((item) => item.asOf), ["2026-02-12", "2026-03-06", "2026-05-16"]);
+  assert.equal(snapshots[0].financials[0].revenue, 100);
+  assert.equal(snapshots[1].financials.length, 1);
+  assert.equal(snapshots[1].financials[0].revenue, 110);
+  assert.equal(snapshots[2].financials.length, 2);
 });

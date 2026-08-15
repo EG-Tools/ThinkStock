@@ -43,6 +43,7 @@
     const document = scope.document;
     const apiPeriods = apiPeriodsModule.DEFAULT_PERIODS;
     const apiPeriodReminderStore = apiPeriodsModule.createReminderStore(scope, { periods: apiPeriods });
+    let openPanel = null;
 
     function renderApiPeriodRows(container, periods) {
       if (!container) return;
@@ -127,6 +128,7 @@
       const releaseNotesBtn = document.getElementById("releaseNotesBtn");
       const releaseNotesPanel = document.getElementById("releaseNotesPanel");
       const releaseNotesVersion = document.getElementById("releaseNotesVersion");
+      const releaseNotesDate = document.getElementById("releaseNotesDate");
       const releaseNotesList = document.getElementById("releaseNotesList");
       const releaseNotesPosition = document.getElementById("releaseNotesPosition");
       const releaseNotesNewerBtn = document.getElementById("releaseNotesNewerBtn");
@@ -330,6 +332,10 @@
         const release = state?.release;
         if (!releaseNotesPanel || !releaseNotesVersion || !releaseNotesList || !release) return;
         releaseNotesVersion.textContent = `v${release.version}`;
+        if (releaseNotesDate) {
+          releaseNotesDate.textContent = String(release.date || "");
+          releaseNotesDate.hidden = !release.date;
+        }
         const items = (Array.isArray(release.items) ? release.items : []).slice(0, 10);
         const twoColumns = items.length > 5;
         const splitIndex = twoColumns ? 5 : items.length;
@@ -368,6 +374,7 @@
         modal.hidden = false;
         syncAppCacheUi().then(captureDiagnosticsLog);
       };
+      openPanel = open;
     
       if (openBtn.dataset.bound === "1") {
         syncApiOptionsButton();
@@ -602,7 +609,12 @@
       syncStockResearchUniverseUi();
     }
 
-    return Object.freeze({ scheduleApiPeriodReminder, setup, showApiPeriodReminderIfDue });
+    return Object.freeze({
+      open: () => openPanel?.(),
+      scheduleApiPeriodReminder,
+      setup,
+      showApiPeriodReminderIfDue,
+    });
   }
 
   globalScope.ThinkStockSettingsPanelRuntime = Object.freeze({

@@ -1397,6 +1397,23 @@ test("merges newly collected financial periods without discarding history", () =
   assert.equal(result[1].period, "2025-12");
 });
 
+test("merges complementary summary and earnings fields for the same quarter", () => {
+  const summary = {
+    ticker: "218410.KQ", period: "2026-06", frequency: "quarter",
+    revenue: 410, operatingProfit: 61, netIncome: 48, eps: 480,
+  };
+  const earnings = {
+    ticker: "218410.KQ", period: "2026-06", frequency: "quarter",
+    operatingProfit: 63, operatingProfitConsensus: 55,
+    operatingProfitSurprise: 14.5, reportDate: "2026-08-12",
+  };
+  const [result] = mergeFinancialRecords([summary], [earnings]);
+  assert.equal(result.revenue, 410);
+  assert.equal(result.operatingProfit, 63);
+  assert.equal(result.operatingProfitConsensus, 55);
+  assert.equal(result.reportDate, "2026-08-12");
+});
+
 test("returns a fresh consensus KV cache without requiring the DART key", async () => {
   const consensus = { ticker: "218410.KQ", targetPrice: 132600, institutions: 5 };
   const cache = memoryKv({
@@ -1445,7 +1462,7 @@ test("returns today's accumulated analysis cache without an upstream request", a
   assert.deepEqual(payload.financials, financials);
   assert.equal(payload.snapshots.length, 1);
   const migrated = JSON.parse(cache.values.get("analysis:218410.KQ"));
-  assert.equal(migrated.schema, 4);
+  assert.equal(migrated.schema, 5);
   assert.equal(migrated.snapshots.length, 1);
   assert.deepEqual(migrated.snapshots[0].financials, financials);
 });

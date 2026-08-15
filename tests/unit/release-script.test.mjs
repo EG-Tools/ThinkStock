@@ -31,7 +31,8 @@ test("release reuses local full WebKit verification while direct runs stay fail-
   assert.match(source, /Invoke-Checked npm @\("run", "verify:release"\)/);
   assert.match(source, /verification_scope=\$GitHubVerificationScope/);
   assert.match(workflow, /verification_scope:[\s\S]*default: full/);
-  assert.match(workflow, /run_webkit_scope\.mjs \$\{\{ matrix\.target \}\} \$\{\{ inputs\.verification_scope \}\}/);
+  assert.match(workflow, /run_webkit_scope\.mjs release \$\{\{ inputs\.verification_scope \}\}/);
+  assert.doesNotMatch(workflow, /matrix\.target/);
 });
 
 test("release script can publish an already prepared version without incrementing it", async () => {
@@ -67,4 +68,13 @@ test("deployment shares the diagnostic bundle with every WebKit validation job",
   const workflow = await readFile(new URL("../../.github/workflows/deploy-pages.yml", import.meta.url), "utf8");
   assert.match(workflow, /name: Upload E2E Diagnostic Bundle[\s\S]*name: thinkstock-e2e-bundle[\s\S]*path: \.thinkstock-cache\/e2e\/app\.bundle\.min\.js/);
   assert.match(workflow, /name: Download E2E Diagnostic Bundle[\s\S]*name: thinkstock-e2e-bundle[\s\S]*path: \.thinkstock-cache\/e2e/);
+});
+
+test("WebKit plan keeps full iPhone coverage without duplicating non-visual desktop cases", async () => {
+  const config = await readFile(new URL("../../playwright.config.mjs", import.meta.url), "utf8");
+  const packageJson = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
+
+  assert.match(config, /name: "webkit",[\s\S]*testMatch: \/thinkstock-\.\*\\\.spec\\\.mjs\//);
+  assert.match(config, /name: "webkit-desktop",[\s\S]*testMatch: \/thinkstock-viewport\\\.spec\\\.mjs\//);
+  assert.match(packageJson.scripts["test:webkit:built"], /--workers=2/);
 });

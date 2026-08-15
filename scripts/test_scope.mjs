@@ -10,7 +10,7 @@ const GENERATED_ARTIFACT_PATTERNS = [
 const WEBKIT_PATTERNS = [
   /^docs\/(app\.js|index\.html|styles\.css)$/,
   /^docs\/assets\/app\.bundle\.min\.js$/,
-  /^docs\/modules\/(ai-|app-ui|cache-migrations|chart-|data-seed|disclosure|insider|main-chart|market-timing|optional-feature|runtime-(?:bootstrap|data|series|source)|startup|stock-research)/,
+  /^docs\/modules\/(ai-|app-ui|broker-|cache-migrations|chart-|data-seed|disclosure|insider|main-chart|market-timing|optional-feature|runtime-(?:bootstrap|data|series|source)|startup|stock-research)/,
   /^scripts\/pages-entry\.mjs$/,
 ];
 
@@ -64,6 +64,7 @@ export const WEBKIT_SMOKE_PATTERN = [
   "AI toggle draws and removes a six-month virtual forecast",
   "stock research popup preserves results while adding multiple candidates",
   "chart, disclosure popover, and lazy history remain interactive",
+  "service worker registers and precaches the app shell",
 ].join("|");
 
 export function normalizeChangedFiles(files) {

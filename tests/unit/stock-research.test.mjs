@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { parseNaverResearchProfile } from "../../shared/research-profile.mjs";
 
+await import("../../shared/runtime-foundation.mjs");
 await import("../../docs/modules/stock-research-contract.js");
 await import("../../docs/modules/stock-research-storage.js");
 await import("../../docs/modules/stock-research-navigation.js");
 await import("../../docs/modules/stock-research-filter.js");
+await import("../../docs/modules/cache-lifecycle-policy.js");
 await import("../../docs/modules/stock-research-history-cache.js");
 await import("../../docs/modules/stock-research-worker-client.js");
 await import("../../docs/modules/stock-research.js");

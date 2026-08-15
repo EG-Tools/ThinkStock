@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+await import("../../shared/runtime-foundation.mjs");
 await import("../../docs/modules/stock-research-contract.js");
 await import("../../docs/modules/stock-research-storage.js");
 await import("../../docs/modules/stock-research-navigation.js");
 await import("../../docs/modules/stock-research-filter.js");
+await import("../../docs/modules/cache-lifecycle-policy.js");
 await import("../../docs/modules/stock-research-history-cache.js");
 await import("../../docs/modules/stock-research-worker-client.js");
 await import("../../docs/modules/stock-research-controller.js");
@@ -287,6 +289,7 @@ test("stock research merges a recent history tail without duplicating dates", ()
   assert.equal(merged.rows.length, 301);
   assert.equal(merged.rows.at(-2).close, 99999);
   assert.equal(merged.rows.at(-1).date, "2025-10-28");
+  assert.equal(merged.cacheMeta.source, "stock-research-history");
 });
 
 test("stock research requests only the tail when a valid local history exists", () => {

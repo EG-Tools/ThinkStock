@@ -1,5 +1,5 @@
 import { access, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,12 +16,14 @@ const REPORT_PATH = path.join(CACHE_DIR, "walkforward-report.json");
 const BASELINE_PATH = path.join(CACHE_DIR, "walkforward-baseline.json");
 const COMPARISON_PATH = path.join(CACHE_DIR, "walkforward-comparison.json");
 const SUMMARY_PATH = path.join(CACHE_DIR, "walkforward-validation-summary.json");
+const PRICE_PATH = path.join(CACHE_DIR, "walkforward-prices.json");
+const CONTEXT_PATH = path.join(CACHE_DIR, "walkforward-context.json");
 const accept = process.argv.includes("--accept");
 const summaryOnly = process.argv.includes("--summary-only");
 
-function run(script) {
+function run(script, args = []) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [path.join(ROOT, "scripts", script)], {
+    const child = spawn(process.execPath, [path.join(ROOT, "scripts", script), ...args], {
       cwd: ROOT,
       stdio: "inherit",
     });
@@ -33,9 +35,67 @@ function run(script) {
   });
 }
 
+function sourceCountsMatch(report, context) {
+  const coverage = report?.sourceCoverage || {};
+  return Number(coverage.macroRows) === (context?.macroRows?.length || 0)
+    && Number(coverage.creditRows) === (context?.creditRows?.length || 0)
+    && Number(coverage.auxiliaryRows) === (context?.auxiliaryRows?.length || 0)
+    && Number(coverage.crisisRows) === (context?.crisisRows?.length || 0);
+}
+
+async function canReuseHeadBaseline() {
+  try {
+    const [baseline, prices, context] = await Promise.all([
+      readFile(BASELINE_PATH, "utf8").then(JSON.parse),
+      readFile(PRICE_PATH, "utf8").then(JSON.parse),
+      readFile(CONTEXT_PATH, "utf8").then(JSON.parse),
+    ]);
+    const headForecast = execFileSync("git", ["show", "HEAD:docs/modules/ai-forecast.js"], {
+      cwd: ROOT,
+      encoding: "utf8",
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    const headVersion = headForecast.match(/const FORECAST_PATH_VERSION = "([^"]+)";/)?.[1] || "";
+    const baselineVersion = String(baseline.enginePathVersion || "");
+    const sameEngine = Boolean(headVersion && (
+      baselineVersion === headVersion || baselineVersion.endsWith(`|${headVersion}`)
+    ));
+    const sameSelection = JSON.stringify(baseline.selection || {}) === JSON.stringify(prices.selection || {});
+    const exactSnapshot = baseline.dataSnapshot
+      ? baseline.dataSnapshot.priceFormat === prices.format
+        && baseline.dataSnapshot.priceGeneratedAt === (prices.generatedAt || "")
+        && baseline.dataSnapshot.contextFormat === context.format
+        && baseline.dataSnapshot.contextGeneratedAt === (context.generatedAt || "")
+      : sourceCountsMatch(baseline, context)
+        && Date.parse(baseline.generatedAt || "") >= Date.parse(prices.generatedAt || "")
+        && Date.parse(baseline.generatedAt || "") >= Date.parse(context.generatedAt || "");
+    return sameEngine
+      && sameSelection
+      && exactSnapshot
+      && Number(baseline.maxWindowsPerStock) === 12
+      && Number(baseline.maxWindowsPerIndex) === 36;
+  } catch (_) {
+    return false;
+  }
+}
+
 await mkdir(CACHE_DIR, { recursive: true });
 if (!summaryOnly) {
-  await run("backtest_ai_forecast_walkforward.mjs");
+  // Compare the working model with the deployed commit on the exact same data and sample.
+  const baselineReusable = await canReuseHeadBaseline();
+  const baselineRun = baselineReusable
+    ? Promise.resolve()
+    : run("backtest_ai_forecast_walkforward.mjs", [
+      "--output",
+      path.basename(BASELINE_PATH),
+      "--engine-ref",
+      "HEAD",
+    ]);
+  if (baselineReusable) console.log("Reusing the matching deployed-model baseline.");
+  await Promise.all([
+    baselineRun,
+    run("backtest_ai_forecast_walkforward.mjs"),
+  ]);
   await run("analyze_ai_walkforward_report.mjs");
 }
 

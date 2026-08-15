@@ -4,11 +4,14 @@ import { WEBKIT_SMOKE_PATTERN } from "./test_scope.mjs";
 const mode = String(process.argv[2] || "smoke");
 const requestedScope = String(process.argv[3] || "smoke");
 const playwrightCli = "node_modules/@playwright/test/cli.js";
-const ciTarget = ["mobile", "desktop", "sw"].includes(mode);
+const ciTarget = ["mobile", "desktop", "sw", "release"].includes(mode);
 const workers = process.env.CI && ciTarget && mode !== "sw" && requestedScope === "full" ? "2" : "1";
 const args = [playwrightCli, "test", `--workers=${workers}`];
 
-if (mode === "service-worker" || mode === "sw") {
+if (mode === "release") {
+  args.push("--project=webkit", "--project=webkit-desktop", "--project=webkit-sw");
+  if (requestedScope === "smoke") args.push("--grep", WEBKIT_SMOKE_PATTERN);
+} else if (mode === "service-worker" || mode === "sw") {
   args.push("--project=webkit-sw");
 } else if (mode === "desktop") {
   args.push("--project=webkit-desktop");

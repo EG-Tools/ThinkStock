@@ -20,6 +20,8 @@
     function begin(invalidation = {}) {
       return Object.freeze({
         startedAt: now(),
+        transactionId: Number(invalidation.transactionId) || 0,
+        requestCount: Math.max(1, Number(invalidation.requestCount) || 1),
         updateClasses: [...(invalidation.updateClasses || [])],
       });
     }
@@ -44,6 +46,8 @@
       if (fallbackPaths.length) fallbackRenderCount += 1;
       if (updateScope) updateScopes[updateScope] = (Number(updateScopes[updateScope]) || 0) + 1;
       recent.push(Object.freeze({
+        transactionId: Number(token?.transactionId) || 0,
+        requestCount: Math.max(1, Number(token?.requestCount) || 1),
         mode,
         durationMs: Math.round(duration * 10) / 10,
         updateClasses: Object.freeze([...updateClasses]),

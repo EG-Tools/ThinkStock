@@ -7,7 +7,7 @@
   const MIN_HISTORY = TRADING_DAYS * 3;
   const FORECAST_HORIZONS = Object.freeze([20, 63, 126]);
   const FORECAST_AUDIT_HORIZONS = Object.freeze([5, 10, 20, 63, 126]);
-  const FORECAST_PATH_VERSION = "path-v19";
+  const FORECAST_PATH_VERSION = "path-v20";
   const STOCK_HORIZON_CALIBRATION = Object.freeze({
     20: Object.freeze({ localScale: 0.33, regimeScale: 1, rangeScale: 1 }),
     63: Object.freeze({ localScale: 0.125, regimeScale: 0, rangeScale: 0.3 }),
@@ -462,7 +462,7 @@
   function buildInternetNewsSignal(rows, lastDate) {
     const positivePattern = /수주|공급계약|계약\s*체결|흑자\s*전환|실적\s*(개선|호조)|사상\s*(최대|최고)|승인|허가|증설|자사주|배당\s*(확대|증가)|목표가\s*상향|신제품/;
     const negativePattern = /적자|실적\s*(부진|악화)|급락|목표가\s*하향|리콜|소송|제재|압수수색|횡령|배임|유상증자|감자|상장폐지|거래정지|파산|부도|해킹|화재|생산\s*중단/;
-    const terminalPattern = /기업\s*파산|파산|부도|상장폐지|거래정지|회생절차|기업회생|감사의견.{0,8}(거절|한정)|의견거절|완전자본잠식/;
+    const terminalPattern = /기업\s*파산|파산|부도|상장폐지|상장적격성|관리종목|회생절차|기업회생|감사의견.{0,8}(거절|한정)|의견거절|완전자본잠식/;
     const dilutionPattern = /유상증자|감자/;
     const reliefPattern = /철회|취소|부인|해소|기각|종료|무혐의|해제/;
     const ambiguousEventPattern = /기업분할|회사분할|인적분할|물적분할|분할합병|합병|사업양수도|지주회사\s*전환/;
@@ -582,11 +582,41 @@
     const fundamentals = fundamentalParts.length ? clamp(mean(fundamentalParts), -1, 1) : 0;
     const fundamentalsConfidence = clamp(fundamentalParts.length / 3, 0, 1);
     const internetNews = buildInternetNewsSignal(options?.internetNews, lastDate);
+    const brokerSummary = options?.brokerResearch
+      && String(options.brokerResearch.latestAvailableDate || options.brokerResearch.latestDate || "").slice(0, 10)
+        <= String(lastDate || "9999-99-99")
+      ? options.brokerResearch
+      : null;
+    const brokerReportCount = Math.max(0, Number(brokerSummary?.reportCount) || 0);
+    const brokerCoverage = brokerReportCount
+      ? clamp(brokerReportCount / 3, 0.35, 1)
+      : 0;
+    const brokerPrimaryCoverage = clamp(Number(brokerSummary?.primaryCoverage) || 0, 0, 1);
+    const brokerTargetRevisionAvailable = finite(brokerSummary?.targetRevisionChange) !== null;
+    const brokerTargetCut = finite(brokerSummary?.targetRevisionChange) < -0.015;
+    const brokerEvidenceScale = clamp(
+      (brokerPrimaryCoverage * 0.75)
+        + (brokerTargetRevisionAvailable ? (brokerTargetCut ? 0.45 : 0.25) : 0),
+      0,
+      1,
+    );
+    const brokerSignal = brokerSummary
+      ? clamp(Number(brokerSummary.signal) || 0, -1, 1)
+      : 0;
+    const brokerConfidence = brokerSummary
+      ? clamp((Number(brokerSummary.confidence) || 0) * brokerCoverage * brokerEvidenceScale, 0, 0.8)
+      : 0;
+    const brokerAdjustment = brokerSummary
+      ? clamp((Number(brokerSummary.adjustment) || 0) * brokerCoverage * brokerEvidenceScale, -0.024, 0.018)
+      : 0;
     const consensusWeighted = consensusSignal * consensusConfidence;
     const fundamentalsWeighted = fundamentals * fundamentalsConfidence;
     const structuralConfidence = consensusConfidence + fundamentalsConfidence;
-    const weighted = consensusWeighted + fundamentalsWeighted + (internetNews.signal * internetNews.confidence);
-    const confidenceTotal = structuralConfidence + internetNews.confidence;
+    const weighted = consensusWeighted
+      + fundamentalsWeighted
+      + (internetNews.signal * internetNews.confidence)
+      + (brokerSignal * brokerConfidence);
+    const confidenceTotal = structuralConfidence + internetNews.confidence + brokerConfidence;
     const consensusAdjustment = structuralConfidence ? (consensusWeighted / structuralConfidence) * 0.04 : 0;
     const fundamentalsAdjustment = structuralConfidence ? (fundamentalsWeighted / structuralConfidence) * 0.04 : 0;
     return {
@@ -609,11 +639,20 @@
       internetNewsCriticalSeverity: internetNews.criticalSeverity,
       internetNewsCriticalRows: internetNews.criticalCount,
       internetNewsAmbiguousRows: internetNews.ambiguousCount,
+      brokerResearch: brokerSignal,
+      brokerResearchConfidence: brokerConfidence,
+      brokerResearchAdjustment: brokerAdjustment,
+      brokerResearchReports: brokerReportCount,
+      brokerResearchPrimaryCoverage: brokerPrimaryCoverage,
+      brokerResearchTargetRevision: finite(brokerSummary?.targetRevisionChange) !== null
+        ? finite(brokerSummary.targetRevisionChange)
+        : null,
+      brokerResearchConflict: brokerSummary?.primaryConflict === true,
       combined: confidenceTotal ? clamp(weighted / confidenceTotal, -1, 1) : 0,
       adjustment: clamp(
-        consensusAdjustment + fundamentalsAdjustment + internetNews.adjustment,
-        -0.053,
-        0.053,
+        consensusAdjustment + fundamentalsAdjustment + internetNews.adjustment + brokerAdjustment,
+        -0.065,
+        0.065,
       ),
     };
   }
@@ -982,7 +1021,9 @@
     let score = 0;
     let terminalRisk = false;
     let recentDilutionRisk = false;
-    const criticalPattern = /상장폐지|상장적격성|관리종목|거래정지|감사의견.{0,8}(거절|한정)|의견거절|자본잠식|회생절차|파산|영업정지|횡령|배임/;
+    let recentGovernanceRisk = false;
+    const terminalPattern = /상장폐지|상장적격성|관리종목|감사의견.{0,8}(거절|한정)|의견거절|자본잠식|회생절차|파산|영업정지/;
+    const governancePattern = /횡령|배임/;
     const financingPattern = /유상증자|감자|전환사채|신주인수권부사채|교환사채|제3자배정/;
     const warningPattern = /최대주주변경|불성실공시|소송|채무보증|담보제공|대규모손실/;
     const positivePattern = /단일판매.{0,6}공급계약|자기주식취득결정|현금.{0,5}배당/;
@@ -1000,10 +1041,14 @@
       if (ageDays > 1095) return;
       const decay = Math.exp(-ageDays / 365);
       const relieved = reliefPattern.test(title);
-      if (!relieved && criticalPattern.test(title)) {
+      if (!relieved && terminalPattern.test(title)) {
         score += 0.8 * decay;
-        terminalRisk = terminalRisk || ageDays <= 730;
+        terminalRisk = terminalRisk || ageDays <= 365;
         reasons.push("상장·감사 위험 공시");
+      } else if (!relieved && governancePattern.test(title)) {
+        score += 0.45 * decay;
+        recentGovernanceRisk = recentGovernanceRisk || ageDays <= 90;
+        reasons.push("횡령·배임 위험 공시");
       } else if (!relieved && financingPattern.test(title)) {
         score += 0.24 * decay;
         recentDilutionRisk = recentDilutionRisk || (ageDays <= 14 && /유상증자|감자/.test(title));
@@ -1053,6 +1098,7 @@
       score: normalizedScore,
       terminalRisk,
       recentDilutionRisk,
+      recentGovernanceRisk,
       adjustment: -0.14 * normalizedScore,
       uncertainty: 0.07 * normalizedScore,
       reasons: [...new Set(reasons)].slice(0, 3),
@@ -1568,6 +1614,16 @@
       internetNewsFingerprint(options, decisionDate),
       options?.consensus || null,
       (Array.isArray(options?.financials) ? options.financials : []).slice(-6),
+      options?.brokerResearch ? {
+        latestDate: options.brokerResearch.latestDate,
+        latestAvailableDate: options.brokerResearch.latestAvailableDate,
+        usedReportIds: options.brokerResearch.usedReportIds,
+        signal: options.brokerResearch.signal,
+        confidence: options.brokerResearch.confidence,
+        primaryConflict: options.brokerResearch.primaryConflict,
+        targetRevisionChange: options.brokerResearch.targetRevisionChange,
+        metrics: options.brokerResearch.metrics,
+      } : null,
       finite(options?.macdSignal),
       options?.marketModel?.generated_at || options?.marketModel?.generatedAt || null,
     ]);
@@ -1611,10 +1667,14 @@
     const dates = points.map((point) => point.date);
     const prices = points.map((point) => point.price);
     const decisionDate = forecastDecisionDate(options, dates.at(-1));
-    const structuralProfile = contextProfileEngine?.buildStructuralStockProfile({
-      ...options,
-      asOfDate: dates.at(-1),
-    }) || null;
+    const suppliedStructuralProfile = options.structuralProfile;
+    const structuralProfile = suppliedStructuralProfile?.version === contextProfileEngine?.PROFILE_VERSION
+      && String(suppliedStructuralProfile.asOfDate || "") <= dates.at(-1)
+      ? suppliedStructuralProfile
+      : (contextProfileEngine?.buildStructuralStockProfile({
+        ...options,
+        asOfDate: dates.at(-1),
+      }) || null);
     const returns = logarithmicReturns(prices);
     const context = {
       dates,
@@ -1651,6 +1711,9 @@
       structuralProfile,
     }) || null;
     const contextProfileFeatures = contextProfileEngine?.contextProfileAuditFeatures(contextProfile) || {};
+    const trendUpArchetype = Number(structuralProfile?.scores?.trendUp) >= 0.35;
+    const highVolatilityArchetype = Number(structuralProfile?.scores?.highVolatility) >= 0.65;
+    const lateCycleRegime = contextProfile?.market?.dominant === "lateCycle";
     const koreanVolatility = buildKoreanVolatilityProfile(
       options,
       options.series,
@@ -1700,8 +1763,19 @@
       const volatilityBound = finalFeature.volatility * Math.sqrt(model.horizon) * 2.5;
       const bounded = clamp(raw, Math.max(empiricalLow, -volatilityBound), Math.min(empiricalHigh, volatilityBound));
       const horizonWeight = model.horizon / 126;
+      const hardCorporateRisk = corporateRisk.terminalRisk || corporateRisk.recentDilutionRisk;
+      const longHorizonSoftRisk = model.horizon === 126
+        && (highVolatilityArchetype || lateCycleRegime);
+      const mediumHorizonTrendRisk = model.horizon === 63 && trendUpArchetype;
+      const directionalCorporateRiskScale = hardCorporateRisk
+        || corporateRisk.recentGovernanceRisk
+        || model.horizon <= 20
+        || mediumHorizonTrendRisk
+        || longHorizonSoftRisk
+        ? 1
+        : 0;
       const riskGated = bounded > 0
-        ? bounded * (1 - (corporateRisk.score * 0.6))
+        ? bounded * (1 - (corporateRisk.score * 0.6 * directionalCorporateRiskScale))
         : bounded;
       const regimeWeight = indexForecast ? 1.6 : 1;
       const components = {
@@ -1712,9 +1786,10 @@
         consensus: contextSignal.consensusAdjustment * horizonWeight,
         fundamentals: contextSignal.fundamentalsAdjustment * horizonWeight,
         internetNews: contextSignal.internetNewsAdjustment * horizonWeight,
+        brokerResearch: contextSignal.brokerResearchAdjustment * horizonWeight,
         marketRegime: marketRegime.adjustment * regimeWeight * horizonWeight * calibration.regimeScale,
         koreanVolatility: koreanVolatility.indexAdjustment126 * horizonWeight,
-        corporateRisk: corporateRisk.adjustment * horizonWeight,
+        corporateRisk: corporateRisk.adjustment * horizonWeight * directionalCorporateRiskScale,
         rotation: rotation.adjustment * horizonWeight,
       };
       const beforeStructural = Object.values(components).reduce((sum, value) => sum + value, 0);
@@ -1723,7 +1798,6 @@
         + (structuralTarget * structuralWeight);
       components.rangeMeanReversion = (rawAfterStructural - beforeStructural) * calibration.rangeScale;
       const afterStructural = beforeStructural + components.rangeMeanReversion;
-      const hardCorporateRisk = corporateRisk.terminalRisk || corporateRisk.recentDilutionRisk;
       const corporateRiskFloor = corporateRisk.terminalRisk ? -0.1 : -0.06;
       const afterTerminalRisk = hardCorporateRisk
         ? Math.min(afterStructural, corporateRiskFloor * horizonWeight)
@@ -1828,6 +1902,9 @@
       0.1,
       0.8,
     );
+    const scenarioCorporateRisk = corporateRisk.terminalRisk || corporateRisk.recentDilutionRisk
+      ? corporateRisk
+      : { ...corporateRisk, score: 0, adjustment: 0 };
     const scenarios = buildForecastScenarios({
       basePrice: prices.at(-1),
       cumulative,
@@ -1837,7 +1914,7 @@
       confidence,
       contextSignal,
       marketRegime,
-      corporateRisk,
+      corporateRisk: scenarioCorporateRisk,
       priceRegime,
       rotation,
       recentMomentum: finalFeature.momentum?.[20],
@@ -1862,6 +1939,9 @@
       internetNews: latestSourceDate(options?.internetNews, decisionDate),
       consensus: latestSourceDate(options?.consensus ? [options.consensus] : [], decisionDate),
       financials: latestSourceDate(options?.financials, decisionDate),
+      brokerResearch: String(
+        options?.brokerResearch?.latestAvailableDate || options?.brokerResearch?.latestDate || "",
+      ).slice(0, 10),
     });
     const featureFamilies = Object.freeze({
       price: Object.freeze({ count: points.length, latestDate: sourceDates.price }),
@@ -1897,6 +1977,10 @@
       internetNews: Object.freeze({
         count: sourceCountAsOf(options?.internetNews, decisionDate),
         latestDate: sourceDates.internetNews,
+      }),
+      brokerResearch: Object.freeze({
+        count: Math.max(0, Number(options?.brokerResearch?.reportCount) || 0),
+        latestDate: sourceDates.brokerResearch,
       }),
     });
     const audit = {
@@ -1959,13 +2043,23 @@
         internet_news_critical_severity: contextSignal.internetNewsCriticalSeverity,
         internet_news_critical_rows: contextSignal.internetNewsCriticalRows,
         internet_news_ambiguous_rows: contextSignal.internetNewsAmbiguousRows,
+        broker_research_signal: contextSignal.brokerResearch,
+        broker_research_confidence: contextSignal.brokerResearchConfidence,
+        broker_research_adjustment: contextSignal.brokerResearchAdjustment,
+        broker_research_reports: contextSignal.brokerResearchReports,
+        broker_research_primary_coverage: contextSignal.brokerResearchPrimaryCoverage,
+        broker_research_target_revision: contextSignal.brokerResearchTargetRevision,
+        broker_research_conflict: contextSignal.brokerResearchConflict ? 1 : 0,
         corporate_risk_score: corporateRisk.score,
         corporate_risk_adjustment: corporateRisk.adjustment,
         corporate_terminal_risk: corporateRisk.terminalRisk ? 1 : 0,
         corporate_recent_dilution_risk: corporateRisk.recentDilutionRisk ? 1 : 0,
+        corporate_recent_governance_risk: corporateRisk.recentGovernanceRisk ? 1 : 0,
         regime_support: marketRegime.support,
         regime_risk: marketRegime.risk,
         regime_range: marketRegime.range,
+        regime_combined: marketRegime.combined,
+        regime_range_pressure: marketRegime.rangePressure,
         regime_adjustment: marketRegime.adjustment,
         regime_uncertainty: marketRegime.uncertainty,
         ...contextProfileFeatures,

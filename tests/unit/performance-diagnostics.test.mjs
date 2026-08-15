@@ -24,6 +24,7 @@ test("captures bounded version diagnostics with storage state", async () => {
   const performanceApi = {
     summary: () => ({ longTasks: 2, maxLongTask: 120 }),
     getLatestOperations: () => ({ appStartup: { duration: 300 } }),
+    getOperationProfiles: () => [{ label: "appStartup", count: 2, p50: 280, p95: 300, max: 320 }],
     getSlowOperations: () => [{ label: "appStartup", duration: 300 }],
   };
   const diagnostics = diagnosticsModule.createPerformanceDiagnostics(scope, {
@@ -37,6 +38,9 @@ test("captures bounded version diagnostics with storage state", async () => {
   await diagnostics.capture({ appVersion: "0.94", buildVersion: "build-old" });
 
   assert.equal(report.storage.persisted, true);
+  assert.deepEqual(report.operationProfiles, [
+    { label: "appStartup", count: 2, p50: 280, p95: 300, max: 320 },
+  ]);
   assert.deepEqual(diagnostics.readHistory().map((item) => item.appVersion), ["0.94", "0.95", "0.96"]);
   assert.match(diagnostics.reportLines(report).join("\n"), /부팅 300ms/);
   assert.match(diagnostics.reportLines(report).join("\n"), /10MB \/ 100MB/);
@@ -147,6 +151,13 @@ test("keeps separate sessions and compares version percentiles", async () => {
       performanceApi: {
         summary: () => ({ p95PointerMove: startupDuration / 10 }),
         getLatestOperations: () => ({ appStartup: { duration: startupDuration } }),
+        getOperationProfiles: () => [{
+          label: "viewportRangeSync",
+          count: 3,
+          p50: startupDuration / 3,
+          p95: startupDuration / 2,
+          max: startupDuration / 2,
+        }],
         getSlowOperations: () => [],
       },
     })
@@ -160,6 +171,9 @@ test("keeps separate sessions and compares version percentiles", async () => {
   const comparison = currentA.comparisonFor(report);
   assert.equal(comparison.current.sessions, 2);
   assert.equal(comparison.current.startupP95, 300);
+  assert.equal(comparison.current.topOperations[0].label, "viewportRangeSync");
+  assert.equal(comparison.current.topOperations[0].sessions, 2);
+  assert.equal(comparison.current.topOperations[0].samples, 6);
   assert.equal(comparison.previous.appVersion, "0.96");
   assert.match(currentA.reportLines(report, comparison).join("\n"), /이전 0.96/);
 });

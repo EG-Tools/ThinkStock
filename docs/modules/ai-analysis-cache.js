@@ -1,16 +1,14 @@
 (function initThinkStockAiAnalysisCache(globalScope) {
   "use strict";
 
-  const SCHEMA_VERSION = 3;
+  const SCHEMA_VERSION = 4;
   const TICKER_PATTERN = /^\d{6}\.(KS|KQ)$/;
   const snapshotEngine = globalScope.ThinkStockAiAnalysisSnapshots || null;
   const newsEvidenceEngine = globalScope.ThinkStockAiNewsEvidence || null;
-
-  function finiteOrNull(value) {
-    if (value === null || value === undefined || value === "") return null;
-    const number = Number(value);
-    return Number.isFinite(number) ? number : null;
-  }
+  const cacheLifecycle = globalScope.ThinkStockCacheLifecyclePolicy;
+  const finiteOrNull = globalScope.ThinkStockRuntimeFoundation?.values?.finiteOrNull;
+  if (!cacheLifecycle?.withCacheMetadata) throw new Error("cache lifecycle policy is required");
+  if (typeof finiteOrNull !== "function") throw new Error("runtime value contract is required");
 
   function sanitizeConsensus(value) {
     if (!value || typeof value !== "object") return null;
@@ -61,6 +59,10 @@
       record.eps,
       record.operatingProfitConsensus,
       record.netIncomeConsensus,
+      record.operatingProfitSurprise,
+      record.netIncomeSurprise,
+      record.operatingProfitYoy,
+      record.netIncomeYoy,
     ].some(Number.isFinite)
       ? record
       : null;
@@ -94,7 +96,34 @@
     [...(existing || []), ...(incoming || [])].forEach((value) => {
       const record = sanitizeFinancialRecord(value);
       if (!record) return;
-      merged.set(`${record.frequency}:${record.period}`, record);
+      const key = `${record.frequency}:${record.period}`;
+      const previous = merged.get(key) || {};
+      const preferFinite = (nextValue, previousValue) => (
+        Number.isFinite(nextValue) ? nextValue : (Number.isFinite(previousValue) ? previousValue : null)
+      );
+      merged.set(key, {
+        ...record,
+        estimate: value?.estimate === true
+          ? previous.estimate !== false
+          : (value?.estimate === false ? false : previous.estimate === true),
+        revenue: preferFinite(record.revenue, previous.revenue),
+        operatingProfit: preferFinite(record.operatingProfit, previous.operatingProfit),
+        netIncome: preferFinite(record.netIncome, previous.netIncome),
+        eps: preferFinite(record.eps, previous.eps),
+        operatingProfitConsensus: preferFinite(
+          record.operatingProfitConsensus,
+          previous.operatingProfitConsensus,
+        ),
+        netIncomeConsensus: preferFinite(record.netIncomeConsensus, previous.netIncomeConsensus),
+        operatingProfitSurprise: preferFinite(
+          record.operatingProfitSurprise,
+          previous.operatingProfitSurprise,
+        ),
+        netIncomeSurprise: preferFinite(record.netIncomeSurprise, previous.netIncomeSurprise),
+        operatingProfitYoy: preferFinite(record.operatingProfitYoy, previous.operatingProfitYoy),
+        netIncomeYoy: preferFinite(record.netIncomeYoy, previous.netIncomeYoy),
+        reportDate: record.reportDate || previous.reportDate || "",
+      });
     });
     return [...merged.values()].sort((left, right) => (
       left.period.localeCompare(right.period) || left.frequency.localeCompare(right.frequency)
@@ -168,13 +197,27 @@
     const currentSnapshot = consensus || financials.length || news.length
       ? { savedAt, ticker: target, consensus, financials, news }
       : null;
+    const historicalSnapshots = snapshotEngine?.historicalFinancialSnapshotsFromRecord
+      ? snapshotEngine.historicalFinancialSnapshotsFromRecord({ financials })
+      : [];
     const snapshots = mergeSnapshots(
       prior.snapshots,
-      [...(Array.isArray(source.snapshots) ? source.snapshots : []), ...(currentSnapshot ? [currentSnapshot] : [])],
+      [
+        ...(Array.isArray(source.snapshots) ? source.snapshots : []),
+        ...historicalSnapshots,
+        ...(currentSnapshot ? [currentSnapshot] : []),
+      ],
       target,
     );
     if (!consensus && !financials.length && !news.length && !snapshots.length) return null;
-    return {
+    const asOf = snapshots.at(-1)?.asOf
+      || snapshotEngine?.koreanDateFromTimestamp?.(savedAt)
+      || "";
+    const evidence = { consensus, financials, news };
+    const fingerprint = snapshotEngine?.analysisEvidenceFingerprint
+      ? snapshotEngine.analysisEvidenceFingerprint(evidence)
+      : cacheLifecycle.contentFingerprint(evidence);
+    return cacheLifecycle.withCacheMetadata({
       schema: SCHEMA_VERSION,
       ticker: target,
       savedAt,
@@ -183,7 +226,15 @@
       financials,
       news,
       snapshots,
-    };
+    }, {
+      source: "ai-analysis",
+      asOf,
+      revision: String(SCHEMA_VERSION),
+      contentFingerprint: fingerprint,
+      now,
+      savedAt,
+      touch: true,
+    });
   }
 
   function isAnalysisFresh(record, maxAgeMs, now = Date.now()) {

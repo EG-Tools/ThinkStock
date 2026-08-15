@@ -6,7 +6,8 @@
   }
 
   function byteLength(scope, value) {
-    const text = typeof value === "string" ? value : JSON.stringify(value);
+    let text = "";
+    try { text = typeof value === "string" ? value : JSON.stringify(value); } catch (_) { return 0; }
     if (!text) return 0;
     try {
       const Encoder = scope.TextEncoder;
@@ -43,17 +44,24 @@
 
     async function indexedDbBytes() {
       if (!indexedCacheStore?.readAllRecords) return 0;
-      let total = 0;
-      for (const storeName of indexedStoreNames) {
-        try {
-          const records = await indexedCacheStore.readAllRecords(storeName);
-          total += (Array.isArray(records) ? records : [])
-            .reduce((sum, record) => sum + byteLength(scope, record), 0);
-        } catch (_) {
-          // A blocked or unavailable store must not hide the remaining cache size.
+      let cursor = 0;
+      const laneCount = Math.min(2, indexedStoreNames.length);
+      const laneTotals = await Promise.all(Array.from({ length: laneCount }, async () => {
+        let laneTotal = 0;
+        while (cursor < indexedStoreNames.length) {
+          const storeName = indexedStoreNames[cursor];
+          cursor += 1;
+          try {
+            const records = await indexedCacheStore.readAllRecords(storeName);
+            laneTotal += (Array.isArray(records) ? records : [])
+              .reduce((sum, record) => sum + byteLength(scope, record), 0);
+          } catch (_) {
+            // A blocked or unavailable store must not hide the remaining cache size.
+          }
         }
-      }
-      return total;
+        return laneTotal;
+      }));
+      return laneTotals.reduce((sum, size) => sum + size, 0);
     }
 
     async function appCacheNames() {
@@ -145,38 +153,4 @@
     createAppCacheManager,
     formatBytes,
   });
-}(typeof self !== "undefined" ? self : globalThis));
-
-// Granular cache validation belongs to cache management.
-(function initThinkStockCacheRecordHealth(globalScope) {
-  "use strict";
-
-  const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-
-  function granularRecordIssue(record, options = {}) {
-    if (record == null) return "missing";
-    if (!record || typeof record !== "object" || Array.isArray(record)) return "invalid-record";
-    if (Number(record.schema) !== Number(options.schema)) return "schema-mismatch";
-    const expectedKey = String(options.key || "").trim().toUpperCase();
-    const recordKey = String(record[options.keyField || "ticker"] || "").trim().toUpperCase();
-    if (expectedKey && recordKey !== expectedKey) return "key-mismatch";
-    if (options.requireContent !== false && Math.max(0, Number(options.contentCount) || 0) === 0) {
-      return "empty-content";
-    }
-    const savedAt = Number(record.savedAt || 0);
-    const now = Number.isFinite(options.now) ? Number(options.now) : Date.now();
-    if (!Number.isFinite(savedAt) || savedAt <= 0 || savedAt > now + 24 * 60 * 60 * 1000) {
-      return "invalid-timestamp";
-    }
-    const latestDate = String(options.latestDate || record.latestDate || "").slice(0, 10);
-    if (latestDate && !DATE_PATTERN.test(latestDate)) return "invalid-date";
-    const expectedFingerprint = String(options.contentFingerprint || "");
-    const storedFingerprint = String(record.contentFingerprint || "");
-    if (storedFingerprint && expectedFingerprint && storedFingerprint !== expectedFingerprint) {
-      return "content-mismatch";
-    }
-    return "";
-  }
-
-  globalScope.ThinkStockCacheRecordHealth = Object.freeze({ granularRecordIssue });
 }(typeof self !== "undefined" ? self : globalThis));

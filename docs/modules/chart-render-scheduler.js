@@ -18,26 +18,46 @@
     let pendingPreserveZoom = true;
     let deferredPreserveZoom = true;
     let disposed = false;
+    let activeTransaction = null;
+    let nextTransactionId = 1;
+    let pendingRequestCount = 0;
     const pendingReasons = new Set();
     const pendingClasses = new Set();
     const invalidationCounts = {};
     let coalescedRequests = 0;
+    let supersededTransactions = 0;
 
     function queueInvalidation(requestOptions = {}) {
       const reason = String(requestOptions.reason || "data");
       const updateClass = String(requestOptions.updateClass || "data");
+      pendingRequestCount += 1;
       pendingReasons.add(reason);
       pendingClasses.add(updateClass);
       invalidationCounts[updateClass] = (Number(invalidationCounts[updateClass]) || 0) + 1;
+      if (activeTransaction && updateClass !== "markers" && !activeTransaction.superseded) {
+        activeTransaction.superseded = true;
+        supersededTransactions += 1;
+      }
     }
 
     function takeInvalidation() {
+      const transaction = {
+        id: nextTransactionId,
+        requestCount: pendingRequestCount,
+        superseded: false,
+      };
+      nextTransactionId += 1;
       const value = Object.freeze({
         reasons: [...pendingReasons],
         updateClasses: [...pendingClasses],
+        transactionId: transaction.id,
+        requestCount: transaction.requestCount,
+        shouldAbort: () => transaction.superseded,
+        transaction,
       });
       pendingReasons.clear();
       pendingClasses.clear();
+      pendingRequestCount = 0;
       return value;
     }
 
@@ -64,7 +84,9 @@
         try {
           while (!disposed) {
             renderAfterFlight = false;
+            activeTransaction = nextInvalidation.transaction;
             await render(nextPreserveZoom, nextInvalidation);
+            activeTransaction = null;
             if (!renderAfterFlight) {
               await options.afterBatch?.();
               break;
@@ -74,6 +96,7 @@
             nextInvalidation = takeInvalidation();
           }
         } finally {
+          activeTransaction = null;
           inFlightPromise = null;
           try { options.afterSettled?.(); } catch (_) {}
           if (!disposed && renderAfterFlight) {
@@ -152,6 +175,8 @@
         deferred: Boolean(deferredTimer),
         renderAfterFlight,
         coalescedRequests,
+        supersededTransactions,
+        activeTransactionId: activeTransaction?.id || 0,
         invalidationCounts: { ...invalidationCounts },
         pendingReasons: [...pendingReasons],
         pendingClasses: [...pendingClasses],

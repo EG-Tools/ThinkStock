@@ -14,9 +14,9 @@
       chartSession,
       chartViewportControllerModule,
       clearHoverOnChart,
-      createLatestFrameScheduler,
       createPointerFrameController,
       ensureFullHistoryDataReady,
+      findAiForecastReportAtClientPoint,
       findDisclosureMarkerAtClientPoint,
       findNearestLineDragTarget,
       getChartCursorSyncController,
@@ -29,6 +29,7 @@
       isTouchDevice,
       latestPointerSample,
       nearestMainLineDate,
+      openAiForecastReportHit,
       openDisclosureMarkerHit,
       recordPerfSample,
       resetDisclosureHoverHighlight,
@@ -41,8 +42,7 @@
       zoomChartViewport,
     } = options;
     if (!scope.document || !interactionState
-      || typeof createPointerFrameController !== "function"
-      || typeof createLatestFrameScheduler !== "function") {
+      || typeof createPointerFrameController !== "function") {
       throw new Error("chart pointer runtime dependencies are incomplete");
     }
 
@@ -68,6 +68,7 @@
       const macdEl = document.getElementById("chart-macd");
       const adrEl = document.getElementById("chart-adr");
       let disclosurePointerDown = null;
+      let aiReportPointerDown = null;
       if (!mainEl || !adrEl) return;
       getChartCursorSyncController().prepare([mainEl, macdEl, adrEl]);
       if (cursorMoveBound && chartInteractionsBound) return;
@@ -76,14 +77,10 @@
       let dragState = null;
       let pinchState = null;
       const activeTouchPointers = new Map();
-      const viewportRangeScheduler = createLatestFrameScheduler(window, (request) => (
-        applySyncedXRangeMs(request.startMs, request.endMs, request.meta)
-      ));
 
       const scheduleViewportRange = (range, meta) => {
         if (!range) return false;
-        viewportRangeScheduler.schedule({ startMs: range[0], endMs: range[1], meta });
-        return true;
+        return applySyncedXRangeMs(range[0], range[1], meta);
       };
     
       const moveAt = (sourceEl, clientX, clientY, geometry = null) => {
@@ -121,6 +118,10 @@
             geometry,
           );
           sourceEl.classList.toggle("is-disclosure-hovering", Boolean(disclosureTarget));
+          const aiReportTarget = disclosureTarget || typeof findAiForecastReportAtClientPoint !== "function"
+            ? null
+            : findAiForecastReportAtClientPoint(sourceEl, clientX, clientY, false, geometry);
+          sourceEl.classList.toggle("is-ai-report-hovering", Boolean(aiReportTarget));
           if (!chartSession.hoverShowPopup) {
             if (disclosureTarget) {
               const trace = sourceEl.data?.[disclosureTarget.traceIndex];
@@ -136,7 +137,7 @@
               resetDisclosureHoverHighlight(sourceEl);
             }
           }
-          const lineTarget = disclosureTarget
+          const lineTarget = disclosureTarget || aiReportTarget
             ? null
             : findNearestLineDragTarget(sourceEl, clientX, clientY, false, geometry);
           setHoveredLineTarget(lineTarget);
@@ -176,7 +177,7 @@
         if (event?.pointerType === "touch" && touchSelectionPinned) return;
         pointerMoveController.cancel();
         setHoveredLineTarget(null);
-        mainEl.classList.remove("is-disclosure-hovering");
+        mainEl.classList.remove("is-disclosure-hovering", "is-ai-report-hovering");
         resetDisclosureHoverHighlight(mainEl);
         scheduleSyncedCursor(null);
         clearHoverOnChart(mainEl);
@@ -188,9 +189,12 @@
       window.addEventListener("resize", invalidatePointerGeometry, { passive: true });
       window.addEventListener("scroll", invalidatePointerGeometry, { passive: true });
     
-      const onDisclosurePriorityClick = (event) => {
+      const onPriorityClick = (event) => {
         if (event.target instanceof Element && event.target.closest(".disclosure-popover")) return;
         const hit = findDisclosureMarkerAtClientPoint(mainEl, event.clientX, event.clientY, isTouchDevice());
+        const aiReportHit = hit || typeof findAiForecastReportAtClientPoint !== "function"
+          ? null
+          : findAiForecastReportAtClientPoint(mainEl, event.clientX, event.clientY, isTouchDevice());
         const now = Date.now();
         const directPress = Boolean(
           hit
@@ -199,13 +203,23 @@
           && disclosurePointerDown.traceIndex === hit.traceIndex
           && disclosurePointerDown.pointIndex === hit.pointIndex
         );
+        const directAiReportPress = Boolean(
+          aiReportHit
+          && aiReportPointerDown
+          && now - aiReportPointerDown.at <= 800
+          && aiReportPointerDown.traceIndex === aiReportHit.traceIndex
+        );
         disclosurePointerDown = null;
-        if (!hit) {
+        aiReportPointerDown = null;
+        if (!hit && !aiReportHit) {
           hideDisclosurePopover();
           return;
         }
-        if (now < interactionState.suppressPlotlyClickUntil && !directPress) return;
-        if (!openDisclosureMarkerHit(mainEl, hit, event)) return;
+        if (now < interactionState.suppressPlotlyClickUntil && !directPress && !directAiReportPress) return;
+        const opened = hit
+          ? openDisclosureMarkerHit(mainEl, hit, event)
+          : openAiForecastReportHit?.(mainEl, aiReportHit, event);
+        if (!opened) return;
         event.preventDefault();
         event.stopPropagation();
       };
@@ -258,10 +272,9 @@
         previewSyncedCursor(st.sourceEl, sample.clientX, sample.clientY);
         schedulePointerMove(st.sourceEl, sample.clientX, sample.clientY, false);
         if (cancelled || !st.moved) {
-          viewportRangeScheduler.cancel();
+          getChartRangeSyncController().cancel?.();
           return;
         }
-        viewportRangeScheduler.flush();
         interactionState.suppressPlotlyClickUntil = Date.now() + 700;
         Promise.resolve(getChartRangeSyncController().flush())
           .finally(() => applyChartResetPolicy("viewport", 80));
@@ -288,7 +301,7 @@
           requestedAnchorRatio,
           { tolerance: DAY_MS * 2 },
         );
-        viewportRangeScheduler.cancel();
+        getChartRangeSyncController().cancel?.();
         clearViewportDrag();
         pinchState = {
           sourceEl,
@@ -344,12 +357,13 @@
     
       const finishPinchZoom = () => {
         if (!pinchState) return;
-        viewportRangeScheduler.flush();
         pinchState = null;
         interactionState.viewportDragging = false;
         interactionState.suppressPlotlyClickUntil = Date.now() + 700;
         pointerMoveController?.cancel();
         scheduleSyncedCursor(null);
+        Promise.resolve(getChartRangeSyncController().flush())
+          .finally(() => applyChartResetPolicy("viewport", 80));
       };
     
       const performFullVisibleLifetimeToggle = async () => {
@@ -482,6 +496,7 @@
         if (!event.isPrimary) return;
         const geometry = getChartInteractionGeometry(sourceEl);
         disclosurePointerDown = null;
+        aiReportPointerDown = null;
         if (isTouch) touchStartPoint = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
     
         const disclosureTarget = findDisclosureMarkerAtClientPoint(
@@ -493,6 +508,21 @@
         );
         if (disclosureTarget) {
           disclosurePointerDown = { ...disclosureTarget, at: Date.now() };
+          setHoveredLineTarget(null);
+          return;
+        }
+
+        const aiReportTarget = typeof findAiForecastReportAtClientPoint === "function"
+          ? findAiForecastReportAtClientPoint(
+            sourceEl,
+            event.clientX,
+            event.clientY,
+            isTouch,
+            geometry,
+          )
+          : null;
+        if (aiReportTarget) {
+          aiReportPointerDown = { ...aiReportTarget, at: Date.now() };
           setHoveredLineTarget(null);
           return;
         }
@@ -635,7 +665,7 @@
         chartEl.addEventListener("wheel", onWheelRange, { passive: false });
       });
       document.addEventListener("dblclick", onChartDoubleClick, true);
-      mainEl.addEventListener("click", onDisclosurePriorityClick, true);
+      mainEl.addEventListener("click", onPriorityClick, true);
       cursorMoveBound = true;
       chartInteractionsBound = true;
     }

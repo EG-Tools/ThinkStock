@@ -67,6 +67,36 @@
     return Object.freeze(episodes.map(Object.freeze));
   }
 
+  function timingTemporalCoverage(signals) {
+    const dates = [...new Set((Array.isArray(signals) ? signals : [])
+      .map((signal) => String(signal?.confirmationDate || signal?.date || "").slice(0, 10))
+      .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))]
+      .sort();
+    const yearCounts = {};
+    dates.forEach((date) => { yearCounts[date.slice(0, 4)] = (yearCounts[date.slice(0, 4)] || 0) + 1; });
+    const firstYear = Number(dates[0]?.slice(0, 4)) || 0;
+    const lastYear = Number(dates.at(-1)?.slice(0, 4)) || firstYear;
+    const spanYears = dates.length ? Math.max(1, lastYear - firstYear + 1) : 0;
+    const activeYears = Object.keys(yearCounts).length;
+    const maximumYearShare = dates.length
+      ? Math.max(...Object.values(yearCounts)) / dates.length
+      : null;
+    const eligibleForCheck = dates.length >= 12 && spanYears >= 3;
+    const requiredActiveYears = eligibleForCheck ? Math.min(3, spanYears) : 0;
+    const passed = !eligibleForCheck
+      || (activeYears >= requiredActiveYears && maximumYearShare <= 0.6);
+    return Object.freeze({
+      samples: dates.length,
+      spanYears,
+      activeYears,
+      maximumYearShare: rounded(maximumYearShare),
+      requiredActiveYears,
+      eligibleForCheck,
+      passed,
+      byYear: Object.freeze(yearCounts),
+    });
+  }
+
   function buildPurgedTimingHoldout(signals, dates, options = {}) {
     const sourceDates = Array.isArray(dates) ? dates.map((date) => String(date || "").slice(0, 10)) : [];
     const indexByDate = new Map(sourceDates.map((date, index) => [date, index]));
@@ -253,6 +283,40 @@
     });
   }
 
+  function timingGeneralizationGap(validation, horizon = 20) {
+    const key = String(Number(horizon) || 20);
+    const bySide = Object.freeze(Object.fromEntries(["buy", "sell"].map((side) => {
+      const development = validation?.development?.[side]?.horizons?.[key] || {};
+      const holdout = validation?.holdout?.[side]?.horizons?.[key] || {};
+      const developmentSamples = Math.max(0, Number(development.samples) || 0);
+      const holdoutSamples = Math.max(0, Number(holdout.samples) || 0);
+      const comparable = developmentSamples >= 8 && holdoutSamples >= 5;
+      const hitRateGap = comparable
+        ? Number(development.hitRate) - Number(holdout.hitRate)
+        : null;
+      const returnGap = comparable
+        ? Number(development.meanDirectionalReturn) - Number(holdout.meanDirectionalReturn)
+        : null;
+      const overfit = comparable && (
+        hitRateGap > 0.2
+        || (returnGap > 0.04 && Number(holdout.meanDirectionalReturn) <= 0.005)
+      );
+      return [side, Object.freeze({
+        developmentSamples,
+        holdoutSamples,
+        comparable,
+        hitRateGap: rounded(hitRateGap),
+        directionalReturnGap: rounded(returnGap),
+        overfit,
+      })];
+    })));
+    return Object.freeze({
+      horizon: Number(key),
+      bySide,
+      overfit: Object.values(bySide).some((row) => row.overfit),
+    });
+  }
+
   function evaluateMarketTimingQualityGate(value, options = {}) {
     const quality = value?.quality || value || {};
     const metrics = holdoutQualityMetrics(quality, options);
@@ -266,6 +330,9 @@
     const sideReasons = { buy: [], sell: [] };
     if (quality.pointInTimeSafe === false) reasons.push("point-in-time-unsafe");
     if (quality.overfitRisk === true) reasons.push("development-holdout-gap");
+    if (quality.temporalCoverage?.eligibleForCheck && quality.temporalCoverage?.passed === false) {
+      reasons.push("temporally-concentrated-signals");
+    }
     if (metrics.samples < minimumSamples) reasons.push("insufficient-holdout-samples");
     if (metrics.samples >= minimumSamples && Number(metrics.hitRateLowerBound) < minimumHitLowerBound) {
       reasons.push("weak-hit-rate-lower-bound");
@@ -378,7 +445,7 @@
     });
     const buySplit = buildPurgedTimingHoldout(buySignals, dates, options);
     const sellSplit = buildPurgedTimingHoldout(sellSignals, dates, options);
-    const validation = Object.freeze({
+    const validationBase = {
       holdoutStartDate: buySplit.holdoutStartDate || sellSplit.holdoutStartDate,
       purgeTradingDays: Math.max(buySplit.purgeTradingDays, sellSplit.purgeTradingDays),
       purgedSignals: buySplit.purged + sellSplit.purged,
@@ -394,7 +461,12 @@
         buy: evaluateSignalsByEntryMode(buySplit.holdout, "buy", dates, prices, options.horizons),
         sell: evaluateSignalsByEntryMode(sellSplit.holdout, "sell", dates, prices, options.horizons),
       }),
-    });
+    };
+    const comparableHorizon = String((Array.isArray(options.horizons) && options.horizons.length
+      ? options.horizons
+      : HORIZONS).includes(20) ? 20 : (options.horizons || HORIZONS)[0]);
+    const generalization = timingGeneralizationGap(validationBase, comparableHorizon);
+    const validation = Object.freeze({ ...validationBase, generalization });
     const matureSamples = Object.values(buy.horizons).reduce((sum, row) => sum + row.samples, 0)
       + Object.values(sell.horizons).reduce((sum, row) => sum + row.samples, 0);
     const holdoutMatureSamples = [validation.holdout.buy, validation.holdout.sell]
@@ -403,19 +475,11 @@
     const developmentMatureSamples = [validation.development.buy, validation.development.sell]
       .reduce((total, side) => total + Object.values(side.horizons)
         .reduce((sum, row) => sum + row.samples, 0), 0);
-    const comparableHorizon = String((Array.isArray(options.horizons) && options.horizons.length
-      ? options.horizons
-      : HORIZONS).includes(20) ? 20 : (options.horizons || HORIZONS)[0]);
-    const overfitRisk = ["buy", "sell"].some((side) => {
-      const developmentRow = validation.development[side].horizons[comparableHorizon];
-      const holdoutRow = validation.holdout[side].horizons[comparableHorizon];
-      return Number(holdoutRow?.samples) >= 5
-        && Number(developmentRow?.samples) >= 8
-        && Number(developmentRow?.hitRate) - Number(holdoutRow?.hitRate) > 0.2;
-    });
+    const temporalCoverage = timingTemporalCoverage([...buySignals, ...sellSignals]);
+    const overfitRisk = generalization.overfit || temporalCoverage.passed === false;
     const pointInTimeSafe = buy.invalidLookAhead === 0 && sell.invalidLookAhead === 0;
     const quality = {
-      format: "market-timing-quality-v4",
+      format: "market-timing-quality-v5",
       context: classifyTimingContext(indexKey, prices),
       rawSignalCount: Object.freeze({
         buy: Array.isArray(model?.signals) ? model.signals.length : 0,
@@ -429,6 +493,7 @@
       matureSamples,
       developmentMatureSamples,
       holdoutMatureSamples,
+      temporalCoverage,
       overfitRisk,
       pointInTimeSafe,
     };
@@ -577,6 +642,8 @@
     evaluateSignalsByEntryMode,
     summarizeMarketTimingQuality,
     holdoutQualityMetrics,
+    timingGeneralizationGap,
+    timingTemporalCoverage,
     wilsonLowerBound,
   });
 }(typeof self !== "undefined" ? self : globalThis));

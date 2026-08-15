@@ -818,10 +818,24 @@ body {
 
 .release-notes-header { gap: 12px; }
 
-.release-notes-header > strong {
+.release-notes-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+
+.release-notes-heading > strong {
   color: var(--accent);
   font-size: 14px;
   font-variant-numeric: tabular-nums;
+}
+
+#releaseNotesDate {
+  color: rgba(166, 177, 173, 0.72);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .app-cache-header > strong {
@@ -1974,10 +1988,13 @@ body {
 
 .chart-frame.is-line-hovering,
 .chart-frame.is-disclosure-hovering,
+.chart-frame.is-ai-report-hovering,
 .chart-frame.is-line-hovering .main-svg,
 .chart-frame.is-disclosure-hovering .main-svg,
+.chart-frame.is-ai-report-hovering .main-svg,
 .chart-frame.is-line-hovering .main-svg *,
-.chart-frame.is-disclosure-hovering .main-svg * {
+.chart-frame.is-disclosure-hovering .main-svg *,
+.chart-frame.is-ai-report-hovering .main-svg * {
   cursor: pointer !important;
 }
 

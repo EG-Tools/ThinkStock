@@ -1,4 +1,7 @@
-import { mergePointInTimeAnalysisSnapshots } from "../../shared/ai-analysis-snapshots.mjs";
+import {
+  historicalFinancialSnapshotsFromRecord,
+  mergePointInTimeAnalysisSnapshots,
+} from "../../shared/ai-analysis-snapshots.mjs";
 import { normalizeAnalysisNewsEvidence } from "../../shared/ai-news-evidence.mjs";
 import { koreanDateText } from "../../shared/market-calendar.mjs";
 
@@ -7,7 +10,7 @@ const COMPANY_NEWS_URL = "https://finance.naver.com/item/main.naver";
 const MAX_OVERVIEW_BYTES = 900_000;
 const MAX_NEWS_BYTES = 600_000;
 
-export const ANALYSIS_CACHE_SCHEMA = 4;
+export const ANALYSIS_CACHE_SCHEMA = 5;
 
 function decodeHtmlEntities(value) {
   const named = {
@@ -95,11 +98,15 @@ export function mergeAnalysisSnapshots(existing, incoming) {
 }
 
 export function normalizeAnalysisCache(value, ticker) {
-  if (!value || value.ticker !== ticker || ![2, 3, ANALYSIS_CACHE_SCHEMA].includes(value.schema)) return null;
+  if (!value || value.ticker !== ticker || ![2, 3, 4, ANALYSIS_CACHE_SCHEMA].includes(value.schema)) return null;
   const hasNews = Array.isArray(value.news);
   const currentSnapshot = snapshotFromAnalysis(value);
   const storedSnapshots = mergeAnalysisSnapshots(value.snapshots, []);
-  const snapshots = mergeAnalysisSnapshots(storedSnapshots, currentSnapshot ? [currentSnapshot] : []);
+  const historicalSnapshots = historicalFinancialSnapshotsFromRecord(value);
+  const snapshots = mergeAnalysisSnapshots(
+    storedSnapshots,
+    [...historicalSnapshots, ...(currentSnapshot ? [currentSnapshot] : [])],
+  );
   const includesCurrentSnapshot = !currentSnapshot
     || storedSnapshots.some((snapshot) => snapshot.savedAt === currentSnapshot.savedAt);
   return {
@@ -114,6 +121,7 @@ export function normalizeAnalysisCache(value, ticker) {
     needsMigration: value.schema !== ANALYSIS_CACHE_SCHEMA
       || !Array.isArray(value.snapshots)
       || storedSnapshots.length !== value.snapshots.length
+      || snapshots.length !== storedSnapshots.length
       || !includesCurrentSnapshot,
   };
 }
@@ -365,23 +373,37 @@ export function mergeFinancialRecords(existing, incoming) {
     const frequency = ["annual", "quarter"].includes(record?.frequency) ? record.frequency : "";
     const period = String(record?.period || "").slice(0, 7);
     if (!ticker || !frequency || !/^\d{4}-\d{2}$/.test(period)) return;
-    merged.set(`${frequency}:${period}`, {
+    const key = `${frequency}:${period}`;
+    const previous = merged.get(key) || {};
+    const preferValue = (value, fallback) => {
+      const normalized = finiteNumberOrNull(value);
+      return normalized === null ? (fallback ?? null) : normalized;
+    };
+    merged.set(key, {
       ticker,
       period,
       frequency,
-      estimate: record?.estimate === true,
-      revenue: finiteNumberOrNull(record?.revenue),
-      operatingProfit: finiteNumberOrNull(record?.operatingProfit),
-      netIncome: finiteNumberOrNull(record?.netIncome),
-      eps: finiteNumberOrNull(record?.eps),
-      operatingProfitConsensus: finiteNumberOrNull(record?.operatingProfitConsensus),
-      netIncomeConsensus: finiteNumberOrNull(record?.netIncomeConsensus),
-      operatingProfitSurprise: finiteNumberOrNull(record?.operatingProfitSurprise),
-      netIncomeSurprise: finiteNumberOrNull(record?.netIncomeSurprise),
-      operatingProfitYoy: finiteNumberOrNull(record?.operatingProfitYoy),
-      netIncomeYoy: finiteNumberOrNull(record?.netIncomeYoy),
+      estimate: record?.estimate === true
+        ? previous.estimate !== false
+        : (record?.estimate === false ? false : previous.estimate === true),
+      revenue: preferValue(record?.revenue, previous.revenue),
+      operatingProfit: preferValue(record?.operatingProfit, previous.operatingProfit),
+      netIncome: preferValue(record?.netIncome, previous.netIncome),
+      eps: preferValue(record?.eps, previous.eps),
+      operatingProfitConsensus: preferValue(
+        record?.operatingProfitConsensus,
+        previous.operatingProfitConsensus,
+      ),
+      netIncomeConsensus: preferValue(record?.netIncomeConsensus, previous.netIncomeConsensus),
+      operatingProfitSurprise: preferValue(
+        record?.operatingProfitSurprise,
+        previous.operatingProfitSurprise,
+      ),
+      netIncomeSurprise: preferValue(record?.netIncomeSurprise, previous.netIncomeSurprise),
+      operatingProfitYoy: preferValue(record?.operatingProfitYoy, previous.operatingProfitYoy),
+      netIncomeYoy: preferValue(record?.netIncomeYoy, previous.netIncomeYoy),
       reportDate: /^\d{4}-\d{2}-\d{2}$/.test(String(record?.reportDate || ""))
-        ? String(record.reportDate) : "",
+        ? String(record.reportDate) : (previous.reportDate || ""),
     });
   });
   return [...merged.values()].sort((left, right) => (
@@ -412,9 +434,11 @@ export async function fetchCompanyAnalysis(ticker, fetchImpl = fetch) {
   }
   const overviewHtml = overviewResult.status === "fulfilled" ? overviewResult.value : "";
   const newsHtml = newsResult.status === "fulfilled" ? newsResult.value : "";
+  const financialSummary = parseFinancialSummaryHtml(overviewHtml, ticker);
+  const earningsTrend = parseEarningsTrendHtml(overviewHtml, ticker);
   return {
     consensus: parseConsensusHtml(overviewHtml, ticker),
-    financials: parseEarningsTrendHtml(overviewHtml, ticker),
+    financials: mergeFinancialRecords(financialSummary, earningsTrend),
     news: parseNaverNewsHtml(newsHtml, ticker),
     newsFetched: newsResult.status === "fulfilled",
   };

@@ -29,6 +29,8 @@ test("records render modes, causes, duration, and fallback paths", () => {
     total: 1,
   });
   assert.deepEqual(snapshot.recent[0], {
+    transactionId: 0,
+    requestCount: 1,
     mode: "full",
     durationMs: 8.4,
     updateClasses: ["viewport", "marker"],

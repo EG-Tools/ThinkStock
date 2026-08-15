@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+await import("../../shared/runtime-foundation.mjs");
+await import("../../shared/ai-context-classifier.mjs");
 await import("../../docs/modules/ai-forecast-calibration.js");
 const calibration = globalThis.ThinkStockAiForecastCalibration;
 
@@ -103,6 +105,40 @@ test("prefers the stock's own completed history before broader market cohorts", 
 
   assert.equal(profile.horizons[126].tier, "own-regime");
   assert.equal(profile.horizons[126].samples, 5);
+});
+
+test("keeps range-bound evidence ahead of broader uptrend cohorts", () => {
+  const rangeRows = Array.from({ length: 8 }, (_, index) => {
+    const record = scoredRecord(index, -0.05);
+    return {
+      ...record,
+      audit: audit({
+        price_range_bound_score: 0.8,
+        ...(index < 4 ? { leading_recovery: 1 } : { leading_peak: 1 }),
+      }),
+    };
+  });
+  const uptrendRows = Array.from({ length: 8 }, (_, index) => {
+    const record = scoredRecord(index, 0.12);
+    return {
+      ...record,
+      ticker: `${String(200000 + index).slice(-6)}.KS`,
+      audit: audit({
+        price_annualized_return: 0.2,
+        price_trend_r_squared: 0.5,
+      }),
+    };
+  });
+  const profile = calibration.buildCalibrationProfile({
+    ticker: "078930.KS",
+    forecast: forecast({ audit: audit({ price_range_bound_score: 0.8 }) }),
+    records: [...rangeRows, ...uptrendRows],
+  });
+
+  assert.equal(profile.context.trend, "range");
+  assert.equal(profile.horizons[126].tier, "trend-regime");
+  assert.equal(profile.horizons[126].samples, 8);
+  assert.ok(profile.horizons[126].correction < 0);
 });
 
 test("calibration preserves the anchor and shifts paths without overriding hard negative gates", () => {
@@ -255,9 +291,54 @@ test("does not turn consistently wrong directional history into a price correcti
     records,
   });
 
-  assert.equal(profile.format, "ai-calibration-v9");
+  assert.equal(profile.format, "ai-calibration-v10");
   assert.equal(profile.horizons[126].directionQuality, 0);
   assert.equal(profile.horizons[126].correction, 0);
+});
+
+test("selects a structural archetype and market phase before broad cohorts", () => {
+  const contextFeatures = {
+    context_profile_version: 1,
+    profile_range_score: 0.9,
+    regime_probability_slowdown: 0.8,
+  };
+  const records = Array.from({ length: 8 }, (_, index) => {
+    const record = scoredRecord(index, 0.08);
+    return {
+      ...record,
+      audit: audit({
+        ...contextFeatures,
+        projected_volatility: index < 4 ? 0.01 : 0.04,
+      }),
+    };
+  });
+  const profile = calibration.buildCalibrationProfile({
+    ticker: "078930.KS",
+    forecast: forecast({ audit: audit(contextFeatures) }),
+    records,
+  });
+
+  assert.equal(profile.context.archetype, "range");
+  assert.equal(profile.context.probabilisticRegime, "slowdown");
+  assert.equal(profile.horizons[126].tier, "archetype-phase-regime");
+  assert.equal(profile.horizons[126].walkForward.applied, true);
+  assert.ok(profile.horizons[126].correction > 0);
+});
+
+test("rejects a historical bias when the newest holdout reverses direction", () => {
+  const samples = Array.from({ length: 10 }, (_, index) => ({
+    asOf: `2025-${String(index + 1).padStart(2, "0")}-01`,
+    error: index < 7 ? 0.08 : -0.08,
+    weight: 1,
+    directionCorrect: true,
+    intervalCovered: true,
+  }));
+  const result = calibration.walkForwardBiasValidation(samples, 126);
+
+  assert.equal(result.applied, true);
+  assert.equal(result.passed, false);
+  assert.equal(result.scale, 0);
+  assert.ok(result.correctedError > result.baselineError);
 });
 
 test("carries the automatic forecast quality summary into the calibration audit", () => {
@@ -404,6 +485,35 @@ test("keeps KOSPI volatility cohorts separate in quality diagnostics", () => {
   assert.equal(summary.byContext["KOSPI:range"].seriesCount, 2);
   assert.equal(summary.byCohort["KOSPI:range:low"].seriesCount, 1);
   assert.equal(summary.byCohort["KOSPI:range:high"].samples, 12);
+});
+
+test("validates report-backed forecasts as a separate cohort before broad calibration", () => {
+  const reportFeatures = {
+    broker_research_reports: 3,
+    broker_research_confidence: 0.7,
+  };
+  const reportRows = Array.from({ length: 8 }, (_, index) => ({
+    ...scoredRecord(index, -0.06),
+    audit: audit(reportFeatures),
+  }));
+  const broadRows = Array.from({ length: 8 }, (_, index) => ({
+    ...scoredRecord(index, 0.08),
+    ticker: `${String(200000 + index).slice(-6)}.KS`,
+  }));
+  const profile = calibration.buildCalibrationProfile({
+    ticker: "005930.KS",
+    forecast: forecast({ audit: audit(reportFeatures) }),
+    records: [...reportRows, ...broadRows],
+  });
+
+  assert.equal(profile.context.researchCohort, "report-backed");
+  assert.equal(profile.horizons[126].tier, "research-cohort-regime");
+  assert.ok(profile.horizons[126].correction < 0);
+
+  const diagnostic = calibration.buildForecastQualityDiagnostic(profile, null);
+  const summary = calibration.summarizeForecastQualityDiagnostics({ report: diagnostic });
+  assert.equal(diagnostic.brokerReportCount, 3);
+  assert.equal(summary.byResearch["KOSPI:report-backed"].seriesCount, 1);
 });
 
 test("keeps overbought and oversold quality diagnostics separate", () => {

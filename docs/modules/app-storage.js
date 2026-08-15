@@ -98,8 +98,10 @@
   }
 
   function createIndexedCacheStore(scope = globalScope, options = {}) {
-    const dbName = String(options.dbName || "thinkstock-runtime-cache-v1");
-    const dbVersion = Math.max(1, Number(options.dbVersion) || 1);
+    const storageContract = scope.ThinkStockRuntimeFoundation?.storage || {};
+    const dbName = String(options.dbName || storageContract.dbName || "");
+    const dbVersion = Math.max(1, Number(options.dbVersion) || Number(storageContract.dbVersion) || 0);
+    if (!dbName) throw new Error("IndexedDB storage contract is required");
     const storeNames = [...new Set((options.storeNames || []).map(String).filter(Boolean))];
     let database = null;
     let databasePromise = null;

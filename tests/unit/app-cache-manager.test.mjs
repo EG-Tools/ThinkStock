@@ -113,3 +113,31 @@ test("cache size labels stay compact and readable", () => {
   assert.equal(module.formatBytes(512 * 1024), "512KB");
   assert.equal(module.formatBytes(5.2 * 1024 * 1024), "5.2MB");
 });
+
+test("cache measurement stays complete across many bounded IndexedDB records", async () => {
+  const records = Array.from({ length: 600 }, (_, index) => ({
+    ticker: `T${index}`,
+    values: [index, index + 1, index + 2],
+  }));
+  const scope = { localStorage: createStorage(), sessionStorage: createStorage() };
+  const module = loadModule(scope);
+  const manager = module.createAppCacheManager(scope, {
+    indexedCacheStore: {
+      async readAllRecords(name) {
+        return name === "prices" ? records : [{ ticker: "AI", values: [1] }];
+      },
+    },
+    indexedStoreNames: ["prices", "analysis"],
+  });
+  const encoder = new TextEncoder();
+  const expected = records.reduce((sum, record) => (
+    sum + encoder.encode(JSON.stringify(record)).byteLength
+  ), encoder.encode(JSON.stringify({ ticker: "AI", values: [1] })).byteLength);
+
+  const measured = await manager.measure();
+  assert.equal(measured.indexedBytes, expected);
+  assert.equal(measured.totalBytes, expected);
+  const circular = {};
+  circular.self = circular;
+  assert.equal(module.byteLength(scope, circular), 0);
+});

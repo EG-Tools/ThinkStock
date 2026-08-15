@@ -4,17 +4,18 @@
   const STORAGE_KEY = "thinkstock-runtime-source-health-v1";
   const MAX_BLOCK_AGE_MS = 24 * 60 * 60 * 1000;
   const DEFAULT_BACKOFF_MS = Object.freeze([30_000, 120_000, 300_000]);
-  const SOURCE_BACKOFF_MS = Object.freeze({
-    indices: Object.freeze([15_000, 60_000, 300_000]),
-    prices: Object.freeze([15_000, 60_000, 300_000]),
-    "prices-hidden": Object.freeze([30_000, 120_000, 300_000]),
-    adr: Object.freeze([30_000, 120_000, 300_000]),
-    fearGreed: Object.freeze([30_000, 120_000, 300_000]),
-    credit: Object.freeze([60_000, 300_000, 900_000]),
-    macro: Object.freeze([60_000, 300_000, 900_000]),
-    crisis: Object.freeze([60_000, 300_000, 900_000]),
-    disclosure: Object.freeze([30_000, 120_000, 300_000]),
-  });
+  const freshnessPolicy = globalScope.ThinkStockRuntimeFreshnessPolicy || null;
+  const SOURCE_NAMES = Object.freeze([
+    "indices", "prices", "prices-hidden", "adr", "fearGreed", "credit",
+    "macro", "crisis", "disclosure", "insider", "brokerResearch",
+  ]);
+  const SOURCE_BACKOFF_MS = Object.freeze(Object.fromEntries(SOURCE_NAMES.map((source) => [
+    source,
+    Object.freeze([1, 2, 3].map((failureCount) => (
+      Number(freshnessPolicy?.failureBackoffMs?.(source, failureCount))
+      || DEFAULT_BACKOFF_MS[failureCount - 1]
+    ))),
+  ])));
 
   function sourceKey(value) {
     return String(value || "").trim().slice(0, 40);
@@ -126,6 +127,8 @@
   }
 
   function backoffFor(source, failureCount) {
+    const shared = Number(freshnessPolicy?.failureBackoffMs?.(source, failureCount));
+    if (Number.isFinite(shared) && shared >= 0) return shared;
     const values = SOURCE_BACKOFF_MS[source] || DEFAULT_BACKOFF_MS;
     const index = Math.max(0, Math.min(values.length - 1, (Number(failureCount) || 1) - 1));
     return values[index];

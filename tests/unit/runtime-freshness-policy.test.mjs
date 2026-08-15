@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  cacheRefreshDecision,
   cacheTtlSeconds,
   executeRuntimeSourcePlan,
+  failureBackoffMs,
   retryDelaysMs,
   shouldConfirmRuntimeSource,
 } from "../../shared/runtime-freshness-policy.mjs";
@@ -21,6 +23,29 @@ test("provides one retry policy for browser and Worker callers", () => {
   assert.deepEqual(retryDelaysMs("adr"), [3000, 15000]);
   assert.deepEqual(retryDelaysMs("credit"), [500]);
   assert.deepEqual(retryDelaysMs("disclosure"), [400, 800]);
+  assert.equal(failureBackoffMs("prices", 1), 15_000);
+  assert.equal(failureBackoffMs("credit", 20), 900_000);
+});
+
+test("distinguishes ready, empty, and failed cache refresh decisions", () => {
+  const now = new Date("2026-08-15T03:00:00Z").getTime();
+  assert.equal(cacheRefreshDecision("brokerResearch", {
+    resultState: "ready",
+    checkedAt: now - 60_000,
+  }, { now, maximumAgeMs: 120_000 }).reuse, true);
+  assert.equal(cacheRefreshDecision("brokerResearch", {
+    resultState: "empty",
+    checkedAt: now - 16 * 60_000,
+  }, { now }).refresh, true);
+  const failed = cacheRefreshDecision("credit", {
+    resultState: "error",
+    failureCount: 2,
+    lastFailureAt: now - 10_000,
+  }, { now });
+  assert.equal(failed.reuse, true);
+  assert.equal(failed.waitMs, 290_000);
+  assert.equal(cacheRefreshDecision("price", null, { now }).reason, "missing-stale");
+  assert.equal(cacheRefreshDecision("price", { checkedAt: now }, { now, force: true }).reason, "forced");
 });
 
 test("runs retries, fallback, and stale cache through one source plan", async () => {

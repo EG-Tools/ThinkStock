@@ -250,3 +250,44 @@ test("keeps bounded diagnostic timings without enabling frame monitoring", () =>
   assert.equal(api.summary().p95PointerMove, 20);
   assert.equal(api.summary().maxPointerMove, 30);
 });
+
+test("ranks bounded operation profiles by their p95 duration", () => {
+  const harness = createScope();
+  const monitor = createPerformanceMonitor(harness.scope, { diagnosticSampleLimit: 8 });
+  const api = monitor.init();
+
+  [10, 30, 20].forEach((duration) => {
+    harness.setNow(100);
+    const startedAt = monitor.startSample();
+    harness.setNow(100 + duration);
+    monitor.recordSample("renderChart", startedAt);
+  });
+  [4, 6].forEach((duration) => {
+    harness.setNow(100);
+    const startedAt = monitor.startSample();
+    harness.setNow(100 + duration);
+    monitor.recordSample("pointerMove", startedAt);
+  });
+
+  assert.deepEqual(api.getOperationProfiles(), [
+    {
+      label: "renderChart",
+      count: 3,
+      p50: 20,
+      p95: 20,
+      max: 30,
+      latestAt: api.getLatestOperations().renderChart.at,
+    },
+    {
+      label: "pointerMove",
+      count: 2,
+      p50: 4,
+      p95: 4,
+      max: 6,
+      latestAt: api.getLatestOperations().pointerMove.at,
+    },
+  ]);
+  assert.deepEqual(api.getOperationProfiles(1).map((profile) => profile.label), ["renderChart"]);
+  api.clear();
+  assert.deepEqual(api.getOperationProfiles(), []);
+});

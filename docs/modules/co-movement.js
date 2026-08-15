@@ -58,6 +58,40 @@
     };
   }
 
+  function lowerBoundDate(rows, target) {
+    let low = 0;
+    let high = rows.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (String(rows[middle]?.date || "") < target) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  }
+
+  function upperBoundDate(rows, target) {
+    let low = 0;
+    let high = rows.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (String(rows[middle]?.date || "") <= target) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  }
+
+  function sliceRowsByDateRange(rows, range) {
+    const source = Array.isArray(rows) ? rows : [];
+    const startMs = Number(range?.[0]);
+    const endMs = Number(range?.[1]);
+    if (!source.length || !Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) {
+      return source;
+    }
+    const start = new Date(startMs).toISOString().slice(0, 10);
+    const end = new Date(endMs).toISOString().slice(0, 10);
+    return source.slice(lowerBoundDate(source, start), upperBoundDate(source, end));
+  }
+
   function effectivePeriodLabel(rows, targetKey, requestedMonths) {
     const source = Array.isArray(rows) ? rows : [];
     const windowStartMs = toUtcMs(source[0]?.date);
@@ -96,5 +130,6 @@
     calculateDirectionalAgreement,
     effectivePeriodLabel,
     formatPeriod,
+    sliceRowsByDateRange,
   });
 }(typeof self !== "undefined" ? self : globalThis));

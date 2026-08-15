@@ -174,6 +174,43 @@
       };
     }
 
+    function operationProfiles(limit = 8) {
+      const profileLimit = Math.min(20, Math.max(1, Number(limit) || 8));
+      const grouped = new Map();
+      diagnosticSamples.forEach((sample) => {
+        const label = String(sample?.label || "").trim();
+        const duration = Number(sample?.duration);
+        if (!label || !Number.isFinite(duration) || duration < 0) return;
+        const current = grouped.get(label) || { durations: [], latestAt: "" };
+        current.durations.push(duration);
+        current.latestAt = String(sample?.at || current.latestAt || "");
+        grouped.set(label, current);
+      });
+      const percentile = (values, ratio) => {
+        if (!values.length) return 0;
+        return values[Math.floor((values.length - 1) * ratio)];
+      };
+      return [...grouped.entries()]
+        .map(([label, profile]) => {
+          const durations = [...profile.durations].sort((left, right) => left - right);
+          return {
+            label,
+            count: durations.length,
+            p50: percentile(durations, 0.5),
+            p95: percentile(durations, 0.95),
+            max: durations[durations.length - 1] || 0,
+            latestAt: profile.latestAt,
+          };
+        })
+        .sort((left, right) => (
+          right.p95 - left.p95
+          || right.max - left.max
+          || right.count - left.count
+          || left.label.localeCompare(right.label)
+        ))
+        .slice(0, profileLimit);
+    }
+
     function recordError(source, error, meta = {}) {
       const sample = {
         source: String(source || "unknown"),
@@ -193,6 +230,7 @@
       disable: () => setEnabled(false),
       get: () => [...samples],
       getLatestOperations: () => ({ ...latestOperations }),
+      getOperationProfiles: (limit) => operationProfiles(limit),
       getSlowOperations: () => [...slowSamples],
       getLongTasks: () => [...longTasks],
       getRecentErrors: () => [...errorSamples],

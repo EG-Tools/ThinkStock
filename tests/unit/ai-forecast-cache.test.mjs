@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+await import("../../shared/runtime-foundation.mjs");
+
+await import("../../docs/modules/cache-lifecycle-policy.js");
 await import("../../docs/modules/ai-forecast-cache.js");
 
 const { createForecastCache } = globalThis.ThinkStockAiForecastCache;
@@ -23,6 +26,7 @@ test("reuses a persisted forecast only for the same input fingerprint", async ()
 
   assert.deepEqual(await secondSession.get("005930.KS", "input-a"), { dates: ["2026-08-08"] });
   assert.equal(restoredWrites, 0);
+  assert.equal(records.get("005930.KS")?.cacheMeta?.source, "ai-forecast");
   assert.equal(await secondSession.get("005930.KS", "input-b"), null);
   assert.equal(records.has("005930.KS"), false);
   assert.ok(writes >= 1);

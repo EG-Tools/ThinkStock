@@ -6,6 +6,7 @@ import {
   DART_DISCLOSURE_TYPES,
   mergeDartDisclosureRecords,
   recordFromDartItem,
+  selectDartDisclosureEvidenceAsOf,
 } from "../../shared/dart-disclosure.mjs";
 
 test("normalizes important DART disclosures for local and Worker callers", () => {
@@ -37,4 +38,14 @@ test("deduplicates revised DART disclosures by receipt number", () => {
   const merged = mergeDartDisclosureRecords([oldRecord], [{ ...oldRecord, name: "new" }]);
   assert.equal(merged.length, 1);
   assert.equal(merged[0].name, "new");
+});
+
+test("selects only same-ticker disclosures published by the forecast cutoff", () => {
+  const selected = selectDartDisclosureEvidenceAsOf([
+    { ticker: "005930.KS", date: "2026-05-01", title: "first", receiptNo: "1" },
+    { ticker: "000660.KS", date: "2026-05-02", title: "other", receiptNo: "2" },
+    { ticker: "005930.KS", date: "2026-05-03", title: "future", receiptNo: "3" },
+  ], "005930.ks", "2026-05-02");
+
+  assert.deepEqual(selected.map((row) => row.title), ["first"]);
 });

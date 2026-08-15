@@ -339,3 +339,21 @@ test("viewport ranges ignore outliers outside the visible dates", () => {
   assert.deepEqual(ranges.news, [88, 112]);
   assert.deepEqual(ranges.vkospi, [15, 25]);
 });
+
+test("viewport ranges preserve the same result for unsorted fallback dates", () => {
+  const ranges = buildAuxiliaryViewportRanges({
+    dates: ["2026-01-02", "2020-01-01", "2026-01-01"],
+    kospiValues: [101, 280, 96],
+    kosdaqValues: [108, 260, 103],
+    newsDates: ["2026-01-02", "2020-01-01", "2026-01-01"],
+    newsValues: [101, 180, 99],
+    vkospiDates: ["2026-01-02", "2020-01-01", "2026-01-01"],
+    vkospiValues: [20, 90, 18],
+    vixDates: ["2026-01-02", "2020-01-01", "2026-01-01"],
+    vixValues: [24, 80, 16],
+  }, ["2026-01-02", "2026-01-01"]);
+
+  assert.deepEqual(ranges.adr, [77.5, 121.2]);
+  assert.deepEqual(ranges.news, [88, 112]);
+  assert.deepEqual(ranges.vkospi, [15, 25]);
+});

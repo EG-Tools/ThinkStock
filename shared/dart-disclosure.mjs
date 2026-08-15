@@ -39,3 +39,17 @@ export function mergeDartDisclosureRecords(existing, incoming) {
       || String(left.title).localeCompare(String(right.title))
   ));
 }
+
+export function selectDartDisclosureEvidenceAsOf(records, ticker, cutoff, options = {}) {
+  const target = String(ticker || "").trim().toUpperCase();
+  const asOf = String(cutoff || "").slice(0, 10);
+  const maximumRows = Math.max(1, Number(options.maximumRows) || 120);
+  if (!target || !/^\d{4}-\d{2}-\d{2}$/.test(asOf)) return [];
+  return mergeDartDisclosureRecords([], records)
+    .filter((record) => (
+      String(record?.ticker || "").trim().toUpperCase() === target
+      && /^\d{4}-\d{2}-\d{2}$/.test(String(record?.date || "").slice(0, 10))
+      && String(record.date).slice(0, 10) <= asOf
+    ))
+    .slice(-maximumRows);
+}

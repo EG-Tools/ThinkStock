@@ -1,3 +1,9 @@
+import {
+  classifyProbabilisticRegime,
+  classifyStructuralArchetype,
+  classifyStructuralArchetypes,
+} from "./ai-context-classifier.mjs";
+
 export const WALKFORWARD_HORIZONS = Object.freeze([20, 63, 126]);
 export const WALKFORWARD_CLASSES = Object.freeze(["upside", "sideways", "downside"]);
 export const WALKFORWARD_REGIMES = Object.freeze(["risk-on", "risk-off", "range", "neutral"]);
@@ -24,14 +30,6 @@ export const WALKFORWARD_PROBABILISTIC_REGIMES = Object.freeze([
   "unclassified",
 ]);
 
-const ARCHETYPE_THRESHOLDS = Object.freeze({
-  "trend-up": 0.35,
-  "trend-down": 0.35,
-  range: 0.65,
-  cyclical: 0.42,
-  defensive: 0.25,
-  "high-volatility": 0.65,
-});
 export const WALKFORWARD_ABLATION_FAMILIES = Object.freeze({
   companyEvidence: Object.freeze([
     "consensus",
@@ -64,43 +62,6 @@ function rounded(value, digits = 6) {
 function finite(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
-}
-
-function structuralArchetypeScores(features) {
-  return [
-    ["trend-up", finite(features.profile_trend_up_score)],
-    ["trend-down", finite(features.profile_trend_down_score)],
-    ["range", finite(features.profile_range_score)],
-    ["cyclical", finite(features.profile_cycle_score)],
-    ["defensive", finite(features.profile_defensive_score)],
-    ["high-volatility", finite(features.profile_high_volatility_score)],
-  ];
-}
-
-function classifyStructuralArchetypes(features) {
-  if (finite(features.context_profile_version) < 1) return ["unclassified"];
-  const active = structuralArchetypeScores(features)
-    .filter(([name, score]) => score >= (ARCHETYPE_THRESHOLDS[name] ?? 0.5))
-    .sort((left, right) => right[1] - left[1])
-    .map(([name]) => name);
-  return active.length ? active : ["mixed"];
-}
-
-function classifyStructuralArchetype(features) {
-  return classifyStructuralArchetypes(features)[0];
-}
-
-function classifyProbabilisticRegime(features) {
-  if (finite(features.context_profile_version) < 1) return "unclassified";
-  const probabilities = [
-    ["recovery", finite(features.regime_probability_recovery)],
-    ["expansion", finite(features.regime_probability_expansion)],
-    ["late-cycle", finite(features.regime_probability_late_cycle)],
-    ["slowdown", finite(features.regime_probability_slowdown)],
-    ["stress", finite(features.regime_probability_stress)],
-    ["range", finite(features.regime_probability_range)],
-  ].sort((left, right) => right[1] - left[1]);
-  return probabilities[0][1] > 0 ? probabilities[0][0] : "unclassified";
 }
 
 export function classifyWalkforwardContext(row) {
@@ -141,13 +102,21 @@ export function classifyWalkforwardRegime(row) {
   return classifyWalkforwardContext(row).regime;
 }
 
-export function walkforwardCohortSets(selection) {
+export function walkforwardCohortSets(selection, validationSplit = null) {
   const development = new Set();
   const holdout = new Set();
-  for (const series of Object.values(selection || {})) {
-    const middle = Math.floor(series.length / 2);
-    series.slice(0, middle).forEach((item) => development.add(item));
-    series.slice(middle).forEach((item) => holdout.add(item));
+  const selected = new Set(Object.values(selection || {}).flat());
+  const explicitDevelopment = Object.values(validationSplit?.development || {}).flat();
+  const explicitHoldout = Object.values(validationSplit?.holdout || {}).flat();
+  if (explicitDevelopment.length || explicitHoldout.length) {
+    explicitDevelopment.filter((item) => selected.has(item)).forEach((item) => development.add(item));
+    explicitHoldout.filter((item) => selected.has(item)).forEach((item) => holdout.add(item));
+  } else {
+    for (const series of Object.values(selection || {})) {
+      const middle = Math.floor(series.length / 2);
+      series.slice(0, middle).forEach((item) => development.add(item));
+      series.slice(middle).forEach((item) => holdout.add(item));
+    }
   }
   return {
     all: new Set([...development, ...holdout]),
@@ -402,7 +371,10 @@ export function compareWalkforwardReports(previous, current) {
   if (JSON.stringify(previous?.selection) !== JSON.stringify(current?.selection)) {
     throw new Error("Backtest selections differ; the reports are not directly comparable.");
   }
-  const cohorts = walkforwardCohortSets(current.selection);
+  if (JSON.stringify(previous?.validationSplit || null) !== JSON.stringify(current?.validationSplit || null)) {
+    throw new Error("Backtest validation splits differ; the reports are not directly comparable.");
+  }
+  const cohorts = walkforwardCohortSets(current.selection, current.validationSplit);
   const matched = pairWalkforwardObservations(previous, current);
   const comparison = {
     format: "thinkstock-ai-walkforward-comparison-v6",

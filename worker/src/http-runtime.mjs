@@ -129,3 +129,35 @@ export async function readBoundedResponseText(response, maxBytes, label = "upstr
   }
   return text + decoder.decode();
 }
+
+export async function readBoundedResponseBytes(response, maxBytes, label = "upstream") {
+  const tooLarge = `${label} response is too large`;
+  const declaredLength = Number(response.headers.get("Content-Length") || 0);
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) throw new Error(tooLarge);
+  if (!response.body?.getReader) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > maxBytes) throw new Error(tooLarge);
+    return bytes;
+  }
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let bytesRead = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    bytesRead += value.byteLength;
+    if (bytesRead > maxBytes) {
+      await reader.cancel(tooLarge);
+      throw new Error(tooLarge);
+    }
+    chunks.push(value);
+  }
+  const combined = new Uint8Array(bytesRead);
+  let offset = 0;
+  chunks.forEach((chunk) => {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  });
+  return combined;
+}

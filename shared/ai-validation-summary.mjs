@@ -1,14 +1,9 @@
 import { WALKFORWARD_HORIZONS } from "./ai-walkforward-comparison.mjs";
+import { finiteOrNull } from "./runtime-foundation.mjs";
 
 export const MINIMUM_POINT_IN_TIME_SNAPSHOT_ANCHORS = 30;
 export const MINIMUM_POINT_IN_TIME_SNAPSHOT_RATE = 0.2;
 export const MINIMUM_POINT_IN_TIME_FAMILY_RATE = 0.1;
-
-function finiteOrNull(value) {
-  if (value === null || value === undefined || value === "") return null;
-  const number = Number(value);
-  return Number.isFinite(number) ? number : null;
-}
 
 function compactMetrics(value = {}) {
   return Object.freeze({
@@ -45,6 +40,7 @@ function pointInTimeCoverage(report = {}) {
   const consensusRate = finiteOrNull(coverage.consensusRate) || 0;
   const financialRate = finiteOrNull(coverage.financialRate) || 0;
   const newsRate = finiteOrNull(coverage.newsRate) || 0;
+  const disclosureRate = finiteOrNull(coverage.disclosureRate) || 0;
   const companyEvidenceExpected = analysisSnapshots > 0
     || sourceCoverage.pointInTimeConsensus === true
     || sourceCoverage.pointInTimeFinancials === true
@@ -55,7 +51,7 @@ function pointInTimeCoverage(report = {}) {
       Math.max(3, Math.ceil(eligibleAnchors * MINIMUM_POINT_IN_TIME_SNAPSHOT_RATE)),
     )
     : MINIMUM_POINT_IN_TIME_SNAPSHOT_ANCHORS;
-  const familyRate = Math.max(consensusRate, financialRate, newsRate);
+  const familyRate = Math.max(consensusRate, financialRate, newsRate, disclosureRate);
   const familyEvidenceReady = familyRate >= MINIMUM_POINT_IN_TIME_FAMILY_RATE;
   const companyEvidenceReady = !companyEvidenceExpected
     || (
@@ -70,6 +66,7 @@ function pointInTimeCoverage(report = {}) {
     consensusRate,
     financialRate,
     newsRate,
+    disclosureRate,
     analysisSnapshots,
     minimumSnapshotAnchors,
     minimumSnapshotRate: MINIMUM_POINT_IN_TIME_SNAPSHOT_RATE,

@@ -6,20 +6,52 @@ import vm from "node:vm";
 
 import * as snapshotEngine from "../../shared/ai-analysis-snapshots.mjs";
 import * as newsEvidenceEngine from "../../shared/ai-news-evidence.mjs";
+import "../../shared/runtime-foundation.mjs";
+
+await import("../../docs/modules/cache-lifecycle-policy.js");
 
 const source = await readFile(path.resolve("docs/modules/ai-analysis-cache.js"), "utf8");
 const context = {
   ThinkStockAiAnalysisSnapshots: snapshotEngine,
   ThinkStockAiNewsEvidence: newsEvidenceEngine,
+  ThinkStockCacheLifecyclePolicy: globalThis.ThinkStockCacheLifecyclePolicy,
+  ThinkStockRuntimeFoundation: globalThis.ThinkStockRuntimeFoundation,
 };
 vm.createContext(context);
 vm.runInContext(source, context);
 const {
   SCHEMA_VERSION,
   isAnalysisFresh,
+  mergeFinancialRecords,
   mergeSnapshots,
   normalizeAnalysisRecord,
 } = context.ThinkStockAiAnalysisCache;
+
+test("merges complementary financial fields without erasing cached values", () => {
+  const records = mergeFinancialRecords([{
+    ticker: "005930.KS",
+    period: "2026-06",
+    frequency: "quarter",
+    estimate: true,
+    revenue: 100,
+    operatingProfit: 20,
+    reportDate: "2026-07-20",
+  }], [{
+    ticker: "005930.KS",
+    period: "2026-06",
+    frequency: "quarter",
+    estimate: false,
+    revenue: null,
+    operatingProfitSurprise: 12.5,
+  }]);
+
+  assert.equal(records.length, 1);
+  assert.equal(records[0].estimate, false);
+  assert.equal(records[0].revenue, 100);
+  assert.equal(records[0].operatingProfit, 20);
+  assert.equal(records[0].operatingProfitSurprise, 12.5);
+  assert.equal(records[0].reportDate, "2026-07-20");
+});
 
 test("preserves accumulated financial periods while applying new analysis", () => {
   const now = Date.UTC(2026, 6, 23);
@@ -49,6 +81,8 @@ test("preserves accumulated financial periods while applying new analysis", () =
   assert.equal(result.financials.length, 2);
   assert.equal(result.consensus.targetPrice, 130000);
   assert.equal(result.lastAccessed, now);
+  assert.equal(result.cacheMeta.source, "ai-analysis");
+  assert.ok(result.cacheMeta.contentFingerprint);
 });
 
 test("checks analysis age without discarding today's cached record", () => {
@@ -161,4 +195,18 @@ test("normalizes server snapshots together with the latest analysis", () => {
   assert.equal(record.snapshots.length, 2);
   assert.equal(record.snapshots[0].consensus.targetPrice, 140);
   assert.equal(record.snapshots[1].consensus.targetPrice, 150);
+});
+
+test("reconstructs historical actual financial snapshots in the browser cache", () => {
+  const record = normalizeAnalysisRecord("005930.KS", {
+    savedAt: Date.parse("2026-07-20T03:00:00Z"),
+    financials: [
+      { ticker: "005930.KS", period: "2025-12", frequency: "quarter", estimate: false, reportDate: "2026-02-11", operatingProfit: 10 },
+      { ticker: "005930.KS", period: "2026-03", frequency: "quarter", estimate: true, reportDate: "2026-04-30", operatingProfit: 20 },
+    ],
+  });
+
+  assert.equal(record.schema, SCHEMA_VERSION);
+  assert.equal(record.snapshots.some((snapshot) => snapshot.asOf === "2026-02-12"), true);
+  assert.equal(record.snapshots.some((snapshot) => snapshot.asOf === "2026-05-01"), false);
 });

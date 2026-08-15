@@ -10,6 +10,7 @@
       clearHoverOnChart,
       configureExactDateEventHover,
       enforceMainChartSeriesLimit,
+      handleAiForecastClick,
       handleDisclosureClick,
       handleTimingSignalClick,
       hideDisclosurePopover,
@@ -92,8 +93,10 @@
             chartSession.currentEnd = new Date(Math.max(startMs, endMs)).toISOString().slice(0, 10);
           }
         }
-        scheduleHandleUpdate(hasRange || hasAuto ? 0 : HANDLE_UPDATE_DEBOUNCE_MS);
-        if (chartSession.showCoMovement && (hasRange || hasAuto)) renderCoMovementPanel();
+        if (!interactionState.chartSyncing) {
+          scheduleHandleUpdate(hasRange || hasAuto ? 0 : HANDLE_UPDATE_DEBOUNCE_MS);
+          if (chartSession.showCoMovement && (hasRange || hasAuto)) renderCoMovementPanel();
+        }
         if (interactionState.chartSyncing || interactionState.isHandleDragging) return;
         if (interactionState.cursorSyncing && !hasRange && !hasAuto) return;
 
@@ -148,6 +151,7 @@
         if (Date.now() < interactionState.suppressPlotlyClickUntil) return;
         if (handleDisclosureClick(eventData)) return;
         if (handleTimingSignalClick(eventData)) return;
+        if (handleAiForecastClick?.(eventData)) return;
         if (isTouchDevice()) return;
         hideDisclosurePopover();
       });

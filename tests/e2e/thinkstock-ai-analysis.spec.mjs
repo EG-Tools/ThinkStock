@@ -53,6 +53,7 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
         calibratedProbability: trace.meta.calibratedProbability,
         primary: trace.meta.isPrimaryAiScenario === true,
         rawPrimary: trace.meta.isRawPrimaryAiScenario === true,
+        emphasized: trace.meta.isEmphasizedAiScenario === true,
         decisive: trace.meta.isDecisiveAiScenario === true,
         scenarioLead: Number(trace.meta.aiScenarioLead),
         expectedDirection: String(trace.meta.aiExpectedDirection || ""),
@@ -96,23 +97,67 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
     expect(styles.every((style) => style.weight === style.probability)).toBe(true);
     expect(styles.every((style) => style.calibratedProbability === false)).toBe(true);
     const rawPrimaryStyles = styles.filter((style) => style.rawPrimary);
-    expect(rawPrimaryStyles.length).toBeGreaterThan(0);
+    expect(rawPrimaryStyles.length).toBe(1);
     expect(rawPrimaryStyles.every((style) => style.probability === highestProbability)).toBe(true);
+    const [rawPrimaryStyle] = rawPrimaryStyles;
+    expect(rawPrimaryStyle.emphasized).toBe(true);
+    expect(rawPrimaryStyle.width).toBe(2.9);
+    expect(rawPrimaryStyle.color).toContain("248, 248, 248");
+    const secondaryStyles = styles.filter((style) => !style.rawPrimary);
+    expect(secondaryStyles.every((style) => !style.emphasized)).toBe(true);
+    expect(new Set(secondaryStyles.map((style) => style.width)).size).toBe(1);
+    expect(new Set(secondaryStyles.map((style) => style.color)).size).toBe(1);
+    expect(secondaryStyles.every((style) => style.width < rawPrimaryStyle.width)).toBe(true);
     const primaryStyles = styles.filter((style) => style.primary);
     expect(primaryStyles.length).toBe(1);
     const [primaryStyle] = primaryStyles;
     if (primaryStyle.decisive) {
       expect(primaryStyle.probability).toBe(highestProbability);
-      expect(primaryStyle.width).toBe(2.9);
-      expect(primaryStyle.color).toContain("248, 248, 248");
     } else {
-      expect(primaryStyle.width).toBe(2.45);
-      expect(primaryStyle.color).toContain("232, 232, 232");
       expect([primaryStyle.expectedDirection, "sideways"]).toContain(primaryStyle.role);
     }
-    expect(styles.filter((style) => !style.primary)
-      .every((style) => style.width < primaryStyle.width)).toBe(true);
   });
+  await page.waitForTimeout(250);
+  const thickLinePoint = await page.locator("#chart").evaluate((element) => {
+    const traces = (element.data || []).filter((trace) => trace?.meta?.isAiForecastScenarioTrace);
+    const thickestWidth = Math.max(...traces.map((trace) => Number(trace.line?.width) || 0));
+    const thick = traces.find((trace) => Number(trace.line?.width) === thickestWidth);
+    thick.meta.representativeReport = {
+      sourceUrl: "https://stock.pstatic.net/stock-research/company/57/20260723_company_184323000.pdf",
+      title: "RFHIC (218410) 참고 리포트",
+      publishedDate: "2026-07-23",
+      broker: "하나증권",
+    };
+    const xaxis = element?._fullLayout?.xaxis;
+    const yaxis = element?._fullLayout?.yaxis;
+    const rect = element.getBoundingClientRect();
+    for (let index = Math.floor((thick.x?.length || 0) * 0.7); index > 0; index -= 1) {
+      const x = rect.left + Number(xaxis?._offset || 0) + Number(xaxis?.d2p?.(thick.x[index]));
+      const y = rect.top + Number(yaxis?._offset || 0) + Number(yaxis?.d2p?.(thick.y[index]));
+      if (Number.isFinite(x) && Number.isFinite(y)
+        && x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) return { x, y };
+    }
+    return null;
+  });
+  expect(thickLinePoint).not.toBeNull();
+  if (isMobile) await page.touchscreen.tap(thickLinePoint.x, thickLinePoint.y);
+  else await page.mouse.click(thickLinePoint.x, thickLinePoint.y);
+  await expect(page.locator("#chart .disclosure-popover")).toBeVisible();
+  await expect(page.locator("#chart .disclosure-title-link")).toHaveCount(1);
+  await expect(page.locator("#chart .disclosure-title-link")).toHaveAttribute(
+    "href",
+    "https://stock.pstatic.net/stock-research/company/57/20260723_company_184323000.pdf",
+  );
+  await expect(page.locator("#chart .disclosure-popover")).toContainText("2026-07-23");
+  await expect(page.locator("#chart .disclosure-popover")).not.toContainText("218410");
+  await page.locator("#chart .disclosure-popover").getByRole("button", { name: "공시 닫기" }).click();
+  await page.mouse.move(thickLinePoint.x, thickLinePoint.y);
+  await expect(page.locator("#chart")).toHaveClass(/is-ai-report-hovering/);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => getComputedStyle(element).cursor))
+    .toBe("pointer");
+  await page.mouse.click(thickLinePoint.x, thickLinePoint.y);
+  await expect(page.locator("#chart .disclosure-popover")).toBeVisible();
+  await page.locator("#chart .disclosure-popover").getByRole("button", { name: "공시 닫기" }).click();
   const horizonPoints = await page.locator("#chart").evaluate((element) => (
     (element.data || []).find((trace) => trace?.meta?.isAiForecastTrace)?.x?.length || 0
   ));

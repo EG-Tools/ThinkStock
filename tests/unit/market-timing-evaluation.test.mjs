@@ -166,6 +166,46 @@ test("quality gate rejects signals without enough honest holdout evidence", () =
   assert.ok(gate.reasons.includes("insufficient-holdout-samples"));
 });
 
+test("rejects a timing model whose apparent quality is concentrated in one year", () => {
+  const coverage = evaluation.timingTemporalCoverage(Array.from({ length: 14 }, (_, index) => ({
+    confirmationDate: index < 12
+      ? `2024-${String(index + 1).padStart(2, "0")}-01`
+      : `${2022 + index - 12}-01-03`,
+  })));
+  assert.equal(coverage.eligibleForCheck, true);
+  assert.equal(coverage.passed, false);
+
+  const gate = evaluation.evaluateMarketTimingQualityGate({
+    pointInTimeSafe: true,
+    overfitRisk: false,
+    temporalCoverage: coverage,
+    validation: {
+      holdout: {
+        buy: { horizons: { 20: { samples: 10, hits: 8, meanDirectionalReturn: 0.03 } } },
+        sell: { horizons: { 20: { samples: 10, hits: 8, meanDirectionalReturn: 0.03 } } },
+      },
+    },
+  });
+  assert.equal(gate.eligible, false);
+  assert.ok(gate.reasons.includes("temporally-concentrated-signals"));
+});
+
+test("measures development-to-holdout deterioration by signal side", () => {
+  const gap = evaluation.timingGeneralizationGap({
+    development: {
+      buy: { horizons: { 20: { samples: 20, hitRate: 0.8, meanDirectionalReturn: 0.08 } } },
+      sell: { horizons: { 20: { samples: 20, hitRate: 0.6, meanDirectionalReturn: 0.02 } } },
+    },
+    holdout: {
+      buy: { horizons: { 20: { samples: 8, hitRate: 0.4, meanDirectionalReturn: -0.01 } } },
+      sell: { horizons: { 20: { samples: 8, hitRate: 0.58, meanDirectionalReturn: 0.018 } } },
+    },
+  }, 20);
+  assert.equal(gap.bySide.buy.overfit, true);
+  assert.equal(gap.bySide.sell.overfit, false);
+  assert.equal(gap.overfit, true);
+});
+
 test("quality gate rejects a weak side even when the combined result looks healthy", () => {
   const gate = evaluation.evaluateMarketTimingQualityGate({
     pointInTimeSafe: true,

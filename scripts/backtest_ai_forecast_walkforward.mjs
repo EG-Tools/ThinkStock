@@ -1,9 +1,11 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 import { selectAnalysisEvidenceAsOf } from "../shared/ai-analysis-snapshots.mjs";
+import { selectDartDisclosureEvidenceAsOf } from "../shared/dart-disclosure.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CACHE_DIR = path.join(ROOT, ".thinkstock-cache", "ai-backtest");
@@ -17,6 +19,18 @@ if (!/^walkforward-[A-Za-z0-9._-]+\.json$/.test(outputName)) {
 const REPORT_PATH = path.join(CACHE_DIR, outputName);
 const koreanVolatilityCandidate = !process.argv.includes("--without-vkospi");
 const externalRiskCandidates = !process.argv.includes("--without-external-risk");
+const companyEvidenceCandidate = !process.argv.includes("--without-company-evidence");
+const includeIndexes = !process.argv.includes("--without-indexes");
+const sampleArgument = process.argv.indexOf("--sample");
+const sampleMode = sampleArgument >= 0 ? String(process.argv[sampleArgument + 1] || "fast") : "fast";
+if (!["fast", "stratified", "development", "holdout", "audit", "confirmation-audit"].includes(sampleMode)) {
+  throw new Error("Walk-forward sample must be fast, stratified, development, holdout, audit, or confirmation-audit");
+}
+const engineRefArgument = process.argv.indexOf("--engine-ref");
+const engineRef = engineRefArgument >= 0 ? String(process.argv[engineRefArgument + 1] || "") : "";
+if (engineRef && !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(engineRef)) {
+  throw new Error("Walk-forward engine ref is invalid");
+}
 const ENGINE_PATHS = [
   "ai-forecast-math.js",
   "ai-forecast-model.js",
@@ -28,7 +42,15 @@ const ENGINE_PATHS = [
 const HORIZONS = Object.freeze([20, 63, 126]);
 const MAX_HORIZON = HORIZONS.at(-1);
 const MIN_HISTORY = 756;
-const MAX_WINDOWS_PER_STOCK = 12;
+
+function positiveIntegerArgument(flag, fallback, maximum) {
+  const argument = process.argv.indexOf(flag);
+  const requested = argument >= 0 ? Number(process.argv[argument + 1]) : fallback;
+  return Math.max(1, Math.min(maximum, Math.trunc(requested || fallback)));
+}
+
+const MAX_WINDOWS_PER_STOCK = positiveIntegerArgument("--stock-windows", 12, 36);
+const MAX_WINDOWS_PER_INDEX = positiveIntegerArgument("--index-windows", 36, 72);
 
 async function readJson(file) {
   return JSON.parse(await readFile(file, "utf8"));
@@ -124,17 +146,17 @@ function alignedCandidate(seriesKey, dates, maps) {
   };
 }
 
-function anchorsFor(points) {
+function anchorsFor(points, maximumWindows = MAX_WINDOWS_PER_STOCK) {
   const lastAnchor = points.length - MAX_HORIZON - 1;
   if (lastAnchor < MIN_HISTORY - 1) return [];
   const firstCandidate = Math.max(
     MIN_HISTORY - 1,
-    lastAnchor - ((MAX_WINDOWS_PER_STOCK - 1) * MAX_HORIZON),
+    lastAnchor - ((maximumWindows - 1) * MAX_HORIZON),
   );
   const anchors = [];
   for (let anchor = firstCandidate; anchor <= lastAnchor; anchor += MAX_HORIZON) anchors.push(anchor);
-  if (anchors.at(-1) !== lastAnchor && anchors.length < MAX_WINDOWS_PER_STOCK) anchors.push(lastAnchor);
-  return anchors.slice(-MAX_WINDOWS_PER_STOCK);
+  if (anchors.at(-1) !== lastAnchor && anchors.length < maximumWindows) anchors.push(lastAnchor);
+  return anchors.slice(-maximumWindows);
 }
 
 function rowsThrough(rows, cutoff) {
@@ -242,8 +264,17 @@ function adrState(row) {
 const sandbox = {};
 vm.createContext(sandbox);
 for (const enginePath of ENGINE_PATHS) {
-  const engineSource = await readFile(enginePath, "utf8");
-  vm.runInContext(engineSource, sandbox, { filename: enginePath });
+  const relativeEnginePath = path.relative(ROOT, enginePath).replaceAll("\\", "/");
+  const engineSource = engineRef
+    ? execFileSync("git", ["show", `${engineRef}:${relativeEnginePath}`], {
+      cwd: ROOT,
+      encoding: "utf8",
+      maxBuffer: 8 * 1024 * 1024,
+    })
+    : await readFile(enginePath, "utf8");
+  vm.runInContext(engineSource, sandbox, {
+    filename: engineRef ? `${engineRef}:${relativeEnginePath}` : enginePath,
+  });
 }
 const { buildForecast } = sandbox.ThinkStockAiForecast;
 const { resolveScenarioPresentation } = sandbox.ThinkStockAiForecastScenarios;
@@ -251,7 +282,7 @@ const [prices, context] = await Promise.all([
   readJson(PRICE_CACHE_PATH),
   readJson(CONTEXT_CACHE_PATH),
 ]);
-if (prices.format !== "thinkstock-ai-walkforward-prices-v1") {
+if (!["thinkstock-ai-walkforward-prices-v1", "thinkstock-ai-walkforward-prices-v2", "thinkstock-ai-walkforward-prices-v3"].includes(prices.format)) {
   throw new Error("Run scripts/prepare_ai_walkforward_data.mjs first");
 }
 if (koreanVolatilityCandidate
@@ -260,9 +291,23 @@ if (koreanVolatilityCandidate
 }
 
 const maps = new Map(Object.entries(prices.series || {}).map(([key, value]) => [key, priceMap(value)]));
+const activeSelection = sampleMode === "stratified"
+  ? prices.stratifiedSelection
+  : (sampleMode === "development"
+    ? prices.validationSplit?.development
+    : (sampleMode === "holdout"
+      ? prices.validationSplit?.holdout
+      : (sampleMode === "audit"
+        ? prices.auditSelection
+        : (sampleMode === "confirmation-audit"
+          ? prices.confirmationAuditSelection
+          : prices.selection))));
+if (!activeSelection?.KOSPI?.length || !activeSelection?.KOSDAQ?.length) {
+  throw new Error(`Walk-forward ${sampleMode} sample is unavailable; refresh the prepared data first`);
+}
 const selected = [
-  ...(prices.selection?.KOSPI || []).map((series) => ({ series, market: "KOSPI", targetType: "stock" })),
-  ...(prices.selection?.KOSDAQ || []).map((series) => ({ series, market: "KOSDAQ", targetType: "stock" })),
+  ...(activeSelection.KOSPI || []).map((series) => ({ series, market: "KOSPI", targetType: "stock" })),
+  ...(activeSelection.KOSDAQ || []).map((series) => ({ series, market: "KOSDAQ", targetType: "stock" })),
 ];
 const selectedSeries = new Set(selected.map((item) => item.series));
 const qualityCases = Array.isArray(prices.qualityCases) ? prices.qualityCases : [];
@@ -279,39 +324,56 @@ const targets = [
       }]
       : []
   )),
-  { series: "^KS11", market: "KOSPI_INDEX", targetType: "index" },
-  { series: "^KQ11", market: "KOSDAQ_INDEX", targetType: "index" },
+  ...(includeIndexes ? [
+    { series: "^KS11", market: "KOSPI_INDEX", targetType: "index" },
+    { series: "^KQ11", market: "KOSDAQ_INDEX", targetType: "index" },
+  ] : []),
 ];
 const observations = [];
 const pointInTimeCoverage = {
   eligibleAnchors: 0,
   anchors: 0,
+  analysisAnchors: 0,
   consensus: 0,
   financials: 0,
   news: 0,
+  disclosures: 0,
 };
 let completed = 0;
 const expected = targets.reduce((sum, item) => (
-  sum + anchorsFor(pricePoints(prices.series[item.series])).length
+  sum + anchorsFor(
+    pricePoints(prices.series[item.series]),
+    item.targetType === "index" ? MAX_WINDOWS_PER_INDEX : MAX_WINDOWS_PER_STOCK,
+  ).length
 ), 0);
 
 for (const item of targets) {
   const points = pricePoints(prices.series[item.series]);
-  for (const anchor of anchorsFor(points)) {
+  const maximumWindows = item.targetType === "index" ? MAX_WINDOWS_PER_INDEX : MAX_WINDOWS_PER_STOCK;
+  for (const anchor of anchorsFor(points, maximumWindows)) {
     const history = points.slice(0, anchor + 1);
     const cutoff = history.at(-1).date;
     const dates = history.map((point) => point.date);
     const currentPrice = history.at(-1).price;
-    const analysis = item.targetType !== "index"
+    const analysis = companyEvidenceCandidate && item.targetType !== "index"
       ? selectAnalysisEvidenceAsOf(context.analysisByTicker?.[item.series], cutoff)
       : null;
+    const disclosures = companyEvidenceCandidate && item.targetType !== "index"
+      ? selectDartDisclosureEvidenceAsOf(
+        context.disclosuresByTicker?.[item.series],
+        item.series,
+        cutoff,
+      )
+      : [];
     if (item.targetType !== "index") pointInTimeCoverage.eligibleAnchors += 1;
+    if (analysis || disclosures.length) pointInTimeCoverage.anchors += 1;
     if (analysis) {
-      pointInTimeCoverage.anchors += 1;
+      pointInTimeCoverage.analysisAnchors += 1;
       if (analysis.consensus) pointInTimeCoverage.consensus += 1;
       if (analysis.financials.length) pointInTimeCoverage.financials += 1;
       if (analysis.news.length) pointInTimeCoverage.news += 1;
     }
+    if (disclosures.length) pointInTimeCoverage.disclosures += 1;
     const forecast = buildForecast({
       series: item.series,
       decisionDate: cutoff,
@@ -325,9 +387,11 @@ for (const item of targets) {
       crisisRows: rowsThrough(context.crisisRows, cutoff),
       koreanVolatilityCandidate,
       externalRiskCandidates,
+      name: prices.names?.[item.series] || "",
       consensus: analysis?.consensus || null,
       financials: analysis?.financials || [],
       internetNews: analysis?.news || [],
+      disclosures,
       horizon: MAX_HORIZON,
     });
     completed += 1;
@@ -360,6 +424,7 @@ for (const item of targets) {
         market: item.market,
         targetType: item.targetType,
         qualityProfile: item.qualityProfile || "",
+        samplingTags: prices.validationSampling?.profiles?.[item.series]?.tags || [],
         horizon,
         cutoff,
         targetDate: actual.date,
@@ -415,7 +480,16 @@ const latestQualityCaseForecasts = Object.fromEntries(qualityCases.flatMap((item
   const cutoff = points.at(-1).date;
   const dates = points.map((point) => point.date);
   const currentPrice = points.at(-1).price;
-  const analysis = selectAnalysisEvidenceAsOf(context.analysisByTicker?.[item.ticker], cutoff);
+  const analysis = companyEvidenceCandidate
+    ? selectAnalysisEvidenceAsOf(context.analysisByTicker?.[item.ticker], cutoff)
+    : null;
+  const disclosures = companyEvidenceCandidate
+    ? selectDartDisclosureEvidenceAsOf(
+      context.disclosuresByTicker?.[item.ticker],
+      item.ticker,
+      cutoff,
+    )
+    : [];
   const forecast = buildForecast({
     series: item.ticker,
     decisionDate: cutoff,
@@ -432,6 +506,7 @@ const latestQualityCaseForecasts = Object.fromEntries(qualityCases.flatMap((item
     consensus: analysis?.consensus || null,
     financials: analysis?.financials || [],
     internetNews: analysis?.news || [],
+    disclosures,
     horizon: MAX_HORIZON,
   });
   if (!forecast || !(currentPrice > 0)) return [];
@@ -485,11 +560,24 @@ const report = {
   format: "thinkstock-ai-walkforward-report-v1",
   generatedAt: new Date().toISOString(),
   enginePathVersion: observations[0]?.modelVersion || "",
+  dataSnapshot: {
+    priceFormat: prices.format,
+    priceGeneratedAt: prices.generatedAt || "",
+    contextFormat: context.format,
+    contextGeneratedAt: context.generatedAt || "",
+  },
   seed: prices.seed,
   horizonTradingDays: HORIZONS,
   stepTradingDays: MAX_HORIZON,
   maxWindowsPerStock: MAX_WINDOWS_PER_STOCK,
-  selection: prices.selection,
+  maxWindowsPerIndex: MAX_WINDOWS_PER_INDEX,
+  includeIndexes,
+  sampleMode,
+  selection: activeSelection,
+  validationSplit: sampleMode === "stratified" ? prices.validationSplit : null,
+  auditSelection: prices.auditSelection || null,
+  confirmationAuditSelection: prices.confirmationAuditSelection || null,
+  samplingCoverage: prices.validationSampling?.coverage || null,
   sourceCoverage: {
     price: prices.source,
     macroRows: context.macroRows?.length || 0,
@@ -503,7 +591,10 @@ const report = {
     krwUsdRows: context.crisisRows?.filter((row) => Number.isFinite(Number(row?.krwUsd))).length || 0,
     analysisSnapshots: Object.values(context.analysisByTicker || {})
       .reduce((total, record) => total + (record?.snapshots?.length || 0), 0),
-    pointInTimeAnalysisAnchors: pointInTimeCoverage.anchors,
+    disclosureRecords: Object.values(context.disclosuresByTicker || {})
+      .reduce((total, records) => total + (records?.length || 0), 0),
+    pointInTimeAnalysisAnchors: pointInTimeCoverage.analysisAnchors,
+    pointInTimeCompanyEvidenceAnchors: pointInTimeCoverage.anchors,
     pointInTimeFeatureCoverage: {
       eligibleAnchors: pointInTimeCoverage.eligibleAnchors,
       snapshotAnchors: pointInTimeCoverage.anchors,
@@ -519,10 +610,14 @@ const report = {
       newsRate: rounded(pointInTimeCoverage.eligibleAnchors
         ? pointInTimeCoverage.news / pointInTimeCoverage.eligibleAnchors
         : 0, 4),
+      disclosureRate: rounded(pointInTimeCoverage.eligibleAnchors
+        ? pointInTimeCoverage.disclosures / pointInTimeCoverage.eligibleAnchors
+        : 0, 4),
     },
     pointInTimeConsensus: pointInTimeCoverage.consensus > 0,
     pointInTimeFinancials: pointInTimeCoverage.financials > 0,
-    pointInTimeDisclosures: false,
+    pointInTimeDisclosures: pointInTimeCoverage.disclosures > 0,
+    companyEvidenceCandidate,
     genericInternetNews: pointInTimeCoverage.news > 0,
     analystReports: false,
     currentTop400ArtifactUsed: false,
@@ -536,6 +631,13 @@ const report = {
     market,
     summarize(stockObservations.filter((row) => row.market === market && row.horizon === MAX_HORIZON)),
   ])),
+  bySamplingTag: Object.fromEntries(Object.entries(prices.validationSampling?.coverage?.selected || {})
+    .map(([tag]) => [tag, Object.fromEntries(HORIZONS.map((horizon) => [
+      horizon,
+      summarize(stockObservations.filter((row) => (
+        row.horizon === horizon && row.samplingTags?.includes(tag)
+      ))),
+    ]))])),
   byAdrState: Object.fromEntries(HORIZONS.map((horizon) => [
     horizon,
     Object.fromEntries(adrStates.map((state) => [
@@ -593,7 +695,7 @@ const report = {
     "Yahoo adjusted closes remove corporate-action jumps but are not the KRX runtime feed.",
     "Historical macro releases may contain later revisions rather than original release vintages.",
     pointInTimeCoverage.anchors > 0
-      ? "Company analysis is used only where a stored point-in-time snapshot existed by the cutoff; earlier anchors remain unfilled."
+      ? "Company analysis and DART disclosures are used only where evidence was published by the cutoff; earlier anchors remain unfilled."
       : "Point-in-time disclosures, financial statements, consensus, generic news, and analyst reports are excluded because historical snapshots are unavailable.",
     "The current top-400 artifact is excluded because it was trained through the present and would leak future information into older anchors.",
     "Scenario percentages are relative scenario weights, not calibrated real-world probabilities.",

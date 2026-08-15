@@ -22,6 +22,7 @@ function validationInput(overrides = {}) {
           consensusRate: 0.7,
           financialRate: 0.6,
           newsRate: 0.5,
+          disclosureRate: 0.4,
         },
       },
     },
@@ -88,6 +89,7 @@ test("validation summary requires meaningful point-in-time coverage", () => {
     consensusRate: 0.01,
     financialRate: 0,
     newsRate: 0,
+    disclosureRate: 0,
   };
   const summary = buildAiValidationSummary(input);
 
@@ -95,6 +97,26 @@ test("validation summary requires meaningful point-in-time coverage", () => {
   assert.equal(summary.pointInTime.coverage.familyEvidenceReady, false);
   assert.equal(summary.pointInTime.coverage.companyEvidenceReady, false);
   assert.equal(summary.promotionAllowed, false);
+});
+
+test("validation summary accepts disclosure-only historical company evidence", () => {
+  const input = validationInput();
+  input.report.sourceCoverage.analysisSnapshots = 0;
+  input.report.sourceCoverage.pointInTimeDisclosures = true;
+  input.report.sourceCoverage.pointInTimeFeatureCoverage = {
+    eligibleAnchors: 100,
+    snapshotAnchors: 30,
+    snapshotRate: 0.3,
+    consensusRate: 0,
+    financialRate: 0,
+    newsRate: 0,
+    disclosureRate: 0.3,
+  };
+  const summary = buildAiValidationSummary(input);
+
+  assert.equal(summary.pointInTime.coverage.familyEvidenceReady, true);
+  assert.equal(summary.pointInTime.coverage.companyEvidenceReady, true);
+  assert.equal(summary.promotionAllowed, true);
 });
 
 test("validation summary cannot promote without beating simple benchmarks", () => {

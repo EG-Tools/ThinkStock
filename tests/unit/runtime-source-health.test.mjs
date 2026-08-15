@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+await import("../../shared/runtime-freshness-policy.mjs");
 await import("../../docs/modules/runtime-source-health.js");
 
 const {
@@ -106,4 +107,18 @@ test("summarizes source coverage and quality without retaining error text", () =
   assert.equal(summary.latestObservedAt, 300);
   assert.equal(summary.coverage.credit.state, "stale");
   assert.equal(JSON.stringify(summary).includes("secret upstream detail"), false);
+});
+
+test("bounds repeated provider failures and recovers after the maximum backoff", () => {
+  let now = 50_000;
+  const health = createRuntimeSourceHealth(globalThis, { now: () => now, storage: null });
+  for (let index = 0; index < 100; index += 1) health.failure("credit", new Error("HTTP 503"));
+
+  assert.equal(health.snapshot().credit.failureCount, 20);
+  assert.equal(health.canAttempt("credit").waitMs, 900_000);
+  now += 900_000;
+  assert.equal(health.canAttempt("credit").allowed, true);
+  health.success("credit", { latestDate: "2026-08-13" });
+  assert.equal(health.snapshot().credit.failureCount, 0);
+  assert.equal(health.snapshot().credit.latestDate, "2026-08-13");
 });

@@ -2,6 +2,67 @@
   "use strict";
 
   const SCENARIO_KEYS = Object.freeze(["upside", "sideways", "downside"]);
+  const PRIMARY_SCENARIO_STYLE = Object.freeze({
+    color: "rgba(248, 248, 248, 0.98)",
+    width: 2.9,
+  });
+  const SECONDARY_SCENARIO_STYLE = Object.freeze({
+    color: "rgba(138, 138, 138, 0.48)",
+    width: 1.8,
+  });
+
+  function resolveScenarioTraceStyle(isHighestProbability) {
+    return isHighestProbability ? PRIMARY_SCENARIO_STYLE : SECONDARY_SCENARIO_STYLE;
+  }
+
+  function isThickestAiScenarioTrace(trace) {
+    if (!trace?.meta?.isAiForecastScenarioTrace) return false;
+    const renderedWidth = Number(trace.line?.width);
+    const thickestWidth = Number(trace.meta?.thickestAiScenarioLineWidth);
+    return Number.isFinite(renderedWidth)
+      && Number.isFinite(thickestWidth)
+      && Math.abs(renderedWidth - thickestWidth) < 0.001;
+  }
+
+  function withoutStockCode(value) {
+    return String(value || "").replace(/\s*\(\d{6}\)/g, "").replace(/\s{2,}/g, " ").trim();
+  }
+
+  function buildRepresentativeReportLink(
+    report,
+    escapeHtml = (value) => String(value || ""),
+  ) {
+    if (!report?.sourceUrl || !report?.title) return "";
+    const date = String(report.publishedDate || "").slice(0, 10);
+    const title = withoutStockCode(report.title);
+    return `<br>참고 리포트 · ${escapeHtml(date)} · ${escapeHtml(title).replaceAll("%", "&#37;")}`;
+  }
+
+  function representativeReportFromForecastClick(eventData) {
+    const point = eventData?.points?.find((candidate) => (
+      isThickestAiScenarioTrace(candidate?.data)
+      && candidate?.data?.meta?.representativeReport
+    ));
+    const report = point?.data?.meta?.representativeReport;
+    if (!report?.sourceUrl || !report?.title) return null;
+    try {
+      const url = new URL(String(report.sourceUrl));
+      const allowed = url.protocol === "https:" && (
+        url.hostname === "consensus.hankyung.com"
+        || (url.hostname === "stock.pstatic.net"
+          && /^\/stock-research\/company\/\d{1,4}\/20\d{6}_company_\d{1,12}\.pdf$/i.test(url.pathname))
+      );
+      if (!allowed) return null;
+      return Object.freeze({ point, report: Object.freeze({
+        broker: String(report.broker || ""),
+        publishedDate: String(report.publishedDate || "").slice(0, 10),
+        sourceUrl: url.toString(),
+        title: String(report.title || "").trim(),
+      }) });
+    } catch (_) {
+      return null;
+    }
+  }
 
   function createAiForecastTraces(options = {}) {
     const {
@@ -20,6 +81,7 @@
       formatActualValue,
       getAiForecastCacheService,
       getMacdModelForSeries,
+      getStructuralProfile,
       labelName,
       queueAiForecastJournalSync,
       resetAiForecastProgress,
@@ -60,6 +122,7 @@
         const analysis = state.aiAnalysisByTicker.get(series) || null;
         if (state.aiContextPendingTickers.has(series)) return [];
         if (state.aiAnalysisPendingTickers.has(series) && !analysis) return [];
+        const brokerResearch = state.brokerResearchByTicker.get(series) || null;
         const historyRows = aiForecastHistoryRows(series);
         const macdModel = getMacdModelForSeries(series);
         const priceDate = String(historyRows.at(-1)?.date || "").slice(0, 10);
@@ -70,7 +133,12 @@
           const date = String(row?.date || "").slice(0, 10);
           return date <= today && date > latest ? date : latest;
         }, "");
-        const decisionDate = [priceDate, analysisAsOf?.asOf || "", disclosureDate]
+        const decisionDate = [
+          priceDate,
+          analysisAsOf?.asOf || "",
+          disclosureDate,
+          String(brokerResearch?.latestAvailableDate || brokerResearch?.latestDate || "").slice(0, 10),
+        ]
           .sort()
           .at(-1);
         const options = {
@@ -96,6 +164,10 @@
           consensus: analysisAsOf?.consensus || null,
           financials: analysisAsOf?.financials || [],
           internetNews: analysisAsOf?.news || [],
+          brokerResearch,
+          structuralProfile: typeof getStructuralProfile === "function"
+            ? getStructuralProfile(series)
+            : null,
           marketModel: state.aiMarketModel,
           macdSignal: macdModel?.signal || 0,
           horizon: 126,
@@ -202,10 +274,10 @@
           backtestConfidence: confidence,
           modelName: String(forecast.model?.name || ""),
         };
-        const scenarioStyles = {
-          upside: { color: "rgba(220, 220, 220, 0.88)", width: 2.1, textposition: "top left" },
-          sideways: { color: "rgba(178, 178, 178, 0.78)", width: 1.9, textposition: "middle left" },
-          downside: { color: "rgba(142, 142, 142, 0.82)", width: 1.8, textposition: "bottom left" },
+        const scenarioTextPositions = {
+          upside: "top left",
+          sideways: "middle left",
+          downside: "bottom left",
         };
         const forecastBasePrice = Number(forecast.prices?.[0]);
         const forecastEndPrice = Number(forecast.prices?.at(-1));
@@ -216,21 +288,23 @@
           expectedReturn,
           flatBand: forecast.scenarios?.calibration?.flatBand,
         });
+        const representativeReport = options.brokerResearch?.representativeReports?.reference
+          || null;
+        const highestScenarioWeight = Math.max(...Object.values(scenarioPresentation.weights));
         SCENARIO_KEYS.forEach((scenarioKey) => {
           const scenario = forecast.scenarios?.[scenarioKey];
           if (!scenario?.prices?.length || !scenario?.chartValues?.length) return;
-          const style = scenarioStyles[scenarioKey];
           const scenarioWeight = scenarioPresentation.weights[scenarioKey];
           const isRawPrimaryScenario = scenarioKey === scenarioPresentation.rawPrimaryKey;
+          const isEmphasizedScenario = scenarioWeight === highestScenarioWeight;
           const isPrimaryScenario = scenarioKey === scenarioPresentation.representativeKey;
-          const isDecisivePrimary = isPrimaryScenario && scenarioPresentation.decisive;
-          const lineColor = isDecisivePrimary
-            ? "rgba(248, 248, 248, 0.98)"
-            : (isPrimaryScenario ? "rgba(232, 232, 232, 0.9)" : style.color);
-          const lineWidth = isDecisivePrimary ? 2.9 : (isPrimaryScenario ? 2.45 : style.width);
+          const traceStyle = resolveScenarioTraceStyle(isEmphasizedScenario);
           const scenarioLabel = String(scenario.label || scenario.directionLabel || scenarioKey);
           const scenarioShortLabel = String(scenario.shortLabel || scenarioLabel);
           const endpointText = `${scenarioShortLabel} 가중치 ${scenarioWeight}%`;
+          const reportLink = isRawPrimaryScenario
+            ? buildRepresentativeReportLink(representativeReport, escapeHtml)
+            : "";
           const labels = forecast.dates.map((_, index) => (
             index === forecast.dates.length - 1 ? endpointText : ""
           ));
@@ -249,11 +323,11 @@
             hoverinfo: chartSession.hoverShowPopup ? undefined : "skip",
             hovertemplate: chartSession.hoverShowPopup
               ? `<b>${escapeHtml(scenarioLabel)} 가중치 ${scenarioWeight}%</b> · %{hovertext}`
-                + `<br>${escapeHtml(scenario.reason)} · 실제 확률 아님<extra></extra>`
+                + `<br>${escapeHtml(scenario.reason)} · 실제 확률 아님${reportLink}<extra></extra>`
               : undefined,
-            textposition: style.textposition,
-            textfont: { color: lineColor, size: isDecisivePrimary ? 12 : 11 },
-            line: { color: lineColor, width: lineWidth, dash: "dot", shape: "linear" },
+            textposition: scenarioTextPositions[scenarioKey],
+            textfont: { color: traceStyle.color, size: isEmphasizedScenario ? 12 : 11 },
+            line: { color: traceStyle.color, width: traceStyle.width, dash: "dot", shape: "linear" },
             meta: {
               ...commonMeta,
               isAiForecastTrace: scenarioKey === "sideways",
@@ -265,10 +339,13 @@
               validationStatus: String(forecast.validation?.status || "experimental"),
               isPrimaryAiScenario: isPrimaryScenario,
               isRawPrimaryAiScenario: isRawPrimaryScenario,
+              isEmphasizedAiScenario: isEmphasizedScenario,
+              thickestAiScenarioLineWidth: PRIMARY_SCENARIO_STYLE.width,
               isDecisiveAiScenario: scenarioPresentation.decisive,
               aiScenarioLead: scenarioPresentation.lead,
               aiExpectedDirection: scenarioPresentation.expectedDirection,
               scenarioReason: scenario.reason,
+              representativeReport,
               scenarioPatternKey: String(scenario.patternKey || scenarioKey),
               scenarioPathSource: String(scenario.pathSource || ""),
               scenarioPatternAnalogCount: Number(scenario.patternAnalogCount) || 0,
@@ -300,6 +377,11 @@
   }
 
   globalScope.ThinkStockAiForecastTraces = Object.freeze({
+    buildRepresentativeReportLink,
     createAiForecastTraces,
+    isThickestAiScenarioTrace,
+    representativeReportFromForecastClick,
+    resolveScenarioTraceStyle,
+    withoutStockCode,
   });
 }(typeof self !== "undefined" ? self : globalThis));

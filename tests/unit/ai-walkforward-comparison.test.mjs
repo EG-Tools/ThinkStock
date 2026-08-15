@@ -7,6 +7,7 @@ import {
   classifyWalkforwardRegime,
   compareWalkforwardReports,
   evaluateWalkforwardComparison,
+  walkforwardCohortSets,
 } from "../../shared/ai-walkforward-comparison.mjs";
 
 function observation(overrides = {}) {
@@ -49,6 +50,22 @@ test("walk-forward comparison separates market regime results", () => {
   assert.equal(comparison.behaviors.market[126].after.samples, 1);
   assert.equal(comparison.cycles.neutral[126].after.samples, 1);
   assert.equal(comparison.cohorts.all[126].after.improvementVsMomentum, 0.4545);
+});
+
+test("walk-forward cohorts honor an explicit ticker-disjoint validation split", () => {
+  const selection = {
+    KOSPI: ["DEV1.KS", "DEV2.KS", "DEV3.KS", "HOLD.KS"],
+    KOSDAQ: ["DEV1.KQ", "DEV2.KQ", "DEV3.KQ", "HOLD.KQ"],
+  };
+  const split = {
+    development: { KOSPI: selection.KOSPI.slice(0, 3), KOSDAQ: selection.KOSDAQ.slice(0, 3) },
+    holdout: { KOSPI: ["HOLD.KS"], KOSDAQ: ["HOLD.KQ"] },
+  };
+  const cohorts = walkforwardCohortSets(selection, split);
+  assert.equal(cohorts.development.size, 6);
+  assert.equal(cohorts.holdout.size, 2);
+  assert.equal(cohorts.holdout.has("HOLD.KS"), true);
+  assert.equal(cohorts.development.has("HOLD.KS"), false);
 });
 
 test("walk-forward comparison keeps both models in the champion cohort", () => {

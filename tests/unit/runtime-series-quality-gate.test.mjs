@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+await import("../../shared/runtime-foundation.mjs");
 await import("../../shared/series-integrity.mjs");
 await import("../../docs/modules/data-health.js");
 await import("../../docs/modules/runtime-data-transaction.js");

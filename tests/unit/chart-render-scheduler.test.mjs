@@ -37,11 +37,40 @@ test("coalesces typed invalidations and passes one combined render description",
   frames.shift()();
   await new Promise((resolve) => setTimeout(resolve, 0));
 
-  assert.deepEqual(renders, [{
-    reasons: ["viewport-pan", "event-marker-data"],
-    updateClasses: ["viewport", "markers"],
-  }]);
+  assert.equal(renders.length, 1);
+  assert.deepEqual(renders[0].reasons, ["viewport-pan", "event-marker-data"]);
+  assert.deepEqual(renders[0].updateClasses, ["viewport", "markers"]);
+  assert.equal(renders[0].transactionId, 1);
+  assert.equal(renders[0].requestCount, 2);
+  assert.equal(renders[0].shouldAbort(), false);
   assert.equal(scheduler.stats().coalescedRequests, 1);
+});
+
+test("marks an in-flight data transaction stale and runs one replacement", async () => {
+  const frames = [];
+  const invalidations = [];
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  const scheduler = createChartRenderScheduler({}, {
+    requestFrame: (callback) => { frames.push(callback); return frames.length; },
+    cancelFrame: () => {},
+    render: async (_preserveZoom, invalidation) => {
+      invalidations.push(invalidation);
+      if (invalidations.length === 1) await firstGate;
+    },
+  });
+
+  scheduler.request(true, { reason: "price", updateClass: "data" });
+  frames.shift()();
+  await Promise.resolve();
+  scheduler.request(true, { reason: "viewport", updateClass: "viewport" });
+  assert.equal(invalidations[0].shouldAbort(), true);
+  releaseFirst();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(invalidations.length, 2);
+  assert.deepEqual(invalidations[1].reasons, ["viewport"]);
+  assert.equal(scheduler.stats().supersededTransactions, 1);
 });
 
 test("defers rendering while chart interaction is active", () => {

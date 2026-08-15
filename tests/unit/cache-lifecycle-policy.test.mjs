@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+await import("../../shared/runtime-foundation.mjs");
 await import("../../docs/modules/cache-lifecycle-policy.js");
 const cachePolicy = globalThis.ThinkStockCacheLifecyclePolicy;
 
@@ -29,4 +30,36 @@ test("expires idle records and invalidates likely corporate-action boundaries", 
   assert.equal(cachePolicy.recordLifecycle({ lastAccessed: now - 10 * 86400000 }, "tickerAiAnalysis", { now }), "active");
   assert.equal(cachePolicy.shouldInvalidatePriceBoundary({ ratio: 2.1, boundaryDays: 3 }), true);
   assert.equal(cachePolicy.shouldInvalidatePriceBoundary({ ratio: 1.1, boundaryDays: 3 }), false);
+});
+
+test("adds stable cache metadata and detects a changed source fingerprint", () => {
+  const now = Date.parse("2026-08-12T03:00:00Z");
+  const fingerprint = cachePolicy.contentFingerprint([{ date: "2026-08-12", close: 100 }]);
+  const record = cachePolicy.withCacheMetadata({
+    schema: 2,
+    ticker: "005930.KS",
+    savedAt: now,
+  }, {
+    source: "ticker-price",
+    asOf: "2026-08-12",
+    revision: "2",
+    contentFingerprint: fingerprint,
+    now,
+    touch: true,
+  });
+
+  assert.equal(record.cacheMeta.source, "ticker-price");
+  assert.equal(record.cacheMeta.asOf, "2026-08-12");
+  assert.equal(cachePolicy.cacheMetadataIssue(record, {
+    source: "ticker-price",
+    revision: "2",
+    contentFingerprint: fingerprint,
+    now,
+  }), "");
+  assert.equal(cachePolicy.cacheMetadataIssue(record, {
+    source: "ticker-price",
+    revision: "2",
+    contentFingerprint: "changed",
+    now,
+  }), "content-mismatch");
 });

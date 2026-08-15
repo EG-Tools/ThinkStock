@@ -4,15 +4,15 @@
   "private": true,
   "description": "ThinkStock local and GitHub Pages web app",
   "scripts": {
-    "vendor:sync": "node scripts/build_plotly_bundle.cjs",
+    "vendor:sync": "node scripts/build_plotly_bundle.cjs && node scripts/sync_pdfjs_vendor.mjs",
     "check:sources": "node scripts/check_javascript_sources.mjs",
-    "build:web": "node scripts/check_javascript_sources.mjs --scope web && node scripts/build_pages_bundle.mjs",
+    "build:web": "node scripts/sync_pdfjs_vendor.mjs && node scripts/check_javascript_sources.mjs --scope web && node scripts/build_pages_bundle.mjs",
     "test": "npm run build:web && npm run test:unit:built",
     "test:unit:built": "node scripts/check_javascript_sources.mjs --scope runtime && node --test tests/unit/*.test.mjs && node scripts/validate_pages_data_local.mjs && node scripts/validate_pages_app.mjs",
     "test:affected": "node scripts/test_affected.mjs",
     "test:quick": "npm run test:affected",
     "test:webkit": "npm run build:web && npm run test:webkit:built",
-    "test:webkit:built": "playwright test --workers=1 --project=webkit --project=webkit-desktop --project=webkit-sw",
+    "test:webkit:built": "playwright test --workers=2 --project=webkit --project=webkit-desktop --project=webkit-sw",
     "test:webkit:mobile": "npm run build:web && npm run test:webkit:mobile:built",
     "test:webkit:mobile:built": "playwright test --workers=1 --project=webkit",
     "test:webkit:smoke": "npm run build:web && node scripts/run_webkit_scope.mjs smoke",
@@ -34,6 +34,11 @@
     "backtest:ai:verify": "node scripts/run_ai_walkforward_validation.mjs",
     "backtest:ai:summary": "node scripts/run_ai_walkforward_validation.mjs --summary-only",
     "backtest:ai:accept": "node scripts/run_ai_walkforward_validation.mjs --accept",
+    "backtest:broker-reports": "node scripts/backtest_broker_report_weights.mjs",
+    "backtest:qlib:setup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup_qlib_env.ps1",
+    "backtest:qlib:prepare": "node scripts/export_qlib_krx_manifest.mjs",
+    "backtest:qlib:quick": "node scripts/run_qlib_krx_challenger.mjs --quick --no-audit",
+    "backtest:qlib": "node scripts/run_qlib_krx_challenger.mjs",
     "check:ai-validation": "node scripts/check_ai_validation_status.mjs",
     "worker:deploy": "wrangler deploy --keep-vars --config worker/wrangler.jsonc",
     "worker:check": "wrangler deploy --dry-run --config worker/wrangler.jsonc",
@@ -41,7 +46,8 @@
     "release:pages": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release_pages.ps1"
   },
   "dependencies": {
-    "fflate": "^0.8.3"
+    "fflate": "^0.8.3",
+    "pdfjs-dist": "6.2.108"
   },
   "devDependencies": {
     "@babel/core": "^7.29.7",

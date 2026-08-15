@@ -31,6 +31,20 @@ test("merges valid incoming fields without erasing cached values", () => {
   ]);
 });
 
+test("does not coerce missing indicator values into zero", () => {
+  const rows = mergeDatedSeriesRows([], [
+    { date: "2026-01-02", leading_cycle: 102.2, news_sentiment: 112 },
+    { date: "2026-01-03", leading_cycle: null, news_sentiment: 113.99 },
+    { date: "2026-01-04", leading_cycle: "", news_sentiment: 116.9 },
+  ]);
+
+  assert.deepEqual(rows, [
+    { date: "2026-01-02", leading_cycle: 102.2, news_sentiment: 112 },
+    { date: "2026-01-03", news_sentiment: 113.99 },
+    { date: "2026-01-04", news_sentiment: 116.9 },
+  ]);
+});
+
 test("a partial series refresh preserves neighboring indicators on other dates", () => {
   const rows = mergeDatedSeriesRows(
     [

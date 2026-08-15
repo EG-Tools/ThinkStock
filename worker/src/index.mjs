@@ -48,6 +48,17 @@ import {
   mergeDartDisclosureRecords,
   recordFromDartItem,
 } from "../../shared/dart-disclosure.mjs";
+import { historicalFinancialSnapshotsFromRecord } from "../../shared/ai-analysis-snapshots.mjs";
+import {
+  buildHankyungReportListUrl,
+  buildHankyungReportPdfUrl,
+  buildNaverReportListUrl,
+  buildNaverReportPdfUrl,
+  decodeNaverReportListBytes,
+  parseHankyungReportListHtml,
+  parseNaverReportListHtml,
+  reportAgeDays,
+} from "../../shared/broker-report-source.mjs";
 
 import {
   ANALYSIS_CACHE_SCHEMA,
@@ -63,7 +74,7 @@ import {
   snapshotFromAnalysis,
 } from "./company-analysis.mjs";
 
-import { matchRequestRoute, queryFlag } from "./request-router.mjs";
+import { dispatchRequestRoute, matchRequestRoute, queryFlag } from "./request-router.mjs";
 import { adminSessionResponse } from "./admin-session-handler.mjs";
 import {
   FORECAST_JOURNAL_INPUT_LIMIT,
@@ -99,6 +110,7 @@ import {
   isAllowedOrigin,
   isValidIsoDate,
   jsonResponse,
+  readBoundedResponseBytes,
   readBoundedResponseText,
   readCacheBestEffort,
   shiftDate,
@@ -136,6 +148,8 @@ const DART_LIST_URL = "https://opendart.fss.or.kr/api/list.json";
 const DART_ELESTOCK_URL = "https://opendart.fss.or.kr/api/elestock.json";
 const DART_MAJORSTOCK_URL = "https://opendart.fss.or.kr/api/majorstock.json";
 const DART_DOCUMENT_URL = "https://opendart.fss.or.kr/api/document.xml";
+const BROKER_REPORT_LIST_MAX_BYTES = 2 * 1024 * 1024;
+const BROKER_REPORT_PDF_MAX_BYTES = 12 * 1024 * 1024;
 const KRX_STOCK_BASE_URL = "https://data-dbg.krx.co.kr/svc/apis/sto";
 const KRX_INDEX_BASE_URL = "https://data-dbg.krx.co.kr/svc/apis/idx";
 const NAVER_STOCK_PRICE_URL = "https://api.finance.naver.com/siseJson.naver";
@@ -1645,7 +1659,10 @@ async function analysisResponse(env, ctx, ticker, origin, options = {}) {
     const currentSnapshot = snapshotFromAnalysis(analysis);
     analysis.snapshots = mergeAnalysisSnapshots(
       cached?.snapshots || [],
-      currentSnapshot ? [currentSnapshot] : [],
+      [
+        ...historicalFinancialSnapshotsFromRecord(analysis),
+        ...(currentSnapshot ? [currentSnapshot] : []),
+      ],
     );
     const write = writeCachesBestEffort("company-analysis", [
       () => writeAnalysisCache(env, ticker, analysis),
@@ -2296,6 +2313,192 @@ async function forecastJournalResponse(request, env, ticker, origin) {
   }
 }
 
+async function brokerReportsResponse(ticker, url, origin) {
+  const days = Number(url.searchParams.get("days")) <= 90 ? 90 : 180;
+  const requestedAsOf = String(url.searchParams.get("asOf") || "").slice(0, 10);
+  const source = url.searchParams.get("source") === "naver" ? "naver" : "hankyung";
+  const asOf = isValidIsoDate(requestedAsOf) ? requestedAsOf : new Date().toISOString().slice(0, 10);
+  const sourceUrl = source === "naver"
+    ? buildNaverReportListUrl(ticker)
+    : buildHankyungReportListUrl(ticker, { days, asOf });
+  try {
+    const upstream = await fetch(sourceUrl, {
+      headers: {
+        Accept: "text/html,application/xhtml+xml",
+        ...(source === "naver" ? { Referer: "https://finance.naver.com/" } : {}),
+        "User-Agent": "ThinkStock/2 broker-research",
+      },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!upstream.ok) throw new Error(`${source === "naver" ? "Naver Finance" : "Hankyung Consensus"} HTTP ${upstream.status}`);
+    const html = source === "naver"
+      ? decodeNaverReportListBytes(await readBoundedResponseBytes(
+        upstream,
+        BROKER_REPORT_LIST_MAX_BYTES,
+        "Broker report list",
+      ))
+      : await readBoundedResponseText(upstream, BROKER_REPORT_LIST_MAX_BYTES, "Broker report list");
+    const reports = (source === "naver"
+      ? parseNaverReportListHtml(html, ticker)
+      : parseHankyungReportListHtml(html, ticker))
+      .filter((report) => reportAgeDays(report.publishedDate, asOf) < days);
+    return jsonResponse({
+      ok: true,
+      ticker,
+      days,
+      reports,
+      source: source === "naver" ? "Naver Finance" : "Hankyung Consensus",
+    }, 200, origin);
+  } catch (error) {
+    return jsonResponse({
+      ok: false,
+      error: `Broker report list failed: ${error?.message || error}`,
+    }, 503, origin);
+  }
+}
+
+async function brokerReportPdfResponse(url, origin) {
+  let sourceUrl = "";
+  let reportId = "";
+  const source = url.searchParams.get("source") === "naver" ? "naver" : "hankyung";
+  try {
+    reportId = String(url.searchParams.get("reportId") || "").trim();
+    if (source === "naver") {
+      if (!/^naver-\d{1,12}$/.test(reportId)) throw new Error("Broker report id is invalid");
+      sourceUrl = buildNaverReportPdfUrl(url.searchParams.get("sourceUrl"));
+    } else {
+      sourceUrl = buildHankyungReportPdfUrl(reportId);
+    }
+  } catch (_) {
+    return jsonResponse({ ok: false, error: "Broker report id is invalid" }, 400, origin);
+  }
+  try {
+    const upstream = await fetch(sourceUrl, {
+      headers: {
+        Accept: "application/pdf",
+        ...(source === "naver" ? { Referer: "https://finance.naver.com/" } : {}),
+        "User-Agent": "ThinkStock/2 broker-research",
+      },
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!upstream.ok) throw new Error(`${source === "naver" ? "Naver Finance" : "Hankyung Consensus"} PDF HTTP ${upstream.status}`);
+    const bytes = await readBoundedResponseBytes(
+      upstream,
+      BROKER_REPORT_PDF_MAX_BYTES,
+      "Broker report PDF",
+    );
+    if (new TextDecoder().decode(bytes.slice(0, 5)) !== "%PDF-") {
+      throw new Error("Broker report response is not a PDF");
+    }
+    return new Response(bytes, {
+      status: 200,
+      headers: {
+        ...corsHeaders(origin),
+        "Cache-Control": "private, no-store",
+        "Content-Disposition": `inline; filename=broker-report-${reportId}.pdf`,
+        "Content-Length": String(bytes.byteLength),
+        "Content-Type": "application/pdf",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  } catch (error) {
+    return jsonResponse({
+      ok: false,
+      error: `Broker report PDF failed: ${error?.message || error}`,
+    }, 503, origin);
+  }
+}
+
+const ROUTE_HANDLERS = Object.freeze({
+  "auth-check": ({ origin }) => jsonResponse({ ok: true }, 200, origin),
+  "admin-session": ({ request, env, origin }) => (
+    adminSessionResponse(request, env, origin, { jsonResponse, tokensMatch })
+  ),
+  macro: ({ env, origin, url }) => (
+    ecosMacroResponse(env, origin, queryFlag(url.searchParams.get("refresh")))
+  ),
+  credit: ({ env, origin, url }) => (
+    creditMacroResponse(env, origin, queryFlag(url.searchParams.get("refresh")))
+  ),
+  "crisis-signal": ({ env, origin, url, accessAuthorized }) => crisisSignalResponse(
+    env,
+    origin,
+    accessAuthorized && queryFlag(url.searchParams.get("refresh")),
+  ),
+  adr: ({ env, origin, url }) => (
+    adrMarketResponse(env, origin, queryFlag(url.searchParams.get("refresh")))
+  ),
+  bootstrap: ({ env, origin, url }) => runtimeBootstrapResponse(env, url, origin),
+  indices: ({ env, origin, url }) => krxCoreIndexResponse(
+    env,
+    origin,
+    queryFlag(url.searchParams.get("refresh")),
+    url.searchParams.get("since"),
+  ),
+  "research-universe": ({ env, origin, url }) => researchUniverseResponse(
+    env,
+    origin,
+    queryFlag(url.searchParams.get("refresh")),
+    url.searchParams.get("limit"),
+  ),
+  "research-summary": ({ request, env, origin, url }) => (
+    researchSummaryResponse(request, env, url, origin)
+  ),
+  "prices-batch": ({ env, origin, url }) => krxBatchPriceResponse(
+    env,
+    String(url.searchParams.get("tickers") || "").split(","),
+    origin,
+  ),
+  prices: ({ env, ticker, origin }) => krxPriceResponse(env, ticker, origin),
+  "research-history": ({ env, ticker, origin, url }) => researchHistoryResponse(
+    env,
+    ticker,
+    origin,
+    {
+      sinceDate: url.searchParams.get("since"),
+      forceFull: queryFlag(url.searchParams.get("full")),
+    },
+  ),
+  "research-profile": ({ env, ticker, origin }) => researchProfileResponse(env, ticker, origin),
+  "forecast-journal": ({ request, env, ticker, origin }) => (
+    forecastJournalResponse(request, env, ticker, origin)
+  ),
+  consensus: ({ env, workerContext, ticker, origin, url }) => analysisResponse(
+    env,
+    workerContext,
+    ticker,
+    origin,
+    {
+      requireFinancials: false,
+      requireNews: false,
+      forceRefresh: queryFlag(url.searchParams.get("refresh")),
+    },
+  ),
+  analysis: ({ env, workerContext, ticker, origin, url }) => analysisResponse(
+    env,
+    workerContext,
+    ticker,
+    origin,
+    {
+      requireFinancials: true,
+      requireNews: true,
+      forceRefresh: queryFlag(url.searchParams.get("refresh")),
+    },
+  ),
+  "broker-reports": ({ ticker, origin, url }) => brokerReportsResponse(ticker, url, origin),
+  "broker-report-pdf": ({ origin, url }) => brokerReportPdfResponse(url, origin),
+  "insider-trades": ({ env, workerContext, ticker, corpCode, origin, url }) => (
+    insiderTradeResponse(
+      env,
+      workerContext,
+      ticker,
+      corpCode,
+      origin,
+      queryFlag(url.searchParams.get("force")),
+    )
+  ),
+});
+
 export async function handleRequest(request, env, ctx = null) {
   const origin = String(request.headers.get("Origin") || "");
   if (!isAllowedOrigin(origin)) return jsonResponse({ ok: false, error: "허용되지 않은 앱 주소입니다." }, 403, origin);
@@ -2326,74 +2529,35 @@ export async function handleRequest(request, env, ctx = null) {
   if (route.authenticated && !accessAuthorized) {
     return jsonResponse({ ok: false, error: "개인 접속 코드가 올바르지 않습니다." }, 401, origin);
   }
-  if (route.id === "auth-check") return jsonResponse({ ok: true }, 200, origin);
-  if (route.id === "admin-session") {
-    return adminSessionResponse(request, env, origin, { jsonResponse, tokensMatch });
-  }
-  if (route.id === "macro") {
-    const refresh = queryFlag(url.searchParams.get("refresh"));
-    return ecosMacroResponse(env, origin, refresh);
-  }
-  if (route.id === "credit") {
-    const refresh = queryFlag(url.searchParams.get("refresh"));
-    return creditMacroResponse(env, origin, refresh);
-  }
-  if (route.id === "crisis-signal") {
-    // Public clients may read validated market data; only authenticated clients may force upstream calls.
-    const refresh = accessAuthorized && queryFlag(url.searchParams.get("refresh"));
-    return crisisSignalResponse(env, origin, refresh);
-  }
-  if (route.id === "adr") {
-    const refresh = queryFlag(url.searchParams.get("refresh"));
-    return adrMarketResponse(env, origin, refresh);
-  }
-  if (route.id === "bootstrap") return runtimeBootstrapResponse(env, url, origin);
-  if (route.id === "indices") {
-    const refresh = queryFlag(url.searchParams.get("refresh"));
-    return krxCoreIndexResponse(env, origin, refresh, url.searchParams.get("since"));
-  }
-  if (route.id === "research-universe") {
-    return researchUniverseResponse(
-      env,
-      origin,
-      queryFlag(url.searchParams.get("refresh")),
-      url.searchParams.get("limit"),
-    );
-  }
-  if (route.id === "research-summary") return researchSummaryResponse(request, env, url, origin);
-  if (route.id === "prices-batch") {
-    const tickers = String(url.searchParams.get("tickers") || "").split(",");
-    return krxBatchPriceResponse(env, tickers, origin);
-  }
   const ticker = String(url.searchParams.get("ticker") || "").trim().toUpperCase();
   if (route.ticker && !TICKER_PATTERN.test(ticker)) {
     return jsonResponse({ ok: false, error: "종목코드 형식이 올바르지 않습니다." }, 400, origin);
   }
-  if (route.id === "prices") return krxPriceResponse(env, ticker, origin);
-  if (route.id === "research-history") {
-    return researchHistoryResponse(env, ticker, origin, {
-      sinceDate: url.searchParams.get("since"),
-      forceFull: queryFlag(url.searchParams.get("full")),
-    });
+  if (route.provider === "dart" && !env.DART_API_KEY) {
+    return jsonResponse({ ok: false, error: "Cloudflare에 DART 키가 설정되지 않았습니다." }, 503, origin);
   }
-  if (route.id === "research-profile") return researchProfileResponse(env, ticker, origin);
-  if (route.id === "forecast-journal") return forecastJournalResponse(request, env, ticker, origin);
-  if (["consensus", "analysis"].includes(route.id)) {
-    return analysisResponse(env, ctx, ticker, origin, {
-      requireFinancials: route.id === "analysis",
-      requireNews: route.id === "analysis",
-      forceRefresh: queryFlag(url.searchParams.get("refresh")),
-    });
-  }
-  if (!env.DART_API_KEY) return jsonResponse({ ok: false, error: "Cloudflare에 DART 키가 설정되지 않았습니다." }, 503, origin);
 
   const corpCode = String(url.searchParams.get("corpCode") || "").trim();
   if (route.corpCode && !CORP_CODE_PATTERN.test(corpCode)) {
     return jsonResponse({ ok: false, error: "종목 또는 DART 회사코드 형식이 올바르지 않습니다." }, 400, origin);
   }
 
+  const routedResponse = dispatchRequestRoute(route, ROUTE_HANDLERS, {
+    request,
+    env,
+    workerContext: ctx,
+    origin,
+    url,
+    ticker,
+    corpCode,
+    accessAuthorized,
+  });
+  if (routedResponse) return routedResponse;
+  if (route.id !== "dart-disclosures") {
+    return jsonResponse({ ok: false, error: "Not found" }, 404, origin);
+  }
+
   const force = queryFlag(url.searchParams.get("force"));
-  if (route.id === "insider-trades") return insiderTradeResponse(env, ctx, ticker, corpCode, origin, force);
   const progressive = queryFlag(url.searchParams.get("progressive"));
   const requestedPage = Math.min(MAX_PAGES, Math.max(1, Number(url.searchParams.get("page")) || 1));
   const cached = await readCache(env, ticker);

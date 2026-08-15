@@ -204,19 +204,82 @@
     };
   }
 
-  function collectFiniteRangeValues(dates, valueSeries, startDate = "", endDate = "") {
-    const output = [];
+  const sortedDateCache = new WeakMap();
+
+  function sortedDateInfo(dates) {
+    if (!Array.isArray(dates)) return { sorted: false, start: 0, end: 0 };
+    const cached = sortedDateCache.get(dates);
+    const first = dates[0];
+    const last = dates.at(-1);
+    if (cached && cached.length === dates.length && cached.first === first && cached.last === last) {
+      return cached;
+    }
+    let sorted = true;
+    for (let index = 1; index < dates.length; index += 1) {
+      if (String(dates[index - 1] || "").slice(0, 10) > String(dates[index] || "").slice(0, 10)) {
+        sorted = false;
+        break;
+      }
+    }
+    const result = { sorted, first, last, length: dates.length };
+    sortedDateCache.set(dates, result);
+    return result;
+  }
+
+  function dateLowerBound(dates, target) {
+    let low = 0;
+    let high = dates.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (String(dates[middle] || "").slice(0, 10) < target) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  }
+
+  function dateUpperBound(dates, target) {
+    let low = 0;
+    let high = dates.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (String(dates[middle] || "").slice(0, 10) <= target) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  }
+
+  function finiteRangeExtrema(dates, valueSeries, startDate = "", endDate = "") {
     const safeDates = Array.isArray(dates) ? dates : [];
     const safeSeries = Array.isArray(valueSeries) ? valueSeries : [];
-    safeDates.forEach((rawDate, index) => {
-      const date = String(rawDate || "").slice(0, 10);
-      if (!date || (startDate && date < startDate) || (endDate && date > endDate)) return;
-      safeSeries.forEach((values) => {
+    const dateInfo = sortedDateInfo(safeDates);
+    const startIndex = dateInfo.sorted && startDate ? dateLowerBound(safeDates, startDate) : 0;
+    const endIndex = dateInfo.sorted && endDate ? dateUpperBound(safeDates, endDate) : safeDates.length;
+    let minimum = Number.POSITIVE_INFINITY;
+    let maximum = Number.NEGATIVE_INFINITY;
+    let count = 0;
+    for (let index = startIndex; index < endIndex; index += 1) {
+      if (!dateInfo.sorted) {
+        const date = String(safeDates[index] || "").slice(0, 10);
+        if (!date || (startDate && date < startDate) || (endDate && date > endDate)) continue;
+      }
+      for (const values of safeSeries) {
         const value = toNumber(values?.[index]);
-        if (value !== null) output.push(value);
-      });
-    });
-    return output;
+        if (value === null) continue;
+        minimum = Math.min(minimum, value);
+        maximum = Math.max(maximum, value);
+        count += 1;
+      }
+    }
+    return { minimum, maximum, count };
+  }
+
+  function mergeExtrema(...items) {
+    const valid = items.filter((item) => item?.count > 0);
+    return {
+      count: valid.reduce((sum, item) => sum + item.count, 0),
+      minimum: valid.length ? Math.min(...valid.map((item) => item.minimum)) : Number.POSITIVE_INFINITY,
+      maximum: valid.length ? Math.max(...valid.map((item) => item.maximum)) : Number.NEGATIVE_INFINITY,
+    };
   }
 
   function insertDatedGapBreaks(rows, key, maximumCalendarGap = 20) {
@@ -312,45 +375,45 @@
     const adrHighThreshold = Number(options.adrHighThreshold) || 120;
     const newsLowThreshold = Number(options.newsLowThreshold) || 90;
     const newsHighThreshold = Number(options.newsHighThreshold) || 110;
-    const adrValues = [
-      ...collectFiniteRangeValues(
+    const adrRange = mergeExtrema(
+      finiteRangeExtrema(
         model.adrKospiDates || model.dates,
         [model.adrKospiValues || model.kospiValues],
         startDate,
         endDate,
       ),
-      ...collectFiniteRangeValues(
+      finiteRangeExtrema(
         model.adrKosdaqDates || model.dates,
         [model.adrKosdaqValues || model.kosdaqValues],
         startDate,
         endDate,
       ),
-    ];
-    const newsValues = collectFiniteRangeValues(
+    );
+    const newsRange = finiteRangeExtrema(
       model.newsDates,
       [model.newsValues],
       startDate,
       endDate,
     );
-    const vkospiValues = collectFiniteRangeValues(
+    const vkospiRange = finiteRangeExtrema(
       model.vkospiDates,
       [model.vkospiValues],
       startDate,
       endDate,
     );
-    const vixValues = collectFiniteRangeValues(
+    const vixRange = finiteRangeExtrema(
       model.vixDates,
       [model.vixValues],
       startDate,
       endDate,
     );
-    const adrMinimum = adrValues.length ? Math.min(...adrValues, adrLowThreshold) : adrLowThreshold;
-    const adrMaximum = adrValues.length ? Math.max(...adrValues, adrHighThreshold) : adrHighThreshold;
-    const newsMinimum = newsValues.length ? Math.min(...newsValues, newsLowThreshold) : newsLowThreshold;
-    const newsMaximum = newsValues.length ? Math.max(...newsValues, newsHighThreshold) : newsHighThreshold;
-    const volatilityValues = [...vkospiValues, ...vixValues];
-    const vkospiMinimum = volatilityValues.length ? Math.min(...volatilityValues) : 10;
-    const vkospiMaximum = volatilityValues.length ? Math.max(...volatilityValues) : 40;
+    const volatilityRange = mergeExtrema(vkospiRange, vixRange);
+    const adrMinimum = adrRange.count ? Math.min(adrRange.minimum, adrLowThreshold) : adrLowThreshold;
+    const adrMaximum = adrRange.count ? Math.max(adrRange.maximum, adrHighThreshold) : adrHighThreshold;
+    const newsMinimum = newsRange.count ? Math.min(newsRange.minimum, newsLowThreshold) : newsLowThreshold;
+    const newsMaximum = newsRange.count ? Math.max(newsRange.maximum, newsHighThreshold) : newsHighThreshold;
+    const vkospiMinimum = volatilityRange.count ? volatilityRange.minimum : 10;
+    const vkospiMaximum = volatilityRange.count ? volatilityRange.maximum : 40;
     const vkospiPadding = Math.max(1, (vkospiMaximum - vkospiMinimum) * 0.08);
 
     return {

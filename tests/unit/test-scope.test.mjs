@@ -49,6 +49,12 @@ test("affected test scope keeps runtime bootstrap changes under WebKit smoke cov
   assert.deepEqual(scope.unitTests, ["tests/unit/runtime-bootstrap.test.mjs"]);
 });
 
+test("broker report runtime changes retain WebKit smoke coverage", () => {
+  const scope = classifyChangedFiles(["docs/modules/broker-research-cache.js"]);
+  assert.equal(scope.runWebkitSmoke, true);
+  assert.deepEqual(scope.unitTests, ["tests/unit/broker-research-cache.test.mjs"]);
+});
+
 test("affected test scope adds service-worker coverage only when needed", () => {
   const scope = classifyChangedFiles(["docs/sw.js"]);
   assert.equal(scope.runWebkitSmoke, false);

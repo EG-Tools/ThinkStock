@@ -1,9 +1,33 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+await import("../../shared/runtime-foundation.mjs");
 await import("../../shared/series-integrity.mjs");
 await import("../../docs/modules/runtime-series-merge.js");
 const merge = globalThis.ThinkStockRuntimeSeriesMerge;
+
+test("normalizes duplicate dated values through one shared path", () => {
+  assert.deepEqual(merge.normalizeDatedRows([
+    { date: "2026-08-02T09:00:00Z", news_sentiment: 99 },
+    { date: "2026-08-01", news_sentiment: 98 },
+    { date: "2026-08-02", news_sentiment: 101 },
+    { date: "invalid", news_sentiment: 120 },
+  ], ["news_sentiment"], { requireIsoDate: true }), [
+    { date: "2026-08-01", news_sentiment: 98 },
+    { date: "2026-08-02", news_sentiment: 101 },
+  ]);
+});
+
+test("normalizes sparse positive credit fields without replacing valid duplicates with zero", () => {
+  assert.deepEqual(merge.normalizeCreditInputRows([
+    { date: "2026-08-01", kospi_credit: 10, customer_deposit: 0 },
+    { date: "2026-08-01", kospi_credit: 0, customer_deposit: 20 },
+  ], ["kospi_credit", "customer_deposit"]), [
+    { date: "2026-08-01", kospi_credit: 10, customer_deposit: 20 },
+  ]);
+  assert.equal(merge.sameNullableNumber(null, ""), true);
+  assert.equal(merge.sameNullableNumber(10, "10"), true);
+});
 
 test("merges dated macro values without discarding unrelated fields", () => {
   const result = merge.mergeDatedSeries({
@@ -73,4 +97,45 @@ test("normalizes only bounded crisis scores", () => {
     stage: "crisis",
     uninversion: false,
   }]);
+});
+
+test("runtime controller commits each live series through one validated state path", () => {
+  const state = {
+    macro: [{ date: "2026-08-01", leading_cycle: 101 }],
+    credit: [{ date: "2026-08-01", kospi_credit: 10, customer_deposit: 20 }],
+    crisis: [],
+    adr: [{ date: "2026-08-01", adr_kospi: 95 }],
+  };
+  const changed = [];
+  const validated = [];
+  const controller = merge.createRuntimeSeriesController({
+    creditKeys: ["kospi_credit", "customer_deposit"],
+    getRows: (name) => state[name],
+    setRows: (name, rows) => { state[name] = rows; },
+    markChanged: (name) => changed.push(name),
+    validate: (label, _current, candidate) => {
+      validated.push(label);
+      return { rows: candidate };
+    },
+  });
+
+  controller.applyNewsSentimentLiveRows([
+    { date: "2026-08-02", news_sentiment: 102 },
+  ]);
+  controller.applyCreditLiveRows([
+    { date: "2026-08-02", kospi_credit: 11, customer_deposit: 21 },
+  ]);
+  controller.applyCrisisSignalRows([
+    { date: "2026-08-02", score: 55 },
+  ]);
+  controller.applyAuxiliarySeriesRows([
+    { date: "2026-08-02", vix: 18 },
+  ], "vix", "VIX");
+
+  assert.equal(state.macro.at(-1).news_sentiment, 102);
+  assert.equal(state.credit.at(-1).kospi_credit, 11);
+  assert.equal(state.crisis.at(-1).stage, "warning");
+  assert.equal(state.adr.at(-1).vix, 18);
+  assert.deepEqual(changed, ["macro", "credit", "crisis", "adr"]);
+  assert.deepEqual(validated, ["news sentiment", "credit balance", "recession signal", "VIX"]);
 });

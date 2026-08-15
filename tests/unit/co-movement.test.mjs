@@ -69,3 +69,16 @@ test("shortens a 30-year request to the target's actual history", () => {
   assert.equal(summary.periodLabel, "16년");
   assert.equal(summary.targetName, "테스트종목");
 });
+
+test("slices a sorted long history to the visible viewport", () => {
+  const rows = [
+    { date: "2026-01-01", stock: 100 },
+    { date: "2026-01-02", stock: 101 },
+    { date: "2026-01-03", stock: 102 },
+    { date: "2026-01-04", stock: 103 },
+  ];
+  assert.deepEqual(coMovement.sliceRowsByDateRange(rows, [
+    Date.parse("2026-01-02T00:00:00Z"),
+    Date.parse("2026-01-03T00:00:00Z"),
+  ]), rows.slice(1, 3));
+});

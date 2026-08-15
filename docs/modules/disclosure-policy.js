@@ -152,6 +152,7 @@
 
   function createTickerDisclosureCache(options = {}) {
     const schema = Number(options.schema) || 1;
+    const source = String(options.source || "ticker-disclosure-cache");
     const now = typeof options.now === "function" ? options.now : Date.now;
     const sanitizeRows = options.sanitizeRows;
     const readRecord = options.readRecord;
@@ -170,11 +171,15 @@
         if (!record) return null;
         const rows = sanitizeRows(record.rows).filter((row) => row.ticker === key);
         const latestDate = rows.at(-1)?.date || "";
+        const contentFingerprint = String(options.contentFingerprint?.(rows) || "");
         const issue = options.recordIssue?.(record, {
           schema,
           key,
           contentCount: rows.length,
           latestDate,
+          source,
+          revision: String(schema),
+          contentFingerprint,
         });
         if (issue) {
           await options.removeInvalid?.(key);
@@ -182,12 +187,20 @@
         }
         const accessedAt = now();
         const shouldTouch = options.shouldTouch?.(record.lastAccessed, accessedAt) === true;
-        const nextRecord = {
+        const baseRecord = {
           ...record,
           rows,
           lastAccessed: shouldTouch ? accessedAt : record.lastAccessed,
         };
-        if (shouldTouch) await writeRecord(key, nextRecord).catch(() => {});
+        const nextRecord = options.withMetadata?.(baseRecord, {
+          source,
+          revision: String(schema),
+          latestDate,
+          contentFingerprint,
+          now: accessedAt,
+          touch: shouldTouch,
+        }) || baseRecord;
+        if (shouldTouch || !record.cacheMeta) await writeRecord(key, nextRecord).catch(() => {});
         return nextRecord;
       } catch (_) {
         return null;
@@ -199,14 +212,24 @@
       const normalized = sanitizeRows(rows).filter((row) => row.ticker === key);
       if (!key || !normalized.length) return false;
       const savedAt = now();
-      const record = {
+      const latestDate = normalized.at(-1)?.date || "";
+      const contentFingerprint = String(options.contentFingerprint?.(normalized) || "");
+      const baseRecord = {
         schema,
         ticker: key,
         savedAt,
         lastAccessed: savedAt,
-        latestDate: normalized.at(-1)?.date || "",
+        latestDate,
         rows: normalized,
       };
+      const record = options.withMetadata?.(baseRecord, {
+        source,
+        revision: String(schema),
+        latestDate,
+        contentFingerprint,
+        now: savedAt,
+        touch: true,
+      }) || baseRecord;
       try {
         await writeRecord(key, record);
         options.schedulePrune?.();

@@ -1,8 +1,11 @@
+import { finiteOrNull } from "./runtime-foundation.mjs";
+
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 export const RECENT_ANALYSIS_WINDOW_DAYS = 120;
 export const RECENT_ANALYSIS_SNAPSHOT_LIMIT = 45;
 export const MONTHLY_ANALYSIS_SNAPSHOT_LIMIT = 60;
+export const HISTORICAL_FINANCIAL_SNAPSHOT_LIMIT = 48;
 
 export function analysisDateText(value) {
   const date = String(value || "").slice(0, 10);
@@ -26,9 +29,13 @@ function snapshotDate(value) {
     || analysisDateText(value?.asOf ?? value?.as_of);
 }
 
-function finiteOrNull(value) {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : null;
+function nextCalendarDate(value) {
+  const date = analysisDateText(value);
+  if (!date) return "";
+  const timestamp = Date.parse(`${date}T00:00:00Z`);
+  return Number.isFinite(timestamp)
+    ? new Date(timestamp + 86400000).toISOString().slice(0, 10)
+    : "";
 }
 
 function fnv1a(text) {
@@ -212,6 +219,56 @@ export function analysisSnapshotFromRecord(record) {
   };
 }
 
+export function historicalFinancialSnapshotsFromRecord(record, options = {}) {
+  const limit = Math.max(1, Number(options.limit) || HISTORICAL_FINANCIAL_SNAPSHOT_LIMIT);
+  const byVersion = new Map();
+  (Array.isArray(record?.financials) ? record.financials : []).forEach((row) => {
+    const reportDate = analysisDateText(row?.reportDate ?? row?.report_date);
+    const period = String(row?.period || "").slice(0, 7);
+    const frequency = String(row?.frequency || "");
+    if (!reportDate || !/^\d{4}-\d{2}$/.test(period) || row?.estimate === true) return;
+    byVersion.set(`${frequency}:${period}:${reportDate}`, {
+      ...row,
+      period,
+      frequency,
+      reportDate,
+      estimate: false,
+    });
+  });
+  const rows = [...byVersion.values()].sort((left, right) => (
+    left.reportDate.localeCompare(right.reportDate)
+      || String(left.period).localeCompare(String(right.period))
+      || String(left.frequency).localeCompare(String(right.frequency))
+  ));
+  const reportDates = [...new Set(rows.map((row) => row.reportDate))];
+  const latestByPeriod = new Map();
+  const snapshots = [];
+  reportDates.forEach((reportDate) => {
+    rows.filter((row) => row.reportDate === reportDate).forEach((row) => {
+      latestByPeriod.set(`${row.frequency}:${row.period}`, row);
+    });
+    const asOf = nextCalendarDate(reportDate);
+    if (!asOf) return;
+    const snapshot = {
+      asOf,
+      savedAt: Date.parse(`${asOf}T03:00:00Z`),
+      consensus: null,
+      financials: [...latestByPeriod.values()].sort((left, right) => (
+        String(left.period).localeCompare(String(right.period))
+          || String(left.frequency).localeCompare(String(right.frequency))
+      )),
+      news: [],
+    };
+    const featureManifest = analysisFeatureManifest(snapshot);
+    snapshots.push({
+      ...snapshot,
+      evidenceFingerprint: featureManifest.fingerprint,
+      featureManifest,
+    });
+  });
+  return snapshots.slice(-limit);
+}
+
 export function selectAnalysisEvidenceAsOf(record, cutoff) {
   const asOf = analysisDateText(cutoff);
   if (!asOf || !record || typeof record !== "object") return null;
@@ -251,6 +308,7 @@ export function selectAnalysisEvidenceAsOf(record, cutoff) {
 }
 
 const browserApi = Object.freeze({
+  HISTORICAL_FINANCIAL_SNAPSHOT_LIMIT,
   MONTHLY_ANALYSIS_SNAPSHOT_LIMIT,
   RECENT_ANALYSIS_SNAPSHOT_LIMIT,
   RECENT_ANALYSIS_WINDOW_DAYS,
@@ -258,6 +316,7 @@ const browserApi = Object.freeze({
   analysisFeatureManifest,
   analysisDateText,
   analysisSnapshotFromRecord,
+  historicalFinancialSnapshotsFromRecord,
   koreanDateFromTimestamp,
   mergePointInTimeAnalysisSnapshots,
   selectAnalysisEvidenceAsOf,

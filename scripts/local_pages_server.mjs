@@ -59,6 +59,20 @@ import {
   DART_DISCLOSURE_TYPES,
   recordFromDartItem,
 } from "../shared/dart-disclosure.mjs";
+import {
+  buildHankyungReportListUrl,
+  buildHankyungReportPdfUrl,
+  buildNaverReportListUrl,
+  buildNaverReportPdfUrl,
+  decodeNaverReportListBytes,
+  parseHankyungReportListHtml,
+  parseNaverReportListHtml,
+  reportAgeDays,
+} from "../shared/broker-report-source.mjs";
+import {
+  readBoundedResponseBytes,
+  readBoundedResponseText,
+} from "../worker/src/http-runtime.mjs";
 
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -85,10 +99,13 @@ const NAVER_STOCK_PROFILE_URL = "https://finance.naver.com/item/main.naver";
 const STOCK_RESEARCH_LIMIT = RESEARCH_UNIVERSE_DEFAULT_SIZE / 2;
 const STOCK_RESEARCH_PROFILE_FRESH_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_NAVER_PROFILE_BYTES = 512 * 1024;
+const BROKER_REPORT_LIST_MAX_BYTES = 2 * 1024 * 1024;
+const BROKER_REPORT_PDF_MAX_BYTES = 12 * 1024 * 1024;
 const MIME_TYPES = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml",
   ".webmanifest": "application/manifest+json; charset=utf-8",
@@ -936,6 +953,19 @@ function sendJson(request, response, statusCode, payload) {
   response.end(body);
 }
 
+function sendBytes(request, response, statusCode, bytes, extraHeaders = {}) {
+  const body = Buffer.from(bytes);
+  const headers = Object.fromEntries(Object.entries(corsHeaders(request)).filter(([, value]) => value));
+  response.writeHead(statusCode, {
+    ...headers,
+    "cache-control": "private, no-store",
+    "content-length": body.length,
+    "x-content-type-options": "nosniff",
+    ...extraHeaders,
+  });
+  response.end(body);
+}
+
 async function serveStatic(response, pathname, headOnly = false, dataMirrorDir = PAGES_DATA_CACHE_DIR) {
   const relative = decodeURIComponent(pathname === "/" ? "/index.html" : pathname);
   const mirrorName = relative.match(/^\/data\/([a-z0-9_-]+\.json)$/i)?.[1] || "";
@@ -1041,6 +1071,93 @@ export async function createThinkStockServer(options = {}) {
         pagesDataGeneratedAt: mirrorStatus.generatedAt,
         pagesDataWarning: mirrorStatus.warning || "",
       });
+      return;
+    }
+    if (requestUrl.pathname === "/api/broker-reports") {
+      try {
+        const ticker = String(requestUrl.searchParams.get("ticker") || "").trim().toUpperCase();
+        const days = Number(requestUrl.searchParams.get("days")) <= 90 ? 90 : 180;
+        const requestedAsOf = String(requestUrl.searchParams.get("asOf") || "").slice(0, 10);
+        const asOf = /^\d{4}-\d{2}-\d{2}$/.test(requestedAsOf)
+          ? requestedAsOf
+          : new Date().toISOString().slice(0, 10);
+        const source = requestUrl.searchParams.get("source") === "naver" ? "naver" : "hankyung";
+        const sourceUrl = source === "naver"
+          ? buildNaverReportListUrl(ticker)
+          : buildHankyungReportListUrl(ticker, { days, asOf });
+        const upstream = await fetchImpl(sourceUrl, {
+          headers: {
+            Accept: "text/html,application/xhtml+xml",
+            ...(source === "naver" ? { Referer: "https://finance.naver.com/" } : {}),
+            "User-Agent": "ThinkStock-Local/2 broker-research",
+          },
+          signal: AbortSignal.timeout(20000),
+        });
+        if (!upstream.ok) throw new Error(`${source === "naver" ? "Naver Finance" : "Hankyung Consensus"} HTTP ${upstream.status}`);
+        const html = source === "naver"
+          ? decodeNaverReportListBytes(await readBoundedResponseBytes(
+            upstream,
+            BROKER_REPORT_LIST_MAX_BYTES,
+            "Broker report list",
+          ))
+          : await readBoundedResponseText(upstream, BROKER_REPORT_LIST_MAX_BYTES, "Broker report list");
+        const reports = (source === "naver"
+          ? parseNaverReportListHtml(html, ticker)
+          : parseHankyungReportListHtml(html, ticker))
+          .filter((report) => reportAgeDays(report.publishedDate, asOf) < days);
+        sendJson(request, response, 200, {
+          ok: true,
+          ticker,
+          days,
+          reports,
+          source: source === "naver" ? "Naver Finance" : "Hankyung Consensus",
+        });
+      } catch (error) {
+        sendJson(request, response, 503, {
+          ok: false,
+          error: `Broker report list failed: ${error?.message || error}`,
+        });
+      }
+      return;
+    }
+    if (requestUrl.pathname === "/api/broker-report-pdf") {
+      try {
+        const reportId = String(requestUrl.searchParams.get("reportId") || "").trim();
+        const source = requestUrl.searchParams.get("source") === "naver" ? "naver" : "hankyung";
+        if (source === "naver" && !/^naver-\d{1,12}$/.test(reportId)) {
+          throw new Error("Broker report id is invalid");
+        }
+        const sourceUrl = source === "naver"
+          ? buildNaverReportPdfUrl(requestUrl.searchParams.get("sourceUrl"))
+          : buildHankyungReportPdfUrl(reportId);
+        const upstream = await fetchImpl(sourceUrl, {
+          headers: {
+            Accept: "application/pdf",
+            ...(source === "naver" ? { Referer: "https://finance.naver.com/" } : {}),
+            "User-Agent": "ThinkStock-Local/2 broker-research",
+          },
+          signal: AbortSignal.timeout(30000),
+        });
+        if (!upstream.ok) throw new Error(`${source === "naver" ? "Naver Finance" : "Hankyung Consensus"} PDF HTTP ${upstream.status}`);
+        const bytes = await readBoundedResponseBytes(
+          upstream,
+          BROKER_REPORT_PDF_MAX_BYTES,
+          "Broker report PDF",
+        );
+        if (new TextDecoder().decode(bytes.slice(0, 5)) !== "%PDF-") {
+          throw new Error("Broker report response is not a PDF");
+        }
+        sendBytes(request, response, 200, bytes, {
+          "content-disposition": `inline; filename=broker-report-${reportId}.pdf`,
+          "content-type": "application/pdf",
+        });
+      } catch (error) {
+        const invalidId = /id is invalid/i.test(String(error?.message || error));
+        sendJson(request, response, invalidId ? 400 : 503, {
+          ok: false,
+          error: `Broker report PDF failed: ${error?.message || error}`,
+        });
+      }
       return;
     }
     if (requestUrl.pathname === "/api/adr") {

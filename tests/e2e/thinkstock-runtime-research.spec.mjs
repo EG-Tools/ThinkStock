@@ -16,6 +16,8 @@ import { evaluatePerformanceBudget } from "../../shared/performance-budget.mjs";
 
 await import("../../docs/modules/stock-research-contract.js");
 const RESEARCH_CONTRACT = globalThis.ThinkStockStockResearchContract;
+await import("../../docs/modules/release-notes.js");
+const RELEASE_NOTES = globalThis.ThinkStockReleaseNotes.RELEASES;
 
 test("KRX API expiry reminder supports daily display and seven-day snooze", async ({ page }) => {
   await stubExternalRefreshes(page);
@@ -142,7 +144,8 @@ test("stock research popup preserves results while adding multiple candidates", 
   }, RESEARCH_CONTRACT);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
   await page.evaluate(() => new Promise((resolve, reject) => {
-    const request = indexedDB.open("thinkstock-runtime-cache-v1", 6);
+    const contract = window.ThinkStockRuntimeFoundation.storage;
+    const request = indexedDB.open(contract.dbName, contract.dbVersion);
     request.onerror = () => reject(request.error);
     request.onsuccess = () => {
       const db = request.result;
@@ -240,7 +243,8 @@ test("stock research popup preserves results while adding multiple candidates", 
   await expect(page.locator('[data-research-toggle="000001.KS"]')).toHaveText("제거");
   expect(Date.now() - cachedAddStarted).toBeLessThan(2000);
   const promotedPointCount = await page.evaluate(() => new Promise((resolve, reject) => {
-    const request = indexedDB.open("thinkstock-runtime-cache-v1", 6);
+    const contract = window.ThinkStockRuntimeFoundation.storage;
+    const request = indexedDB.open(contract.dbName, contract.dbVersion);
     request.onerror = () => reject(request.error);
     request.onsuccess = () => {
       const db = request.result;
@@ -252,7 +256,8 @@ test("stock research popup preserves results while adding multiple candidates", 
   }));
   expect(promotedPointCount).toBeGreaterThanOrEqual(300);
   await expect.poll(() => page.evaluate(() => new Promise((resolve, reject) => {
-    const request = indexedDB.open("thinkstock-runtime-cache-v1", 6);
+    const contract = window.ThinkStockRuntimeFoundation.storage;
+    const request = indexedDB.open(contract.dbName, contract.dbVersion);
     request.onerror = () => reject(request.error);
     request.onsuccess = () => {
       const db = request.result;
@@ -845,9 +850,28 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await expect(page.locator("#apiPeriodBtn")).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator("#apiSettingsModal .settings-control-group")).toBeVisible();
   await expect(page.locator("#releaseNotesPanel")).toBeVisible();
-  await expect(page.locator("#releaseNotesVersion")).toHaveText("v2.79");
-  await expect(page.locator("#releaseNotesList")).toContainText("AI 동일 표본 워크포워드·배포 안전장치 강화");
-  await expect(page.locator("#releaseNotesList")).toContainText("구형 관리자 인증 이관 경로 정리");
+  const latestRelease = RELEASE_NOTES[0];
+  await expect(page.locator("#releaseNotesVersion")).toHaveText(`v${latestRelease.version}`);
+  await expect(page.locator("#releaseNotesDate")).toHaveText(latestRelease.date);
+  await expect(page.locator("#releaseNotesList > li")).toHaveCount(latestRelease.items.length);
+  const v284Index = RELEASE_NOTES.findIndex((release) => release.version === "2.84");
+  expect(v284Index).toBeGreaterThan(0);
+  for (let index = 0; index < v284Index; index += 1) {
+    await page.locator("#releaseNotesOlderBtn").click();
+  }
+  await expect(page.locator("#releaseNotesVersion")).toHaveText("v2.84");
+  await expect(page.locator("#releaseNotesList")).toContainText("200");
+  await expect(page.locator("#releaseNotesList > li")).toHaveCount(6);
+  await expect(page.locator("#releaseNotesList")).toHaveClass(/is-two-column/);
+  await page.locator("#releaseNotesOlderBtn").click();
+  await expect(page.locator("#releaseNotesVersion")).toHaveText("v2.83");
+  await expect(page.locator("#releaseNotesList")).toContainText("AI 과거시점 기업 근거 검증 확대");
+  await expect(page.locator("#releaseNotesList > li")).toHaveCount(5);
+  await expect(page.locator("#releaseNotesList")).not.toHaveClass(/is-two-column/);
+  await page.locator("#releaseNotesOlderBtn").click();
+  await expect(page.locator("#releaseNotesVersion")).toHaveText("v2.82");
+  await expect(page.locator("#releaseNotesList")).toContainText("app.js");
+  await expect(page.locator("#releaseNotesList")).toContainText("AI");
   await expect(page.locator("#releaseNotesList > li")).toHaveCount(7);
   await expect(page.locator("#releaseNotesList")).toHaveClass(/is-two-column/);
   const latestReleaseLayout = await page.locator("#releaseNotesList").evaluate((element) => ({
@@ -858,6 +882,19 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   const chartRangeBeforeReleaseNavigation = await page.locator("#chart").evaluate((element) => (
     [...(element.layout?.xaxis?.range || [])]
   ));
+  await page.locator("#releaseNotesOlderBtn").click();
+  await expect(page.locator("#releaseNotesVersion")).toHaveText("v2.81");
+  await expect(page.locator("#releaseNotesList > li")).toHaveCount(8);
+  await page.locator("#releaseNotesOlderBtn").click();
+  await expect(page.locator("#releaseNotesVersion")).toHaveText("v2.80");
+  await expect(page.locator("#releaseNotesList")).toContainText("데이터 이상값 격리·마지막 정상값 복구 강화");
+  await expect(page.locator("#releaseNotesList")).toContainText("AI 최고확률 시나리오 단일 강조");
+  await expect(page.locator("#releaseNotesList > li")).toHaveCount(8);
+  await page.locator("#releaseNotesOlderBtn").click();
+  await expect(page.locator("#releaseNotesVersion")).toHaveText("v2.79");
+  await expect(page.locator("#releaseNotesList")).toContainText("AI 동일 표본 워크포워드·배포 안전장치 강화");
+  await expect(page.locator("#releaseNotesList")).toContainText("구형 관리자 인증 이관 경로 정리");
+  await expect(page.locator("#releaseNotesList > li")).toHaveCount(7);
   await page.locator("#releaseNotesOlderBtn").click();
   await expect(page.locator("#releaseNotesVersion")).toHaveText("v2.78");
   await expect(page.locator("#releaseNotesList")).toContainText("지수 6종 색상 고정 및 종목 색상 자동 배정");
@@ -1514,7 +1551,8 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await page.evaluate(() => window.ThinkStockE2E.saveRuntimeSnapshotNow());
   const snapshotStatsBefore = await page.evaluate(() => window.ThinkStockE2E.getRuntimeSnapshotStats());
   const runtimeCacheKeys = await page.evaluate(() => new Promise((resolve, reject) => {
-    const request = indexedDB.open("thinkstock-runtime-cache-v1", 6);
+    const contract = window.ThinkStockRuntimeFoundation.storage;
+    const request = indexedDB.open(contract.dbName, contract.dbVersion);
     request.onerror = () => reject(request.error);
     request.onsuccess = () => {
       const db = request.result;
@@ -1544,7 +1582,8 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   expect(snapshotStatsAfter.skips).toBeGreaterThan(snapshotStatsBefore.skips);
 
   await page.evaluate(() => new Promise((resolve, reject) => {
-    const request = indexedDB.open("thinkstock-runtime-cache-v1", 6);
+    const contract = window.ThinkStockRuntimeFoundation.storage;
+    const request = indexedDB.open(contract.dbName, contract.dbVersion);
     request.onerror = () => reject(request.error);
     request.onsuccess = () => {
       const db = request.result;
@@ -1562,7 +1601,8 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   const cleanupBefore = await page.evaluate(() => window.ThinkStockE2E.getCacheCleanupStats());
   await page.evaluate(() => window.ThinkStockE2E.pruneGranularCacheForTest("tickerPrices", 2));
   const remainingTickerCacheKeys = await page.evaluate(() => new Promise((resolve, reject) => {
-    const request = indexedDB.open("thinkstock-runtime-cache-v1", 6);
+    const contract = window.ThinkStockRuntimeFoundation.storage;
+    const request = indexedDB.open(contract.dbName, contract.dbVersion);
     request.onerror = () => reject(request.error);
     request.onsuccess = () => {
       const db = request.result;

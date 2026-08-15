@@ -8,10 +8,18 @@
     let ai = null;
     let marketTimingService = null;
     let stockResearch = null;
+    let settings = null;
 
     async function ensureAi() {
       if (ai) return ai;
       await loader.loadFeature("ai-forecast", [
+        "./modules/broker-report-parser.js",
+        "./modules/broker-report-worker-client.js",
+        "./modules/broker-research-cache.js",
+        "./modules/broker-research-runtime.js",
+        "./modules/ai-forecast-app.js",
+        "./modules/ai-forecast-cache.js",
+        "./modules/ai-forecast-traces.js",
         "./modules/ai-forecast-math.js",
         "./modules/ai-context-profile.js",
         "./modules/ai-forecast-model.js",
@@ -24,6 +32,13 @@
         "./modules/ai-forecast-quality-runtime.js",
       ], () => Boolean(
         scope.ThinkStockAiForecast
+        && scope.ThinkStockBrokerReportParser
+        && scope.ThinkStockBrokerReportWorkerClient
+        && scope.ThinkStockBrokerResearchCache
+        && scope.ThinkStockBrokerResearchRuntime
+        && scope.ThinkStockAiForecastApp
+        && scope.ThinkStockAiForecastCache
+        && scope.ThinkStockAiForecastTraces
         && scope.ThinkStockAiAnalysisCache
         && scope.ThinkStockAiForecastJournal
         && scope.ThinkStockAiForecastCalibration
@@ -31,10 +46,17 @@
       ));
       ai = Object.freeze({
         analysis: scope.ThinkStockAiAnalysisCache,
+        app: scope.ThinkStockAiForecastApp,
+        brokerParser: scope.ThinkStockBrokerReportParser,
+        brokerResearch: scope.ThinkStockBrokerResearchCache,
+        brokerRuntime: scope.ThinkStockBrokerResearchRuntime,
+        brokerWorker: scope.ThinkStockBrokerReportWorkerClient,
+        cache: scope.ThinkStockAiForecastCache,
         forecast: scope.ThinkStockAiForecast,
         journal: scope.ThinkStockAiForecastJournal,
         calibration: scope.ThinkStockAiForecastCalibration,
         qualityRuntime: scope.ThinkStockAiForecastQualityRuntime,
+        traces: scope.ThinkStockAiForecastTraces,
       });
       return ai;
     }
@@ -93,7 +115,28 @@
       return stockResearch;
     }
 
-    return Object.freeze({ ensureAi, ensureMarketTiming, ensureStockResearch });
+    async function ensureSettings() {
+      if (settings) return settings;
+      await Promise.all([
+        loader.loadScript("./modules/api-periods.js"),
+        loader.loadScript("./modules/release-notes.js"),
+      ]);
+      await loader.loadFeature("settings", [
+        "./modules/settings-panel-runtime.js",
+      ], () => Boolean(
+        scope.ThinkStockApiPeriods
+        && scope.ThinkStockReleaseNotes
+        && scope.ThinkStockSettingsPanelRuntime
+      ));
+      settings = Object.freeze({
+        apiPeriods: scope.ThinkStockApiPeriods,
+        releaseNotes: scope.ThinkStockReleaseNotes,
+        runtime: scope.ThinkStockSettingsPanelRuntime,
+      });
+      return settings;
+    }
+
+    return Object.freeze({ ensureAi, ensureMarketTiming, ensureSettings, ensureStockResearch });
   }
 
   globalScope.ThinkStockOptionalFeatureRuntime = Object.freeze({ createOptionalFeatureRuntime });

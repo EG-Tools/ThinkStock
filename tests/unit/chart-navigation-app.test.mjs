@@ -170,3 +170,29 @@ test("latest navigation animates the current span to the data boundary", () => {
   assert.deepEqual(applied.at(-1).slice(0, 2), [400_000, 1_000_000]);
   assert.equal(element.classList.contains("is-viewport-panning"), false);
 });
+
+test("latest navigation advances on its first delayed browser frame", () => {
+  const element = fakeElement();
+  const frames = [];
+  const applied = [];
+  const navigation = createChartNavigation({
+    performance: { now: () => 100 },
+  }, {
+    viewport,
+    dayMs: 1,
+    getElement: () => element,
+    getCurrentRange: () => [0, 600_000],
+    getDataRange: () => [0, 1_000_000],
+    isInteractionBusy: () => false,
+    requestFrame: (callback) => { frames.push(callback); return frames.length; },
+    cancelFrame: () => {},
+    applyRange: (...args) => applied.push(args),
+    setViewportDragging: () => {},
+  });
+
+  assert.equal(navigation.slideToLatest(), true);
+  frames.shift()(180);
+  assert.equal(applied.length, 1);
+  assert.ok(applied[0][0] > 0);
+  assert.ok(applied[0][1] > 600_000);
+});

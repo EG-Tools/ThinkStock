@@ -92,6 +92,7 @@
         performance,
         budget: evaluateBudget ? evaluateBudget(performance) : null,
         latestOperations: performanceApi?.getLatestOperations?.() || {},
+        operationProfiles: performanceApi?.getOperationProfiles?.() || [],
         slowOperations: (performanceApi?.getSlowOperations?.() || []).slice(-5),
         recentErrors: (performanceApi?.getRecentErrors?.() || []).slice(-5),
         storage: await readStorageState(),
@@ -120,6 +121,26 @@
         (item) => item?.latestOperations?.[name]?.duration,
       );
       const metricValues = (name) => reports.map((item) => item?.performance?.[name]);
+      const operationGroups = new Map();
+      reports.forEach((report) => {
+        (report?.operationProfiles || []).forEach((profile) => {
+          const label = String(profile?.label || "").trim();
+          const duration = Number(profile?.p95);
+          if (!label || !Number.isFinite(duration)) return;
+          const group = operationGroups.get(label) || { durations: [], samples: 0 };
+          group.durations.push(duration);
+          group.samples += Math.max(0, Number(profile?.count) || 0);
+          operationGroups.set(label, group);
+        });
+      });
+      const topOperations = [...operationGroups.entries()].map(([label, group]) => ({
+        label,
+        sessions: group.durations.length,
+        samples: group.samples,
+        p50: percentile(group.durations, 0.5),
+        p95: percentile(group.durations, 0.95),
+        max: Math.max(0, ...group.durations),
+      })).sort((left, right) => right.p95 - left.p95 || right.samples - left.samples).slice(0, 8);
       return {
         appVersion,
         sessions: new Set(reports.map((item) => item?.sessionId).filter(Boolean)).size,
@@ -130,6 +151,7 @@
           ...metricValues("p95RenderChart"),
         ], 0.95),
         pointerP95: percentile(metricValues("p95PointerMove"), 0.95),
+        topOperations,
       };
     }
 

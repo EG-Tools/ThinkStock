@@ -164,6 +164,24 @@ test("cache pruning removes idle records before least-recent overflow", () => {
   assert.deepEqual([...deleteKeys], ["OLD", "C"]);
 });
 
+test("cache pruning remains deterministic with thousands of ticker records", () => {
+  const module = loadModule();
+  const records = Array.from({ length: 2000 }, (_, index) => ({
+    ticker: `T${String(index).padStart(4, "0")}`,
+    lastAccessed: index + 1,
+  }));
+  const deleteKeys = new Set(module.planPruneKeys(records, {
+    now: 10_000,
+    maxIdleMs: 20_000,
+    maxRecords: 24,
+  }));
+
+  assert.equal(deleteKeys.size, 1976);
+  assert.equal(deleteKeys.has("T1975"), true);
+  assert.equal(deleteKeys.has("T1976"), false);
+  assert.equal(deleteKeys.has("T1999"), false);
+});
+
 test("IndexedDB connection is reused and batch records share one transaction", async () => {
   const indexedDB = createIndexedDb();
   const module = loadModule({ indexedDB });

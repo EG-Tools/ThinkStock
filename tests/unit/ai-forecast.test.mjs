@@ -123,7 +123,7 @@ test("trains deterministic 20, 63, and 126-day models with uncertainty bands", (
   assert.ok(standardDeviation(forecastReturns) <= standardDeviation(recentReturns) * 1.2);
   assert.deepEqual(first.prices, second.prices);
   assert.equal(first.model.horizons.map((item) => item.days).join(","), "20,63,126");
-  assert.equal(first.model.pathVersion, "path-v19");
+  assert.equal(first.model.pathVersion, "path-v20");
   const [month, quarter, halfYear] = first.model.horizons;
   assert.equal(month.calibration.localScale, 0.33);
   assert.equal(month.calibration.regimeScale, 1);
@@ -146,6 +146,8 @@ test("trains deterministic 20, 63, and 126-day models with uncertainty bands", (
   assert.equal(first.audit.features.context_profile_version, 1);
   assert.ok(Number.isFinite(first.audit.features.profile_range_score));
   assert.ok(Number.isFinite(first.audit.features.regime_probability_expansion));
+  assert.ok(Number.isFinite(first.audit.features.regime_combined));
+  assert.ok(Number.isFinite(first.audit.features.regime_range_pressure));
   assert.equal(first.model.contextProfileVersion, "context-profile-v1");
   assert.equal(first.model.contextProfileDiagnosticOnly, true);
   assert.equal(first.signals.contextProfile.diagnosticOnly, true);
@@ -311,6 +313,19 @@ test("changes the forecast input key when any decision input changes", () => {
       financials: [{ ...common.financials[0], operatingProfit: -5 }],
     }),
     getForecastInputKey({ ...common, internetNews: [{ date: lastDate, title: "대규모 유상증자" }] }),
+    getForecastInputKey({
+      ...common,
+      brokerResearch: {
+        latestDate: lastDate,
+        usedReportIds: ["651738"],
+        reportCount: 1,
+        signal: -0.7,
+        confidence: 0.7,
+        primaryCoverage: 1,
+        targetRevisionChange: -0.2,
+        metrics: { eps: { change: -0.1 }, roe: { change: -2 } },
+      },
+    }),
     getForecastInputKey({ ...common, macdSignal: -0.4 }),
     getForecastInputKey({
       ...common,
@@ -389,6 +404,10 @@ test("hard-gates an optimistic forecast when fresh company news reports a critic
   assert.equal(criticalSignal.criticalRisk, true);
   assert.equal(criticalSignal.criticalSeverity, 1);
   assert.equal(buildInternetNewsSignal(relievedNews, lastDate).criticalRisk, false);
+  assert.equal(buildInternetNewsSignal([{
+    date: lastDate,
+    title: "액면분할에 따른 주권매매거래정지 안내",
+  }], lastDate).criticalRisk, false);
   assert.equal(ambiguousSplit.signal, 0);
   assert.equal(ambiguousSplit.ambiguousCount, 1);
   assert.ok(positiveSplit.signal > 0);
@@ -514,6 +533,54 @@ test("records the real consensus contribution and moves the forecast when only c
   assert.ok(positive.prices.at(-1) > negative.prices.at(-1));
 });
 
+test("uses verified forward EPS, ROE and target revisions without overpowering the base model", () => {
+  const { dates, prices, kospi } = syntheticHistory(1100);
+  const lastDate = dates.at(-1);
+  const common = {
+    series: "005930.KS",
+    dates,
+    prices,
+    marketCandidates: [{ series: "^KS11", dates, prices: kospi }],
+  };
+  const positive = buildForecast({
+    ...common,
+    brokerResearch: {
+      latestDate: lastDate,
+      usedReportIds: ["1", "2", "3"],
+      reportCount: 3,
+      signal: 0.8,
+      confidence: 0.8,
+      adjustment: 0.018,
+      primaryCoverage: 1,
+      primaryConflict: false,
+      targetRevisionChange: 0.15,
+      metrics: { eps: { change: 0.25 }, roe: { change: 3 } },
+    },
+  });
+  const negative = buildForecast({
+    ...common,
+    brokerResearch: {
+      latestDate: lastDate,
+      usedReportIds: ["4", "5", "6"],
+      reportCount: 3,
+      signal: -0.8,
+      confidence: 0.8,
+      adjustment: -0.018,
+      primaryCoverage: 1,
+      primaryConflict: false,
+      targetRevisionChange: -0.15,
+      metrics: { eps: { change: -0.25 }, roe: { change: -3 } },
+    },
+  });
+
+  assert.ok(positive.attribution.horizons[126].components.brokerResearch > 0);
+  assert.ok(negative.attribution.horizons[126].components.brokerResearch < 0);
+  assert.ok(positive.prices.at(-1) > negative.prices.at(-1));
+  assert.equal(positive.audit.featureFamilies.brokerResearch.count, 3);
+  assert.equal(positive.audit.sourceDates.brokerResearch, lastDate);
+  assert.ok(Math.abs(positive.signals.brokerResearchAdjustment) <= 0.018);
+});
+
 test("reports point-in-time environment coverage when data is available", () => {
   const { dates, prices, kosdaq } = syntheticHistory(1000);
   const macroRows = dates.map((date, index) => ({
@@ -589,8 +656,8 @@ test("blends a validated top-400 market model without replacing the local guardr
 
   assert.equal(blended.model.marketModelUsed, true);
   assert.match(blended.model.name, /top-400/);
-  assert.equal(blended.model.version, "2026-07-23|path-v19");
-  assert.equal(blended.model.pathVersion, "path-v19");
+  assert.equal(blended.model.version, "2026-07-23|path-v20");
+  assert.equal(blended.model.pathVersion, "path-v20");
   assert.equal(blended.scenarios.calibration.probabilitySignalStrength, 0.5);
   assert.equal(blended.scenarios.calibration.sidewaysProbabilityScale, 0.7);
   assert.equal(blended.model.globalMarketSeries, "^KS11");
@@ -691,6 +758,45 @@ test("gates optimistic forecasts when recent disclosures and losses show termina
   assert.equal(buildCorporateRiskSignal({
     disclosures: [{ ticker: "005930.KS", date: dates.at(-1), title: "유상증자 결정 철회" }],
   }, "005930.KS", dates.at(-1)).recentDilutionRisk, false);
+
+  const routineHalt = buildCorporateRiskSignal({
+    disclosures: [{
+      ticker: "005930.KS",
+      date: dates.at(-1),
+      title: "주권매매거래정지 (액면분할에 따른 전자등록 변경)",
+    }],
+  }, "005930.KS", dates.at(-1));
+  assert.equal(routineHalt.terminalRisk, false);
+
+  const governance = buildCorporateRiskSignal({
+    disclosures: [{ ticker: "005930.KS", date: dates.at(-1), title: "횡령ㆍ배임혐의발생" }],
+  }, "005930.KS", dates.at(-1));
+  assert.equal(governance.terminalRisk, false);
+  assert.equal(governance.recentGovernanceRisk, true);
+});
+
+test("keeps routine disclosure risk short-term and trend-aware without making it terminal", () => {
+  const { dates, prices, kospi } = syntheticHistory(1100);
+  const forecast = buildForecast({
+    series: "005930.KS",
+    dates,
+    prices,
+    marketCandidates: [{ series: "^KS11", dates, prices: kospi }],
+    disclosures: [{
+      ticker: "005930.KS",
+      date: dates.at(-2),
+      title: "\uC804\uD658\uC0AC\uCC44 \uBC1C\uD589\uACB0\uC815",
+    }],
+  });
+
+  assert.ok(forecast.signals.corporateRisk.score > 0);
+  assert.ok(forecast.attribution.horizons["20"].components.corporateRisk < 0);
+  assert.ok(forecast.audit.features.profile_trend_up_score >= 0.35);
+  assert.ok(forecast.attribution.horizons["63"].components.corporateRisk < 0);
+  assert.ok(forecast.attribution.horizons["63"].components.corporateRiskGate <= 0);
+  assert.equal(forecast.attribution.horizons["126"].components.corporateRisk, 0);
+  assert.equal(forecast.attribution.horizons["126"].components.corporateRiskGate, 0);
+
 });
 
 test("uses a macro-first model for KOSPI and reacts to rates, trade, and recession risk", () => {

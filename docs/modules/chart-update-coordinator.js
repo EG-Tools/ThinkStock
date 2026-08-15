@@ -168,10 +168,21 @@
     let pendingMarkers = false;
     let pendingHandles = false;
     let pendingReasons = new Set();
+    let inFlightPromise = null;
+    let renderAfterFlight = false;
+    let nextTransactionId = 1;
+    const settleWaiters = new Set();
+
+    function settleWaitersIfIdle() {
+      if (frameId || inFlightPromise || pendingSeries.size || pendingMarkers || pendingHandles) return;
+      settleWaiters.forEach((resolve) => resolve());
+      settleWaiters.clear();
+    }
 
     function takePending() {
       if (!pendingSeries.size && !pendingMarkers && !pendingHandles && !pendingReasons.size) return null;
       const frame = {
+        transactionId: nextTransactionId,
         series: [...pendingSeries.values()],
         markers: pendingMarkers,
         handles: pendingHandles,
@@ -181,14 +192,58 @@
       pendingMarkers = false;
       pendingHandles = false;
       pendingReasons = new Set();
+      nextTransactionId += 1;
       return frame;
+    }
+
+    function scheduleFrame() {
+      if (frameId || inFlightPromise) {
+        if (inFlightPromise) renderAfterFlight = true;
+        return;
+      }
+      frameId = requestFrame(() => {
+        frameId = 0;
+        const frame = takePending();
+        if (frame) apply(frame);
+        else settleWaitersIfIdle();
+      });
+    }
+
+    function apply(frame) {
+      let result;
+      try {
+        result = applyFrame(frame);
+      } catch (error) {
+        options.onError?.(error);
+        settleWaitersIfIdle();
+        return;
+      }
+      if (!result || typeof result.then !== "function") {
+        settleWaitersIfIdle();
+        return;
+      }
+      inFlightPromise = Promise.resolve(result)
+        .catch((error) => options.onError?.(error))
+        .finally(() => {
+          inFlightPromise = null;
+          if (renderAfterFlight || pendingSeries.size || pendingMarkers || pendingHandles) {
+            renderAfterFlight = false;
+            scheduleFrame();
+          } else {
+            settleWaitersIfIdle();
+          }
+        });
     }
 
     function flush() {
       if (frameId && typeof cancelFrame === "function") cancelFrame(frameId);
       frameId = 0;
+      if (inFlightPromise) {
+        renderAfterFlight = true;
+        return null;
+      }
       const frame = takePending();
-      if (frame) applyFrame(frame);
+      if (frame) apply(frame);
       return frame;
     }
 
@@ -203,12 +258,7 @@
       pendingMarkers = pendingMarkers || update.markers === true;
       pendingHandles = pendingHandles || update.handles === true;
       if (update.reason) pendingReasons.add(String(update.reason));
-      if (frameId) return;
-      frameId = requestFrame(() => {
-        frameId = 0;
-        const frame = takePending();
-        if (frame) applyFrame(frame);
-      });
+      scheduleFrame();
     }
 
     function cancel() {
@@ -218,14 +268,24 @@
       pendingMarkers = false;
       pendingHandles = false;
       pendingReasons = new Set();
+      renderAfterFlight = false;
+      settleWaitersIfIdle();
+    }
+
+    function whenSettled() {
+      if (!frameId && !inFlightPromise && !pendingSeries.size && !pendingMarkers && !pendingHandles) {
+        return Promise.resolve();
+      }
+      return new Promise((resolve) => settleWaiters.add(resolve));
     }
 
     return Object.freeze({
       schedule,
       flush,
       cancel,
+      whenSettled,
       hasPending: () => Boolean(
-        frameId || pendingSeries.size || pendingMarkers || pendingHandles || pendingReasons.size
+        frameId || inFlightPromise || pendingSeries.size || pendingMarkers || pendingHandles || pendingReasons.size
       ),
     });
   }

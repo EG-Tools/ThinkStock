@@ -315,7 +315,8 @@ assert.ok(!/(^|\n)\.cartesianlayer \.point \{ display: none !important; \}/.test
   && styles.includes(".chart-frame-adr .cartesianlayer .point { display: none !important; }"),
 "global point-marker hiding must not suppress insider trade triangles");
 assert.ok(workerIndex.includes("DART_ELESTOCK_URL")
-  && workerIndex.includes('route.id === "insider-trades"')
+  && workerIndex.includes('"insider-trades":')
+  && workerIndex.includes("dispatchRequestRoute(route, ROUTE_HANDLERS")
   && workerRouter.includes('path: "/api/dart/insider-trades"')
   && workerIndex.includes("LOOKBACK_YEARS")
   && workerIndex.includes("`insider:${ticker}`"),
@@ -424,13 +425,15 @@ assert.ok(!pagesEntry.includes('import "../docs/modules/ai-scenario-paths.js"')
   && aiScenarioPaths.includes("buildHistoricalPathLibrary")
   && aiScenarioPaths.includes("buildScenarioMorphologies"),
 "AI scenario modules must load on demand and stay shared with the forecast worker");
-assert.ok(pagesEntry.includes('import "../docs/modules/ai-forecast-app.js"')
+assert.ok(!pagesEntry.includes('import "../docs/modules/ai-forecast-app.js"')
+  && optionalFeatureRuntime.includes('"./modules/ai-forecast-app.js"')
   && app.includes("ThinkStockAiForecastApp")
   && aiForecastApp.includes("cancelCalculations")
   && aiForecastApp.includes("progressActive")
   && !app.includes("let aiForecastWorker"),
 "AI worker and progress orchestration is not separated from app.js");
-assert.ok(pagesEntry.includes('import "../docs/modules/ai-forecast-traces.js"')
+assert.ok(!pagesEntry.includes('import "../docs/modules/ai-forecast-traces.js"')
+  && optionalFeatureRuntime.includes('"./modules/ai-forecast-traces.js"')
   && app.includes("ThinkStockAiForecastTraces")
   && aiForecastTraces.includes("createAiForecastTraces")
   && aiForecastTraces.includes("isPrimaryAiScenario"),
@@ -625,7 +628,8 @@ assert.ok(pagesEntry.includes('import "../docs/modules/optional-feature-runtime.
   && stockResearchWorkerClient.includes("createWorkerLane")
   && !pagesEntry.includes('import "../docs/modules/stock-research-controller.js"'),
 "optional features are still part of the initial bundle");
-assert.ok(pagesEntry.includes('import "../docs/modules/ai-forecast-cache.js"')
+assert.ok(!pagesEntry.includes('import "../docs/modules/ai-forecast-cache.js"')
+  && optionalFeatureRuntime.includes('"./modules/ai-forecast-cache.js"')
   && aiForecastCache.includes("matchesInput")
   && app.includes("TICKER_AI_FORECAST_CACHE_STORE_NAME"),
 "AI input-fingerprint cache is incomplete");
@@ -682,8 +686,12 @@ assert.ok(app.includes("ThinkStockAppUiBindings")
   "boot UI event bindings are not separated from app.js");
 assert.ok(app.includes("ThinkStockSettingsPanelRuntime")
   && app.includes("ThinkStockApiPeriods")
-  && pagesEntry.includes('import "../docs/modules/api-periods.js"')
-  && pagesEntry.includes('import "../docs/modules/settings-panel-runtime.js"')
+  && !pagesEntry.includes('import "../docs/modules/api-periods.js"')
+  && !pagesEntry.includes('import "../docs/modules/settings-panel-runtime.js"')
+  && optionalFeatureRuntime.includes('loader.loadFeature("settings"')
+  && optionalFeatureRuntime.includes('"./modules/api-periods.js"')
+  && optionalFeatureRuntime.includes('"./modules/release-notes.js"')
+  && optionalFeatureRuntime.includes('"./modules/settings-panel-runtime.js"')
   && apiPeriods.includes("createReminderStore")
   && apiPeriods.includes("파생상품지수 시세정보")
   && settingsPanelRuntime.includes("createSettingsPanelRuntime")
@@ -796,9 +804,10 @@ assert.ok(!sw.includes(".map((req) => cache.delete(req))"), "service worker stil
 assert.ok(playwrightConfig.includes('name: "webkit-sw"') && playwrightConfig.includes('serviceWorkers: "allow"'),
   "service-worker-aware WebKit coverage is missing");
 assert.ok(playwrightConfig.includes('name: "webkit"')
-  && deployWorkflow.includes("target: mobile")
-  && deployWorkflow.includes("target: desktop")
-  && deployWorkflow.includes("run_webkit_scope.mjs ${{ matrix.target }} ${{ inputs.verification_scope }}")
+  && playwrightConfig.includes('name: "webkit-desktop"')
+  && deployWorkflow.includes("run_webkit_scope.mjs release ${{ inputs.verification_scope }}")
+  && webkitScopeRunner.includes('mode === "release"')
+  && webkitScopeRunner.includes('args.push("--project=webkit", "--project=webkit-desktop", "--project=webkit-sw")')
   && webkitScopeRunner.includes('mode === "desktop"')
   && webkitScopeRunner.includes('args.push("--project=webkit-desktop")')
   && webkitScopeRunner.includes('args.push("--project=webkit")'),

@@ -3,11 +3,8 @@
 
   const seriesIntegrity = globalScope.ThinkStockSeriesIntegrity;
 
-  function toFinite(value) {
-    if (value === null || value === undefined || value === "") return null;
-    const number = Number(value);
-    return Number.isFinite(number) ? number : null;
-  }
+  const toFinite = globalScope.ThinkStockRuntimeFoundation?.values?.finiteOrNull;
+  if (typeof toFinite !== "function") throw new Error("runtime value contract is required");
 
   function dateOf(row) {
     return String(row?.date || "").slice(0, 10);
@@ -23,6 +20,36 @@
 
   function sortedRows(byDate) {
     return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
+  }
+
+  function normalizeDatedRows(rows, keys, options = {}) {
+    const valueKeys = Array.isArray(keys) ? keys.filter(Boolean) : [];
+    const byDate = new Map();
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const date = dateOf(row);
+      if (!date || (options.requireIsoDate === true && !/^\d{4}-\d{2}-\d{2}$/.test(date))) continue;
+      const next = { ...(byDate.get(date) || {}), date };
+      for (const key of valueKeys) {
+        const value = toFinite(row?.[key]);
+        if (value !== null && (options.positiveOnly !== true || value > 0)) {
+          next[key] = value;
+        } else if (options.includeMissingKeys === true && !Object.hasOwn(next, key)) {
+          next[key] = null;
+        }
+      }
+      if (valueKeys.some((key) => {
+        const value = toFinite(next[key]);
+        return value !== null && (options.positiveOnly !== true || value > 0);
+      })) byDate.set(date, next);
+    }
+    return sortedRows(byDate);
+  }
+
+  function normalizeCreditInputRows(rows, keys) {
+    return normalizeDatedRows(rows, keys, {
+      includeMissingKeys: true,
+      positiveOnly: true,
+    });
   }
 
   function mergeDatedSeries(options = {}) {
@@ -200,11 +227,184 @@
     });
   }
 
+  function createRuntimeSeriesController(options = {}) {
+    const creditKeys = Array.isArray(options.creditKeys) ? options.creditKeys : [];
+    const getRows = (name) => {
+      const rows = options.getRows?.(name);
+      return Array.isArray(rows) ? rows : [];
+    };
+    const commitRows = (name, rows) => {
+      options.setRows?.(name, rows);
+      options.markChanged?.(name);
+    };
+    const policiesFor = (keys) => options.policiesFor?.(keys) || {};
+    const validate = (label, currentRows, candidateRows, incomingRows, keys, validation = {}) => (
+      options.validate?.(label, currentRows, candidateRows, incomingRows, keys, validation)
+      || { rows: candidateRows }
+    );
+
+    function buildLeadingCycleLiveRows(monthlyRows, sourceRows = getRows("macro")) {
+      const normalized = normalizeDatedRows(monthlyRows, ["leading_cycle"]);
+      const priceDates = (options.getPriceDates?.() || []).filter(Boolean);
+      if (!normalized.length || !priceDates.length) {
+        return {
+          rows: sourceRows,
+          normalized,
+          updated: 0,
+          latestDate: normalized.at(-1)?.date || "",
+        };
+      }
+      const latestDate = normalized.at(-1)?.date || "";
+      const denseRows = options.buildDenseMacroRows?.(normalized, priceDates) || normalized;
+      return {
+        ...mergeLeadingCycle({ sourceRows, denseRows, priceDates, latestDate }),
+        normalized,
+      };
+    }
+
+    function buildDatedLiveRows(liveRows, keys, sourceRows = getRows("macro"), normalizeOptions = {}) {
+      const normalized = normalizeDatedRows(liveRows, keys, normalizeOptions);
+      if (!normalized.length) {
+        return { rows: sourceRows, normalized, updated: 0, latestDate: "" };
+      }
+      return {
+        ...mergeDatedSeries({ sourceRows, incomingRows: normalized, keys }),
+        normalized,
+      };
+    }
+
+    function commitMacroBuild(result, keys, commitOptions = {}) {
+      if (!result?.updated) return { updated: 0, latestDate: result?.latestDate || "" };
+      const currentRows = getRows("macro");
+      const accepted = validate(
+        commitOptions.label || "macro",
+        currentRows,
+        result.rows,
+        result.normalized,
+        keys,
+        commitOptions.validation,
+      );
+      commitRows("macro", accepted.rows || result.rows);
+      return { updated: result.updated, latestDate: result.latestDate };
+    }
+
+    function buildCreditLiveRows(liveRows, sourceRows = getRows("credit"), keys = creditKeys) {
+      const normalized = normalizeCreditInputRows(liveRows, creditKeys);
+      if (!normalized.length) {
+        return { rows: sourceRows, normalized, updated: 0, latestDate: "" };
+      }
+      return {
+        ...mergeCreditRows({ sourceRows, incomingRows: normalized, keys }),
+        normalized,
+      };
+    }
+
+    function applyCreditLiveRows(liveRows, keys = creditKeys, label = "credit balance") {
+      const currentRows = getRows("credit");
+      const result = buildCreditLiveRows(liveRows, currentRows, keys);
+      if (!result.updated) return { updated: 0, latestDate: result.latestDate };
+      const accepted = validate(
+        label,
+        currentRows,
+        result.rows,
+        result.normalized,
+        keys,
+      );
+      commitRows("credit", accepted.rows || result.rows);
+      return { updated: result.updated, latestDate: result.latestDate };
+    }
+
+    function applyCrisisSignalRows(liveRows) {
+      const normalized = normalizeCrisisRows(liveRows);
+      if (!normalized.length) return { updated: 0, latestDate: "" };
+      const currentRows = getRows("crisis");
+      const changed = JSON.stringify(currentRows) !== JSON.stringify(normalized);
+      if (changed) {
+        const accepted = validate(
+          "recession signal",
+          currentRows,
+          normalized,
+          normalized,
+          ["score"],
+        );
+        commitRows("crisis", accepted.rows || normalized);
+      }
+      return { updated: changed ? 1 : 0, latestDate: normalized.at(-1)?.date || "" };
+    }
+
+    function applyAuxiliarySeriesRows(liveRows, key, label, validationOptions = {}) {
+      const normalized = normalizeDatedRows(liveRows, [key], {
+        positiveOnly: true,
+        requireIsoDate: true,
+      });
+      if (!normalized.length) return { updated: 0, latestDate: "" };
+      const currentRows = getRows("adr");
+      const result = mergeDatedSeries({
+        sourceRows: currentRows,
+        incomingRows: normalized,
+        keys: [key],
+        policies: policiesFor([key]),
+      });
+      if (result.updated) {
+        const accepted = validate(
+          label,
+          currentRows,
+          result.rows,
+          normalized,
+          [key],
+          validationOptions,
+        );
+        commitRows("adr", accepted.rows || result.rows);
+      }
+      return { updated: result.updated, latestDate: result.latestDate };
+    }
+
+    function scaleCreditRowsToExisting(liveRows, existingRows) {
+      const normalized = normalizeCreditInputRows(liveRows, creditKeys);
+      if (!normalized.length) return normalized;
+      return scaleRowsToExisting({
+        existingRows: normalizeCreditInputRows(existingRows, creditKeys),
+        liveRows: normalized,
+        keys: creditKeys,
+      });
+    }
+
+    return Object.freeze({
+      applyAuxiliarySeriesRows,
+      applyCreditLiveRows,
+      applyCrisisSignalRows,
+      applyNewsSentimentLiveRows: (rows) => commitMacroBuild(
+        buildDatedLiveRows(rows, ["news_sentiment"]),
+        ["news_sentiment"],
+        { label: "news sentiment" },
+      ),
+      buildCreditLiveRows,
+      buildLeadingCycleLiveRows,
+      buildMacroIndicatorLiveRows: (rows, keys, sourceRows) => buildDatedLiveRows(
+        rows,
+        keys,
+        sourceRows,
+        { positiveOnly: true, requireIsoDate: true },
+      ),
+      buildNewsSentimentLiveRows: (rows, sourceRows) => buildDatedLiveRows(
+        rows,
+        ["news_sentiment"],
+        sourceRows,
+      ),
+      commitMacroBuild,
+      scaleCreditRowsToExisting,
+    });
+  }
+
   globalScope.ThinkStockRuntimeSeriesMerge = Object.freeze({
+    createRuntimeSeriesController,
     mergeCreditRows,
     mergeDatedSeries,
     mergeLeadingCycle,
+    normalizeCreditInputRows,
     normalizeCrisisRows,
+    normalizeDatedRows,
+    sameNullableNumber: sameNumber,
     scaleRowsToExisting,
   });
 }(typeof self !== "undefined" ? self : globalThis));

@@ -3,7 +3,8 @@
 
   const transaction = globalScope.ThinkStockRuntimeDataTransaction;
   const health = globalScope.ThinkStockDataHealth;
-  if (!transaction?.validateSeriesRows || !health?.DEFAULT_SERIES_POLICIES) {
+  const finite = globalScope.ThinkStockRuntimeFoundation?.values?.finiteOrNull;
+  if (!transaction?.validateSeriesRows || !health?.DEFAULT_SERIES_POLICIES || typeof finite !== "function") {
     throw new Error("runtime series quality dependencies are required");
   }
 
@@ -46,12 +47,6 @@
     return String(ticker || "").trim().toUpperCase();
   }
 
-  function finite(value) {
-    if (value === null || value === undefined || value === "") return null;
-    const number = Number(value);
-    return Number.isFinite(number) ? number : null;
-  }
-
   function policiesFor(keys) {
     return Object.fromEntries((Array.isArray(keys) ? keys : []).flatMap((key) => (
       health.DEFAULT_SERIES_POLICIES[key]
@@ -87,11 +82,23 @@
 
   function assertRows(options = {}) {
     const keys = [...new Set((options.keys || []).map(String).filter(Boolean))];
-    return transaction.assertSeriesRows({
+    const input = {
       ...options,
       keys,
       policies: options.policies || policiesFor(keys),
-    });
+    };
+    const result = options.autoRepair === false
+      ? transaction.validateSeriesRows(input)
+      : transaction.repairSeriesRows(input);
+    if (result.ok) return result;
+    const issue = result.issues?.[0] || result.originalValidation?.issues?.[0];
+    const detail = issue
+      ? `${issue.key} ${issue.latestDate || issue.date || ""} ${issue.kind}`.trim()
+      : result.reason;
+    const error = new Error(`${options.label || "runtime data"} validation failed: ${detail}`);
+    error.code = "RUNTIME_DATA_REJECTED";
+    error.validation = result;
+    throw error;
   }
 
   function validatePricePoints(options = {}) {

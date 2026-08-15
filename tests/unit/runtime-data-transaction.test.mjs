@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+await import("../../shared/runtime-foundation.mjs");
 await import("../../shared/series-integrity.mjs");
 await import("../../docs/modules/data-health.js");
 await import("../../docs/modules/runtime-data-transaction.js");
@@ -142,4 +143,36 @@ test("rejects a candidate that introduces a missing trusted market date", () => 
   assert.equal(result.reason, "introduced-gap");
   assert.equal(result.issues[0].latestDate, "2026-08-11");
   assert.equal(result.quality.gapCount, 1);
+});
+
+test("quarantines a bad latest value while preserving the last-good series", () => {
+  const currentRows = [
+    { date: "2026-08-12", kospi_credit: 12.4 },
+    { date: "2026-08-13", kospi_credit: 12.5 },
+  ];
+  const result = transaction.repairSeriesRows({
+    currentRows,
+    candidateRows: [...currentRows, { date: "2026-08-14", kospi_credit: 0 }],
+    incomingRows: [{ date: "2026-08-14", kospi_credit: 0 }],
+    keys: ["kospi_credit"],
+    policies: { kospi_credit: policies.kospi_credit },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.repaired, true);
+  assert.deepEqual(result.rows, currentRows);
+  assert.deepEqual(result.repair.quarantined, [
+    { date: "2026-08-14", key: "kospi_credit", kind: "zero" },
+  ]);
+});
+
+test("source ledger throttles repeated failures but permits a forced refresh", () => {
+  let now = 1_000;
+  const ledger = transaction.createLastGoodLedger({ now: () => now, retryBaseMs: 2_000 });
+  ledger.failure("adr", new Error("HTTP 503"));
+  assert.equal(ledger.canAttempt("adr").allowed, false);
+  assert.equal(ledger.canAttempt("adr").waitMs, 2_000);
+  assert.equal(ledger.canAttempt("adr", { force: true }).allowed, true);
+  now = 3_000;
+  assert.equal(ledger.canAttempt("adr").allowed, true);
 });

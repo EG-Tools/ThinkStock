@@ -207,7 +207,10 @@ const mainChartEventsModule = globalThis.ThinkStockMainChartEvents;
 if (!mainChartEventsModule) throw new Error("Main chart events module failed to load");
 const coMovementModule = globalThis.ThinkStockCoMovement;
 if (!coMovementModule) throw new Error("Co-movement module failed to load");
-const { buildSummary: buildCoMovementSummary } = coMovementModule;
+const {
+  buildSummary: buildCoMovementSummary,
+  sliceRowsByDateRange: sliceCoMovementRowsByDateRange,
+} = coMovementModule;
 const insiderTradesModule = globalThis.ThinkStockInsiderTrades;
 if (!insiderTradesModule) throw new Error("Insider trades module failed to load");
 const {
@@ -221,17 +224,15 @@ const optionalFeatureLoaderModule = globalThis.ThinkStockOptionalFeatureLoader;
 if (!optionalFeatureLoaderModule) throw new Error("Optional feature loader module failed to load");
 const optionalFeatureRuntimeModule = globalThis.ThinkStockOptionalFeatureRuntime;
 if (!optionalFeatureRuntimeModule) throw new Error("Optional feature runtime module failed to load");
-const aiForecastAppModule = globalThis.ThinkStockAiForecastApp;
-if (!aiForecastAppModule) throw new Error("AI forecast app module failed to load");
-const aiForecastTracesModule = globalThis.ThinkStockAiForecastTraces;
-if (!aiForecastTracesModule) throw new Error("AI forecast traces module failed to load");
+let aiForecastAppModule = globalThis.ThinkStockAiForecastApp || null;
+let aiForecastTracesModule = globalThis.ThinkStockAiForecastTraces || null;
 const stockResearchContract = globalThis.ThinkStockStockResearchContract;
 if (!stockResearchContract) throw new Error("Stock research contract failed to load");
 const stockResearchAppModule = globalThis.ThinkStockStockResearchApp;
 if (!stockResearchAppModule) throw new Error("Stock research app module failed to load");
-const aiForecastCacheModule = globalThis.ThinkStockAiForecastCache;
-if (!aiForecastCacheModule) throw new Error("AI forecast cache module failed to load");
+let aiForecastCacheModule = globalThis.ThinkStockAiForecastCache || null;
 let aiFeature = null;
+let aiForecastApp = null;
 const macdOscillatorModule = globalThis.ThinkStockMacdOscillator;
 if (!macdOscillatorModule) throw new Error("MACD oscillator module failed to load");
 const { buildMacdOscillator, thinMacdPoints } = macdOscillatorModule;
@@ -286,12 +287,9 @@ const controlStateView = globalThis.ThinkStockControlStateView;
 if (!controlStateView) throw new Error("Control state view module failed to load");
 const appUiBindingsModule = globalThis.ThinkStockAppUiBindings;
 if (!appUiBindingsModule) throw new Error("App UI bindings module failed to load");
-const apiPeriodsModule = globalThis.ThinkStockApiPeriods;
-if (!apiPeriodsModule) throw new Error("API periods module failed to load");
-const releaseNotesModule = globalThis.ThinkStockReleaseNotes;
-if (!releaseNotesModule) throw new Error("release notes module failed to load");
-const settingsPanelRuntimeModule = globalThis.ThinkStockSettingsPanelRuntime;
-if (!settingsPanelRuntimeModule) throw new Error("Settings panel runtime module failed to load");
+let apiPeriodsModule = globalThis.ThinkStockApiPeriods || null;
+let releaseNotesModule = globalThis.ThinkStockReleaseNotes || null;
+let settingsPanelRuntimeModule = globalThis.ThinkStockSettingsPanelRuntime || null;
 const startupLoaderModule = globalThis.ThinkStockStartupLoader;
 if (!startupLoaderModule) throw new Error("Startup loader module failed to load");
 const startupLoader = startupLoaderModule.createStartupLoader(globalThis);
@@ -384,11 +382,13 @@ const ADMIN_FEATURE_BUTTON_IDS = Object.freeze([
   "coMovementToggle",
   "stockResearchBtn",
 ]);
-const DATA_CACHE_DB_NAME = "thinkstock-runtime-cache-v1";
-const DATA_CACHE_DB_VERSION = 6;
-const DATA_CACHE_STORE_NAME = "snapshots";
-const DATA_CACHE_RECORD_KEY = "latest";
-const DATA_CACHE_LOCAL_KEY = "thinkstock-runtime-cache-v1";
+const runtimeStorageContract = globalThis.ThinkStockRuntimeFoundation?.storage;
+if (!runtimeStorageContract) throw new Error("runtime storage contract failed to load");
+const DATA_CACHE_DB_NAME = runtimeStorageContract.dbName;
+const DATA_CACHE_DB_VERSION = runtimeStorageContract.dbVersion;
+const DATA_CACHE_STORE_NAME = runtimeStorageContract.stores.snapshots;
+const DATA_CACHE_RECORD_KEY = runtimeStorageContract.snapshotRecordKey;
+const DATA_CACHE_LOCAL_KEY = runtimeStorageContract.localSnapshotKey;
 const DATA_CACHE_SCHEMA_VERSION = 10;
 const DATA_CACHE_MAX_AGE_DAYS = 7;
 const RUNTIME_SNAPSHOT_FORMAT = "component-v1";
@@ -402,12 +402,13 @@ const RUNTIME_SNAPSHOT_COMPONENT_KEYS = Object.freeze({
 });
 const LOCAL_SNAPSHOT_MAX_ROWS = 900;
 const LOCAL_SNAPSHOT_MAX_DISCLOSURES = 80;
-const TICKER_PRICE_CACHE_STORE_NAME = "tickerPrices";
-const TICKER_DISCLOSURE_CACHE_STORE_NAME = "tickerDisclosures";
-const TICKER_AI_ANALYSIS_CACHE_STORE_NAME = "tickerAiAnalysis";
-const TICKER_AI_FORECAST_CACHE_STORE_NAME = "tickerAiForecast";
-const TICKER_AI_FORECAST_JOURNAL_STORE_NAME = "tickerAiForecastJournal";
-const TICKER_RESEARCH_HISTORY_STORE_NAME = "tickerResearchHistory";
+const TICKER_PRICE_CACHE_STORE_NAME = runtimeStorageContract.stores.tickerPrices;
+const TICKER_DISCLOSURE_CACHE_STORE_NAME = runtimeStorageContract.stores.tickerDisclosures;
+const TICKER_AI_ANALYSIS_CACHE_STORE_NAME = runtimeStorageContract.stores.tickerAiAnalysis;
+const TICKER_AI_FORECAST_CACHE_STORE_NAME = runtimeStorageContract.stores.tickerAiForecast;
+const TICKER_AI_FORECAST_JOURNAL_STORE_NAME = runtimeStorageContract.stores.tickerAiForecastJournal;
+const TICKER_RESEARCH_HISTORY_STORE_NAME = runtimeStorageContract.stores.tickerResearchHistory;
+const TICKER_BROKER_RESEARCH_STORE_NAME = runtimeStorageContract.stores.tickerBrokerResearch;
 const GRANULAR_CACHE_SCHEMA_VERSION = 1;
 const TICKER_DISCLOSURE_CACHE_SCHEMA_VERSION = 2;
 const GRANULAR_CACHE_PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -415,7 +416,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "2.79";
+const APP_VERSION = "2.88";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -472,10 +473,6 @@ const optionalFeatureRuntime = optionalFeatureRuntimeModule.createOptionalFeatur
   version: APP_BUILD_VERSION,
   buildMacdOscillator,
 });
-const aiForecastApp = aiForecastAppModule.createAiForecastApp(globalThis, {
-  workerUrl: `./modules/ai-forecast-worker.js?v=${encodeURIComponent(APP_BUILD_VERSION)}`,
-  buildFallback: (options) => aiFeature?.forecast?.buildForecast(options) || null,
-});
 const runtimeDataApp = runtimeDataAppModule.createRuntimeDataApp(globalThis, {
   isAbortError,
   runRefresh: (messageElement, options) => runRuntimeDataRefresh(messageElement, options),
@@ -505,6 +502,7 @@ const indexedCacheStore = appStorageModule.createIndexedCacheStore(globalThis, {
     TICKER_AI_FORECAST_CACHE_STORE_NAME,
     TICKER_AI_FORECAST_JOURNAL_STORE_NAME,
     TICKER_RESEARCH_HISTORY_STORE_NAME,
+    TICKER_BROKER_RESEARCH_STORE_NAME,
   ],
 });
 const tickerSeriesCacheRetention = seriesCacheRetentionModule.createSeriesCacheRetention({
@@ -522,6 +520,7 @@ const granularCacheMaintenance = cacheMaintenanceRuntimeModule.createCacheMainte
     TICKER_AI_FORECAST_CACHE_STORE_NAME,
     TICKER_AI_FORECAST_JOURNAL_STORE_NAME,
     TICKER_RESEARCH_HISTORY_STORE_NAME,
+    TICKER_BROKER_RESEARCH_STORE_NAME,
   ],
 });
 const dartGatewaySettingsStore = appStorageModule.createApiSettingsStore(globalThis, {
@@ -558,6 +557,7 @@ const APP_CACHE_INDEXED_STORE_NAMES = Object.freeze([
   TICKER_AI_FORECAST_CACHE_STORE_NAME,
   TICKER_AI_FORECAST_JOURNAL_STORE_NAME,
   TICKER_RESEARCH_HISTORY_STORE_NAME,
+  TICKER_BROKER_RESEARCH_STORE_NAME,
 ]);
 const APP_CACHE_LOCAL_STORAGE_KEYS = Object.freeze([
   DATA_CACHE_LOCAL_KEY,
@@ -597,6 +597,12 @@ const CREDIT_GATEWAY_ENDPOINT = `${DART_GATEWAY_URL}/api/credit`;
 const ADR_GATEWAY_ENDPOINT = `${DART_GATEWAY_URL}/api/adr`;
 const CRISIS_SIGNAL_GATEWAY_ENDPOINT = `${DART_GATEWAY_URL}/api/crisis-signal`;
 const AI_ANALYSIS_ENDPOINT = `${DART_GATEWAY_URL}/api/analysis`;
+const BROKER_REPORT_LIST_ENDPOINT = IS_LOCAL_RUNTIME
+  ? "./api/broker-reports"
+  : `${DART_GATEWAY_URL}/api/broker-reports`;
+const BROKER_REPORT_PDF_ENDPOINT = IS_LOCAL_RUNTIME
+  ? "./api/broker-report-pdf"
+  : `${DART_GATEWAY_URL}/api/broker-report-pdf`;
 const AI_FORECAST_JOURNAL_ENDPOINT = `${DART_GATEWAY_URL}/api/forecast-journal`;
 const AI_MARKET_MODEL_URL = "./data/ai_market_model.json";
 const AI_ROTATION_LEADER_TICKERS = Object.freeze(["005930.KS", "000660.KS"]);
@@ -692,7 +698,18 @@ const runtimeGatewayClient = runtimeGatewayClientModule.createRuntimeGatewayClie
 });
 
 async function ensureAiFeatureModules() {
-  if (!aiFeature) aiFeature = await optionalFeatureRuntime.ensureAi();
+  if (!aiFeature) {
+    aiFeature = await optionalFeatureRuntime.ensureAi();
+    aiForecastAppModule = aiFeature.app;
+    aiForecastCacheModule = aiFeature.cache;
+    aiForecastTracesModule = aiFeature.traces;
+  }
+  if (!aiForecastApp) {
+    aiForecastApp = aiForecastAppModule.createAiForecastApp(globalThis, {
+      workerUrl: `./modules/ai-forecast-worker.js?v=${encodeURIComponent(APP_BUILD_VERSION)}`,
+      buildFallback: (options) => aiFeature?.forecast?.buildForecast(options) || null,
+    });
+  }
   return aiFeature.forecast;
 }
 
@@ -701,6 +718,12 @@ async function ensureMarketTimingFeature() {
   return marketTimingService;
 }
 const toNum = (v) => (v != null && Number.isFinite(Number(v))) ? Number(v) : null;
+const normalizeCreditRows = (rows) => runtimeSeriesMergeModule.normalizeCreditInputRows(
+  rows,
+  CREDIT_COLS,
+);
+const normalizeCrisisSignalRows = (rows) => runtimeSeriesMergeModule.normalizeCrisisRows(rows);
+const sameNullableNumber = (left, right) => runtimeSeriesMergeModule.sameNullableNumber(left, right);
 const browserMarketClient = browserMarketClientModule.createBrowserMarketClient({
   fetchJson: (...args) => fetchJsonWithProxyFallback(...args),
   appendCacheBust,
@@ -773,6 +796,8 @@ function plotlyHoverLabel(fontSize) {
 const ensurePlotlyReady = chartLoaderModule.ensurePlotlyReady;
 const LINE_DRAG_TOLERANCE_PX = 14;
 const LINE_DRAG_TOUCH_TOLERANCE_PX = 24;
+const AI_REPORT_LINE_HIT_TOLERANCE_PX = 10;
+const AI_REPORT_LINE_TOUCH_HIT_TOLERANCE_PX = 20;
 const LINE_HIGHLIGHT_EXTRA_WIDTH = 2;
 const LINE_HIT_TEST_INTERVAL_MS = 50;
 const CHART_GEOMETRY_CACHE_MS = 240;
@@ -850,6 +875,7 @@ let lastInsiderTradeTraceStats = { total: 0, candidates: 0, markers: 0 };
 let baseTraceValues = {};
 let adrFinalRetryController = null;
 let chartVisualFrameCoordinator = null;
+let coMovementFrameScheduler = null;
 let chartMarkerRuntime = null;
 let historicalDataLoaded = false;
 let historicalDataLoadPromise = null;
@@ -891,6 +917,9 @@ let aiAnalysisByTicker = new Map();
 let aiAnalysisPromises = new Map();
 let aiAnalysisForcedRefreshTickers = new Set();
 let aiAnalysisPendingTickers = new Set();
+let brokerResearchByTicker = new Map();
+let brokerResearchPendingTickers = new Set();
+let brokerResearchService = null;
 let aiContextPendingTickers = new Set();
 let aiRotationSeriesByTicker = new Map();
 let aiRotationSeriesPromise = null;
@@ -973,6 +1002,8 @@ let chartHoverRuntime = null;
 let auxiliaryChartRuntime = null;
 let mainChartEvents = null;
 let settingsPanelRuntime = null;
+let settingsPanelLoadPromise = null;
+let runtimeSeriesController = null;
 let aiForecastTracesRuntime = null;
 let runtimeRefreshOrchestrator = null;
 let viewportRelayoutQueue = null;
@@ -981,6 +1012,7 @@ let disclosureHoverTimer = 0;
 let pendingDisclosureHoverData = null;
 let disclosureGroupStore = new Map();
 let lineHitIndexCache = new WeakMap();
+let aiReportLineHitIndexCache = new WeakMap();
 let chartRangeSyncController = null;
 let chartCursorSyncController = null;
 let chartNavigationController = null;
@@ -1395,6 +1427,7 @@ function getDataRevisions() {
 
 function markDataChanged(...names) {
   runtimeSnapshotRevisionTracker.markChanged(names);
+  scheduleDataFreshnessRender();
 }
 
 function applySnapshotRevisions(revisions, loadedNames) {
@@ -1970,6 +2003,9 @@ async function fetchLatestKrxTickerSeriesBatch(tickers, options = {}) {
 
 function getSettingsPanelRuntime() {
   if (settingsPanelRuntime) return settingsPanelRuntime;
+  if (!settingsPanelRuntimeModule || !apiPeriodsModule || !releaseNotesModule) {
+    throw new Error("Settings panel modules are not loaded");
+  }
   settingsPanelRuntime = settingsPanelRuntimeModule.createSettingsPanelRuntime(globalThis, {
     ADMIN_ACCESS_MASK,
     APP_BUILD_VERSION,
@@ -2008,8 +2044,45 @@ function getSettingsPanelRuntime() {
   return settingsPanelRuntime;
 }
 
+function ensureSettingsPanelRuntime() {
+  if (settingsPanelRuntime) return Promise.resolve(settingsPanelRuntime);
+  if (!settingsPanelLoadPromise) {
+    settingsPanelLoadPromise = optionalFeatureRuntime.ensureSettings().then((feature) => {
+      apiPeriodsModule = feature.apiPeriods;
+      releaseNotesModule = feature.releaseNotes;
+      settingsPanelRuntimeModule = feature.runtime;
+      return getSettingsPanelRuntime();
+    }).finally(() => { settingsPanelLoadPromise = null; });
+  }
+  return settingsPanelLoadPromise;
+}
+
 function setupApiSettingsPanel(msgEl) {
-  getSettingsPanelRuntime().setup(msgEl);
+  const openButton = document.getElementById("apiOptionsBtn");
+  if (!openButton || openButton.dataset.settingsLazyBound === "1") return;
+  openButton.dataset.settingsLazyBound = "1";
+  const openSettings = async () => {
+    if (openButton.getAttribute("aria-busy") === "true") return;
+    openButton.setAttribute("aria-busy", "true");
+    try {
+      const runtime = await ensureSettingsPanelRuntime();
+      openButton.removeEventListener("click", openSettings);
+      runtime.setup(msgEl);
+      runtime.open();
+    } catch (error) {
+      setMessage(msgEl, `Settings load failed: ${error.message}`, true);
+    } finally {
+      openButton.removeAttribute("aria-busy");
+    }
+  };
+  openButton.addEventListener("click", openSettings);
+}
+
+function scheduleApiPeriodReminderLoad() {
+  const load = () => ensureSettingsPanelRuntime()
+    .then((runtime) => runtime.scheduleApiPeriodReminder())
+    .catch((error) => recordRuntimeError("settings-reminder-load", error));
+  setTimeout(load, 1200);
 }
 
 function shiftMonths(dateStr, months) {
@@ -2326,14 +2399,19 @@ function getChartRangeSyncController() {
   if (chartRangeSyncController) return chartRangeSyncController;
   chartRangeSyncController = chartViewportControllerModule.createRangeSyncController(window, {
     applyRange: async ({ startMs, endMs, meta }) => {
+      const perfStartedAt = startPerfSample();
       const mainEl = document.getElementById("chart");
       const macdEl = document.getElementById("chart-macd");
       const adrEl = document.getElementById("chart-adr");
       const r0 = new Date(startMs).toISOString();
       const r1 = new Date(endMs).toISOString();
       const payload = { "xaxis.range[0]": r0, "xaxis.range[1]": r1 };
+      const updateMain = Boolean(mainEl?.data && !xRangeMatches(mainEl, r0, r1));
+      const updateMacd = Boolean(macdEl?.data && !macdEl.hidden && !xRangeMatches(macdEl, r0, r1));
+      const updateAdr = Boolean(adrEl?.data && !xRangeMatches(adrEl, r0, r1));
+      if (!updateMain && !updateMacd && !updateAdr) return;
       let mainPayload = payload;
-      if (meta?.liveFit && chartSession.autoChartReset && mainEl?.data) {
+      if (updateMain && meta?.liveFit && chartSession.autoChartReset) {
         const primaryTraces = mainEl.data.filter((trace) => (
           trace?.meta?.seriesKey
           && !trace?.meta?.isDisclosureTrace
@@ -2358,19 +2436,25 @@ function getChartRangeSyncController() {
       chartSyncing = true;
       try {
         const tasks = [];
-        if (mainEl?.data && !xRangeMatches(mainEl, r0, r1)) tasks.push(Plotly.relayout(mainEl, mainPayload));
-        if (macdEl?.data && !macdEl.hidden && !xRangeMatches(macdEl, r0, r1)) {
+        if (updateMain) tasks.push(Plotly.relayout(mainEl, mainPayload));
+        if (updateMacd) {
           tasks.push(Plotly.relayout(macdEl, addViewportYRangeToRelayout(macdEl, payload)));
         }
-        if (adrEl?.data && !xRangeMatches(adrEl, r0, r1)) {
+        if (updateAdr) {
           tasks.push(Plotly.relayout(adrEl, addViewportYRangeToRelayout(adrEl, payload)));
         }
         await Promise.allSettled(tasks);
       } finally {
         chartSyncing = false;
       }
+      recordPerfSample("viewportRangeSync", perfStartedAt, {
+        main: updateMain,
+        macd: updateMacd,
+        auxiliary: updateAdr,
+        liveFit: Boolean(meta?.liveFit),
+      });
       scheduleHandleUpdate(0);
-      if (chartSession.showCoMovement) renderCoMovementPanel();
+      if (chartSession.showCoMovement) scheduleCoMovementPanelRender();
       if (meta?.fit !== false) applyChartResetPolicy("viewport");
     },
     onError: (error) => recordRuntimeError("chart-range-sync", error),
@@ -2478,6 +2562,49 @@ function findNearestLineDragTarget(el, clientX, clientY, isTouch = false, geomet
     lineHitIndexCache.set(el, index);
   }
   return findNearestLineTarget(index, targetMs, localY, ya, tolerance);
+}
+
+function findAiForecastReportAtClientPoint(el, clientX, clientY, isTouch = false, geometry = null) {
+  const mainEl = document.getElementById("chart");
+  if (!el || el !== mainEl || !el._fullLayout || !Array.isArray(el.data)) return null;
+  if (typeof aiForecastTracesModule?.isThickestAiScenarioTrace !== "function") return null;
+
+  const xa = geometry?.xa || el._fullLayout.xaxis;
+  const ya = geometry?.ya || el._fullLayout.yaxis;
+  if (!xa || !ya) return null;
+  const rect = geometry?.rect || el.getBoundingClientRect();
+  const localX = clientX - rect.left;
+  const localY = clientY - rect.top;
+  if (localX < xa._offset || localX > xa._offset + xa._length
+    || localY < ya._offset || localY > ya._offset + ya._length) return null;
+
+  const targetMs = toMsSafe(axisPixelToXValue(el, clientX, false, geometry));
+  if (!Number.isFinite(targetMs)) return null;
+  const traceKeys = el.data.map((trace, traceIndex) => (
+    aiForecastTracesModule.isThickestAiScenarioTrace(trace)
+      && trace?.meta?.representativeReport
+      ? `ai-report:${traceIndex}`
+      : ""
+  ));
+  let index = aiReportLineHitIndexCache.get(el);
+  if (!lineHitIndexMatches(index, el.data, traceKeys)) {
+    index = buildLineHitIndex(el.data, traceKeys);
+    aiReportLineHitIndexCache.set(el, index);
+  }
+  const tolerance = isTouch
+    ? AI_REPORT_LINE_TOUCH_HIT_TOLERANCE_PX
+    : AI_REPORT_LINE_HIT_TOLERANCE_PX;
+  const target = findNearestLineTarget(index, targetMs, localY, ya, tolerance);
+  return target ? { traceIndex: target.traceIndex } : null;
+}
+
+function openAiForecastReportHit(el, hit, sourceEvent) {
+  const trace = el?.data?.[hit?.traceIndex];
+  if (!trace) return false;
+  return handleAiForecastClick({
+    event: sourceEvent,
+    points: [{ curveNumber: hit.traceIndex, data: trace }],
+  });
 }
 
 function clearAutoResetSeriesTransforms(seriesKey = "") {
@@ -2787,10 +2914,7 @@ function renderCoMovementPanel() {
   let visibleRows = rows;
   let requestedMonths = chartSession.activeMonths;
   if (chartRange) {
-    visibleRows = rows.filter((row) => {
-      const timestamp = toMsSafe(row?.date);
-      return Number.isFinite(timestamp) && timestamp >= chartRange[0] && timestamp <= chartRange[1];
-    });
+    visibleRows = sliceCoMovementRowsByDateRange(rows, chartRange);
     const spanDays = Math.max(1, (chartRange[1] - chartRange[0]) / DAY_MS);
     if (spanDays <= 45) {
       const tradingDays = visibleRows.reduce((count, row) => (
@@ -2834,6 +2958,13 @@ function renderCoMovementPanel() {
   panel.replaceChildren(...nodes);
   panel.setAttribute("aria-label", nodes.map((node) => node.textContent).join(", "));
   panel.hidden = false;
+}
+
+function scheduleCoMovementPanelRender() {
+  if (!coMovementFrameScheduler) {
+    coMovementFrameScheduler = createLatestFrameScheduler(window, renderCoMovementPanel);
+  }
+  coMovementFrameScheduler.schedule(true);
 }
 
 function setHoveredLineTarget(target) {
@@ -2916,9 +3047,9 @@ function getChartPointerRuntime() {
     chartSession,
     chartViewportControllerModule,
     clearHoverOnChart,
-    createLatestFrameScheduler,
     createPointerFrameController,
     ensureFullHistoryDataReady,
+    findAiForecastReportAtClientPoint,
     findDisclosureMarkerAtClientPoint,
     findNearestLineDragTarget,
     getChartCursorSyncController,
@@ -2931,6 +3062,7 @@ function getChartPointerRuntime() {
     isTouchDevice,
     latestPointerSample,
     nearestMainLineDate,
+    openAiForecastReportHit,
     openDisclosureMarkerHit,
     recordPerfSample,
     resetDisclosureHoverHighlight,
@@ -3222,7 +3354,7 @@ function getTickerPricePayloadController() {
     sameNumber: sameNullableNumber,
     assertPoints: (options) => runtimeSeriesQualityGateModule.assertPricePoints(options),
     displayName: (ticker) => DISPLAY_NAMES[ticker] || ticker,
-    onClear: (ticker) => getAiForecastCacheService().invalidate(ticker),
+    onClear: invalidateAiForecastCache,
     onChanged: () => markDataChanged("price"),
   });
   return tickerPricePayloadController;
@@ -3264,19 +3396,28 @@ async function readTickerPriceCache(ticker) {
       contentCount: points.length,
       latestDate: points.at(-1)?.date || "",
       contentFingerprint,
+      source: "ticker-price",
+      revision: String(GRANULAR_CACHE_SCHEMA_VERSION),
     });
     if (issue) {
       await removeTickerPriceCacheRecord(key);
       return null;
     }
     tickerSeriesCacheRetention.noteAccess(key);
-    const nextRecord = {
+    const nextRecord = cacheLifecyclePolicyModule.withCacheMetadata({
       ...record,
       points,
       historyCoverage: tickerPriceRuntimeModule.normalizeHistoryCoverage(record.historyCoverage),
       contentFingerprint,
-    };
-    if (!record.contentFingerprint) {
+    }, {
+      source: "ticker-price",
+      asOf: points.at(-1)?.date || "",
+      revision: String(GRANULAR_CACHE_SCHEMA_VERSION),
+      contentFingerprint,
+      now: Date.now(),
+      touch: true,
+    });
+    if (!record.contentFingerprint || !record.cacheMeta) {
       await writeIndexedDbRecord(TICKER_PRICE_CACHE_STORE_NAME, key, nextRecord).catch(() => {});
       tickerSeriesCacheRetention.noteStored(key, nextRecord);
     }
@@ -3362,7 +3503,7 @@ async function writeTickerPriceCache(ticker, points, displayName = "", options =
       ["close", "volume"],
       { tail: 96, logicVersion: "ticker-price-cache-v1" },
     );
-    const record = {
+    const record = cacheLifecyclePolicyModule.withCacheMetadata({
       schema: GRANULAR_CACHE_SCHEMA_VERSION,
       ticker: key,
       displayName: String(displayName || DISPLAY_NAMES[key] || key).trim(),
@@ -3377,7 +3518,15 @@ async function writeTickerPriceCache(ticker, points, displayName = "", options =
         localCache: true,
       }),
       points: normalized,
-    };
+    }, {
+      source: "ticker-price",
+      asOf: normalized.at(-1)?.date || "",
+      revision: String(GRANULAR_CACHE_SCHEMA_VERSION),
+      contentFingerprint,
+      now,
+      savedAt: now,
+      touch: true,
+    });
     const admission = tickerSeriesCacheRetention.planAdmission(key);
     if (admission.rankingRequired) {
       if (admission.touchUpdates.length) {
@@ -3429,7 +3578,7 @@ function getTickerCacheInvalidator() {
       const stores = new Set(context.stores || []);
       const sources = new Set(context.changedSources || []);
       if (stores.has(TICKER_AI_ANALYSIS_CACHE_STORE_NAME)) aiAnalysisByTicker.delete(ticker);
-      if (stores.has(TICKER_AI_FORECAST_CACHE_STORE_NAME)) getAiForecastCacheService().invalidate(ticker);
+      if (stores.has(TICKER_AI_FORECAST_CACHE_STORE_NAME)) invalidateAiForecastCache(ticker);
       if (sources.has("price")) {
         aiForecastQualityRuntime?.invalidateTicker(ticker);
         macdModelCache.delete(ticker);
@@ -4433,7 +4582,7 @@ function appendEventMarkerYUpdates(el, traceIndexes, yUpdates) {
   };
 }
 
-function applyChartVisualFrame(frame) {
+async function applyChartVisualFrame(frame) {
   const el = document.getElementById("chart");
   if (!el?.data || !window.Plotly) return;
   const traceIndexes = [];
@@ -4455,7 +4604,7 @@ function applyChartVisualFrame(frame) {
   if (traceIndexes.length) {
     lineHitIndexCache.delete(el);
     chartEventLayerModule.invalidateMarkerPixels(el);
-    Plotly.restyle(el, { y: yUpdates }, traceIndexes);
+    await Plotly.restyle(el, { y: yUpdates }, traceIndexes);
   }
   if (frame.handles && !(frame.series || []).length) updateHandles();
   if (eventUpdate.structureChanged) requestChartRender(true, { reason: "event-structure" });
@@ -4465,6 +4614,7 @@ function getChartVisualFrameCoordinator() {
   if (!chartVisualFrameCoordinator) {
     chartVisualFrameCoordinator = chartVisualFrameModule.createCoordinator(window, {
       applyFrame: applyChartVisualFrame,
+      onError: recordRuntimeError,
     });
   }
   return chartVisualFrameCoordinator;
@@ -5003,6 +5153,23 @@ function handleDisclosureClick(evtData) {
   }
 }
 
+function handleAiForecastClick(evtData) {
+  const selected = aiForecastTracesModule.representativeReportFromForecastClick?.(evtData);
+  if (!selected) return false;
+  const { point, report } = selected;
+  const series = String(point?.data?.meta?.seriesKey || "");
+  const displayName = aiForecastTracesModule.withoutStockCode?.(labelName(series)) || labelName(series);
+  const reportTitle = aiForecastTracesModule.withoutStockCode?.(report.title) || report.title;
+  showDisclosurePopover({
+    name: report.broker
+      ? `${displayName} · ${report.broker}`
+      : `${displayName} · 참고 리포트`,
+    plotDate: report.publishedDate,
+    events: [{ title: reportTitle, url: report.sourceUrl }],
+  }, evtData.event);
+  return true;
+}
+
 function handleTimingSignalClick(evtData) {
   const point = evtData?.points?.find((candidate) => (
     candidate?.data?.meta?.isMarketTimingBuyTrace
@@ -5171,7 +5338,7 @@ function collectVisibleAiForecastSeries() {
 }
 
 function cancelAiForecastCalculations() {
-  aiForecastApp.cancelCalculations();
+  aiForecastApp?.cancelCalculations?.();
 }
 
 function refreshAiForecastTargets() {
@@ -5241,31 +5408,32 @@ async function loadAiMarketModel() {
 }
 
 function setAiForecastProgress(value, label = "AI 계산") {
-  aiForecastApp.setProgress(value, label);
+  aiForecastApp?.setProgress?.(value, label);
 }
 
 function resetAiForecastProgress(label = "AI 계산 준비") {
-  aiForecastApp.resetProgress(label);
+  aiForecastApp?.resetProgress?.(label);
 }
 
 function waitForAiProgressPaint(delay = 0) {
-  return aiForecastApp.waitForProgressPaint(delay);
+  return aiForecastApp?.waitForProgressPaint?.(delay) || Promise.resolve();
 }
 
 function startAiForecastProgress() {
-  aiForecastApp.startProgress();
+  aiForecastApp?.startProgress?.();
 }
 
 function finishAiForecastProgress() {
-  aiForecastApp.finishProgress();
+  aiForecastApp?.finishProgress?.();
 }
 
 function stopAiForecastProgress() {
-  aiForecastApp.stopProgress();
+  aiForecastApp?.stopProgress?.();
 }
 
 function getAiForecastCacheService() {
   if (aiForecastCacheService) return aiForecastCacheService;
+  if (!aiForecastCacheModule) throw new Error("AI forecast cache is not loaded");
   aiForecastCacheService = aiForecastCacheModule.createForecastCache({
     memory: aiForecastResultBySeries,
     maxMemory: 24,
@@ -5277,8 +5445,18 @@ function getAiForecastCacheService() {
   return aiForecastCacheService;
 }
 
+function invalidateAiForecastCache(ticker) {
+  const key = String(ticker || "").trim().toUpperCase();
+  if (!key) return false;
+  aiForecastResultBySeries.delete(key);
+  aiForecastCalculationCounts.delete(key);
+  if (aiForecastCacheService) return aiForecastCacheService.invalidate(key);
+  deleteIndexedDbRecord(TICKER_AI_FORECAST_CACHE_STORE_NAME, key).catch(() => {});
+  return true;
+}
+
 function runAiForecast(options) {
-  return aiForecastApp.run(options);
+  return aiForecastApp?.run?.(options) || Promise.resolve(null);
 }
 
 async function readAiAnalysisCacheForTicker(ticker) {
@@ -5291,6 +5469,9 @@ async function readAiAnalysisCacheForTicker(ticker) {
       schema: aiFeature.analysis.SCHEMA_VERSION,
       key: ticker,
       requireContent: false,
+      source: "ai-analysis",
+      revision: String(aiFeature.analysis.SCHEMA_VERSION),
+      contentFingerprint: normalized?.contentFingerprint || "",
     });
     if (issue || !normalized) {
       await removeInvalidGranularCacheRecord(TICKER_AI_ANALYSIS_CACHE_STORE_NAME, ticker);
@@ -5317,6 +5498,100 @@ function aiAnalysisIsFresh(analysis) {
   const savedAt = Number(analysis?.savedAt);
   return aiFeature.analysis.isAnalysisFresh(analysis, TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS * DAY_MS)
     && koreanDateText(new Date(savedAt)) === koreanDateText();
+}
+
+function getBrokerResearchService() {
+  if (brokerResearchService) return brokerResearchService;
+  if (!aiFeature?.brokerResearch || !aiFeature?.brokerParser) {
+    throw new Error("Broker research feature is not loaded");
+  }
+  const parser = aiFeature.brokerParser;
+  const revision = `${aiFeature.brokerResearch.CACHE_SCHEMA}:${parser.PARSER_REVISION}`;
+  brokerResearchService = aiFeature.brokerRuntime.createBrokerResearchRuntime(globalThis, {
+    cacheModule: aiFeature.brokerResearch,
+    parser,
+    workerModule: aiFeature.brokerWorker,
+    listEndpoint: BROKER_REPORT_LIST_ENDPOINT,
+    pdfEndpoint: BROKER_REPORT_PDF_ENDPOINT,
+    fetchWithTimeout,
+    getAsOfDate: koreanDateText,
+    getHeaders: () => {
+      if (IS_LOCAL_RUNTIME) return {};
+      const token = getDartGatewayAccessToken();
+      return token ? { Authorization: `Bearer ${token}` } : {};
+    },
+    workerUrl: new URL(
+      `./modules/broker-report-worker.js?v=${encodeURIComponent(APP_BUILD_VERSION)}`,
+      document.baseURI,
+    ).toString(),
+    workerTimeoutMs: 30000,
+    pdfModuleUrl: new URL(`./vendor/pdf.min.mjs?v=${encodeURIComponent(APP_BUILD_VERSION)}`, document.baseURI).toString(),
+    pdfWorkerUrl: new URL(`./vendor/pdf.worker.min.mjs?v=${encodeURIComponent(APP_BUILD_VERSION)}`, document.baseURI).toString(),
+    read: (ticker) => readLifecycleCacheRecord(TICKER_BROKER_RESEARCH_STORE_NAME, ticker),
+    write: (ticker, record) => writeIndexedDbRecord(
+      TICKER_BROKER_RESEARCH_STORE_NAME,
+      ticker,
+      cacheLifecyclePolicyModule.withCacheMetadata(record, {
+        source: "broker-research",
+        revision,
+        asOf: record.latestDate || record.checkedDate,
+        contentFingerprint: parser.reportSummaryFingerprint(record.summary),
+      }),
+    ),
+  });
+  return brokerResearchService;
+}
+
+async function requestBrokerResearchForTicker(ticker, options = {}) {
+  await ensureAiFeatureModules();
+  const target = String(ticker || "").trim().toUpperCase();
+  if (!/^\d{6}\.(KS|KQ)$/.test(target)) return null;
+  brokerResearchPendingTickers.add(target);
+  syncAiForecastToggleButton();
+  try {
+    const existingRecord = await readLifecycleCacheRecord(
+      TICKER_BROKER_RESEARCH_STORE_NAME,
+      target,
+    ).catch(() => null);
+    if (existingRecord?.summary && !brokerResearchByTicker.has(target)) {
+      brokerResearchByTicker.set(target, existingRecord.summary);
+    }
+    const record = await getBrokerResearchService().loadTicker(target, {
+      asOfDate: koreanDateText(),
+      forceNetwork: options.forceNetwork === true,
+      listRefreshAfterDays: 1,
+      existingRecord,
+      onProgress: (progress, label) => {
+        if (!chartSession.showAiForecast) return;
+        const mapped = 12 + Math.round((Math.max(0, Math.min(100, Number(progress) || 0)) / 100) * 22);
+        setAiForecastProgress(mapped, `${labelName(target)} ${label}`);
+      },
+      onReferenceReport: (referenceReport) => {
+        if (!referenceReport?.sourceUrl) return;
+        const current = brokerResearchByTicker.get(target) || existingRecord?.summary || null;
+        brokerResearchByTicker.set(
+          target,
+          aiFeature.brokerRuntime.mergeReferenceSummary(current, referenceReport, koreanDateText()),
+        );
+        if (chartSession.showAiForecast) requestAiForecastRender(lastAiForecastTraceCount > 0);
+      },
+    });
+    const currentReference = brokerResearchByTicker.get(target)?.representativeReports?.reference || null;
+    const finalSummary = aiFeature.brokerRuntime.mergeReferenceSummary(
+      record?.summary || null,
+      currentReference,
+      koreanDateText(),
+    );
+    brokerResearchByTicker.set(target, finalSummary);
+    return finalSummary;
+  } catch (_) {
+    if (!brokerResearchByTicker.has(target)) brokerResearchByTicker.set(target, null);
+    return brokerResearchByTicker.get(target) || null;
+  } finally {
+    brokerResearchPendingTickers.delete(target);
+    syncAiForecastToggleButton();
+    if (chartSession.showAiForecast) requestAiForecastRender(lastAiForecastTraceCount > 0);
+  }
 }
 
 async function requestAiAnalysisForTicker(ticker, options = {}) {
@@ -5427,11 +5702,25 @@ async function refreshAiAnalysisForVisibleSeries(options = {}) {
   if (!chartSession.showAiForecast) return 0;
   const tickers = activeAiAnalysisTickers();
   const before = aiAnalysisByTicker.size;
+  const brokerRefresh = (tickers.length
+    ? mapWithConcurrency(tickers, 2, (ticker) => requestBrokerResearchForTicker(ticker, options))
+    : Promise.resolve([])).catch(() => {
+    // Broker reports are optional evidence. The base forecast must remain immediately usable.
+    return [];
+  });
+  let brokerWaitTimer = 0;
+  const brokerSoftWait = Promise.race([
+    brokerRefresh,
+    new Promise((resolve) => {
+      brokerWaitTimer = setTimeout(() => resolve([]), 6000);
+    }),
+  ]).finally(() => clearTimeout(brokerWaitTimer));
   await Promise.all([
     tickers.length
       ? mapWithConcurrency(tickers, 2, (ticker) => requestAiAnalysisForTicker(ticker, options))
       : Promise.resolve([]),
     loadAiRotationLeaderSeries(),
+    brokerSoftWait,
   ]);
   setAiForecastProgress(35, "실적·컨센서스 준비");
   return Math.max(0, aiAnalysisByTicker.size - before);
@@ -5792,6 +6081,7 @@ function getTickerDisclosureCache() {
   if (tickerDisclosureCache) return tickerDisclosureCache;
   tickerDisclosureCache = disclosurePolicy.createTickerDisclosureCache({
     schema: TICKER_DISCLOSURE_CACHE_SCHEMA_VERSION,
+    source: "ticker-disclosures",
     sanitizeRows: sanitizeDisclosureRows,
     readRecord: (ticker) => readLifecycleCacheRecord(TICKER_DISCLOSURE_CACHE_STORE_NAME, ticker),
     writeRecord: (ticker, record) => writeIndexedDbRecord(
@@ -5804,6 +6094,22 @@ function getTickerDisclosureCache() {
       ticker,
     ),
     recordIssue: (record, options) => cacheRecordHealthModule.granularRecordIssue(record, options),
+    contentFingerprint: (rows) => cacheLifecyclePolicyModule.contentFingerprint(rows.map((row) => ({
+      ticker: row.ticker,
+      date: row.date,
+      receiptNo: row.receiptNo,
+      title: row.title,
+      summary: row.summary,
+    }))),
+    withMetadata: (record, metadata) => cacheLifecyclePolicyModule.withCacheMetadata(record, {
+      source: metadata.source,
+      asOf: metadata.latestDate,
+      revision: metadata.revision,
+      contentFingerprint: metadata.contentFingerprint,
+      now: metadata.now,
+      savedAt: record.savedAt,
+      touch: metadata.touch,
+    }),
     shouldTouch: (lastAccessed, now) => tickerPriceRuntimeModule.shouldTouchCacheRecord(
       lastAccessed,
       now,
@@ -6206,7 +6512,10 @@ function getMainChartRenderScheduler() {
   mainChartRenderScheduler = chartRenderSchedulerModule.createChartRenderScheduler(globalThis, {
     deferDelayMs: INTERACTION_RENDER_DELAY_MS,
     isInteractionBusy: isChartInteractionBusy,
-    render: renderChart,
+    render: async (...args) => {
+      await getChartVisualFrameCoordinator().whenSettled();
+      return renderChart(...args);
+    },
     afterBatch: () => {
       if (!chartSession.pendingAutoChartFit) return;
       const expandOnly = chartSession.pendingAutoChartFitExpandOnly;
@@ -6257,6 +6566,8 @@ function getAiForecastTracesRuntime() {
   const state = {
     get aiAnalysisByTicker() { return aiAnalysisByTicker; },
     get aiAnalysisPendingTickers() { return aiAnalysisPendingTickers; },
+    get brokerResearchByTicker() { return brokerResearchByTicker; },
+    get brokerResearchPendingTickers() { return brokerResearchPendingTickers; },
     get aiContextPendingTickers() { return aiContextPendingTickers; },
     get aiFeature() { return aiFeature; },
     get aiForecastCalculationCounts() { return aiForecastCalculationCounts; },
@@ -6288,6 +6599,9 @@ function getAiForecastTracesRuntime() {
     formatActualValue,
     getAiForecastCacheService,
     getMacdModelForSeries,
+    getStructuralProfile: (series) => (
+      marketTimingService?.get(series)?.contextProfile?.structural || null
+    ),
     labelName,
     queueAiForecastJournalSync,
     resetAiForecastProgress,
@@ -6302,7 +6616,9 @@ function getAiForecastTracesRuntime() {
   return aiForecastTracesRuntime;
 }
 
-function buildAiForecastTraces(rows, seriesModels) {
+async function buildAiForecastTraces(rows, seriesModels) {
+  if (!chartSession.showAiForecast) return [];
+  await ensureAiFeatureModules();
   return getAiForecastTracesRuntime().build(rows, seriesModels);
 }
 
@@ -6325,6 +6641,7 @@ function getMainChartEvents() {
     clearHoverOnChart,
     configureExactDateEventHover,
     enforceMainChartSeriesLimit,
+    handleAiForecastClick,
     handleDisclosureClick,
     handleTimingSignalClick,
     hideDisclosurePopover,
@@ -6376,8 +6693,6 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
     [priceRows, mainMacroRows, creditRows],
     today,
   );
-  renderDataFreshness();
-
   const end = maxDate;
   const requestedStart = shiftMonths(end, chartSession.activeMonths);
   const start = requestedStart < minDate ? minDate : requestedStart;
@@ -6408,7 +6723,7 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
     allowedSeries,
     displayBudget,
   );
-  if (!model || renderGeneration !== chartRenderGeneration) return;
+  if (!model || renderGeneration !== chartRenderGeneration || invalidation.shouldAbort?.()) return;
   const { rows, allSeries, selected, seriesModels } = model;
   chartSession.currentMainChartModel = model;
   captureLockedChartFrame(model);
@@ -6454,7 +6769,8 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
     prepareMarketTimingModels(selected, seriesModels),
   ]);
   if (renderGeneration !== chartRenderGeneration
-    || aiToggleRevisionAtStart !== aiForecastToggleRevision) return;
+    || aiToggleRevisionAtStart !== aiForecastToggleRevision
+    || invalidation.shouldAbort?.()) return;
   traces.push(...aiForecastTraces);
 
   const markerArguments = [selected, seriesModels, chartSession.currentDataStart, chartSession.currentDataEnd, frameStart, frameEnd];
@@ -6557,6 +6873,7 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
     fittedYRange: fittedDefaultYRange,
     longRangeTicks,
   });
+  if (invalidation.shouldAbort?.()) return;
   const renderMode = await applyMainChartRender(el, traces, layout, invalidation);
   const renderedFrameRange = getCurrentXRangeMs(el);
   if (renderedFrameRange) {
@@ -6584,7 +6901,7 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
   getMainChartEvents().bind(el);
 
   const mainRangeForAdr = el._fullLayout?.xaxis?.range?.slice() || (savedXRange ? [...savedXRange] : null);
-  if (chartUpdateCoordinatorModule.shouldUpdateAuxiliary(invalidation)) {
+  if (!invalidation.shouldAbort?.() && chartUpdateCoordinatorModule.shouldUpdateAuxiliary(invalidation)) {
     await Promise.allSettled([
       renderMacdChart(mainRangeForAdr ? [...mainRangeForAdr] : null),
       renderAdrChart(mainRangeForAdr ? [...mainRangeForAdr] : null),
@@ -6840,73 +7157,6 @@ function renderAdrChart(xRange) {
   return getAuxiliaryChartRuntime().renderAdrChart(xRange);
 }
 
-function normalizeLeadingRows(rows) {
-  const map = new Map();
-  (rows || []).forEach((row) => {
-    const date = String(row?.date || "").slice(0, 10);
-    const value = toNum(row?.leading_cycle);
-    if (!date || !Number.isFinite(value)) return;
-    map.set(date, { date, leading_cycle: value });
-  });
-  return [...map.values()].sort((a, b) => a.date.localeCompare(b.date));
-}
-
-function normalizeNewsSentimentRows(rows) {
-  const map = new Map();
-  (rows || []).forEach((row) => {
-    const date = String(row?.date || "").slice(0, 10);
-    const value = toNum(row?.news_sentiment);
-    if (!date || !Number.isFinite(value)) return;
-    map.set(date, { date, news_sentiment: value });
-  });
-  return [...map.values()].sort((a, b) => a.date.localeCompare(b.date));
-}
-
-function normalizeMacroIndicatorRows(rows, keys) {
-  const map = new Map();
-  (Array.isArray(rows) ? rows : []).forEach((row) => {
-    const date = String(row?.date || "").slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
-    const previous = map.get(date) || { date };
-    const next = { ...previous };
-    keys.forEach((key) => {
-      const value = toNum(row?.[key]);
-      if (Number.isFinite(value) && value > 0) next[key] = value;
-    });
-    if (keys.some((key) => Number.isFinite(next[key]))) map.set(date, next);
-  });
-  return [...map.values()].sort((left, right) => left.date.localeCompare(right.date));
-}
-
-function normalizeCreditRows(rows) {
-  const map = new Map();
-  (rows || []).forEach((row) => {
-    const date = String(row?.date || "").slice(0, 10);
-    if (!date) return;
-    const next = { date };
-    CREDIT_COLS.forEach((key) => {
-      const value = toNum(row?.[key]);
-      next[key] = Number.isFinite(value) && value > 0 ? value : null;
-    });
-    if (!CREDIT_COLS.some((key) => Number.isFinite(next[key]))) return;
-    const prev = map.get(date) || { date };
-    const merged = { date };
-    CREDIT_COLS.forEach((key) => {
-      merged[key] = Number.isFinite(next[key]) ? next[key] : (prev[key] ?? null);
-    });
-    map.set(date, merged);
-  });
-  return [...map.values()].sort((a, b) => a.date.localeCompare(b.date));
-}
-
-function sameNullableNumber(a, b) {
-  const na = toNum(a);
-  const nb = toNum(b);
-  if (na === null && nb === null) return true;
-  if (na === null || nb === null) return false;
-  return Math.abs(na - nb) <= 1e-9;
-}
-
 async function fetchJsonWithProxyFallback(url, init = null, options = {}) {
   const allowProxy = options?.allowProxy !== false;
   const candidates = allowProxy ? [url, CORS_PROXY + encodeURIComponent(url)] : [url];
@@ -6948,209 +7198,62 @@ function validateRuntimeSeriesCandidate(label, currentRows, candidateRows, incom
   });
 }
 
-function buildLeadingCycleLiveRows(monthlyRows, sourceRows = macroRows) {
-  const normalized = normalizeLeadingRows(monthlyRows);
-  if (!normalized.length || !pricePayload?.records?.length) {
-    return { rows: sourceRows, normalized, updated: 0, latestDate: "" };
-  }
-
-  const priceDates = (pricePayload.records || []).map((r) => r.date).filter(Boolean);
-  if (!priceDates.length) {
-    return {
-      rows: sourceRows,
-      normalized,
-      updated: 0,
-      latestDate: normalized[normalized.length - 1].date,
-    };
-  }
-
-  const latestDate = normalized[normalized.length - 1].date;
-  const dense = buildDenseMacroRows(normalized, priceDates);
-
-  return {
-    ...runtimeSeriesMergeModule.mergeLeadingCycle({
-      sourceRows,
-      denseRows: dense,
-      priceDates,
-      latestDate,
-    }),
-    normalized,
-  };
-}
-
-function buildNewsSentimentLiveRows(liveRows, sourceRows = macroRows) {
-  const normalized = normalizeNewsSentimentRows(liveRows);
-  if (!normalized.length) return { rows: sourceRows, normalized, updated: 0, latestDate: "" };
-  return {
-    ...runtimeSeriesMergeModule.mergeDatedSeries({
-      sourceRows,
-      incomingRows: normalized,
-      keys: ["news_sentiment"],
-    }),
-    normalized,
-  };
-}
-
-function buildMacroIndicatorLiveRows(liveRows, keys, sourceRows = macroRows) {
-  const normalized = normalizeMacroIndicatorRows(liveRows, keys);
-  if (!normalized.length) return { rows: sourceRows, normalized, updated: 0, latestDate: "" };
-  return {
-    ...runtimeSeriesMergeModule.mergeDatedSeries({ sourceRows, incomingRows: normalized, keys }),
-    normalized,
-  };
-}
-
-function commitMacroBuild(result, keys, options = {}) {
-  if (!result?.updated) return { updated: 0, latestDate: result?.latestDate || "" };
-  validateRuntimeSeriesCandidate(
-    options.label || "macro",
-    macroRows,
-    result.rows,
-    result.normalized,
-    keys,
-    options.validation,
-  );
-  macroRows = result.rows;
-  markDataChanged("macro");
-  return { updated: result.updated, latestDate: result.latestDate };
-}
-
-function applyNewsSentimentLiveRows(liveRows) {
-  return commitMacroBuild(buildNewsSentimentLiveRows(liveRows), ["news_sentiment"], {
-    label: "news sentiment",
+function getRuntimeSeriesController() {
+  if (runtimeSeriesController) return runtimeSeriesController;
+  runtimeSeriesController = runtimeSeriesMergeModule.createRuntimeSeriesController({
+    creditKeys: CREDIT_COLS,
+    buildDenseMacroRows,
+    getPriceDates: () => (pricePayload?.records || []).map((row) => row?.date).filter(Boolean),
+    getRows: (name) => ({ macro: macroRows, credit: creditRows, crisis: crisisRows, adr: adrRows }[name]),
+    setRows: (name, rows) => {
+      if (name === "macro") macroRows = rows;
+      else if (name === "credit") creditRows = rows;
+      else if (name === "crisis") crisisRows = rows;
+      else if (name === "adr") adrRows = rows;
+    },
+    markChanged: markDataChanged,
+    policiesFor: runtimePoliciesFor,
+    validate: validateRuntimeSeriesCandidate,
   });
+  return runtimeSeriesController;
 }
 
-function buildCreditLiveRows(liveRows, sourceRows = creditRows, keys = CREDIT_COLS) {
-  const normalized = normalizeCreditRows(liveRows);
-  if (!normalized.length) return { rows: sourceRows, normalized, updated: 0, latestDate: "" };
-
-  return {
-    ...runtimeSeriesMergeModule.mergeCreditRows({
-      sourceRows,
-      incomingRows: normalized,
-      keys,
-    }),
-    normalized,
-  };
-}
-
-function applyCreditLiveRows(liveRows, keys = CREDIT_COLS, label = "credit balance") {
-  const result = buildCreditLiveRows(liveRows, creditRows, keys);
-  if (!result.updated) return { updated: 0, latestDate: result.latestDate };
-  validateRuntimeSeriesCandidate(
-    label,
-    creditRows,
-    result.rows,
-    result.normalized,
-    keys,
-  );
-  creditRows = result.rows;
-  markDataChanged("credit");
-  return { updated: result.updated, latestDate: result.latestDate };
-}
-
-function normalizeCrisisSignalRows(rows) {
-  return runtimeSeriesMergeModule.normalizeCrisisRows(rows);
-}
-
-function applyCrisisSignalRows(liveRows) {
-  const normalized = normalizeCrisisSignalRows(liveRows);
-  if (!normalized.length) return { updated: 0, latestDate: "" };
-  // Score can stay unchanged while rates, volatility, labor, or FX inputs move.
-  // Compare the complete normalized payload so those inputs reach timing and AI models.
-  const changed = JSON.stringify(crisisRows) !== JSON.stringify(normalized);
-  if (changed) {
-    validateRuntimeSeriesCandidate(
-      "recession signal",
-      crisisRows,
-      normalized,
-      normalized,
-      ["score"],
-    );
-    crisisRows = normalized;
-    markDataChanged("crisis");
-  }
-  return { updated: changed ? 1 : 0, latestDate: normalized.at(-1)?.date || "" };
-}
+const buildLeadingCycleLiveRows = (...args) => (
+  getRuntimeSeriesController().buildLeadingCycleLiveRows(...args)
+);
+const buildNewsSentimentLiveRows = (...args) => (
+  getRuntimeSeriesController().buildNewsSentimentLiveRows(...args)
+);
+const buildMacroIndicatorLiveRows = (...args) => (
+  getRuntimeSeriesController().buildMacroIndicatorLiveRows(...args)
+);
+const commitMacroBuild = (...args) => getRuntimeSeriesController().commitMacroBuild(...args);
+const applyNewsSentimentLiveRows = (...args) => (
+  getRuntimeSeriesController().applyNewsSentimentLiveRows(...args)
+);
+const applyCreditLiveRows = (...args) => getRuntimeSeriesController().applyCreditLiveRows(...args);
+const applyCrisisSignalRows = (...args) => (
+  getRuntimeSeriesController().applyCrisisSignalRows(...args)
+);
+const scaleCreditRowsToExisting = (...args) => (
+  getRuntimeSeriesController().scaleCreditRowsToExisting(...args)
+);
 
 function applyVkospiLiveRows(liveRows) {
-  const normalized = (Array.isArray(liveRows) ? liveRows : []).flatMap((row) => {
-    const date = String(row?.date || "").slice(0, 10);
-    const value = toNum(row?.vkospi);
-    return /^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(value) && value > 0
-      ? [{ date, vkospi: value }]
-      : [];
+  const referenceDates = (pricePayload?.records || []).flatMap((row) => (
+    Number.isFinite(toNum(row?.["^KS11"])) ? [String(row.date || "").slice(0, 10)] : []
+  ));
+  return getRuntimeSeriesController().applyAuxiliarySeriesRows(liveRows, "vkospi", "VKOSPI", {
+    gapPolicies: runtimePoliciesFor(VKOSPI_SERIES),
+    referenceDates,
+    gapLookbackDays: 45,
   });
-  if (!normalized.length) return { updated: 0, latestDate: "" };
-  const result = runtimeSeriesMergeModule.mergeDatedSeries({
-    sourceRows: adrRows,
-    incomingRows: normalized,
-    keys: VKOSPI_SERIES,
-    policies: runtimePoliciesFor(VKOSPI_SERIES),
-  });
-  if (result.updated) {
-    const referenceDates = (pricePayload?.records || []).flatMap((row) => (
-      Number.isFinite(toNum(row?.["^KS11"])) ? [String(row.date || "").slice(0, 10)] : []
-    ));
-    validateRuntimeSeriesCandidate(
-      "VKOSPI",
-      adrRows,
-      result.rows,
-      normalized,
-      VKOSPI_SERIES,
-      {
-        gapPolicies: runtimePoliciesFor(VKOSPI_SERIES),
-        referenceDates,
-        gapLookbackDays: 45,
-      },
-    );
-    adrRows = result.rows;
-    markDataChanged("adr");
-  }
-  return { updated: result.updated, latestDate: result.latestDate };
 }
 
 function applyVixLiveRows(liveRows) {
-  const normalized = (Array.isArray(liveRows) ? liveRows : []).flatMap((row) => {
-    const date = String(row?.date || "").slice(0, 10);
-    const value = toNum(row?.vix);
-    return /^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(value) && value > 0
-      ? [{ date, vix: value }]
-      : [];
-  });
-  if (!normalized.length) return { updated: 0, latestDate: "" };
-  const result = runtimeSeriesMergeModule.mergeDatedSeries({
-    sourceRows: adrRows,
-    incomingRows: normalized,
-    keys: VIX_SERIES,
-    policies: runtimePoliciesFor(VIX_SERIES),
-  });
-  if (result.updated) {
-    validateRuntimeSeriesCandidate(
-      "VIX",
-      adrRows,
-      result.rows,
-      normalized,
-      VIX_SERIES,
-      {
-        gapPolicies: runtimePoliciesFor(VIX_SERIES),
-        gapLookbackDays: 45,
-      },
-    );
-    adrRows = result.rows;
-    markDataChanged("adr");
-  }
-  return { updated: result.updated, latestDate: result.latestDate };
-}
-
-function scaleCreditRowsToExisting(liveRows, existingRows) {
-  const normalized = normalizeCreditRows(liveRows);
-  if (!normalized.length) return normalized;
-  return runtimeSeriesMergeModule.scaleRowsToExisting({
-    existingRows: normalizeCreditRows(existingRows),
-    liveRows: normalized,
-    keys: CREDIT_COLS,
+  return getRuntimeSeriesController().applyAuxiliarySeriesRows(liveRows, "vix", "VIX", {
+    gapPolicies: runtimePoliciesFor(VIX_SERIES),
+    gapLookbackDays: 45,
   });
 }
 
@@ -7310,14 +7413,14 @@ function refreshSourceWithRetry(kind, task, signal = null) {
 function applyAdrLiveRows(incomingRows) {
   const result = adrDataModule.mergeAdrLiveRows(adrRows, incomingRows);
   if (result.changed) {
-    validateRuntimeSeriesCandidate(
+    const validation = validateRuntimeSeriesCandidate(
       "ADR",
       adrRows,
       result.rows,
       incomingRows,
       ADR_SERIES,
     );
-    adrRows = result.rows;
+    adrRows = validation.rows || result.rows;
     markDataChanged("adr");
   }
   return result;
@@ -7497,14 +7600,14 @@ async function refreshFearGreedFromWeb(signal = null) {
     policies: runtimePoliciesFor(FEAR_GREED_SERIES),
   });
   if (result.updated) {
-    validateRuntimeSeriesCandidate(
+    const validation = validateRuntimeSeriesCandidate(
       "fear greed",
       adrRows,
       result.rows,
       liveRows,
       FEAR_GREED_SERIES,
     );
-    adrRows = result.rows;
+    adrRows = validation.rows || result.rows;
     markDataChanged("adr");
   }
   return { added: result.updated, latestDate: result.latestDate };
@@ -7786,6 +7889,7 @@ async function boot() {
   setupStockAddPanel(msgEl);
   setupStockResearch(msgEl);
   setupApiSettingsPanel(msgEl);
+  scheduleApiPeriodReminderLoad();
   syncApiOptionsButton();
   renderAppVersionLabel();
   syncChartResetToggleButton();
@@ -7795,6 +7899,8 @@ async function boot() {
   syncRecessionToggleButton();
   syncCoMovementToggleButton();
   syncAiForecastToggleButton();
+  syncDisclosureToggleButton();
+  syncInsiderTradeToggleButton(0);
   syncAdminFeatureAccess();
   bindRuntimeSnapshotExitSave();
   scheduleGranularCacheCleanup();
@@ -8050,7 +8156,6 @@ async function boot() {
     setMessage(msgEl, err.message || "데이터를 가져오지 못했습니다.", true);
   } finally {
     hideStartupLoader();
-    getSettingsPanelRuntime().scheduleApiPeriodReminder();
     scheduleHistoricalDataPreload();
     recordPerfSample("appStartup", startupPerfStartedAt, {
       historicalDataLoaded,

@@ -232,7 +232,8 @@
       const currentSpan = currentRange[1] - currentRange[0];
       const screenDistance = distance / Math.max(dayMs, currentSpan);
       const duration = Math.min(850, 420 + (Math.log2(1 + screenDistance) * 90));
-      let startedAt = null;
+      const requestedAt = Number(scope.performance?.now?.());
+      let startedAt = Number.isFinite(requestedAt) ? requestedAt : null;
 
       const step = (timestamp) => {
         if (!animationActive || token !== animationToken) return;

@@ -4,6 +4,10 @@
   const HORIZONS = Object.freeze([5, 10, 20, 63, 126]);
   const CORRECTION_CAPS = Object.freeze({ 5: 0.025, 10: 0.04, 20: 0.06, 63: 0.1, 126: 0.16 });
   const SCENARIO_KEYS = Object.freeze(["upside", "sideways", "downside"]);
+  const contextClassifier = globalScope.ThinkStockAiContextClassifier;
+  const finiteOrNull = globalScope.ThinkStockRuntimeFoundation?.values?.finiteOrNull;
+  if (!contextClassifier) throw new Error("AI context classifier failed to load");
+  if (typeof finiteOrNull !== "function") throw new Error("runtime value contract failed to load");
   const INPUT_FRESHNESS_RULES = Object.freeze({
     price: Object.freeze({ graceDays: 4, staleDays: 14, weight: 4 }),
     market: Object.freeze({ graceDays: 4, staleDays: 14, weight: 3 }),
@@ -22,6 +26,9 @@
     own: 0.98,
     "shock-cohort": 0.97,
     "cohort-regime": 0.96,
+    "archetype-phase-regime": 0.96,
+    "archetype-regime": 0.955,
+    "trend-regime": 0.95,
     "group-regime": 0.94,
     "behavior-cycle-regime": 0.93,
     "behavior-regime": 0.92,
@@ -29,6 +36,7 @@
     "market-shock": 0.92,
     "market-regime": 0.9,
     market: 0.88,
+    archetype: 0.9,
     global: 0.84,
     none: 1,
   });
@@ -36,11 +44,6 @@
   function finite(value, fallback = 0) {
     const number = Number(value);
     return Number.isFinite(number) ? number : fallback;
-  }
-
-  function finiteOrNull(value) {
-    const number = Number(value);
-    return Number.isFinite(number) ? number : null;
   }
 
   function clamp(value, minimum, maximum) {
@@ -91,6 +94,11 @@
     const shock = shockActive
       ? (shockSignedStrength > 0 ? "overbought" : "oversold")
       : "normal";
+    const brokerReportCount = Math.max(0, finite(features.broker_research_reports));
+    const brokerConfidence = Math.max(0, finite(features.broker_research_confidence));
+    const researchCohort = brokerReportCount > 0 && brokerConfidence > 0
+      ? "report-backed"
+      : "no-report";
     let regime = "neutral";
     if (crisis >= 50 || risk - support >= 0.2) regime = "risk-off";
     else if (support - risk >= 0.2) regime = "risk-on";
@@ -106,6 +114,8 @@
     let cycle = "neutral";
     if (leadingPeak > 0.5 || leadingSlowdown > 0.5) cycle = "late-cycle";
     else if (leadingRecovery > 0.5) cycle = "recovery";
+    const archetypes = contextClassifier.classifyStructuralArchetypes(features);
+    const probabilisticRegime = contextClassifier.classifyProbabilisticRegime(features);
     return Object.freeze({
       market,
       volatility,
@@ -115,9 +125,14 @@
       behavior,
       trend,
       cycle,
+      archetype: archetypes[0],
+      archetypes: Object.freeze(archetypes),
+      probabilisticRegime,
       shock,
       shockStrength: shockActive ? Math.abs(shockSignedStrength) : 0,
       shockCohort: `${market}:${volatilityGroup}:${shock}`,
+      researchCohort,
+      brokerReportCount,
       cohort: `${market}:${volatilityGroup}:${behavior}:${trend}:${cycle}`,
     });
   }
@@ -135,18 +150,34 @@
     const volatilityWeight = Math.exp(-volatilityDistance * 0.55);
     const behaviorWeight = recordContext?.behavior === currentContext?.behavior ? 1 : 0.82;
     const cycleWeight = recordContext?.cycle === currentContext?.cycle ? 1 : 0.88;
+    const currentArchetypes = currentContext?.archetypes || [];
+    const recordArchetypes = recordContext?.archetypes || [];
+    const hasSpecificArchetype = !currentArchetypes.includes("unclassified")
+      && !currentArchetypes.includes("mixed");
+    const archetypeWeight = !hasSpecificArchetype
+      ? 1
+      : (currentArchetypes.some((item) => recordArchetypes.includes(item)) ? 1.05 : 0.78);
+    const phaseWeight = currentContext?.probabilisticRegime === "unclassified"
+      ? 1
+      : (recordContext?.probabilisticRegime === currentContext.probabilisticRegime ? 1.04 : 0.86);
     const currentShock = String(currentContext?.shock || "normal");
     const recordShock = String(recordContext?.shock || "normal");
     const shockWeight = currentShock === "normal"
       ? (recordShock === "normal" ? 1 : 0.78)
       : (recordShock === currentShock ? 1.15 : (recordShock === "normal" ? 0.48 : 0.25));
+    const researchWeight = currentContext?.researchCohort === "report-backed"
+      ? (recordContext?.researchCohort === "report-backed" ? 1.08 : 0.78)
+      : (recordContext?.researchCohort === "report-backed" ? 0.9 : 1);
     return Math.max(0.15, recency)
       * modelWeight
       * tickerWeight
       * volatilityWeight
       * behaviorWeight
       * cycleWeight
-      * shockWeight;
+      * archetypeWeight
+      * phaseWeight
+      * shockWeight
+      * researchWeight;
   }
 
   function robustBias(samples, horizon) {
@@ -244,6 +275,46 @@
       intervalCoverage,
       intervalScale: clamp(coverageScale * confidenceWidening, 1, 1.9),
       reliability,
+    };
+  }
+
+  function walkForwardBiasValidation(samples, horizon) {
+    const ordered = [...(samples || [])].sort((left, right) => (
+      String(left.asOf || "").localeCompare(String(right.asOf || ""))
+    ));
+    if (ordered.length < 8) {
+      return {
+        applied: false,
+        passed: true,
+        samples: 0,
+        correction: 0,
+        improvement: null,
+        scale: 1,
+      };
+    }
+    const validationCount = Math.max(3, Math.floor(ordered.length * 0.3));
+    const training = ordered.slice(0, ordered.length - validationCount);
+    const validation = ordered.slice(ordered.length - validationCount);
+    const trainingCorrection = robustBias(training, horizon).correction;
+    const weightTotal = validation.reduce((sum, sample) => sum + sample.weight, 0);
+    const weightedError = (correction) => validation.reduce((sum, sample) => (
+      sum + (Math.abs(sample.error - correction) * sample.weight)
+    ), 0) / Math.max(1e-9, weightTotal);
+    const baselineError = weightedError(0);
+    const correctedError = weightedError(trainingCorrection);
+    const improvement = baselineError > 1e-9
+      ? 1 - (correctedError / baselineError)
+      : 0;
+    const passed = Math.abs(trainingCorrection) <= 1e-9 || improvement >= 0.01;
+    return {
+      applied: true,
+      passed,
+      samples: validation.length,
+      correction: trainingCorrection,
+      baselineError,
+      correctedError,
+      improvement,
+      scale: passed ? clamp(improvement / 0.12, 0.2, 1) : 0,
     };
   }
 
@@ -456,16 +527,30 @@
       { key: "shock-cohort", minimum: 6, matches: (sample) => sample.context.shockCohort === context.shockCohort },
       { key: "market-shock", minimum: 8, matches: (sample) => sample.context.market === context.market && sample.context.shock === context.shock },
     ];
+    const hasSpecificArchetype = !["mixed", "unclassified"].includes(context.archetype);
+    const archetypeTiers = hasSpecificArchetype ? [
+      ...(context.probabilisticRegime !== "unclassified" ? [
+        { key: "archetype-phase-regime", minimum: 8, matches: (sample) => sample.context.market === context.market && sample.context.archetypes.includes(context.archetype) && sample.context.probabilisticRegime === context.probabilisticRegime && sample.context.regime === context.regime },
+      ] : []),
+      { key: "archetype-regime", minimum: 8, matches: (sample) => sample.context.market === context.market && sample.context.archetypes.includes(context.archetype) && sample.context.regime === context.regime },
+    ] : [];
+    const researchTiers = context.researchCohort === "report-backed" ? [
+      { key: "research-cohort-regime", minimum: 8, matches: (sample) => sample.context.group === context.group && sample.context.regime === context.regime && sample.context.researchCohort === context.researchCohort },
+    ] : [];
     const tiers = [
       ...shockTiers,
       { key: "own-regime", minimum: 4, matches: (sample) => sample.ticker === ticker && sample.context.regime === context.regime },
       { key: "own", minimum: 5, matches: (sample) => sample.ticker === ticker },
+      ...researchTiers,
       { key: "cohort-regime", minimum: 6, matches: (sample) => sample.context.cohort === context.cohort && sample.context.regime === context.regime },
+      ...archetypeTiers,
+      { key: "trend-regime", minimum: 8, matches: (sample) => sample.context.market === context.market && sample.context.volatilityGroup === context.volatilityGroup && sample.context.trend === context.trend && sample.context.regime === context.regime },
       { key: "group-regime", minimum: 8, matches: (sample) => sample.context.group === context.group && sample.context.regime === context.regime },
       { key: "behavior-cycle-regime", minimum: 10, matches: (sample) => sample.context.market === context.market && sample.context.behavior === context.behavior && sample.context.cycle === context.cycle && sample.context.regime === context.regime },
       { key: "behavior-regime", minimum: 10, matches: (sample) => sample.context.market === context.market && sample.context.behavior === context.behavior && sample.context.regime === context.regime },
       { key: "group", minimum: 10, matches: (sample) => sample.context.group === context.group },
       { key: "market-regime", minimum: 10, matches: (sample) => sample.context.market === context.market && sample.context.regime === context.regime },
+      ...(hasSpecificArchetype ? [{ key: "archetype", minimum: 12, matches: (sample) => sample.context.market === context.market && sample.context.archetypes.includes(context.archetype) }] : []),
       { key: "market", minimum: 12, matches: (sample) => sample.context.market === context.market },
       { key: "global", minimum: 16, matches: () => true },
     ];
@@ -478,6 +563,7 @@
         const recordContext = classifyContext(record.ticker, record);
         return [{
           ticker: String(record.ticker || "").trim().toUpperCase(),
+          asOf: String(record.asOf || "").slice(0, 10),
           context: recordContext,
           error: Number(score.signedLogError),
           actualLogReturn: Number(score.actualLogReturn),
@@ -501,8 +587,13 @@
         return;
       }
       const samples = eligible.filter(tier.matches);
+      const bias = robustBias(samples, horizon);
+      const walkForward = walkForwardBiasValidation(samples, horizon);
       horizons[horizon] = {
-        ...robustBias(samples, horizon),
+        ...bias,
+        correction: bias.correction * walkForward.scale,
+        correctionEligible: bias.correctionEligible && walkForward.passed,
+        walkForward,
         probability: probabilityCalibration(samples, horizon),
         tier: tier.key,
       };
@@ -517,7 +608,7 @@
     );
     const inputReliability = buildInputReliability(forecast, horizons[126]);
     return Object.freeze({
-      format: "ai-calibration-v9",
+      format: "ai-calibration-v10",
       context,
       horizons,
       quality: options.quality || null,
@@ -588,7 +679,11 @@
       behavior: String(context.behavior || "unknown"),
       trend: String(context.trend || "unknown"),
       cycle: String(context.cycle || "unknown"),
+      archetype: String(context.archetype || "unknown"),
+      probabilisticRegime: String(context.probabilisticRegime || "unknown"),
       shock: String(context.shock || "normal"),
+      researchCohort: String(context.researchCohort || "no-report"),
+      brokerReportCount: Math.max(0, Number(context.brokerReportCount) || 0),
       tier: String(row?.tier || "none"),
       directionAccuracy: finiteOrNull(row?.directionAccuracy),
       skillVsNoChange: finiteOrNull(row?.skillVsNoChange),
@@ -606,6 +701,7 @@
     const contextRows = {};
     const cohortRows = {};
     const shockRows = {};
+    const researchRows = {};
     const series = {};
 
     entries.forEach(([ticker, rawValue]) => {
@@ -615,9 +711,11 @@
       const regime = String(value.regime || "unknown");
       const volatilityGroup = String(value.volatilityGroup || "unknown");
       const shock = String(value.shock || "normal");
+      const researchCohort = String(value.researchCohort || "no-report");
       const contextKey = `${market}:${regime}`;
       const cohortKey = `${contextKey}:${volatilityGroup}`;
       const shockKey = `${market}:${shock}`;
+      const researchKey = `${market}:${researchCohort}`;
       const samples = Math.max(0, Number(value.horizonSamples) || 0);
       const confidence = clamp(finite(value.confidenceScale, 1), 0, 1);
       const directionAccuracy = finiteOrNull(value.directionAccuracy);
@@ -670,6 +768,21 @@
         shockRow.directionWeightedTotal += directionAccuracy * samples;
         shockRow.directionSamples += samples;
       }
+      researchRows[researchKey] ||= {
+        seriesCount: 0,
+        samples: 0,
+        confidenceTotal: 0,
+        directionWeightedTotal: 0,
+        directionSamples: 0,
+      };
+      const researchRow = researchRows[researchKey];
+      researchRow.seriesCount += 1;
+      researchRow.samples += samples;
+      researchRow.confidenceTotal += confidence;
+      if (directionAccuracy !== null && samples > 0) {
+        researchRow.directionWeightedTotal += directionAccuracy * samples;
+        researchRow.directionSamples += samples;
+      }
     });
 
     const byContext = Object.freeze(Object.fromEntries(Object.entries(contextRows).map(([key, row]) => [
@@ -712,6 +825,19 @@
           : null,
       }),
     ])));
+    const byResearch = Object.freeze(Object.fromEntries(Object.entries(researchRows).map(([key, row]) => [
+      key,
+      Object.freeze({
+        seriesCount: row.seriesCount,
+        samples: row.samples,
+        averageConfidenceScale: row.seriesCount
+          ? Math.round((row.confidenceTotal / row.seriesCount) * 1000) / 1000
+          : null,
+        directionAccuracy: row.directionSamples
+          ? Math.round((row.directionWeightedTotal / row.directionSamples) * 10000) / 10000
+          : null,
+      }),
+    ])));
     return Object.freeze({
       seriesCount: entries.length,
       statuses: Object.freeze(statuses),
@@ -721,6 +847,7 @@
       byContext,
       byCohort,
       byShock,
+      byResearch,
       series: Object.freeze(series),
     });
   }
@@ -872,6 +999,8 @@
       [`journal_skill_vs_momentum_${horizon}`, finite(profile.horizons[horizon]?.skillVsMomentum)],
       [`journal_confidence_scale_${horizon}`, finite(profile.horizons[horizon]?.confidenceScale, 1)],
       [`journal_interval_scale_${horizon}`, finite(profile.horizons[horizon]?.intervalScale, 1)],
+      [`journal_walkforward_improvement_${horizon}`, finite(profile.horizons[horizon]?.walkForward?.improvement)],
+      [`journal_walkforward_passed_${horizon}`, profile.horizons[horizon]?.walkForward?.passed === false ? 0 : 1],
     ]));
     calibrationFeatures.journal_quality_confidence_scale = finite(profile.qualityConfidenceScale, 1);
     calibrationFeatures.input_confidence_scale = finite(profile.inputReliability?.confidenceScale, 1);
@@ -912,5 +1041,6 @@
     probabilityCalibration,
     realizedScenario,
     summarizeForecastQualityDiagnostics,
+    walkForwardBiasValidation,
   });
 }(typeof self !== "undefined" ? self : globalThis));
