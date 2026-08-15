@@ -45,6 +45,7 @@ Invoke-Checked git @(
   "add", "--",
   ".github",
   ".gitignore",
+  "README.md",
   "deploy_pages.bat",
   "docs",
   "package.json",

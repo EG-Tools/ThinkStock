@@ -15,6 +15,12 @@ test("release script excludes personal iPhone preview files from commits", async
   assert.match(source, /:\(exclude\)scripts\/resize_preview_window\.ps1/);
 });
 
+test("release script includes reproducibility documentation and Qlib requirements", async () => {
+  const source = await readFile(new URL("../../scripts/release_pages.ps1", import.meta.url), "utf8");
+  assert.match(source, /"README\.md"/);
+  assert.match(source, /"requirements-qlib\.txt"/);
+});
+
 test("release script can skip only the duplicate local verification", async () => {
   const source = await readFile(new URL("../../scripts/release_pages.ps1", import.meta.url), "utf8");
   const launcher = await readFile(new URL("../../deploy_pages.bat", import.meta.url), "utf8");

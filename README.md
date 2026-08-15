@@ -27,6 +27,10 @@ Local edits are never published automatically. GitHub Pages is deployed only by 
 - `worker/`: private Cloudflare gateway for DART and protected runtime data.
 - `tests/`: unit and Safari/iPhone WebKit coverage.
 
+## Offline Quant Research
+
+Qlib is an optional local challenger and is never loaded by the browser app. Run `npm run backtest:qlib:setup` once, then `npm run backtest:qlib` to rebuild the Korean-market research report in `.thinkstock-cache/ai-backtest/qlib`. A Qlib result is not published or blended into ThinkStock until the ticker-disjoint holdout, sealed audit, and matched-anchor champion comparison all pass.
+
 ## API Keys
 
 Store local keys only in `.env.local`:
