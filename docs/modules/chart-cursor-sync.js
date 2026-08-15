@@ -24,8 +24,11 @@
     const getMode = typeof options.getMode === "function" ? options.getMode : () => "vertical";
     const requestFrame = options.requestFrame || scope.requestAnimationFrame?.bind(scope);
     const cancelFrame = options.cancelFrame || scope.cancelAnimationFrame?.bind(scope);
+    const now = options.now || (() => scope.performance?.now?.() || Date.now());
+    const geometryTtlMs = Math.max(0, Number(options.geometryTtlMs) || 240);
     if (typeof requestFrame !== "function") throw new Error("requestAnimationFrame is required");
     const lineCache = new WeakMap();
+    let rectCache = new WeakMap();
     let frameId = 0;
     let pending = null;
     let lastApplied = null;
@@ -57,7 +60,7 @@
 
     function hideOrientation(element, orientation) {
       const line = ensureLine(element, orientation);
-      if (line) line.style.opacity = "0";
+      if (line && line.style.opacity !== "0") line.style.opacity = "0";
     }
 
     function hide(element) {
@@ -75,8 +78,9 @@
         hideOrientation(element, "vertical");
         return false;
       }
-      line.style.opacity = "1";
-      line.style.transform = `translateX(${localPixel.toFixed(2)}px)`;
+      const transform = `translateX(${localPixel.toFixed(2)}px)`;
+      if (line.style.opacity !== "1") line.style.opacity = "1";
+      if (line.style.transform !== transform) line.style.transform = transform;
       return true;
     }
 
@@ -92,8 +96,9 @@
         hideOrientation(element, "horizontal");
         return false;
       }
-      line.style.opacity = "1";
-      line.style.transform = `translateY(${localPixel.toFixed(2)}px)`;
+      const transform = `translateY(${localPixel.toFixed(2)}px)`;
+      if (line.style.opacity !== "1") line.style.opacity = "1";
+      if (line.style.transform !== transform) line.style.transform = transform;
       return true;
     }
 
@@ -101,6 +106,21 @@
 
     function targets() {
       return (getTargets() || []).filter(Boolean);
+    }
+
+    function rectFor(element) {
+      if (!element) return null;
+      const timestamp = now();
+      const cached = rectCache.get(element);
+      if (cached && timestamp - cached.at <= geometryTtlMs) return cached.rect;
+      const rect = element.getBoundingClientRect?.() || null;
+      rectCache.set(element, { at: timestamp, rect });
+      return rect;
+    }
+
+    function invalidateGeometry(element = null) {
+      if (element) rectCache.delete(element);
+      else rectCache = new WeakMap();
     }
 
     function previewClientX(clientX) {
@@ -112,7 +132,7 @@
       }
       let shown = 0;
       const placements = targets().map((element) => {
-        const rect = element.getBoundingClientRect?.();
+        const rect = rectFor(element);
         return { element, localPixel: screenX - Number(rect?.left) };
       });
       placements.forEach(({ element, localPixel }) => {
@@ -128,7 +148,7 @@
       const screenY = Number(clientY);
       let shown = 0;
       currentTargets.forEach((element) => {
-        const rect = element.getBoundingClientRect?.();
+        const rect = rectFor(element);
         if (activeMode === "horizontal" || !Number.isFinite(screenX)) {
           hideOrientation(element, "vertical");
         } else if (showVertical(element, screenX - Number(rect?.left))) {
@@ -160,7 +180,7 @@
           if (element === state.sourceElement && Number.isFinite(state.sourceLocalPixel)) {
             showVertical(element, state.sourceLocalPixel);
           } else if (element === state.sourceElement && Number.isFinite(state.sourceClientX)) {
-            const rect = element.getBoundingClientRect?.();
+            const rect = rectFor(element);
             showVertical(element, Number(state.sourceClientX) - Number(rect?.left));
           } else {
             showVertical(element, xValueToLocalPixel(element, state.xValue));
@@ -173,7 +193,7 @@
           if (Number.isFinite(state.sourceLocalYPixel)) {
             showHorizontal(element, state.sourceLocalYPixel);
           } else if (Number.isFinite(state.sourceClientY)) {
-            const rect = element.getBoundingClientRect?.();
+            const rect = rectFor(element);
             showHorizontal(element, Number(state.sourceClientY) - Number(rect?.top));
           } else {
             hideOrientation(element, "horizontal");
@@ -224,6 +244,7 @@
       cancel,
       dispose,
       hide,
+      invalidateGeometry,
       isBusy: () => Boolean(frameId || pending),
       prepare,
       previewClientX,

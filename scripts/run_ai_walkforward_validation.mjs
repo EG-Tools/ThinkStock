@@ -1,5 +1,5 @@
 import { access, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -20,6 +20,16 @@ const PRICE_PATH = path.join(CACHE_DIR, "walkforward-prices.json");
 const CONTEXT_PATH = path.join(CACHE_DIR, "walkforward-context.json");
 const accept = process.argv.includes("--accept");
 const summaryOnly = process.argv.includes("--summary-only");
+
+function argumentValue(name) {
+  const index = process.argv.indexOf(name);
+  return index >= 0 ? String(process.argv[index + 1] || "").trim() : "";
+}
+
+const championRef = argumentValue("--champion-ref");
+if (championRef && !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(championRef)) {
+  throw new Error("AI champion ref is invalid");
+}
 
 function run(script, args = []) {
   return new Promise((resolve, reject) => {
@@ -43,23 +53,13 @@ function sourceCountsMatch(report, context) {
     && Number(coverage.crisisRows) === (context?.crisisRows?.length || 0);
 }
 
-async function canReuseHeadBaseline() {
+async function canReuseChampionBaseline() {
   try {
     const [baseline, prices, context] = await Promise.all([
       readFile(BASELINE_PATH, "utf8").then(JSON.parse),
       readFile(PRICE_PATH, "utf8").then(JSON.parse),
       readFile(CONTEXT_PATH, "utf8").then(JSON.parse),
     ]);
-    const headForecast = execFileSync("git", ["show", "HEAD:docs/modules/ai-forecast.js"], {
-      cwd: ROOT,
-      encoding: "utf8",
-      maxBuffer: 8 * 1024 * 1024,
-    });
-    const headVersion = headForecast.match(/const FORECAST_PATH_VERSION = "([^"]+)";/)?.[1] || "";
-    const baselineVersion = String(baseline.enginePathVersion || "");
-    const sameEngine = Boolean(headVersion && (
-      baselineVersion === headVersion || baselineVersion.endsWith(`|${headVersion}`)
-    ));
     const sameSelection = JSON.stringify(baseline.selection || {}) === JSON.stringify(prices.selection || {});
     const exactSnapshot = baseline.dataSnapshot
       ? baseline.dataSnapshot.priceFormat === prices.format
@@ -69,8 +69,7 @@ async function canReuseHeadBaseline() {
       : sourceCountsMatch(baseline, context)
         && Date.parse(baseline.generatedAt || "") >= Date.parse(prices.generatedAt || "")
         && Date.parse(baseline.generatedAt || "") >= Date.parse(context.generatedAt || "");
-    return sameEngine
-      && sameSelection
+    return sameSelection
       && exactSnapshot
       && Number(baseline.maxWindowsPerStock) === 12
       && Number(baseline.maxWindowsPerIndex) === 36;
@@ -81,21 +80,29 @@ async function canReuseHeadBaseline() {
 
 await mkdir(CACHE_DIR, { recursive: true });
 if (!summaryOnly) {
-  // Compare the working model with the deployed commit on the exact same data and sample.
-  const baselineReusable = await canReuseHeadBaseline();
-  const baselineRun = baselineReusable
-    ? Promise.resolve()
-    : run("backtest_ai_forecast_walkforward.mjs", [
-      "--output",
-      path.basename(BASELINE_PATH),
-      "--engine-ref",
-      "HEAD",
+  // The baseline is the accepted champion, not simply the current Git HEAD.
+  // Replacing it before a challenger wins makes a regression look like progress.
+  let hasChampion = true;
+  try { await access(BASELINE_PATH); } catch (_) { hasChampion = false; }
+  if (hasChampion && !await canReuseChampionBaseline()) {
+    if (!championRef) {
+      throw new Error(
+        "AI champion baseline does not match the prepared sample. "
+        + "Re-run with --champion-ref <accepted-commit> to evaluate the accepted engine on the same sample.",
+      );
+    }
+    console.log(`Rebuilding the AI champion baseline from ${championRef} on the prepared sample.`);
+    await run("backtest_ai_forecast_walkforward.mjs", [
+      "--output", "walkforward-baseline.json",
+      "--engine-ref", championRef,
     ]);
-  if (baselineReusable) console.log("Reusing the matching deployed-model baseline.");
-  await Promise.all([
-    baselineRun,
-    run("backtest_ai_forecast_walkforward.mjs"),
-  ]);
+    if (!await canReuseChampionBaseline()) {
+      throw new Error("The rebuilt AI champion baseline still does not match the prepared sample.");
+    }
+    hasChampion = true;
+  }
+  if (hasChampion) console.log("Reusing the accepted AI champion baseline.");
+  await run("backtest_ai_forecast_walkforward.mjs");
   await run("analyze_ai_walkforward_report.mjs");
 }
 

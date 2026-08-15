@@ -77,7 +77,7 @@ const [deferredDiagnostics, dataHealth, pagesEntry, styles, insiderTrades, worke
   readFile(path.join(root, "docs", "modules", "settings-panel-runtime.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "ai-forecast-traces.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "runtime-refresh-orchestrator.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "progress-view.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "control-state-view.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "disclosure-progress.js"), "utf8"),
 ]);
 const [aiForecastApp, runtimeDataApp, cacheMigrations, stockResearchContract, stockResearchStorage, stockResearchNavigation, stockResearchFilter, stockResearchHistoryCache, stockResearchWorkerClient, runtimeBootstrap, appStateController, controlStateView, cacheMaintenanceRuntime, runtimeSnapshotController, sharedRequestRegistry, chartUpdateCoordinator, webkitScopeRunner] = await Promise.all([
@@ -204,7 +204,7 @@ assert.ok(html.includes("chart-progress disclosure-progress")
   && styles.includes(".chart-progress-track > i")
   && styles.includes("--chart-ui-progress-fill"),
 "AI and DART progress components do not share one visual system");
-assert.ok(pagesEntry.includes('import "../docs/modules/progress-view.js"')
+assert.ok(pagesEntry.includes('import "../docs/modules/control-state-view.js"')
   && aiForecastApp.includes("ThinkStockProgressView")
   && disclosureProgress.includes("ThinkStockProgressView")
   && progressView.includes("createProgressView"),
@@ -814,6 +814,10 @@ assert.ok(playwrightConfig.includes('name: "webkit"')
   "iPhone WebKit is not covered by deployment validation");
 assert.ok(deployWorkflow.indexOf("npm ci") < deployWorkflow.indexOf("npm run test:unit:built"),
   "Node dependencies must be installed before web validation");
+assert.ok((deployWorkflow.match(/path: node_modules/g) || []).length >= 2
+  && deployWorkflow.includes("thinkstock-node24-${{ runner.os }}-${{ hashFiles('package-lock.json') }}")
+  && deployWorkflow.includes("outputs.cache-hit != 'true'"),
+"deployment does not reuse lockfile-pinned Node dependencies");
 assert.equal((deployWorkflow.match(/npm run build:web/g) || []).length, 1,
   "deployment must build the web app exactly once");
 assert.ok(deployWorkflow.includes("needs: build-web-artifact")

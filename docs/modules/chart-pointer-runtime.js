@@ -185,7 +185,10 @@
         clearHoverOnChart(adrEl);
       };
     
-      const invalidatePointerGeometry = () => pointerMoveController?.invalidate();
+      const invalidatePointerGeometry = () => {
+        pointerMoveController?.invalidate();
+        getChartCursorSyncController().invalidateGeometry?.();
+      };
       window.addEventListener("resize", invalidatePointerGeometry, { passive: true });
       window.addEventListener("scroll", invalidatePointerGeometry, { passive: true });
     

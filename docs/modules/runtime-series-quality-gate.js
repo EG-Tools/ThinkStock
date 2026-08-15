@@ -39,7 +39,7 @@
   const COMPONENT_KEYS = Object.freeze({
     macro: Object.freeze(["leading_cycle", "news_sentiment"]),
     credit: Object.freeze(["customer_deposit", "kospi_credit", "kosdaq_credit"]),
-    adr: Object.freeze(["adr_kospi", "adr_kosdaq", "fear_greed", "vkospi"]),
+    adr: Object.freeze(["adr_kospi", "adr_kosdaq", "fear_greed", "vkospi", "vix"]),
     crisis: Object.freeze(["score"]),
   });
 
@@ -52,6 +52,12 @@
       health.DEFAULT_SERIES_POLICIES[key]
         ? [[key, health.DEFAULT_SERIES_POLICIES[key]]]
         : []
+    )));
+  }
+
+  function gapPoliciesFor(keys) {
+    return Object.fromEntries(Object.entries(policiesFor(keys)).filter(([, policy]) => (
+      Number.isFinite(Number(policy?.maxMissingWeekdays))
     )));
   }
 
@@ -86,6 +92,7 @@
       ...options,
       keys,
       policies: options.policies || policiesFor(keys),
+      gapPolicies: options.gapPolicies || gapPoliciesFor(keys),
     };
     const result = options.autoRepair === false
       ? transaction.validateSeriesRows(input)
@@ -177,6 +184,7 @@
       incomingRows: rows,
       keys,
       policies: policiesFor(keys),
+      gapPolicies: gapPoliciesFor(keys),
     });
   }
 
@@ -186,6 +194,7 @@
     STOCK_PRICE_POLICY,
     assertPricePoints,
     assertRows,
+    gapPoliciesFor,
     policiesFor,
     pricePolicyFor,
     priceRows,

@@ -47,15 +47,15 @@ const TARGET_PER_MARKET = Math.max(5, Math.min(50, Math.trunc(requestedPerMarket
 const stratifiedPerMarketArgument = process.argv.indexOf("--stratified-per-market");
 const requestedStratifiedPerMarket = stratifiedPerMarketArgument >= 0
   ? Number(process.argv[stratifiedPerMarketArgument + 1])
-  : 80;
-const STRATIFIED_PER_MARKET = Math.max(20, Math.min(100, Math.trunc(requestedStratifiedPerMarket || 80)));
+  : 100;
+const STRATIFIED_PER_MARKET = Math.max(20, Math.min(160, Math.trunc(requestedStratifiedPerMarket || 100)));
 const auditPerMarketArgument = process.argv.indexOf("--audit-per-market");
 const requestedAuditPerMarket = auditPerMarketArgument >= 0
   ? Number(process.argv[auditPerMarketArgument + 1])
-  : 20;
-const AUDIT_PER_MARKET = Math.max(5, Math.min(30, Math.trunc(requestedAuditPerMarket || 20)));
+  : 25;
+const AUDIT_PER_MARKET = Math.max(5, Math.min(40, Math.trunc(requestedAuditPerMarket || 25)));
 const CONFIRMATION_AUDIT_PER_MARKET = AUDIT_PER_MARKET;
-const BREADTH_DEVELOPMENT_PER_MARKET = 20;
+const BREADTH_DEVELOPMENT_PER_MARKET = 30;
 const MIN_PRICE_ROWS = 1000;
 const START_DATE = "2000-01-01";
 const QUALITY_CASES = Object.freeze([
@@ -708,8 +708,8 @@ async function preparePrices() {
     auditPerMarket: AUDIT_PER_MARKET,
     confirmationAuditPerMarket: CONFIRMATION_AUDIT_PER_MARKET,
     breadthPerMarket: BREADTH_DEVELOPMENT_PER_MARKET,
-    minimumPerTag: 20,
-    holdoutFraction: 0.25,
+    minimumPerTag: 24,
+    holdoutFraction: 0.3,
   });
   if (sampleDesign.deficits.length) {
     throw new Error(`Stratified sample coverage is incomplete: ${JSON.stringify(sampleDesign.deficits)}`);

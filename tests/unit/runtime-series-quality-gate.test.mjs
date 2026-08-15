@@ -71,3 +71,18 @@ test("validates all index series in a restored price snapshot", () => {
   });
   assert.equal(result.ok, true);
 });
+
+test("rejects a long daily credit gap while allowing a real zero sentiment score", () => {
+  const credit = gate.validateSnapshotComponent("credit", [
+    { date: "2026-07-01", customer_deposit: 72, kospi_credit: 12, kosdaq_credit: 8 },
+    { date: "2026-07-20", customer_deposit: 73, kospi_credit: 12.1, kosdaq_credit: 8.1 },
+  ]);
+  assert.equal(credit.ok, false);
+  assert.equal(credit.reason, "introduced-gap");
+
+  const sentiment = gate.validateSnapshotComponent("adr", [
+    { date: "2026-08-10", fear_greed: 0, vkospi: 30, vix: 20 },
+    { date: "2026-08-11", fear_greed: 1, vkospi: 31, vix: 21 },
+  ]);
+  assert.equal(sentiment.ok, true);
+});

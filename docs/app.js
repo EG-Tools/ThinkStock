@@ -27,6 +27,7 @@ if (!runtimeRefreshOrchestratorModule) throw new Error("Runtime refresh orchestr
 const sharedRequestRegistryModule = globalThis.ThinkStockSharedRequestRegistry;
 if (!sharedRequestRegistryModule) throw new Error("Shared request registry module failed to load");
 const { mapWithConcurrency } = sharedRequestRegistryModule;
+const appRequestRegistry = sharedRequestRegistryModule.createSharedRequestRegistry();
 const adminFeatureAccessModule = globalThis.ThinkStockAdminFeatureAccess;
 if (!adminFeatureAccessModule) throw new Error("Admin feature access module failed to load");
 const adrDataModule = globalThis.ThinkStockAdrData;
@@ -416,7 +417,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "2.88";
+const APP_VERSION = "2.89";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -895,6 +896,7 @@ let auxiliaryChartCalcCache = null;
 let auxiliaryChartCalcPending = null;
 let chartModelWorkerClient = null;
 let partialDisclosureUpdateCount = 0;
+let mainChartSkippedRenderCount = 0;
 let mainChartPartialUpdateCount = 0;
 let mainChartFullRenderCount = 0;
 let lastMainChartRenderMode = "none";
@@ -914,8 +916,6 @@ let chartViewportInteractionRevision = 0;
 let aiForecastToggleRevision = 0;
 let lastAiForecastTraceCount = 0;
 let aiAnalysisByTicker = new Map();
-let aiAnalysisPromises = new Map();
-let aiAnalysisForcedRefreshTickers = new Set();
 let aiAnalysisPendingTickers = new Set();
 let brokerResearchByTicker = new Map();
 let brokerResearchPendingTickers = new Set();
@@ -1146,6 +1146,7 @@ function initE2eDebugAccess() {
           sourceTransfers: Number(workerStats.sourceTransfers) || 0,
           superseded: Number(workerStats.superseded) || 0,
           partialDisclosureUpdates: partialDisclosureUpdateCount,
+          skippedChartRenders: mainChartSkippedRenderCount,
           partialChartUpdates: mainChartPartialUpdateCount,
           fullChartRenders: mainChartFullRenderCount,
           lastChartRenderMode: lastMainChartRenderMode,
@@ -2140,6 +2141,7 @@ function clearHoverOnChart(targetEl) {
 function getChartCursorSyncController() {
   if (chartCursorSyncController) return chartCursorSyncController;
   chartCursorSyncController = chartCursorSyncModule.createCursorSyncController(window, {
+    geometryTtlMs: CHART_GEOMETRY_CACHE_MS,
     getMode: () => chartSession.cursorLineMode,
     getTargets: () => [
       document.getElementById("chart"),
@@ -5546,9 +5548,12 @@ async function requestBrokerResearchForTicker(ticker, options = {}) {
   await ensureAiFeatureModules();
   const target = String(ticker || "").trim().toUpperCase();
   if (!/^\d{6}\.(KS|KQ)$/.test(target)) return null;
-  brokerResearchPendingTickers.add(target);
-  syncAiForecastToggleButton();
-  try {
+  const requestKey = `broker-research:${target}`;
+  const forceNetwork = options.forceNetwork === true;
+  return appRequestRegistry.run(requestKey, async () => {
+    brokerResearchPendingTickers.add(target);
+    syncAiForecastToggleButton();
+    try {
     const existingRecord = await readLifecycleCacheRecord(
       TICKER_BROKER_RESEARCH_STORE_NAME,
       target,
@@ -5558,7 +5563,7 @@ async function requestBrokerResearchForTicker(ticker, options = {}) {
     }
     const record = await getBrokerResearchService().loadTicker(target, {
       asOfDate: koreanDateText(),
-      forceNetwork: options.forceNetwork === true,
+      forceNetwork,
       listRefreshAfterDays: 1,
       existingRecord,
       onProgress: (progress, label) => {
@@ -5576,6 +5581,11 @@ async function requestBrokerResearchForTicker(ticker, options = {}) {
         if (chartSession.showAiForecast) requestAiForecastRender(lastAiForecastTraceCount > 0);
       },
     });
+    const evaluationRows = getTickerPricePointsFromPayload(target);
+    if (evaluationRows.length) {
+      void getBrokerResearchService().evaluateTicker?.(target, evaluationRows, { record })
+        .catch(() => null);
+    }
     const currentReference = brokerResearchByTicker.get(target)?.representativeReports?.reference || null;
     const finalSummary = aiFeature.brokerRuntime.mergeReferenceSummary(
       record?.summary || null,
@@ -5584,14 +5594,19 @@ async function requestBrokerResearchForTicker(ticker, options = {}) {
     );
     brokerResearchByTicker.set(target, finalSummary);
     return finalSummary;
-  } catch (_) {
-    if (!brokerResearchByTicker.has(target)) brokerResearchByTicker.set(target, null);
-    return brokerResearchByTicker.get(target) || null;
-  } finally {
-    brokerResearchPendingTickers.delete(target);
-    syncAiForecastToggleButton();
-    if (chartSession.showAiForecast) requestAiForecastRender(lastAiForecastTraceCount > 0);
-  }
+    } catch (_) {
+      if (!brokerResearchByTicker.has(target)) brokerResearchByTicker.set(target, null);
+      return brokerResearchByTicker.get(target) || null;
+    } finally {
+      brokerResearchPendingTickers.delete(target);
+      syncAiForecastToggleButton();
+      if (chartSession.showAiForecast) requestAiForecastRender(lastAiForecastTraceCount > 0);
+    }
+  }, {
+    tag: forceNetwork ? "force" : "normal",
+    afterCurrent: forceNetwork && appRequestRegistry.has(requestKey)
+      && appRequestRegistry.tag(requestKey) !== "force",
+  });
 }
 
 async function requestAiAnalysisForTicker(ticker, options = {}) {
@@ -5599,20 +5614,15 @@ async function requestAiAnalysisForTicker(ticker, options = {}) {
   const target = String(ticker || "").trim().toUpperCase();
   const forceNetwork = Boolean(options.forceNetwork);
   if (!/^\d{6}\.(KS|KQ)$/.test(target)) return null;
-  const memoryAnalysis = aiAnalysisByTicker.get(target) || null;
-  if (!forceNetwork && aiAnalysisIsFresh(memoryAnalysis)) return memoryAnalysis;
-  if (aiAnalysisPromises.has(target)) {
-    const pending = aiAnalysisPromises.get(target);
-    if (!forceNetwork || aiAnalysisForcedRefreshTickers.has(target)) return pending;
-    return Promise.resolve(pending).then(() => requestAiAnalysisForTicker(target, options));
-  }
-
-  if (forceNetwork) aiAnalysisForcedRefreshTickers.add(target);
-  aiAnalysisPendingTickers.add(target);
-  if (chartSession.showAiForecast) setAiForecastProgress(20, `${labelName(target)} 저장 분석 확인`);
-  syncAiForecastToggleButton();
-
-  const task = (async () => {
+  const initialMemoryAnalysis = aiAnalysisByTicker.get(target) || null;
+  if (!forceNetwork && aiAnalysisIsFresh(initialMemoryAnalysis)) return initialMemoryAnalysis;
+  const requestKey = `ai-analysis:${target}`;
+  return appRequestRegistry.run(requestKey, async () => {
+    aiAnalysisPendingTickers.add(target);
+    if (chartSession.showAiForecast) setAiForecastProgress(20, `${labelName(target)} 저장 분석 확인`);
+    syncAiForecastToggleButton();
+    const memoryAnalysis = aiAnalysisByTicker.get(target) || initialMemoryAnalysis;
+    try {
     let cached = memoryAnalysis || await readAiAnalysisCacheForTicker(target);
     if (cached) {
       aiAnalysisByTicker.set(target, cached);
@@ -5635,15 +5645,18 @@ async function requestAiAnalysisForTicker(ticker, options = {}) {
     if (chartSession.showAiForecast) setAiForecastProgress(33, `${labelName(target)} 분석 자료 저장`);
     await saveAiAnalysisCacheForTicker(target, analysis);
     return analysis;
-  })().catch(() => memoryAnalysis).finally(() => {
-    aiAnalysisPromises.delete(target);
-    aiAnalysisForcedRefreshTickers.delete(target);
-    aiAnalysisPendingTickers.delete(target);
-    syncAiForecastToggleButton();
-    if (chartSession.showAiForecast) requestAiForecastRender(lastAiForecastTraceCount > 0);
+    } catch (_) {
+      return aiAnalysisByTicker.get(target) || memoryAnalysis;
+    } finally {
+      aiAnalysisPendingTickers.delete(target);
+      syncAiForecastToggleButton();
+      if (chartSession.showAiForecast) requestAiForecastRender(lastAiForecastTraceCount > 0);
+    }
+  }, {
+    tag: forceNetwork ? "force" : "normal",
+    afterCurrent: forceNetwork && appRequestRegistry.has(requestKey)
+      && appRequestRegistry.tag(requestKey) !== "force",
   });
-  aiAnalysisPromises.set(target, task);
-  return task;
 }
 
 function aiRotationCandidatesForForecast() {
@@ -6500,7 +6513,8 @@ async function applyMainChartRender(el, traces, layout, invalidation = {}) {
   } finally {
     if (partialCandidate) chartSyncing = false;
   }
-  if (["partial", "structural"].includes(result.mode)) mainChartPartialUpdateCount += 1;
+  if (result.mode === "skipped") mainChartSkippedRenderCount += 1;
+  else if (["partial", "structural"].includes(result.mode)) mainChartPartialUpdateCount += 1;
   else mainChartFullRenderCount += 1;
   chartRenderTelemetry.complete(telemetryToken, result);
   lastMainChartRenderMode = result.mode;

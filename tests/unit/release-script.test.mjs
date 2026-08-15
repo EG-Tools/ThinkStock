@@ -76,6 +76,14 @@ test("deployment shares the diagnostic bundle with every WebKit validation job",
   assert.match(workflow, /name: Download E2E Diagnostic Bundle[\s\S]*name: thinkstock-e2e-bundle[\s\S]*path: \.thinkstock-cache\/e2e/);
 });
 
+test("deployment reuses exact Node 24 dependencies without weakening cache invalidation", async () => {
+  const workflow = await readFile(new URL("../../.github/workflows/deploy-pages.yml", import.meta.url), "utf8");
+  assert.ok((workflow.match(/path: node_modules/g) || []).length >= 2);
+  assert.match(workflow, /thinkstock-node24-\$\{\{ runner\.os \}\}-\$\{\{ hashFiles\('package-lock\.json'\) \}\}/);
+  assert.ok((workflow.match(/outputs\.cache-hit != 'true'/g) || []).length >= 2);
+  assert.match(workflow, /npm ci --prefer-offline --no-audit --no-fund/);
+});
+
 test("WebKit plan keeps full iPhone coverage without duplicating non-visual desktop cases", async () => {
   const config = await readFile(new URL("../../playwright.config.mjs", import.meta.url), "utf8");
   const packageJson = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));

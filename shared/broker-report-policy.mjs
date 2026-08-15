@@ -118,6 +118,45 @@ export function scoreBrokerReportEvidence(input = {}, policy = DEFAULT_BROKER_RE
   });
 }
 
+export function brokerReportEvaluationEvent(tickerValue, report = {}) {
+  const ticker = String(tickerValue || report?.ticker || "").trim().toUpperCase();
+  const reportId = String(report?.reportId || report?.id || "").trim();
+  const publishedDate = normalizedIsoDate(report?.publishedDate);
+  const availableDate = reportAvailableDate(report, { historicalMode: true });
+  if (!/^\d{6}\.(?:KS|KQ)$/.test(ticker) || !reportId || !publishedDate || !availableDate) return null;
+  const epsChange = finiteOrNull(report?.metrics?.eps?.growth ?? report?.epsChange);
+  const roeChange = finiteOrNull(report?.metrics?.roe?.growth ?? report?.roeChange);
+  const targetRevisionChange = finiteOrNull(report?.targetPriceChange ?? report?.targetRevisionChange);
+  const hasTargetRevision = targetRevisionChange !== null
+    || finiteOrNull(report?.targetRevision) !== null;
+  const primaryCoverage = [epsChange, roeChange].filter((value) => value !== null).length / 2;
+  if (!primaryCoverage && !hasTargetRevision) return null;
+  const evidence = Object.freeze({
+    epsChange,
+    roeChange,
+    targetRevisionChange,
+    hasTargetRevision,
+    targetCutBreadth: targetRevisionChange !== null && targetRevisionChange < -0.015 ? 1 : 0,
+    targetCutStreak: Math.max(0, Math.round(Number(report?.targetRevisionStreak) || 0)),
+    parserConfidence: clamp(report?.confidence, 0, 1),
+    coverageConfidence: 1,
+    primaryCoverage,
+    targetDeviation: 0,
+  });
+  const scored = scoreBrokerReportEvidence(evidence);
+  return Object.freeze({
+    ticker,
+    reportId,
+    publishedDate,
+    availableDate,
+    policyVersion: scored.policyVersion,
+    signal: scored.signal,
+    confidence: scored.confidence,
+    adjustment: scored.adjustment,
+    evidence,
+  });
+}
+
 export function evaluateBrokerReportEvents(events, priceByTicker, options = {}) {
   const horizon = Math.max(1, Math.round(finiteOrNull(options.horizon) || 63));
   const observations = [];
@@ -158,6 +197,7 @@ export function evaluateBrokerReportEvents(events, priceByTicker, options = {}) 
 globalThis.ThinkStockBrokerReportPolicy = Object.freeze({
   BROKER_REPORT_POLICY_VERSION,
   DEFAULT_BROKER_REPORT_POLICY,
+  brokerReportEvaluationEvent,
   evaluateBrokerReportEvents,
   reportAvailableDate,
   reportIsAvailableAt,

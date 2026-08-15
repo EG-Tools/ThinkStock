@@ -8,7 +8,7 @@
     throw new Error("broker research contracts failed to load");
   }
 
-  const CACHE_SCHEMA = 5;
+  const CACHE_SCHEMA = 6;
   const MAX_PDF_BYTES = 12 * 1024 * 1024;
   const MAX_PDF_PAGES = 12;
   const MAX_REPORTS_PER_TICKER = 40;
@@ -243,7 +243,7 @@
   }
 
   function normalizeCacheRecord(record, ticker) {
-    if (!record || Number(record.schema) !== CACHE_SCHEMA || normalizeTicker(record.ticker) !== ticker) {
+    if (!record || ![5, CACHE_SCHEMA].includes(Number(record.schema)) || normalizeTicker(record.ticker) !== ticker) {
       return null;
     }
     const reports = (Array.isArray(record.reports) ? record.reports : [])
@@ -251,6 +251,13 @@
       .filter(Boolean)
       .sort((left, right) => String(right.publishedDate).localeCompare(String(left.publishedDate)))
       .slice(0, MAX_REPORTS_PER_TICKER);
+    const evaluationEvents = (Array.isArray(record.evaluationEvents)
+      ? record.evaluationEvents
+      : reports.map((report) => reportPolicy.brokerReportEvaluationEvent?.(
+        ticker,
+        report.parsed || report,
+      )))
+      .filter(Boolean);
     return {
       ...record,
       schema: CACHE_SCHEMA,
@@ -271,8 +278,28 @@
         .map(String)
         .filter((id) => REPORT_KEY_PATTERN.test(id)),
       reports,
+      evaluationEvents,
+      evaluation: record.evaluation && typeof record.evaluation === "object"
+        ? record.evaluation
+        : null,
       summary: record.summary && typeof record.summary === "object" ? record.summary : null,
     };
+  }
+
+  function mergeEvaluationEvents(previousEvents, nextEvents) {
+    const merged = new Map();
+    (Array.isArray(previousEvents) ? previousEvents : []).forEach((event) => {
+      const key = `${String(event?.reportId || "")}:${String(event?.policyVersion || "")}`;
+      if (key !== ":") merged.set(key, event);
+    });
+    (Array.isArray(nextEvents) ? nextEvents : []).forEach((event) => {
+      const key = `${String(event?.reportId || "")}:${String(event?.policyVersion || "")}`;
+      if (key !== ":" && !merged.has(key)) merged.set(key, event);
+    });
+    return [...merged.values()].sort((left, right) => (
+      String(left?.availableDate || "").localeCompare(String(right?.availableDate || ""))
+      || String(left?.reportId || "").localeCompare(String(right?.reportId || ""))
+    ));
   }
 
   function lineItemsFromTextContent(textContent) {
@@ -638,6 +665,9 @@
         let summary = parser.summarizeReports(reportEvidence(), asOfDate, { activeReportIds });
         const savedAt = nowMs;
         const resultState = complete ? (reports.length ? "ready" : "empty") : "error";
+        const nextEvaluationEvents = reportEvidence()
+          .map((report) => reportPolicy.brokerReportEvaluationEvent?.(ticker, report))
+          .filter(Boolean);
         const record = {
           schema: CACHE_SCHEMA,
           ticker,
@@ -653,6 +683,8 @@
           latestDate: reports[0]?.publishedDate || existing?.latestDate || "",
           activeReportIds,
           reports,
+          evaluationEvents: mergeEvaluationEvents(existing?.evaluationEvents, nextEvaluationEvents),
+          evaluation: existing?.evaluation || null,
           summary,
           refreshStats: {
             downloadedPdfCount,
@@ -670,11 +702,62 @@
       return task;
     }
 
+    async function evaluateTicker(rawTicker, priceRows, evaluationOptions = {}) {
+      const ticker = normalizeTicker(rawTicker);
+      if (!ticker || typeof reportPolicy.evaluateBrokerReportEvents !== "function") return null;
+      const rows = (Array.isArray(priceRows) ? priceRows : [])
+        .map((row) => ({
+          date: normalizedDate(row?.date),
+          close: valueContract.positiveOrNull(row?.close),
+        }))
+        .filter((row) => row.date && row.close)
+        .sort((left, right) => left.date.localeCompare(right.date));
+      const sourceRecord = evaluationOptions.record
+        || await read(ticker).catch(() => null);
+      const record = normalizeCacheRecord(sourceRecord, ticker);
+      if (!record?.evaluationEvents?.length || rows.length < 22) return record?.evaluation || null;
+      const latestPriceDate = rows.at(-1)?.date || "";
+      const eventSignature = record.evaluationEvents
+        .map((event) => `${event.reportId}:${event.policyVersion}:${event.availableDate}`)
+        .sort()
+        .join("|");
+      if (
+        record.evaluation?.latestPriceDate === latestPriceDate
+        && record.evaluation?.eventSignature === eventSignature
+      ) return record.evaluation;
+      const horizons = [...new Set((evaluationOptions.horizons || [20, 63, 126])
+        .map((value) => Math.max(1, Math.round(Number(value) || 0)))
+        .filter(Boolean))];
+      const results = Object.fromEntries(horizons.map((horizon) => [
+        horizon,
+        reportPolicy.evaluateBrokerReportEvents(
+          record.evaluationEvents,
+          { [ticker]: rows },
+          { horizon },
+        ),
+      ]));
+      const evaluationNow = now();
+      const evaluatedAt = Number(evaluationNow instanceof Date
+        ? evaluationNow.getTime()
+        : new Date(evaluationNow).getTime())
+        || Date.now();
+      const evaluation = {
+        eventSignature,
+        evaluatedAt,
+        latestPriceDate,
+        policyVersions: [...new Set(record.evaluationEvents.map((event) => event.policyVersion).filter(Boolean))],
+        results,
+      };
+      await write(ticker, { ...record, evaluation, lastAccessed: evaluatedAt });
+      return evaluation;
+    }
+
     return Object.freeze({
       CACHE_SCHEMA,
       MAX_ACTIVE_REPORTS,
       MAX_PDF_BYTES,
       loadTicker,
+      evaluateTicker,
       normalizeCacheRecord,
       pendingTickers: () => new Set(pending.keys()),
     });

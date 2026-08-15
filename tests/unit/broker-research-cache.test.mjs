@@ -82,6 +82,41 @@ test("caches structured reports and does not reprocess the same PDF", async () =
   assert.deepEqual(listCalls, ["hankyung:90", "naver:90"]);
 });
 
+test("evaluates frozen report signals against later 20, 63, and 126-day prices", async () => {
+  const records = new Map();
+  const service = createBrokerResearchCache(globalThis, {
+    parser,
+    minimumReportCount: 1,
+    now: () => new Date("2026-08-15T00:00:00Z"),
+    read: async (ticker) => records.get(ticker) || null,
+    write: async (ticker, record) => records.set(ticker, record),
+    fetchList: async (_ticker, _days, source) => source === "naver" ? [] : [{
+      id: "77",
+      publishedDate: "2026-01-02",
+      broker: "A증권",
+      targetPrice: 70000,
+    }],
+    fetchPdf: async () => new TextEncoder().encode("%PDF-evaluation"),
+    extractReport: async (_bytes, metadata) => parsedReport(metadata),
+  });
+  const loaded = await service.loadTicker("005930.KS");
+  assert.equal(loaded.evaluationEvents.length, 1);
+  const originalSignal = loaded.evaluationEvents[0].signal;
+  const prices = Array.from({ length: 150 }, (_, index) => ({
+    date: new Date(Date.UTC(2026, 0, 5 + index)).toISOString().slice(0, 10),
+    close: 100 + index,
+  }));
+
+  const evaluation = await service.evaluateTicker("005930.KS", prices, { record: loaded });
+  assert.deepEqual(Object.keys(evaluation.results), ["20", "63", "126"]);
+  assert.equal(evaluation.results[20].samples, 1);
+  assert.equal(evaluation.results[126].samples, 1);
+  assert.equal(records.get("005930.KS").evaluationEvents[0].signal, originalSignal);
+
+  const reused = await service.evaluateTicker("005930.KS", prices);
+  assert.equal(reused.evaluatedAt, evaluation.evaluatedAt);
+});
+
 test("expands to six months only when the three-month list is empty", async () => {
   const calls = [];
   const service = createBrokerResearchCache(globalThis, {
@@ -245,7 +280,7 @@ test("replaces a pre-Naver empty cache with an available RFHIC reference report"
     extractReport: async (_bytes, metadata) => parsedReport(metadata),
   });
 
-  assert.equal(service.CACHE_SCHEMA, 5);
+  assert.equal(service.CACHE_SCHEMA, 6);
   assert.equal(service.normalizeCacheRecord(oldRecord, "218410.KQ"), null);
   const result = await service.loadTicker("218410.KQ", {
     onReferenceReport: (report) => phases.push(`reference:${report.sourceUrl}`),

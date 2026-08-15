@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/progress-view.js");
+await import("../../docs/modules/control-state-view.js");
 await import("../../docs/modules/ai-forecast-app.js");
 
 const { createAiForecastApp } = globalThis.ThinkStockAiForecastApp;

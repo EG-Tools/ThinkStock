@@ -41,7 +41,6 @@ import "../docs/modules/main-chart-events.js";
 import "../docs/modules/co-movement.js";
 import "../docs/modules/macd-oscillator.js";
 import "../docs/modules/optional-feature-runtime.js";
-import "../docs/modules/progress-view.js";
 import "../docs/modules/stock-research-contract.js";
 import "../docs/modules/stock-research-storage.js";
 import "../docs/modules/stock-research-app.js";

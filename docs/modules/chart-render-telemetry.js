@@ -2,9 +2,9 @@
   "use strict";
 
   function createChartRenderTelemetry(scope = globalScope, options = {}) {
-    const counts = { partial: 0, structural: 0, full: 0 };
-    const durations = { partial: 0, structural: 0, full: 0 };
-    const maximums = { partial: 0, structural: 0, full: 0 };
+    const counts = { skipped: 0, partial: 0, structural: 0, full: 0 };
+    const durations = { skipped: 0, partial: 0, structural: 0, full: 0 };
+    const maximums = { skipped: 0, partial: 0, structural: 0, full: 0 };
     const fallbacks = {};
     const classes = {};
     const classModes = {};
@@ -27,7 +27,9 @@
     }
 
     function complete(token, result = {}) {
-      const mode = ["partial", "structural", "full"].includes(result.mode) ? result.mode : "full";
+      const mode = ["skipped", "partial", "structural", "full"].includes(result.mode)
+        ? result.mode
+        : "full";
       const duration = Math.max(0, now() - Number(token?.startedAt || now()));
       const updateClasses = token?.updateClasses?.length ? token.updateClasses : ["unknown"];
       const fallbackPaths = [...new Set((result.fallbacks || []).map(String).filter(Boolean))];
@@ -37,7 +39,7 @@
       maximums[mode] = Math.max(maximums[mode], duration);
       updateClasses.forEach((key) => {
         classes[key] = (Number(classes[key]) || 0) + 1;
-        classModes[key] ||= { partial: 0, structural: 0, full: 0 };
+        classModes[key] ||= { skipped: 0, partial: 0, structural: 0, full: 0 };
         classModes[key][mode] += 1;
       });
       fallbackPaths.forEach((key) => {
@@ -65,7 +67,7 @@
         total,
         counts: Object.freeze({ ...counts }),
         fullRenderRate: ratio(counts.full),
-        partialReuseRate: ratio(counts.partial + counts.structural),
+        partialReuseRate: ratio(counts.skipped + counts.partial + counts.structural),
         fallbackRate: ratio(fallbackRenderCount),
         averageMs: Object.freeze(Object.fromEntries(Object.keys(counts).map((mode) => [
           mode,
@@ -80,7 +82,7 @@
           key,
           Object.freeze({
             ...value,
-            total: value.partial + value.structural + value.full,
+            total: value.skipped + value.partial + value.structural + value.full,
           }),
         ]))),
         recent: Object.freeze([...recent]),

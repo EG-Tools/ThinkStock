@@ -234,6 +234,43 @@ test("quality gate rejects a weak side even when the combined result looks healt
   assert.ok(gate.reasons.includes("sell-non-positive-holdout-return"));
 });
 
+test("quality gate rejects an entry mode that fails outside development data", () => {
+  const modeRow = (samples, hits, meanDirectionalReturn) => ({
+    horizons: { 20: {
+      samples,
+      hits,
+      hitRate: samples ? hits / samples : null,
+      meanDirectionalReturn,
+    } },
+  });
+  const gate = evaluation.evaluateMarketTimingQualityGate({
+    pointInTimeSafe: true,
+    overfitRisk: false,
+    validation: {
+      development: {
+        buy: modeRow(20, 15, 0.05),
+        sell: modeRow(0, 0, null),
+      },
+      holdout: {
+        buy: modeRow(20, 14, 0.03),
+        sell: modeRow(0, 0, null),
+      },
+      developmentByEntryMode: {
+        buy: { "extreme-daily": modeRow(8, 7, 0.08) },
+        sell: {},
+      },
+      holdoutByEntryMode: {
+        buy: { "extreme-daily": modeRow(8, 2, -0.02) },
+        sell: {},
+      },
+    },
+  });
+
+  assert.equal(gate.eligible, false);
+  assert.ok(gate.reasons.includes("buy-extreme-daily-development-holdout-gap"));
+  assert.ok(gate.reasons.includes("buy-extreme-daily-non-positive-holdout-return"));
+});
+
 test("records holdout timing quality by entry mode", () => {
   const dates = Array.from({ length: 120 }, (_, index) => (
     new Date(Date.UTC(2026, 0, 1 + index)).toISOString().slice(0, 10)

@@ -71,6 +71,27 @@
     return issues;
   }
 
+  function duplicateDateIssues(rows, keys) {
+    const seen = new Map();
+    const issues = [];
+    (Array.isArray(rows) ? rows : []).forEach((row) => {
+      const date = String(row?.date || "").slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+      const values = seen.get(date) || new Map();
+      (Array.isArray(keys) ? keys : []).forEach((key) => {
+        const value = finite(row?.[key]);
+        if (value === null) return;
+        if (values.has(key) && values.get(key) !== value) {
+          issues.push({ key, kind: "duplicate-conflict", latestDate: date, latestValue: value });
+        } else {
+          values.set(key, value);
+        }
+      });
+      seen.set(date, values);
+    });
+    return issues;
+  }
+
   function validateSeriesRows(options = {}) {
     const currentRows = Array.isArray(options.currentRows) ? options.currentRows : [];
     const candidateRows = Array.isArray(options.candidateRows) ? options.candidateRows : [];
@@ -84,6 +105,16 @@
 
     if (!candidateRows.length && currentRows.length) {
       return { ok: false, reason: "candidate-empty", issues: [], quality: quality() };
+    }
+
+    const duplicateIssues = duplicateDateIssues(candidateRows, keys);
+    if (duplicateIssues.length) {
+      return {
+        ok: false,
+        reason: "duplicate-date-conflict",
+        issues: duplicateIssues,
+        quality: quality({ anomalyCount: duplicateIssues.length }),
+      };
     }
 
     const directIssues = incomingValueIssues(incomingRows, policies);
@@ -362,6 +393,7 @@
   globalScope.ThinkStockRuntimeDataTransaction = Object.freeze({
     assertSeriesRows,
     createLastGoodLedger,
+    duplicateDateIssues,
     repairSeriesRows,
     seriesStats,
     summarizeSeriesQuality,

@@ -1,4 +1,4 @@
-export const AI_VALIDATION_SAMPLE_VERSION = "stratified-v7";
+export const AI_VALIDATION_SAMPLE_VERSION = "stratified-v8";
 
 export const AI_VALIDATION_BALANCE_TAGS = Object.freeze([
   "size-large",
@@ -344,18 +344,18 @@ export function buildStratifiedValidationDesign(candidates, options = {}) {
     });
   const profiles = [...byIssuer.values()];
   const markets = [...new Set(profiles.map((candidate) => candidate.market))].sort();
-  const targetPerMarket = clamp(Math.trunc(finite(options.targetPerMarket, 80)), 20, 100);
-  const minimumPerTag = clamp(Math.trunc(finite(options.minimumPerTag, 20)), 1, 50);
-  const holdoutFraction = clamp(finite(options.holdoutFraction, 0.25), 0.15, 0.4);
+  const targetPerMarket = clamp(Math.trunc(finite(options.targetPerMarket, 100)), 20, 160);
+  const minimumPerTag = clamp(Math.trunc(finite(options.minimumPerTag, 24)), 1, 60);
+  const holdoutFraction = clamp(finite(options.holdoutFraction, 0.3), 0.15, 0.4);
   const seed = Math.trunc(finite(options.seed, 20260815));
   const availableCoverage = tagCoverage(profiles);
-  const requestedAuditPerMarket = clamp(Math.trunc(finite(options.auditPerMarket, 20)), 5, 30);
+  const requestedAuditPerMarket = clamp(Math.trunc(finite(options.auditPerMarket, 25)), 5, 40);
   const requestedConfirmationAuditPerMarket = clamp(
     Math.trunc(finite(options.confirmationAuditPerMarket, requestedAuditPerMarket)),
     5,
-    30,
+    40,
   );
-  const requestedBreadthPerMarket = clamp(Math.trunc(finite(options.breadthPerMarket, 20)), 0, 40);
+  const requestedBreadthPerMarket = clamp(Math.trunc(finite(options.breadthPerMarket, 30)), 0, 60);
   const confirmationTargets = Object.fromEntries(markets.map((market) => [
     market,
     Math.min(requestedConfirmationAuditPerMarket, profiles.filter((candidate) => candidate.market === market).length),

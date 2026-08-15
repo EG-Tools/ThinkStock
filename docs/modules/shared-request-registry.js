@@ -27,7 +27,23 @@
 
   function createSharedRequestRegistry(options = {}) {
     const entries = new Map();
-    const counters = { started: 0, sharedHits: 0, completed: 0, failed: 0, cancelled: 0 };
+    const listeners = new Set();
+    const counters = { started: 0, sharedHits: 0, queued: 0, completed: 0, failed: 0, cancelled: 0 };
+
+    function snapshot() {
+      return Object.freeze({
+        ...counters,
+        inFlight: entries.size,
+        keys: Object.freeze([...entries.keys()]),
+      });
+    }
+
+    function notify() {
+      const value = snapshot();
+      listeners.forEach((listener) => {
+        try { listener(value); } catch (_) { /* Diagnostic listeners must not break requests. */ }
+      });
+    }
 
     function run(keyValue, factory, runOptions = {}) {
       const key = String(keyValue || "");
@@ -36,6 +52,15 @@
       if (callerSignal?.aborted) return Promise.reject(abortError(callerSignal.reason));
 
       let entry = entries.get(key);
+      if (entry && runOptions.afterCurrent === true
+        && (!runOptions.tag || entry.tag !== String(runOptions.tag))) {
+        counters.queued += 1;
+        notify();
+        return entry.promise.then(() => run(key, factory, {
+          ...runOptions,
+          afterCurrent: false,
+        }));
+      }
       if (!entry) {
         const controller = new AbortController();
         entry = {
@@ -43,9 +68,11 @@
           subscribers: new Set(),
           settled: false,
           promise: null,
+          tag: String(runOptions.tag || ""),
         };
         entries.set(key, entry);
         counters.started += 1;
+        notify();
         entry.promise = Promise.resolve()
           .then(() => factory(controller.signal))
           .then((value) => {
@@ -62,9 +89,11 @@
           .finally(() => {
             entries.delete(key);
             entry.subscribers.clear();
+            notify();
           });
       } else {
         counters.sharedHits += 1;
+        notify();
       }
 
       return new Promise((resolve, reject) => {
@@ -100,6 +129,7 @@
       const entry = entries.get(String(keyValue || ""));
       if (!entry || entry.settled) return false;
       entry.controller.abort(reason || abortError());
+      notify();
       return true;
     }
 
@@ -110,14 +140,26 @@
         entry.controller.abort(reason || abortError());
         cancelled += 1;
       });
+      if (cancelled) notify();
       return cancelled;
+    }
+
+    function subscribe(listener) {
+      if (typeof listener !== "function") return () => {};
+      listeners.add(listener);
+      listener(snapshot());
+      return () => listeners.delete(listener);
     }
 
     return Object.freeze({
       cancel,
       cancelAll,
+      has: (keyValue) => entries.has(String(keyValue || "")),
+      keys: () => Object.freeze([...entries.keys()]),
       run,
-      stats: () => Object.freeze({ ...counters, inFlight: entries.size }),
+      stats: snapshot,
+      subscribe,
+      tag: (keyValue) => String(entries.get(String(keyValue || ""))?.tag || ""),
     });
   }
 

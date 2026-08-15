@@ -62,10 +62,30 @@ test("validation summary permits only a tested, materially better challenger", (
 
   assert.equal(summary.releaseDecision, "promote-challenger");
   assert.equal(summary.promotionAllowed, true);
+  assert.equal(summary.activeVersion, "challenger");
   assert.equal(summary.holdout[126].samples, 40);
   assert.equal(summary.holdout[126].directionAccuracyPoints, 2);
   assert.equal(summary.holdout[20].scenarioAccuracy, null);
   assert.equal(summary.pointInTime.coverage.companyEvidenceReady, true);
+});
+
+test("validation summary blocks a challenger with a severe segment regression", () => {
+  const input = validationInput();
+  input.comparison.markets = {
+    KOSDAQ: {
+      63: {
+        after: { samples: 40, directionAccuracy: 0.4, improvementVsNoChange: -0.08 },
+        delta: { directionAccuracyPoints: -6, errorReduction: -0.06 },
+      },
+    },
+  };
+  const summary = buildAiValidationSummary(input);
+
+  assert.equal(summary.releaseDecision, "hold-for-segment-regression");
+  assert.equal(summary.promotionAllowed, false);
+  assert.equal(summary.segmentSafety.passed, false);
+  assert.equal(summary.segmentSafety.issues[0].name, "KOSDAQ");
+  assert.equal(summary.segments.markets.KOSDAQ[63].samples, 40);
 });
 
 test("validation summary blocks promotion when historical company evidence is absent", () => {

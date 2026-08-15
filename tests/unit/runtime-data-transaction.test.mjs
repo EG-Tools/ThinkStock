@@ -47,6 +47,22 @@ test("accepts a valid append and preserves historical coverage", () => {
   assert.equal(result.quality.series.customer_deposit.count, 3);
 });
 
+test("rejects conflicting values for the same series date", () => {
+  const result = transaction.validateSeriesRows({
+    currentRows: [],
+    candidateRows: [
+      { date: "2026-08-12", kospi_credit: 12.4 },
+      { date: "2026-08-12", kospi_credit: 0 },
+    ],
+    incomingRows: [],
+    keys: ["kospi_credit"],
+    policies: { kospi_credit: policies.kospi_credit },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "duplicate-date-conflict");
+  assert.equal(result.issues[0].kind, "duplicate-conflict");
+});
+
 test("permits an explicit publication-end trim but rejects accidental history loss", () => {
   const currentRows = [
     { date: "2026-05-01", leading_cycle: 104.8 },

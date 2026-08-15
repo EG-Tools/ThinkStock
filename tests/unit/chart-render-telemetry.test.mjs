@@ -23,6 +23,7 @@ test("records render modes, causes, duration, and fallback paths", () => {
   assert.equal(snapshot.updateClasses.viewport, 1);
   assert.equal(snapshot.updateClasses.marker, 1);
   assert.deepEqual(snapshot.byUpdateClass.viewport, {
+    skipped: 0,
     partial: 0,
     structural: 0,
     full: 1,
@@ -69,4 +70,20 @@ test("counts selective marker-only updates separately", () => {
 
   assert.deepEqual(telemetry.snapshot().updateScopes, { markers: 1 });
   assert.equal(telemetry.snapshot().recent[0].updateScope, "markers");
+});
+
+test("records unchanged render skips as successful reuse", () => {
+  const telemetry = globalThis.ThinkStockChartRenderTelemetry.createChartRenderTelemetry({
+    performance: { now: () => 1 },
+  });
+  telemetry.complete(telemetry.begin({ updateClasses: ["viewport"] }), {
+    mode: "skipped",
+    updateScope: "unchanged",
+  });
+
+  const snapshot = telemetry.snapshot();
+  assert.equal(snapshot.counts.skipped, 1);
+  assert.equal(snapshot.partialReuseRate, 1);
+  assert.deepEqual(snapshot.updateScopes, { unchanged: 1 });
+  assert.equal(snapshot.byUpdateClass.viewport.skipped, 1);
 });

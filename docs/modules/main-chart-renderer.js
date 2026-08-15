@@ -197,6 +197,77 @@
     return payload;
   }
 
+  const RENDER_FINGERPRINT_PROPERTY = "__thinkStockMainChartFingerprintV1";
+
+  function mixFingerprintToken(state, token) {
+    const text = String(token);
+    for (let index = 0; index < text.length; index += 1) {
+      const code = text.charCodeAt(index);
+      state.left = Math.imul(state.left ^ code, 16777619) >>> 0;
+      state.right = Math.imul(state.right ^ (code + index), 2246822519) >>> 0;
+    }
+    state.left = Math.imul(state.left ^ text.length, 16777619) >>> 0;
+    state.right = Math.imul(state.right ^ (text.length + 0x9e3779b9), 3266489917) >>> 0;
+  }
+
+  function fingerprintValue(value, state, ancestors) {
+    if (value === null) {
+      mixFingerprintToken(state, "null");
+      return;
+    }
+    const valueType = typeof value;
+    if (valueType === "number") {
+      mixFingerprintToken(state, Number.isNaN(value)
+        ? "number:nan"
+        : `number:${Object.is(value, -0) ? "-0" : value}`);
+      return;
+    }
+    if (valueType === "string") {
+      mixFingerprintToken(state, `string:${value.length}:${value}`);
+      return;
+    }
+    if (valueType === "boolean" || valueType === "undefined" || valueType === "bigint") {
+      mixFingerprintToken(state, `${valueType}:${String(value)}`);
+      return;
+    }
+    if (valueType === "function" || valueType === "symbol") {
+      mixFingerprintToken(state, valueType);
+      return;
+    }
+    if (ancestors.has(value)) {
+      mixFingerprintToken(state, "circular");
+      return;
+    }
+    ancestors.add(value);
+    if (Array.isArray(value) || ArrayBuffer.isView(value)) {
+      mixFingerprintToken(state, `array:${value.length}`);
+      for (let index = 0; index < value.length; index += 1) {
+        fingerprintValue(value[index], state, ancestors);
+      }
+    } else if (value instanceof Date) {
+      mixFingerprintToken(state, `date:${value.toISOString()}`);
+    } else {
+      const keys = Object.keys(value).sort();
+      mixFingerprintToken(state, `object:${keys.length}`);
+      keys.forEach((key) => {
+        mixFingerprintToken(state, `key:${key}`);
+        fingerprintValue(value[key], state, ancestors);
+      });
+    }
+    ancestors.delete(value);
+  }
+
+  function renderFingerprint(traces, layout, config = {}) {
+    const state = { left: 2166136261, right: 2654435761 };
+    fingerprintValue([traces, layout, config], state, new Set());
+    return `${state.left.toString(16).padStart(8, "0")}${state.right.toString(16).padStart(8, "0")}`;
+  }
+
+  function rememberRenderFingerprint(element, fingerprint, result) {
+    if (element && fingerprint) element[RENDER_FINGERPRINT_PROPERTY] = fingerprint;
+    return result;
+  }
+
   function dateBounds(rowGroups, fallbackDate = "") {
     const starts = [];
     const ends = [];
@@ -377,6 +448,15 @@
   async function render(plotly, element, traces, layout, config, options = {}) {
     let attemptedPartial = false;
     const fallbacks = [];
+    const fingerprint = renderFingerprint(traces, layout, config);
+    if (
+      options.skipUnchanged !== false
+      && element?._fullLayout?.xaxis
+      && element?._fullLayout?.yaxis
+      && element[RENDER_FINGERPRINT_PROPERTY] === fingerprint
+    ) {
+      return { mode: "skipped", attemptedPartial: false, updateScope: "unchanged" };
+    }
     if (canApplyEventMarkerUpdate(element, traces, options.invalidation)) {
       attemptedPartial = true;
       try {
@@ -394,11 +474,11 @@
             markerIndexes,
           );
         }
-        return {
+        return rememberRenderFingerprint(element, fingerprint, {
           mode: structureChanged ? "structural" : "partial",
           attemptedPartial,
           updateScope: "markers",
-        };
+        });
       } catch (_) {
         fallbacks.push("markers");
       }
@@ -412,7 +492,7 @@
           relayoutPayload(layout),
           traces.map((_, index) => index),
         );
-        return { mode: "partial", attemptedPartial };
+        return rememberRenderFingerprint(element, fingerprint, { mode: "partial", attemptedPartial });
       } catch (_) {
         // A plugin may mutate the trace structure between compatibility check and update.
         fallbacks.push("partial");
@@ -428,18 +508,18 @@
           relayoutPayload(layout),
           traces.map((_, index) => index),
         );
-        return { mode: "structural", attemptedPartial };
+        return rememberRenderFingerprint(element, fingerprint, { mode: "structural", attemptedPartial });
       } catch (_) {
         // A full render restores a consistent graph after any plugin-side mutation.
         fallbacks.push("structural");
       }
     }
     await plotly.react(element, traces, layout, config);
-    return {
+    return rememberRenderFingerprint(element, fingerprint, {
       mode: "full",
       attemptedPartial,
       ...(fallbacks.length ? { fallbacks } : {}),
-    };
+    });
   }
 
   globalScope.ThinkStockMainChartRenderer = Object.freeze({
@@ -455,6 +535,7 @@
     finiteTracePoints,
     isEventMarkerTrace,
     normalizeCursorLineMode,
+    renderFingerprint,
     relayoutPayload,
     reconcileTraceStructure,
     render,

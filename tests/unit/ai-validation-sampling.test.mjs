@@ -89,6 +89,7 @@ test("stratified design keeps ticker-disjoint holdout and balanced market quotas
   const first = buildStratifiedValidationDesign(candidates, {
     targetPerMarket: 40,
     auditPerMarket: 10,
+    breadthPerMarket: 20,
     minimumPerTag: 8,
     holdoutFraction: 0.25,
     seed: 1234,
@@ -96,6 +97,7 @@ test("stratified design keeps ticker-disjoint holdout and balanced market quotas
   const second = buildStratifiedValidationDesign(candidates, {
     targetPerMarket: 40,
     auditPerMarket: 10,
+    breadthPerMarket: 20,
     minimumPerTag: 8,
     holdoutFraction: 0.25,
     seed: 1234,

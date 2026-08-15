@@ -77,3 +77,45 @@ test("maps work with a bounded concurrency while preserving result order", async
   assert.equal(maximumActive, 2);
   assert.deepEqual(await module.mapWithConcurrency([], 2, () => null), []);
 });
+
+test("queues one forced producer after a normal request and shares duplicate force callers", async () => {
+  const registry = module.createSharedRequestRegistry();
+  const releases = [];
+  let calls = 0;
+  const factory = () => {
+    calls += 1;
+    return new Promise((resolve) => releases.push(resolve));
+  };
+  const normal = registry.run("analysis:005930", factory, { tag: "normal" });
+  await Promise.resolve();
+  const forcedA = registry.run("analysis:005930", factory, { tag: "force", afterCurrent: true });
+  const forcedB = registry.run("analysis:005930", factory, { tag: "force", afterCurrent: true });
+  assert.equal(registry.has("analysis:005930"), true);
+  assert.equal(registry.tag("analysis:005930"), "normal");
+  releases.shift()("cached");
+  assert.equal(await normal, "cached");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 2);
+  assert.equal(registry.tag("analysis:005930"), "force");
+  releases.shift()("fresh");
+  assert.equal(await forcedA, "fresh");
+  assert.equal(await forcedB, "fresh");
+  assert.equal(registry.stats().queued, 2);
+  assert.equal(registry.stats().sharedHits, 1);
+});
+
+test("publishes compact in-flight snapshots", async () => {
+  const registry = module.createSharedRequestRegistry();
+  const snapshots = [];
+  const unsubscribe = registry.subscribe((value) => snapshots.push(value));
+  let release;
+  const request = registry.run("macro", () => new Promise((resolve) => { release = resolve; }));
+  await Promise.resolve();
+  assert.deepEqual(registry.keys(), ["macro"]);
+  release("ok");
+  await request;
+  await Promise.resolve();
+  unsubscribe();
+  assert.equal(snapshots.some((value) => value.inFlight === 1), true);
+  assert.equal(snapshots.at(-1).inFlight, 0);
+});

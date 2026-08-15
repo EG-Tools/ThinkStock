@@ -317,9 +317,83 @@
     });
   }
 
+  function timingEntryModeQuality(quality, options = {}) {
+    const key = String(Number(options.horizon) || 20);
+    const minimumSamples = Math.max(2, Number(options.minimumEntryModeSamples) || 6);
+    const minimumHitLowerBound = Math.max(0, Number(options.minimumHitLowerBound) || 0.2);
+    const minimumDirectionalReturn = Number.isFinite(Number(options.minimumDirectionalReturn))
+      ? Number(options.minimumDirectionalReturn)
+      : 0;
+    const maximumHitRateGap = Math.max(0, Number(options.maximumEntryModeHitRateGap) || 0.25);
+    const maximumReturnGap = Math.max(0, Number(options.maximumEntryModeReturnGap) || 0.04);
+    const bySide = Object.fromEntries(["buy", "sell"].map((side) => {
+      const development = quality?.validation?.developmentByEntryMode?.[side] || {};
+      const holdout = quality?.validation?.holdoutByEntryMode?.[side] || {};
+      const modes = new Set([...Object.keys(development), ...Object.keys(holdout)]);
+      return [side, Object.freeze(Object.fromEntries([...modes].map((mode) => {
+        const developmentRow = development?.[mode]?.horizons?.[key] || {};
+        const holdoutRow = holdout?.[mode]?.horizons?.[key] || {};
+        const samples = Math.max(0, Number(holdoutRow.samples) || 0);
+        const hits = Number.isFinite(Number(holdoutRow.hits))
+          ? Number(holdoutRow.hits)
+          : (Number(holdoutRow.hitRate) || 0) * samples;
+        const hitRateLowerBound = Number.isFinite(Number(holdoutRow.hitRateLowerBound))
+          ? Number(holdoutRow.hitRateLowerBound)
+          : wilsonLowerBound(hits, samples);
+        const directionalReturn = Number.isFinite(Number(holdoutRow.meanDirectionalReturn))
+          ? Number(holdoutRow.meanDirectionalReturn)
+          : null;
+        const developmentSamples = Math.max(0, Number(developmentRow.samples) || 0);
+        const comparable = samples >= minimumSamples && developmentSamples >= minimumSamples;
+        const hitRateGap = comparable
+          ? (Number(developmentRow.hitRate) || 0) - (Number(holdoutRow.hitRate) || 0)
+          : 0;
+        const returnGap = comparable
+          ? (Number(developmentRow.meanDirectionalReturn) || 0) - (directionalReturn || 0)
+          : 0;
+        const reasons = [];
+        if (samples >= minimumSamples && hitRateLowerBound < minimumHitLowerBound) {
+          reasons.push("weak-hit-rate-lower-bound");
+        }
+        if (samples >= minimumSamples && (directionalReturn === null || directionalReturn <= minimumDirectionalReturn)) {
+          reasons.push("non-positive-holdout-return");
+        }
+        if (comparable && (hitRateGap > maximumHitRateGap
+          || (returnGap > maximumReturnGap && (directionalReturn || 0) <= 0.005))) {
+          reasons.push("development-holdout-gap");
+        }
+        return [mode, Object.freeze({
+          samples,
+          developmentSamples,
+          eligibleForCheck: samples >= minimumSamples,
+          hitRateLowerBound: rounded(hitRateLowerBound),
+          meanDirectionalReturn: directionalReturn === null ? null : rounded(directionalReturn),
+          hitRateGap: rounded(hitRateGap),
+          directionalReturnGap: rounded(returnGap),
+          passed: reasons.length === 0,
+          reasons: Object.freeze(reasons),
+        })];
+      })))];
+    }));
+    const failures = [];
+    Object.entries(bySide).forEach(([side, modes]) => {
+      Object.entries(modes).forEach(([mode, row]) => {
+        row.reasons.forEach((reason) => failures.push(`${side}-${mode}-${reason}`));
+      });
+    });
+    return Object.freeze({
+      horizon: Number(key),
+      minimumSamples,
+      bySide: Object.freeze(bySide),
+      passed: failures.length === 0,
+      failures: Object.freeze(failures),
+    });
+  }
+
   function evaluateMarketTimingQualityGate(value, options = {}) {
     const quality = value?.quality || value || {};
     const metrics = holdoutQualityMetrics(quality, options);
+    const entryModes = timingEntryModeQuality(quality, options);
     const minimumSamples = Math.max(1, Number(options.minimumSamples) || 8);
     const minimumSideSamples = Math.max(2, Number(options.minimumSideSamples) || 5);
     const minimumHitLowerBound = Math.max(0, Number(options.minimumHitLowerBound) || 0.2);
@@ -351,10 +425,12 @@
         reasons.push(`${side}-non-positive-holdout-return`);
       }
     });
+    reasons.push(...entryModes.failures);
     return Object.freeze({
-      format: "market-timing-quality-gate-v2",
+      format: "market-timing-quality-gate-v3",
       eligible: reasons.length === 0,
       metrics,
+      entryModes,
       minimumSamples,
       minimumSideSamples,
       minimumHitLowerBound,
@@ -452,6 +528,10 @@
       development: Object.freeze({
         buy: evaluateSignalSide(buySplit.development, "buy", dates, prices, options.horizons),
         sell: evaluateSignalSide(sellSplit.development, "sell", dates, prices, options.horizons),
+      }),
+      developmentByEntryMode: Object.freeze({
+        buy: evaluateSignalsByEntryMode(buySplit.development, "buy", dates, prices, options.horizons),
+        sell: evaluateSignalsByEntryMode(sellSplit.development, "sell", dates, prices, options.horizons),
       }),
       holdout: Object.freeze({
         buy: evaluateSignalSide(buySplit.holdout, "buy", dates, prices, options.horizons),
@@ -643,6 +723,7 @@
     summarizeMarketTimingQuality,
     holdoutQualityMetrics,
     timingGeneralizationGap,
+    timingEntryModeQuality,
     timingTemporalCoverage,
     wilsonLowerBound,
   });

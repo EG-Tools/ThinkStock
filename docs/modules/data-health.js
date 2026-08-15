@@ -26,6 +26,7 @@
       maxRelativeChange: 0.35,
       maxAbsoluteChange: 20,
       maxGapDays: 14,
+      maxMissingWeekdays: 10,
       scanPoints: 120,
     }),
     customer_deposit: Object.freeze({
@@ -35,6 +36,7 @@
       maxRelativeChange: 0.2,
       maxAbsoluteChange: 25,
       maxGapDays: 14,
+      maxMissingWeekdays: 10,
       scanPoints: 120,
     }),
     kospi_credit: Object.freeze({
@@ -44,6 +46,7 @@
       maxRelativeChange: 0.15,
       maxAbsoluteChange: 3,
       maxGapDays: 14,
+      maxMissingWeekdays: 10,
       scanPoints: 120,
     }),
     kosdaq_credit: Object.freeze({
@@ -53,6 +56,7 @@
       maxRelativeChange: 0.15,
       maxAbsoluteChange: 1,
       maxGapDays: 14,
+      maxMissingWeekdays: 10,
       scanPoints: 120,
     }),
     adr_kospi: Object.freeze({
@@ -62,6 +66,7 @@
       maxRelativeChange: 0.5,
       maxAbsoluteChange: 40,
       maxGapDays: 14,
+      maxMissingWeekdays: 10,
       scanPoints: 120,
     }),
     adr_kosdaq: Object.freeze({
@@ -71,6 +76,7 @@
       maxRelativeChange: 0.5,
       maxAbsoluteChange: 40,
       maxGapDays: 14,
+      maxMissingWeekdays: 10,
       scanPoints: 120,
     }),
     fear_greed: Object.freeze({
@@ -79,6 +85,7 @@
       maxRelativeChange: 0.5,
       maxAbsoluteChange: 30,
       maxGapDays: 14,
+      maxMissingWeekdays: 10,
       scanPoints: 120,
     }),
     vkospi: Object.freeze({

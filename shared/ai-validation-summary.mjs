@@ -30,6 +30,56 @@ function compactHoldout(result = {}) {
   });
 }
 
+const SEGMENT_FAMILIES = Object.freeze([
+  "markets",
+  "regimes",
+  "volatilityGroups",
+  "behaviors",
+  "cycles",
+  "archetypes",
+  "probabilisticRegimes",
+]);
+
+function compactSegmentFamilies(comparison = {}) {
+  return Object.freeze(Object.fromEntries(SEGMENT_FAMILIES.map((family) => [
+    family,
+    Object.freeze(Object.fromEntries(Object.entries(comparison?.[family] || {}).map(([name, horizons]) => [
+      name,
+      Object.freeze(Object.fromEntries(WALKFORWARD_HORIZONS.map((horizon) => [
+        String(horizon),
+        compactHoldout(horizons?.[horizon]),
+      ]))),
+    ]))),
+  ])));
+}
+
+function segmentRegressionSafety(comparison = {}) {
+  const issues = [];
+  SEGMENT_FAMILIES.forEach((family) => {
+    Object.entries(comparison?.[family] || {}).forEach(([name, horizons]) => {
+      WALKFORWARD_HORIZONS.forEach((horizon) => {
+        const row = horizons?.[horizon] || {};
+        const samples = Math.max(0, Number(row?.after?.samples) || 0);
+        if (samples < 20) return;
+        const directionDelta = finiteOrNull(row?.delta?.directionAccuracyPoints);
+        const errorReduction = finiteOrNull(row?.delta?.errorReduction);
+        if ((directionDelta !== null && directionDelta <= -5)
+          || (errorReduction !== null && errorReduction <= -0.05)) {
+          issues.push(Object.freeze({
+            family,
+            name,
+            horizon,
+            samples,
+            directionAccuracyPoints: directionDelta,
+            errorReduction,
+          }));
+        }
+      });
+    });
+  });
+  return Object.freeze({ passed: issues.length === 0, issues: Object.freeze(issues) });
+}
+
 function pointInTimeCoverage(report = {}) {
   const sourceCoverage = report.sourceCoverage || {};
   const coverage = sourceCoverage.pointInTimeFeatureCoverage || {};
@@ -84,6 +134,7 @@ export function buildAiValidationSummary(options = {}) {
   const audit = options.pointInTimeAudit || {};
   const baselineCreated = options.baselineCreated === true;
   const coverage = pointInTimeCoverage(report);
+  const segmentSafety = segmentRegressionSafety(comparison);
   const auditPassed = audit.passed === true;
   const regressionPassed = baselineCreated || evaluation.passed === true;
   const promotionRecommended = !baselineCreated && evaluation.promotionRecommended === true;
@@ -91,7 +142,8 @@ export function buildAiValidationSummary(options = {}) {
     && regressionPassed
     && auditPassed
     && evaluation.benchmarkOutperformanceConfirmed === true
-    && coverage.companyEvidenceReady;
+    && coverage.companyEvidenceReady
+    && segmentSafety.passed;
   let releaseDecision = String(evaluation.decision || "keep-champion");
   if (baselineCreated) releaseDecision = "baseline-created";
   else if (!regressionPassed || !auditPassed) releaseDecision = "keep-champion";
@@ -99,7 +151,16 @@ export function buildAiValidationSummary(options = {}) {
     releaseDecision = "hold-for-benchmark";
   }
   else if (promotionRecommended && !coverage.companyEvidenceReady) releaseDecision = "hold-for-evidence";
+  else if (promotionRecommended && !segmentSafety.passed) releaseDecision = "hold-for-segment-regression";
   else if (promotionAllowed) releaseDecision = "promote-challenger";
+
+  const championVersion = String(
+    comparison.previousVersion || (baselineCreated ? report.enginePathVersion : ""),
+  );
+  const challengerVersion = String(comparison.currentVersion || report.enginePathVersion || "");
+  const activeVersion = promotionAllowed || baselineCreated
+    ? challengerVersion
+    : championVersion;
 
   const warnings = [...new Set([
     ...Array.isArray(evaluation.warnings) ? evaluation.warnings : [],
@@ -119,8 +180,9 @@ export function buildAiValidationSummary(options = {}) {
   return Object.freeze({
     format: "thinkstock-ai-validation-summary-v1",
     generatedAt: String(options.generatedAt || new Date().toISOString()),
-    championVersion: String(comparison.previousVersion || (baselineCreated ? report.enginePathVersion : "")),
-    challengerVersion: String(comparison.currentVersion || report.enginePathVersion || ""),
+    championVersion,
+    challengerVersion,
+    activeVersion,
     releaseDecision,
     regressionPassed,
     benchmarkOutperformanceConfirmed: evaluation.benchmarkOutperformanceConfirmed === true,
@@ -135,6 +197,8 @@ export function buildAiValidationSummary(options = {}) {
       issueCounts: Object.freeze({ ...(audit.issueCounts || {}) }),
       coverage,
     }),
+    segments: compactSegmentFamilies(comparison),
+    segmentSafety,
     promotionEvidence: Object.freeze({ ...(evaluation.promotionEvidence || {}) }),
     warnings: Object.freeze(warnings),
     failures: Object.freeze(failures),

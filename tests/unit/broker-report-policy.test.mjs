@@ -2,11 +2,30 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  brokerReportEvaluationEvent,
   evaluateBrokerReportEvents,
   reportAvailableDate,
   reportIsAvailableAt,
   scoreBrokerReportEvidence,
 } from "../../shared/broker-report-policy.mjs";
+
+test("evaluation events freeze the point-in-time signal and policy version", () => {
+  const event = brokerReportEvaluationEvent("005930.KS", {
+    reportId: "101",
+    publishedDate: "2026-08-14",
+    confidence: 0.8,
+    metrics: {
+      eps: { growth: 0.2 },
+      roe: { growth: 2.5 },
+    },
+    targetPriceChange: 0.1,
+  });
+  assert.equal(event.availableDate, "2026-08-17");
+  assert.equal(event.policyVersion, "broker-policy-v1");
+  assert.ok(event.signal > 0);
+  assert.ok(event.confidence > 0);
+  assert.equal(event.evidence.epsChange, 0.2);
+});
 
 test("historical report availability is conservative and blocks future leakage", () => {
   const report = { publishedDate: "2026-08-14" };

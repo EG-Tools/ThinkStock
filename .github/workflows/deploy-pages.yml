@@ -46,7 +46,15 @@ jobs:
           node-version: "24"
           cache: "npm"
 
+      - name: Restore Installed Web Dependencies
+        id: webkit-node-modules
+        uses: actions/cache@v5
+        with:
+          path: node_modules
+          key: thinkstock-node24-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
       - name: Install Web Dependencies
+        if: ${{ steps.webkit-node-modules.outputs.cache-hit != 'true' }}
         run: npm ci --prefer-offline --no-audit --no-fund
 
       - name: Cache WebKit Browser
@@ -87,7 +95,15 @@ jobs:
           node-version: "24"
           cache: "npm"
 
+      - name: Restore Installed Web Dependencies
+        id: build-node-modules
+        uses: actions/cache@v5
+        with:
+          path: node_modules
+          key: thinkstock-node24-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
       - name: Install Web Dependencies
+        if: ${{ steps.build-node-modules.outputs.cache-hit != 'true' }}
         run: npm ci --prefer-offline --no-audit --no-fund
 
       - name: Build Plotly Vendor Bundle

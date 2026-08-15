@@ -6,6 +6,9 @@ import { fileURLToPath } from "node:url";
 import { evaluateAiReleaseGate } from "../shared/ai-release-gate.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// path-v20 was already deployed in v2.88. It may stay in place unchanged,
+// but every later runtime edit must win the normal challenger promotion gate.
+const APPROVED_OPERATIONAL_INCUMBENT = "path-v20";
 const runtimeFiles = [
   "docs/modules/ai-context-profile.js",
   "docs/modules/ai-forecast-calibration.js",
@@ -39,6 +42,7 @@ const gate = evaluateAiReleaseGate({
   summary,
   comparison,
   runtimeChanged: changed.length > 0,
+  approvedIncumbentPathVersion: APPROVED_OPERATIONAL_INCUMBENT,
 });
 
 if (!gate.ok) {

@@ -108,6 +108,36 @@ test("combines compatible trace and viewport updates into one Plotly call", asyn
   assert.equal(calls[0][3]["xaxis.tickvals"], null);
 });
 
+test("skips an identical render after the first successful Plotly update", async () => {
+  const element = {
+    data: [trace("^KS11", [0, 0])],
+    _fullLayout: { xaxis: {}, yaxis: {} },
+  };
+  const calls = [];
+  const plotly = {
+    update: async (...args) => calls.push(["update", ...args]),
+    react: async (...args) => calls.push(["react", ...args]),
+  };
+  const traces = [trace("^KS11")];
+  const layout = {
+    hovermode: false,
+    xaxis: { range: ["2026-01-01", "2026-01-02"] },
+    yaxis: { range: [0, 3] },
+  };
+
+  assert.equal((await renderer.render(plotly, element, traces, layout, {})).mode, "partial");
+  assert.deepEqual(await renderer.render(plotly, element, traces, layout, {}), {
+    mode: "skipped",
+    attemptedPartial: false,
+    updateScope: "unchanged",
+  });
+  assert.deepEqual(calls.map((call) => call[0]), ["update"]);
+
+  const changed = [{ ...traces[0], y: [1, 3] }];
+  assert.equal((await renderer.render(plotly, element, changed, layout, {})).mode, "partial");
+  assert.deepEqual(calls.map((call) => call[0]), ["update", "update"]);
+});
+
 
 test("carries explicit long-range date ticks through a partial update", () => {
   const payload = renderer.relayoutPayload({
