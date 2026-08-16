@@ -199,6 +199,7 @@
     normalizeBlockedEntries,
     normalizeMinimum,
     normalizeUniverseSize,
+    normalizeCachePayload,
     removeCache,
     saveBlocked,
     saveCache,

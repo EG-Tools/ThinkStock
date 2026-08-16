@@ -138,6 +138,27 @@ test("skips an identical render after the first successful Plotly update", async
   assert.deepEqual(calls.map((call) => call[0]), ["update", "update"]);
 });
 
+test("uses an explicit line render revision instead of walking large line arrays", () => {
+  const result = renderer.buildLineTraces({
+    seriesModels: [{
+      series: "^KS11",
+      xValues: ["2026-01-01", "2026-01-02"],
+      values: [100, 101],
+      rawTexts: ["100", "101"],
+      baseValues: [100, 101],
+      baseLineWidth: 2,
+    }],
+    renderRevision: "model-42",
+    hiddenSeries: new Set(),
+  });
+  assert.match(result.traces[0].meta.renderFingerprint, /^model-42\|\^KS11\|/);
+  const first = renderer.renderFingerprint(result.traces, { xaxis: {}, yaxis: {} }, {});
+  result.traces[0].y[0] = 999;
+  assert.equal(renderer.renderFingerprint(result.traces, { xaxis: {}, yaxis: {} }, {}), first);
+  result.traces[0].meta.renderFingerprint = "model-43|^KS11";
+  assert.notEqual(renderer.renderFingerprint(result.traces, { xaxis: {}, yaxis: {} }, {}), first);
+});
+
 
 test("carries explicit long-range date ticks through a partial update", () => {
   const payload = renderer.relayoutPayload({

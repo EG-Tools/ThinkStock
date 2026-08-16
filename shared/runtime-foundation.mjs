@@ -30,7 +30,7 @@ export const RUNTIME_VALUE_CONTRACT = Object.freeze({
 
 export const RUNTIME_STORAGE_CONTRACT = Object.freeze({
   dbName: "thinkstock-runtime-cache-v1",
-  dbVersion: 7,
+  dbVersion: 8,
   localSnapshotKey: "thinkstock-runtime-cache-v1",
   snapshotRecordKey: "latest",
   stores: Object.freeze({
@@ -41,6 +41,7 @@ export const RUNTIME_STORAGE_CONTRACT = Object.freeze({
     tickerAiForecast: "tickerAiForecast",
     tickerAiForecastJournal: "tickerAiForecastJournal",
     tickerResearchHistory: "tickerResearchHistory",
+    stockResearchResults: "stockResearchResults",
     tickerBrokerResearch: "tickerBrokerResearch",
   }),
 });

@@ -3,6 +3,35 @@
 
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "2.92",
+      date: "2026.08.16",
+      items: Object.freeze([
+        "차트 우측 여백 0~30일 설정 추가",
+        "확대·이동·AI 예측 범위에 동일한 여백 정책 적용",
+      ]),
+    }),
+    Object.freeze({
+      version: "2.91",
+      date: "2026.08.16",
+      items: Object.freeze([
+        "AI·메인 차트 범위와 표시 대상 사전 계산 통합",
+        "차트 모델 지문 재사용으로 동일 렌더링 비교 비용 절감",
+        "DART 공시·내부거래 실시간 요청 공통화",
+        "중복 요청 상태 제거 및 기타 런타임 최적화",
+      ]),
+    }),
+    Object.freeze({
+      version: "2.90",
+      date: "2026.08.16",
+      items: Object.freeze([
+        "차트 AI 입력 배열 재사용으로 반복 렌더링 비용 절감",
+        "종목탐구 대용량 결과를 IndexedDB 비동기 캐시로 전환",
+        "DART 기업코드·공시 시드 요청 공통화",
+        "선택 기능 중복 로딩 제거",
+        "로컬 검증 결과 재사용으로 배포 빌드 단축",
+      ]),
+    }),
+    Object.freeze({
       version: "2.89",
       date: "2026.08.16",
       items: Object.freeze([

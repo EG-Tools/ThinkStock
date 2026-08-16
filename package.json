@@ -4,7 +4,7 @@
   "private": true,
   "description": "ThinkStock local and GitHub Pages web app",
   "scripts": {
-    "vendor:sync": "node scripts/build_plotly_bundle.cjs && node scripts/sync_pdfjs_vendor.mjs",
+    "vendor:sync": "node scripts/build_plotly_bundle.cjs",
     "check:sources": "node scripts/check_javascript_sources.mjs",
     "build:web": "node scripts/sync_pdfjs_vendor.mjs && node scripts/check_javascript_sources.mjs --scope web && node scripts/build_pages_bundle.mjs",
     "test": "npm run build:web && npm run test:unit:built",

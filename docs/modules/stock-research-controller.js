@@ -34,6 +34,7 @@
     loadUniverseSize,
     normalizeMinimum,
     normalizeUniverseSize,
+    normalizeCachePayload,
     removeCache,
     saveBlocked,
     saveCache,
@@ -139,6 +140,7 @@
     const onCacheStateChanged = options.onCacheStateChanged || (() => {});
     const onBlockedStateChanged = options.onBlockedStateChanged || (() => {});
     const historyCache = options.historyCache || null;
+    const resultCache = options.resultCache || null;
     const getSharedSources = options.getSharedSources || (() => {
       const data = getData();
       const records = Array.isArray(data.priceRecords) ? data.priceRecords : [];
@@ -193,6 +195,10 @@
     let running = false;
     let enrichingCachedProfiles = false;
     let navigationSequence = 0;
+    let resultCacheHydrated = !resultCache;
+    let resultCacheHydrationPromise = null;
+    let persistTimer = 0;
+    let pendingPersistPayload = null;
 
     const elements = {};
     const element = (id) => scope.document.getElementById(id);
@@ -202,11 +208,54 @@
     }
 
     function persistCache() {
-      if (cached) {
+      if (cached && resultCache) {
+        pendingPersistPayload = cached;
+        if (!persistTimer) {
+          persistTimer = scope.setTimeout(() => {
+            persistTimer = 0;
+            const payload = pendingPersistPayload;
+            pendingPersistPayload = null;
+            if (!payload) return;
+            const size = normalizeUniverseSize(payload.universeSize);
+            Promise.all([
+              resultCache.write(`current:${calculationVersion}`, payload),
+              resultCache.write(`variant:${calculationVersion}:${size}`, payload),
+            ]).then(() => removeCache(storage)).catch(() => {});
+          }, 180);
+        }
+      } else if (cached) {
         saveCache(storage, cached);
         saveCacheVariant(storage, cached);
       }
       notifyCacheState();
+    }
+
+    async function hydrateResultCache() {
+      if (resultCacheHydrated) return cached;
+      if (resultCacheHydrationPromise) return resultCacheHydrationPromise;
+      resultCacheHydrationPromise = (async () => {
+        const size = normalizeUniverseSize(universeSize);
+        const records = await Promise.all([
+          resultCache.read(`variant:${calculationVersion}:${size}`),
+          resultCache.read(`current:${calculationVersion}`),
+        ]);
+        const stored = records
+          .map((value) => normalizeCachePayload(value, calculationVersion))
+          .filter((value) => value && normalizeUniverseSize(value.universeSize) === size)
+          .sort((left, right) => String(right.generatedAt || "").localeCompare(String(left.generatedAt || "")))[0];
+        if (stored && (!cached || String(stored.generatedAt || "") >= String(cached.generatedAt || ""))) {
+          cached = stored;
+        }
+        resultCacheHydrated = true;
+        if (cached) persistCache();
+        return cached;
+      })().catch(() => {
+        resultCacheHydrated = true;
+        return cached;
+      }).finally(() => {
+        resultCacheHydrationPromise = null;
+      });
+      return resultCacheHydrationPromise;
     }
 
     function markSummaryAvailable() {
@@ -216,10 +265,14 @@
 
     function clearCache(clearOptions = {}) {
       if (running) return false;
+      if (persistTimer) scope.clearTimeout(persistTimer);
+      persistTimer = 0;
+      pendingPersistPayload = null;
       const bypassAfterClear = clearOptions.bypassSummary !== false;
       cached = null;
       bypassSummary = bypassAfterClear;
       removeCache(storage);
+      if (resultCache) Promise.resolve(resultCache.clear()).catch(() => {});
       if (clearOptions.clearHistory !== false) {
         try { Promise.resolve(historyCache?.clear?.()).catch(() => {}); } catch (_) {}
       }
@@ -382,6 +435,16 @@
     function setUniverseSize(value) {
       if (running) return universeSize;
       universeSize = saveUniverseSize(storage, normalizeUniverseSize(value));
+      if (resultCache) {
+        cached = null;
+        resultCacheHydrated = false;
+        hydrateResultCache().then(() => {
+          navigationSequence += 1;
+          render();
+          notifyCacheState();
+        });
+        return universeSize;
+      }
       const variant = loadCacheVariant(storage, calculationVersion, universeSize);
       if (variant) {
         cached = variant;
@@ -991,8 +1054,9 @@
       }
     }
 
-    function open() {
+    async function open() {
       if (!canRun()) return false;
+      await hydrateResultCache();
       render();
       elements.modal.hidden = false;
       if (cached) enrichExistingCandidateProfiles();

@@ -207,6 +207,33 @@ test("render viewport plan reveals the forecast once and extends only to its las
   assert.equal(plan.revealAiForecastRange, false);
 });
 
+test("render viewport plan adds the configured empty days after observed and forecast lines", () => {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const observed = viewport.buildRenderViewportPlan({
+    preserveZoom: false,
+    observedStart: "2026-02-01",
+    observedEnd: "2026-08-01",
+    rightPaddingMs: 30 * dayMs,
+  });
+  assert.deepEqual(observed.defaultXRange, [
+    "2026-02-01",
+    new Date(Date.parse("2026-08-01") + (30 * dayMs)).toISOString(),
+  ]);
+
+  const forecast = viewport.buildRenderViewportPlan({
+    preserveZoom: false,
+    showAiForecast: true,
+    aiForecastTraces: [{ x: ["2026-08-01", "2027-02-01"] }],
+    observedStart: "2026-02-01",
+    observedEnd: "2026-08-01",
+    rightPaddingMs: 10 * dayMs,
+  });
+  assert.equal(
+    forecast.defaultXRange[1],
+    new Date(Date.parse("2027-02-01") + (10 * dayMs)).toISOString(),
+  );
+});
+
 test("render viewport plan restores the entry viewport after AI is disabled", () => {
   const visibleRange = [Date.parse("2026-01-01"), Date.parse("2026-08-01")];
   const plan = viewport.buildRenderViewportPlan({

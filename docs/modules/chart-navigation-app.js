@@ -186,7 +186,9 @@
       const dataRange = options.getDataRange(element);
       if (!dataRange) return false;
       cancelLatestAnimation();
-      const latestDate = new Date(dataRange[1]).toISOString().slice(0, 10);
+      const rightPaddingMs = Math.max(0, Number(options.getRightPaddingMs?.()) || 0);
+      const latestAnchor = Math.max(dataRange[0], dataRange[1] - rightPaddingMs);
+      const latestDate = new Date(latestAnchor).toISOString().slice(0, 10);
       const requestedStart = Number(options.toMilliseconds(
         options.shiftMonths(latestDate, requestedMonths),
       ));

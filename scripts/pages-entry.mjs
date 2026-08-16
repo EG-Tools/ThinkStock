@@ -73,6 +73,7 @@ import "../docs/modules/service-worker-client.js";
 import "../docs/modules/runtime-refresh-orchestrator.js";
 import "../docs/modules/runtime-data-app.js";
 import "../docs/modules/shared-request-registry.js";
+import "../docs/modules/dart-request-runtime.js";
 import "../docs/modules/runtime-gateway-client.js";
 import "../docs/modules/runtime-index-refresh.js";
 import "../docs/modules/data-freshness-view.js";

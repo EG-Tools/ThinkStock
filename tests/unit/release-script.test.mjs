@@ -41,11 +41,12 @@ test("release reuses local full WebKit verification while direct runs stay fail-
   assert.doesNotMatch(workflow, /matrix\.target/);
 });
 
-test("release script can publish an already prepared version without incrementing it", async () => {
+test("release script always publishes the authoritative local version", async () => {
   const source = await readFile(new URL("../../scripts/release_pages.ps1", import.meta.url), "utf8");
   const launcher = await readFile(new URL("../../deploy_pages.bat", import.meta.url), "utf8");
   assert.match(source, /\[switch\]\$KeepVersion/);
-  assert.match(source, /if \(-not \$KeepVersion\) \{\s*Invoke-Checked npm @\("run", "version:pages"\)/);
+  assert.doesNotMatch(source, /Invoke-Checked npm @\("run", "version:pages"\)/);
+  assert.match(source, /authoritative local app version/);
   assert.match(launcher, /--keep-version/);
   assert.match(launcher, /-KeepVersion/);
   assert.match(launcher, /--keep-version[\s\S]*--skip-verified[\s\S]*-KeepVersion -SkipVerification/);

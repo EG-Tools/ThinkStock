@@ -17,6 +17,7 @@ function state() {
     seriesScales: {},
     hoverShowPopup: true,
     cursorLineMode: "vertical",
+    chartRightPaddingDays: 0,
     newsSentimentMovingAverageDays: 1,
     showDisclosures: true,
     showInsiderTrades: false,
@@ -103,6 +104,7 @@ test("loads legacy auxiliary visibility and keeps AI disabled at boot", () => {
         seriesScales: { A: 1.5 },
         creditOffset: -4,
         cursorLineMode: "cross",
+        chartRightPaddingDays: 12,
         newsSentimentMovingAverageDays: 5,
         showChartTools: false,
         customStocks: [{ ticker: "005930.KS", name: "삼성전자" }],
@@ -112,6 +114,7 @@ test("loads legacy auxiliary visibility and keeps AI disabled at boot", () => {
     panelKeys: ["adr", "fearGreed", "newsSentiment", "vkospi"],
     seriesKeys,
     normalizeCursorLineMode: (value) => value,
+    normalizeChartRightPaddingDays: (value) => Math.max(0, Math.min(30, Number(value) || 0)),
     normalizeNewsMovingAverageDays: (value) => Number(value) || 1,
     getCustomStocks: () => customStocks,
     setCustomStocks: (value) => { customStocks = value; },
@@ -123,6 +126,7 @@ test("loads legacy auxiliary visibility and keeps AI disabled at boot", () => {
   assert.equal(chartState.activeMonths, 12);
   assert.equal(chartState.showAiForecast, false);
   assert.equal(chartState.showChartTools, false);
+  assert.equal(chartState.chartRightPaddingDays, 12);
   assert.deepEqual([...chartState.hiddenAuxiliaryPanels].sort(), ["adr", "fearGreed"]);
   assert.deepEqual([...chartState.hiddenAuxiliarySeries], []);
   assert.deepEqual(chartState.seriesOffsets, { A: 3 });
@@ -147,5 +151,6 @@ test("saves one normalized application state record", () => {
   assert.equal(saved.creditOffset, -2);
   assert.equal(saved.showAiForecast, undefined);
   assert.equal(saved.showChartTools, true);
+  assert.equal(saved.chartRightPaddingDays, 0);
   assert.deepEqual(saved.customStocks, [{ ticker: "005930.KS", name: "삼성전자" }]);
 });

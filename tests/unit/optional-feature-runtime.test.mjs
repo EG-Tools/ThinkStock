@@ -15,6 +15,7 @@ test("loads each optional feature only once and creates one timing service", asy
     ThinkStockAiForecast: { buildForecast() {} },
     ThinkStockAiForecastApp: { createAiForecastApp() {} },
     ThinkStockAiForecastCache: { createAiForecastCache() {} },
+    ThinkStockAiForecastInputCache: { createAiForecastInputCache() {} },
     ThinkStockAiForecastTraces: { buildAiForecastTraces() {} },
     ThinkStockAiAnalysisCache: { SCHEMA_VERSION: 1 },
     ThinkStockAiForecastJournal: { SCHEMA_VERSION: 1 },
@@ -68,7 +69,9 @@ test("loads each optional feature only once and creates one timing service", asy
   assert.equal(featurePaths.get("ai-forecast").includes("./modules/broker-research-cache.js"), true);
   assert.equal(featurePaths.get("ai-forecast").includes("./modules/broker-research-runtime.js"), true);
   assert.equal(featurePaths.get("ai-forecast").includes("./modules/ai-forecast-cache.js"), true);
+  assert.equal(featurePaths.get("ai-forecast").includes("./modules/ai-forecast-input-cache.js"), true);
   assert.equal(featurePaths.get("ai-forecast").includes("./modules/ai-forecast-traces.js"), true);
   assert.equal(featurePaths.get("ai-forecast").includes("./modules/ai-context-profile.js"), true);
+  assert.equal(featurePaths.get("stock-research").includes("./modules/stock-research-storage.js"), false);
   assert.equal(featurePaths.get("market-timing").includes("./modules/ai-context-profile.js"), true);
 });

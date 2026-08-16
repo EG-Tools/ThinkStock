@@ -8,6 +8,8 @@
       APP_VERSION,
       NEWS_MOVING_AVERAGE_MIN_DAYS = 1,
       NEWS_MOVING_AVERAGE_MAX_DAYS = 20,
+      CHART_RIGHT_PADDING_MIN_DAYS = 0,
+      CHART_RIGHT_PADDING_MAX_DAYS = 30,
       STOCK_RESEARCH_UNIVERSE_MIN = 100,
       STOCK_RESEARCH_UNIVERSE_MAX = 1000,
       STOCK_RESEARCH_UNIVERSE_STEP = 100,
@@ -23,6 +25,7 @@
       getAdminAccessGranted,
       getBlockedStockCount,
       getCursorLineMode,
+      getChartRightPaddingDays,
       getNewsSentimentMovingAverageDays,
       getStockResearchUniverseSize,
       getDartGatewayAccessToken,
@@ -30,6 +33,7 @@
       resetStoredAppState,
       setMessage,
       setCursorLineMode,
+      setChartRightPaddingDays,
       setNewsSentimentMovingAverageDays,
       setStockResearchUniverseSize,
       syncApiOptionsButton,
@@ -145,6 +149,9 @@
       const cursorLineModeButtons = [...modal.querySelectorAll(
         ".cursor-line-mode-btn[data-chart-cursor-mode]",
       )];
+      const chartRightPaddingDecrease = document.getElementById("chartRightPaddingDecrease");
+      const chartRightPaddingIncrease = document.getElementById("chartRightPaddingIncrease");
+      const chartRightPaddingValue = document.getElementById("chartRightPaddingValue");
       const newsMovingAverageDecrease = document.getElementById("newsSentimentMovingAverageDecrease");
       const newsMovingAverageIncrease = document.getElementById("newsSentimentMovingAverageIncrease");
       const newsMovingAverageValue = document.getElementById("newsSentimentMovingAverageValue");
@@ -205,6 +212,25 @@
           button.setAttribute("aria-pressed", String(active));
           button.classList.toggle("is-active", active);
         });
+      };
+      const syncChartRightPaddingUi = () => {
+        const days = Math.min(
+          CHART_RIGHT_PADDING_MAX_DAYS,
+          Math.max(
+            CHART_RIGHT_PADDING_MIN_DAYS,
+            Math.round(Number(getChartRightPaddingDays?.()) || 0),
+          ),
+        );
+        if (chartRightPaddingValue) {
+          chartRightPaddingValue.value = String(days);
+          chartRightPaddingValue.textContent = String(days);
+        }
+        if (chartRightPaddingDecrease) {
+          chartRightPaddingDecrease.disabled = days <= CHART_RIGHT_PADDING_MIN_DAYS;
+        }
+        if (chartRightPaddingIncrease) {
+          chartRightPaddingIncrease.disabled = days >= CHART_RIGHT_PADDING_MAX_DAYS;
+        }
       };
       const syncNewsMovingAverageUi = () => {
         const days = Math.min(
@@ -367,6 +393,7 @@
         setAccessStatus(dartGatewayTokenStatus);
         if (adminAccessCodeInput) adminAccessCodeInput.value = "";
         syncAdminAccessUi();
+        syncChartRightPaddingUi();
         syncCursorLineModeUi();
         syncNewsMovingAverageUi();
         syncStockResearchUniverseUi();
@@ -389,6 +416,16 @@
           setCursorLineMode(button.dataset.chartCursorMode);
           syncCursorLineModeUi();
         });
+      });
+      chartRightPaddingDecrease?.addEventListener("click", () => {
+        if (typeof setChartRightPaddingDays !== "function") return;
+        setChartRightPaddingDays(Number(getChartRightPaddingDays?.()) - 1);
+        syncChartRightPaddingUi();
+      });
+      chartRightPaddingIncrease?.addEventListener("click", () => {
+        if (typeof setChartRightPaddingDays !== "function") return;
+        setChartRightPaddingDays(Number(getChartRightPaddingDays?.()) + 1);
+        syncChartRightPaddingUi();
       });
       newsMovingAverageDecrease?.addEventListener("click", () => {
         if (typeof setNewsSentimentMovingAverageDays !== "function") return;

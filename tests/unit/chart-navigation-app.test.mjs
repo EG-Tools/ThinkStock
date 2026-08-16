@@ -196,3 +196,26 @@ test("latest navigation advances on its first delayed browser frame", () => {
   assert.ok(applied[0][0] > 0);
   assert.ok(applied[0][1] > 600_000);
 });
+
+test("period presets keep the requested history before a right-side blank margin", () => {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const latest = Date.parse("2026-08-01");
+  const padding = 30 * dayMs;
+  const applied = [];
+  const navigation = createChartNavigation({}, {
+    viewport,
+    dayMs,
+    getElement: fakeElement,
+    getDataRange: () => [Date.parse("2020-01-01"), latest + padding],
+    getRightPaddingMs: () => padding,
+    toMilliseconds: Date.parse,
+    shiftMonths: () => "2026-02-01",
+    applyRange: (...args) => applied.push(args),
+  });
+
+  assert.equal(navigation.showLatestPeriod(6), true);
+  assert.deepEqual(applied[0].slice(0, 2), [
+    Date.parse("2026-02-01"),
+    latest + padding,
+  ]);
+});

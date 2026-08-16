@@ -1,6 +1,6 @@
 importScripts("./modules/cache-refresh-policy.js?v=dev");
 
-const CACHE_NAME = "thinkstock-dev-2.89";
+const CACHE_NAME = "thinkstock-dev-2.92";
 const NETWORK_FIRST_TIMEOUT_MS = 3500;
 const DATA_REFRESH_CONCURRENCY = 3;
 const DATA_MANIFEST_PATH = "./data/data_manifest.json";
@@ -84,6 +84,7 @@ const CORE_ASSET_PATHS = [
   "/modules/broker-research-cache.js",
   "/modules/broker-research-runtime.js",
   "/modules/ai-forecast-cache.js",
+  "/modules/ai-forecast-input-cache.js",
   "/modules/ai-forecast-traces.js",
   "/modules/ai-forecast-math.js",
   "/modules/ai-context-profile.js",

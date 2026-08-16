@@ -477,12 +477,21 @@
       : copyRange(options.lockedYRange);
     const observedStart = options.observedStart;
     const observedEnd = options.observedEnd;
-    const forecastEnd = aiForecastTraces
+    const rightPaddingMs = Math.max(0, Number(options.rightPaddingMs) || 0);
+    const observedEndMs = toMilliseconds(observedEnd);
+    const paddedObservedEnd = rightPaddingMs > 0 && Number.isFinite(observedEndMs)
+      ? new Date(observedEndMs + rightPaddingMs).toISOString()
+      : observedEnd;
+    const rawForecastEnd = aiForecastTraces
       .map((trace) => trace?.x?.at?.(-1) || "")
       .reduce((latest, date) => date > latest ? date : latest, observedEnd);
+    const rawForecastEndMs = toMilliseconds(rawForecastEnd);
+    const forecastEnd = rightPaddingMs > 0 && Number.isFinite(rawForecastEndMs)
+      ? new Date(rawForecastEndMs + rightPaddingMs).toISOString()
+      : rawForecastEnd;
 
     if (revealAiForecastRange && showAiForecast && aiForecastTraces.length) {
-      const observedEndMs = toMilliseconds(observedEnd);
+      const observedEndMs = toMilliseconds(paddedObservedEnd);
       const forecastEndMs = toMilliseconds(forecastEnd);
       const savedStartMs = toMilliseconds(savedXRange?.[0]);
       const nextStartMs = Number.isFinite(savedStartMs) && savedStartMs < observedEndMs
@@ -497,7 +506,7 @@
     }
 
     if (trimAiForecastRange && !showAiForecast) {
-      const observedEndMs = toMilliseconds(observedEnd);
+      const observedEndMs = toMilliseconds(paddedObservedEnd);
       const savedEndMs = toMilliseconds(savedXRange?.[1]);
       if (Number.isFinite(observedEndMs) && Number.isFinite(savedEndMs) && savedEndMs > observedEndMs) {
         const savedStartMs = toMilliseconds(savedXRange?.[0]);
@@ -668,9 +677,10 @@
     });
     if (!Array.isArray(viewRange) || !visible?.range) return null;
     const tolerance = options.timelinePolicy?.latestToleranceMs?.(visible.series);
+    const rightPaddingMs = Math.max(0, Number(options.rightPaddingMs) || 0);
     return Object.freeze({
       viewRange: Object.freeze([...viewRange]),
-      dataRange: visible.range,
+      dataRange: Object.freeze([visible.range[0], visible.range[1] + rightPaddingMs]),
       visibleSeries: visible.series,
       forceFitFull: options.forceFitFull === true,
       latestTolerance: Number.isFinite(Number(tolerance)) ? Number(tolerance) : undefined,

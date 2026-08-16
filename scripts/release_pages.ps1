@@ -33,13 +33,17 @@ if ($PreparedCommit -and $HeadCommit -ne $RemoteCommit) {
 }
 $GitHubVerificationScope = "smoke"
 Invoke-Checked npm @("run", "check:ai-validation")
+$BuiltWebApp = $false
 if (-not $SkipVerification) {
   Invoke-Checked npm @("run", "verify:release")
+  $BuiltWebApp = $true
 }
 if (-not $KeepVersion) {
-  Invoke-Checked npm @("run", "version:pages")
+  Write-Output "Using the authoritative local app version; release does not increment it."
 }
-Invoke-Checked npm @("run", "build:web")
+if (-not $BuiltWebApp) {
+  Invoke-Checked npm @("run", "build:web")
+}
 Invoke-Checked node @("scripts/validate_pages_app.mjs")
 Invoke-Checked git @(
   "add", "--",

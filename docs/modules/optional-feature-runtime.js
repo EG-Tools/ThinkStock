@@ -19,6 +19,7 @@
         "./modules/broker-research-runtime.js",
         "./modules/ai-forecast-app.js",
         "./modules/ai-forecast-cache.js",
+        "./modules/ai-forecast-input-cache.js",
         "./modules/ai-forecast-traces.js",
         "./modules/ai-forecast-math.js",
         "./modules/ai-context-profile.js",
@@ -38,6 +39,7 @@
         && scope.ThinkStockBrokerResearchRuntime
         && scope.ThinkStockAiForecastApp
         && scope.ThinkStockAiForecastCache
+        && scope.ThinkStockAiForecastInputCache
         && scope.ThinkStockAiForecastTraces
         && scope.ThinkStockAiAnalysisCache
         && scope.ThinkStockAiForecastJournal
@@ -89,9 +91,12 @@
       const contractPaths = scope.ThinkStockStockResearchContract
         ? []
         : ["./modules/stock-research-contract.js"];
+      const storagePaths = scope.ThinkStockStockResearchStorage
+        ? []
+        : ["./modules/stock-research-storage.js"];
       await loader.loadFeature("stock-research", [
         ...contractPaths,
-        "./modules/stock-research-storage.js",
+        ...storagePaths,
         "./modules/stock-research-navigation.js",
         "./modules/stock-research-filter.js",
         "./modules/stock-research-history-cache.js",

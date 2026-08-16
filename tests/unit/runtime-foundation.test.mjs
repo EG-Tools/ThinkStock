@@ -24,7 +24,7 @@ test("runtime value contract rejects missing and malformed numeric values", () =
 
 test("runtime storage contract owns every IndexedDB store name", () => {
   assert.equal(RUNTIME_STORAGE_CONTRACT.dbName, "thinkstock-runtime-cache-v1");
-  assert.equal(RUNTIME_STORAGE_CONTRACT.dbVersion, 7);
+  assert.equal(RUNTIME_STORAGE_CONTRACT.dbVersion, 8);
   assert.deepEqual(Object.values(RUNTIME_STORAGE_CONTRACT.stores), [
     "snapshots",
     "tickerPrices",
@@ -33,6 +33,7 @@ test("runtime storage contract owns every IndexedDB store name", () => {
     "tickerAiForecast",
     "tickerAiForecastJournal",
     "tickerResearchHistory",
+    "stockResearchResults",
     "tickerBrokerResearch",
   ]);
 });

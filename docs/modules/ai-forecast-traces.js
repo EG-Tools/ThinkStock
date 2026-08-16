@@ -82,6 +82,7 @@
       getAiForecastCacheService,
       getMacdModelForSeries,
       getStructuralProfile,
+      getPriceRevision,
       labelName,
       queueAiForecastJournalSync,
       resetAiForecastProgress,
@@ -96,6 +97,8 @@
     if (!state || !chartSession || !aiForecastApp) {
       throw new Error("AI forecast trace dependencies are incomplete");
     }
+    const inputCache = globalScope.ThinkStockAiForecastInputCache
+      ?.createAiForecastInputCache({ maxEntries: 24 });
 
     async function build(rows, seriesModels) {
       if (!chartSession.showAiForecast) {
@@ -124,6 +127,22 @@
         if (state.aiAnalysisPendingTickers.has(series) && !analysis) return [];
         const brokerResearch = state.brokerResearchByTicker.get(series) || null;
         const historyRows = aiForecastHistoryRows(series);
+        const historyProjection = inputCache?.resolve([
+          series,
+          typeof getPriceRevision === "function" ? getPriceRevision() : "",
+          historyRows.length,
+          String(historyRows.at(-1)?.date || ""),
+        ].join("|"), () => ({
+          dates: historyRows.map((row) => row.date),
+          prices: historyRows.map((row) => row[series]),
+          kospiPrices: historyRows.map((row) => row["^KS11"]),
+          kosdaqPrices: historyRows.map((row) => row["^KQ11"]),
+        })) || {
+          dates: historyRows.map((row) => row.date),
+          prices: historyRows.map((row) => row[series]),
+          kospiPrices: historyRows.map((row) => row["^KS11"]),
+          kosdaqPrices: historyRows.map((row) => row["^KQ11"]),
+        };
         const macdModel = getMacdModelForSeries(series);
         const priceDate = String(historyRows.at(-1)?.date || "").slice(0, 10);
         const today = typeof currentDate === "function" ? currentDate() : priceDate;
@@ -144,17 +163,17 @@
         const options = {
           series,
           decisionDate,
-          dates: historyRows.map((row) => row.date),
-          prices: historyRows.map((row) => row[series]),
+          dates: historyProjection.dates,
+          prices: historyProjection.prices,
           transformPrices: (rows || []).map((row) => row?.[series]),
           transformChartValues: model.values,
           macroRows: state.macroRows,
           auxiliaryRows: state.adrRows,
           creditRows: state.creditRows,
-          marketCandidates: ["^KS11", "^KQ11"].map((marketSeries) => ({
+          marketCandidates: ["^KS11", "^KQ11"].map((marketSeries, index) => ({
             series: marketSeries,
-            dates: historyRows.map((row) => row.date),
-            prices: historyRows.map((row) => row[marketSeries]),
+            dates: historyProjection.dates,
+            prices: index === 0 ? historyProjection.kospiPrices : historyProjection.kosdaqPrices,
           })),
           rotationCandidates: aiRotationCandidatesForForecast(),
           crisisRows: state.crisisRows,

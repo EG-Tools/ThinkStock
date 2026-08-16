@@ -28,6 +28,9 @@ const sharedRequestRegistryModule = globalThis.ThinkStockSharedRequestRegistry;
 if (!sharedRequestRegistryModule) throw new Error("Shared request registry module failed to load");
 const { mapWithConcurrency } = sharedRequestRegistryModule;
 const appRequestRegistry = sharedRequestRegistryModule.createSharedRequestRegistry();
+const dartRequestRuntimeModule = globalThis.ThinkStockDartRequestRuntime;
+if (!dartRequestRuntimeModule) throw new Error("DART request runtime module failed to load");
+const dartRequestRuntime = dartRequestRuntimeModule.createDartRequestRuntime(appRequestRegistry);
 const adminFeatureAccessModule = globalThis.ThinkStockAdminFeatureAccess;
 if (!adminFeatureAccessModule) throw new Error("Admin feature access module failed to load");
 const adrDataModule = globalThis.ThinkStockAdrData;
@@ -199,11 +202,17 @@ const {
   normalizeCursorLineMode,
 } = mainChartRenderer;
 const CURSOR_LINE_MODES = Object.freeze(["vertical", "horizontal", "cross"]);
+const CHART_RIGHT_PADDING_MIN_DAYS = 0;
+const CHART_RIGHT_PADDING_MAX_DAYS = 30;
 const CURSOR_LINE_LABELS = Object.freeze({
   vertical: "세로 차트선 방식",
   horizontal: "가로 차트선 방식",
   cross: "십자 차트선 방식",
 });
+function normalizeChartRightPaddingDays(value) {
+  const days = Math.round(Number(value) || 0);
+  return Math.max(CHART_RIGHT_PADDING_MIN_DAYS, Math.min(CHART_RIGHT_PADDING_MAX_DAYS, days));
+}
 const mainChartEventsModule = globalThis.ThinkStockMainChartEvents;
 if (!mainChartEventsModule) throw new Error("Main chart events module failed to load");
 const coMovementModule = globalThis.ThinkStockCoMovement;
@@ -409,6 +418,7 @@ const TICKER_AI_ANALYSIS_CACHE_STORE_NAME = runtimeStorageContract.stores.ticker
 const TICKER_AI_FORECAST_CACHE_STORE_NAME = runtimeStorageContract.stores.tickerAiForecast;
 const TICKER_AI_FORECAST_JOURNAL_STORE_NAME = runtimeStorageContract.stores.tickerAiForecastJournal;
 const TICKER_RESEARCH_HISTORY_STORE_NAME = runtimeStorageContract.stores.tickerResearchHistory;
+const STOCK_RESEARCH_RESULTS_STORE_NAME = runtimeStorageContract.stores.stockResearchResults;
 const TICKER_BROKER_RESEARCH_STORE_NAME = runtimeStorageContract.stores.tickerBrokerResearch;
 const GRANULAR_CACHE_SCHEMA_VERSION = 1;
 const TICKER_DISCLOSURE_CACHE_SCHEMA_VERSION = 2;
@@ -417,7 +427,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "2.89";
+const APP_VERSION = "2.92";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -503,6 +513,7 @@ const indexedCacheStore = appStorageModule.createIndexedCacheStore(globalThis, {
     TICKER_AI_FORECAST_CACHE_STORE_NAME,
     TICKER_AI_FORECAST_JOURNAL_STORE_NAME,
     TICKER_RESEARCH_HISTORY_STORE_NAME,
+    STOCK_RESEARCH_RESULTS_STORE_NAME,
     TICKER_BROKER_RESEARCH_STORE_NAME,
   ],
 });
@@ -558,12 +569,14 @@ const APP_CACHE_INDEXED_STORE_NAMES = Object.freeze([
   TICKER_AI_FORECAST_CACHE_STORE_NAME,
   TICKER_AI_FORECAST_JOURNAL_STORE_NAME,
   TICKER_RESEARCH_HISTORY_STORE_NAME,
+  STOCK_RESEARCH_RESULTS_STORE_NAME,
   TICKER_BROKER_RESEARCH_STORE_NAME,
 ]);
 const APP_CACHE_LOCAL_STORAGE_KEYS = Object.freeze([
   DATA_CACHE_LOCAL_KEY,
   DART_DISCLOSURE_CACHE_KEY,
   stockResearchContract.CACHE_KEY,
+  stockResearchContract.CACHE_VARIANTS_KEY,
   stockResearchContract.CACHE_BYPASS_KEY,
 ]);
 const APP_STATE_RESET_STORAGE_KEYS = Object.freeze([
@@ -839,22 +852,15 @@ let creditRows = [];   // KOFIA credit balance seed data (credit_data.json)
 let crisisRows = [];
 let disclosureRows = [];
 let disclosureManifest = null;
-let disclosureSeedLoadPromises = new Map();
 let disclosureSeedLoadedTickers = new Set();
-let disclosureSeedForcedRefreshTickers = new Set();
 let insiderTradeRows = [];
 let insiderTradeLoadedTickers = new Set();
-let insiderTradeTickerPromises = new Map();
-let insiderTradeForcedRefreshTickers = new Set();
 let insiderTradeRefreshTimer = 0;
 let insiderTradePendingTickers = new Set();
 let dartCorpCodeMap = new Map();
 let dartCorpCodeMapLoaded = false;
 let dartCorpCodeManifest = null;
-let dartCorpCodeManifestPromise = null;
 let dartCorpCodeLoadedShards = new Set();
-let dartCorpCodeMapPromises = new Map();
-let dartDisclosureTickerRefreshPromises = new Map();
 let customStocks = [];
 const recentlyRemovedCustomStockColors = new Map();
 let runtimeBootstrapService = null;
@@ -895,6 +901,7 @@ let lastAuxiliaryChartModelSource = "none";
 let auxiliaryChartCalcCache = null;
 let auxiliaryChartCalcPending = null;
 let chartModelWorkerClient = null;
+let mainChartMacroBoundsCache = { revision: "", rows: [] };
 let partialDisclosureUpdateCount = 0;
 let mainChartSkippedRenderCount = 0;
 let mainChartPartialUpdateCount = 0;
@@ -956,6 +963,7 @@ const chartSession = chartSessionStateModule.createChartSessionState({
   currentMainChartModel: null,
   hoverShowPopup: false,
   cursorLineMode: "vertical",
+  chartRightPaddingDays: 0,
   newsSentimentMovingAverageDays: NEWS_MOVING_AVERAGE_DAYS,
   showDisclosures: true,
   showInsiderTrades: false,
@@ -1113,7 +1121,7 @@ function initE2eDebugAccess() {
       getDisclosureProgressState() {
         return {
           enabled: chartSession.showDisclosures,
-          pendingTickers: [...dartDisclosureTickerRefreshPromises.keys()].sort(),
+          pendingTickers: dartRequestRuntime.identities("disclosure-refresh").sort(),
           ...disclosureProgress.snapshot(),
         };
       },
@@ -1293,6 +1301,7 @@ function getAppStateController() {
     seriesKeys: AUXILIARY_SERIES_KEYS,
     maxCustomStocks: MAX_CUSTOM_STOCKS,
     normalizeCursorLineMode,
+    normalizeChartRightPaddingDays,
     normalizeNewsMovingAverageDays,
     getCustomStocks: () => customStocks,
     setCustomStocks: (value) => { customStocks = value; },
@@ -1373,8 +1382,7 @@ function mergeDartCorpCodeRows(records) {
 
 async function ensureDartCorpCodeManifest(forceNetwork = false) {
   if (dartCorpCodeManifest && !forceNetwork) return dartCorpCodeManifest;
-  if (dartCorpCodeManifestPromise) return dartCorpCodeManifestPromise;
-  dartCorpCodeManifestPromise = (async () => {
+  return dartRequestRuntime.run("corp-manifest", "global", async () => {
     const text = await fetchSeedText("./data/dart_corp_codes.json", forceNetwork);
     if (!text) return null;
     const payload = JSON.parse(text);
@@ -1385,10 +1393,7 @@ async function ensureDartCorpCodeManifest(forceNetwork = false) {
     setDartCorpCodeRows(payload?.codes || payload?.records || []);
     dartCorpCodeManifest = payload;
     return payload;
-  })().finally(() => {
-    dartCorpCodeManifestPromise = null;
-  });
-  return dartCorpCodeManifestPromise;
+  }, { force: forceNetwork });
 }
 
 async function ensureDartCorpCodeMapLoaded(stockCode = "", forceNetwork = false) {
@@ -1404,9 +1409,7 @@ async function ensureDartCorpCodeMapLoaded(stockCode = "", forceNetwork = false)
   const relativePath = manifest.files?.[prefix];
   if (!relativePath) return false;
   if (dartCorpCodeLoadedShards.has(prefix)) return dartCorpCodeMap.has(code);
-  if (dartCorpCodeMapPromises.has(prefix)) return dartCorpCodeMapPromises.get(prefix);
-
-  const task = (async () => {
+  return dartRequestRuntime.run("corp-shard", prefix, async () => {
     const path = `./${String(relativePath).replace(/^\.?\//, "")}`;
     const text = await fetchSeedText(path, forceNetwork);
     if (!text) return false;
@@ -1415,11 +1418,7 @@ async function ensureDartCorpCodeMapLoaded(stockCode = "", forceNetwork = false)
     mergeDartCorpCodeRows(payload.codes);
     dartCorpCodeLoadedShards.add(prefix);
     return dartCorpCodeMap.has(code);
-  })().finally(() => {
-    dartCorpCodeMapPromises.delete(prefix);
-  });
-  dartCorpCodeMapPromises.set(prefix, task);
-  return task;
+  }, { force: forceNetwork });
 }
 
 function getDataRevisions() {
@@ -2013,6 +2012,8 @@ function getSettingsPanelRuntime() {
     APP_VERSION,
     NEWS_MOVING_AVERAGE_MIN_DAYS,
     NEWS_MOVING_AVERAGE_MAX_DAYS,
+    CHART_RIGHT_PADDING_MIN_DAYS,
+    CHART_RIGHT_PADDING_MAX_DAYS,
     STOCK_RESEARCH_UNIVERSE_MIN: stockResearchContract.UNIVERSE_SIZE_LOW,
     STOCK_RESEARCH_UNIVERSE_MAX: stockResearchContract.UNIVERSE_SIZE_HIGH,
     STOCK_RESEARCH_UNIVERSE_STEP: stockResearchContract.UNIVERSE_SIZE_STEP,
@@ -2028,6 +2029,7 @@ function getSettingsPanelRuntime() {
     getAdminAccessGranted: () => adminAccessGranted,
     getBlockedStockCount: () => stockResearchApp?.getBlockedCount?.() || 0,
     getCursorLineMode: () => chartSession.cursorLineMode,
+    getChartRightPaddingDays: () => chartSession.chartRightPaddingDays,
     getNewsSentimentMovingAverageDays: () => chartSession.newsSentimentMovingAverageDays,
     getStockResearchUniverseSize: () => stockResearchApp?.getUniverseSize?.()
       ?? stockResearchContract.UNIVERSE_SIZE_DEFAULT,
@@ -2036,6 +2038,7 @@ function getSettingsPanelRuntime() {
     resetStoredAppState,
     setMessage,
     setCursorLineMode,
+    setChartRightPaddingDays,
     setNewsSentimentMovingAverageDays,
     setStockResearchUniverseSize: (value) => stockResearchApp?.setUniverseSize?.(value)
       ?? stockResearchContract.UNIVERSE_SIZE_DEFAULT,
@@ -2184,16 +2187,28 @@ function getChartDataRangeMs(sourceEl) {
   return chartDataRangeCache.get(sourceEl);
 }
 
+function chartRightPaddingMs() {
+  return normalizeChartRightPaddingDays(chartSession.chartRightPaddingDays) * DAY_MS;
+}
+
+function extendChartRangeRight(range) {
+  if (!Array.isArray(range) || range.length < 2) return range;
+  const start = Number(range[0]);
+  const end = Number(range[1]);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return range;
+  return [start, end + chartRightPaddingMs()];
+}
+
 function getChartNavigationDataRangeMs(sourceEl) {
   const observedRange = getChartDataRangeMs(sourceEl);
-  if (!chartSession.showAiForecast) return observedRange;
+  if (!chartSession.showAiForecast) return extendChartRangeRight(observedRange);
   const forecastRange = chartAiForecastRangeCache.get(sourceEl);
-  if (!observedRange) return forecastRange;
-  if (!forecastRange) return observedRange;
-  return [
+  if (!observedRange) return extendChartRangeRight(forecastRange);
+  if (!forecastRange) return extendChartRangeRight(observedRange);
+  return extendChartRangeRight([
     Math.min(observedRange[0], forecastRange[0]),
     Math.max(observedRange[1], forecastRange[1]),
-  ];
+  ]);
 }
 
 function isLatestChartViewport() {
@@ -2226,6 +2241,7 @@ function getChartNavigationController() {
     applyRange: applySyncedXRangeMs,
     applyResetPolicy: applyChartResetPolicy,
     isAutoScale: () => chartSession.autoChartReset,
+    getRightPaddingMs: chartRightPaddingMs,
     isInteractionBusy: () => isHandleDragging || isViewportDragging,
     setViewportDragging: (value) => { isViewportDragging = Boolean(value); },
     setViewportPinned: (value) => { chartSession.userViewportPinned = Boolean(value); },
@@ -2832,6 +2848,23 @@ function setCursorLineMode(mode, options = {}) {
     requestChartRender(true, { deferDuringInteraction: false });
   }
   return normalized;
+}
+
+function setChartRightPaddingDays(value, options = {}) {
+  const days = normalizeChartRightPaddingDays(value);
+  const changed = chartSession.chartRightPaddingDays !== days;
+  const wasLatest = isLatestChartViewport();
+  chartSession.chartRightPaddingDays = days;
+  if (!changed) return days;
+  saveState();
+  if (options.render !== false) {
+    requestChartRender(!wasLatest, {
+      deferDuringInteraction: false,
+      reason: "right-padding",
+      updateClass: "viewport",
+    });
+  }
+  return days;
 }
 
 function cycleCursorLineMode() {
@@ -4094,6 +4127,60 @@ function getChartModelWorkerClient() {
   return chartModelWorkerClient;
 }
 
+function mainChartMacroBoundsRows() {
+  const revision = [
+    dataRevisionSignature("macro"),
+    macroRows.length,
+    String(macroRows.at(-1)?.date || ""),
+  ].join("|");
+  if (mainChartMacroBoundsCache.revision !== revision) {
+    mainChartMacroBoundsCache = {
+      revision,
+      rows: macroRows.filter((row) => Number.isFinite(toNum(row?.leading_cycle))),
+    };
+  }
+  return mainChartMacroBoundsCache.rows;
+}
+
+function prepareMainChartRenderInputs(el, preserveZoom) {
+  const priceRows = pricePayload?.records || [];
+  const today = new Date().toISOString().slice(0, 10);
+  const { minDate, maxDate } = mainChartRenderer.dateBounds(
+    [priceRows, mainChartMacroBoundsRows(), creditRows],
+    today,
+  );
+  const end = maxDate;
+  const requestedStart = shiftMonths(end, chartSession.activeMonths);
+  const start = requestedStart < minDate ? minDate : requestedStart;
+  const dataStart = [minDate, shiftMonths(maxDate, 360)].sort().at(-1);
+  const dataEnd = maxDate;
+  const preservedFrameRange = preserveZoom ? getCurrentXRangeMs(el) : null;
+  const frameStart = preservedFrameRange
+    ? new Date(Math.max(toUtcMs(dataStart), preservedFrameRange[0])).toISOString().slice(0, 10)
+    : start;
+  const frameEnd = preservedFrameRange
+    ? new Date(Math.min(toUtcMs(dataEnd), preservedFrameRange[1])).toISOString().slice(0, 10)
+    : end;
+  const allowedSeries = new Set([
+    ...CORE_SERIES,
+    ...customStocks.map((item) => item.ticker),
+  ]);
+  const visibleSeriesCount = [...allowedSeries]
+    .filter((key) => !SUPPLEMENTAL_SERIES.includes(key) && !chartSession.hiddenSeries.has(key))
+    .length;
+  return {
+    allowedSeries,
+    dataEnd,
+    dataStart,
+    displayBudget: getMainChartDisplayPointBudget(el, visibleSeriesCount),
+    end,
+    frameEnd,
+    frameStart,
+    priceRows,
+    start,
+  };
+}
+
 function requestChartModelFromWorker(payload, type = "buildMainChartModel") {
   return getChartModelWorkerClient().request(payload, type);
 }
@@ -4126,7 +4213,7 @@ function getMainChartCalcCacheKey(
     CREDIT_OFFSET_DAYS,
     priceFingerprint,
     dataRevisionSignature("macro", "credit"),
-    customStocks.map((item) => item.ticker).join(","),
+    customStocks.map((item) => `${item.ticker}:${item.color || ""}`).join(","),
     [...chartSession.hiddenSeries].sort().join(","),
     sortedObjectSignature(chartSession.seriesOffsets),
     sortedObjectSignature(chartSession.seriesScales),
@@ -4153,7 +4240,7 @@ function setupStockResearch(msgEl) {
       workerUrl: `./modules/stock-research-worker.js?v=${encodeURIComponent(APP_BUILD_VERSION)}`,
       canRun: () => adminAccessGranted,
       getData: () => ({ priceRecords: pricePayload?.records, adrRows, macroRows, creditRows, crisisRows }),
-      historyCache: {
+    historyCache: {
         read: readSharedResearchHistoryCache,
         readMany: readSharedResearchHistoryCaches,
         write: (ticker, record) => writeIndexedDbRecord(TICKER_RESEARCH_HISTORY_STORE_NAME, ticker, record),
@@ -4162,8 +4249,13 @@ function setupStockResearch(msgEl) {
           entries,
         ),
         clear: () => indexedCacheStore.clearStore(TICKER_RESEARCH_HISTORY_STORE_NAME),
-        prune: () => scheduleGranularCachePrune(TICKER_RESEARCH_HISTORY_STORE_NAME, 420),
-      },
+      prune: () => scheduleGranularCachePrune(TICKER_RESEARCH_HISTORY_STORE_NAME, 420),
+    },
+    resultCache: {
+      read: (key) => indexedCacheStore.readRecord(STOCK_RESEARCH_RESULTS_STORE_NAME, key),
+      write: (key, value) => indexedCacheStore.writeRecord(STOCK_RESEARCH_RESULTS_STORE_NAME, key, value),
+      clear: () => indexedCacheStore.clearStore(STOCK_RESEARCH_RESULTS_STORE_NAME),
+    },
       isAdded: (ticker) => customStocks.some((item) => item.ticker === ticker),
       addStock: (candidate) => addCustomStock(candidate, msgEl),
       removeStock: (ticker) => removeCustomStock(ticker),
@@ -4371,6 +4463,7 @@ async function getMainChartModel(
         MAIN_CHART_PRESERVE_DAILY_POINTS,
       );
     }
+    model.renderRevision = key;
     return model;
   });
   lastMainChartModelCacheHit = request.status !== "miss";
@@ -4756,9 +4849,10 @@ function addDragListeners(pointerId, onMove, onEnd) {
 }
 
 function visibleLineDataRangeMs(traces) {
-  return chartCompositionViewportModule.visibleLineDataRangeMs(traces, {
+  const range = chartCompositionViewportModule.visibleLineDataRangeMs(traces, {
     toMilliseconds: toMsSafe,
   })?.range || null;
+  return extendChartRangeRight(range);
 }
 
 function queueAutoCompositionViewport(forceFitFull = false) {
@@ -4770,6 +4864,7 @@ function queueAutoCompositionViewport(forceFitFull = false) {
     getViewRange: getCurrentXRangeMs,
     timelinePolicy: seriesTimelinePolicyModule,
     toMilliseconds: toMsSafe,
+    rightPaddingMs: chartRightPaddingMs(),
   });
 }
 
@@ -5925,21 +6020,11 @@ async function requestInsiderTradesForTicker(ticker, options = {}) {
   const name = labelName(target);
   const progressKey = `insider:${target}`;
   const trackProgress = chartSession.showInsiderTrades && options.trackProgress !== false;
-  if (insiderTradeTickerPromises.has(target)) {
-    const pending = insiderTradeTickerPromises.get(target);
-    if (options.forceNetwork && !insiderTradeForcedRefreshTickers.has(target)) {
-      return Promise.resolve(pending).then(() => requestInsiderTradesForTicker(target, options));
-    }
-    if (!trackProgress) return pending;
+  if (trackProgress && dartRequestRuntime.has("insider", target)) {
     disclosureProgress.begin(progressKey, `${name} 내부거래`);
     disclosureProgress.update(progressKey, 0.1, `${name} 내부거래`);
-    return Promise.resolve(pending).finally(() => {
-      disclosureProgress.complete(progressKey, `${name} 내부거래`);
-    });
   }
-
-  const task = (async () => {
-    if (options.forceNetwork) insiderTradeForcedRefreshTickers.add(target);
+  const task = dartRequestRuntime.run("insider", target, async (requestSignal) => {
     if (trackProgress) disclosureProgress.begin(progressKey, `${name} 내부거래`);
     insiderTradePendingTickers.add(target);
     syncInsiderTradeToggleButton(lastInsiderTradeTraceStats.markers);
@@ -5957,7 +6042,7 @@ async function requestInsiderTradesForTicker(ticker, options = {}) {
     try {
       payload = await runtimeGatewayClient.fetchInsiderTrades({ ticker: target, corpCode }, {
         forceNetwork: options.forceNetwork,
-        signal: options.signal || null,
+        signal: requestSignal,
         timeoutMs: DART_GATEWAY_REQUEST_TIMEOUT_MS,
       });
     } catch (error) {
@@ -5979,14 +6064,14 @@ async function requestInsiderTradesForTicker(ticker, options = {}) {
     insiderTradeLoadedTickers.add(target);
     if (merged.changed) queueEventMarkerRefresh("insider");
     return rows;
-  })().finally(() => {
-    insiderTradeTickerPromises.delete(target);
-    insiderTradeForcedRefreshTickers.delete(target);
+  }, {
+    force: options.forceNetwork === true,
+    signal: options.signal || null,
+  }).finally(() => {
     insiderTradePendingTickers.delete(target);
     syncInsiderTradeToggleButton(lastInsiderTradeTraceStats.markers);
     if (trackProgress) disclosureProgress.complete(progressKey, `${name} 내부거래`);
   });
-  insiderTradeTickerPromises.set(target, task);
   return task;
 }
 
@@ -6019,7 +6104,7 @@ function queueInsiderTradeRefresh() {
     return;
   }
   const missing = visibleDisclosureTargetTickers().filter((ticker) => (
-    !insiderTradeLoadedTickers.has(ticker) && !insiderTradeTickerPromises.has(ticker)
+    !insiderTradeLoadedTickers.has(ticker) && !dartRequestRuntime.has("insider", ticker)
   ));
   if (!missing.length || insiderTradeRefreshTimer) return;
   insiderTradeRefreshTimer = setTimeout(() => {
@@ -6175,16 +6260,7 @@ async function ensureDisclosureSeedForTicker(ticker, forceNetwork = false) {
   const target = String(ticker || "").trim().toUpperCase();
   if (!/^[0-9]{6}\.(KS|KQ)$/.test(target)) return { ticker: target, added: 0 };
   if (disclosureSeedLoadedTickers.has(target) && !forceNetwork) return { ticker: target, added: 0 };
-  if (disclosureSeedLoadPromises.has(target)) {
-    const pending = disclosureSeedLoadPromises.get(target);
-    if (forceNetwork && !disclosureSeedForcedRefreshTickers.has(target)) {
-      return Promise.resolve(pending).then(() => ensureDisclosureSeedForTicker(target, true));
-    }
-    return pending;
-  }
-
-  const task = (async () => {
-    if (forceNetwork) disclosureSeedForcedRefreshTickers.add(target);
+  return dartRequestRuntime.run("disclosure-seed", target, async () => {
     const cached = await applyTickerDisclosureCache(target);
     const manifestLatest = String(disclosureManifest?.latest?.[target] || "");
     const cacheIsCurrent = cached.applied
@@ -6200,13 +6276,7 @@ async function ensureDisclosureSeedForTicker(ticker, forceNetwork = false) {
       seeded: seeded.seeded,
       latestDate: seeded.latestDate || cached.latestDate,
     };
-  })().catch(() => ({ ticker: target, added: 0 })).finally(() => {
-    disclosureSeedLoadPromises.delete(target);
-    disclosureSeedForcedRefreshTickers.delete(target);
-  });
-
-  disclosureSeedLoadPromises.set(target, task);
-  return task;
+  }, { force: forceNetwork }).catch(() => ({ ticker: target, added: 0 }));
 }
 
 async function ensureDisclosureSeedsForTickers(tickers, forceNetwork = false) {
@@ -6334,18 +6404,9 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
   if (!/^[0-9]{6}\.(KS|KQ)$/.test(target)) return;
   const name = labelName(target);
   const progressKey = `disclosure:${target}`;
-  if (dartDisclosureTickerRefreshPromises.has(target)) {
-    const pending = dartDisclosureTickerRefreshPromises.get(target);
-    if (!chartSession.showDisclosures) return pending;
-    disclosureProgress.begin(progressKey, `${name} 공시`);
-    return Promise.resolve(pending).finally(() => {
-      disclosureProgress.complete(progressKey, `${name} 공시`);
-    });
-  }
-
   const trackProgress = chartSession.showDisclosures;
   if (trackProgress) disclosureProgress.begin(progressKey, `${name} 공시`);
-  const task = ensureDisclosureSeedForTicker(target)
+  const task = dartRequestRuntime.run("disclosure-refresh", target, (requestSignal) => ensureDisclosureSeedForTicker(target)
     .then(async (seedInfo) => {
       if (trackProgress) disclosureProgress.update(progressKey, 0.2, `${name} 공시`);
       if (seedInfo?.added > 0) {
@@ -6354,6 +6415,7 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
       if (canUseDartGateway()) {
         const refreshOptions = {
           forceNetwork: false,
+          signal: requestSignal,
           onBatch: async (_batch, progress) => {
             // Coalesce streamed pages until the current line render has finished.
             if (chartSession.currentMainChartModel?.seriesModels?.length) queueDisclosureTraceRefresh();
@@ -6389,12 +6451,11 @@ function requestDartDisclosureRefreshForTicker(ticker, msgEl) {
         `${name} 종목은 추가됐지만 최신 DART 공시를 확인하지 못했습니다.`,
         error.message,
       ], true);
-    })
-    .finally(() => {
-      dartDisclosureTickerRefreshPromises.delete(target);
+    }), {
+      signal: null,
+    }).finally(() => {
       if (trackProgress) disclosureProgress.complete(progressKey, `${name} 공시`);
     });
-  dartDisclosureTickerRefreshPromises.set(target, task);
   return task;
 }
 
@@ -6616,6 +6677,7 @@ function getAiForecastTracesRuntime() {
     getStructuralProfile: (series) => (
       marketTimingService?.get(series)?.contextProfile?.structural || null
     ),
+    getPriceRevision: () => dataRevisionSignature("price"),
     labelName,
     queueAiForecastJournalSync,
     resetAiForecastProgress,
@@ -6699,35 +6761,17 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
   }
   const renderGeneration = ++chartRenderGeneration;
   const eventMarkerRevisionsAtStart = getChartUpdateCoordinator().eventRevisions();
-  const priceRows = pricePayload?.records || [];
-  const today = new Date().toISOString().slice(0, 10);
-  // Auxiliary-only macro series must not move the main chart past its visible data.
-  const mainMacroRows = macroRows.filter((row) => Number.isFinite(toNum(row?.leading_cycle)));
-  const { minDate, maxDate } = mainChartRenderer.dateBounds(
-    [priceRows, mainMacroRows, creditRows],
-    today,
-  );
-  const end = maxDate;
-  const requestedStart = shiftMonths(end, chartSession.activeMonths);
-  const start = requestedStart < minDate ? minDate : requestedStart;
-  const dataStart = [minDate, shiftMonths(maxDate, 360)].sort().at(-1);
-  const dataEnd = maxDate;
-  const preservedFrameRange = preserveZoom ? getCurrentXRangeMs(el) : null;
-  const frameStart = preservedFrameRange
-    ? new Date(Math.max(toUtcMs(dataStart), preservedFrameRange[0])).toISOString().slice(0, 10)
-    : start;
-  const frameEnd = preservedFrameRange
-    ? new Date(Math.min(toUtcMs(dataEnd), preservedFrameRange[1])).toISOString().slice(0, 10)
-    : end;
-
-  const allowedSeries = new Set([
-    ...CORE_SERIES,
-    ...customStocks.map((item) => item.ticker),
-  ]);
-  const visibleSeriesCount = [...allowedSeries]
-    .filter((key) => !SUPPLEMENTAL_SERIES.includes(key) && !chartSession.hiddenSeries.has(key))
-    .length;
-  const displayBudget = getMainChartDisplayPointBudget(el, visibleSeriesCount);
+  const {
+    allowedSeries,
+    dataEnd,
+    dataStart,
+    displayBudget,
+    end,
+    frameEnd,
+    frameStart,
+    priceRows,
+    start,
+  } = prepareMainChartRenderInputs(el, preserveZoom);
   const model = await getMainChartModel(
     priceRows,
     dataStart,
@@ -6773,6 +6817,7 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
     lineTraceType: MAIN_LINE_TRACE_TYPE,
     hoverShowPopup: chartSession.hoverShowPopup,
     labelName,
+    renderRevision: model.renderRevision,
     seriesColor,
   });
   const traces = lineTraceModel.traces;
@@ -6844,6 +6889,7 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
     trimAiForecastRange: trimAiForecastRangeOnNextRender,
     observedStart: start,
     observedEnd: end,
+    rightPaddingMs: chartRightPaddingMs(),
     toMilliseconds: toMsSafe,
   });
   chartSession.pinnedXRange = viewportPlan.pinnedXRange;
@@ -8057,7 +8103,7 @@ async function boot() {
       onDisabled: () => {
         const pending = new Set([
           ...disclosureTargetTickers(),
-          ...dartDisclosureTickerRefreshPromises.keys(),
+          ...dartRequestRuntime.identities("disclosure-refresh"),
         ]);
         pending.forEach((ticker) => disclosureProgress.cancel(`disclosure:${ticker}`));
       },
@@ -8077,7 +8123,7 @@ async function boot() {
           chartSession.showInsiderTrades = false;
           const pending = new Set([
             ...disclosureTargetTickers(),
-            ...insiderTradeTickerPromises.keys(),
+            ...dartRequestRuntime.identities("insider"),
           ]);
           pending.forEach((ticker) => disclosureProgress.cancel(`insider:${ticker}`));
           syncInsiderTradeToggleButton(0);

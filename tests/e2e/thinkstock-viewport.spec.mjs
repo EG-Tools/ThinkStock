@@ -297,12 +297,22 @@ test("bundled recent data boots through the chart worker", async ({ page }, test
   await expect(page.locator("#chart .synced-cursor-line")).toHaveCSS("opacity", "1");
   await expect(page.locator("#chart .synced-cursor-horizontal-line")).toHaveCSS("opacity", "1");
   await page.locator("#apiOptionsBtn").click();
-  await expect(page.locator(".cursor-line-setting-label").first()).toHaveText("차트선 방식");
+  await expect(page.locator(".chart-right-padding-setting .cursor-line-setting-label"))
+    .toHaveText("차트 우측 여백");
+  await expect(page.locator(".chart-cursor-mode-setting .cursor-line-setting-label"))
+    .toHaveText("차트선 방식");
   expect(await page.locator("#apiSettingsModal").evaluate((modal) => (
-    Boolean(modal.querySelector(".cursor-line-setting")?.compareDocumentPosition(
+    Boolean(modal.querySelector(".chart-cursor-mode-setting")?.compareDocumentPosition(
       modal.querySelector(".api-local-server-field"),
     ) & Node.DOCUMENT_POSITION_FOLLOWING)
   ))).toBe(true);
+  await expect(page.locator("#chartRightPaddingValue")).toHaveText("0");
+  await expect(page.locator("#chartRightPaddingDecrease")).toBeDisabled();
+  await page.locator("#chartRightPaddingIncrease").evaluate((button) => {
+    for (let index = 0; index < 35; index += 1) button.click();
+  });
+  await expect(page.locator("#chartRightPaddingValue")).toHaveText("30");
+  await expect(page.locator("#chartRightPaddingIncrease")).toBeDisabled();
   await page.locator('.cursor-line-mode-btn[data-chart-cursor-mode="vertical"]').click();
   await expect(page.locator("#chartCursorModeBtn")).toHaveAttribute(
     "data-chart-cursor-mode",
@@ -343,6 +353,7 @@ test("bundled recent data boots through the chart worker", async ({ page }, test
   await expect(page.locator('[data-news-sentiment-average-days="5"]'))
     .toHaveAttribute("aria-pressed", "true");
   await page.locator("#apiOptionsBtn").click();
+  await expect(page.locator("#chartRightPaddingValue")).toHaveText("30");
   await expect(page.locator("#newsSentimentMovingAverageValue")).toHaveText("5");
   await expect(page.locator("#stockResearchUniverseValue")).toHaveText("600");
   await page.locator("#stockResearchUniverseDecrease").click();
@@ -411,7 +422,7 @@ test("bundled recent data boots through the chart worker", async ({ page }, test
     };
   });
   expect(chartTimeline.firstData).toBeLessThan(chartTimeline.view[0]);
-  expect(chartTimeline.lastData).toBeGreaterThanOrEqual(chartTimeline.view[1]);
+  expect(chartTimeline.view[1] - chartTimeline.lastData).toBe(30 * 24 * 60 * 60 * 1000);
   expect(pageErrors).toEqual([]);
 });
 

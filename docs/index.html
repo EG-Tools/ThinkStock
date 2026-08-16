@@ -10,7 +10,7 @@
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" href="./icon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./styles.css">
-    <script defer src="./assets/app.bundle.min.js?v=dev&amp;build=2.89"></script>
+<script defer src="./assets/app.bundle.min.js?v=dev&amp;build=2.92"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -103,7 +103,7 @@
           This product uses the FRED&reg; API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.
         </p>
         <p id="mainAppMeta" class="app-company-line app-company-line-main">
-          <span>Version : <span data-app-version-copy>2.89</span></span>
+<span>Version : <span data-app-version-copy>2.92</span></span>
           <span>회사 : Life User</span>
           <span>이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a></span>
         </p>
@@ -160,7 +160,15 @@
           <button id="apiSettingsCloseBtn" class="api-close-btn" type="button" aria-label="닫기">×</button>
         </header>
         <div class="settings-control-group">
-          <div class="cursor-line-setting">
+          <div class="cursor-line-setting chart-right-padding-setting" title="최신 차트선 오른쪽에 표시할 빈 날짜 영역입니다.">
+            <span class="cursor-line-setting-label">차트 우측 여백</span>
+            <div class="settings-number-stepper" role="group" aria-label="차트 우측 여백 일수">
+              <button id="chartRightPaddingDecrease" class="settings-stepper-btn" type="button" aria-label="차트 우측 여백 줄이기">-</button>
+              <output id="chartRightPaddingValue" class="settings-stepper-value" aria-live="polite">0</output>
+              <button id="chartRightPaddingIncrease" class="settings-stepper-btn" type="button" aria-label="차트 우측 여백 늘리기">+</button>
+            </div>
+          </div>
+          <div class="cursor-line-setting chart-cursor-mode-setting">
             <span class="cursor-line-setting-label">차트선 방식</span>
             <div class="cursor-line-mode-options" role="group" aria-label="차트선 방식">
               <button class="cursor-line-mode-btn" type="button" data-chart-cursor-mode="vertical" aria-label="세로 차트선 방식" aria-pressed="true"><span class="cursor-line-glyph" aria-hidden="true"></span></button>
@@ -211,7 +219,7 @@
         <section id="releaseNotesPanel" class="performance-diagnostics release-notes-panel" hidden>
           <div class="performance-diagnostics-header release-notes-header">
             <div class="release-notes-heading">
-              <strong id="releaseNotesVersion">v2.89</strong>
+<strong id="releaseNotesVersion">v2.92</strong>
               <small id="releaseNotesDate" hidden></small>
             </div>
             <div class="release-notes-navigation" aria-label="업데이트 내역 이동">
@@ -251,7 +259,7 @@
           <p id="appCacheEmpty" class="app-cache-empty" hidden>저장된 캐시가 없습니다.</p>
         </section>
         <p id="settingsAppMeta" class="app-company-line">
-          <span class="api-settings-version">Version : <span id="appVersionText">2.89</span></span>
+<span class="api-settings-version">Version : <span id="appVersionText">2.92</span></span>
           <span>회사 : Life User</span>
           <span>이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a></span>
         </p>

@@ -259,7 +259,36 @@
 
   function renderFingerprint(traces, layout, config = {}) {
     const state = { left: 2166136261, right: 2654435761 };
-    fingerprintValue([traces, layout, config], state, new Set());
+    const traceInputs = (Array.isArray(traces) ? traces : []).map((trace) => {
+      const fastFingerprint = String(trace?.meta?.renderFingerprint || "");
+      if (fastFingerprint) return [traceIdentity(trace), fastFingerprint];
+      return [
+        traceIdentity(trace),
+        trace?.type,
+        trace?.mode,
+        trace?.x,
+        trace?.y,
+        trace?.name,
+        trace?.text,
+        trace?.customdata,
+        trace?.meta,
+        trace?.line,
+        trace?.marker,
+        trace?.textfont,
+        trace?.textposition,
+        trace?.connectgaps,
+        trace?.cliponaxis,
+        trace?.showlegend,
+        trace?.legendgroup,
+        trace?.yaxis,
+        trace?.hoverinfo,
+        trace?.hovertemplate,
+        trace?.visible,
+        trace?.fill,
+        trace?.fillcolor,
+      ];
+    });
+    fingerprintValue([traceInputs, layout, config], state, new Set());
     return `${state.left.toString(16).padStart(8, "0")}${state.right.toString(16).padStart(8, "0")}`;
   }
 
@@ -297,6 +326,7 @@
       hoverShowPopup = false,
       labelName = (series) => String(series || ""),
       seriesColor = () => "#ffffff",
+      renderRevision = "",
     } = options;
     const pick = (values) => (
       Array.isArray(displayIndexes)
@@ -335,6 +365,14 @@
           displayPointCount: Number.isFinite(displayPointCount)
             ? displayPointCount
             : tracePoints.x.length,
+          renderFingerprint: [
+            renderRevision,
+            series,
+            color,
+            hiddenSeries.has(series) ? "hidden" : "visible",
+            hoverShowPopup ? "hover" : "plain",
+            lineTraceType,
+          ].join("|"),
         },
         line: { color, width: baseLineWidth, shape: "linear" },
         marker: { symbol: "circle", size: 7, color },
