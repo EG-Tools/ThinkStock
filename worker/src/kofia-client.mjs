@@ -5,7 +5,12 @@ const KOFIA_MARKET_FUNDS_URL = "https://apis.data.go.kr/1160100/service/GetKofia
 const FREESIS_CREDIT_URL = "https://freesis.kofia.or.kr/meta/getMetaDataList.do";
 const FREESIS_CREDIT_OBJECT = "STATSCU0100000070BO";
 const FREESIS_CUSTOMER_DEPOSIT_OBJECT = "STATSCU0100000060BO";
+const INDEXERGO_SERIES_URL = "https://www.indexergo.com/series/";
+const INDEXERGO_CUSTOMER_DEPOSIT_ID = "20111";
+const INDEXERGO_KOSPI_CREDIT_ID = "20215";
+const INDEXERGO_KOSDAQ_CREDIT_ID = "20315";
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const SOURCE_WARNINGS = Symbol("kofiaSourceWarnings");
 
 function shiftDate(dateText, days) {
   const parsed = new Date(`${dateText}T00:00:00Z`);
@@ -61,6 +66,20 @@ export function parseFreesisPayload(text) {
   }
 }
 
+export function parseIndexergoLatestPoint(html) {
+  const source = String(html || "");
+  const match = source.match(
+    /(\d{4})[./-](\d{2})[./-](\d{2})\s*마감\s*기준[^:<]*:\s*([\d,.]+)\s*조원/i,
+  );
+  if (!match) throw new Error("INDEXerGO latest point was not found");
+  const value = finiteNumber(match[4].replaceAll(",", ""), { min: 0.01, max: 1000 });
+  if (value === null) throw new Error("INDEXerGO latest value is invalid");
+  return {
+    date: `${match[1]}-${match[2]}-${match[3]}`,
+    value,
+  };
+}
+
 function parseOpenApiPayload(text) {
   const source = String(text || "").trim();
   try {
@@ -78,6 +97,7 @@ export function createKofiaClient(options = {}) {
   const fetchFn = options.fetch || ((...args) => globalThis.fetch(...args));
   const wait = options.wait || ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
   const timeoutSignal = options.timeoutSignal || ((timeoutMs) => AbortSignal.timeout(timeoutMs));
+  const indexergoEnabled = options.enableIndexergo === true;
 
   async function fetchOpenApiItems(apiKey, endpoint) {
     const cleanKey = String(apiKey || "").trim();
@@ -94,7 +114,12 @@ export function createKofiaClient(options = {}) {
         url.searchParams.set("pageNo", "1");
         url.searchParams.set("resultType", "json");
         url.searchParams.set("beginBasDt", shiftDate(koreanDateText(), -180).replaceAll("-", ""));
-        const response = await fetchFn(url, { signal: timeoutSignal(30000) });
+        // KOFIA can publish a newer business day while an edge still holds the
+        // previous response. Always reach the origin before updating our KV.
+        const response = await fetchFn(url, {
+          cache: "no-store",
+          signal: timeoutSignal(30000),
+        });
         if (!response.ok) throw new Error(`KOFIA Open API HTTP ${response.status}`);
         const payload = parseOpenApiPayload(await response.text());
         const header = payload?.response?.header;
@@ -120,9 +145,18 @@ export function createKofiaClient(options = {}) {
     let lastError = null;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        const response = await fetchFn(FREESIS_CREDIT_URL, {
+        const url = new URL(FREESIS_CREDIT_URL);
+        url.searchParams.set("_", `${Date.now()}-${attempt}`);
+        const response = await fetchFn(url, {
           method: "POST",
-          headers: { "Content-Type": "application/json; charset=UTF-8" },
+          cache: "no-store",
+          headers: {
+            Accept: "application/json, text/plain, */*",
+            "Content-Type": "application/json; charset=UTF-8",
+            Origin: "https://freesis.kofia.or.kr",
+            Referer: "https://freesis.kofia.or.kr/",
+            "User-Agent": "Mozilla/5.0 ThinkStock/2",
+          },
           body: JSON.stringify({
             dmSearch: {
               OBJ_NM: objectName,
@@ -144,6 +178,34 @@ export function createKofiaClient(options = {}) {
       }
     }
     throw lastError || new Error("KOFIA request failed");
+  }
+
+  async function fetchIndexergoPoint(detailId) {
+    let lastError = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const url = new URL(INDEXERGO_SERIES_URL);
+        url.searchParams.set("detailId", detailId);
+        url.searchParams.set("frq", "D");
+        url.searchParams.set("_", `${Date.now()}-${attempt}`);
+        const response = await fetchFn(url, {
+          cache: "no-store",
+          headers: {
+            Accept: "text/html,application/xhtml+xml",
+            "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
+            Referer: "https://www.indexergo.com/",
+            "User-Agent": "Mozilla/5.0 ThinkStock/2",
+          },
+          signal: timeoutSignal(15000),
+        });
+        if (!response.ok) throw new Error(`INDEXerGO HTTP ${response.status}`);
+        return parseIndexergoLatestPoint(await response.text());
+      } catch (error) {
+        lastError = error;
+        if (attempt === 0) await wait(350);
+      }
+    }
+    throw lastError || new Error("INDEXerGO request failed");
   }
 
   async function fetchOpenApiCreditRows(apiKey) {
@@ -185,39 +247,79 @@ export function createKofiaClient(options = {}) {
     })).filter((row) => isValidIsoDate(row.date) && row.customer_deposit !== null);
   }
 
-  async function mergeAvailableSources(openApiRequest, freesisRequest, label) {
-    const [openApiResult, freesisResult] = await Promise.allSettled([
-      openApiRequest(),
-      freesisRequest(),
+  async function fetchIndexergoCreditRows() {
+    const [kospi, kosdaq] = await Promise.all([
+      fetchIndexergoPoint(INDEXERGO_KOSPI_CREDIT_ID),
+      fetchIndexergoPoint(INDEXERGO_KOSDAQ_CREDIT_ID),
     ]);
+    if (kospi.date !== kosdaq.date) {
+      throw new Error(`INDEXerGO credit dates differ: ${kospi.date} / ${kosdaq.date}`);
+    }
+    return [{
+      date: kospi.date,
+      kospi_credit: kospi.value,
+      kosdaq_credit: kosdaq.value,
+    }];
+  }
+
+  async function fetchIndexergoDepositRows() {
+    const deposit = await fetchIndexergoPoint(INDEXERGO_CUSTOMER_DEPOSIT_ID);
+    return [{ date: deposit.date, customer_deposit: deposit.value }];
+  }
+
+  async function mergeAvailableSources(openApiRequest, freesisRequest, indexergoRequest, label) {
+    const [openApiResult, freesisResult, indexergoResult] = await Promise.allSettled([
+      openApiRequest ? openApiRequest() : Promise.reject(new Error("KOFIA_API_KEY is not configured")),
+      freesisRequest(),
+      indexergoRequest
+        ? indexergoRequest()
+        : Promise.reject(new Error("INDEXerGO is disabled in this environment")),
+    ]);
+    // The mirror is intentionally merged first so official values retain
+    // their higher precision whenever sources publish the same date.
     const rows = mergeCreditRows(
-      openApiResult.status === "fulfilled" ? openApiResult.value : [],
-      freesisResult.status === "fulfilled" ? freesisResult.value : [],
+      indexergoResult.status === "fulfilled" ? indexergoResult.value : [],
+      mergeCreditRows(
+        openApiResult.status === "fulfilled" ? openApiResult.value : [],
+        freesisResult.status === "fulfilled" ? freesisResult.value : [],
+      ),
     );
-    if (rows.length) return rows;
+    if (rows.length) {
+      const warnings = [
+        openApiRequest && openApiResult.status === "rejected"
+          ? `${label} Open API 지연: ${errorMessage(openApiResult.reason)}`
+          : "",
+        freesisResult.status === "rejected"
+          ? `${label} Freesis 지연: ${errorMessage(freesisResult.reason)}`
+          : "",
+        indexergoRequest && indexergoResult.status === "rejected"
+          ? `${label} INDEXerGO 지연: ${errorMessage(indexergoResult.reason)}`
+          : "",
+      ].filter(Boolean);
+      Object.defineProperty(rows, SOURCE_WARNINGS, { value: warnings });
+      return rows;
+    }
     throw new Error(
-      `${label} 조회 실패: ${errorMessage(openApiResult.reason)} / ${errorMessage(freesisResult.reason)}`,
+      `${label} 조회 실패: ${errorMessage(openApiResult.reason)} / ${errorMessage(freesisResult.reason)} / ${errorMessage(indexergoResult.reason)}`,
     );
   }
 
   function fetchCreditRows(apiKey = "") {
-    return apiKey
-      ? mergeAvailableSources(
-        () => fetchOpenApiCreditRows(apiKey),
-        fetchFreesisCreditRows,
-        "신용 잔고",
-      )
-      : fetchFreesisCreditRows();
+    return mergeAvailableSources(
+      apiKey ? () => fetchOpenApiCreditRows(apiKey) : null,
+      fetchFreesisCreditRows,
+      indexergoEnabled ? fetchIndexergoCreditRows : null,
+      "신용 잔고",
+    );
   }
 
   function fetchDepositRows(apiKey = "") {
-    return apiKey
-      ? mergeAvailableSources(
-        () => fetchOpenApiDepositRows(apiKey),
-        fetchFreesisDepositRows,
-        "고객예탁금",
-      )
-      : fetchFreesisDepositRows();
+    return mergeAvailableSources(
+      apiKey ? () => fetchOpenApiDepositRows(apiKey) : null,
+      fetchFreesisDepositRows,
+      indexergoEnabled ? fetchIndexergoDepositRows : null,
+      "고객예탁금",
+    );
   }
 
   return Object.freeze({
@@ -245,6 +347,10 @@ export async function fetchKofiaCreditAndDepositRows(client, apiKey = "") {
     rows,
     creditFailed: creditResult.status === "rejected",
     depositFailed: depositResult.status === "rejected",
+    componentWarnings: [...new Set([
+      ...(creditResult.status === "fulfilled" ? creditResult.value[SOURCE_WARNINGS] || [] : []),
+      ...(depositResult.status === "fulfilled" ? depositResult.value[SOURCE_WARNINGS] || [] : []),
+    ])],
   };
 }
 

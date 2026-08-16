@@ -563,6 +563,52 @@ test("loads local credit and deposits together from the shared KOFIA client", as
   }
 });
 
+test("synchronizes a newer local credit row to the authenticated Worker cache", async () => {
+  let synchronized = null;
+  const server = await createThinkStockServer({
+    syncPagesData: false,
+    kofiaApiKey: "kofia-key",
+    kofiaClient: {
+      fetchCreditRows: async () => [{
+        date: "2026-08-13",
+        kospi_credit: 24.5349,
+        kosdaq_credit: 6.3914,
+      }],
+      fetchDepositRows: async () => [{ date: "2026-08-13", customer_deposit: 100.0684 }],
+    },
+    workerAccessToken: "local-secret",
+    fetchImpl: async (url, options = {}) => {
+      synchronized = {
+        url: String(url),
+        authorization: options.headers?.Authorization,
+        body: JSON.parse(options.body),
+      };
+      return new Response(JSON.stringify({
+        ok: true,
+        latestDate: "2026-08-13",
+        accepted: 1,
+      }), { status: 200 });
+    },
+    gateway: { apiKey: "", initialize: async () => {} },
+  });
+  try {
+    const port = await listenTestServer(server);
+    const response = await fetch(`http://127.0.0.1:${port}/api/credit?refresh=1`);
+    assert.equal(response.status, 200);
+    assert.match(synchronized.url, /\/api\/credit\/sync$/);
+    assert.equal(synchronized.authorization, "Bearer local-secret");
+    assert.deepEqual(synchronized.body.rows.at(-1), {
+      date: "2026-08-13",
+      customer_deposit: 100.0684,
+      kospi_credit: 24.5349,
+      kosdaq_credit: 6.3914,
+    });
+  } finally {
+    server.close();
+    await once(server, "close");
+  }
+});
+
 test("proxies and validates the FRED crisis signal for local pages", async () => {
   const requestedUrls = [];
   const server = await createThinkStockServer({

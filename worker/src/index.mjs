@@ -200,6 +200,8 @@ const ECOS_EXPORT_ITEM_CODE = "T002";
 const ECOS_IMPORT_ITEM_CODE = "T004";
 const CREDIT_CACHE_SCHEMA = 5;
 const CREDIT_CACHE_KEY = `credit-macro:${CREDIT_CACHE_SCHEMA}`;
+const CREDIT_SYNC_MAX_BYTES = 64 * 1024;
+const CREDIT_SYNC_MAX_ROWS = 45;
 const ADR_CACHE_SCHEMA = 1;
 const ADR_CACHE_KEY = `adr-market:${ADR_CACHE_SCHEMA}:latest`;
 const ADR_CACHE_FRESH_MS = sourcePolicy("adr").liveConfirmMs;
@@ -769,6 +771,7 @@ async function creditMacroResponse(env, origin, refresh = false) {
     const warnings = [];
     if (result.creditFailed) warnings.push("신용 잔고 연결 실패로 마지막 확인 데이터를 사용합니다.");
     if (result.depositFailed) warnings.push("고객예탁금 연결 실패로 마지막 확인 데이터를 사용합니다.");
+    warnings.push(...(result.componentWarnings || []));
     const payload = {
       schema: CREDIT_CACHE_SCHEMA,
       savedAt: Date.now(),
@@ -792,6 +795,66 @@ async function creditMacroResponse(env, origin, refresh = false) {
     }, 200, origin);
     return jsonResponse({ ok: false, error: `신용 잔고 조회 실패: ${error?.message || error}` }, 503, origin);
   }
+}
+
+function normalizeCreditSyncRows(rows, today = koreanDateText()) {
+  const earliest = shiftDate(today, -45);
+  return mergeCreditRows([], rows)
+    .filter((row) => row.date >= earliest && row.date <= today)
+    .filter((row) => (
+      Number(row.customer_deposit) >= 1 && Number(row.customer_deposit) <= 1000
+      && Number(row.kospi_credit) >= 0.1 && Number(row.kospi_credit) <= 200
+      && Number(row.kosdaq_credit) >= 0.1 && Number(row.kosdaq_credit) <= 100
+    ))
+    .slice(-CREDIT_SYNC_MAX_ROWS);
+}
+
+async function creditSyncResponse(request, env, origin) {
+  if (!env.DISCLOSURE_CACHE) {
+    return jsonResponse({ ok: false, error: "신용 동기화 저장소가 없습니다." }, 503, origin);
+  }
+  const declaredLength = Number(request.headers.get("Content-Length") || 0);
+  if (declaredLength > CREDIT_SYNC_MAX_BYTES) {
+    return jsonResponse({ ok: false, error: "신용 동기화 데이터가 너무 큽니다." }, 413, origin);
+  }
+  let body;
+  try {
+    const text = await request.text();
+    if (new TextEncoder().encode(text).byteLength > CREDIT_SYNC_MAX_BYTES) {
+      return jsonResponse({ ok: false, error: "신용 동기화 데이터가 너무 큽니다." }, 413, origin);
+    }
+    body = JSON.parse(text);
+  } catch (_) {
+    return jsonResponse({ ok: false, error: "신용 동기화 데이터 형식이 올바르지 않습니다." }, 400, origin);
+  }
+  const incoming = normalizeCreditSyncRows(body?.rows);
+  if (!incoming.length) {
+    return jsonResponse({ ok: false, error: "동기화할 유효한 신용 데이터가 없습니다." }, 400, origin);
+  }
+  const cached = await readCacheBestEffort(
+    "credit-sync",
+    () => env.DISCLOSURE_CACHE.get(CREDIT_CACHE_KEY, "json"),
+  );
+  const rows = mergeCreditRows(cached?.rows, incoming).slice(-210);
+  const payload = {
+    ...(cached?.schema === CREDIT_CACHE_SCHEMA ? cached : {}),
+    schema: CREDIT_CACHE_SCHEMA,
+    savedAt: Date.now(),
+    rows,
+    localSyncedAt: Date.now(),
+    localSyncedLatestDate: incoming.at(-1).date,
+  };
+  const failures = await writeCachesBestEffort("credit-sync", [
+    () => env.DISCLOSURE_CACHE.put(CREDIT_CACHE_KEY, JSON.stringify(payload)),
+  ]);
+  if (failures) {
+    return jsonResponse({ ok: false, error: "신용 동기화 저장에 실패했습니다." }, 503, origin);
+  }
+  return jsonResponse({
+    ok: true,
+    latestDate: rows.at(-1)?.date || "",
+    accepted: incoming.length,
+  }, 200, origin);
 }
 
 const krxMarketSnapshotRequests = new Map();
@@ -2420,6 +2483,7 @@ const ROUTE_HANDLERS = Object.freeze({
   credit: ({ env, origin, url }) => (
     creditMacroResponse(env, origin, queryFlag(url.searchParams.get("refresh")))
   ),
+  "credit-sync": ({ request, env, origin }) => creditSyncResponse(request, env, origin),
   "crisis-signal": ({ env, origin, url, accessAuthorized }) => crisisSignalResponse(
     env,
     origin,

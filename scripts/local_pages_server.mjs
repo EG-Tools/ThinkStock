@@ -1019,7 +1019,10 @@ export async function createThinkStockServer(options = {}) {
         .match(/id=["']appVersionText["'][^>]*>([^<]+)/i)?.[1]
       || "",
   ).trim();
-  const localKofiaClient = options.kofiaClient || createKofiaClient({ fetch: fetchImpl });
+  const localKofiaClient = options.kofiaClient || createKofiaClient({
+    fetch: fetchImpl,
+    enableIndexergo: true,
+  });
   const dataMirrorDir = options.dataMirrorDir || PAGES_DATA_CACHE_DIR;
   const mirrorStatus = options.syncPagesData === false
     ? { generatedAt: "", files: 0 }
@@ -1032,9 +1035,33 @@ export async function createThinkStockServer(options = {}) {
   await gateway.initialize();
   let coreIndexCache = null;
   let creditMacroCache = null;
+  let lastCreditWorkerSyncSignature = "";
   let researchUniverseCache = null;
   let vkospiLiveCache = null;
   let localVixCache = null;
+  async function syncCreditRowsToWorker(rows) {
+    if (!workerAccessToken) return false;
+    const recentRows = mergeCreditRows([], rows).slice(-45);
+    const latest = recentRows.at(-1);
+    if (!latest) return false;
+    const signature = JSON.stringify(latest);
+    if (signature === lastCreditWorkerSyncSignature) return false;
+    const upstream = await fetchImpl(`${THINKSTOCK_WORKER_URL}/api/credit/sync`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${workerAccessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ rows: recentRows }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const payload = await upstream.json().catch(() => null);
+    if (!upstream.ok || payload?.ok !== true) {
+      throw new Error(payload?.error || `신용 클라우드 동기화 HTTP ${upstream.status}`);
+    }
+    lastCreditWorkerSyncSignature = signature;
+    return true;
+  }
   const server = createServer(async (request, response) => {
     const requestUrl = new URL(request.url || "/", `http://${request.headers.host || "127.0.0.1"}`);
     if (request.method === "OPTIONS" && requestUrl.pathname.startsWith("/api/")) {
@@ -1285,6 +1312,7 @@ export async function createThinkStockServer(options = {}) {
         || !creditMacroCache
         || Boolean(windowDate && creditMacroCache.lastCheckedWindow !== windowDate);
       if (!needsRefresh) {
+        await syncCreditRowsToWorker(creditMacroCache.rows).catch(() => false);
         sendJson(request, response, 200, { ok: true, cached: true, ...creditMacroCache });
         return;
       }
@@ -1293,12 +1321,19 @@ export async function createThinkStockServer(options = {}) {
         const warnings = [];
         if (result.creditFailed) warnings.push("신용 잔고 연결 실패로 마지막 확인 데이터를 사용합니다.");
         if (result.depositFailed) warnings.push("고객예탁금 연결 실패로 마지막 확인 데이터를 사용합니다.");
+        warnings.push(...(result.componentWarnings || []));
         creditMacroCache = {
           savedAt: Date.now(),
           rows: mergeCreditRows(creditMacroCache?.rows, result.rows).slice(-210),
           lastCheckedWindow: windowDate || creditMacroCache?.lastCheckedWindow || "",
           ...(warnings.length ? { warning: warnings.join(" ") } : {}),
         };
+        await syncCreditRowsToWorker(creditMacroCache.rows).catch((error) => {
+          creditMacroCache.warning = [
+            creditMacroCache.warning,
+            `클라우드 동기화 지연: ${error?.message || error}`,
+          ].filter(Boolean).join(" / ");
+        });
         sendJson(request, response, 200, { ok: true, cached: false, ...creditMacroCache });
       } catch (error) {
         if (creditMacroCache?.rows?.length) {

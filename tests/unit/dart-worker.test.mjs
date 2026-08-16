@@ -354,6 +354,9 @@ test("returns authenticated recent credit balances and caches the KOFIA response
   let calls = 0;
   globalThis.fetch = async (url, options = {}) => {
     calls += 1;
+    if (String(url).includes("indexergo.com")) {
+      return new Response("blocked", { status: 403 });
+    }
     if (String(url).includes("freesis.kofia.or.kr")) {
       const objectName = JSON.parse(options.body).dmSearch.OBJ_NM;
       const isFreesisDeposit = objectName === "STATSCU0100000060BO";
@@ -389,9 +392,11 @@ test("returns authenticated recent credit balances and caches the KOFIA response
       kospi_credit: 123.4,
       kosdaq_credit: 45.6,
     });
+    const callsAfterRefresh = calls;
     const cached = await handleRequest(request("/api/credit", { token: "private" }), env);
     assert.equal((await cached.json()).cached, true);
-    assert.equal(calls, 4);
+    assert.equal(callsAfterRefresh, 4);
+    assert.equal(calls, callsAfterRefresh);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -427,6 +432,51 @@ test("rejects unpublished zero credit balances from newer KOFIA rows", async () 
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("accepts authenticated recent local credit rows and merges them into Worker storage", async () => {
+  const cache = memoryKv();
+  const response = await handleRequest(request("/api/credit/sync", {
+    method: "POST",
+    token: "private",
+    body: {
+      rows: [{
+        date: "2026-08-13",
+        customer_deposit: 100.0684,
+        kospi_credit: 24.5349,
+        kosdaq_credit: 6.3914,
+      }],
+    },
+  }), {
+    THINKSTOCK_ACCESS_TOKEN: "private",
+    DISCLOSURE_CACHE: cache,
+  });
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.latestDate, "2026-08-13");
+  assert.equal(payload.accepted, 1);
+  const stored = JSON.parse(cache.values.get("credit-macro:5"));
+  assert.deepEqual(stored.rows.at(-1), {
+    date: "2026-08-13",
+    customer_deposit: 100.0684,
+    kospi_credit: 24.5349,
+    kosdaq_credit: 6.3914,
+  });
+});
+
+test("rejects incomplete or implausible local credit synchronization", async () => {
+  const response = await handleRequest(request("/api/credit/sync", {
+    method: "POST",
+    token: "private",
+    body: { rows: [{ date: "2026-08-13", kospi_credit: 99999 }] },
+  }), {
+    THINKSTOCK_ACCESS_TOKEN: "private",
+    DISCLOSURE_CACHE: memoryKv(),
+  });
+
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /유효한 신용 데이터/);
 });
 
 test("parses valid Freesis JSON without modifying numeric values", () => {

@@ -35,6 +35,7 @@ test("describes authentication and parameters for every Worker route", () => {
   assert.equal(matchRequestRoute("/api/dart/disclosures", "GET").provider, "dart");
   assert.deepEqual(matchRequestRoute("/api/forecast-journal", "POST").methods, ["GET", "POST"]);
   assert.equal(matchRequestRoute("/api/credit", "POST"), null);
+  assert.deepEqual(matchRequestRoute("/api/credit/sync", "POST").methods, ["POST"]);
   assert.equal(matchRequestRoute("/missing", "GET"), null);
 });
 

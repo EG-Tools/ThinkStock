@@ -11,7 +11,8 @@ const appVersion = appSource.match(/const APP_VERSION = "([^"]+)";/)?.[1];
 test("release notes keep major versions newest-first", () => {
   assert.equal(RELEASES[0].version, appVersion);
   assert.match(RELEASES[0].date, /^\d{4}\.\d{2}\.\d{2}$/);
-  assert.ok(RELEASES[0].items.some((item) => item.includes("AI")));
+  assert.ok(RELEASES[0].items.length >= 1 && RELEASES[0].items.length <= 10);
+  assert.ok(RELEASES[0].items.every((item) => typeof item === "string" && item.trim()));
   assert.ok(RELEASES.length > 1);
 });
 

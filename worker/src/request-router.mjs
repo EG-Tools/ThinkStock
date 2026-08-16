@@ -19,6 +19,7 @@ const ROUTES = Object.freeze([
   { id: "adr", path: "/api/adr", methods: ["GET"] },
   { id: "macro", path: "/api/macro", methods: ["GET"] },
   { id: "credit", path: "/api/credit", methods: ["GET"] },
+  { id: "credit-sync", path: "/api/credit/sync", methods: ["POST"] },
   { id: "crisis-signal", path: "/api/crisis-signal", methods: ["GET"], authenticated: false },
   { id: "forecast-journal", path: "/api/forecast-journal", methods: ["GET", "POST"], ticker: true },
 ]);

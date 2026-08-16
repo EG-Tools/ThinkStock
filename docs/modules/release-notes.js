@@ -3,6 +3,14 @@
 
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "2.93",
+      date: "2026.08.16",
+      items: Object.freeze([
+        "신용·예탁금 최신값 보조 원천 및 지연 감지 추가",
+        "로컬 원본값과 배포 캐시의 안전한 자동 동기화",
+      ]),
+    }),
+    Object.freeze({
       version: "2.92",
       date: "2026.08.16",
       items: Object.freeze([
