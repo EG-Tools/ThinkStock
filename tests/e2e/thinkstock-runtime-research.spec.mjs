@@ -1408,9 +1408,13 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await expect.poll(() => page.locator("#chart").evaluate((element, drag) => (
     element.data?.[drag.traceIndex]?.y?.[drag.pointIndex]
   ), dragResult)).not.toBe(dragResult.before);
-  await expect.poll(() => page.evaluate(() => (
+  const partialUpdatesAfterDrag = await page.evaluate(() => (
     window.ThinkStockE2E.getChartWorkerStats().partialDisclosureUpdates
-  ))).toBeGreaterThan(dragPerfBefore.partialDisclosureUpdates);
+  ));
+  expect(partialUpdatesAfterDrag)
+    .toBeGreaterThanOrEqual(dragPerfBefore.partialDisclosureUpdates);
+  expect(partialUpdatesAfterDrag)
+    .toBeLessThanOrEqual(dragPerfBefore.partialDisclosureUpdates + 1);
   expect(await page.evaluate(() => window.ThinkStockE2E.getChartRenderGeneration()))
     .toBeLessThanOrEqual(dragPerfBefore.generation + 1);
   const dragPerfAfter = await page.evaluate(() => window.ThinkStockE2E.getChartWorkerStats());

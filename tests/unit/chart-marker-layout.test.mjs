@@ -48,6 +48,22 @@ test("reports marker structure changes instead of applying mismatched arrays", (
   assert.deepEqual(result.traceIndexes, []);
 });
 
+test("skips marker restyles when the y positions are unchanged", () => {
+  const result = layout.collectYUpdates({
+    data: [{ meta: { disclosure: true }, x: ["2026-08-01"], y: [10] }],
+  }, [{
+    id: "disclosure",
+    enabled: true,
+    matches: (trace) => trace?.meta?.disclosure,
+    traces: { meta: { disclosure: true }, x: ["2026-08-01"], y: [10] },
+  }]);
+
+  assert.equal(result.structureChanged, false);
+  assert.deepEqual(result.traceIndexes, []);
+  assert.deepEqual(result.yUpdates, []);
+  assert.deepEqual(result.updated, []);
+});
+
 test("requests a structural render when a new ticker changes marker dates or payload", () => {
   const result = layout.collectYUpdates({
     data: [{

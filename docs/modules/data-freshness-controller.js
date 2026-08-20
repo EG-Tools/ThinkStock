@@ -14,12 +14,12 @@
 
   const SOURCE_BY_LABEL = Object.freeze({
     [LABELS.price]: "prices",
-    [LABELS.leading]: "macro",
-    [LABELS.news]: "macro",
+    [LABELS.leading]: "macro:leading",
+    [LABELS.news]: "macro:news",
     [LABELS.credit]: "credit",
     [LABELS.adr]: "adr",
-    [LABELS.fearGreed]: "adr",
-    [LABELS.volatility]: "adr",
+    [LABELS.fearGreed]: "fearGreed",
+    [LABELS.volatility]: "volatility",
     [LABELS.crisis]: "crisis",
   });
 

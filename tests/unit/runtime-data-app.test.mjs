@@ -162,3 +162,29 @@ test("runtime app records refresh coverage and quality in one transaction", () =
   assert.equal(calls[1][2].gapCount, 2);
   assert.equal(calls[1][2].isStale, true);
 });
+
+test("runtime app records each partial refresh component independently", () => {
+  const calls = [];
+  const ledger = {
+    success: (source, detail) => { calls.push(["success", source, detail]); return detail; },
+    failure: (source, error) => { calls.push(["failure", source, error.message]); return error; },
+    observe: (source, detail) => { calls.push(["observe", source, detail]); return detail; },
+    snapshot: () => ({}),
+  };
+  const app = createRuntimeDataApp(createScope(), { sourceLedger: ledger, runRefresh: async () => ({}) });
+  app.noteSourceResult("macro", {
+    latestDate: "2026-08-12",
+    components: {
+      "macro:leading": { ok: true, latestDate: "2026-06-01", updated: 1 },
+      "macro:news": { ok: false, error: "news unavailable", latestDate: "" },
+    },
+  });
+
+  assert.deepEqual(calls.map(([name, source]) => [name, source]), [
+    ["success", "macro"],
+    ["observe", "macro"],
+    ["success", "macro:leading"],
+    ["observe", "macro:leading"],
+    ["failure", "macro:news"],
+  ]);
+});

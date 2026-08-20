@@ -3,6 +3,20 @@
 
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "2.95",
+      date: "2026.08.20",
+      items: Object.freeze([
+        "지표별 최신일자·누락·부분 실패 진단 강화",
+        "VIX 확정 종가 이후 당일 최신 시세 보완",
+        "로컬·배포 런타임 데이터 규칙 통합",
+        "앱 실시간 갱신 처리 추가 모듈화",
+        "차트 마커 중복 갱신 제거",
+        "AI 보정·워크포워드 검증 기록 강화",
+        "종목탐구 1000종목 증분 캐시 보존",
+        "종목별 AI 입력 캐시 재사용 개선",
+      ]),
+    }),
+    Object.freeze({
       version: "2.94",
       date: "2026.08.20",
       items: Object.freeze([

@@ -69,6 +69,13 @@ export const SERIES_TIMELINE_POLICIES = Object.freeze({
     mutableTailDays: 14,
     maximumAsOfAgeDays: 10,
   }),
+  vix: Object.freeze({
+    // The US close is only usable by the Korean app on the following date.
+    availabilityLagDays: 1,
+    latestToleranceDays: 4,
+    mutableTailDays: 14,
+    maximumAsOfAgeDays: 11,
+  }),
   score: Object.freeze({
     availabilityLagDays: 0,
     latestToleranceDays: 3,

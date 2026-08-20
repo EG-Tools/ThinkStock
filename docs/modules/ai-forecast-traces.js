@@ -82,7 +82,8 @@
       getAiForecastCacheService,
       getMacdModelForSeries,
       getStructuralProfile,
-      getPriceRevision,
+      fingerprintDatedSeries,
+      getPriceSourceRevision,
       labelName,
       queueAiForecastJournalSync,
       resetAiForecastProgress,
@@ -99,6 +100,13 @@
     }
     const inputCache = globalScope.ThinkStockAiForecastInputCache
       ?.createAiForecastInputCache({ maxEntries: 24 });
+    const priceRevisionCache = typeof fingerprintDatedSeries === "function"
+      ? globalScope.ThinkStockAiForecastInputCache?.createSeriesRevisionCache({
+        fingerprint: fingerprintDatedSeries,
+        maxEntries: 30,
+        logicVersion: "ai-price-input-v1",
+      })
+      : null;
 
     async function build(rows, seriesModels) {
       if (!chartSession.showAiForecast) {
@@ -127,9 +135,15 @@
         if (state.aiAnalysisPendingTickers.has(series) && !analysis) return [];
         const brokerResearch = state.brokerResearchByTicker.get(series) || null;
         const historyRows = aiForecastHistoryRows(series);
+        const priceRevision = priceRevisionCache?.resolve(
+          series,
+          historyRows,
+          typeof getPriceSourceRevision === "function" ? getPriceSourceRevision() : "",
+          [series, "^KS11", "^KQ11"],
+        ) || "";
         const historyProjection = inputCache?.resolve([
           series,
-          typeof getPriceRevision === "function" ? getPriceRevision() : "",
+          priceRevision,
           historyRows.length,
           String(historyRows.at(-1)?.date || ""),
         ].join("|"), () => ({

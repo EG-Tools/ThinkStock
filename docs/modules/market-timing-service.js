@@ -131,6 +131,13 @@
     let currentSources = null;
     let pendingPreparation = null;
     let requestSequence = 0;
+    const counters = {
+      prepareRequests: 0,
+      targetCacheHits: 0,
+      modelCalculations: 0,
+      workerRequests: 0,
+      workerFallbacks: 0,
+    };
 
     function rejectPending(error) {
       pendingRequests.forEach((request) => {
@@ -173,6 +180,7 @@
     function requestWorker(signature, targets) {
       const activeWorker = ensureWorker();
       if (!activeWorker) return Promise.reject(new Error("market timing worker is unavailable"));
+      counters.workerRequests += 1;
       const id = ++requestSequence;
       const includeSources = workerSourceSignature !== signature;
       if (includeSources) workerSourceSignature = signature;
@@ -208,10 +216,12 @@
     }
 
     async function calculateMissing(signature, targets) {
+      counters.modelCalculations += targets.length;
       let calculated;
       try {
         calculated = await requestWorker(signature, targets);
       } catch (_) {
+        counters.workerFallbacks += 1;
         calculated = calculateFallback(targets);
       }
       Object.entries(calculated || {}).forEach(([ticker, model]) => {
@@ -223,6 +233,7 @@
     }
 
     async function prepare(input = {}) {
+      counters.prepareRequests += 1;
       const signature = String(input.signature || "");
       const targets = normalizeTargets(input.targets);
       if (!signature || !targets.length) return models;
@@ -237,7 +248,11 @@
       if (!currentSources) throw new Error("market timing sources are unavailable");
 
       const missing = targets.filter((ticker) => !models.has(ticker));
-      if (!missing.length) return models;
+      if (!missing.length) {
+        counters.targetCacheHits += targets.length;
+        return models;
+      }
+      counters.targetCacheHits += targets.length - missing.length;
       const activeSignature = currentSignature;
       pendingPreparation = calculateMissing(activeSignature, missing)
         .finally(() => { pendingPreparation = null; });
@@ -259,6 +274,7 @@
       has: (ticker) => models.has(normalizeTicker(ticker)),
       prepare,
       stats: () => ({
+        ...counters,
         signature: currentSignature,
         modelCount: models.size,
         workerSourceSignature,

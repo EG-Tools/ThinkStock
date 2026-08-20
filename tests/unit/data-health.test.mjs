@@ -29,9 +29,40 @@ test("builds freshness ranges from finite series values", () => {
     staleDays: 2,
     isEmpty: false,
     isStale: true,
+    missingSeries: 0,
+    staleSeries: 1,
+    series: {
+      credit: {
+        first: "2026-01-02",
+        latest: "2026-01-03",
+        ageDays: 3,
+        staleDays: 2,
+        isEmpty: false,
+        isStale: true,
+      },
+    },
     anomalies: [],
     gaps: [],
   });
+});
+
+test("does not let one fresh component hide a stale or missing grouped series", () => {
+  const [item] = dataHealth.buildFreshnessItems([{
+    label: "신용·예탁금",
+    rows: [
+      { date: "2026-07-20", kospi_credit: 20 },
+      { date: "2026-08-12", customer_deposit: 82 },
+    ],
+    keys: ["customer_deposit", "kospi_credit", "kosdaq_credit"],
+  }], "2026-08-20");
+
+  assert.equal(item.latest, "2026-08-12");
+  assert.equal(item.isStale, true);
+  assert.equal(item.staleSeries, 1);
+  assert.equal(item.missingSeries, 1);
+  assert.equal(item.series.customer_deposit.isStale, false);
+  assert.equal(item.series.kospi_credit.isStale, true);
+  assert.equal(item.series.kosdaq_credit.isEmpty, true);
 });
 
 test("derives stale thresholds from the shared timeline policy when omitted", () => {

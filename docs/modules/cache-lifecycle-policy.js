@@ -23,7 +23,8 @@
     [stores.tickerAiAnalysis]: Object.freeze({ maxRecords: 80, maxIdleDays: 45 }),
     [stores.tickerAiForecast]: Object.freeze({ maxRecords: 80, maxIdleDays: 60 }),
     [stores.tickerAiForecastJournal]: Object.freeze({ maxRecords: 140, maxIdleDays: 730 }),
-    [stores.tickerResearchHistory]: Object.freeze({ maxRecords: 420, maxIdleDays: 240 }),
+    [stores.tickerResearchHistory]: Object.freeze({ maxRecords: 1020, maxIdleDays: 240 }),
+    [stores.stockResearchResults]: Object.freeze({ maxRecords: 12, maxIdleDays: 240 }),
     [stores.tickerBrokerResearch]: Object.freeze({ maxRecords: 80, maxIdleDays: 365 }),
   });
 

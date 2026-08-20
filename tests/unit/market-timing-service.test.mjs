@@ -42,6 +42,10 @@ test("transfers timing sources once per data signature and caches each model", a
   assert.equal("sources" in worker.messages[1], false);
   assert.equal(service.get("^ks11").indexKey, "^KS11");
   assert.equal(service.stats().modelCount, 2);
+  assert.equal(service.stats().prepareRequests, 3);
+  assert.equal(service.stats().modelCalculations, 2);
+  assert.equal(service.stats().targetCacheHits, 2);
+  assert.equal(service.stats().workerRequests, 2);
 });
 
 test("falls back to the local calculator when Worker is unavailable", async () => {
@@ -70,6 +74,7 @@ test("falls back to the local calculator when Worker is unavailable", async () =
 
   assert.deepEqual(service.get("005930.KS").benchmarkPrices, [100, 101]);
   assert.deepEqual(service.get("005930.KS").volumes, [null, 900]);
+  assert.equal(service.stats().workerFallbacks, 1);
 });
 
 test("builds VKOSPI and VIX candidates from the shared volatility rows", async () => {

@@ -87,6 +87,12 @@ test("accepts partial macro success but rejects an entirely empty response", () 
   assert.deepEqual(normalized.leadingRows, [{ date: "2026-05-01", leading_cycle: 104.8 }]);
   assert.deepEqual(normalized.policyRateRows, [{ date: "2026-05-01", policy_rate: 2.5 }]);
   assert.deepEqual(normalized.tradeRows, [{ date: "2026-05-01", export_value: 60, import_value: 55 }]);
+  assert.deepEqual(normalized.componentLatestDates, {
+    leading_cycle: "2026-05-01",
+    policy_rate: "2026-05-01",
+    export_value: "2026-05-01",
+    import_value: "2026-05-01",
+  });
   assert.throws(
     () => normalizeMacroPayload({ ok: true, leadingRows: [], newsRows: [] }),
     /no usable rows/,
@@ -184,6 +190,33 @@ test("normalizes crisis signal scores and preserves diagnostic components", () =
     vix: 21.25,
     vixChange20: 0.08,
   }]);
+  assert.deepEqual(payload.componentLatestDates, {
+    score: "2026-08-06",
+    vkospi: "2026-08-06",
+    vix: "2026-08-07",
+  });
+});
+
+test("normalization is deterministic across local and remote row ordering", () => {
+  const local = normalizeCreditPayload({
+    ok: true,
+    rows: [
+      { date: "2026-08-12", customer_deposit: 80 },
+      { date: "2026-08-11", kospi_credit: 21 },
+      { date: "2026-08-12", kosdaq_credit: 12 },
+    ],
+  });
+  const remote = normalizeCreditPayload({
+    ok: true,
+    rows: [
+      { date: "2026-08-12", kosdaq_credit: 12 },
+      { date: "2026-08-12", customer_deposit: 80 },
+      { date: "2026-08-11", kospi_credit: 21 },
+    ],
+  });
+
+  assert.deepEqual(remote.rows, local.rows);
+  assert.deepEqual(remote.componentLatestDates, local.componentLatestDates);
 });
 
 test("keeps a valid VKOSPI component when crisis records are unusable", () => {

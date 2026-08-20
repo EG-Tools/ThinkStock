@@ -50,3 +50,22 @@ test("AI input cache reuses projections and evicts the oldest entry", () => {
   assert.equal(resolve("a").build, 4);
   assert.equal(cache.stats().entries, 2);
 });
+
+test("AI series revision stays stable when only an unrelated global price revision changes", () => {
+  let fingerprints = 0;
+  const cache = globalThis.ThinkStockAiForecastInputCache.createSeriesRevisionCache({
+    maxEntries: 2,
+    fingerprint: (rows, keys) => {
+      fingerprints += 1;
+      return JSON.stringify([rows, keys]);
+    },
+  });
+  const rows = [{ date: "2026-08-20", "005930.KS": 70000, "^KS11": 3200 }];
+  const first = cache.resolve("005930.KS", rows, "global-a", ["005930.KS", "^KS11"]);
+  const cached = cache.resolve("005930.KS", rows, "global-a", ["005930.KS", "^KS11"]);
+  const unrelatedRevision = cache.resolve("005930.KS", rows, "global-b", ["005930.KS", "^KS11"]);
+
+  assert.equal(cached, first);
+  assert.equal(unrelatedRevision, first);
+  assert.equal(fingerprints, 2);
+});

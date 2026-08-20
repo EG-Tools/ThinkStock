@@ -31,6 +31,12 @@ import {
   shouldRememberEmptyVkospiDate,
   vkospiBackfillDates,
 } from "../../shared/krx-volatility-index.mjs";
+import {
+  fetchYahooVixRows,
+  mergeVixRows,
+  normalizeBrowserVixContent,
+  yahooVixChartUrl,
+} from "../../shared/vix-market-data.mjs";
 import { parseNaverResearchProfile } from "../../shared/research-profile.mjs";
 import {
   fetchNaverLiveResearchUniverse,
@@ -203,6 +209,7 @@ const CREDIT_CACHE_KEY = `credit-macro:${CREDIT_CACHE_SCHEMA}`;
 const CREDIT_SYNC_MAX_BYTES = 64 * 1024;
 const CREDIT_SYNC_MAX_ROWS = 45;
 const INDEXERGO_BROWSER_MAX_BYTES = 256 * 1024;
+const VIX_BROWSER_MAX_BYTES = 256 * 1024;
 const ADR_CACHE_SCHEMA = 1;
 const ADR_CACHE_KEY = `adr-market:${ADR_CACHE_SCHEMA}:latest`;
 const ADR_CACHE_FRESH_MS = sourcePolicy("adr").liveConfirmMs;
@@ -649,16 +656,73 @@ async function crisisSignalResponse(env, origin, refresh = false) {
   }
 
   try {
-    const sources = await fetchCrisisSignalSources(fetch, String(env.FRED_API_KEY).trim());
-    const cachedVix = normalizeFredObservations((cached?.vixRows || []).map((row) => ({
+    const [sources, yahooVixResult] = await Promise.all([
+      fetchCrisisSignalSources(fetch, String(env.FRED_API_KEY).trim()),
+      fetchYahooVixRows(fetch, {
+        cacheBust: Date.now(),
+        signal: AbortSignal.timeout(12000),
+      }).then((rows) => ({ rows, error: "" }))
+        .catch(async (directError) => {
+          if (!env.BROWSER?.quickAction) {
+            return { rows: [], error: String(directError?.message || directError) };
+          }
+          try {
+            const response = await env.BROWSER.quickAction("content", {
+              url: yahooVixChartUrl({ cacheBust: Date.now() }),
+              cacheTTL: 60,
+              gotoOptions: { waitUntil: "domcontentloaded", timeout: 15000 },
+              rejectResourceTypes: ["image", "media", "font", "stylesheet"],
+            });
+            const body = await readBoundedResponseText(
+              response,
+              VIX_BROWSER_MAX_BYTES,
+              "Yahoo VIX Browser Run",
+            );
+            if (!response.ok) throw new Error(`Yahoo VIX Browser Run HTTP ${response.status}`);
+            const rows = normalizeBrowserVixContent(body);
+            if (!rows.length) throw new Error("Yahoo VIX Browser Run returned no usable rows");
+            return { rows, error: "" };
+          } catch (browserError) {
+            return {
+              rows: [],
+              error: [directError?.message || directError, browserError?.message || browserError]
+                .filter(Boolean)
+                .join(" / "),
+            };
+          }
+        }),
+    ]);
+    const cachedVixOfficialDate = String(
+      cached?.vixOfficialLatestDate || cached?.vixRows?.at(-1)?.date || "",
+    ).slice(0, 10);
+    const cachedVix = normalizeFredObservations((cached?.vixRows || [])
+      .filter((row) => !cachedVixOfficialDate || String(row?.date || "").slice(0, 10) <= cachedVixOfficialDate)
+      .map((row) => ({
       date: row?.date,
       value: row?.vix,
-    })));
+      })));
     const cachedKrwUsd = normalizeFredObservations((cached?.records || []).map((row) => ({
       date: row?.date,
       value: row?.krwUsd,
     })));
-    const vixSeries = sources.vix || cachedVix;
+    const officialVixSeries = sources.vix || cachedVix;
+    const officialVixRows = normalizeFredObservations(officialVixSeries)
+      .map((row) => ({ date: row.date, vix: row.value }));
+    const vixOfficialLatestDate = officialVixRows.at(-1)?.date || cachedVixOfficialDate;
+    const retainedVixRows = mergeVixRows(
+      officialVixRows,
+      cached?.vixRows,
+      { afterDate: vixOfficialLatestDate },
+    );
+    const vixRows = mergeVixRows(
+      retainedVixRows,
+      yahooVixResult.rows,
+      { afterDate: vixOfficialLatestDate },
+    );
+    const vixLiveDate = String(
+      vixRows.at(-1)?.date > vixOfficialLatestDate ? vixRows.at(-1)?.date : "",
+    );
+    const vixSeries = vixRows.map((row) => ({ date: row.date, value: row.vix }));
     const krwUsdSeries = sources.krwUsd || cachedKrwUsd;
     const records = sources.core
       ? buildCrisisSignalRows({
@@ -668,12 +732,11 @@ async function crisisSignalResponse(env, origin, refresh = false) {
       })
       : (Array.isArray(cached?.records) ? cached.records : []);
     if (!records.length) throw new Error("FRED crisis signal contains no usable records");
-    const vixRows = normalizeFredObservations(vixSeries)
-      .map((row) => ({ date: row.date, vix: row.value }));
     const fredWarning = [
       sources.errors.core && "FRED 경기 지표 갱신 지연",
       sources.errors.vix && "FRED VIX 갱신 지연",
       sources.errors.krwUsd && "FRED 원달러 환율 갱신 지연",
+      yahooVixResult.error && "VIX 최신 시세 보완 지연",
     ].filter(Boolean).join(" / ");
     let vkospiRows = cachedRows;
     let vkospiOfficialLatestDate = cachedOfficialLatestDate;
@@ -738,14 +801,18 @@ async function crisisSignalResponse(env, origin, refresh = false) {
         vkospiRows.at(-1)?.date || "",
         vixRows.at(-1)?.date || "",
       ].sort().at(-1),
-      source: hasCurrentLive
+      source: `${hasCurrentLive
         ? (nextSourcePlan.stockplusLiveWindow
           ? "FRED + KRX + Stockplus (intraday)"
           : "FRED + KRX + Stockplus (settlement fallback)")
-        : "FRED + KRX",
+        : "FRED + KRX"}${vixLiveDate ? " + Yahoo VIX (latest)" : ""}`,
       records,
       vkospiRows,
       vixRows,
+      vixOfficialLatestDate,
+      vixLiveCheckedAt: yahooVixResult.rows.length ? Date.now() : Number(cached?.vixLiveCheckedAt || 0),
+      vixLiveDate,
+      vixSource: vixLiveDate ? "FRED VIXCLS + Yahoo Finance (latest)" : "FRED VIXCLS",
       vkospiCoreWarning: vkospiWarning,
       vkospiOfficialCheckedAt,
       vkospiOfficialEmptyDates: cached?.vkospiOfficialEmptyDates || [],

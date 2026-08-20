@@ -7,7 +7,10 @@
   const freshnessPolicy = globalScope.ThinkStockRuntimeFreshnessPolicy || null;
   const SOURCE_NAMES = Object.freeze([
     "indices", "prices", "prices-hidden", "adr", "fearGreed", "credit",
-    "macro", "crisis", "disclosure", "insider", "brokerResearch",
+    "macro", "macro:leading", "macro:news", "macro:policyRate",
+    "macro:trade", "macro:trade:export", "macro:trade:import",
+    "volatility", "volatility:vkospi", "volatility:vix", "crisis",
+    "disclosure", "insider", "brokerResearch",
   ]);
   const SOURCE_BACKOFF_MS = Object.freeze(Object.fromEntries(SOURCE_NAMES.map((source) => [
     source,

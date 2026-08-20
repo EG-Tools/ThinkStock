@@ -2,6 +2,10 @@
   "use strict";
 
   const DISPLAY_LIMIT = 5;
+  const MAX_UNIVERSE_STATE = Math.max(
+    400,
+    Number(globalScope.ThinkStockStockResearchContract?.UNIVERSE_SIZE_HIGH) || 1000,
+  );
 
   function tickerOf(value) {
     return String(value || "").trim().toUpperCase();
@@ -101,7 +105,7 @@
         metadataFingerprint: String(state.metadataFingerprint || "").slice(0, 240),
         signalFingerprint: String(state.signalFingerprint || "").slice(0, 240),
       }]];
-    }).slice(0, 400));
+    }).slice(0, MAX_UNIVERSE_STATE));
   }
 
   function candidateSignalFingerprint(candidate) {
@@ -230,6 +234,7 @@
   }
 
   globalScope.ThinkStockStockResearchNavigation = Object.freeze({
+    MAX_UNIVERSE_STATE,
     DISPLAY_LIMIT,
     candidateSignalFingerprint,
     diffUniverse,

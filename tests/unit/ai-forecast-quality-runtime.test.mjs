@@ -30,7 +30,19 @@ function createFeature() {
     },
     calibration: {
       applyForecastCalibration: (forecast, profile) => ({ ...forecast, profile }),
-      buildCalibrationProfile: ({ ticker, records }) => ({ ticker, samples: records.length }),
+      buildCalibrationProfile: ({ ticker, records }) => ({
+        ticker,
+        samples: records.length,
+        totalSamples: records.length,
+        applied: records.length > 0,
+        horizons: {
+          126: {
+            correctionEligible: records.length > 0,
+            walkForward: { applied: records.length > 0, passed: records.length === 0 },
+          },
+        },
+        inputReliability: { staleSources: [] },
+      }),
       buildForecastQualityDiagnostic: (profile) => ({ status: "usable", ...profile }),
       summarizeForecastQualityDiagnostics: (diagnostics) => ({ seriesCount: diagnostics.size }),
     },
@@ -65,6 +77,10 @@ test("coalesces ticker and pool reads while skipping identical writes", async ()
   assert.equal(tickerReads, 1);
   assert.equal(poolReads, 1);
   assert.equal(writes, 0);
+  assert.equal(runtime.stats().calibrationRuns, 2);
+  assert.equal(runtime.stats().calibrationApplied, 2);
+  assert.equal(runtime.stats().correctionEligibleHorizons, 2);
+  assert.equal(runtime.stats().walkForwardRejectedHorizons, 2);
 });
 
 test("serializes changed journal writes and persists the same result once", async () => {

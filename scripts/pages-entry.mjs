@@ -53,6 +53,7 @@ import "../docs/modules/runtime-series-quality-gate.js";
 import "../docs/modules/runtime-source-health.js";
 import "../docs/modules/runtime-bootstrap.js";
 import "../docs/modules/runtime-series-merge.js";
+import "../docs/modules/runtime-market-refresh.js";
 import "../docs/modules/control-state-view.js";
 import "../docs/modules/app-ui-bindings.js";
 import "../docs/modules/app-storage.js";

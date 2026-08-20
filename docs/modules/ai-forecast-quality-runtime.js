@@ -70,6 +70,12 @@
       poolReadCoalesced: 0,
       syncs: 0,
       syncCoalesced: 0,
+      calibrationRuns: 0,
+      calibrationApplied: 0,
+      calibrationPending: 0,
+      correctionEligibleHorizons: 0,
+      walkForwardRejectedHorizons: 0,
+      staleInputRuns: 0,
     };
 
     function feature() {
@@ -227,6 +233,15 @@
         records,
         quality,
       });
+      const horizonRows = Object.values(profile?.horizons || {});
+      counters.calibrationRuns += 1;
+      if (profile?.applied) counters.calibrationApplied += 1;
+      if (!(Number(profile?.totalSamples) > 0)) counters.calibrationPending += 1;
+      counters.correctionEligibleHorizons += horizonRows
+        .filter((row) => row?.correctionEligible === true).length;
+      counters.walkForwardRejectedHorizons += horizonRows
+        .filter((row) => row?.walkForward?.applied === true && row.walkForward.passed === false).length;
+      if ((profile?.inputReliability?.staleSources || []).length) counters.staleInputRuns += 1;
       rememberDiagnostic(key, currentFeature.calibration.buildForecastQualityDiagnostic(
         profile,
         quality,

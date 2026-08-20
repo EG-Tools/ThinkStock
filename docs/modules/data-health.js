@@ -136,6 +136,24 @@
     return { first, latest };
   }
 
+  function seriesFreshnessForRows(rows, keys = [], todayText, configuredStaleDays) {
+    return Object.freeze(Object.fromEntries((Array.isArray(keys) ? keys : []).map((key) => {
+      const span = dateSpanForRows(rows, [key]);
+      const ageDays = daysSinceDate(span.latest, todayText);
+      const policyStaleDays = seriesTimelinePolicy?.maximumAsOfAgeDays?.([key]);
+      const staleDays = Math.max(0, Number.isFinite(Number(configuredStaleDays))
+        ? Number(configuredStaleDays)
+        : (Number(policyStaleDays) || 0));
+      return [key, Object.freeze({
+        ...span,
+        ageDays,
+        staleDays,
+        isEmpty: !span.latest,
+        isStale: Number.isFinite(ageDays) && ageDays > staleDays,
+      })];
+    })));
+  }
+
   function daysSinceDate(dateText, todayText = new Date().toISOString().slice(0, 10)) {
     const time = toUtcMs(dateText);
     const today = toUtcMs(todayText);
@@ -299,6 +317,15 @@
       const staleDays = Math.max(0, Number.isFinite(configuredStaleDays)
         ? configuredStaleDays
         : (Number(policyStaleDays) || 0));
+      const series = seriesFreshnessForRows(
+        config.rows,
+        config.keys,
+        todayText,
+        Number.isFinite(configuredStaleDays) ? configuredStaleDays : undefined,
+      );
+      const seriesStates = Object.values(series);
+      const missingSeries = seriesStates.filter((item) => item.isEmpty).length;
+      const staleSeries = seriesStates.filter((item) => item.isStale).length;
       const anomalies = detectRecentChanges(config.rows, config.changePolicies);
       const referenceDates = (Array.isArray(config.referenceRows) ? config.referenceRows : [])
         .filter((row) => {
@@ -319,7 +346,10 @@
         ageDays,
         staleDays,
         isEmpty: !span.latest,
-        isStale: Number.isFinite(ageDays) && ageDays > staleDays,
+        isStale: staleSeries > 0 || missingSeries > 0,
+        missingSeries,
+        staleSeries,
+        series,
         anomalies,
         gaps,
       };
@@ -332,6 +362,7 @@
     daysSinceDate,
     detectRecentChanges,
     detectSeriesGaps,
+    seriesFreshnessForRows,
     weekdaysBetween,
     buildFreshnessItems,
   });

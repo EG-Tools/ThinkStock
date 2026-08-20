@@ -33,6 +33,18 @@ function normalizeRows(rows, keys, options = {}) {
   return output;
 }
 
+export function latestSeriesDates(rows, keys) {
+  const result = {};
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const date = String(row?.date || "").slice(0, 10);
+    if (!DATE_PATTERN.test(date)) return;
+    (Array.isArray(keys) ? keys : []).forEach((key) => {
+      if (finiteNumber(row?.[key]) !== null && (!result[key] || date > result[key])) result[key] = date;
+    });
+  });
+  return Object.freeze(result);
+}
+
 function requireUsableRows(sourceRows, normalizedRows, label, allowEmpty = false) {
   if (normalizedRows.length || (allowEmpty && Array.isArray(sourceRows) && !sourceRows.length)) return;
   throw new Error(`${label} response contains no usable rows`);
@@ -57,7 +69,7 @@ export function normalizeCreditPayload(payload) {
   const source = requireSuccess(payload, "Credit");
   const rows = normalizeRows(source.rows, CREDIT_KEYS, { positiveOnly: true });
   requireUsableRows(source.rows, rows, "Credit");
-  return { ...source, rows };
+  return { ...source, rows, componentLatestDates: latestSeriesDates(rows, CREDIT_KEYS) };
 }
 
 export function normalizeMacroPayload(payload) {
@@ -79,7 +91,20 @@ export function normalizeMacroPayload(payload) {
   if (!leadingRows.length && !newsRows.length && !policyRateRows.length && !tradeRows.length) {
     throw new Error(componentWarnings[0] || "Macro response contains no usable rows");
   }
-  return { ...source, leadingRows, newsRows, policyRateRows, tradeRows, componentWarnings };
+  return {
+    ...source,
+    leadingRows,
+    newsRows,
+    policyRateRows,
+    tradeRows,
+    componentWarnings,
+    componentLatestDates: Object.freeze({
+      ...latestSeriesDates(leadingRows, ["leading_cycle"]),
+      ...latestSeriesDates(newsRows, ["news_sentiment"]),
+      ...latestSeriesDates(policyRateRows, ["policy_rate"]),
+      ...latestSeriesDates(tradeRows, ["export_value", "import_value"]),
+    }),
+  };
 }
 
 export function normalizePricePayload(payload) {
@@ -95,6 +120,7 @@ export function normalizePricePayload(payload) {
       records.at(-1)?.date || "",
     ].filter(Boolean).sort().at(-1) || "",
     records,
+    componentLatestDates: latestSeriesDates(records, ["close"]),
   };
 }
 
@@ -273,6 +299,11 @@ export function normalizeCrisisSignalPayload(payload) {
     vkospiRows,
     vixRows,
     componentWarnings,
+    componentLatestDates: Object.freeze({
+      ...latestSeriesDates(records, ["score"]),
+      ...latestSeriesDates(vkospiRows, ["vkospi"]),
+      ...latestSeriesDates(vixRows, ["vix"]),
+    }),
   };
 }
 
@@ -289,6 +320,7 @@ export function normalizeRuntimePayload(kind, payload) {
 
 const api = Object.freeze({
   mergeIndexRecords,
+  latestSeriesDates,
   normalizeCreditPayload,
   normalizeMacroPayload,
   normalizeBootstrapPayload,

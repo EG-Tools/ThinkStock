@@ -34,6 +34,10 @@ import {
   mergeVkospiRows,
   planVkospiSource,
 } from "../shared/krx-volatility-index.mjs";
+import {
+  fetchYahooVixRows,
+  mergeVixRows,
+} from "../shared/vix-market-data.mjs";
 import { parseNaverResearchProfile } from "../shared/research-profile.mjs";
 import {
   RESEARCH_UNIVERSE_DEFAULT_SIZE,
@@ -1039,6 +1043,7 @@ export async function createThinkStockServer(options = {}) {
   let researchUniverseCache = null;
   let vkospiLiveCache = null;
   let localVixCache = null;
+  let localVixLiveCache = null;
   async function syncCreditRowsToWorker(rows) {
     if (!workerAccessToken) return false;
     const recentRows = mergeCreditRows([], rows).slice(-45);
@@ -1543,6 +1548,13 @@ export async function createThinkStockServer(options = {}) {
                   vixSource: "FRED VIXCLS (local latest check)",
                 };
               }
+              payload = {
+                ...payload,
+                vixOfficialLatestDate: [
+                  String(payload?.vixOfficialLatestDate || "").slice(0, 10),
+                  directLatestDate,
+                ].filter(Boolean).sort().at(-1) || workerLatestDate,
+              };
             } catch (error) {
               payload = {
                 ...payload,
@@ -1552,6 +1564,49 @@ export async function createThinkStockServer(options = {}) {
                 ].filter(Boolean).join(" / "),
               };
             }
+          }
+          const vixOfficialLatestDate = String(
+            payload?.vixOfficialLatestDate || payload?.vixRows?.at(-1)?.date || "",
+          ).slice(0, 10);
+          const vixLiveFresh = Date.now() - Number(localVixLiveCache?.checkedAt || 0) < 5 * 60 * 1000;
+          if (forceRefresh || !vixLiveFresh) {
+            try {
+              localVixLiveCache = {
+                checkedAt: Date.now(),
+                rows: await fetchYahooVixRows(fetchImpl, {
+                  cacheBust: Date.now(),
+                  signal: AbortSignal.timeout(12000),
+                }),
+              };
+            } catch (error) {
+              payload = {
+                ...payload,
+                warning: [
+                  payload?.warning,
+                  `VIX 최신 시세 보완 지연: ${error?.message || error}`,
+                ].filter(Boolean).join(" / "),
+              };
+            }
+          }
+          if (localVixLiveCache?.rows?.length) {
+            const vixRows = mergeVixRows(
+              payload?.vixRows,
+              localVixLiveCache.rows,
+              { afterDate: vixOfficialLatestDate },
+            );
+            const vixLiveDate = String(
+              vixRows.at(-1)?.date > vixOfficialLatestDate ? vixRows.at(-1)?.date : "",
+            );
+            payload = {
+              ...payload,
+              latestDate: [payload?.latestDate || "", vixRows.at(-1)?.date || ""].sort().at(-1),
+              vixRows,
+              vixLiveCheckedAt: localVixLiveCache.checkedAt,
+              vixLiveDate,
+              vixSource: vixLiveDate
+                ? "FRED VIXCLS + Yahoo Finance (local latest check)"
+                : (payload?.vixSource || "FRED VIXCLS"),
+            };
           }
           const upstreamSource = String(payload?.source || "");
           const upstreamRows = mergeVkospiRows(payload?.vkospiRows);

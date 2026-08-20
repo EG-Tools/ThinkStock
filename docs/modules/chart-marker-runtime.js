@@ -632,9 +632,23 @@
     return value ? [value] : [];
   }
 
+  function markerArrayMatches(left, right) {
+    if (left === right) return true;
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+    for (let index = 0; index < left.length; index += 1) {
+      const leftValue = left[index];
+      const rightValue = right[index];
+      if (leftValue === rightValue) continue;
+      if (leftValue == null || rightValue == null) return false;
+      if (typeof leftValue !== "object" || typeof rightValue !== "object") return false;
+      if (JSON.stringify(leftValue) !== JSON.stringify(rightValue)) return false;
+    }
+    return true;
+  }
+
   function markerPayloadMatches(current, next) {
     return ["x", "customdata", "text", "hovertext", "ids"].every((key) => (
-      JSON.stringify(current?.[key] ?? null) === JSON.stringify(next?.[key] ?? null)
+      markerArrayMatches(current?.[key] ?? null, next?.[key] ?? null)
     ));
   }
 
@@ -666,6 +680,7 @@
           structureChanged = true;
           return;
         }
+        if (markerArrayMatches(current.y, next.y)) return;
         traceIndexes.push(traceIndex);
         yUpdates.push(next.y);
         if (spec.id && !updated.includes(spec.id)) updated.push(spec.id);
@@ -678,6 +693,7 @@
 
   globalScope.ThinkStockChartMarkerLayout = Object.freeze({
     collectYUpdates,
+    markerArrayMatches,
     markerPayloadMatches,
   });
 }(typeof self !== "undefined" ? self : globalThis));

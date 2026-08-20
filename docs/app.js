@@ -271,6 +271,8 @@ const runtimeSeriesQualityGateModule = globalThis.ThinkStockRuntimeSeriesQuality
 if (!runtimeSeriesQualityGateModule) throw new Error("Runtime series quality gate module failed to load");
 const runtimeSeriesMergeModule = globalThis.ThinkStockRuntimeSeriesMerge;
 if (!runtimeSeriesMergeModule) throw new Error("Runtime series merge module failed to load");
+const runtimeMarketRefreshModule = globalThis.ThinkStockRuntimeMarketRefresh;
+if (!runtimeMarketRefreshModule) throw new Error("Runtime market refresh module failed to load");
 const appStorageModule = globalThis.ThinkStockAppStorage;
 if (!appStorageModule) throw new Error("App storage module failed to load");
 const appStateControllerModule = globalThis.ThinkStockAppStateController;
@@ -427,7 +429,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "2.94";
+const APP_VERSION = "2.95";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -6674,7 +6676,8 @@ function getAiForecastTracesRuntime() {
     getStructuralProfile: (series) => (
       marketTimingService?.get(series)?.contextProfile?.structural || null
     ),
-    getPriceRevision: () => dataRevisionSignature("price"),
+    fingerprintDatedSeries: seriesIntegrityModule.fingerprintDatedSeries,
+    getPriceSourceRevision: () => dataRevisionSignature("price"),
     labelName,
     queueAiForecastJournalSync,
     resetAiForecastProgress,
@@ -7275,189 +7278,34 @@ function getRuntimeSeriesController() {
   return runtimeSeriesController;
 }
 
-const buildLeadingCycleLiveRows = (...args) => (
-  getRuntimeSeriesController().buildLeadingCycleLiveRows(...args)
-);
-const buildNewsSentimentLiveRows = (...args) => (
-  getRuntimeSeriesController().buildNewsSentimentLiveRows(...args)
-);
-const buildMacroIndicatorLiveRows = (...args) => (
-  getRuntimeSeriesController().buildMacroIndicatorLiveRows(...args)
-);
-const commitMacroBuild = (...args) => getRuntimeSeriesController().commitMacroBuild(...args);
 const applyNewsSentimentLiveRows = (...args) => (
   getRuntimeSeriesController().applyNewsSentimentLiveRows(...args)
 );
-const applyCreditLiveRows = (...args) => getRuntimeSeriesController().applyCreditLiveRows(...args);
-const applyCrisisSignalRows = (...args) => (
-  getRuntimeSeriesController().applyCrisisSignalRows(...args)
-);
-const scaleCreditRowsToExisting = (...args) => (
-  getRuntimeSeriesController().scaleCreditRowsToExisting(...args)
-);
 
-function applyVkospiLiveRows(liveRows) {
-  const referenceDates = (pricePayload?.records || []).flatMap((row) => (
-    Number.isFinite(toNum(row?.["^KS11"])) ? [String(row.date || "").slice(0, 10)] : []
-  ));
-  return getRuntimeSeriesController().applyAuxiliarySeriesRows(liveRows, "vkospi", "VKOSPI", {
-    gapPolicies: runtimePoliciesFor(VKOSPI_SERIES),
-    referenceDates,
-    gapLookbackDays: 45,
-  });
-}
-
-function applyVixLiveRows(liveRows) {
-  return getRuntimeSeriesController().applyAuxiliarySeriesRows(liveRows, "vix", "VIX", {
-    gapPolicies: runtimePoliciesFor(VIX_SERIES),
-    gapLookbackDays: 45,
-  });
-}
-
-async function refreshEcosMacroFromGateway(signal = null, forceNetwork = false) {
-  if (!IS_LOCAL_RUNTIME && !canUseDartGateway()) return { applied: [], warnings: [] };
-  const payload = await runtimeGatewayClient.fetchMacro({
-    signal,
-    forceNetwork,
+let runtimeMarketRefresh = null;
+function getRuntimeMarketRefresh() {
+  if (runtimeMarketRefresh) return runtimeMarketRefresh;
+  runtimeMarketRefresh = runtimeMarketRefreshModule.createRuntimeMarketRefresh({
+    gateway: runtimeGatewayClient,
     timeoutMs: DART_GATEWAY_REQUEST_TIMEOUT_MS,
+    isLocal: IS_LOCAL_RUNTIME,
+    canUseGateway: canUseDartGateway,
+    creditKeys: CREDIT_COLS,
+    vkospiSeries: VKOSPI_SERIES,
+    vixSeries: VIX_SERIES,
+    getPricePayload: () => pricePayload,
+    getCreditRows: () => creditRows,
+    getSeriesController: getRuntimeSeriesController,
+    policiesFor: runtimePoliciesFor,
   });
-  const applied = [];
-  const warnings = [
-    ...(payload.warning ? [payload.warning] : []),
-    ...(Array.isArray(payload.componentWarnings) ? payload.componentWarnings : []),
-  ];
-  const latestDates = [];
-  const failures = [];
-  let attempted = 0;
-  let accepted = 0;
-  const applyComponent = (rows, build, keys, label, displayLabel, validation = {}) => {
-    if (!Array.isArray(rows) || !rows.length) return;
-    attempted += 1;
-    try {
-      const result = commitMacroBuild(build(rows), keys, { label, validation });
-      accepted += 1;
-      if (result.latestDate) latestDates.push(result.latestDate);
-      if (result.updated) applied.push(`${displayLabel} ${result.updated}건 반영(~ ${result.latestDate})`);
-    } catch (error) {
-      failures.push(error);
-      warnings.push(`${displayLabel}은 이전 값 유지: ${error.message}`);
-    }
-  };
-
-  applyComponent(payload.leadingRows, buildLeadingCycleLiveRows, ["leading_cycle"],
-    "leading cycle", "선행순환변동", {
-      allowLatestRegressionKeys: ["leading_cycle"],
-      allowCountDecreaseKeys: ["leading_cycle"],
-    });
-  applyComponent(payload.newsRows, buildNewsSentimentLiveRows, ["news_sentiment"],
-    "news sentiment", "뉴스심리");
-  applyComponent(payload.policyRateRows,
-    (rows) => buildMacroIndicatorLiveRows(rows, ["policy_rate"]),
-    ["policy_rate"], "policy rate", "기준금리");
-  applyComponent(payload.tradeRows,
-    (rows) => buildMacroIndicatorLiveRows(rows, ["export_value"]),
-    ["export_value"], "exports", "수출");
-  applyComponent(payload.tradeRows,
-    (rows) => buildMacroIndicatorLiveRows(rows, ["import_value"]),
-    ["import_value"], "imports", "수입");
-
-  if (attempted > 0 && accepted === 0 && failures.length) throw failures[0];
-  return { applied, warnings, latestDate: latestDates.sort().at(-1) || "" };
+  return runtimeMarketRefresh;
 }
 
-async function refreshCreditFromGateway(signal = null, forceNetwork = false) {
-  if (!IS_LOCAL_RUNTIME && !canUseDartGateway()) return { applied: [], warnings: [] };
-  const payload = await runtimeGatewayClient.fetchCredit({
-    signal,
-    forceNetwork,
-    timeoutMs: DART_GATEWAY_REQUEST_TIMEOUT_MS,
-  });
-  const scaledRows = scaleCreditRowsToExisting(payload.rows, creditRows);
-  const labels = {
-    customer_deposit: "고객예탁금",
-    kospi_credit: "코스피 신용",
-    kosdaq_credit: "코스닥 신용",
-  };
-  const warnings = [
-    ...(payload.warning ? [payload.warning] : []),
-    ...(Array.isArray(payload.componentWarnings) ? payload.componentWarnings : []),
-  ];
-  const latestDates = [];
-  const failures = [];
-  let updated = 0;
-  let accepted = 0;
-  for (const key of CREDIT_COLS) {
-    try {
-      const result = applyCreditLiveRows(scaledRows, [key], labels[key]);
-      accepted += 1;
-      updated += result.updated;
-      if (result.latestDate) latestDates.push(result.latestDate);
-    } catch (error) {
-      failures.push(error);
-      warnings.push(`${labels[key]}은 이전 값 유지: ${error.message}`);
-    }
-  }
-  if (!accepted && failures.length) throw failures[0];
-  const latestDate = latestDates.sort().at(-1) || "";
-  return {
-    applied: updated ? [`신용·예탁금 ${updated}건 반영(~ ${latestDate})`] : [],
-    warnings,
-    latestDate,
-  };
-}
-
-async function refreshCrisisSignalFromGateway(signal = null, forceNetwork = false) {
-  const payload = await runtimeGatewayClient.fetchCrisisSignal({
-    signal,
-    forceNetwork,
-    timeoutMs: DART_GATEWAY_REQUEST_TIMEOUT_MS,
-  });
-  const applied = [];
-  const warnings = [
-    ...(payload.warning ? [payload.warning] : []),
-    ...(Array.isArray(payload.componentWarnings) ? payload.componentWarnings : []),
-  ];
-  const latestDates = [];
-  const failures = [];
-  let acceptedComponents = 0;
-
-  try {
-    const result = applyCrisisSignalRows(payload.records);
-    acceptedComponents += 1;
-    if (result.latestDate) latestDates.push(result.latestDate);
-    if (result.updated) applied.push(`침체 위기신호 반영(~ ${result.latestDate})`);
-  } catch (error) {
-    failures.push(error);
-    warnings.push(`침체 위기신호는 이전 값 유지: ${error.message}`);
-  }
-
-  try {
-    const vkospi = applyVkospiLiveRows(payload.vkospiRows);
-    acceptedComponents += 1;
-    if (vkospi.latestDate) latestDates.push(vkospi.latestDate);
-    if (vkospi.updated) applied.push(`VKOSPI ${vkospi.updated}건 반영(~ ${vkospi.latestDate})`);
-  } catch (error) {
-    failures.push(error);
-    warnings.push(`VKOSPI는 이전 값 유지: ${error.message}`);
-  }
-
-  try {
-    const vix = applyVixLiveRows(payload.vixRows);
-    acceptedComponents += 1;
-    if (vix.latestDate) latestDates.push(vix.latestDate);
-    if (vix.updated) applied.push(`VIX ${vix.updated}건 반영(~ ${vix.latestDate})`);
-  } catch (error) {
-    failures.push(error);
-    warnings.push(`VIX는 이전 값 유지: ${error.message}`);
-  }
-
-  if (!acceptedComponents && failures.length) throw failures[0];
-  return {
-    applied,
-    warnings,
-    latestDate: latestDates.sort().at(-1) || "",
-  };
-}
+const applyVkospiLiveRows = (...args) => getRuntimeMarketRefresh().applyVkospiRows(...args);
+const applyVixLiveRows = (...args) => getRuntimeMarketRefresh().applyVixRows(...args);
+const refreshEcosMacroFromGateway = (...args) => getRuntimeMarketRefresh().refreshMacro(...args);
+const refreshCreditFromGateway = (...args) => getRuntimeMarketRefresh().refreshCredit(...args);
+const refreshCrisisSignalFromGateway = (...args) => getRuntimeMarketRefresh().refreshCrisis(...args);
 
 function refreshSourceWithRetry(kind, task, signal = null) {
   return runtimeFreshnessPolicyModule.executeRuntimeSourcePlan(kind, {

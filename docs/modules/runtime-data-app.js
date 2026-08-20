@@ -41,9 +41,9 @@
       if (Object.hasOwn(phaseStats, name)) phaseStats[name] += 1;
     }
 
-    function noteSourceResult(source, result = {}) {
+    function sourceResultDetail(result = {}) {
       const quality = result?.quality && typeof result.quality === "object" ? result.quality : {};
-      const detail = {
+      return {
         firstDate: quality.firstDate || result.firstDate || result.sourceFirstDate || "",
         latestDate: quality.latestDate || result.latestDate || result.sourceLatestDate || "",
         anomalyCount: quality.anomalyCount ?? result.anomalyCount ?? 0,
@@ -53,9 +53,22 @@
         revision: quality.revision || result.revision || "",
         detail: (result.applied || result.info || []).join?.(" · ") || result.detail || "",
       };
-      const success = sourceLedger?.success?.(source, detail) || null;
-      sourceLedger?.observe?.(source, detail);
-      return success;
+    }
+
+    function noteSourceResult(source, result = {}) {
+      const detail = sourceResultDetail(result);
+      if (result?.ok === false) {
+        const error = new Error(result.error || `${source} refresh failed`);
+        sourceLedger?.failure?.(source, error);
+      } else {
+        sourceLedger?.success?.(source, detail);
+        sourceLedger?.observe?.(source, detail);
+      }
+      Object.entries(result?.components || {}).forEach(([component, componentResult]) => {
+        const componentSource = component.includes(":") ? component : `${source}:${component}`;
+        noteSourceResult(componentSource, componentResult || {});
+      });
+      return sourceLedger?.snapshot?.()?.[source] || null;
     }
 
     function isAbort(error, signal) {

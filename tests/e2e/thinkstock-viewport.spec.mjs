@@ -338,17 +338,19 @@ test("bundled recent data boots through the chart worker", async ({ page }, test
   ]));
   const oneDayNewsAverage = page.locator('[data-news-sentiment-average-days="1"]');
   await expect(oneDayNewsAverage).toHaveAttribute("aria-pressed", "true");
-  const oneDayNewsTouchTarget = await oneDayNewsAverage.evaluate((button) => {
+  await expect.poll(() => oneDayNewsAverage.evaluate((button) => {
     const hitArea = button.getBoundingClientRect();
     const circle = button.querySelector("span")?.getBoundingClientRect();
     return {
-      hitWidth: hitArea.width,
-      circleWidth: circle?.width || 0,
+      hitAreaReady: hitArea.width >= 28,
+      circleReady: (circle?.width || 0) > 0,
+      circleInsideHitArea: (circle?.width || 0) < hitArea.width,
     };
+  })).toEqual({
+    hitAreaReady: true,
+    circleReady: true,
+    circleInsideHitArea: true,
   });
-  expect(oneDayNewsTouchTarget.hitWidth).toBeGreaterThanOrEqual(28);
-  expect(oneDayNewsTouchTarget.circleWidth).toBeGreaterThan(0);
-  expect(oneDayNewsTouchTarget.circleWidth).toBeLessThan(oneDayNewsTouchTarget.hitWidth);
   await page.locator('[data-news-sentiment-average-days="5"]').click();
   await expect(page.locator('[data-news-sentiment-average-days="5"]'))
     .toHaveAttribute("aria-pressed", "true");
