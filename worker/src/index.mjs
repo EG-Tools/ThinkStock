@@ -202,6 +202,7 @@ const CREDIT_CACHE_SCHEMA = 5;
 const CREDIT_CACHE_KEY = `credit-macro:${CREDIT_CACHE_SCHEMA}`;
 const CREDIT_SYNC_MAX_BYTES = 64 * 1024;
 const CREDIT_SYNC_MAX_ROWS = 45;
+const INDEXERGO_BROWSER_MAX_BYTES = 256 * 1024;
 const ADR_CACHE_SCHEMA = 1;
 const ADR_CACHE_KEY = `adr-market:${ADR_CACHE_SCHEMA}:latest`;
 const ADR_CACHE_FRESH_MS = sourcePolicy("adr").liveConfirmMs;
@@ -766,7 +767,34 @@ async function creditMacroResponse(env, origin, refresh = false) {
     || Boolean(windowDate && cached.lastCheckedWindow !== windowDate);
   if (!needsRefresh) return jsonResponse({ ...cached, ok: true, cached: true }, 200, origin);
   try {
-    const result = await fetchKofiaCreditAndDepositRows(kofiaClient, env.KOFIA_API_KEY);
+    const creditClient = env.BROWSER?.quickAction
+      ? createKofiaClient({
+        enableIndexergo: true,
+        fetchIndexergoHtml: async (url) => {
+          const response = await env.BROWSER.quickAction("content", {
+            url,
+            cacheTTL: 300,
+            gotoOptions: { waitUntil: "domcontentloaded", timeout: 20000 },
+            waitForSelector: { selector: "h1.visually-hidden", timeout: 20000 },
+            rejectResourceTypes: ["image", "media", "font"],
+          });
+          const body = await readBoundedResponseText(
+            response,
+            INDEXERGO_BROWSER_MAX_BYTES,
+            "INDEXerGO Browser Run",
+          );
+          if (!response.ok) {
+            throw new Error(`INDEXerGO Browser Run HTTP ${response.status}: ${body.slice(0, 240)}`);
+          }
+          try {
+            const payload = JSON.parse(body);
+            if (payload?.success === true && typeof payload.result === "string") return payload.result;
+          } catch (_) {}
+          return body;
+        },
+      })
+      : kofiaClient;
+    const result = await fetchKofiaCreditAndDepositRows(creditClient, env.KOFIA_API_KEY);
     const rows = result.rows;
     const warnings = [];
     if (result.creditFailed) warnings.push("신용 잔고 연결 실패로 마지막 확인 데이터를 사용합니다.");

@@ -98,6 +98,9 @@ export function createKofiaClient(options = {}) {
   const wait = options.wait || ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
   const timeoutSignal = options.timeoutSignal || ((timeoutMs) => AbortSignal.timeout(timeoutMs));
   const indexergoEnabled = options.enableIndexergo === true;
+  const fetchIndexergoHtml = typeof options.fetchIndexergoHtml === "function"
+    ? options.fetchIndexergoHtml
+    : null;
 
   async function fetchOpenApiItems(apiKey, endpoint) {
     const cleanKey = String(apiKey || "").trim();
@@ -188,6 +191,9 @@ export function createKofiaClient(options = {}) {
         url.searchParams.set("detailId", detailId);
         url.searchParams.set("frq", "D");
         url.searchParams.set("_", `${Date.now()}-${attempt}`);
+        if (fetchIndexergoHtml) {
+          return parseIndexergoLatestPoint(await fetchIndexergoHtml(url.toString()));
+        }
         const response = await fetchFn(url, {
           cache: "no-store",
           headers: {

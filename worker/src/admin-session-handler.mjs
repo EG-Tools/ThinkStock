@@ -92,8 +92,15 @@ async function clearFailures(cache, key) {
 
 async function loginCodeIsValid(payload, env, tokensMatch) {
   const code = String(payload.code || "");
-  return LOGIN_CODE_PATTERN.test(code)
-    && await tokensMatch(code, env.THINKSTOCK_ADMIN_CODE);
+  if (!LOGIN_CODE_PATTERN.test(code)) return false;
+  const configuredCodes = [
+    env.THINKSTOCK_ADMIN_CODE,
+    env.THINKSTOCK_ADMIN_CODE_SECONDARY,
+  ].filter(Boolean);
+  const matches = await Promise.all(configuredCodes.map((configuredCode) => (
+    tokensMatch(code, configuredCode)
+  )));
+  return matches.some(Boolean);
 }
 
 function configured(env) {

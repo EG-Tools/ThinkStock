@@ -934,11 +934,12 @@ assert.ok(workerRouter.includes('path: "/api/admin/session"')
 "Cloudflare administrator session routing or signing is incomplete");
 [
   "THINKSTOCK_ADMIN_CODE",
+  "THINKSTOCK_ADMIN_CODE_SECONDARY",
   "THINKSTOCK_ADMIN_SESSION_SECRET",
 ].forEach((secretName) => {
   assert.ok(workerConfig.includes(`\"${secretName}\"`), `Worker secret is not declared: ${secretName}`);
 });
-assert.ok(!/\"(?:THINKSTOCK_ADMIN_CODE|THINKSTOCK_ADMIN_SESSION_SECRET)\"\s*:\s*\"[^\"]+\"/.test(workerConfig),
+assert.ok(!/\"(?:THINKSTOCK_ADMIN_CODE(?:_SECONDARY)?|THINKSTOCK_ADMIN_SESSION_SECRET)\"\s*:\s*\"[^\"]+\"/.test(workerConfig),
   "Worker administrator secret values must not be committed");
 assert.ok(!/THINKSTOCK_LEGACY_ADMIN_HASH|THINKSTOCK_ADMIN_MIGRATION_UNTIL/.test(
   `${app}\n${adminFeatureAccess}\n${adminSessionHandler}\n${workerConfig}`,

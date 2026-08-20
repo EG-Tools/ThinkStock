@@ -116,12 +116,13 @@ test("checks the personal access token without requiring a ticker", async () => 
   assert.equal(invalid.status, 401);
 });
 
-test("issues and renews server-signed admin sessions while rejecting retired codes", async () => {
+test("issues and renews server-signed admin sessions for both configured admin codes", async () => {
   const cache = memoryKv();
-  const legacyCode = "0987654321";
+  const secondaryCode = "0987654321";
   const env = {
     THINKSTOCK_ACCESS_TOKEN: "private",
     THINKSTOCK_ADMIN_CODE: "1234567890",
+    THINKSTOCK_ADMIN_CODE_SECONDARY: secondaryCode,
     THINKSTOCK_ADMIN_SESSION_SECRET: "test-session-secret-that-is-longer-than-thirty-two-characters",
     DISCLOSURE_CACHE: cache,
   };
@@ -144,15 +145,15 @@ test("issues and renews server-signed admin sessions while rejecting retired cod
   assert.equal(refresh.status, 200);
   assert.equal((await refresh.json()).renewed, true);
 
-  const legacyLogin = await handleRequest(request("/api/admin/session", {
+  const secondaryLogin = await handleRequest(request("/api/admin/session", {
     method: "POST",
     token: "private",
-    body: { action: "login", code: legacyCode, deviceId: "legacy-login-device" },
+    body: { action: "login", code: secondaryCode, deviceId: "secondary-login-device" },
   }), env);
-  const legacyLoginPayload = await legacyLogin.json();
-  assert.equal(legacyLogin.status, 401);
-  assert.equal(legacyLoginPayload.ok, false);
-  assert.equal(JSON.stringify(legacyLoginPayload).includes(legacyCode), false);
+  const secondaryLoginPayload = await secondaryLogin.json();
+  assert.equal(secondaryLogin.status, 200);
+  assert.equal(secondaryLoginPayload.ok, true);
+  assert.equal(JSON.stringify(secondaryLoginPayload).includes(secondaryCode), false);
 
   const migration = await handleRequest(request("/api/admin/session", {
     method: "POST",
@@ -397,6 +398,62 @@ test("returns authenticated recent credit balances and caches the KOFIA response
     assert.equal((await cached.json()).cached, true);
     assert.equal(callsAfterRefresh, 4);
     assert.equal(calls, callsAfterRefresh);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("uses Browser Run to fill newer deployed credit and deposit values", async () => {
+  const originalFetch = globalThis.fetch;
+  const cache = memoryKv();
+  const browserCalls = [];
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("freesis.kofia.or.kr")) {
+      return new Response('{"ds1":[{"TMPV3":12####}]}', { status: 200 });
+    }
+    const isDeposit = String(url).includes("getSecuritiesMarketTotalCapitalInfo");
+    const item = isDeposit
+      ? { basDt: "20260812", invrDpsgAmt: "99976500000000" }
+      : { basDt: "20260812", crdTrFingScrs: "24198820770037", crdTrFingKosdaq: "6219932204840" };
+    return new Response(JSON.stringify({
+      response: {
+        header: { resultCode: "00", resultMsg: "NORMAL SERVICE" },
+        body: { items: { item: [item] } },
+      },
+    }), { status: 200 });
+  };
+  const browser = {
+    quickAction: async (action, options) => {
+      browserCalls.push({ action, options });
+      const url = new URL(options.url);
+      const detailId = url.searchParams.get("detailId");
+      const value = detailId === "20111" ? "100.07" : detailId === "20215" ? "24.53" : "6.39";
+      const label = detailId === "20111" ? "투자자예탁금" : "신용거래융자";
+      return Response.json({
+        success: true,
+        result: `<h1 class="visually-hidden">2026.08.13 마감 기준 ${label}: ${value}조원</h1>`,
+      });
+    },
+  };
+  try {
+    const env = {
+      THINKSTOCK_ACCESS_TOKEN: "private",
+      KOFIA_API_KEY: "kofia-key",
+      DISCLOSURE_CACHE: cache,
+      BROWSER: browser,
+    };
+    const response = await handleRequest(request("/api/credit?refresh=1", { token: "private" }), env);
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.deepEqual(payload.rows.at(-1), {
+      date: "2026-08-13",
+      customer_deposit: 100.07,
+      kospi_credit: 24.53,
+      kosdaq_credit: 6.39,
+    });
+    assert.equal(browserCalls.length, 3);
+    assert.ok(browserCalls.every(({ action }) => action === "content"));
+    assert.ok(browserCalls.every(({ options }) => options.cacheTTL === 300));
   } finally {
     globalThis.fetch = originalFetch;
   }

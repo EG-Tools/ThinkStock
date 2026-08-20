@@ -5,6 +5,9 @@
   "compatibility_date": "2026-07-22",
   "workers_dev": true,
   "preview_urls": true,
+  "browser": {
+    "binding": "BROWSER"
+  },
   "secrets": {
     "required": [
       "DART_API_KEY",
@@ -14,6 +17,7 @@
       "FRED_API_KEY",
       "THINKSTOCK_ACCESS_TOKEN",
       "THINKSTOCK_ADMIN_CODE",
+      "THINKSTOCK_ADMIN_CODE_SECONDARY",
       "THINKSTOCK_ADMIN_SESSION_SECRET"
     ]
   },
