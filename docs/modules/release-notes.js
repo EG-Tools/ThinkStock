@@ -3,6 +3,16 @@
 
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "2.94",
+      date: "2026.08.20",
+      items: Object.freeze([
+        "VIX 독립 갱신과 최신값 복구 강화",
+        "AI 참고 리포트 링크 전용 경량화",
+        "검증되지 않은 리포트 예측 가중치 제거",
+        "AI 예측선 핸들 제거",
+      ]),
+    }),
+    Object.freeze({
       version: "2.93",
       date: "2026.08.16",
       items: Object.freeze([

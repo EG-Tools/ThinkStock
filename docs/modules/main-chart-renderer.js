@@ -146,6 +146,18 @@
     return { first, last };
   }
 
+  function isSeriesHandleTrace(trace, baseValuesBySeries = {}) {
+    const seriesKey = String(trace?.meta?.seriesKey || "");
+    return Boolean(
+      seriesKey
+      && trace?.visible !== "legendonly"
+      && !trace?.meta?.isAiForecastTrace
+      && !trace?.meta?.isAiForecastBand
+      && !trace?.meta?.isAiForecastScenarioTrace
+      && baseValuesBySeries[seriesKey]
+    );
+  }
+
   function restylePayload(traces) {
     return {
       x: traces.map((trace) => trace.x || []),
@@ -572,6 +584,7 @@
     dateBounds,
     finiteTracePoints,
     isEventMarkerTrace,
+    isSeriesHandleTrace,
     normalizeCursorLineMode,
     renderFingerprint,
     relayoutPayload,

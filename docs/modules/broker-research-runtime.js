@@ -1,28 +1,37 @@
 (function initThinkStockBrokerResearchRuntime(globalScope) {
   "use strict";
 
-  function mergeReferenceSummary(current, referenceReport, asOfDate = "") {
-    if (!referenceReport?.sourceUrl) return current || null;
+  function toReferenceOnlySummary(current, referenceReport, asOfDate = "") {
     const currentReference = current?.representativeReports?.reference || null;
-    if (currentReference?.publishedDate
-      && String(currentReference.publishedDate) > String(referenceReport.publishedDate || "")) {
-      return current;
-    }
-    if (currentReference?.sourceUrl === referenceReport.sourceUrl) return current;
+    const nextReference = referenceReport?.sourceUrl ? referenceReport : null;
+    const reference = currentReference?.publishedDate
+      && String(currentReference.publishedDate) > String(nextReference?.publishedDate || "")
+      ? currentReference
+      : (nextReference || currentReference);
+    if (!reference?.sourceUrl) return null;
     return Object.freeze({
-      ...(current || {}),
       asOfDate: current?.asOfDate || String(asOfDate || "").slice(0, 10),
-      latestDate: [current?.latestDate, referenceReport.publishedDate]
+      latestDate: [current?.latestDate, reference.publishedDate]
         .filter(Boolean).sort().at(-1) || "",
-      latestAvailableDate: [current?.latestAvailableDate, referenceReport.availableDate]
+      latestAvailableDate: [current?.latestAvailableDate, reference.availableDate]
         .filter(Boolean).sort().at(-1) || "",
+      reportCount: 0,
       referenceReportCount: Math.max(1, Number(current?.referenceReportCount) || 0),
+      brokerCount: Math.max(1, Number(current?.brokerCount) || 0),
+      usedReportIds: Object.freeze([]),
+      signal: 0,
+      confidence: 0,
+      adjustment: 0,
+      primaryCoverage: 0,
+      primaryConflict: false,
+      targetRevisionChange: null,
       representativeReports: Object.freeze({
-        ...(current?.representativeReports || {}),
-        reference: referenceReport,
+        reference,
       }),
     });
   }
+
+  const mergeReferenceSummary = toReferenceOnlySummary;
 
   function createBrokerResearchRuntime(scope = globalScope, options = {}) {
     const cacheModule = options.cacheModule;
@@ -60,11 +69,13 @@
       ...cache,
       dispose: () => workerClient?.dispose?.(),
       mergeReferenceSummary,
+      toReferenceOnlySummary,
     });
   }
 
   globalScope.ThinkStockBrokerResearchRuntime = Object.freeze({
     createBrokerResearchRuntime,
     mergeReferenceSummary,
+    toReferenceOnlySummary,
   });
 }(typeof self !== "undefined" ? self : globalThis));

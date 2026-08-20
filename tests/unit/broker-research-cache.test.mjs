@@ -280,7 +280,7 @@ test("replaces a pre-Naver empty cache with an available RFHIC reference report"
     extractReport: async (_bytes, metadata) => parsedReport(metadata),
   });
 
-  assert.equal(service.CACHE_SCHEMA, 6);
+  assert.equal(service.CACHE_SCHEMA, 7);
   assert.equal(service.normalizeCacheRecord(oldRecord, "218410.KQ"), null);
   const result = await service.loadTicker("218410.KQ", {
     onReferenceReport: (report) => phases.push(`reference:${report.sourceUrl}`),
@@ -290,6 +290,35 @@ test("replaces a pre-Naver empty cache with an available RFHIC reference report"
   assert.equal(result.summary.representativeReports.reference.sourceUrl, naverReport.sourceUrl);
   assert.deepEqual(listCalls, ["hankyung:90", "naver:90"]);
   assert.deepEqual(phases, [`reference:${naverReport.sourceUrl}`, "pdf"]);
+});
+
+test("reference-only mode keeps the latest link without downloading PDFs", async () => {
+  const records = new Map();
+  let pdfCalls = 0;
+  const sourceUrl = "https://consensus.hankyung.com/analysis/downpdf?report_idx=88";
+  const service = createBrokerResearchCache(globalThis, {
+    parser,
+    now: () => new Date("2026-08-20T00:00:00Z"),
+    read: async (ticker) => records.get(ticker) || null,
+    write: async (ticker, record) => records.set(ticker, record),
+    fetchList: async (_ticker, _days, source) => source === "naver" ? [] : [{
+      id: "88",
+      publishedDate: "2026-08-19",
+      broker: "A증권",
+      title: "latest reference",
+      sourceUrl,
+    }],
+    fetchPdf: async () => { pdfCalls += 1; return new Uint8Array([1]); },
+    extractReport: async (_bytes, metadata) => parsedReport(metadata),
+  });
+
+  const result = await service.loadTicker("005930.KS", { referenceOnly: true });
+  assert.equal(pdfCalls, 0);
+  assert.equal(result.reports.length, 0);
+  assert.equal(result.summary.reportCount, 0);
+  assert.equal(result.summary.signal, 0);
+  assert.equal(result.summary.representativeReports.reference.sourceUrl, sourceUrl);
+  assert.equal(result.refreshStats.downloadedPdfCount, 0);
 });
 
 test("detects consecutive same-broker target-price cuts", () => {

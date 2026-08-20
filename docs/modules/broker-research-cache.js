@@ -8,7 +8,7 @@
     throw new Error("broker research contracts failed to load");
   }
 
-  const CACHE_SCHEMA = 6;
+  const CACHE_SCHEMA = 7;
   const MAX_PDF_BYTES = 12 * 1024 * 1024;
   const MAX_PDF_PAGES = 12;
   const MAX_REPORTS_PER_TICKER = 40;
@@ -243,7 +243,7 @@
   }
 
   function normalizeCacheRecord(record, ticker) {
-    if (!record || ![5, CACHE_SCHEMA].includes(Number(record.schema)) || normalizeTicker(record.ticker) !== ticker) {
+    if (!record || Number(record.schema) !== CACHE_SCHEMA || normalizeTicker(record.ticker) !== ticker) {
       return null;
     }
     const reports = (Array.isArray(record.reports) ? record.reports : [])
@@ -468,6 +468,7 @@
         const asOfDate = normalizedDate(loadOptions.asOfDate)
           || normalizedDate(nowDate.toISOString());
         const forceNetwork = loadOptions.forceNetwork === true;
+        const referenceOnly = loadOptions.referenceOnly === true;
         const listRefreshAfterDays = Math.max(1, Math.min(90,
           Number(loadOptions.listRefreshAfterDays ?? loadOptions.refreshAfterDays) || 1));
         const onProgress = typeof loadOptions.onProgress === "function"
@@ -548,9 +549,9 @@
               String(right.publishedDate).localeCompare(String(left.publishedDate))
               || String(right.id).localeCompare(String(left.id))
             ))[0];
-          if (!reference) return;
+          if (!reference) return null;
           const key = `${reference.id}|${reference.publishedDate}|${reference.sourceUrl}`;
-          if (key === publishedReferenceKey) return;
+          if (key === publishedReferenceKey) return reference;
           publishedReferenceKey = key;
           onReferenceReport(Object.freeze({
             reportId: reference.id,
@@ -563,11 +564,75 @@
             confidence: 0,
             quantitative: false,
           }));
+          return reference;
         };
-        publishReferenceReport(selected);
+        const referenceReport = publishReferenceReport(selected);
+        let complete = listErrors.length === 0;
+        if (referenceOnly) {
+          const reference = referenceReport
+            ? Object.freeze({
+              reportId: referenceReport.id,
+              publishedDate: referenceReport.publishedDate,
+              availableDate: referenceReport.availableDate,
+              broker: referenceReport.broker,
+              title: referenceReport.title,
+              sourceUrl: referenceReport.sourceUrl,
+              signal: null,
+              confidence: 0,
+              quantitative: false,
+            })
+            : null;
+          const savedAt = nowMs;
+          const summary = reference
+            ? Object.freeze({
+              asOfDate,
+              latestDate: reference.publishedDate,
+              latestAvailableDate: reference.availableDate,
+              reportCount: 0,
+              referenceReportCount: selected.length,
+              brokerCount: new Set(selected.map((report) => normalizedBrokerKey(report.broker, report.id))).size,
+              usedReportIds: Object.freeze([]),
+              signal: 0,
+              confidence: 0,
+              adjustment: 0,
+              primaryCoverage: 0,
+              primaryConflict: false,
+              targetRevisionChange: null,
+              representativeReports: Object.freeze({ reference }),
+            })
+            : null;
+          const record = {
+            schema: CACHE_SCHEMA,
+            ticker,
+            savedAt,
+            checkedAt: savedAt,
+            lastAccessed: savedAt,
+            checkedDate: asOfDate,
+            checkedWindowDays: windowDays,
+            complete,
+            resultState: complete ? (reference ? "ready" : "empty") : "error",
+            failureCount: complete ? 0 : Math.min(20, (Number(existing?.failureCount) || 0) + 1),
+            lastFailureAt: complete ? 0 : savedAt,
+            latestDate: reference?.publishedDate || "",
+            activeReportIds: [],
+            reports: [],
+            evaluationEvents: [],
+            evaluation: null,
+            summary,
+            refreshStats: {
+              downloadedPdfCount: 0,
+              reusedReportCount: 0,
+              sourceListCount: sourceLists.filter((entry) => !entry.error).length,
+              candidateReportCount: listed.length,
+              listedReportCount: selected.length,
+            },
+          };
+          await write(ticker, record);
+          onProgress(82, reference ? "참고 리포트 연결" : "최근 리포트 없음");
+          return { ...record, cached: false };
+        }
         const byId = new Map((existing?.reports || []).map((report) => [report.id, report]));
         const nextReports = [...(existing?.reports || [])];
-        let complete = listErrors.length === 0;
         let downloadedPdfCount = 0;
         let reusedReportCount = 0;
         const processSelectedReports = async (reportsToProcess) => {

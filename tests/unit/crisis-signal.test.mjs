@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   buildCrisisSignalRows,
+  fetchCrisisSignalSources,
   fetchCrisisSignalSeries,
   fredSeriesUrl,
   normalizeFredObservations,
@@ -53,6 +54,26 @@ test("fetches global VIX and won-dollar series only for an explicit experiment",
   await fetchCrisisSignalSeries(fetchImpl, "secret", { includeExternalRisk: true });
   assert.equal(requested.includes("VIXCLS"), true);
   assert.equal(requested.includes("DEXKOUS"), true);
+});
+
+test("refreshes VIX independently when another FRED group fails", async () => {
+  const fetchImpl = async (url) => {
+    const seriesId = new URL(url).searchParams.get("series_id");
+    if (seriesId === "ICSA") throw new Error("claims unavailable");
+    return {
+      ok: true,
+      json: async () => ({
+        observations: [{ date: "2026-08-18", value: seriesId === "VIXCLS" ? "15.84" : "1" }],
+      }),
+    };
+  };
+
+  const result = await fetchCrisisSignalSources(fetchImpl, "secret");
+  assert.equal(result.core, null);
+  assert.equal(result.vix.at(-1).value, 15.84);
+  assert.equal(result.krwUsd.at(-1).value, 1);
+  assert.match(result.errors.core, /claims unavailable/);
+  assert.equal(result.errors.vix, "");
 });
 
 test("caps un-inversion without labor or credit confirmation below warning", () => {

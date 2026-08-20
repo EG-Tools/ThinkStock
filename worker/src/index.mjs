@@ -82,7 +82,7 @@ import {
 } from "./forecast-journal.mjs";
 import {
   buildCrisisSignalRows,
-  fetchCrisisSignalSeries,
+  fetchCrisisSignalSources,
   normalizeFredObservations,
 } from "./crisis-signal.mjs";
 import {
@@ -649,13 +649,32 @@ async function crisisSignalResponse(env, origin, refresh = false) {
   }
 
   try {
-    const series = await fetchCrisisSignalSeries(fetch, String(env.FRED_API_KEY).trim(), {
-      includeExternalRisk: true,
-    });
-    const records = buildCrisisSignalRows(series);
+    const sources = await fetchCrisisSignalSources(fetch, String(env.FRED_API_KEY).trim());
+    const cachedVix = normalizeFredObservations((cached?.vixRows || []).map((row) => ({
+      date: row?.date,
+      value: row?.vix,
+    })));
+    const cachedKrwUsd = normalizeFredObservations((cached?.records || []).map((row) => ({
+      date: row?.date,
+      value: row?.krwUsd,
+    })));
+    const vixSeries = sources.vix || cachedVix;
+    const krwUsdSeries = sources.krwUsd || cachedKrwUsd;
+    const records = sources.core
+      ? buildCrisisSignalRows({
+        ...sources.core,
+        VIXCLS: vixSeries,
+        DEXKOUS: krwUsdSeries,
+      })
+      : (Array.isArray(cached?.records) ? cached.records : []);
     if (!records.length) throw new Error("FRED crisis signal contains no usable records");
-    const vixRows = normalizeFredObservations(series.VIXCLS)
+    const vixRows = normalizeFredObservations(vixSeries)
       .map((row) => ({ date: row.date, vix: row.value }));
+    const fredWarning = [
+      sources.errors.core && "FRED 경기 지표 갱신 지연",
+      sources.errors.vix && "FRED VIX 갱신 지연",
+      sources.errors.krwUsd && "FRED 원달러 환율 갱신 지연",
+    ].filter(Boolean).join(" / ");
     let vkospiRows = cachedRows;
     let vkospiOfficialLatestDate = cachedOfficialLatestDate;
     const vkospiOfficialCheckedAt = Date.now();
@@ -735,7 +754,7 @@ async function crisisSignalResponse(env, origin, refresh = false) {
       vkospiLiveCheckedAt,
       vkospiLiveDate: livePoint?.date || (retainedLive ? cached?.vkospiLiveDate : "") || "",
       vkospiLive: hasCurrentLive,
-      warning: combineWarnings(vkospiWarning, liveWarning),
+      warning: combineWarnings(fredWarning, vkospiWarning, liveWarning),
     };
     if (env.DISCLOSURE_CACHE) {
       await writeCachesBestEffort("crisis-signal", [

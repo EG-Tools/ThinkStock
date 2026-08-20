@@ -280,4 +280,25 @@ export async function fetchCrisisSignalSeries(fetchImpl, apiKey, options = {}) {
   return Object.fromEntries(entries);
 }
 
+export async function fetchCrisisSignalSources(fetchImpl, apiKey) {
+  const [core, vix, krwUsd] = await Promise.allSettled([
+    fetchCrisisSignalSeries(fetchImpl, apiKey),
+    fetchFredSeries(fetchImpl, apiKey, "VIXCLS", "1990-01-01"),
+    fetchFredSeries(fetchImpl, apiKey, "DEXKOUS"),
+  ]);
+  const errorText = (result) => result.status === "rejected"
+    ? String(result.reason?.message || result.reason || "FRED refresh failed")
+    : "";
+  return Object.freeze({
+    core: core.status === "fulfilled" ? core.value : null,
+    vix: vix.status === "fulfilled" ? vix.value : null,
+    krwUsd: krwUsd.status === "fulfilled" ? krwUsd.value : null,
+    errors: Object.freeze({
+      core: errorText(core),
+      vix: errorText(vix),
+      krwUsd: errorText(krwUsd),
+    }),
+  });
+}
+
 export { EXTERNAL_RISK_SERIES_IDS, SERIES_IDS };

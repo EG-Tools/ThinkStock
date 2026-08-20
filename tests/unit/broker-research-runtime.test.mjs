@@ -20,6 +20,25 @@ test("never replaces a newer reference report with an older parsed result", () =
   assert.equal(runtime.mergeReferenceSummary(current, june).representativeReports.reference, july);
 });
 
+test("strips historical quantitative report fields while preserving the reference", () => {
+  const summary = runtime.toReferenceOnlySummary({
+    reportCount: 3,
+    signal: 0.8,
+    confidence: 0.9,
+    adjustment: 0.02,
+    representativeReports: {
+      reference: {
+        publishedDate: "2026-08-19",
+        sourceUrl: "https://consensus.hankyung.com/analysis/downpdf?report_idx=1",
+      },
+    },
+  });
+  assert.equal(summary.reportCount, 0);
+  assert.equal(summary.signal, 0);
+  assert.equal(summary.confidence, 0);
+  assert.equal(summary.adjustment, 0);
+});
+
 test("constructs one report client, cache, and background extraction lane", async () => {
   let extractPdfPages = null;
   let disposed = false;

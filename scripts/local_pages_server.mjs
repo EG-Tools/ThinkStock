@@ -1515,36 +1515,42 @@ export async function createThinkStockServer(options = {}) {
           const forceRefresh = ["1", "true", "yes"].includes(
             String(requestUrl.searchParams.get("refresh") || "").toLowerCase(),
           );
-          if (!Array.isArray(payload?.vixRows) || !payload.vixRows.length) {
-            if (fredApiKey) {
-              try {
-                if (forceRefresh || localVixCache?.checkedDate !== today) {
-                  const rows = await fetchFredSeries(fetchImpl, fredApiKey, "VIXCLS", "1990-01-01");
-                  localVixCache = {
-                    checkedDate: today,
-                    rows: rows.map((row) => ({ date: row.date, vix: row.value })),
-                  };
-                }
-                if (localVixCache?.rows?.length) {
-                  payload = {
-                    ...payload,
-                    latestDate: [
-                      payload?.latestDate || "",
-                      localVixCache.rows.at(-1)?.date || "",
-                    ].sort().at(-1),
-                    vixRows: localVixCache.rows,
-                    vixSource: "FRED VIXCLS (local fallback)",
-                  };
-                }
-              } catch (error) {
-                payload = {
-                  ...payload,
-                  warning: [
-                    payload?.warning,
-                    `FRED VIX 보완 지연: ${error?.message || error}`,
-                  ].filter(Boolean).join(" / "),
+          if (fredApiKey) {
+            try {
+              const workerVixRows = Array.isArray(payload?.vixRows) ? payload.vixRows : [];
+              const workerLatestDate = String(workerVixRows.at(-1)?.date || "").slice(0, 10);
+              if (forceRefresh || localVixCache?.checkedDate !== today) {
+                const rows = await fetchFredSeries(
+                  fetchImpl,
+                  fredApiKey,
+                  "VIXCLS",
+                  workerLatestDate || "1990-01-01",
+                );
+                localVixCache = {
+                  checkedDate: today,
+                  rows: rows.map((row) => ({ date: row.date, vix: row.value })),
                 };
               }
+              const directLatestDate = String(localVixCache?.rows?.at(-1)?.date || "").slice(0, 10);
+              if (directLatestDate && directLatestDate > workerLatestDate) {
+                const merged = new Map(workerVixRows.map((row) => [row.date, row]));
+                localVixCache.rows.forEach((row) => merged.set(row.date, row));
+                const vixRows = [...merged.values()].sort((left, right) => left.date.localeCompare(right.date));
+                payload = {
+                  ...payload,
+                  latestDate: [payload?.latestDate || "", directLatestDate].sort().at(-1),
+                  vixRows,
+                  vixSource: "FRED VIXCLS (local latest check)",
+                };
+              }
+            } catch (error) {
+              payload = {
+                ...payload,
+                warning: [
+                  payload?.warning,
+                  `FRED VIX 보완 지연: ${error?.message || error}`,
+                ].filter(Boolean).join(" / "),
+              };
             }
           }
           const upstreamSource = String(payload?.source || "");

@@ -427,7 +427,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "2.93";
+const APP_VERSION = "2.94";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -4518,11 +4518,7 @@ function updateHandles() {
 
   el.data.forEach((trace, traceIndex) => {
     const seriesKey = String(trace?.meta?.seriesKey || "");
-    if (!seriesKey
-      || trace.visible === "legendonly"
-      || trace?.meta?.isAiForecastTrace
-      || trace?.meta?.isAiForecastBand
-      || !baseTraceValues[seriesKey]) return;
+    if (!mainChartRenderer.isSeriesHandleTrace(trace, baseTraceValues)) return;
     const { first, last } = mainChartRenderer.visibleEndpointValues(trace, trace.y, xa.range);
     if (!Number.isFinite(first) || !Number.isFinite(last)) return;
     const toPixelY = (value) => {
@@ -4587,11 +4583,13 @@ function mainSeriesTraceIndex(el, seriesKey, preferredIndex = null) {
     preferred?.meta?.seriesKey === seriesKey
     && !preferred?.meta?.isAiForecastTrace
     && !preferred?.meta?.isAiForecastBand
+    && !preferred?.meta?.isAiForecastScenarioTrace
   ) return preferredIndex;
   return (el?.data || []).findIndex((trace) => (
     trace?.meta?.seriesKey === seriesKey
     && !trace?.meta?.isAiForecastTrace
     && !trace?.meta?.isAiForecastBand
+    && !trace?.meta?.isAiForecastScenarioTrace
   ));
 }
 
@@ -5654,11 +5652,15 @@ async function requestBrokerResearchForTicker(ticker, options = {}) {
       target,
     ).catch(() => null);
     if (existingRecord?.summary && !brokerResearchByTicker.has(target)) {
-      brokerResearchByTicker.set(target, existingRecord.summary);
+      brokerResearchByTicker.set(
+        target,
+        aiFeature.brokerRuntime.toReferenceOnlySummary(existingRecord.summary, null, koreanDateText()),
+      );
     }
     const record = await getBrokerResearchService().loadTicker(target, {
       asOfDate: koreanDateText(),
       forceNetwork,
+      referenceOnly: true,
       listRefreshAfterDays: 1,
       existingRecord,
       onProgress: (progress, label) => {
@@ -5676,11 +5678,6 @@ async function requestBrokerResearchForTicker(ticker, options = {}) {
         if (chartSession.showAiForecast) requestAiForecastRender(lastAiForecastTraceCount > 0);
       },
     });
-    const evaluationRows = getTickerPricePointsFromPayload(target);
-    if (evaluationRows.length) {
-      void getBrokerResearchService().evaluateTicker?.(target, evaluationRows, { record })
-        .catch(() => null);
-    }
     const currentReference = brokerResearchByTicker.get(target)?.representativeReports?.reference || null;
     const finalSummary = aiFeature.brokerRuntime.mergeReferenceSummary(
       record?.summary || null,

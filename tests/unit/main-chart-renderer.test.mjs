@@ -42,6 +42,23 @@ test("anchors drag handles to endpoints inside the visible date range", () => {
   assert.deepEqual(endpoints, { first: 110, last: 130 });
 });
 
+test("creates scale handles only for real series traces", () => {
+  const values = { "005930.KS": [100, 101] };
+  assert.equal(renderer.isSeriesHandleTrace(trace("005930.KS"), values), true);
+  assert.equal(renderer.isSeriesHandleTrace({
+    ...trace("005930.KS"),
+    meta: { seriesKey: "005930.KS", isAiForecastTrace: true },
+  }, values), false);
+  assert.equal(renderer.isSeriesHandleTrace({
+    ...trace("005930.KS"),
+    meta: { seriesKey: "005930.KS", isAiForecastBand: true },
+  }, values), false);
+  assert.equal(renderer.isSeriesHandleTrace({
+    ...trace("005930.KS"),
+    meta: { seriesKey: "005930.KS", isAiForecastScenarioTrace: true },
+  }, values), false);
+});
+
 test("builds sampled line traces without reconnecting missing source values", () => {
   const result = renderer.buildLineTraces({
     seriesModels: [{

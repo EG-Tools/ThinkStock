@@ -147,7 +147,7 @@ test("local crisis route fills an older Worker response with official FRED VIX",
       { date: "2026-08-11", vix: 15.28 },
     ]);
     assert.deepEqual(second.vixRows, first.vixRows);
-    assert.equal(first.vixSource, "FRED VIXCLS (local fallback)");
+    assert.equal(first.vixSource, "FRED VIXCLS (local latest check)");
     assert.equal(fredRequests, 1);
   } finally {
     server.close();
