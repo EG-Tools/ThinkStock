@@ -28,6 +28,7 @@ import {
   detectResearchHistoryRebase,
   projectResearchHistoryPayload,
   evaluateNaverPriceFallback,
+  fetchLiveVkospiRows,
   parseMajorHolderDocument,
   parseConsensusHtml,
   parseEarningsTrendHtml,
@@ -230,6 +231,33 @@ test("serves cached public VIX data without a personal access token or forced up
   assert.equal(response.status, 200);
   assert.equal(payload.cached, true);
   assert.deepEqual(payload.vixRows, [{ date: officialDate, vix: 19.5 }]);
+});
+
+test("uses Browser Run when Cloudflare receives a Stockplus VKOSPI 403", async () => {
+  const originalFetch = globalThis.fetch;
+  let browserCalls = 0;
+  globalThis.fetch = async () => Response.json({ error: "blocked" }, { status: 403 });
+  try {
+    const result = await fetchLiveVkospiRows({
+      BROWSER_QUICK_ACTION_INTERVAL_MS: "0",
+      BROWSER: {
+        quickAction: async (action, options) => {
+          browserCalls += 1;
+          assert.equal(action, "content");
+          assert.match(options.url, /KOREA-O2901P.*limit=10/);
+          return Response.json({
+            success: true,
+            result: `<pre>{&quot;dayCandles&quot;:[{&quot;date&quot;:&quot;2026-08-20T09:00:00+09:00&quot;,&quot;tradePrice&quot;:57.26}]}</pre>`,
+          });
+        },
+      },
+    }, [{ date: "2026-08-19", vkospi: 54.2 }], new Date("2026-08-20T04:00:00Z"));
+    assert.equal(browserCalls, 1);
+    assert.deepEqual(result.point, { date: "2026-08-20", vkospi: 57.26 });
+    assert.equal(result.rows.at(-1).date, "2026-08-20");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("returns authenticated ADR data and reuses the short Worker cache", async () => {

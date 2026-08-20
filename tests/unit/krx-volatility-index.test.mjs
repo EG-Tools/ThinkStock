@@ -14,6 +14,7 @@ import {
   vkospiBackfillDates,
   vkospiPointFromRows,
   vkospiPointFromStockplusPayload,
+  vkospiRowsFromStockplusBrowserContent,
   vkospiRowsFromStockplusPayload,
   withVkospiChanges,
 } from "../../shared/krx-volatility-index.mjs";
@@ -124,6 +125,16 @@ test("normalizes Stockplus VKOSPI candles inside the official history range", ()
   }, { to: "2026-08-11" }), [
     { date: "2026-08-11", vkospi: 61.68 },
   ]);
+});
+
+test("normalizes Browser Run wrapped Stockplus JSON", () => {
+  const payload = JSON.stringify({
+    dayCandles: [{ date: "2026-08-20T09:00:00+09:00", tradePrice: 57.26 }],
+  }).replaceAll('"', "&quot;");
+  assert.deepEqual(vkospiRowsFromStockplusBrowserContent(JSON.stringify({
+    success: true,
+    result: `<html><body><pre>${payload}</pre></body></html>`,
+  })), [{ date: "2026-08-20", vkospi: 57.26 }]);
 });
 
 test("extracts and fetches the current Stockplus VKOSPI candle", async () => {

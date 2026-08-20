@@ -29,7 +29,9 @@ import {
   mergeVkospiRows,
   planVkospiSource,
   shouldRememberEmptyVkospiDate,
+  STOCKPLUS_VKOSPI_ENDPOINT,
   vkospiBackfillDates,
+  vkospiRowsFromStockplusBrowserContent,
 } from "../../shared/krx-volatility-index.mjs";
 import {
   fetchYahooVixRows,
@@ -210,6 +212,7 @@ const CREDIT_CACHE_KEY = `credit-macro:${CREDIT_CACHE_SCHEMA}`;
 const CREDIT_SYNC_MAX_BYTES = 64 * 1024;
 const CREDIT_SYNC_MAX_ROWS = 45;
 const INDEXERGO_BROWSER_MAX_BYTES = 256 * 1024;
+const STOCKPLUS_BROWSER_MAX_BYTES = 256 * 1024;
 const VIX_BROWSER_MAX_BYTES = 256 * 1024;
 const BROWSER_QUICK_ACTION_INTERVAL_MS = 10_250;
 const ADR_CACHE_SCHEMA = 1;
@@ -505,12 +508,38 @@ function combineWarnings(...warnings) {
   return [...new Set(warnings.map((value) => String(value || "").trim()).filter(Boolean))].join(" / ");
 }
 
-async function fetchLiveVkospiRows(rows, now = new Date()) {
-  const recentRows = await fetchStockplusVkospiRows(fetch, {
-    expectedDate: koreanDateText(now),
-    limit: 10,
-    signal: AbortSignal.timeout(10000),
-  });
+export async function fetchLiveVkospiRows(env, rows, now = new Date()) {
+  const expectedDate = koreanDateText(now);
+  let recentRows;
+  try {
+    recentRows = await fetchStockplusVkospiRows(fetch, {
+      expectedDate,
+      limit: 10,
+      signal: AbortSignal.timeout(10000),
+    });
+  } catch (directError) {
+    if (!directError?.retryable || !env?.BROWSER?.quickAction) throw directError;
+    const url = new URL(STOCKPLUS_VKOSPI_ENDPOINT);
+    url.searchParams.set("limit", "10");
+    const response = await queuedBrowserQuickAction(env, "content", {
+      url: url.toString(),
+      cacheTTL: 60,
+      gotoOptions: { waitUntil: "domcontentloaded", timeout: 15000 },
+      rejectResourceTypes: ["image", "media", "font", "stylesheet"],
+    });
+    const body = await readBoundedResponseText(
+      response,
+      STOCKPLUS_BROWSER_MAX_BYTES,
+      "Stockplus VKOSPI Browser Run",
+    );
+    if (!response.ok) {
+      throw new Error(`Stockplus VKOSPI Browser Run HTTP ${response.status}: ${body.slice(0, 160)}`);
+    }
+    recentRows = vkospiRowsFromStockplusBrowserContent(body);
+    if (!recentRows.length || recentRows.at(-1)?.date !== expectedDate) {
+      throw new Error("Stockplus VKOSPI Browser Run returned no current value");
+    }
+  }
   const point = recentRows.at(-1);
   return {
     point,
@@ -643,11 +672,16 @@ async function crisisSignalResponse(env, origin, refresh = false) {
     let liveWarning = "";
     if (nextSourcePlan.useStockplus) {
       try {
-        const live = await fetchLiveVkospiRows(vkospiRows, now);
+        const live = await fetchLiveVkospiRows(env, vkospiRows, now);
         vkospiRows = live.rows;
         livePoint = live.point;
       } catch (error) {
-        liveWarning = `증권플러스 VKOSPI 갱신 지연: ${error?.message || error}`;
+        const retainedSettlementValue = !nextSourcePlan.stockplusLiveWindow
+          && cached?.vkospiLive === true
+          && cached?.vkospiLiveDate === checkDate;
+        if (!retainedSettlementValue) {
+          liveWarning = `증권플러스 VKOSPI 갱신 지연: ${error?.message || error}`;
+        }
       }
     }
     const retainedLive = !nextSourcePlan.officialCurrent
@@ -813,12 +847,17 @@ async function crisisSignalResponse(env, origin, refresh = false) {
     if (nextSourcePlan.useStockplus) {
       vkospiLiveAttemptedAt = Date.now();
       try {
-        const live = await fetchLiveVkospiRows(vkospiRows, now);
+        const live = await fetchLiveVkospiRows(env, vkospiRows, now);
         vkospiRows = live.rows;
         livePoint = live.point;
         vkospiLiveCheckedAt = vkospiLiveAttemptedAt;
       } catch (error) {
-        liveWarning = `증권플러스 VKOSPI 장중 갱신 지연: ${error?.message || error}`;
+        const retainedSettlementValue = !nextSourcePlan.stockplusLiveWindow
+          && cached?.vkospiLive === true
+          && cached?.vkospiLiveDate === checkDate;
+        if (!retainedSettlementValue) {
+          liveWarning = `증권플러스 VKOSPI 장중 갱신 지연: ${error?.message || error}`;
+        }
       }
     }
     const retainedLive = !nextSourcePlan.officialCurrent
