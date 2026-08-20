@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { strToU8, zipSync } from "fflate";
 
-import { expectedLatestKoreanTradingDate, koreanDateText } from "../../shared/market-calendar.mjs";
+import {
+  expectedLatestKoreanTradingDate,
+  koreanDateText,
+  shiftIsoDate,
+} from "../../shared/market-calendar.mjs";
+import { expectedLatestKofiaDate } from "../../worker/src/kofia-client.mjs";
 
 import {
   handleRequest,
@@ -441,6 +446,7 @@ test("uses Browser Run to fill newer deployed credit and deposit values", async 
       KOFIA_API_KEY: "kofia-key",
       DISCLOSURE_CACHE: cache,
       BROWSER: browser,
+      BROWSER_QUICK_ACTION_INTERVAL_MS: "0",
     };
     const response = await handleRequest(request("/api/credit?refresh=1", { token: "private" }), env);
     const payload = await response.json();
@@ -453,7 +459,116 @@ test("uses Browser Run to fill newer deployed credit and deposit values", async 
     });
     assert.equal(browserCalls.length, 3);
     assert.ok(browserCalls.every(({ action }) => action === "content"));
-    assert.ok(browserCalls.every(({ options }) => options.cacheTTL === 300));
+    assert.ok(browserCalls.every(({ options }) => options.cacheTTL === 3600));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("does not spend Browser Run quota when official KOFIA rows are current", async () => {
+  const originalFetch = globalThis.fetch;
+  const expectedDate = expectedLatestKofiaDate();
+  const compact = expectedDate.replaceAll("-", "");
+  let freesisCalls = 0;
+  let browserCalls = 0;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("freesis.kofia.or.kr")) {
+      freesisCalls += 1;
+      return new Response('{"ds1":[{"TMPV3":12####}]}');
+    }
+    const isDeposit = String(url).includes("getSecuritiesMarketTotalCapitalInfo");
+    const item = isDeposit
+      ? { basDt: compact, invrDpsgAmt: "106575000000000" }
+      : { basDt: compact, crdTrFingScrs: "24487400000000", crdTrFingKosdaq: "6824600000000" };
+    return Response.json({
+      response: {
+        header: { resultCode: "00", resultMsg: "NORMAL SERVICE" },
+        body: { items: { item: [item] } },
+      },
+    });
+  };
+  try {
+    const response = await handleRequest(request("/api/credit?refresh=1", { token: "private" }), {
+      THINKSTOCK_ACCESS_TOKEN: "private",
+      KOFIA_API_KEY: "kofia-key",
+      DISCLOSURE_CACHE: memoryKv(),
+      BROWSER: {
+        quickAction: async () => {
+          browserCalls += 1;
+          throw new Error("Browser Run should not be called");
+        },
+      },
+      BROWSER_QUICK_ACTION_INTERVAL_MS: "0",
+    });
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.rows.at(-1).date, expectedDate);
+    assert.equal(payload.warning, undefined);
+    assert.equal(freesisCalls, 0);
+    assert.equal(browserCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("keeps a current saved mirror without repeating Browser Run", async () => {
+  const originalFetch = globalThis.fetch;
+  const expectedDate = expectedLatestKofiaDate();
+  const officialDate = shiftIsoDate(expectedDate, -1);
+  const cache = memoryKv();
+  await cache.put("credit-macro:5", JSON.stringify({
+    schema: 5,
+    savedAt: Date.now() - 60_000,
+    lastCheckedWindow: "",
+    rows: [{
+      date: expectedDate,
+      customer_deposit: 106.575,
+      kospi_credit: 24.4874,
+      kosdaq_credit: 6.8246,
+    }],
+    warning: "신용 잔고 INDEXerGO 지연: previous rate limit",
+  }));
+  let browserCalls = 0;
+  let upstreamCalls = 0;
+  globalThis.fetch = async (url) => {
+    upstreamCalls += 1;
+    if (String(url).includes("freesis.kofia.or.kr")) {
+      throw new Error("Freesis should not be called");
+    }
+    const isDeposit = String(url).includes("getSecuritiesMarketTotalCapitalInfo");
+    const item = isDeposit
+      ? { basDt: officialDate.replaceAll("-", ""), invrDpsgAmt: "105000000000000" }
+      : {
+        basDt: officialDate.replaceAll("-", ""),
+        crdTrFingScrs: "24000000000000",
+        crdTrFingKosdaq: "6700000000000",
+      };
+    return Response.json({
+      response: {
+        header: { resultCode: "00", resultMsg: "NORMAL SERVICE" },
+        body: { items: { item: [item] } },
+      },
+    });
+  };
+  try {
+    const response = await handleRequest(request("/api/credit?refresh=1", { token: "private" }), {
+      THINKSTOCK_ACCESS_TOKEN: "private",
+      KOFIA_API_KEY: "kofia-key",
+      DISCLOSURE_CACHE: cache,
+      BROWSER: {
+        quickAction: async () => {
+          browserCalls += 1;
+          throw new Error("Browser Run should not be called");
+        },
+      },
+      BROWSER_QUICK_ACTION_INTERVAL_MS: "0",
+    });
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.rows.at(-1).date, expectedDate);
+    assert.equal(payload.warning, undefined);
+    assert.equal(upstreamCalls, 0);
+    assert.equal(browserCalls, 0);
   } finally {
     globalThis.fetch = originalFetch;
   }

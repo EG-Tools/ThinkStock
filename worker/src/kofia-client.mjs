@@ -1,4 +1,7 @@
-import { koreanDateText } from "../../shared/market-calendar.mjs";
+import {
+  koreanDateText,
+  latestKoreanTradingDateOnOrBefore,
+} from "../../shared/market-calendar.mjs";
 
 const KOFIA_CREDIT_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getGrantingOfCreditBalanceInfo";
 const KOFIA_MARKET_FUNDS_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getSecuritiesMarketTotalCapitalInfo";
@@ -98,6 +101,13 @@ export function createKofiaClient(options = {}) {
   const wait = options.wait || ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
   const timeoutSignal = options.timeoutSignal || ((timeoutMs) => AbortSignal.timeout(timeoutMs));
   const indexergoEnabled = options.enableIndexergo === true;
+  const officialFreshThrough = isValidIsoDate(options.officialFreshThrough)
+    ? String(options.officialFreshThrough)
+    : "";
+  const cachedFreshThrough = options.cachedFreshThrough && typeof options.cachedFreshThrough === "object"
+    ? options.cachedFreshThrough
+    : {};
+  const indexergoAttempts = Math.max(1, Math.min(2, Number(options.indexergoAttempts) || 2));
   const fetchIndexergoHtml = typeof options.fetchIndexergoHtml === "function"
     ? options.fetchIndexergoHtml
     : null;
@@ -185,15 +195,15 @@ export function createKofiaClient(options = {}) {
 
   async function fetchIndexergoPoint(detailId) {
     let lastError = null;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    for (let attempt = 0; attempt < indexergoAttempts; attempt += 1) {
       try {
         const url = new URL(INDEXERGO_SERIES_URL);
         url.searchParams.set("detailId", detailId);
         url.searchParams.set("frq", "D");
-        url.searchParams.set("_", `${Date.now()}-${attempt}`);
         if (fetchIndexergoHtml) {
           return parseIndexergoLatestPoint(await fetchIndexergoHtml(url.toString()));
         }
+        url.searchParams.set("_", `${Date.now()}-${attempt}`);
         const response = await fetchFn(url, {
           cache: "no-store",
           headers: {
@@ -208,7 +218,7 @@ export function createKofiaClient(options = {}) {
         return parseIndexergoLatestPoint(await response.text());
       } catch (error) {
         lastError = error;
-        if (attempt === 0) await wait(350);
+        if (attempt + 1 < indexergoAttempts) await wait(350);
       }
     }
     throw lastError || new Error("INDEXerGO request failed");
@@ -274,8 +284,22 @@ export function createKofiaClient(options = {}) {
   }
 
   async function mergeAvailableSources(openApiRequest, freesisRequest, indexergoRequest, label) {
-    const [openApiResult, freesisResult, indexergoResult] = await Promise.allSettled([
+    const [openApiResult] = await Promise.allSettled([
       openApiRequest ? openApiRequest() : Promise.reject(new Error("KOFIA_API_KEY is not configured")),
+    ]);
+    const officialRows = openApiResult.status === "fulfilled" ? openApiResult.value : [];
+    const officialLatestDate = officialRows.at(-1)?.date || "";
+    const cachedLatestDate = label === "신용 잔고"
+      ? cachedFreshThrough.credit
+      : cachedFreshThrough.deposit;
+    const fallbackAlreadyFresh = isValidIsoDate(cachedLatestDate)
+      && cachedLatestDate >= officialFreshThrough;
+    if (officialRows.length && officialFreshThrough
+      && (officialLatestDate >= officialFreshThrough || fallbackAlreadyFresh)) {
+      Object.defineProperty(officialRows, SOURCE_WARNINGS, { value: [] });
+      return officialRows;
+    }
+    const [freesisResult, indexergoResult] = await Promise.allSettled([
       freesisRequest(),
       indexergoRequest
         ? indexergoRequest()
@@ -286,7 +310,7 @@ export function createKofiaClient(options = {}) {
     const rows = mergeCreditRows(
       indexergoResult.status === "fulfilled" ? indexergoResult.value : [],
       mergeCreditRows(
-        openApiResult.status === "fulfilled" ? openApiResult.value : [],
+        officialRows,
         freesisResult.status === "fulfilled" ? freesisResult.value : [],
       ),
     );
@@ -358,6 +382,24 @@ export async function fetchKofiaCreditAndDepositRows(client, apiKey = "") {
       ...(depositResult.status === "fulfilled" ? depositResult.value[SOURCE_WARNINGS] || [] : []),
     ])],
   };
+}
+
+export function expectedLatestKofiaDate(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now).reduce((out, part) => {
+    out[part.type] = part.value;
+    return out;
+  }, {});
+  const today = `${parts.year}-${parts.month}-${parts.day}`;
+  const published = (Number(parts.hour) * 60) + Number(parts.minute) >= (9 * 60) + 31;
+  return latestKoreanTradingDateOnOrBefore(shiftDate(today, published ? -1 : -2));
 }
 
 export function creditRefreshWindowDate(now = new Date()) {

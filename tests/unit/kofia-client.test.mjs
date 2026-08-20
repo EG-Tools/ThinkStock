@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createKofiaClient,
+  expectedLatestKofiaDate,
   fetchKofiaCreditAndDepositRows,
   mergeCreditRows,
   parseFreesisPayload,
@@ -171,6 +172,78 @@ test("uses a newer INDEXerGO point but preserves same-day official precision", a
     { date: "2026-08-12", kospi_credit: 24.1988, kosdaq_credit: 6.2199 },
     { date: "2026-08-13", kospi_credit: 24.53, kosdaq_credit: 6.39 },
   ]);
+});
+
+test("skips fallback sources when official rows reach the expected publication date", async () => {
+  const requests = [];
+  const client = createKofiaClient({
+    enableIndexergo: true,
+    officialFreshThrough: "2026-08-19",
+    fetchIndexergoHtml: async () => {
+      throw new Error("INDEXerGO should not be called");
+    },
+    fetch: async (url) => {
+      requests.push(String(url));
+      if (!String(url).includes("apis.data.go.kr")) throw new Error("Freesis should not be called");
+      return textResponse(JSON.stringify({
+        response: {
+          header: { resultCode: "00" },
+          body: { items: { item: [{
+            basDt: "20260819",
+            crdTrFingScrs: "24487400000000",
+            crdTrFingKosdaq: "6824600000000",
+          }] } },
+        },
+      }));
+    },
+    timeoutSignal: () => undefined,
+  });
+
+  assert.deepEqual(await client.fetchCreditRows("key"), [{
+    date: "2026-08-19",
+    kospi_credit: 24.4874,
+    kosdaq_credit: 6.8246,
+  }]);
+  assert.equal(requests.length, 1);
+});
+
+test("skips fallback sources when the saved mirror already covers the expected date", async () => {
+  let fallbackCalls = 0;
+  const client = createKofiaClient({
+    enableIndexergo: true,
+    officialFreshThrough: "2026-08-19",
+    cachedFreshThrough: { credit: "2026-08-19" },
+    fetchIndexergoHtml: async () => {
+      fallbackCalls += 1;
+      throw new Error("INDEXerGO should not be called");
+    },
+    fetch: async (url) => {
+      if (!String(url).includes("apis.data.go.kr")) {
+        fallbackCalls += 1;
+        throw new Error("Freesis should not be called");
+      }
+      return textResponse(JSON.stringify({
+        response: {
+          header: { resultCode: "00" },
+          body: { items: { item: [{
+            basDt: "20260818",
+            crdTrFingScrs: "24300000000000",
+            crdTrFingKosdaq: "6700000000000",
+          }] } },
+        },
+      }));
+    },
+    timeoutSignal: () => undefined,
+  });
+
+  assert.equal((await client.fetchCreditRows("key")).at(-1).date, "2026-08-18");
+  assert.equal(fallbackCalls, 0);
+});
+
+test("derives the expected KOFIA publication date around the 09:31 cutoff", () => {
+  assert.equal(expectedLatestKofiaDate(new Date("2026-08-20T00:30:00Z")), "2026-08-18");
+  assert.equal(expectedLatestKofiaDate(new Date("2026-08-20T00:31:00Z")), "2026-08-19");
+  assert.equal(expectedLatestKofiaDate(new Date("2026-08-18T01:00:00Z")), "2026-08-14");
 });
 
 test("credit row merging ignores unpublished zero values", () => {

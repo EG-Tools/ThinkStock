@@ -94,6 +94,7 @@ import {
 import {
   createKofiaClient,
   creditRefreshWindowDate,
+  expectedLatestKofiaDate,
   fetchKofiaCreditAndDepositRows,
   mergeCreditRows,
   parseFreesisPayload,
@@ -210,6 +211,7 @@ const CREDIT_SYNC_MAX_BYTES = 64 * 1024;
 const CREDIT_SYNC_MAX_ROWS = 45;
 const INDEXERGO_BROWSER_MAX_BYTES = 256 * 1024;
 const VIX_BROWSER_MAX_BYTES = 256 * 1024;
+const BROWSER_QUICK_ACTION_INTERVAL_MS = 10_250;
 const ADR_CACHE_SCHEMA = 1;
 const ADR_CACHE_KEY = `adr-market:${ADR_CACHE_SCHEMA}:latest`;
 const ADR_CACHE_FRESH_MS = sourcePolicy("adr").liveConfirmMs;
@@ -221,6 +223,37 @@ const VKOSPI_LIVE_FRESH_MS = sourcePolicy("indices").liveConfirmMs;
 const VKOSPI_SETTLEMENT_RECHECK_MS = 15 * 60 * 1000;
 const ADR_SOURCE_URL = "https://www.adrinfo.kr/chart";
 const ADR_LEGACY_SOURCE_URL = "http://www.adrinfo.kr/chart";
+
+let browserQuickActionQueue = Promise.resolve();
+let browserQuickActionStartedAt = 0;
+
+function browserQuickActionInterval(env) {
+  if (Object.prototype.hasOwnProperty.call(env || {}, "BROWSER_QUICK_ACTION_INTERVAL_MS")) {
+    return Math.max(0, Math.min(60_000, Number(env.BROWSER_QUICK_ACTION_INTERVAL_MS) || 0));
+  }
+  return BROWSER_QUICK_ACTION_INTERVAL_MS;
+}
+
+function queuedBrowserQuickAction(env, action, options) {
+  const run = async () => {
+    const intervalMs = browserQuickActionInterval(env);
+    const attempts = intervalMs > 0 ? 2 : 1;
+    let response = null;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const waitMs = Math.max(0, intervalMs - (Date.now() - browserQuickActionStartedAt));
+      if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+      browserQuickActionStartedAt = Date.now();
+      response = await env.BROWSER.quickAction(action, options);
+      if (response?.status !== 429) return response;
+      await response.arrayBuffer().catch(() => null);
+    }
+    return response;
+  };
+  const pending = browserQuickActionQueue.then(run, run);
+  browserQuickActionQueue = pending.then(() => undefined, () => undefined);
+  return pending;
+}
+
 function normalizeSince(value, today) {
   const lowerBound = yearsBefore(today, LOOKBACK_YEARS);
   const candidate = String(value || "").slice(0, 10);
@@ -667,7 +700,7 @@ async function crisisSignalResponse(env, origin, refresh = false) {
             return { rows: [], error: String(directError?.message || directError) };
           }
           try {
-            const response = await env.BROWSER.quickAction("content", {
+            const response = await queuedBrowserQuickAction(env, "content", {
               url: yahooVixChartUrl({ cacheBust: Date.now() }),
               cacheTTL: 60,
               gotoOptions: { waitUntil: "domcontentloaded", timeout: 15000 },
@@ -848,18 +881,37 @@ async function creditMacroResponse(env, origin, refresh = false) {
     ? await readCacheBestEffort("credit", () => env.DISCLOSURE_CACHE.get(CREDIT_CACHE_KEY, "json"))
     : null;
   const windowDate = creditRefreshWindowDate();
-  const needsRefresh = refresh
-    || !cached || cached.schema !== CREDIT_CACHE_SCHEMA
-    || Boolean(windowDate && cached.lastCheckedWindow !== windowDate);
-  if (!needsRefresh) return jsonResponse({ ...cached, ok: true, cached: true }, 200, origin);
+  const expectedDate = expectedLatestKofiaDate();
+  const cachedRows = Array.isArray(cached?.rows) ? cached.rows : [];
+  const latestCachedDateFor = (keys) => cachedRows
+    .filter((row) => keys.every((key) => Number(row?.[key]) > 0))
+    .at(-1)?.date || "";
+  const cachedFreshThrough = {
+    credit: latestCachedDateFor(["kospi_credit", "kosdaq_credit"]),
+    deposit: latestCachedDateFor(["customer_deposit"]),
+  };
+  const cacheCoversExpectedDate = Boolean(expectedDate)
+    && cachedFreshThrough.credit >= expectedDate
+    && cachedFreshThrough.deposit >= expectedDate;
+  const refreshRequested = refresh
+    || Boolean(windowDate && cached?.lastCheckedWindow !== windowDate);
+  const needsRefresh = !cached || cached.schema !== CREDIT_CACHE_SCHEMA
+    || (refreshRequested && !cacheCoversExpectedDate);
+  if (!needsRefresh) {
+    const { warning: _staleSourceWarning, ...cleanCached } = cached;
+    return jsonResponse({ ...cleanCached, ok: true, cached: true }, 200, origin);
+  }
   try {
     const creditClient = env.BROWSER?.quickAction
       ? createKofiaClient({
         enableIndexergo: true,
+        officialFreshThrough: expectedDate,
+        cachedFreshThrough,
+        indexergoAttempts: 1,
         fetchIndexergoHtml: async (url) => {
-          const response = await env.BROWSER.quickAction("content", {
+          const response = await queuedBrowserQuickAction(env, "content", {
             url,
-            cacheTTL: 300,
+            cacheTTL: 3600,
             gotoOptions: { waitUntil: "domcontentloaded", timeout: 20000 },
             waitForSelector: { selector: "h1.visually-hidden", timeout: 20000 },
             rejectResourceTypes: ["image", "media", "font"],
