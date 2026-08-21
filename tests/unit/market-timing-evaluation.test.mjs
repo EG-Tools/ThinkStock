@@ -1,323 +1,380 @@
-import assert from "node:assert/strict";
 import test from "node:test";
+import assert from "node:assert/strict";
 
-await import("../../docs/modules/market-timing-evaluation.js");
-const evaluation = globalThis.ThinkStockMarketTimingEvaluation;
+import {
+  compactTimingSignalOutcome,
+  compareSellObjectives,
+  newTimingSignalRows,
+  stableTimingTickerBucket,
+  summarizeTimingGroups,
+  summarizeTimingOutcomes,
+  summarizeTimingSegments,
+  summarizeSellObjectives,
+  summarizeSellObjectiveGroups,
+  summarizeSellTailFailures,
+  sellObjectivePromotionDecision,
+  timingRegimeStability,
+  timingSidePromotionDecision,
+  timingTemporalStability,
+  timingValidationSafety,
+} from "../../shared/market-timing-evaluation.mjs";
 
-test("evaluates exceptional and ordinary timing signals in separate cohorts", () => {
-  const dates = Array.from({ length: 80 }, (_, index) => (
-    new Date(Date.UTC(2026, 0, 1 + index)).toISOString().slice(0, 10)
-  ));
-  const prices = dates.map((_, index) => 100 + index);
-  const grouped = evaluation.evaluateSignalsByEntryMode([
-    { date: dates[10], confirmationDate: dates[10], entryMode: "extreme-daily" },
-    { date: dates[20], confirmationDate: dates[20], entryMode: "overheat-continuation" },
-    { date: dates[30], confirmationDate: dates[30] },
-  ], "sell", dates, prices, [5]);
+function outcome({
+  ticker = "000001.KS",
+  date = "2024-01-02",
+  regime = "range",
+  hit = true,
+  type = "buy",
+} = {}) {
+  return {
+    ticker,
+    kind: "stock",
+    market: ticker.endsWith(".KQ") ? "KOSDAQ" : "KOSPI",
+    type,
+    date,
+    actionDate: date,
+    marketRegime: regime,
+    directional20: hit ? 0.1 : -0.1,
+    directional63: hit ? 0.1 : -0.1,
+    return20: type === "buy" ? (hit ? 0.1 : -0.1) : (hit ? -0.1 : 0.1),
+    return63: type === "buy" ? (hit ? 0.1 : -0.1) : (hit ? -0.1 : 0.1),
+    direction20: hit,
+    direction63: hit,
+    excursionHit: hit,
+    adverse20: hit ? -0.02 : -0.1,
+    favorable20: hit ? 0.15 : 0.03,
+    turningDistance: hit ? 0.01 : 0.05,
+    vkospiPercentile: 0.5,
+    tags: [],
+  };
+}
 
-  assert.deepEqual(Object.keys(grouped).sort(), ["extreme-daily", "overheat-continuation", "standard"]);
-  assert.equal(grouped["extreme-daily"].horizons[5].samples, 1);
-  assert.equal(grouped["overheat-continuation"].horizons[5].samples, 1);
-  assert.equal(grouped.standard.horizons[5].samples, 1);
-});
-
-test("evaluates signals from confirmation dates without future leakage", () => {
-  const dates = Array.from({ length: 90 }, (_, index) => {
-    const date = new Date("2026-01-01T00:00:00Z");
-    date.setUTCDate(date.getUTCDate() + index);
-    return date.toISOString().slice(0, 10);
-  });
-  const prices = dates.map((_, index) => index <= 40 ? 100 + index : 140 - (index - 40));
-  const quality = evaluation.evaluateMarketTimingModel({
-    signals: [{ date: dates[0], confirmationDate: dates[1] }],
-    sellSignals: [{ date: dates[40], confirmationDate: dates[41] }],
-  }, { dates, prices, horizons: [5, 20], indexKey: "^KS11" });
-
-  assert.equal(quality.buy.horizons[5].hitRate, 1);
-  assert.equal(quality.sell.horizons[20].hitRate, 1);
-  assert.ok(quality.buy.horizons[5].meanDirectionalReturn > 0);
-  assert.ok(quality.sell.horizons[20].meanDirectionalReturn > 0);
-  assert.ok(quality.buy.horizons[5].hitRateLowerBound < 1);
-  assert.equal(quality.context.market, "KOSPI");
-  assert.ok(quality.buy.horizons[20].meanMaxFavorableReturn > 0);
-  assert.equal(quality.buy.horizons[20].meanMaxAdverseReturn, 0);
-  assert.ok(quality.sell.horizons[20].meanMaxFavorableReturn > 0);
-  assert.equal(quality.pointInTimeSafe, true);
-});
-
-test("flags an impossible confirmation date before the detected signal", () => {
-  const quality = evaluation.evaluateMarketTimingModel({
-    signals: [{ date: "2026-01-03", confirmationDate: "2026-01-02" }],
-  }, { dates: ["2026-01-02", "2026-01-03"], prices: [100, 101], horizons: [1] });
-  assert.equal(quality.buy.invalidLookAhead, 1);
-  assert.equal(quality.pointInTimeSafe, false);
-});
-
-test("summarizes point-in-time safety and sample-weighted hit rates", () => {
-  const summary = evaluation.summarizeMarketTimingQuality(new Map([
-    ["^KS11", { quality: {
-      status: "usable",
-      matureSamples: 40,
-      pointInTimeSafe: true,
-      context: { cohort: "KOSPI:low", market: "KOSPI", volatilityGroup: "low" },
-      buy: { horizons: { 20: { samples: 10, hits: 7, hitRate: 0.7, meanDirectionalReturn: 0.04 } } },
-      sell: { horizons: { 20: { samples: 5, hits: 3, hitRate: 0.6, meanDirectionalReturn: 0.03 } } },
-    } }],
-    ["^KQ11", { quality: {
-      status: "limited",
-      matureSamples: 12,
-      pointInTimeSafe: false,
-      context: { cohort: "KOSDAQ:high", market: "KOSDAQ", volatilityGroup: "high" },
-      buy: { horizons: { 20: { samples: 10, hits: 5, hitRate: 0.5, meanDirectionalReturn: -0.02 } } },
-      sell: { horizons: { 20: { samples: 5, hits: 2, hitRate: 0.4, meanDirectionalReturn: 0.01 } } },
-    } }],
-  ]));
-
-  assert.equal(summary.modelCount, 2);
-  assert.equal(summary.evaluatedModels, 2);
-  assert.equal(summary.matureSamples, 52);
-  assert.equal(summary.pointInTimeUnsafe, 1);
-  assert.deepEqual(summary.statuses, { usable: 1, limited: 1, pending: 0, unknown: 0 });
-  assert.equal(summary.buy[20].hitRate, 0.6);
-  assert.equal(summary.sell[20].hitRate, 0.5);
-  assert.equal(summary.buy[20].meanDirectionalReturn, 0.01);
-  assert.equal(summary.sell[20].meanDirectionalReturn, 0.02);
-  assert.ok(summary.buy[20].hitRateLowerBound < summary.buy[20].hitRate);
-  assert.equal(summary.byCohort["KOSPI:low"].models, 1);
-  assert.equal(summary.byCohort["KOSDAQ:high"].sell[20].samples, 5);
-});
-
-test("uses a conservative confidence lower bound for small signal samples", () => {
-  assert.equal(evaluation.wilsonLowerBound(0, 0), null);
-  assert.ok(evaluation.wilsonLowerBound(3, 3) < 0.5);
-  assert.ok(evaluation.wilsonLowerBound(70, 100) > 0.6);
-});
-
-test("separates KOSPI and KOSDAQ volatility cohorts", () => {
-  const stable = Array.from({ length: 300 }, (_, index) => 100 + (index * 0.02));
-  const volatile = Array.from({ length: 300 }, (_, index) => 100 * Math.exp((index % 2 ? 1 : -1) * 0.04));
-
-  assert.equal(evaluation.classifyTimingContext("005930.KS", stable).cohort, "KOSPI:low");
-  assert.equal(evaluation.classifyTimingContext("247540.KQ", volatile).cohort, "KOSDAQ:high");
-});
-
-test("collapses repeated nearby markers into one signal episode", () => {
-  const dates = Array.from({ length: 40 }, (_, index) => (
-    new Date(Date.UTC(2026, 0, 1 + index)).toISOString().slice(0, 10)
-  ));
-  const episodes = evaluation.collapseSignalEpisodes([
-    { date: dates[5], confirmationDate: dates[5] },
-    { date: dates[7], confirmationDate: dates[7] },
-    { date: dates[20], confirmationDate: dates[20] },
-  ], dates, { minimumGap: 5 });
-  assert.equal(episodes.length, 2);
-  assert.equal(episodes[0].episodeSize, 2);
-  assert.equal(episodes[0].confirmationDate, dates[5]);
-});
-
-test("purges horizon overlap between development and chronological holdout", () => {
-  const dates = Array.from({ length: 100 }, (_, index) => (
-    new Date(Date.UTC(2026, 0, 1 + index)).toISOString().slice(0, 10)
-  ));
-  const signals = [10, 50, 65, 72, 90].map((index) => ({
-    date: dates[index],
-    confirmationDate: dates[index],
+function cohortRows({ date, regime, hitCount, samples = 60, tickerPrefix = "01" }) {
+  return Array.from({ length: samples }, (_, index) => outcome({
+    ticker: `${tickerPrefix}${String(index).padStart(4, "0")}.KS`,
+    date,
+    regime,
+    hit: index < hitCount,
   }));
-  const split = evaluation.buildPurgedTimingHoldout(signals, dates, {
-    horizons: [20],
-    holdoutRatio: 0.3,
-  });
-  assert.equal(split.holdoutStartDate, dates[70]);
-  assert.deepEqual(split.development.map((signal) => signal.date), [dates[10]]);
-  assert.deepEqual(split.holdout.map((signal) => signal.date), [dates[72], dates[90]]);
-  assert.equal(split.purged, 2);
-});
+}
 
-test("reports raw markers, episodes, and holdout coverage separately", () => {
-  const dates = Array.from({ length: 160 }, (_, index) => (
-    new Date(Date.UTC(2026, 0, 1 + index)).toISOString().slice(0, 10)
-  ));
-  const prices = dates.map((_, index) => 100 + index);
-  const quality = evaluation.evaluateMarketTimingModel({
-    signals: [10, 12, 40, 80, 120, 140].map((index) => ({
-      date: dates[index],
-      confirmationDate: dates[index],
-    })),
-    sellSignals: [],
-  }, { dates, prices, horizons: [5], indexKey: "^KS11", episodeOptions: { minimumGap: 5 } });
-  assert.equal(quality.rawSignalCount.buy, 6);
-  assert.equal(quality.episodeCount.buy, 5);
-  assert.ok(quality.holdoutMatureSamples > 0);
-  assert.equal(typeof quality.overfitRisk, "boolean");
-});
+test("summarizes timing quality and separates stock outcomes", () => {
+  const summary = summarizeTimingOutcomes([
+    outcome({ hit: true }),
+    outcome({ ticker: "000002.KS", hit: false }),
+  ]);
 
-test("quality gate rejects signals without enough honest holdout evidence", () => {
-  const gate = evaluation.evaluateMarketTimingQualityGate({
-    pointInTimeSafe: true,
-    overfitRisk: false,
-    validation: {
-      holdout: {
-        buy: { horizons: { 20: { samples: 2, hits: 2, hitRate: 1, meanDirectionalReturn: 0.1 } } },
-        sell: { horizons: { 20: { samples: 0 } } },
-      },
-    },
-  });
-  assert.equal(gate.eligible, false);
-  assert.ok(gate.reasons.includes("insufficient-holdout-samples"));
-});
-
-test("rejects a timing model whose apparent quality is concentrated in one year", () => {
-  const coverage = evaluation.timingTemporalCoverage(Array.from({ length: 14 }, (_, index) => ({
-    confirmationDate: index < 12
-      ? `2024-${String(index + 1).padStart(2, "0")}-01`
-      : `${2022 + index - 12}-01-03`,
-  })));
-  assert.equal(coverage.eligibleForCheck, true);
-  assert.equal(coverage.passed, false);
-
-  const gate = evaluation.evaluateMarketTimingQualityGate({
-    pointInTimeSafe: true,
-    overfitRisk: false,
-    temporalCoverage: coverage,
-    validation: {
-      holdout: {
-        buy: { horizons: { 20: { samples: 10, hits: 8, meanDirectionalReturn: 0.03 } } },
-        sell: { horizons: { 20: { samples: 10, hits: 8, meanDirectionalReturn: 0.03 } } },
-      },
-    },
-  });
-  assert.equal(gate.eligible, false);
-  assert.ok(gate.reasons.includes("temporally-concentrated-signals"));
-});
-
-test("measures development-to-holdout deterioration by signal side", () => {
-  const gap = evaluation.timingGeneralizationGap({
-    development: {
-      buy: { horizons: { 20: { samples: 20, hitRate: 0.8, meanDirectionalReturn: 0.08 } } },
-      sell: { horizons: { 20: { samples: 20, hitRate: 0.6, meanDirectionalReturn: 0.02 } } },
-    },
-    holdout: {
-      buy: { horizons: { 20: { samples: 8, hitRate: 0.4, meanDirectionalReturn: -0.01 } } },
-      sell: { horizons: { 20: { samples: 8, hitRate: 0.58, meanDirectionalReturn: 0.018 } } },
-    },
-  }, 20);
-  assert.equal(gap.bySide.buy.overfit, true);
-  assert.equal(gap.bySide.sell.overfit, false);
-  assert.equal(gap.overfit, true);
-});
-
-test("quality gate rejects a weak side even when the combined result looks healthy", () => {
-  const gate = evaluation.evaluateMarketTimingQualityGate({
-    pointInTimeSafe: true,
-    overfitRisk: false,
-    validation: {
-      holdout: {
-        buy: { horizons: { 20: {
-          samples: 20,
-          hits: 18,
-          hitRate: 0.9,
-          meanDirectionalReturn: 0.08,
-        } } },
-        sell: { horizons: { 20: {
-          samples: 8,
-          hits: 1,
-          hitRate: 0.125,
-          meanDirectionalReturn: -0.04,
-        } } },
-      },
-    },
-  });
-
-  assert.equal(gate.metrics.hitRate > 0.65, true);
-  assert.equal(gate.eligible, false);
-  assert.ok(gate.reasons.includes("sell-weak-hit-rate-lower-bound"));
-  assert.ok(gate.reasons.includes("sell-non-positive-holdout-return"));
-});
-
-test("quality gate rejects an entry mode that fails outside development data", () => {
-  const modeRow = (samples, hits, meanDirectionalReturn) => ({
-    horizons: { 20: {
-      samples,
-      hits,
-      hitRate: samples ? hits / samples : null,
-      meanDirectionalReturn,
-    } },
-  });
-  const gate = evaluation.evaluateMarketTimingQualityGate({
-    pointInTimeSafe: true,
-    overfitRisk: false,
-    validation: {
-      development: {
-        buy: modeRow(20, 15, 0.05),
-        sell: modeRow(0, 0, null),
-      },
-      holdout: {
-        buy: modeRow(20, 14, 0.03),
-        sell: modeRow(0, 0, null),
-      },
-      developmentByEntryMode: {
-        buy: { "extreme-daily": modeRow(8, 7, 0.08) },
-        sell: {},
-      },
-      holdoutByEntryMode: {
-        buy: { "extreme-daily": modeRow(8, 2, -0.02) },
-        sell: {},
-      },
-    },
-  });
-
-  assert.equal(gate.eligible, false);
-  assert.ok(gate.reasons.includes("buy-extreme-daily-development-holdout-gap"));
-  assert.ok(gate.reasons.includes("buy-extreme-daily-non-positive-holdout-return"));
-});
-
-test("records holdout timing quality by entry mode", () => {
-  const dates = Array.from({ length: 120 }, (_, index) => (
-    new Date(Date.UTC(2026, 0, 1 + index)).toISOString().slice(0, 10)
-  ));
-  const prices = dates.map((_, index) => 100 + index);
-  const quality = evaluation.evaluateMarketTimingModel({
-    signals: [80, 100].map((index, offset) => ({
-      date: dates[index],
-      confirmationDate: dates[index],
-      entryMode: offset ? "extreme-daily" : "standard",
-    })),
-    sellSignals: [],
-  }, { dates, prices, horizons: [5], holdoutRatio: 0.4 });
-
-  assert.equal(quality.validation.holdoutByEntryMode.buy.standard.horizons[5].samples, 1);
-  assert.equal(quality.validation.holdoutByEntryMode.buy["extreme-daily"].horizons[5].samples, 1);
-});
-
-test("promotes a timing challenger only when holdout quality improves", () => {
-  const quality = (hits, directionalReturn, adverseReturn = -0.03) => ({
-    pointInTimeSafe: true,
-    overfitRisk: false,
-    validation: {
-      holdout: {
-        buy: { horizons: { 20: {
-          samples: 20,
-          hits,
-          hitRate: hits / 20,
-          meanDirectionalReturn: directionalReturn,
-          meanMaxAdverseReturn: adverseReturn,
-          meanMaxFavorableReturn: 0.08,
-        } } },
-        sell: { horizons: { 20: { samples: 0 } } },
-      },
-    },
-  });
-  const result = evaluation.compareMarketTimingCandidates(
-    quality(11, 0.02),
-    quality(15, 0.045),
+  assert.equal(summary.stock.buy.samples, 2);
+  assert.equal(summary.stock.buy.direction20, 0.5);
+  assert.equal(summary.stock.buy.composite, 0.5);
+  assert.equal(summary.index.buy.samples, 0);
+  assert.equal(summary.index.buy.meanReturn20, null);
+  assert.equal(
+    summarizeTimingGroups([outcome({ regime: "range" })], (row) => row.marketRegime)
+      .range.stock.buy.samples,
+    1,
   );
-  assert.equal(result.promote, true);
-  assert.equal(result.decision, "promote-challenger");
+});
 
-  const unsafe = evaluation.compareMarketTimingCandidates(
-    quality(11, 0.02),
-    { ...quality(15, 0.045), pointInTimeSafe: false },
+test("temporal stability requires improvements to recur across recent windows", () => {
+  const periods = ["2022-06-01", "2023-06-01", "2024-06-01", "2025-06-01"];
+  const baseline = periods.flatMap((date, index) => cohortRows({
+    date,
+    regime: "range",
+    hitCount: 30,
+    tickerPrefix: `1${index}`,
+  }));
+  const candidate = periods.flatMap((date, index) => cohortRows({
+    date,
+    regime: "range",
+    hitCount: index === 2 ? 28 : 36,
+    tickerPrefix: `1${index}`,
+  }));
+  const stability = timingTemporalStability(baseline, candidate, "buy");
+
+  assert.equal(stability.validCohorts, 4);
+  assert.equal(stability.positiveCohorts, 3);
+  assert.ok(stability.meanCompositeDelta > 0);
+  assert.ok(stability.worstCompositeDelta < 0);
+});
+
+test("regime stability exposes a candidate that succeeds in only one market state", () => {
+  const regimes = ["risk-on", "range", "stress"];
+  const baseline = regimes.flatMap((regime, index) => cohortRows({
+    date: "2024-06-01",
+    regime,
+    hitCount: 30,
+    tickerPrefix: `2${index}`,
+  }));
+  const candidate = regimes.flatMap((regime, index) => cohortRows({
+    date: "2024-06-01",
+    regime,
+    hitCount: index === 0 ? 42 : 24,
+    tickerPrefix: `2${index}`,
+  }));
+  const stability = timingRegimeStability(baseline, candidate, "buy");
+
+  assert.equal(stability.validCohorts, 3);
+  assert.equal(stability.positiveCohorts, 1);
+  assert.ok(stability.worstCompositeDelta < 0);
+});
+
+test("validation safety includes long-term structural direction cohorts", () => {
+  const baselineRows = Array.from({ length: 20 }, (_, index) => ({
+    ...outcome({ ticker: `${String(index).padStart(6, "0")}.KS`, hit: index < 16 }),
+    structuralDirection: "range",
+  }));
+  const candidateRows = Array.from({ length: 20 }, (_, index) => ({
+    ...outcome({ ticker: `${String(index).padStart(6, "0")}.KS`, hit: index < 4 }),
+    structuralDirection: "range",
+  }));
+  const safety = timingValidationSafety(
+    summarizeTimingSegments(baselineRows),
+    summarizeTimingSegments(candidateRows),
   );
-  assert.equal(unsafe.promote, false);
-  assert.ok(unsafe.reasons.includes("point-in-time-unsafe"));
+
+  assert.equal(safety.passed, false);
+  assert.ok(safety.issues.some((issue) => (
+    issue.family === "byStructuralDirection" && issue.name === "range"
+  )));
+});
+
+test("new signal detection treats nearby dates as one timing episode", () => {
+  const baseline = [outcome({ date: "2024-01-10" })];
+  const candidate = [
+    outcome({ date: "2024-01-14" }),
+    outcome({ ticker: "000002.KS", date: "2024-01-14" }),
+  ];
+
+  assert.deepEqual(
+    newTimingSignalRows(candidate, baseline).map((row) => row.ticker),
+    ["000002.KS"],
+  );
+});
+
+test("promotion rejects an apparent average gain that fails across market regimes", () => {
+  const bucketZeroTickers = [];
+  for (let index = 0; bucketZeroTickers.length < 180; index += 1) {
+    const ticker = `${String(index).padStart(6, "0")}.KS`;
+    if (stableTimingTickerBucket(ticker) === 0) bucketZeroTickers.push(ticker);
+  }
+  const regimes = ["risk-on", "range", "stress"];
+  const baseline = regimes.flatMap((regime, regimeIndex) => (
+    Array.from({ length: 60 }, (_, index) => outcome({
+      ticker: bucketZeroTickers[(regimeIndex * 60) + index],
+      date: "2024-06-01",
+      regime,
+      hit: index < 30,
+    }))
+  ));
+  const candidateHits = [54, 24, 24];
+  const candidate = regimes.flatMap((regime, regimeIndex) => (
+    Array.from({ length: 60 }, (_, index) => outcome({
+      ticker: bucketZeroTickers[(regimeIndex * 60) + index],
+      date: "2024-06-01",
+      regime,
+      hit: index < candidateHits[regimeIndex],
+    }))
+  ));
+  const decision = timingSidePromotionDecision(baseline, candidate, "buy");
+
+  assert.equal(decision.promote, false);
+  assert.ok(decision.deltas.composite > 0);
+  assert.ok(decision.reasons.includes("cohort-regression"));
+  assert.ok(decision.reasons.includes("unstable-market-regimes"));
+});
+
+test("promotion excludes risk warnings from predictive accuracy", () => {
+  const tickers = [];
+  for (let index = 0; tickers.length < 120; index += 1) {
+    const ticker = `${String(index).padStart(6, "0")}.KS`;
+    if (stableTimingTickerBucket(ticker) === 0) tickers.push(ticker);
+  }
+  const baseline = tickers.map((ticker, index) => ({
+    ...outcome({ ticker, hit: index < 60 }),
+    signalRole: "predictive",
+  }));
+  const candidate = [
+    ...baseline,
+    ...tickers.map((ticker) => ({
+      ...outcome({ ticker, hit: false }),
+      signalRole: "warning",
+    })),
+  ];
+  const decision = timingSidePromotionDecision(baseline, candidate, "buy");
+
+  assert.equal(decision.candidate.samples, 120);
+  assert.equal(decision.deltas.composite, 0);
+  assert.deepEqual(decision.excludedWarnings, { baseline: 0, candidate: 120 });
+});
+
+test("sell objectives keep a quick correction separate from a medium trend reversal", () => {
+  const rows = [
+    {
+      ...outcome({ type: "sell" }),
+      return5: -0.06,
+      return10: -0.08,
+      return20: 0.02,
+      return63: 0.04,
+      directional20: -0.02,
+      directional63: -0.04,
+      direction5: true,
+      direction10: true,
+      direction20: false,
+      direction63: false,
+      persistentDirection: false,
+      excursion10Hit: true,
+      excursionHit: true,
+      daysToExcursion20: 4,
+    },
+    {
+      ...outcome({ ticker: "000002.KS", type: "sell" }),
+      return5: 0.02,
+      return10: 0.01,
+      return20: -0.05,
+      return63: -0.12,
+      directional20: 0.05,
+      directional63: 0.12,
+      direction5: false,
+      direction10: false,
+      direction20: true,
+      direction63: true,
+      persistentDirection: true,
+      excursion10Hit: false,
+      excursionHit: false,
+    },
+  ];
+
+  const summary = summarizeSellObjectives(rows);
+  assert.equal(summary.shortCorrection.composite, 0.5);
+  assert.equal(summary.shortCorrection.meanDaysToExcursion20, 4);
+  assert.equal(summary.shortCorrection.meanNetExcursion20, 0.13);
+  assert.equal(summary.shortCorrection.tailContainment20, 1);
+  assert.equal(summary.shortCorrection.lowerDecileDirectional20, -0.02);
+  assert.equal(summary.mediumTrendReversal.composite, 0.5);
+  assert.equal(summary.mediumTrendReversal.tailContainment63, 1);
+  assert.equal(summary.mediumTrendReversal.lowerDecileDirectional63, -0.04);
+  assert.equal(
+    summarizeSellObjectiveGroups(rows, (row) => row.signalFamily || "legacy").legacy.samples,
+    2,
+  );
+});
+
+test("compact signal diagnostics retain the short and medium objective fields", () => {
+  const compact = compactTimingSignalOutcome({
+    ...outcome({ type: "sell" }),
+    return5: -0.04,
+    return10: -0.08,
+    direction5: true,
+    direction10: true,
+    persistentDirection: false,
+    excursion10Hit: true,
+    daysToExcursion20: 6,
+  });
+
+  assert.equal(compact.return5, -0.04);
+  assert.equal(compact.direction10, true);
+  assert.equal(compact.excursion10Hit, true);
+  assert.equal(compact.daysToExcursion20, 6);
+});
+
+test("sell tail diagnostics retain only the worst predictive stock outcomes", () => {
+  const rows = [
+    {
+      ...outcome({ ticker: "000001.KS", type: "sell" }),
+      directional63: -0.45,
+      return63: 0.45,
+      signalRole: "predictive",
+    },
+    {
+      ...outcome({ ticker: "000002.KQ", type: "sell" }),
+      directional63: -0.2,
+      return63: 0.2,
+      signalRole: "predictive",
+    },
+    {
+      ...outcome({ ticker: "000003.KS", type: "sell" }),
+      directional63: -0.9,
+      return63: 0.9,
+      signalRole: "warning",
+    },
+  ];
+  const failures = summarizeSellTailFailures(rows, {
+    "000001.KS": "첫번째",
+    "000002.KQ": "두번째",
+  }, { limit: 1 });
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].ticker, "000001.KS");
+  assert.equal(failures[0].name, "첫번째");
+  assert.equal(failures[0].directionalReturn, -0.45);
+  assert.equal(failures[0].horizon, 63);
+});
+
+test("sell objective comparison exposes a short-term gain that harms trend reversal quality", () => {
+  const sellRow = (ticker, shortHit, mediumHit) => ({
+    ...outcome({ ticker, type: "sell" }),
+    return5: shortHit ? -0.05 : 0.03,
+    return10: shortHit ? -0.08 : 0.04,
+    return20: mediumHit ? -0.06 : 0.05,
+    return63: mediumHit ? -0.12 : 0.08,
+    direction5: shortHit,
+    direction10: shortHit,
+    direction20: mediumHit,
+    direction63: mediumHit,
+    persistentDirection: mediumHit,
+    excursion10Hit: shortHit,
+    excursionHit: shortHit,
+    daysToExcursion20: shortHit ? 5 : null,
+  });
+  const baseline = [
+    sellRow("000001.KS", true, true),
+    sellRow("000002.KS", true, true),
+    sellRow("000003.KS", false, false),
+    sellRow("000004.KS", false, false),
+  ];
+  const candidate = [
+    sellRow("000001.KS", true, true),
+    sellRow("000002.KS", true, false),
+    sellRow("000003.KS", true, false),
+    sellRow("000004.KS", false, false),
+  ];
+
+  const comparison = compareSellObjectives(baseline, candidate);
+  assert.equal(comparison.deltas.shortCorrection.composite, 0.25);
+  assert.equal(comparison.deltas.mediumTrendReversal.composite, -0.25);
+});
+
+test("sell objective promotion accepts one improved objective only when the other stays safe", () => {
+  const rows = (shortHits, mediumHits) => Array.from({ length: 40 }, (_, index) => ({
+    ...outcome({ ticker: `${String(index).padStart(6, "0")}.KS`, type: "sell" }),
+    return5: index < shortHits ? -0.05 : 0.04,
+    return10: index < shortHits ? -0.08 : 0.06,
+    return20: index < mediumHits ? -0.06 : 0.05,
+    return63: index < mediumHits ? -0.1 : 0.09,
+    directional5: index < shortHits ? 0.05 : -0.04,
+    directional10: index < shortHits ? 0.08 : -0.06,
+    directional20: index < mediumHits ? 0.06 : -0.05,
+    directional63: index < mediumHits ? 0.1 : -0.09,
+    direction5: index < shortHits,
+    direction10: index < shortHits,
+    direction20: index < mediumHits,
+    direction63: index < mediumHits,
+    persistentDirection: index < mediumHits,
+    excursion10Hit: index < shortHits,
+    excursionHit: index < shortHits,
+    daysToExcursion20: index < shortHits ? 5 : null,
+  }));
+  const baseline = rows(20, 20);
+  const safeCandidate = rows(24, 20);
+  const unsafeCandidate = rows(24, 10);
+
+  const accepted = sellObjectivePromotionDecision(baseline, safeCandidate, {
+    minimumSamples: 30,
+  });
+  const rejected = sellObjectivePromotionDecision(baseline, unsafeCandidate, {
+    minimumSamples: 30,
+  });
+  assert.equal(accepted.promote, true);
+  assert.deepEqual(accepted.promotedObjectives, ["short-correction"]);
+  assert.equal(rejected.promote, false);
 });

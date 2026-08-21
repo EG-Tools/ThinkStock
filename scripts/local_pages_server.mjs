@@ -12,7 +12,9 @@ import {
 } from "../shared/runtime-data-contract.mjs";
 import {
   expectedLatestKoreanTradingDate,
+  inspectDailyPriceHistoryDensity,
   isKoreanCurrentPriceWindow,
+  isKoreanMarketPricePoint,
   koreanDateText,
 } from "../shared/market-calendar.mjs";
 import {
@@ -429,8 +431,27 @@ export function parseLocalResearchHistory(text) {
     const close = krxIndexNumber(match[2]);
     const volume = krxIndexNumber(match[3]);
     if (!Number.isFinite(close) || close <= 0) continue;
+    if (!isKoreanMarketPricePoint(date, volume)) continue;
     rows.set(date, { date, close, volume: Number.isFinite(volume) && volume >= 0 ? volume : null });
   }
+  return [...rows.values()].sort((left, right) => left.date.localeCompare(right.date));
+}
+
+export function normalizeLocalResearchHistoryRows(sourceRows) {
+  const rows = new Map();
+  (Array.isArray(sourceRows) ? sourceRows : []).forEach((row) => {
+    const date = String(row?.date || "").slice(0, 10);
+    const close = Number(row?.close);
+    const volume = row?.volume == null || String(row.volume).trim() === ""
+      ? null
+      : Number(row.volume);
+    if (!Number.isFinite(close) || close <= 0 || !isKoreanMarketPricePoint(date, volume)) return;
+    rows.set(date, {
+      date,
+      close,
+      volume: Number.isFinite(volume) && volume >= 0 ? volume : null,
+    });
+  });
   return [...rows.values()].sort((left, right) => left.date.localeCompare(right.date));
 }
 
@@ -475,6 +496,7 @@ export function localResearchHistoryPointFromUniverse(existingRows, universeItem
     || latestClose <= 0
     || !Number.isFinite(latestTime)
     || !Number.isFinite(pointTime)
+    || !isKoreanMarketPricePoint(date, universeItem?.volume)
   ) return null;
   const calendarGap = Math.round((pointTime - latestTime) / 86400000);
   const ratio = close / latestClose;
@@ -491,6 +513,14 @@ function fiveYearsBefore(dateText) {
   const date = new Date(`${dateText}T00:00:00Z`);
   const month = date.getUTCMonth();
   date.setUTCFullYear(date.getUTCFullYear() - 5);
+  if (date.getUTCMonth() !== month) date.setUTCDate(0);
+  return date.toISOString().slice(0, 10);
+}
+
+function yearsBefore(dateText, years) {
+  const date = new Date(`${dateText}T00:00:00Z`);
+  const month = date.getUTCMonth();
+  date.setUTCFullYear(date.getUTCFullYear() - Math.max(1, Number(years) || 1));
   if (date.getUTCMonth() !== month) date.setUTCDate(0);
   return date.toISOString().slice(0, 10);
 }
@@ -531,19 +561,26 @@ export async function fetchLocalResearchHistory(
   now = new Date(),
   cacheDir = STOCK_RESEARCH_CACHE_DIR,
   universeItem = null,
+  options = {},
 ) {
   const match = TICKER_PATTERN.exec(String(ticker || "").trim().toUpperCase());
   if (!match) throw new Error("종목코드 형식이 올바르지 않습니다.");
   const target = `${match[1]}.${match[2]}`;
+  const fullHistory = options.fullHistory === true;
   const asOfDate = expectedLatestKoreanTradingDate(now);
-  const cachePath = path.join(cacheDir, `${target}.json`);
-  const cached = JSON.parse(await readFile(cachePath, "utf8").catch(() => "null"));
-  if (cached?.asOfDate === asOfDate && Array.isArray(cached?.rows) && cached.rows.length >= 252) {
+  const cachePath = path.join(cacheDir, `${target}${fullHistory ? ".full" : ""}.json`);
+  let cached = JSON.parse(await readFile(cachePath, "utf8").catch(() => "null"));
+  // Backtest prices can use a different adjusted-price basis. They must never
+  // seed the user-facing chart, even when an older local build persisted them.
+  if (fullHistory && cached?.source === "LOCAL_AI_HISTORY_CACHE") cached = null;
+  const cachedRows = Array.isArray(cached?.rows) ? cached.rows : [];
+  const existing = normalizeLocalResearchHistoryRows(cachedRows);
+  const cachedRowsAreClean = existing.length === cachedRows.length;
+  if (cached?.asOfDate === asOfDate && existing.length >= 252 && cachedRowsAreClean) {
     return { ...cached, ok: true, cached: true };
   }
-  const existing = Array.isArray(cached?.rows) ? cached.rows : [];
   const latestDate = existing.at(-1)?.date || "";
-  const cutoff = fiveYearsBefore(asOfDate);
+  const cutoff = fullHistory ? yearsBefore(asOfDate, 30) : fiveYearsBefore(asOfDate);
   const persist = async (payload) => {
     await mkdir(cacheDir, { recursive: true });
     const temporaryPath = `${cachePath}.tmp`;
@@ -551,7 +588,7 @@ export async function fetchLocalResearchHistory(
     await rename(temporaryPath, cachePath);
   };
   if (existing.length >= 252 && latestDate === asOfDate) {
-    const payload = { ...cached, schema: 1, ticker: target, asOfDate, latestDate };
+    const payload = { ...cached, schema: 1, ticker: target, asOfDate, latestDate, rows: existing };
     await persist(payload).catch(() => false);
     return { ok: true, cached: true, ...payload };
   }
@@ -605,13 +642,27 @@ export async function fetchLocalResearchHistory(
   });
   const rows = [...merged.values()].sort((left, right) => left.date.localeCompare(right.date));
   if (rows.length < 252) throw new Error("가격 이력이 1년 미만입니다.");
-  const payload = { schema: 1, ticker: target, asOfDate, latestDate: rows.at(-1).date, rebased, rows };
+  if (fullHistory) {
+    const olderDensity = inspectDailyPriceHistoryDensity(rows, { beforeDate: fiveYearsBefore(asOfDate) });
+    if (!olderDensity.dense) throw new Error("과거 가격 이력이 일별 자료가 아닙니다.");
+  }
+  const payload = {
+    schema: 1,
+    ticker: target,
+    asOfDate,
+    latestDate: rows.at(-1).date,
+    rebased,
+    source: fullHistory ? "NAVER_FULL_HISTORY" : "NAVER_HISTORY",
+    rows,
+  };
   await persist(payload).catch(() => false);
   return { ...payload, ok: true, cached: false };
   } catch (error) {
     if (existing.length >= 252) {
       return {
         ...cached,
+        rows: existing,
+        latestDate: existing.at(-1)?.date || "",
         ok: true,
         cached: true,
         stale: true,
@@ -1455,6 +1506,7 @@ export async function createThinkStockServer(options = {}) {
           new Date(),
           STOCK_RESEARCH_CACHE_DIR,
           universeItem ? { ...universeItem, date: researchUniverseCache.baseDate } : null,
+          { fullHistory: forceFull },
         );
         sendJson(request, response, 200, projectLocalResearchHistory(payload, sinceDate, forceFull));
       } catch (error) {

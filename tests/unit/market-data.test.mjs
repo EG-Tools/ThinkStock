@@ -76,6 +76,38 @@ test("detects overlap and boundary price rebases", () => {
   assert.equal(stable, null);
 });
 
+test("removes explicit zero-volume placeholder prices", () => {
+  assert.deepEqual(marketData.normalizeTickerPricePoints([
+    { date: "2017-05-01", close: 286371, volume: 0 },
+    { date: "2017-05-02", close: 287842, volume: 125000 },
+    { date: "2017-05-04", close: 292255 },
+  ]), [
+    { date: "2017-05-02", close: 287842, volume: 125000 },
+    { date: "2017-05-04", close: 292255 },
+  ]);
+});
+
+test("removes cached Korean equity values on non-trading dates without deleting valid market rows", () => {
+  const payload = marketData.sanitizeKoreanEquityPricePayload({
+    records: [
+      { date: "2017-04-28", "^KS11": 2205, "207940.KS": 266242 },
+      { date: "2017-05-01", "207940.KS": 286371, leading_cycle: 100.2 },
+      { date: "2017-05-02", "^KS11": 2219, "207940.KS": 272328 },
+      { date: "2017-06-01", "^KS11": 2344, "207940.KS": 348397 },
+    ],
+    series: ["^KS11", "207940.KS", "leading_cycle"],
+  }, {
+    isTradingDate: (date) => date !== "2017-05-01",
+  });
+
+  assert.deepEqual(payload.records, [
+    { date: "2017-04-28", "^KS11": 2205, "207940.KS": 266242 },
+    { date: "2017-05-01", leading_cycle: 100.2 },
+    { date: "2017-05-02", "^KS11": 2219, "207940.KS": 272328 },
+    { date: "2017-06-01", "^KS11": 2344, "207940.KS": 348397 },
+  ]);
+});
+
 
 test("aligns historical credit scale before using current KOFIA values", () => {
   const dates = ["2026-01-01", "2026-01-02", "2026-01-03"];

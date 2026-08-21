@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import {
+  inspectDailyPriceHistoryDensity,
+  isKoreanMarketPricePoint,
+} from "../../shared/market-calendar.mjs";
 
 await import("../../docs/modules/browser-market-client.js");
 
@@ -37,7 +41,7 @@ test("normalizes KRX stock rows and generates incremental Yahoo requests", () =>
   }]);
   assert.match(url, /period1=/);
   assert.match(url, /period2=/);
-  assert.match(client.buildYahooHistoryUrl("035420.KS"), /range=30y/);
+  assert.match(client.buildYahooHistoryUrl("035420.KS"), /range=max/);
 });
 
 
@@ -56,6 +60,34 @@ test("normalizes Yahoo history responses into sorted daily points", async () => 
   assert.deepEqual(points, [
     { date: "2026-01-01", close: 101, volume: 1100 },
     { date: "2026-01-02", close: 102, volume: 2200 },
+  ]);
+});
+
+test("rejects non-trading placeholders without removing real Korean trading dates", async () => {
+  const client = createClient(async () => ({
+    chart: {
+      result: [{
+        timestamp: [1493596800, 1496275200],
+        meta: { gmtoffset: 0 },
+        indicators: { quote: [{ close: [286371, 333083], volume: [0, 306967] }] },
+      }],
+    },
+  }), {
+    isValidPricePoint: ({ date, volume }) => isKoreanMarketPricePoint(date, volume),
+  });
+
+  assert.deepEqual(await client.fetchYahooHistorySeries("207940.KS"), [
+    { date: "2017-06-01", close: 333083, volume: 306967 },
+  ]);
+});
+
+test("drops explicit zero-volume placeholders while merging price sources", () => {
+  const client = createClient();
+  assert.deepEqual(client.mergePriceSeries([
+    { date: "2017-05-01", close: 286371, volume: 0 },
+    { date: "2017-05-02", close: 287842, volume: 125000 },
+  ]), [
+    { date: "2017-05-02", close: 287842, volume: 125000 },
   ]);
 });
 
@@ -89,6 +121,63 @@ test("uses KRX latest price when Yahoo is rate limited", async () => {
   assert.deepEqual(await client.fetchTickerHistorySeries("383220.KS"), [
     { date: "2026-08-03", close: 61800 },
   ]);
+});
+
+test("prefers the authenticated daily history source before the browser Yahoo fallback", async () => {
+  let yahooCalls = 0;
+  const preferred = Array.from({ length: 320 }, (_, index) => ({
+    date: new Date(Date.UTC(2025, 0, 2 + index)).toISOString().slice(0, 10),
+    close: 700000 + index,
+    volume: 10000 + index,
+  }));
+  const client = createClient(async () => {
+    yahooCalls += 1;
+    throw new Error("Yahoo should not be requested");
+  }, {
+    fetchPreferredHistory: async () => preferred,
+    fetchLatestPrice: async () => [],
+  });
+
+  const points = await client.fetchTickerHistorySeries("207940.KS");
+  assert.equal(points.length, 320);
+  assert.equal(points[0].date, preferred[0].date);
+  assert.equal(points.at(-1).date, preferred.at(-1).date);
+  assert.equal(yahooCalls, 0);
+});
+
+test("rejects a monthly preferred-history response before accepting a daily fallback", async () => {
+  const monthly = Array.from({ length: 60 }, (_, index) => ({
+    date: new Date(Date.UTC(2016 + Math.floor(index / 12), index % 12, 1)).toISOString().slice(0, 10),
+    close: 500000 + index,
+    volume: 10000 + index,
+  }));
+  const dailyTimestamps = Array.from({ length: 260 }, (_, index) => (
+    Date.parse(new Date(Date.UTC(2025, 0, 2 + index)).toISOString()) / 1000
+  ));
+  let yahooCalls = 0;
+  const client = createClient(async () => {
+    yahooCalls += 1;
+    return {
+      chart: {
+        result: [{
+          timestamp: dailyTimestamps,
+          meta: { gmtoffset: 0 },
+          indicators: { quote: [{
+            close: dailyTimestamps.map((_, index) => 700000 + index),
+            volume: dailyTimestamps.map((_, index) => 100000 + index),
+          }] },
+        }],
+      },
+    };
+  }, {
+    fetchPreferredHistory: async () => monthly,
+    fetchLatestPrice: async () => [],
+    validateHistory: (points) => inspectDailyPriceHistoryDensity(points).dense,
+  });
+
+  const points = await client.fetchTickerHistorySeries("207940.KS");
+  assert.equal(yahooCalls, 1);
+  assert.equal(points.length, 260);
 });
 
 test("uses prefetched latest points without requesting the same price twice", async () => {

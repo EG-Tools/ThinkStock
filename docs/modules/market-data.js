@@ -89,6 +89,31 @@
     };
   }
 
+  function sanitizeKoreanEquityPricePayload(raw, options = {}) {
+    const payload = sanitizePricePayload(raw);
+    if (!payload) return null;
+    const equityPattern = options.equityPattern instanceof RegExp
+      ? options.equityPattern
+      : /^\d{6}\.(KS|KQ)$/;
+    const isTradingDate = typeof options.isTradingDate === "function"
+      ? options.isTradingDate
+      : () => true;
+    const equitySeries = [...new Set([
+      ...(payload.series || []),
+      ...getSeriesColumns(payload.records),
+    ])].filter((key) => equityPattern.test(String(key)));
+    if (!equitySeries.length) return payload;
+
+    const records = payload.records.map((row) => {
+      const date = String(row?.date || "").slice(0, 10);
+      if (isTradingDate(date)) return row;
+      const next = { ...row };
+      equitySeries.forEach((key) => { delete next[key]; });
+      return next;
+    }).filter((row) => Object.keys(row).some((key) => key !== "date" && toNum(row[key]) !== null));
+    return { ...payload, records };
+  }
+
   function mergeRowsPreservingExisting(existingRows, incomingRows) {
     const byDate = new Map();
     normalizePayloadRecords(existingRows).forEach((row) => byDate.set(row.date, { ...row }));
@@ -173,6 +198,7 @@
       const close = toNum(point?.close);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || close === null) return;
       const volume = toNum(point?.volume);
+      if (volume !== null && volume <= 0) return;
       byDate.set(date, {
         date,
         close,
@@ -504,6 +530,7 @@
     normalizeFearGreedRows,
     copyDisplayNames,
     sanitizePricePayload,
+    sanitizeKoreanEquityPricePayload,
     mergeRowsPreservingExisting,
     mergeRowsPreferIncoming,
     mergePricePayloadPreservingExisting,

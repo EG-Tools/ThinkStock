@@ -18,6 +18,9 @@
     const buildExternalVolatilityTimingRows = options.buildExternalVolatilityTimingRows;
     const evaluateMarketTimingModel = options.evaluateMarketTimingModel;
     const buildStructuralStockProfile = options.buildStructuralStockProfile;
+    const behaviorPolicy = options.behaviorPolicy
+      || globalScope.ThinkStockMarketTiming?.PROMOTED_RUNTIME_BEHAVIOR_POLICY
+      || { enabled: true, buyEnabled: true, sellEnabled: false };
     if (typeof buildMacdOscillator !== "function" || typeof buildMarketTimingSignals !== "function") {
       throw new Error("market timing calculation dependencies are unavailable");
     }
@@ -80,6 +83,7 @@
         externalVolatilityRows,
         koreanVolatilityPolicy: { enabled: true },
         externalVolatilityPolicy: { enabled: true },
+        behaviorPolicy,
       });
       const quality = typeof evaluateMarketTimingModel === "function"
         ? evaluateMarketTimingModel(model, {

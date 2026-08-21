@@ -12,9 +12,11 @@ import {
   isAllowedOrigin,
   isPrivateAddress,
   fetchLocalKrxCoreIndices,
+  fetchLocalResearchHistory,
   fetchLocalResearchUniverse,
   detectLocalResearchHistoryRebase,
   localResearchHistoryPointFromUniverse,
+  normalizeLocalResearchHistoryRows,
   normalizeLocalResearchUniverseRows,
   parseLocalResearchHistory,
   projectLocalResearchHistory,
@@ -243,12 +245,75 @@ test("stock research stops requesting live prices after 4 PM Korea time", async 
 
 test("parses local Naver research history", () => {
   assert.deepEqual(parseLocalResearchHistory(`
+    <item data="20170501|100|110|90|105|0" />
     <item data="20260806|100|110|90|105|12345" />
     <item data="20260807|105|120|100|118|45678" />
   `), [
     { date: "2026-08-06", close: 105, volume: 12345 },
     { date: "2026-08-07", close: 118, volume: 45678 },
   ]);
+});
+
+test("repairs persisted local research rows while retaining a real June trading session", () => {
+  assert.deepEqual(normalizeLocalResearchHistoryRows([
+    { date: "2017-05-01", close: 286371, volume: 0 },
+    { date: "2017-05-02", close: 272328, volume: 89745 },
+    { date: "2017-06-01", close: 348397, volume: 300468 },
+  ]), [
+    { date: "2017-05-02", close: 272328, volume: 89745 },
+    { date: "2017-06-01", close: 348397, volume: 300468 },
+  ]);
+});
+
+test("full local chart history replaces a persisted AI backtest seed with Naver daily rows", async () => {
+  const cacheDir = await mkdtemp(path.join(os.tmpdir(), "thinkstock-display-history-"));
+  const buildRows = (startDate, count, base = 700000) => {
+    const rows = [];
+    const cursor = new Date(`${startDate}T00:00:00Z`);
+    while (rows.length < count) {
+      const weekday = cursor.getUTCDay();
+      if (weekday !== 0 && weekday !== 6) {
+        rows.push({
+          date: cursor.toISOString().slice(0, 10),
+          close: base + rows.length,
+          volume: 100000 + rows.length,
+        });
+      }
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+    return rows;
+  };
+  const contaminated = buildRows("2017-01-02", 300, 300000);
+  await writeFile(path.join(cacheDir, "207940.KS.full.json"), JSON.stringify({
+    schema: 1,
+    ticker: "207940.KS",
+    asOfDate: "2026-08-21",
+    latestDate: contaminated.at(-1).date,
+    source: "LOCAL_AI_HISTORY_CACHE",
+    rows: contaminated,
+  }), "utf8");
+
+  const naverRows = buildRows("2016-11-10", 320);
+  let requestedStartTime = "";
+  try {
+    const result = await fetchLocalResearchHistory(async (url) => {
+      requestedStartTime = new URL(url).searchParams.get("startTime") || "";
+      const xml = naverRows.map((row) => (
+        `<item data="${row.date.replaceAll("-", "")}|${row.close}|${row.close}|${row.close}|${row.close}|${row.volume}" />`
+      )).join("\n");
+      return new Response(xml, { status: 200 });
+    }, "207940.KS", new Date("2026-08-21T09:00:00Z"), cacheDir, null, {
+      fullHistory: true,
+    });
+
+    assert.equal(requestedStartTime, "19960821");
+    assert.equal(result.source, "NAVER_FULL_HISTORY");
+    assert.equal(result.rows[0].date, "2016-11-10");
+    assert.ok(result.rows.length >= 300);
+    assert.notEqual(result.rows[0].close, contaminated[0].close);
+  } finally {
+    await rm(cacheDir, { recursive: true, force: true });
+  }
 });
 
 test("detects a consistent split rebase but ignores ordinary price corrections", () => {

@@ -78,6 +78,8 @@
 
   function assessTicker(options = {}) {
     const item = options.item || {};
+    const behaviorPolicy = options.behaviorPolicy
+      || globalScope.ThinkStockMarketTiming?.PROMOTED_RUNTIME_BEHAVIOR_POLICY;
     const includeBuy = options.includeBuy !== false;
     const includeSell = options.includeSell === true;
     const todayOnly = options.todayOnly === true;
@@ -137,6 +139,7 @@
       externalVolatilityRows: options.externalVolatilityRows || [],
       koreanVolatilityPolicy: options.koreanVolatilityPolicy || {},
       externalVolatilityPolicy: options.externalVolatilityPolicy || {},
+      ...(behaviorPolicy ? { behaviorPolicy } : {}),
     });
     const dateIndexes = new Map(rows.map((row, index) => [row.date, index]));
     const latestIndex = rows.length - 1;

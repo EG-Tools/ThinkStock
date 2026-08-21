@@ -16,7 +16,10 @@ test("timing hover reasons stay concise while preserving the strongest evidence"
 test("timing signal popovers reuse the compact marker payload", () => {
   const group = markerModule.buildTimingSignalPopoverGroup({
     x: "2026-08-21",
-    customdata: ["삼성전자", "신용 과열 · MACD 반전", "8.2", "-1.3", "강", "slowdown", 5],
+    customdata: [
+      "삼성전자", "신용 과열 · MACD 반전", "8.2", "-1.3", "강", "slowdown", 5,
+      "trend-exhaustion", "추세형",
+    ],
     data: { name: "타이밍 매도신호", meta: { isMarketTimingSellTrace: true } },
   });
   assert.equal(group.name, "삼성전자");
@@ -26,7 +29,20 @@ test("timing signal popovers reuse the compact marker payload", () => {
     "근거: 신용 과열 · MACD 반전",
     "신용20일 8.2% · 고점대비 -1.3%",
     "시장 둔화 · 근거 5개",
+    "추세 소진 · 추세형",
   ]);
+});
+
+test("exceptional timing moves are labeled as warnings instead of predictions", () => {
+  const buy = markerModule.buildTimingSignalPopoverGroup({
+    x: "2026-08-21",
+    customdata: [
+      "삼성전자", "전일대비 30% 하락", "-", "-", "-", "이례", "stress", 2,
+      "shock-reversal", "고변동·모멘텀", "과매도 경고",
+    ],
+    data: { meta: { isMarketTimingBuyTrace: true } },
+  });
+  assert.equal(buy.events[0].title, "과매도 경고 · 이례");
 });
 
 function createRuntime(overrides = {}) {

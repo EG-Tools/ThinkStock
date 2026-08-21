@@ -1,6 +1,11 @@
 (function initThinkStockMainChartRenderer(globalScope) {
   "use strict";
 
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const KOREAN_EQUITY_PATTERN = /^\d{6}\.(?:KS|KQ)$/;
+  const LONG_NON_TRADING_GAP_DAYS = 10;
+  const NON_TRADING_MARKET_SESSIONS = 3;
+
   function traceIdentity(trace) {
     if (trace?.meta?.isCrisisSignalTrace) return "crisis-signal";
     if (trace?.meta?.isMarketTimingBuyTrace) return "market-timing-buy";
@@ -123,6 +128,87 @@
     }
     return { x, y, text, base };
   }
+
+  function lowerBoundTime(sortedTimes, target) {
+    let low = 0;
+    let high = sortedTimes.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (sortedTimes[middle] < target) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  }
+
+  function upperBoundTime(sortedTimes, target) {
+    let low = 0;
+    let high = sortedTimes.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (sortedTimes[middle] <= target) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  }
+
+  function marketSessionsBetween(sortedTimes, startTime, endTime) {
+    if (!Array.isArray(sortedTimes) || !sortedTimes.length) return 0;
+    return Math.max(
+      0,
+      lowerBoundTime(sortedTimes, endTime) - upperBoundTime(sortedTimes, startTime),
+    );
+  }
+
+  function carryNonTradingGaps(xValues, yValues, textValues = [], baseValues = [], options = {}) {
+    const x = Array.isArray(xValues) ? xValues : [];
+    const y = Array.isArray(yValues) ? [...yValues] : [];
+    const text = Array.isArray(textValues) ? [...textValues] : [];
+    const base = Array.isArray(baseValues) ? [...baseValues] : [];
+    const minimumGapDays = Math.max(
+      1,
+      Math.floor(Number(options.minimumGapDays) || LONG_NON_TRADING_GAP_DAYS),
+    );
+    const minimumMarketSessions = Math.max(
+      1,
+      Math.floor(Number(options.minimumMarketSessions) || NON_TRADING_MARKET_SESSIONS),
+    );
+    const marketTimes = Array.isArray(options.marketTimes)
+      ? options.marketTimes.filter(Number.isFinite).sort((left, right) => left - right)
+      : [];
+    let previousFiniteIndex = -1;
+    let filledPointCount = 0;
+
+    for (let index = 0; index < y.length; index += 1) {
+      if (!Number.isFinite(y[index])) continue;
+      if (previousFiniteIndex >= 0) {
+        const previousTime = Date.parse(String(x[previousFiniteIndex] || ""));
+        const currentTime = Date.parse(String(x[index] || ""));
+        const gapDays = Number.isFinite(previousTime) && Number.isFinite(currentTime)
+          ? Math.round((currentTime - previousTime) / DAY_MS)
+          : 0;
+        const missingMarketSessions = Number.isFinite(previousTime) && Number.isFinite(currentTime)
+          ? marketSessionsBetween(marketTimes, previousTime, currentTime)
+          : 0;
+        if (gapDays > minimumGapDays || missingMarketSessions >= minimumMarketSessions) {
+          for (let gapIndex = previousFiniteIndex + 1; gapIndex < index; gapIndex += 1) {
+            const gapTime = Date.parse(String(x[gapIndex] || ""));
+            if (!Number.isFinite(gapTime) || Number.isFinite(y[gapIndex])) continue;
+            y[gapIndex] = y[previousFiniteIndex];
+            base[gapIndex] = Number.isFinite(base[previousFiniteIndex])
+              ? base[previousFiniteIndex]
+              : null;
+            text[gapIndex] = String(options.missingText || "거래 없음");
+            filledPointCount += 1;
+          }
+        }
+      }
+      previousFiniteIndex = index;
+    }
+
+    return { x, y, text, base, filledPointCount };
+  }
+
+  const carryLongNonTradingGaps = carryNonTradingGaps;
 
   function visibleEndpointValues(trace, values = trace?.y, xRange = null) {
     const xValues = Array.isArray(trace?.x) ? trace.x : [];
@@ -345,6 +431,19 @@
         ? displayIndexes.map((index) => values[index])
         : values
     );
+    const modelBySeries = new Map(seriesModels.map((model) => [String(model?.series || ""), model]));
+    const marketTimes = Object.fromEntries([
+      ["KS", "^KS11"],
+      ["KQ", "^KQ11"],
+    ].map(([market, benchmark]) => {
+      const model = modelBySeries.get(benchmark);
+      const times = (Array.isArray(model?.xValues) ? model.xValues : []).flatMap((date, index) => (
+        Number.isFinite(model?.values?.[index]) && Number.isFinite(Date.parse(String(date || "")))
+          ? [Date.parse(String(date))]
+          : []
+      ));
+      return [market, times];
+    }));
     const baseValuesBySeries = {};
     const traces = seriesModels.map((model) => {
       const series = model?.series;
@@ -353,11 +452,15 @@
       const rawTexts = Array.isArray(model?.rawTexts) ? model.rawTexts : [];
       const baseValues = Array.isArray(model?.baseValues) ? model.baseValues : [];
       const baseLineWidth = model?.baseLineWidth;
+      const market = String(series || "").endsWith(".KQ") ? "KQ" : "KS";
+      const renderValues = KOREAN_EQUITY_PATTERN.test(String(series || ""))
+        ? carryNonTradingGaps(xValues, values, rawTexts, baseValues, { marketTimes: marketTimes[market] })
+        : { x: xValues, y: values, text: rawTexts, base: baseValues, filledPointCount: 0 };
       const tracePoints = finiteTracePoints(
-        pick(xValues),
-        pick(values),
-        pick(rawTexts),
-        pick(baseValues),
+        pick(renderValues.x),
+        pick(renderValues.y),
+        pick(renderValues.text),
+        pick(renderValues.base),
       );
       baseValuesBySeries[series] = tracePoints.base;
       const color = seriesColor(series);
@@ -373,7 +476,8 @@
         meta: {
           seriesKey: series,
           baseLineWidth,
-          sourcePointCount: xValues.length,
+           sourcePointCount: xValues.length,
+          longGapFillPointCount: renderValues.filledPointCount,
           displayPointCount: Number.isFinite(displayPointCount)
             ? displayPointCount
             : tracePoints.x.length,
@@ -578,6 +682,8 @@
     buildCursorHoverMode,
     buildLineTraces,
     buildLongRangeTicks,
+    carryNonTradingGaps,
+    carryLongNonTradingGaps,
     canApplyPartialUpdate,
     canApplyEventMarkerUpdate,
     canReconcileTraceStructure,

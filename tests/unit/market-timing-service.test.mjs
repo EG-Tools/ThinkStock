@@ -124,6 +124,9 @@ test("builds VKOSPI and VIX candidates from the shared volatility rows", async (
   ]);
   assert.equal(received.koreanVolatilityPolicy.enabled, true);
   assert.equal(received.externalVolatilityPolicy.enabled, true);
+  assert.equal(received.behaviorPolicy.enabled, true);
+  assert.equal(received.behaviorPolicy.buyEnabled, true);
+  assert.equal(received.behaviorPolicy.sellEnabled, false);
 });
 
 test("attaches point-in-time signal quality to locally calculated models", async () => {

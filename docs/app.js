@@ -59,7 +59,13 @@ const seriesTimelinePolicyModule = globalThis.ThinkStockSeriesTimelinePolicy;
 if (!seriesTimelinePolicyModule) throw new Error("Series timeline policy module failed to load");
 const marketCalendarModule = globalThis.ThinkStockMarketCalendar;
 if (!marketCalendarModule) throw new Error("Market calendar module failed to load");
-const { expectedLatestKoreanTradingDate, koreanDateText } = marketCalendarModule;
+const {
+  expectedLatestKoreanTradingDate,
+  inspectDailyPriceHistoryDensity,
+  isKoreanMarketPricePoint,
+  isKoreanTradingDate,
+  koreanDateText,
+} = marketCalendarModule;
 const runtimeFreshnessPolicyModule = globalThis.ThinkStockRuntimeFreshnessPolicy;
 if (!runtimeFreshnessPolicyModule) throw new Error("Runtime freshness policy module failed to load");
 const runtimeApiContractModule = globalThis.ThinkStockRuntimeApiContract;
@@ -70,6 +76,7 @@ const {
   getSeriesColumns,
   copyDisplayNames,
   sanitizePricePayload: sanitizePricePayloadForSnapshot,
+  sanitizeKoreanEquityPricePayload,
   mergeRowsPreservingExisting,
   mergeRowsPreferIncoming,
   mergePricePayloadPreservingExisting,
@@ -401,7 +408,7 @@ const DATA_CACHE_DB_VERSION = runtimeStorageContract.dbVersion;
 const DATA_CACHE_STORE_NAME = runtimeStorageContract.stores.snapshots;
 const DATA_CACHE_RECORD_KEY = runtimeStorageContract.snapshotRecordKey;
 const DATA_CACHE_LOCAL_KEY = runtimeStorageContract.localSnapshotKey;
-const DATA_CACHE_SCHEMA_VERSION = 10;
+const DATA_CACHE_SCHEMA_VERSION = 11;
 const DATA_CACHE_MAX_AGE_DAYS = 7;
 const RUNTIME_SNAPSHOT_FORMAT = "component-v1";
 const RUNTIME_SNAPSHOT_COMPONENT_KEYS = Object.freeze({
@@ -422,14 +429,14 @@ const TICKER_AI_FORECAST_JOURNAL_STORE_NAME = runtimeStorageContract.stores.tick
 const TICKER_RESEARCH_HISTORY_STORE_NAME = runtimeStorageContract.stores.tickerResearchHistory;
 const STOCK_RESEARCH_RESULTS_STORE_NAME = runtimeStorageContract.stores.stockResearchResults;
 const TICKER_BROKER_RESEARCH_STORE_NAME = runtimeStorageContract.stores.tickerBrokerResearch;
-const GRANULAR_CACHE_SCHEMA_VERSION = 1;
+const GRANULAR_CACHE_SCHEMA_VERSION = 5;
 const TICKER_DISCLOSURE_CACHE_SCHEMA_VERSION = 2;
 const GRANULAR_CACHE_PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "2.96";
+const APP_VERSION = "2.98";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -606,6 +613,9 @@ const DART_GATEWAY_DISCLOSURE_ENDPOINT = `${DART_GATEWAY_URL}/api/dart/disclosur
 const DART_GATEWAY_INSIDER_ENDPOINT = `${DART_GATEWAY_URL}/api/dart/insider-trades`;
 const KRX_GATEWAY_PRICE_ENDPOINT = `${DART_GATEWAY_URL}/api/prices`;
 const KRX_GATEWAY_PRICE_BATCH_ENDPOINT = `${DART_GATEWAY_URL}/api/prices/batch`;
+const TICKER_HISTORY_ENDPOINT = IS_LOCAL_RUNTIME
+  ? "./api/research/history"
+  : `${DART_GATEWAY_URL}/api/research/history`;
 const RUNTIME_GATEWAY_BOOTSTRAP_ENDPOINT = `${DART_GATEWAY_URL}/api/bootstrap`;
 const KRX_GATEWAY_INDEX_ENDPOINT = `${DART_GATEWAY_URL}/api/indices`;
 const ECOS_GATEWAY_MACRO_ENDPOINT = `${DART_GATEWAY_URL}/api/macro`;
@@ -740,6 +750,30 @@ const normalizeCreditRows = (rows) => runtimeSeriesMergeModule.normalizeCreditIn
 );
 const normalizeCrisisSignalRows = (rows) => runtimeSeriesMergeModule.normalizeCrisisRows(rows);
 const sameNullableNumber = (left, right) => runtimeSeriesMergeModule.sameNullableNumber(left, right);
+async function fetchPreferredTickerHistory(ticker, requestOptions = {}) {
+  const key = String(ticker || "").trim().toUpperCase();
+  if (!/^\d{6}\.(KS|KQ)$/.test(key)) return [];
+  const sinceDate = String(requestOptions.sinceDate || "").slice(0, 10);
+  const query = new URLSearchParams({ ticker: key });
+  if (sinceDate) query.set("since", sinceDate);
+  else query.set("full", "1");
+  const headers = {};
+  if (!IS_LOCAL_RUNTIME) {
+    const accessToken = getDartGatewayAccessToken();
+    if (!accessToken) throw new Error("Think Stock access token is unavailable");
+    headers.Authorization = `Bearer ${accessToken}`;
+  }
+  const response = await fetchWithTimeout(
+    appendCacheBust(`${TICKER_HISTORY_ENDPOINT}?${query}`),
+    { cache: "no-store", headers, signal: requestOptions.signal || null },
+    NETWORK_REQUEST_TIMEOUT_MS,
+  );
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || payload?.ok !== true) {
+    throw new Error(payload?.error || `Price history HTTP ${response.status}`);
+  }
+  return normalizeTickerPricePointsForTicker(payload.rows, key);
+}
 const browserMarketClient = browserMarketClientModule.createBrowserMarketClient({
   fetchJson: (...args) => fetchJsonWithProxyFallback(...args),
   appendCacheBust,
@@ -747,6 +781,18 @@ const browserMarketClient = browserMarketClientModule.createBrowserMarketClient(
   toNumber: toNum,
   dayMs: DAY_MS,
   fetchLatestPrice: fetchLatestKrxTickerSeries,
+  fetchPreferredHistory: fetchPreferredTickerHistory,
+  validateHistory: (points, requestOptions = {}) => {
+    if (requestOptions.sinceDate || points.length < 24) return true;
+    const latestDate = String(points.at(-1)?.date || "").slice(0, 10);
+    return inspectDailyPriceHistoryDensity(points, {
+      beforeDate: shiftDays(latestDate, -(365 * 5)),
+    }).dense;
+  },
+  isValidPricePoint: ({ ticker, date, volume }) => {
+    const isKoreanEquity = /^\d{6}\.(KS|KQ)$/.test(String(ticker || "").toUpperCase());
+    return !isKoreanEquity || isKoreanMarketPricePoint(date, volume);
+  },
 });
 const {
   fetchTickerHistorySeries,
@@ -1437,9 +1483,15 @@ function applySnapshotRevisions(revisions, loadedNames) {
   runtimeSnapshotRevisionTracker.applyRevisions(revisions, loadedNames);
 }
 
+function sanitizeRuntimePricePayload(raw) {
+  return sanitizeKoreanEquityPricePayload(raw, {
+    isTradingDate: (date) => isKoreanTradingDate(date),
+  });
+}
+
 function getSnapshotComponent(name) {
   return runtimeSnapshotRevisionTracker.getComponent(name, () => {
-    if (name === "price") return sanitizePricePayloadForSnapshot(pricePayload);
+    if (name === "price") return sanitizeRuntimePricePayload(pricePayload);
     if (name === "macro") return normalizePayloadRecords(macroRows);
     if (name === "credit") return normalizeCreditRows(creditRows);
     if (name === "adr") return normalizePayloadRecords(adrRows);
@@ -1509,7 +1561,7 @@ function isRuntimeSnapshotUsable(snapshot) {
 function applyRuntimeDataSnapshot(snapshot) {
   if (!isRuntimeSnapshotUsable(snapshot)) return false;
 
-  const safePricePayload = sanitizePricePayloadForSnapshot(snapshot.pricePayload);
+  const safePricePayload = sanitizeRuntimePricePayload(snapshot.pricePayload);
   const safeMacroRows = normalizePayloadRecords(snapshot.macroRows);
   const safeCreditRows = normalizeCreditRows(snapshot.creditRows);
   const safeAdrRows = normalizePayloadRecords(snapshot.adrRows);
@@ -3381,6 +3433,13 @@ function hasTickerVolumeHistory(ticker) {
   return getTickerPricePayloadController().hasVolumeHistory(ticker);
 }
 
+function normalizeTickerPricePointsForTicker(points, ticker = "") {
+  const key = String(ticker || "").trim().toUpperCase();
+  const normalized = normalizeTickerPricePoints(points);
+  if (!/^\d{6}\.(KS|KQ)$/.test(key)) return normalized;
+  return normalized.filter((point) => isKoreanMarketPricePoint(point.date, point.volume));
+}
+
 function getTickerPricePayloadController() {
   if (tickerPricePayloadController) return tickerPricePayloadController;
   tickerPricePayloadController = tickerPriceRuntimeModule.createPayloadController({
@@ -3388,7 +3447,7 @@ function getTickerPricePayloadController() {
     setPayload: (value) => { pricePayload = value; },
     volumesByTicker: tickerVolumeSeriesByTicker,
     toNumber: toNum,
-    normalizePoints: normalizeTickerPricePoints,
+    normalizePoints: normalizeTickerPricePointsForTicker,
     sameNumber: sameNullableNumber,
     assertPoints: (options) => runtimeSeriesQualityGateModule.assertPricePoints(options),
     displayName: (ticker) => DISPLAY_NAMES[ticker] || ticker,
@@ -3422,7 +3481,7 @@ async function readTickerPriceCache(ticker) {
       tickerSeriesCacheRetention.noteRemoved(key);
       return null;
     }
-    const points = normalizeTickerPricePoints(record.points);
+    const points = normalizeTickerPricePointsForTicker(record.points, key);
     const contentFingerprint = seriesIntegrityModule.fingerprintDatedSeries(
       points,
       ["close", "volume"],
@@ -3469,7 +3528,7 @@ function normalizeResearchHistoryCacheForTicker(value, ticker) {
   return tickerPriceRuntimeModule.normalizeResearchHistoryCache(
     value,
     ticker,
-    normalizeTickerPricePoints,
+    normalizeTickerPricePointsForTicker,
   );
 }
 
@@ -3477,7 +3536,7 @@ function tickerPriceCacheToResearchHistory(value, ticker) {
   return tickerPriceRuntimeModule.priceCacheToResearchHistory(
     value,
     ticker,
-    normalizeTickerPricePoints,
+    normalizeTickerPricePointsForTicker,
     { priceSchema: GRANULAR_CACHE_SCHEMA_VERSION },
   );
 }
@@ -3530,7 +3589,7 @@ async function readSharedResearchHistoryCaches(tickers) {
 
 async function writeTickerPriceCache(ticker, points, displayName = "", options = {}) {
   const key = String(ticker || "").trim().toUpperCase();
-  const normalized = normalizeTickerPricePoints(points);
+  const normalized = normalizeTickerPricePointsForTicker(points, key);
   if (!key || !normalized.length) return false;
   return runTickerPriceCacheMutation(async () => {
     await ensureTickerSeriesCacheRetention();
@@ -3687,7 +3746,7 @@ function getTickerSeriesLoader() {
     isCacheFresh: isTickerPriceCacheFresh,
     latestDate: getLatestTickerDateFromPricePayload,
     mergePoints: mergeTickerSeriesIntoPricePayload,
-    normalizePoints: normalizeTickerPricePoints,
+    normalizePoints: normalizeTickerPricePointsForTicker,
     setStatus: setTickerPriceStatus,
     throwIfAborted,
     writeCache: writeTickerPriceCache,

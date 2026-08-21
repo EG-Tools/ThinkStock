@@ -156,7 +156,7 @@
 
   function normalizeResearchHistoryCache(value, ticker, normalizePoints, options = {}) {
     const key = normalizeTicker(ticker);
-    const rows = typeof normalizePoints === "function" ? normalizePoints(value?.rows) : [];
+    const rows = typeof normalizePoints === "function" ? normalizePoints(value?.rows, key) : [];
     const schema = Number(options.schema) || 1;
     const minimumPoints = Math.max(1, Number(options.minimumPoints) || 252);
     if (Number(value?.schema) !== schema
@@ -174,7 +174,7 @@
 
   function priceCacheToResearchHistory(value, ticker, normalizePoints, options = {}) {
     const key = normalizeTicker(ticker);
-    const rows = typeof normalizePoints === "function" ? normalizePoints(value?.points) : [];
+    const rows = typeof normalizePoints === "function" ? normalizePoints(value?.points, key) : [];
     const priceSchema = Number(options.priceSchema);
     const researchSchema = Number(options.researchSchema) || 1;
     const minimumPoints = Math.max(1, Number(options.minimumPoints) || 252);
@@ -192,6 +192,15 @@
       lastAccessed: now,
       rows,
     };
+  }
+
+  function shouldReplaceFullHistory(existingPoints, incomingPoints, options = {}) {
+    const existing = Array.isArray(existingPoints) ? existingPoints : [];
+    const incoming = Array.isArray(incomingPoints) ? incomingPoints : [];
+    if (!incoming.length) return false;
+    if (!existing.length) return true;
+    const minimumCoverageRatio = Math.max(0.5, Math.min(1, Number(options.minimumCoverageRatio) || 0.8));
+    return incoming.length >= Math.floor(existing.length * minimumCoverageRatio);
   }
 
   function createPayloadController(options = {}) {
@@ -224,17 +233,20 @@
       return hadSeries;
     }
 
-    function merge(ticker, points) {
+    function merge(ticker, points, mergeOptions = {}) {
       const key = normalizeTicker(ticker);
-      const sourcePoints = Array.isArray(points) ? points : [];
-      const payload = getPayload();
+      const sourcePoints = normalizePoints(Array.isArray(points) ? points : [], key);
+      const currentPayload = getPayload();
+      const replacing = mergeOptions.replace === true;
+      const payload = replacing ? clearSeries(currentPayload, key) : currentPayload;
+      if (replacing) volumesByTicker.delete(key);
       options.assertPoints?.({ ticker: key, currentPayload: payload, incomingPoints: sourcePoints });
       const existingByDate = new Map((payload?.records || []).map((row) => [
         String(row?.date || "").slice(0, 10),
         row,
       ]));
       const volumes = new Map(volumesByTicker.get(key) || []);
-      let changed = !(payload?.series || []).includes(key);
+      let changed = replacing || !(payload?.series || []).includes(key);
       sourcePoints.forEach((point) => {
         const date = String(point?.date || "").slice(0, 10);
         const close = toNumber(point?.close);
@@ -254,7 +266,7 @@
     function points(ticker) {
       const key = normalizeTicker(ticker);
       const volumes = volumesByTicker.get(key);
-      return seriesPoints(getPayload(), key, normalizePoints).map((point) => ({
+      return seriesPoints(getPayload(), key, (values) => normalizePoints(values, key)).map((point) => ({
         ...point,
         ...(volumes?.has(point.date) ? { volume: volumes.get(point.date) } : {}),
       }));
@@ -307,7 +319,7 @@
       const signal = loadOptions.signal || null;
       const hasPrefetchedLatest = Object.prototype.hasOwnProperty.call(loadOptions, "latestPoints");
       const prefetchedLatest = hasPrefetchedLatest
-        ? options.normalizePoints(loadOptions.latestPoints)
+        ? options.normalizePoints(loadOptions.latestPoints, key)
         : [];
       throwIfAborted(signal);
       const cacheInfo = await options.applySharedCache(key, displayName);
@@ -370,7 +382,8 @@
           await options.invalidateCache(key, assessment);
         }
         throwIfAborted(signal);
-        options.mergePoints(key, points);
+        const replaceFullHistory = !sinceDate && shouldReplaceFullHistory(existingPoints, points);
+        options.mergePoints(key, points, { replace: replaceFullHistory });
         await options.writeCache(key, options.getPoints(key), displayName, {
           historyCoverage: HISTORY_COVERAGE_FULL,
         });
@@ -424,5 +437,6 @@
     priceCacheToResearchHistory,
     resolveHistoryFetchSinceDate,
     shouldTouchCacheRecord,
+    shouldReplaceFullHistory,
   });
 }(typeof self !== "undefined" ? self : globalThis));

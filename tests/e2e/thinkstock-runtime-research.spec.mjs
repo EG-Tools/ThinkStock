@@ -66,7 +66,7 @@ test("stock research popup preserves results while adding multiple candidates", 
   });
   await page.route("https://query2.finance.yahoo.com/v8/finance/chart/000001.KS**", async (route) => {
     const requestUrl = new URL(route.request().url());
-    if (requestUrl.searchParams.get("range") === "30y") fullHistoryRequests += 1;
+    if (requestUrl.searchParams.get("range") === "max") fullHistoryRequests += 1;
     await route.fulfill({ json: {
       chart: {
         result: [{
@@ -150,12 +150,21 @@ test("stock research popup preserves results while adding multiple candidates", 
     request.onsuccess = () => {
       const db = request.result;
       const tx = db.transaction("tickerResearchHistory", "readwrite");
-      const start = Date.parse("2025-10-01T00:00:00Z");
-      const rows = Array.from({ length: 300 }, (_, index) => ({
-        date: new Date(start + index * 86400000).toISOString().slice(0, 10),
-        close: 10000 + index,
-        volume: 1000000 + index,
-      }));
+      const rows = [];
+      const cursor = new Date("2025-01-02T00:00:00Z");
+      // Leave enough weekday rows for the runtime's Korean holiday filter to
+      // remove exchange closures while still exercising a 300+ point cache.
+      while (rows.length < 340) {
+        const weekday = cursor.getUTCDay();
+        if (weekday !== 0 && weekday !== 6) {
+          rows.push({
+            date: cursor.toISOString().slice(0, 10),
+            close: 10000 + rows.length,
+            volume: 1000000 + rows.length,
+          });
+        }
+        cursor.setUTCDate(cursor.getUTCDate() + 1);
+      }
       tx.objectStore("tickerResearchHistory").put({
         schema: 1,
         ticker: "000001.KS",

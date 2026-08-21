@@ -6,6 +6,7 @@
     const appendCacheBust = options.appendCacheBust || ((url) => url);
     const shiftDays = options.shiftDays;
     const toNumber = options.toNumber || ((value) => {
+      if (value == null || String(value).trim() === "") return null;
       const number = Number(value);
       return Number.isFinite(number) ? number : null;
     });
@@ -13,6 +14,15 @@
     const fetchLatestPrice = typeof options.fetchLatestPrice === "function"
       ? options.fetchLatestPrice
       : null;
+    const fetchPreferredHistory = typeof options.fetchPreferredHistory === "function"
+      ? options.fetchPreferredHistory
+      : null;
+    const validateHistory = typeof options.validateHistory === "function"
+      ? options.validateHistory
+      : () => true;
+    const isValidPricePoint = typeof options.isValidPricePoint === "function"
+      ? options.isValidPricePoint
+      : () => true;
     const baseInfoEndpoints = options.baseInfoEndpoints || {};
     const indexEndpoints = options.indexEndpoints || {};
     if (typeof fetchJson !== "function") throw new TypeError("fetchJson is required");
@@ -89,7 +99,7 @@
           return `${baseUrl}&period1=${period1}&period2=${period2}`;
         }
       }
-      return `${baseUrl}&range=30y`;
+      return `${baseUrl}&range=max`;
     }
 
     async function fetchYahooHistorySeries(ticker, requestOptions = {}) {
@@ -115,6 +125,7 @@
         const volume = toNumber(volumes[index]);
         if (!Number.isFinite(timestamp) || close === null) return;
         const date = new Date((timestamp + offsetSeconds) * 1000).toISOString().slice(0, 10);
+        if (!isValidPricePoint({ ticker, date, close, volume })) return;
         byDate.set(date, { close, volume: volume !== null && volume >= 0 ? volume : null });
       });
       return [...byDate.entries()]
@@ -135,6 +146,7 @@
           if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || close === null || close <= 0) return;
           const existing = byDate.get(date) || {};
           const volume = toNumber(point?.volume);
+          if (volume !== null && volume <= 0) return;
           byDate.set(date, {
             ...existing,
             date,
@@ -147,7 +159,28 @@
     }
 
     async function fetchTickerHistorySeries(ticker, requestOptions = {}) {
-      const tasks = [fetchYahooHistorySeries(ticker, requestOptions)];
+      const fetchPrimaryHistory = async () => {
+        let preferredError = null;
+        if (fetchPreferredHistory) {
+          try {
+            const preferred = await fetchPreferredHistory(ticker, requestOptions);
+            if (Array.isArray(preferred) && preferred.length
+              && validateHistory(preferred, requestOptions)) return preferred;
+          } catch (error) {
+            preferredError = error;
+          }
+        }
+        try {
+          const yahoo = await fetchYahooHistorySeries(ticker, requestOptions);
+          if (!validateHistory(yahoo, requestOptions)) {
+            throw new Error(`${ticker} full history is not daily data`);
+          }
+          return yahoo;
+        } catch (error) {
+          throw preferredError || error;
+        }
+      };
+      const tasks = [fetchPrimaryHistory()];
       const hasPrefetchedLatest = Object.prototype.hasOwnProperty.call(requestOptions, "latestPoints");
       if (!hasPrefetchedLatest && fetchLatestPrice) tasks.push(fetchLatestPrice(ticker, requestOptions));
       const results = await Promise.allSettled(tasks);

@@ -112,6 +112,49 @@ export function isKoreanTradingDate(dateText, options = {}) {
   return true;
 }
 
+export function isKoreanMarketPricePoint(dateText, volume, options = {}) {
+  if (!isKoreanTradingDate(dateText, options)) return false;
+  if (volume == null || String(volume).trim() === "") return true;
+  const numericVolume = Number(volume);
+  return !Number.isFinite(numericVolume) || numericVolume > 0;
+}
+
+export function inspectDailyPriceHistoryDensity(rows, options = {}) {
+  const beforeDate = normalizeIsoDate(options.beforeDate);
+  const dates = [...new Set((Array.isArray(rows) ? rows : [])
+    .map((row) => normalizeIsoDate(typeof row === "string" ? row : row?.date))
+    .filter((date) => date && (!beforeDate || date < beforeDate)))]
+    .sort();
+  if (dates.length < 24) {
+    return Object.freeze({ dense: true, samples: dates.length, spanDays: 0, medianGapDays: 0 });
+  }
+  const firstMs = Date.parse(`${dates[0]}T00:00:00Z`);
+  const lastMs = Date.parse(`${dates.at(-1)}T00:00:00Z`);
+  const spanDays = Math.max(0, Math.round((lastMs - firstMs) / DAY_MS));
+  if (spanDays < 180) {
+    return Object.freeze({ dense: true, samples: dates.length, spanDays, medianGapDays: 0 });
+  }
+  const gaps = [];
+  for (let index = 1; index < dates.length; index += 1) {
+    const gap = Math.round((Date.parse(`${dates[index]}T00:00:00Z`)
+      - Date.parse(`${dates[index - 1]}T00:00:00Z`)) / DAY_MS);
+    if (gap > 0) gaps.push(gap);
+  }
+  gaps.sort((left, right) => left - right);
+  const middle = Math.floor(gaps.length / 2);
+  const medianGapDays = gaps.length % 2
+    ? gaps[middle]
+    : ((gaps[middle - 1] || 0) + (gaps[middle] || 0)) / 2;
+  const annualizedSamples = spanDays > 0 ? (dates.length * 365.25) / spanDays : dates.length;
+  return Object.freeze({
+    dense: medianGapDays <= 4 || annualizedSamples >= 120,
+    samples: dates.length,
+    spanDays,
+    medianGapDays,
+    annualizedSamples,
+  });
+}
+
 export function latestKoreanTradingDateOnOrBefore(dateText, options = {}) {
   let value = normalizeIsoDate(dateText);
   if (!value) return "";
@@ -168,6 +211,8 @@ const api = Object.freeze({
   koreanDateText,
   shiftIsoDate,
   isKoreanTradingDate,
+  isKoreanMarketPricePoint,
+  inspectDailyPriceHistoryDensity,
   latestKoreanTradingDateOnOrBefore,
   latestWeekdayOnOrBefore,
   expectedLatestKoreanTradingDate,

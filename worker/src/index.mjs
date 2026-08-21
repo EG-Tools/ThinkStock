@@ -2,6 +2,7 @@ import { strFromU8, unzipSync } from "fflate";
 
 import {
   expectedLatestKoreanTradingDate,
+  inspectDailyPriceHistoryDensity,
   isKoreanCurrentPriceWindow,
   koreanDateText,
 } from "../../shared/market-calendar.mjs";
@@ -193,6 +194,7 @@ const MAX_NAVER_PRICE_BYTES = 1024 * 1024;
 const PRICE_MOVE_WARNING_RATIO = 1.35;
 const RESEARCH_CACHE_SCHEMA = 1;
 const RESEARCH_HISTORY_YEARS = 5;
+const FULL_PRICE_HISTORY_YEARS = 30;
 const RESEARCH_HISTORY_OVERLAP_DAYS = 21;
 const RESEARCH_CACHE_TTL_SECONDS = 45 * 24 * 60 * 60;
 const RESEARCH_PROFILE_FRESH_MS = 30 * 24 * 60 * 60 * 1000;
@@ -1478,8 +1480,8 @@ async function researchUniverseResponse(env, origin, forceRefresh = false, reque
   return jsonResponse({ ok: false, error: "KRX 시가총액 상위 종목을 불러오지 못했습니다." }, 503, origin);
 }
 
-function mergeResearchHistory(existing, incoming, today) {
-  const cutoff = yearsBefore(today, RESEARCH_HISTORY_YEARS);
+function mergeResearchHistory(existing, incoming, today, historyYears = RESEARCH_HISTORY_YEARS) {
+  const cutoff = yearsBefore(today, historyYears);
   const byDate = new Map();
   [...(existing || []), ...(incoming || [])].forEach((row) => {
     const date = String(row?.date || "").slice(0, 10);
@@ -1513,7 +1515,10 @@ async function researchHistoryResponse(env, ticker, origin, options = {}) {
   const today = expectedLatestKoreanTradingDate(new Date());
   const sinceDate = String(options.sinceDate || "").slice(0, 10);
   const forceFull = options.forceFull === true;
-  const cacheKey = `research-history:${RESEARCH_CACHE_SCHEMA}:${ticker}`;
+  const historyYears = forceFull ? FULL_PRICE_HISTORY_YEARS : RESEARCH_HISTORY_YEARS;
+  const cacheKey = forceFull
+    ? `research-history:${RESEARCH_CACHE_SCHEMA}:full:${ticker}`
+    : `research-history:${RESEARCH_CACHE_SCHEMA}:${ticker}`;
   const cached = env.DISCLOSURE_CACHE
     ? await readCacheBestEffort("research-history", () => env.DISCLOSURE_CACHE.get(cacheKey, "json"))
     : null;
@@ -1529,17 +1534,23 @@ async function researchHistoryResponse(env, ticker, origin, options = {}) {
     const latestDate = existingRows.at(-1)?.date || "";
     const startDate = latestDate
       ? shiftDate(latestDate, -RESEARCH_HISTORY_OVERLAP_DAYS)
-      : yearsBefore(today, RESEARCH_HISTORY_YEARS);
+      : yearsBefore(today, historyYears);
     let incoming = await fetchNaverResearchHistory(ticker, startDate, today);
     let mergeBase = existingRows;
     let rebased = false;
     if (existingRows.length && detectResearchHistoryRebase(existingRows, incoming)) {
-      incoming = await fetchNaverResearchHistory(ticker, yearsBefore(today, RESEARCH_HISTORY_YEARS), today);
+      incoming = await fetchNaverResearchHistory(ticker, yearsBefore(today, historyYears), today);
       mergeBase = [];
       rebased = true;
     }
-    const rows = mergeResearchHistory(mergeBase, incoming, today);
+    const rows = mergeResearchHistory(mergeBase, incoming, today, historyYears);
     if (rows.length < 252) throw new Error("가격 이력이 1년 미만입니다.");
+    if (forceFull) {
+      const olderDensity = inspectDailyPriceHistoryDensity(rows, {
+        beforeDate: yearsBefore(today, RESEARCH_HISTORY_YEARS),
+      });
+      if (!olderDensity.dense) throw new Error("Full price history is not daily data");
+    }
     const payload = {
       schema: RESEARCH_CACHE_SCHEMA,
       ticker,

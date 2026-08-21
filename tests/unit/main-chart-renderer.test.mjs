@@ -33,6 +33,96 @@ test("joins valid trading points across internal calendar gaps", () => {
   });
 });
 
+test("keeps long Korean stock trading suspensions flat until trading resumes", () => {
+  const result = renderer.buildLineTraces({
+    seriesModels: [{
+      series: "207940.KS",
+      xValues: [
+        "2018-11-14",
+        "2018-11-15",
+        "2018-11-30",
+        "2018-12-10",
+        "2018-12-11",
+      ],
+      values: [100, null, null, null, 118],
+      rawTexts: ["100", "", "", "", "118"],
+      baseValues: [100, null, null, null, 118],
+      baseLineWidth: 2,
+    }],
+    hiddenSeries: new Set(),
+    labelName: () => "삼성바이오로직스",
+    seriesColor: () => "#36d399",
+  });
+
+  assert.deepEqual(result.traces[0].x, [
+    "2018-11-14",
+    "2018-11-15",
+    "2018-11-30",
+    "2018-12-10",
+    "2018-12-11",
+  ]);
+  assert.deepEqual(result.traces[0].y, [100, 100, 100, 100, 118]);
+  assert.equal(result.traces[0].text[2], "거래 없음");
+  assert.equal(result.traces[0].meta.longGapFillPointCount, 3);
+});
+
+test("does not flatten short stock holidays or non-stock series", () => {
+  const shortGap = renderer.carryLongNonTradingGaps(
+    ["2026-09-30", "2026-10-01", "2026-10-06"],
+    [100, null, 105],
+  );
+  assert.deepEqual(shortGap.y, [100, null, 105]);
+
+  const indexResult = renderer.buildLineTraces({
+    seriesModels: [{
+      series: "^KS11",
+      xValues: ["2018-11-14", "2018-11-30", "2018-12-11"],
+      values: [100, null, 118],
+      rawTexts: ["100", "", "118"],
+      baseValues: [100, null, 118],
+      baseLineWidth: 2,
+    }],
+    hiddenSeries: new Set(),
+  });
+  assert.deepEqual(indexResult.traces[0].y, [100, 118]);
+  assert.equal(indexResult.traces[0].meta.longGapFillPointCount, 0);
+});
+
+test("keeps a short stock-only halt flat when the benchmark traded three times", () => {
+  const dates = [
+    "2018-04-27",
+    "2018-04-30",
+    "2018-05-02",
+    "2018-05-03",
+    "2018-05-04",
+  ];
+  const result = renderer.buildLineTraces({
+    seriesModels: [
+      {
+        series: "^KS11",
+        xValues: dates,
+        values: [100, 101, 100, 102, 103],
+        rawTexts: ["100", "101", "100", "102", "103"],
+        baseValues: [100, 101, 100, 102, 103],
+        baseLineWidth: 3,
+      },
+      {
+        series: "005930.KS",
+        xValues: dates,
+        values: [100, null, null, null, 98],
+        rawTexts: ["100", "", "", "", "98"],
+        baseValues: [100, null, null, null, 98],
+        baseLineWidth: 2,
+      },
+    ],
+    hiddenSeries: new Set(),
+  });
+
+  const stockTrace = result.traces.find((item) => item.meta.seriesKey === "005930.KS");
+  assert.deepEqual(stockTrace.y, [100, 100, 100, 100, 98]);
+  assert.equal(stockTrace.meta.longGapFillPointCount, 3);
+});
+
 test("anchors drag handles to endpoints inside the visible date range", () => {
   const endpoints = renderer.visibleEndpointValues({
     x: ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04"],

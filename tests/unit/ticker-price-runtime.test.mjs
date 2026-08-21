@@ -130,6 +130,42 @@ test("payload controller owns price, volume and invalidation mutations", () => {
   assert.equal(volumes.has("005930.KS"), false);
 });
 
+test("replaces a complete ticker history instead of retaining orphaned cached dates", () => {
+  let payload = {
+    records: [
+      { date: "2017-05-01", "207940.KS": 999999 },
+      { date: "2017-05-02", "207940.KS": 272328 },
+    ],
+    series: ["207940.KS"],
+    display_names: {},
+  };
+  const controller = runtime.createPayloadController({
+    getPayload: () => payload,
+    setPayload: (value) => { payload = value; },
+    toNumber: (value) => value == null ? null : Number(value),
+    normalizePoints: (points) => points.filter((point) => Number.isFinite(point.close)),
+    sameNumber: (left, right) => left === right,
+  });
+
+  controller.merge("207940.KS", [
+    { date: "2017-05-02", close: 272328, volume: 89745 },
+    { date: "2017-06-01", close: 348397, volume: 300468 },
+  ], { replace: true });
+
+  assert.deepEqual(controller.points("207940.KS"), [
+    { date: "2017-05-02", close: 272328, volume: 89745 },
+    { date: "2017-06-01", close: 348397, volume: 300468 },
+  ]);
+});
+
+test("does not replace a healthy cache with a severely truncated full-history response", () => {
+  const existing = Array.from({ length: 300 }, (_, index) => ({ date: `old-${index}`, close: index + 1 }));
+  const complete = Array.from({ length: 280 }, (_, index) => ({ date: `new-${index}`, close: index + 1 }));
+  assert.equal(runtime.shouldReplaceFullHistory(existing, complete), true);
+  assert.equal(runtime.shouldReplaceFullHistory(existing, complete.slice(0, 2)), false);
+  assert.equal(runtime.shouldReplaceFullHistory([], complete.slice(0, 2)), true);
+});
+
 test("converts validated price cache records into research history", () => {
   const rows = Array.from({ length: 252 }, (_, index) => ({
     date: new Date(Date.UTC(2025, 0, 1 + index)).toISOString().slice(0, 10),

@@ -60,31 +60,53 @@
     })[String(value || "")] || "혼조";
   }
 
+  function timingFamilyLabel(value) {
+    return ({
+      "shock-reversal": "급락 과매도 경고",
+      "capitulation-reversal": "투매 반전",
+      "range-floor-reversal": "박스권 하단",
+      "trend-pullback": "추세 눌림",
+      "relative-washout": "상대 과매도",
+      "correction-reversal": "조정 반전",
+      "blowoff-exhaustion": "급등 소진",
+      "blowoff-continuation": "과열 연장",
+      "range-ceiling-rollover": "박스권 상단",
+      "trend-exhaustion": "추세 소진",
+      "distribution-rollover": "분배 전환",
+      "crowding-rollover": "쏠림 전환",
+      "overheat-rollover": "과열 전환",
+    })[String(value || "")] || "복합 판정";
+  }
+
   function buildTimingSignalPopoverGroup(point) {
     const meta = point?.data?.meta || {};
     const values = Array.isArray(point?.customdata) ? point.customdata : [];
     const date = String(point?.x || "").slice(0, 10);
     if (meta.isMarketTimingBuyTrace) {
+      const title = values[10] || "매수 신호";
       return {
         name: values[0] || point.data.name || "타이밍",
         plotDate: date,
         events: [
-          { title: `매수 신호 · ${values[5] || "보통"}` },
+          { title: `${title} · ${values[5] || "보통"}` },
           { title: `근거: ${values[1] || "과매도·반전"}` },
           { title: `ADR ${values[2] ?? "-"} · 공포 ${values[3] ?? "-"} · MACD ${values[4] ?? "-"}` },
           { title: `시장 ${timingRegimeLabel(values[6])} · 근거 ${values[7] ?? "-"}개` },
+          { title: `${timingFamilyLabel(values[8])} · ${values[9] || "혼합형"}` },
         ],
       };
     }
     if (meta.isMarketTimingSellTrace) {
+      const title = values[9] || "매도 신호";
       return {
         name: values[0] || point.data.name || "타이밍",
         plotDate: date,
         events: [
-          { title: `매도 신호 · ${values[4] || "보통"}` },
+          { title: `${title} · ${values[4] || "보통"}` },
           { title: `근거: ${values[1] || "과열·추세 둔화"}` },
           { title: `신용20일 ${values[2] ?? "-"}% · 고점대비 ${values[3] ?? "-"}%` },
           { title: `시장 ${timingRegimeLabel(values[5])} · 근거 ${values[6] ?? "-"}개` },
+          { title: `${timingFamilyLabel(values[7])} · ${values[8] || "혼합형"}` },
         ],
       };
     }
@@ -348,6 +370,9 @@
           signal.signalGrade || "보통",
           signal.marketRegime || "range",
           Number.isFinite(signal.evidenceCount) ? signal.evidenceCount : "-",
+          signal.signalFamily || "overheat-rollover",
+          signal.behaviorProfile?.label || "혼합형",
+          signal.signalRole === "warning" ? "과매수 경고" : "매도 신호",
         ]),
         type: "scatter",
         mode: "markers",
@@ -357,7 +382,7 @@
         yaxis: "y",
         hoverinfo: chartSession.hoverShowPopup ? undefined : "none",
         hovertemplate: chartSession.hoverShowPopup
-          ? "<b>%{customdata[0]} 매도 신호</b>"
+          ? "<b>%{customdata[0]} %{customdata[9]}</b>"
             + "<br>근거 · %{customdata[1]}"
             + "<br>신용20일 %{customdata[2]}% · 고점대비 %{customdata[3]}%<extra></extra>"
           : undefined,
@@ -385,6 +410,9 @@
           signal.signalGrade || "보통",
           signal.marketRegime || "range",
           Number.isFinite(signal.evidenceCount) ? signal.evidenceCount : "-",
+          signal.signalFamily || "correction-reversal",
+          signal.behaviorProfile?.label || "혼합형",
+          signal.signalRole === "warning" ? "과매도 경고" : "매수 신호",
         ]),
         type: "scatter",
         mode: "markers",
@@ -394,7 +422,7 @@
         yaxis: "y",
         hoverinfo: chartSession.hoverShowPopup ? undefined : "none",
         hovertemplate: chartSession.hoverShowPopup
-          ? "<b>%{customdata[0]} 매수 신호</b>"
+          ? "<b>%{customdata[0]} %{customdata[10]}</b>"
             + "<br>근거 · %{customdata[1]}"
             + "<br>ADR %{customdata[2]} · 공포 %{customdata[3]} · MACD %{customdata[4]}<extra></extra>"
           : undefined,
@@ -607,7 +635,7 @@
       const first = records[0] || {};
       const latest = records.at(-1) || {};
       const signature = [
-        "market-timing-v5",
+        "market-timing-v6",
         sourceRevision,
         sourceTickers.join(","),
         first.date || "",

@@ -7,6 +7,8 @@
   const MINIMUM_HISTORY_ROWS = contract.RECENT_SIGNAL_WINDOW;
   const cacheLifecycle = globalScope.ThinkStockCacheLifecyclePolicy;
   if (!cacheLifecycle?.withCacheMetadata) throw new Error("cache lifecycle policy is required");
+  const isKoreanMarketPricePoint = globalScope.ThinkStockMarketCalendar?.isKoreanMarketPricePoint
+    || (() => true);
 
   function normalizeResearchHistoryRows(rows) {
     const byDate = new Map();
@@ -15,10 +17,12 @@
       const close = Number(row?.close);
       const volume = Number(row?.volume);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(close) || close <= 0) return;
+      if (row?.volume != null && Number.isFinite(volume) && volume <= 0) return;
+      if (!isKoreanMarketPricePoint(date, row?.volume)) return;
       byDate.set(date, {
         date,
         close,
-        volume: Number.isFinite(volume) && volume >= 0 ? volume : null,
+        volume: row?.volume != null && Number.isFinite(volume) && volume >= 0 ? volume : null,
       });
     });
     return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));

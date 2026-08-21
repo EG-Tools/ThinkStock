@@ -6,20 +6,33 @@ await import("../../docs/modules/macd-oscillator.js");
 await import("../../docs/modules/market-timing.js");
 const {
   DEFAULT_KOREAN_VOLATILITY_POLICY,
+  PROMOTED_RUNTIME_BEHAVIOR_POLICY,
   VOLATILITY_MAX_HISTORY_DAYS,
   alignedSource,
   alignAsOf,
   buildExternalVolatilityTimingRows,
   buildMarketTimingSignals,
   buildVolatilityProfile,
+  calibrateTimingSignals,
+  classifyBehaviorProfile,
   classifyTimingRegime,
   decorateTimingSignal,
+  pricePathEfficiency,
+  timingCalibrationObjective,
 } = globalThis.ThinkStockMarketTiming;
 const { buildMacdOscillator } = globalThis.ThinkStockMacdOscillator;
 
 function dateAt(index) {
   return new Date(Date.UTC(2025, 0, 1 + index)).toISOString().slice(0, 10);
 }
+
+test("runtime policy promotes the validated buy path without replacing sell signals", () => {
+  assert.deepEqual(PROMOTED_RUNTIME_BEHAVIOR_POLICY, {
+    enabled: true,
+    buyEnabled: true,
+    sellEnabled: false,
+  });
+});
 
 function timingFixture({ oversold = true } = {}) {
   const dates = Array.from({ length: 130 }, (_, index) => dateAt(index));
@@ -90,6 +103,8 @@ test("timing regimes and evidence grades remain descriptive rather than probabil
   });
   assert.equal(signal.evidenceCount, 3);
   assert.equal(signal.signalGrade, "보통");
+  assert.equal(signal.signalRole, "predictive");
+  assert.equal(decorateTimingSignal({ entryMode: "extreme-daily" }).signalRole, "warning");
   assert.deepEqual(DEFAULT_KOREAN_VOLATILITY_POLICY, {
     buyPercentile: 0.85,
     sellPercentile: 0.2,
@@ -141,6 +156,299 @@ test("classifies stock volatility from available history with a 15-year cap", ()
   assert.ok(shortLowVolatility.scale.at(-1) < 0.9);
   assert.ok(shortHighVolatility.scale.at(-1) > 1.2);
   assert.ok(shortLowVolatility.scale.at(-1) < shortHighVolatility.scale.at(-1));
+});
+
+test("classifies point-in-time stock behavior without relying on sector labels", () => {
+  const rangeProfile = classifyBehaviorProfile({
+    volatilityHistoryDays: 756,
+    volatilityScale: 0.7,
+    marketCorrelation60: 0.2,
+    marketBeta60: 0.3,
+    marketDownsideBeta60: 0.2,
+    trendEfficiency60: 0.1,
+    trendEfficiency120: 0.1,
+    longTermVolatility: 18,
+    price20d: -1,
+    price60d: 2,
+    price120d: 1,
+    price252d: 3,
+    price756d: 8,
+    price1260d: 10,
+    rangePosition120: 0.5,
+  }, { isIndividualStock: true });
+  const momentumProfile = classifyBehaviorProfile({
+    volatilityHistoryDays: 756,
+    volatilityScale: 1.5,
+    marketCorrelation60: 0.8,
+    marketBeta60: 1.3,
+    marketDownsideBeta60: 1.5,
+    trendEfficiency60: 0.75,
+    trendEfficiency120: 0.8,
+    price60d: 45,
+    price120d: 90,
+    rangePosition120: 0.95,
+  }, { isIndividualStock: true });
+
+  assert.equal(rangeProfile.dominant, "lowVolRange");
+  assert.equal(momentumProfile.dominant, "highVolMomentum");
+  assert.ok(rangeProfile.scores.defensive > momentumProfile.scores.defensive);
+  assert.equal(rangeProfile.version, "timing-behavior-v2");
+  assert.equal(rangeProfile.structural.trendDirection, "range");
+  assert.equal(rangeProfile.structural.horizonDays, 1260);
+  assert.equal(rangeProfile.structural.directionConsistency, 1);
+  assert.equal(rangeProfile.state.return20, -1);
+});
+
+test("structural behavior combines only the available one, three, and five-year history", () => {
+  const profile = classifyBehaviorProfile({
+    volatilityHistoryDays: 1500,
+    volatilityScale: 1,
+    longTermVolatility: 30,
+    marketCorrelation60: 0.5,
+    marketBeta60: 1,
+    marketDownsideBeta60: 1,
+    trendEfficiency60: 0.4,
+    trendEfficiency120: 0.4,
+    price60d: 3,
+    price120d: 5,
+    price252d: 40,
+    price756d: -10,
+    price1260d: -20,
+    rangePosition120: 0.6,
+  }, { isIndividualStock: true });
+
+  assert.equal(profile.structural.trendDirection, "up");
+  assert.equal(profile.structural.return1y, 40);
+  assert.equal(profile.structural.return3y, -10);
+  assert.equal(profile.structural.return5y, -20);
+  assert.equal(profile.structural.horizonDays, 1260);
+  assert.ok(profile.structural.directionConsistency < 0.5);
+});
+
+test("behavior features stay unchanged when future prices are appended", () => {
+  const past = Array.from({ length: 140 }, (_, index) => 100 + Math.sin(index / 8) * 4 + (index * 0.05));
+  const pastEfficiency = pricePathEfficiency(past, 139, 120);
+  const future = [...past, 500, 20, 700];
+  assert.equal(pricePathEfficiency(future, 139, 120), pastEfficiency);
+});
+
+test("point-in-time calibration abstains only after earlier comparable failures mature", () => {
+  const dates = Array.from({ length: 100 }, (_, index) => dateAt(index));
+  const prices = Array.from({ length: 100 }, (_, index) => 100 - (index * 0.2));
+  const profile = { dominant: "lowVolRange" };
+  const signals = [10, 25, 40, 55, 80].map((index) => ({
+    date: dates[index],
+    confirmationDate: dates[index],
+    signalFamily: "range-floor-reversal",
+    behaviorProfile: profile,
+  }));
+  const calibrated = calibrateTimingSignals(signals, "buy", dates, prices, {
+    horizon: 5,
+    minimumSamples: 4,
+    rejectHitRate: 0.42,
+  });
+
+  assert.equal(calibrated.abstained, 1);
+  assert.equal(calibrated.signals.length, 4);
+  assert.equal(calibrated.signals.at(-1).calibration.samples, 3);
+  assert.equal(calibrated.signals[0].calibration.pointInTime, true);
+});
+
+test("strong buy evidence survives only a mixed-family fallback calibration veto", () => {
+  const dates = Array.from({ length: 110 }, (_, index) => dateAt(index));
+  const prices = Array.from({ length: 110 }, (_, index) => 100 - (index * 0.25));
+  const profile = { dominant: "indexIndependent" };
+  const signals = [10, 20, 30, 40, 50, 60].map((index, order) => ({
+    date: dates[index],
+    confirmationDate: dates[index],
+    signalFamily: `fallback-family-${order}`,
+    behaviorProfile: profile,
+  }));
+  signals.push({
+    date: dates[80],
+    confirmationDate: dates[80],
+    signalFamily: "trend-pullback",
+    behaviorProfile: profile,
+    evidenceCount: 7,
+  });
+
+  const calibrated = calibrateTimingSignals(signals, "buy", dates, prices, {
+    horizon: 5,
+    minimumSamples: 4,
+    rejectHitRate: 0.42,
+  });
+  const strongSignal = calibrated.signals.find((signal) => signal.date === dates[80]);
+
+  assert.ok(strongSignal);
+  assert.equal(strongSignal.calibration.cohort, "behavior");
+  assert.equal(strongSignal.calibration.status, "evidence-override");
+});
+
+test("warning outcomes never calibrate predictive timing signals", () => {
+  const dates = Array.from({ length: 80 }, (_, index) => dateAt(index));
+  const prices = Array.from({ length: 80 }, (_, index) => 100 - (index * 0.3));
+  const warnings = [10, 20, 30, 40].map((index) => ({
+    date: dates[index],
+    confirmationDate: dates[index],
+    entryMode: "extreme-daily",
+    signalFamily: "shock-reversal",
+    signalRole: "warning",
+    behaviorProfile: { dominant: "highVolMomentum" },
+  }));
+  const predictive = {
+    date: dates[60],
+    confirmationDate: dates[60],
+    signalFamily: "trend-pullback",
+    signalRole: "predictive",
+    behaviorProfile: { dominant: "highVolMomentum" },
+  };
+  const calibrated = calibrateTimingSignals([...warnings, predictive], "buy", dates, prices, {
+    horizon: 5,
+    minimumSamples: 4,
+  });
+
+  assert.equal(calibrated.signals.at(-1).calibration.samples, 0);
+  assert.equal(calibrated.signals.at(-1).calibration.role, "predictive");
+});
+
+test("high-volatility downtrend reversals calibrate against tradable rebounds", () => {
+  const dates = Array.from({ length: 130 }, (_, index) => dateAt(index));
+  const prices = Array.from({ length: 130 }, () => 100);
+  const signalIndexes = [10, 30, 50, 70, 100];
+  signalIndexes.forEach((index) => {
+    prices[index + 1] = 108;
+    prices[index + 5] = 99;
+  });
+  const profile = {
+    dominant: "highVolMomentum",
+    scores: { trendDown: 0.8, trendUp: 0.1 },
+  };
+  const signals = signalIndexes.map((index) => ({
+    date: dates[index],
+    confirmationDate: dates[index],
+    signalFamily: "correction-reversal",
+    behaviorProfile: profile,
+    volatilityScale: 1.4,
+    price120d: -35,
+  }));
+  const calibrated = calibrateTimingSignals(signals, "buy", dates, prices, {
+    horizon: 5,
+    minimumSamples: 4,
+    rejectHitRate: 0.42,
+  });
+
+  assert.equal(timingCalibrationObjective(signals[0], "buy"), "rebound");
+  assert.equal(calibrated.abstained, 0);
+  assert.equal(calibrated.signals.length, signals.length);
+  assert.equal(calibrated.signals.at(-1).calibration.objective, "rebound");
+  assert.ok(calibrated.signals.at(-1).calibration.meanFavorableReturn >= 8);
+});
+
+test("low-volatility range signals keep terminal-return calibration", () => {
+  const signal = {
+    signalFamily: "range-floor-reversal",
+    behaviorProfile: { dominant: "lowVolRange", scores: { trendDown: 0.8 } },
+    price120d: -35,
+  };
+  assert.equal(timingCalibrationObjective(signal, "buy"), "terminal");
+  assert.equal(timingCalibrationObjective(signal, "sell"), "terminal");
+});
+
+test("calibration decisions for an earlier signal never depend on appended future prices", () => {
+  const fullDates = Array.from({ length: 130 }, (_, index) => dateAt(index));
+  const fullPrices = Array.from({ length: 130 }, (_, index) => 100 - (index * 0.05));
+  const signalIndexes = [10, 30, 50, 70, 90];
+  const signals = signalIndexes.map((index) => ({
+    date: fullDates[index],
+    confirmationDate: fullDates[index],
+    signalFamily: "range-floor-reversal",
+    behaviorProfile: { dominant: "lowVolRange" },
+  }));
+  const before = calibrateTimingSignals(signals.slice(0, 4), "buy", fullDates.slice(0, 100), fullPrices.slice(0, 100), {
+    horizon: 5,
+    minimumSamples: 4,
+  });
+  const after = calibrateTimingSignals(signals, "buy", fullDates, [
+    ...fullPrices.slice(0, 100),
+    ...Array.from({ length: 30 }, (_, index) => index % 2 ? 1000 : 10),
+  ], {
+    horizon: 5,
+    minimumSamples: 4,
+  });
+
+  assert.deepEqual(
+    before.signals.map((signal) => [signal.date, signal.calibration.status]),
+    after.signals.filter((signal) => signal.date <= fullDates[70])
+      .map((signal) => [signal.date, signal.calibration.status]),
+  );
+});
+
+test("adaptive behavior policy annotates exceptional stock signals", () => {
+  const dates = Array.from({ length: 150 }, (_, index) => dateAt(index));
+  const prices = dates.map((_, index) => 100 + (index * 0.08));
+  prices[149] = prices[148] * 1.3;
+  const model = buildMarketTimingSignals({
+    indexKey: "005930.KS",
+    dates,
+    prices,
+    oscillator: dates.map(() => 0.6),
+    benchmarkPrices: dates.map((_, index) => 100 + (index * 0.04)),
+    behaviorPolicy: { enabled: true },
+  });
+
+  assert.equal(model.strategy, "adaptive-behavior-v19");
+  assert.equal(model.sellSignals.at(-1).signalFamily, "blowoff-exhaustion");
+  assert.notEqual(model.sellSignals.at(-1).behaviorProfile.dominant, "insufficient-history");
+});
+
+test("adaptive behavior policy can promote buy and sell paths independently", () => {
+  const dates = Array.from({ length: 150 }, (_, index) => dateAt(index));
+  const prices = dates.map((_, index) => 100 + (index * 0.08));
+  prices[149] = prices[148] * 1.3;
+  const shared = {
+    indexKey: "005930.KS",
+    dates,
+    prices,
+    oscillator: dates.map(() => 0.6),
+    benchmarkPrices: dates.map((_, index) => 100 + (index * 0.04)),
+  };
+  const buyOnly = buildMarketTimingSignals({
+    ...shared,
+    behaviorPolicy: { enabled: true, buyEnabled: true, sellEnabled: false },
+  });
+  const sellOnly = buildMarketTimingSignals({
+    ...shared,
+    behaviorPolicy: { enabled: true, buyEnabled: false, sellEnabled: true },
+  });
+
+  assert.equal(buyOnly.strategy, "adaptive-behavior-v19-buy");
+  assert.equal(sellOnly.strategy, "adaptive-behavior-v19-sell");
+  assert.equal(buyOnly.behaviorPolicy.sellEnabled, false);
+  assert.equal(sellOnly.behaviorPolicy.buyEnabled, false);
+  assert.equal(buyOnly.calibration.sellAbstained, 0);
+  assert.equal(sellOnly.calibration.buyAbstained, 0);
+});
+
+test("sell calibration can be evaluated without discovering new behavior sell families", () => {
+  const dates = Array.from({ length: 220 }, (_, index) => dateAt(index));
+  const prices = dates.map((_, index) => 100 + Math.sin(index / 11) * 8 + index * 0.04);
+  const model = buildMarketTimingSignals({
+    indexKey: "005930.KS",
+    dates,
+    prices,
+    oscillator: dates.map((_, index) => Math.sin(index / 9)),
+    benchmarkPrices: dates.map((_, index) => 100 + index * 0.03),
+    behaviorPolicy: {
+      enabled: true,
+      buyEnabled: false,
+      sellEnabled: true,
+      sellDiscoveryEnabled: false,
+    },
+  });
+
+  assert.equal(model.strategy, "adaptive-behavior-v19-sell-calibration");
+  assert.equal(model.behaviorPolicy.sellEnabled, true);
+  assert.equal(model.behaviorPolicy.sellDiscoveryEnabled, false);
 });
 
 test("emits one high-confidence buy signal after an oversold reversal", () => {

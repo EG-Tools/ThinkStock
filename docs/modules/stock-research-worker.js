@@ -46,6 +46,7 @@ self.onmessage = (event) => {
       externalVolatilityRows: shared.externalVolatilityRows,
       koreanVolatilityPolicy: { enabled: true },
       externalVolatilityPolicy: { enabled: true },
+      behaviorPolicy: timing.PROMOTED_RUNTIME_BEHAVIOR_POLICY,
       buildMacdOscillator: macd.buildMacdOscillator,
       buildMarketTimingSignals: timing.buildMarketTimingSignals,
     });

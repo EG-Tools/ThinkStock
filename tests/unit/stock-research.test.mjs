@@ -79,17 +79,24 @@ test("minimum signal option includes three-signal candidates", () => {
     volume: 10_000_000,
   }));
   const timingSignals = [480, 490, 500].map((index) => ({ date: rows[index].date }));
+  const behaviorPolicy = { enabled: true, buyEnabled: true, sellEnabled: false };
+  let receivedTimingOptions = null;
   const assess = (minimumBuySignals) => research.assessTicker({
     item: { ticker: "000001.KS", name: "테스트", market: "KOSPI", rank: 100 },
     rows,
     asOfDate: rows.at(-1).date,
     minimumBuySignals,
+    behaviorPolicy,
     benchmarkRows: rows.map((row) => ({ date: row.date, close: 1000 })),
     buildMacdOscillator: ({ dates, prices }) => ({ dates, prices, normalized: prices.map(() => 0) }),
-    buildMarketTimingSignals: () => ({ signals: timingSignals, sellSignals: [] }),
+    buildMarketTimingSignals: (options) => {
+      receivedTimingOptions = options;
+      return { signals: timingSignals, sellSignals: [] };
+    },
   });
   assert.equal(assess(), null);
   assert.equal(assess(3)?.buyCount, 3);
+  assert.equal(receivedTimingOptions.behaviorPolicy, behaviorPolicy);
 });
 
 test("counts only buy and sell signals visible in the latest trading year", () => {

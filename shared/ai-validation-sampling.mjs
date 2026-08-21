@@ -60,6 +60,47 @@ function stableHash(value) {
   return hash >>> 0;
 }
 
+export function buildRandomValidationBatches(records, options = {}) {
+  const seed = Math.trunc(finite(options.seed, 20260821));
+  const batchSize = clamp(Math.trunc(finite(options.batchSize, 10)), 1, 50);
+  const batchCount = clamp(Math.trunc(finite(options.batchCount, 5)), 1, 20);
+  const byIssuer = new Map();
+  (Array.isArray(records) ? records : []).forEach((record) => {
+    const ticker = String(record?.ticker || "").trim().toUpperCase();
+    const name = String(record?.name || ticker).trim();
+    const market = String(record?.market || (ticker.endsWith(".KQ") ? "KOSDAQ" : "KOSPI")).toUpperCase();
+    if (!/^\d{6}\.(KS|KQ)$/.test(ticker) || !["KOSPI", "KOSDAQ"].includes(market)) return;
+    if (/스팩/i.test(name)) return;
+    const issuerKey = `${market}:${validationIssuerKey(name, ticker)}`;
+    const preferred = /(?:\d+)?우(?:B|C)?(?:\(전환\))?$/i.test(name);
+    const candidate = { ticker, name, market, issuerKey, preferred };
+    const previous = byIssuer.get(issuerKey);
+    if (!previous || (previous.preferred && !preferred)) byIssuer.set(issuerKey, candidate);
+  });
+  const eligible = [...byIssuer.values()]
+    .sort((left, right) => (
+      stableHash(`${seed}:${left.ticker}`) - stableHash(`${seed}:${right.ticker}`)
+      || left.ticker.localeCompare(right.ticker)
+    ));
+  const selected = eligible.slice(0, batchSize * batchCount);
+  const batches = Array.from({ length: batchCount }, (_, index) => Object.freeze({
+    index: index + 1,
+    seed: seed + index,
+    records: Object.freeze(selected
+      .slice(index * batchSize, (index + 1) * batchSize)
+      .map(({ ticker, name, market }) => Object.freeze({ ticker, name, market }))),
+  })).filter((batch) => batch.records.length > 0);
+  return Object.freeze({
+    format: "thinkstock-random-validation-batches-v1",
+    seed,
+    batchSize,
+    requestedBatchCount: batchCount,
+    eligibleCount: eligible.length,
+    selectedCount: selected.length,
+    batches: Object.freeze(batches),
+  });
+}
+
 export function validationIssuerKey(name, ticker = "") {
   const compact = String(name || "")
     .replace(/\s+/g, "")

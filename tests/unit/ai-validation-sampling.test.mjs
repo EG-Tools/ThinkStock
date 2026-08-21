@@ -3,10 +3,33 @@ import test from "node:test";
 
 import {
   assignValidationArchetypes,
+  buildRandomValidationBatches,
   buildStratifiedValidationDesign,
   buildValidationCandidateProfile,
   validationIssuerKey,
 } from "../../shared/ai-validation-sampling.mjs";
+
+test("random validation batches are reproducible, disjoint, and report their stocks", () => {
+  const records = Array.from({ length: 80 }, (_, index) => ({
+    ticker: `${String(index + 1).padStart(6, "0")}.${index % 2 ? "KQ" : "KS"}`,
+    name: `무작위회사${index + 1}`,
+    market: index % 2 ? "KOSDAQ" : "KOSPI",
+  }));
+  records[0].name = "동일회사";
+  records.push({ ticker: "000081.KS", name: "동일회사우", market: "KOSPI" });
+  records.push({ ticker: "000082.KQ", name: "테스트스팩", market: "KOSDAQ" });
+  const first = buildRandomValidationBatches(records, { seed: 41, batchSize: 10, batchCount: 5 });
+  const second = buildRandomValidationBatches(records, { seed: 41, batchSize: 10, batchCount: 5 });
+  const selected = first.batches.flatMap((batch) => batch.records);
+
+  assert.deepEqual(first, second);
+  assert.equal(first.batches.length, 5);
+  first.batches.forEach((batch) => assert.equal(batch.records.length, 10));
+  assert.equal(new Set(selected.map((row) => row.ticker)).size, 50);
+  assert.ok(selected.every((row) => row.name && row.market));
+  assert.equal(selected.some((row) => row.name.endsWith("우")), false);
+  assert.equal(selected.some((row) => row.name.includes("스팩")), false);
+});
 
 function syntheticSeries(index, rows = 1000) {
   const dates = [];

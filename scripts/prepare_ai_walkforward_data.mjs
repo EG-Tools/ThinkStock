@@ -9,6 +9,7 @@ import {
 } from "../shared/ai-analysis-snapshots.mjs";
 import {
   AI_VALIDATION_SAMPLE_VERSION,
+  buildRandomValidationBatches,
   buildStratifiedValidationDesign,
   buildValidationCandidateProfile,
 } from "../shared/ai-validation-sampling.mjs";
@@ -19,6 +20,7 @@ import {
   parseDartMajorAccountPayload,
 } from "../shared/dart-financial-history.mjs";
 import { mergeDatedSeriesRows } from "../shared/series-integrity.mjs";
+import { isKoreanMarketPricePoint } from "../shared/market-calendar.mjs";
 import {
   buildCrisisSignalRows,
   fetchCrisisSignalSeries,
@@ -39,6 +41,10 @@ const MODEL_PATH = path.join(ROOT, "docs", "data", "ai_market_model.json");
 const UNIVERSE_PATH = path.join(ROOT, "docs", "data", "krx_universe.json");
 const LOCAL_ENV_PATH = path.join(ROOT, ".env.local");
 const RANDOM_SEED = 20260807;
+const RANDOM_SIGNAL_AUDIT_SEED = 20260821;
+const RANDOM_SIGNAL_AUDIT_BATCH_SIZE = 10;
+const RANDOM_SIGNAL_AUDIT_BATCH_COUNT = 5;
+const RANDOM_SIGNAL_AUDIT_FETCH_MULTIPLIER = 2;
 const perMarketArgument = process.argv.indexOf("--per-market");
 const requestedPerMarket = perMarketArgument >= 0
   ? Number(process.argv[perMarketArgument + 1])
@@ -69,8 +75,11 @@ const GATEWAY_URL = "https://thinkstock-api.keg0320.workers.dev";
 const refreshAll = process.argv.includes("--refresh");
 const refreshPrices = refreshAll || process.argv.includes("--refresh-prices");
 const refreshContext = refreshAll || process.argv.includes("--refresh-context");
+const pricesOnly = process.argv.includes("--prices-only");
+const repairPriceIntegrity = process.argv.includes("--repair-price-integrity");
 const DART_FINANCIAL_START_YEAR = 2020;
 const DART_MULTI_COMPANY_LIMIT = 100;
+const PRICE_INTEGRITY_VERSION = 3;
 
 async function readJson(file) {
   return JSON.parse(await readFile(file, "utf8"));
@@ -101,6 +110,36 @@ function unixSeconds(dateText) {
 function isoDateFromUnix(value) {
   const milliseconds = Number(value) * 1000;
   return Number.isFinite(milliseconds) ? new Date(milliseconds).toISOString().slice(0, 10) : "";
+}
+
+function sanitizeKoreanMarketSeries(ticker, series) {
+  if (!series || !(/^(?:\^K[QS]11|\d{6}\.(?:KS|KQ))$/.test(String(ticker || "")))) return series;
+  const dates = Array.isArray(series.dates) ? series.dates : [];
+  const keep = dates.flatMap((rawDate, index) => {
+    const date = String(rawDate || "").slice(0, 10);
+    const volume = Array.isArray(series.volumes) ? series.volumes[index] : null;
+    return isKoreanMarketPricePoint(date, volume) ? [index] : [];
+  });
+  if (keep.length === dates.length) return series;
+  const filtered = { ...series, dates: keep.map((index) => dates[index]) };
+  ["prices", "opens", "highs", "lows", "volumes"].forEach((field) => {
+    if (Array.isArray(series[field])) filtered[field] = keep.map((index) => series[field][index]);
+  });
+  return filtered;
+}
+
+function needsAuthoritativeHistoryRefetch(series) {
+  const volumes = Array.isArray(series?.volumes) ? series.volumes : [];
+  let observed = 0;
+  let zero = 0;
+  volumes.forEach((rawVolume) => {
+    if (rawVolume == null || String(rawVolume).trim() === "") return;
+    const volume = Number(rawVolume);
+    if (!Number.isFinite(volume)) return;
+    observed += 1;
+    if (volume <= 0) zero += 1;
+  });
+  return observed >= MIN_PRICE_ROWS && zero >= 252 && zero / observed >= 0.2;
 }
 
 async function fetchJson(url, options = {}, attempts = 3) {
@@ -159,7 +198,9 @@ async function fetchYahooAdjustedSeries(ticker, endDate) {
         const value = Number(quote?.[field]?.[index]);
         return Number.isFinite(value) && value > 0 ? value * adjustment : null;
       };
-      const volume = Number(quote?.volume?.[index]);
+      const rawVolume = quote?.volume?.[index];
+      const volume = rawVolume != null && Number.isFinite(Number(rawVolume)) ? Number(rawVolume) : null;
+      if (!isKoreanMarketPricePoint(date, volume)) return;
       byDate.set(date, {
         price,
         open: adjustedField("open"),
@@ -194,6 +235,7 @@ function mergeMarketSeries(primary, supplement) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(price) || price <= 0) return;
       const previous = byDate.get(date) || {};
       const numberOrNull = (values) => {
+        if (values?.[index] == null || String(values[index]).trim() === "") return null;
         const value = Number(values?.[index]);
         return Number.isFinite(value) && value >= 0 ? value : null;
       };
@@ -226,16 +268,20 @@ function yahooSeriesCachePath(ticker) {
   return path.join(YAHOO_SERIES_CACHE_DIR, `${String(ticker).replace(/[^A-Za-z0-9.-]/g, "_")}.json`);
 }
 
-async function cachedYahooAdjustedSeries(ticker, endDate) {
-  const research = await researchPriceSeries(ticker);
-  if (!refreshPrices) {
-    const cached = await readJsonOrNull(yahooSeriesCachePath(ticker));
-    if (Array.isArray(cached?.dates) && Array.isArray(cached?.prices) && cached.dates.length === cached.prices.length) {
+async function cachedYahooAdjustedSeries(ticker, endDate, { forceNetwork = false } = {}) {
+  const research = sanitizeKoreanMarketSeries(ticker, await researchPriceSeries(ticker));
+  if (!refreshPrices && !forceNetwork) {
+    const rawCached = await readJsonOrNull(yahooSeriesCachePath(ticker));
+    const cached = sanitizeKoreanMarketSeries(ticker, rawCached);
+    if (!needsAuthoritativeHistoryRefetch(rawCached)
+      && Array.isArray(cached?.dates)
+      && Array.isArray(cached?.prices)
+      && cached.dates.length === cached.prices.length) {
       return mergeMarketSeries(cached, research) || cached;
     }
     if (research?.dates?.length >= MIN_PRICE_ROWS) return research;
   }
-  const series = await fetchYahooAdjustedSeries(ticker, endDate);
+  const series = sanitizeKoreanMarketSeries(ticker, await fetchYahooAdjustedSeries(ticker, endDate));
   const merged = mergeMarketSeries(series, research) || series;
   await mkdir(YAHOO_SERIES_CACHE_DIR, { recursive: true });
   await writeFile(yahooSeriesCachePath(ticker), `${JSON.stringify(merged)}\n`, "utf8");
@@ -550,11 +596,15 @@ async function researchPriceSeries(ticker) {
   rows.forEach((row) => {
     const date = String(row?.date || "").slice(0, 10);
     const price = Number(row?.close);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(price) && price > 0) {
+    const rawVolume = row?.volume;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date)
+      && Number.isFinite(price)
+      && price > 0
+      && isKoreanMarketPricePoint(date, rawVolume)) {
       dates.push(date);
       prices.push(price);
-      const volume = Number(row?.volume);
-      volumes.push(Number.isFinite(volume) && volume >= 0 ? volume : null);
+      const volume = rawVolume != null && Number.isFinite(Number(rawVolume)) ? Number(rawVolume) : null;
+      volumes.push(volume !== null && volume >= 0 ? volume : null);
     }
   });
   return dates.length ? {
@@ -603,13 +653,21 @@ async function latestResearchUniverseMetadata() {
 async function preparePrices() {
   const existing = await readJsonOrNull(PRICE_CACHE_PATH);
   const canReuseExisting = !refreshPrices
+    && !repairPriceIntegrity
     && existing?.format === "thinkstock-ai-walkforward-prices-v3"
+    && Number(existing.priceIntegrityVersion || 0) === PRICE_INTEGRITY_VERSION
+    && Number(existing.dataQuality?.integrityRepair?.unresolvedSeries || 0) === 0
     && Number(existing.targetPerMarket || 10) === TARGET_PER_MARKET
     && Number(existing.stratifiedPerMarket || 0) === STRATIFIED_PER_MARKET
     && Number(existing.auditPerMarket || 0) === AUDIT_PER_MARKET
     && Number(existing.confirmationAuditPerMarket || 0) === CONFIRMATION_AUDIT_PER_MARKET
     && Number(existing.breadthDevelopmentPerMarket || 0) === BREADTH_DEVELOPMENT_PER_MARKET
     && existing.validationSampling?.version === AI_VALIDATION_SAMPLE_VERSION
+    && Number(existing.validationSampling?.randomSignalAudit?.selectedCount || 0)
+      >= RANDOM_SIGNAL_AUDIT_BATCH_SIZE * RANDOM_SIGNAL_AUDIT_BATCH_COUNT
+    && (existing.validationSampling?.randomSignalAudit?.batches || []).every((batch) => (
+      (batch.records || []).every((record) => existing.series?.[record.ticker])
+    ))
     && QUALITY_CASES.every(({ ticker }) => existing.series?.[ticker])
     && ["KOSPI", "KOSDAQ"].every((market) => (
       existing.selection?.[market]?.length === TARGET_PER_MARKET
@@ -621,11 +679,14 @@ async function preparePrices() {
       && existing.auditSelection[market].every((ticker) => existing.series?.[ticker])
       && existing.confirmationAuditSelection[market].every((ticker) => existing.series?.[ticker])
       && existing.breadthDevelopmentSelection[market].every((ticker) => existing.series?.[ticker])
-    ));
+  ));
   if (canReuseExisting) {
     const qualityCasesMatch = JSON.stringify(existing.qualityCases || []) === JSON.stringify(QUALITY_CASES);
-    if (qualityCasesMatch) return existing;
-    const migrated = { ...existing, qualityCases: QUALITY_CASES };
+    const failures = Object.fromEntries(Object.entries(existing.failures || {})
+      .filter(([ticker]) => existing.series?.[ticker]));
+    const failuresMatch = JSON.stringify(failures) === JSON.stringify(existing.failures || {});
+    if (qualityCasesMatch && failuresMatch) return existing;
+    const migrated = { ...existing, qualityCases: QUALITY_CASES, failures };
     await writeFile(PRICE_CACHE_PATH, `${JSON.stringify(migrated)}\n`, "utf8");
     return migrated;
   }
@@ -637,7 +698,17 @@ async function preparePrices() {
   ]);
   const endDate = new Date().toISOString().slice(0, 10);
   const names = Object.fromEntries((universe.records || []).map((row) => [row.ticker, row.name]));
-  const fetched = new Map(!refreshPrices ? Object.entries(existing?.series || {}) : []);
+  const existingSeriesEntries = !refreshPrices ? Object.entries(existing?.series || {}) : [];
+  const priorUnresolvedHistory = !refreshPrices
+    ? (existing?.dataQuality?.integrityRepair?.unresolvedTickers || [])
+    : [];
+  const needsHistoryRefetch = new Set([...priorUnresolvedHistory, ...existingSeriesEntries
+    .filter(([, series]) => needsAuthoritativeHistoryRefetch(series))
+    .map(([ticker]) => ticker)]);
+  const fetched = new Map(existingSeriesEntries.map(([ticker, series]) => [
+    ticker,
+    sanitizeKoreanMarketSeries(ticker, series),
+  ]));
   const failures = { ...(!refreshPrices ? existing?.failures : {}) };
   await mapWithConcurrency(["^KS11", "^KQ11"].filter((ticker) => !fetched.has(ticker)), 2, async (ticker) => {
     fetched.set(ticker, await cachedYahooAdjustedSeries(ticker, endDate));
@@ -714,25 +785,45 @@ async function preparePrices() {
   if (sampleDesign.deficits.length) {
     throw new Error(`Stratified sample coverage is incomplete: ${JSON.stringify(sampleDesign.deficits)}`);
   }
+  const randomAuditPool = buildRandomValidationBatches(universe.records || [], {
+    seed: RANDOM_SIGNAL_AUDIT_SEED,
+    batchSize: RANDOM_SIGNAL_AUDIT_BATCH_SIZE * RANDOM_SIGNAL_AUDIT_FETCH_MULTIPLIER,
+    batchCount: RANDOM_SIGNAL_AUDIT_BATCH_COUNT,
+  });
+  const randomAuditPoolRecords = randomAuditPool.batches.flatMap((batch) => batch.records);
 
   const requiredSeries = [...new Set([
     ...Object.values(sampleDesign.selection).flat(),
     ...Object.values(sampleDesign.audit).flat(),
     ...Object.values(sampleDesign.confirmationAudit).flat(),
     ...Object.values(sampleDesign.breadthDevelopment).flat(),
+    ...randomAuditPoolRecords.map((record) => record.ticker),
     ...QUALITY_CASES.map(({ ticker }) => ticker),
     "^KS11",
     "^KQ11",
     "005930.KS",
     "000660.KS",
   ])];
-  await mapWithConcurrency(requiredSeries.filter((ticker) => !fetched.has(ticker)), 6, async (ticker) => {
+  const historyFetchTargets = requiredSeries.filter((ticker) => (
+    repairPriceIntegrity || !fetched.has(ticker) || needsHistoryRefetch.has(ticker)
+  ));
+  let completedHistoryFetches = 0;
+  let repairedHistorySeries = 0;
+  const failedHistoryFetches = new Set();
+  await mapWithConcurrency(historyFetchTargets, 3, async (ticker) => {
+    const forceNetwork = repairPriceIntegrity || needsHistoryRefetch.has(ticker);
     try {
-      fetched.set(ticker, await cachedYahooAdjustedSeries(ticker, endDate));
+      fetched.set(ticker, await cachedYahooAdjustedSeries(ticker, endDate, { forceNetwork }));
+      delete failures[ticker];
+      if (forceNetwork) repairedHistorySeries += 1;
     } catch (error) {
+      failedHistoryFetches.add(ticker);
       failures[ticker] = String(error?.message || error);
       const fallback = localCandidateSeries.get(ticker);
       if (fallback) fetched.set(ticker, fallback);
+    } finally {
+      completedHistoryFetches += 1;
+      console.error(`[prices] ${completedHistoryFetches}/${historyFetchTargets.length} ${ticker}`);
     }
   });
   for (const required of ["^KS11", "^KQ11"]) {
@@ -751,8 +842,17 @@ async function preparePrices() {
   const volumeSeriesCount = requiredRecords.filter(([, series]) => (
     Array.isArray(series?.volumes) && series.volumes.some((value) => Number.isFinite(Number(value)))
   )).length;
+  const eligibleRandomAuditRecords = randomAuditPoolRecords.filter((record) => (
+    isEligible(fetched.get(record.ticker), endDate)
+  ));
+  const randomSignalAudit = buildRandomValidationBatches(eligibleRandomAuditRecords, {
+    seed: RANDOM_SIGNAL_AUDIT_SEED,
+    batchSize: RANDOM_SIGNAL_AUDIT_BATCH_SIZE,
+    batchCount: RANDOM_SIGNAL_AUDIT_BATCH_COUNT,
+  });
   const payload = {
     format: "thinkstock-ai-walkforward-prices-v3",
+    priceIntegrityVersion: PRICE_INTEGRITY_VERSION,
     generatedAt: new Date().toISOString(),
     source: "ThinkStock stock-research cache with Yahoo adjusted-history fallback",
     startDate: START_DATE,
@@ -772,7 +872,17 @@ async function preparePrices() {
       development: sampleDesign.development,
       holdout: sampleDesign.holdout,
     },
-    validationSampling: sampleDesign,
+    validationSampling: {
+      ...sampleDesign,
+      randomSignalAudit: {
+        ...randomSignalAudit,
+        fetchedCandidates: randomAuditPoolRecords.length,
+        eligibleCandidates: eligibleRandomAuditRecords.length,
+        deficit: Math.max(0,
+          (RANDOM_SIGNAL_AUDIT_BATCH_SIZE * RANDOM_SIGNAL_AUDIT_BATCH_COUNT)
+          - randomSignalAudit.selectedCount),
+      },
+    },
     researchUniverse: {
       source: researchUniverse.source,
       generatedAt: researchUniverse.generatedAt,
@@ -786,11 +896,20 @@ async function preparePrices() {
       marketCapTrainingPolicy: "latest snapshot is sampling metadata only and excluded from historical model features",
       survivorshipPolicy: "lower-ranked current listings augment development; delisted point-in-time membership remains unavailable",
       delistedSeries: 0,
+      integrityRepair: {
+        mode: repairPriceIntegrity ? "full-authoritative" : "incremental",
+        detectedSeries: [...needsHistoryRefetch].filter((ticker) => requiredSeries.includes(ticker)).length,
+        requestedSeries: historyFetchTargets.length,
+        repairedSeries: repairedHistorySeries,
+        unresolvedSeries: failedHistoryFetches.size,
+        unresolvedTickers: [...failedHistoryFetches].sort(),
+      },
     },
     qualityCases: QUALITY_CASES,
     names,
     series: Object.fromEntries(requiredRecords),
-    failures,
+    failures: Object.fromEntries(Object.entries(failures)
+      .filter(([ticker]) => requiredSeries.includes(ticker))),
   };
   await writeFile(PRICE_CACHE_PATH, `${JSON.stringify(payload)}\n`, "utf8");
   return payload;
@@ -898,7 +1017,7 @@ async function prepareContext(prices) {
 
 await mkdir(CACHE_DIR, { recursive: true });
 const prices = await preparePrices();
-const context = await prepareContext(prices);
+const context = pricesOnly ? null : await prepareContext(prices);
 console.log(JSON.stringify({
   priceCache: path.relative(ROOT, PRICE_CACHE_PATH),
   contextCache: path.relative(ROOT, CONTEXT_CACHE_PATH),
@@ -909,7 +1028,7 @@ console.log(JSON.stringify({
   selection: prices.selection,
   auditSelection: prices.auditSelection,
   validationSplit: prices.validationSplit,
-  contextRows: {
+  contextRows: context ? {
     macro: context.macroRows.length,
     credit: context.creditRows.length,
     auxiliary: context.auxiliaryRows.length,
@@ -923,5 +1042,5 @@ console.log(JSON.stringify({
       .reduce((total, records) => total + (records?.length || 0), 0),
     financialHistoryRows: Number(context.financialHistoryCoverage?.rows || 0),
     financialHistoryTickers: Number(context.financialHistoryCoverage?.tickers || 0),
-  },
+  } : null,
 }, null, 2));
