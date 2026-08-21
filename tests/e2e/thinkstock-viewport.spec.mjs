@@ -80,6 +80,84 @@ test("main chart allows more than five visible stocks and indices", async ({ pag
   expect(readdedStockColor).not.toBe(firstStockColor);
 });
 
+test("ten visible stocks remain interactive and the eleventh starts disabled", async ({ page }) => {
+  const stocks = Array.from({ length: 10 }, (_, index) => {
+    const code = String(100001 + index).padStart(6, "0");
+    return { ticker: `${code}.KS`, code, name: `테스트종목${index + 1}`, market: "KOSPI" };
+  });
+  await page.addInitScript((customStocks) => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 6,
+      autoChartReset: true,
+      customStocks,
+      hiddenSeries: [
+        "leading_cycle",
+        "^KS11",
+        "^KQ11",
+        "customer_deposit",
+        "kospi_credit",
+        "kosdaq_credit",
+      ],
+    }));
+  }, stocks);
+  await installDataRoutes(page);
+  await page.unroute("**/api/prices?*");
+  await page.route("**/api/prices?*", async (route) => {
+    const ticker = new URL(route.request().url()).searchParams.get("ticker") || "";
+    const base = 10000 + Number(ticker.slice(0, 6));
+    await route.fulfill({ json: {
+      ok: true,
+      ticker,
+      source: "KRX",
+      latestDate: recentDates.at(-1),
+      historyCoverage: "full",
+      records: recentDates.map((date, index) => ({
+        date,
+        close: base + (index * 100),
+        volume: 100000 + index,
+      })),
+    } });
+  });
+  await page.unroute("https://query2.finance.yahoo.com/**");
+  await page.route("https://query2.finance.yahoo.com/**", async (route) => {
+    const ticker = decodeURIComponent(new URL(route.request().url()).pathname.split("/").pop() || "");
+    const base = 10000 + Number(ticker.slice(0, 6));
+    await route.fulfill({ json: {
+      chart: { result: [{
+        meta: { gmtoffset: 0 },
+        timestamp: recentDates.map((date) => Date.parse(`${date}T00:00:00Z`) / 1000),
+        indicators: { quote: [{
+          close: recentDates.map((_, index) => base + (index * 100)),
+          volume: recentDates.map((_, index) => 100000 + index),
+        }] },
+      }] },
+    } });
+  });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+
+  const visibleStockCount = () => page.locator("#chart").evaluate((element) => (
+    new Set((element.data || [])
+      .filter((trace) => /^\d{6}\.(KS|KQ)$/.test(trace?.meta?.seriesKey || "")
+        && trace.visible !== "legendonly"
+        && !trace?.meta?.isAiForecastTrace)
+      .map((trace) => trace.meta.seriesKey)).size
+  ));
+  await expect.poll(visibleStockCount, { timeout: 20000 }).toBe(10);
+
+  const firstToggle = page.locator(`[data-series="${stocks[0].ticker}"]`);
+  await firstToggle.click();
+  await expect.poll(visibleStockCount).toBe(9);
+  await firstToggle.click();
+  await expect.poll(visibleStockCount).toBe(10);
+
+  await page.locator("#stockSearchInput").fill("SK하이닉스");
+  await page.locator(".stock-suggest-item").filter({ hasText: "SK하이닉스" }).click();
+  await expect(page.locator('[data-series="000660.KS"]')).toHaveClass(/is-off/);
+  await expect(page.locator("#chartNavigationMessage")).toHaveText("최대 10개 까지만 추가됩니다.");
+  await expect.poll(visibleStockCount).toBe(10);
+});
+
 test("mobile stock remove control keeps a forgiving touch target", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "webkit", "touch target coverage is mobile-only");
   await installDataRoutes(page);

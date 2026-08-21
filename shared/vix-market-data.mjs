@@ -1,3 +1,5 @@
+import { createProviderHttpError } from "./runtime-provider-resilience.mjs";
+
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const DEFAULT_VIX_URL = "https://query2.finance.yahoo.com/v8/finance/chart/%5EVIX";
 
@@ -113,7 +115,7 @@ export async function fetchYahooVixRows(fetchImpl, options = {}) {
     headers: { Accept: "application/json" },
     signal: options.signal,
   });
-  if (!response.ok) throw new Error(`Yahoo VIX HTTP ${response.status}`);
+  if (!response.ok) throw createProviderHttpError("Yahoo VIX", response);
   const rows = normalizeYahooVixChart(await response.json());
   if (!rows.length) throw new Error("Yahoo VIX returned no usable rows");
   return rows;

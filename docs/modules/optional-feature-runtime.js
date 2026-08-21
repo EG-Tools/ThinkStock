@@ -13,24 +13,7 @@
     async function ensureAi() {
       if (ai) return ai;
       await loader.loadFeature("ai-forecast", [
-        "./modules/broker-report-parser.js",
-        "./modules/broker-report-worker-client.js",
-        "./modules/broker-research-cache.js",
-        "./modules/broker-research-runtime.js",
-        "./modules/ai-forecast-app.js",
-        "./modules/ai-forecast-cache.js",
-        "./modules/ai-forecast-input-cache.js",
-        "./modules/ai-forecast-traces.js",
-        "./modules/ai-forecast-math.js",
-        "./modules/ai-context-profile.js",
-        "./modules/ai-forecast-model.js",
-        "./modules/ai-scenario-paths.js",
-        "./modules/ai-forecast-scenarios.js",
-        "./modules/ai-forecast.js",
-        "./modules/ai-analysis-cache.js",
-        "./modules/ai-forecast-journal.js",
-        "./modules/ai-forecast-calibration.js",
-        "./modules/ai-forecast-quality-runtime.js",
+        "./assets/ai-feature.bundle.min.js",
       ], () => Boolean(
         scope.ThinkStockAiForecast
         && scope.ThinkStockBrokerReportParser
@@ -66,11 +49,7 @@
     async function ensureMarketTiming() {
       if (marketTimingService) return marketTimingService;
       await loader.loadFeature("market-timing", [
-        "./modules/ai-forecast-math.js",
-        "./modules/ai-context-profile.js",
-        "./modules/market-timing-evaluation.js",
-        "./modules/market-timing.js",
-        "./modules/market-timing-service.js",
+        "./assets/market-timing-feature.bundle.min.js",
       ], () => Boolean(
         scope.ThinkStockMarketTimingEvaluation
         && scope.ThinkStockMarketTiming
@@ -88,21 +67,8 @@
 
     async function ensureStockResearch() {
       if (stockResearch) return stockResearch;
-      const contractPaths = scope.ThinkStockStockResearchContract
-        ? []
-        : ["./modules/stock-research-contract.js"];
-      const storagePaths = scope.ThinkStockStockResearchStorage
-        ? []
-        : ["./modules/stock-research-storage.js"];
       await loader.loadFeature("stock-research", [
-        ...contractPaths,
-        ...storagePaths,
-        "./modules/stock-research-navigation.js",
-        "./modules/stock-research-filter.js",
-        "./modules/stock-research-history-cache.js",
-        "./modules/stock-research-worker-client.js",
-        "./modules/stock-research.js",
-        "./modules/stock-research-controller.js",
+        "./assets/stock-research-feature.bundle.min.js",
       ], () => Boolean(
         scope.ThinkStockStockResearchContract
         && scope.ThinkStockStockResearchStorage
@@ -122,12 +88,8 @@
 
     async function ensureSettings() {
       if (settings) return settings;
-      await Promise.all([
-        loader.loadScript("./modules/api-periods.js"),
-        loader.loadScript("./modules/release-notes.js"),
-      ]);
       await loader.loadFeature("settings", [
-        "./modules/settings-panel-runtime.js",
+        "./assets/settings-feature.bundle.min.js",
       ], () => Boolean(
         scope.ThinkStockApiPeriods
         && scope.ThinkStockReleaseNotes

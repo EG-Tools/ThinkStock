@@ -10,8 +10,10 @@ test("classifies web and runtime syntax-check scopes without generated bundles",
   assert.equal(shouldIncludeSource("docs/app.js", "web"), true);
   assert.equal(shouldIncludeSource("shared/series-integrity.mjs", "web"), true);
   assert.equal(shouldIncludeSource("scripts/pages-entry.mjs", "web"), true);
+  assert.equal(shouldIncludeSource("scripts/feature-entries/ai-feature.mjs", "web"), true);
   assert.equal(shouldIncludeSource("docs/assets/app.bundle.min.js", "web"), false);
   assert.equal(shouldIncludeSource("scripts/local_pages_server.mjs", "runtime"), true);
+  assert.equal(shouldIncludeSource("scripts/feature-entries/ai-feature.mjs", "runtime"), false);
   assert.equal(shouldIncludeSource("worker/src/index.mjs", "runtime"), true);
   assert.equal(shouldIncludeSource("docs/app.js", "runtime"), false);
 });

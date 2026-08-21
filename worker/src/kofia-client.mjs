@@ -2,6 +2,7 @@ import {
   koreanDateText,
   latestKoreanTradingDateOnOrBefore,
 } from "../../shared/market-calendar.mjs";
+import { createProviderHttpError } from "../../shared/runtime-provider-resilience.mjs";
 
 const KOFIA_CREDIT_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getGrantingOfCreditBalanceInfo";
 const KOFIA_MARKET_FUNDS_URL = "https://apis.data.go.kr/1160100/service/GetKofiaStatisticsInfoService/getSecuritiesMarketTotalCapitalInfo";
@@ -57,6 +58,40 @@ export function mergeCreditRows(existing, incoming) {
     if (Object.keys(next).length > 1) byDate.set(date, next);
   });
   return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
+}
+
+export function creditCacheFreshThrough(rows) {
+  const sourceRows = Array.isArray(rows) ? rows : [];
+  const latestDateFor = (keys) => sourceRows
+    .filter((row) => keys.every((key) => Number(row?.[key]) > 0))
+    .at(-1)?.date || "";
+  return Object.freeze({
+    credit: latestDateFor(["kospi_credit", "kosdaq_credit"]),
+    deposit: latestDateFor(["customer_deposit"]),
+  });
+}
+
+export function creditCacheRefreshDecision(options = {}) {
+  const cached = options.cached && typeof options.cached === "object" ? options.cached : null;
+  const expectedDate = String(options.expectedDate || "").slice(0, 10);
+  const windowDate = String(options.windowDate || "").slice(0, 10);
+  const requiredSchema = Number(options.requiredSchema);
+  const schemaMatches = !Number.isFinite(requiredSchema)
+    || Number(cached?.schema) === requiredSchema;
+  const freshThrough = creditCacheFreshThrough(cached?.rows);
+  const coversExpectedDate = isValidIsoDate(expectedDate)
+    && freshThrough.credit >= expectedDate
+    && freshThrough.deposit >= expectedDate;
+  const refreshRequested = options.refresh === true
+    || Boolean(windowDate && cached?.lastCheckedWindow !== windowDate);
+  const hasUsableCache = Boolean(cached && schemaMatches && Array.isArray(cached.rows) && cached.rows.length);
+  return Object.freeze({
+    coversExpectedDate,
+    freshThrough,
+    hasUsableCache,
+    needsRefresh: !hasUsableCache || (refreshRequested && !coversExpectedDate),
+    refreshRequested,
+  });
 }
 
 export function parseFreesisPayload(text) {
@@ -133,7 +168,7 @@ export function createKofiaClient(options = {}) {
           cache: "no-store",
           signal: timeoutSignal(30000),
         });
-        if (!response.ok) throw new Error(`KOFIA Open API HTTP ${response.status}`);
+        if (!response.ok) throw createProviderHttpError("KOFIA Open API", response);
         const payload = parseOpenApiPayload(await response.text());
         const header = payload?.response?.header;
         if (String(header?.resultCode || "") !== "00") {
@@ -180,7 +215,7 @@ export function createKofiaClient(options = {}) {
             },
           }),
         });
-        if (!response.ok) throw new Error(`KOFIA HTTP ${response.status}`);
+        if (!response.ok) throw createProviderHttpError("KOFIA", response);
         const payload = parseFreesisPayload(await response.text());
         const rows = Array.isArray(payload?.ds1) ? payload.ds1 : [];
         if (rows.length) return rows;
@@ -214,7 +249,7 @@ export function createKofiaClient(options = {}) {
           },
           signal: timeoutSignal(15000),
         });
-        if (!response.ok) throw new Error(`INDEXerGO HTTP ${response.status}`);
+        if (!response.ok) throw createProviderHttpError("INDEXerGO", response);
         return parseIndexergoLatestPoint(await response.text());
       } catch (error) {
         lastError = error;

@@ -3,6 +3,20 @@
 
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "2.96",
+      date: "2026.08.21",
+      items: Object.freeze([
+        "외부 데이터 제공자 오류·재시도 정책 통합",
+        "로컬·배포 데이터 복구 규칙 공용화",
+        "AI·신호·종목탐구 선택 기능 로딩 단축",
+        "캐시 갱신 및 중복 계산 경로 정리",
+        "AI·신호 품질 검증 표본 확대",
+        "신호 시장국면·근거 등급과 VKOSPI 정책 개선",
+        "10개 차트·아이폰 조작 회귀검사 강화",
+        "앱 상태 조정 구조 추가 모듈화",
+      ]),
+    }),
+    Object.freeze({
       version: "2.95",
       date: "2026.08.20",
       items: Object.freeze([

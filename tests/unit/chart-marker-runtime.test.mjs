@@ -13,6 +13,22 @@ test("timing hover reasons stay concise while preserving the strongest evidence"
   assert.equal(markerModule.compactTimingReasons([], "복합 신호"), "복합 신호");
 });
 
+test("timing signal popovers reuse the compact marker payload", () => {
+  const group = markerModule.buildTimingSignalPopoverGroup({
+    x: "2026-08-21",
+    customdata: ["삼성전자", "신용 과열 · MACD 반전", "8.2", "-1.3", "강", "slowdown", 5],
+    data: { name: "타이밍 매도신호", meta: { isMarketTimingSellTrace: true } },
+  });
+  assert.equal(group.name, "삼성전자");
+  assert.equal(group.plotDate, "2026-08-21");
+  assert.deepEqual(group.events.map((event) => event.title), [
+    "매도 신호 · 강",
+    "근거: 신용 과열 · MACD 반전",
+    "신용20일 8.2% · 고점대비 -1.3%",
+    "시장 둔화 · 근거 5개",
+  ]);
+});
+
 function createRuntime(overrides = {}) {
   const counters = { index: 0, gap: 0, indexedTickers: [] };
   const chartSession = {

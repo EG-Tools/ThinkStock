@@ -47,7 +47,9 @@ import {
 } from "../shared/research-universe-live.mjs";
 import {
   createKofiaClient,
+  creditCacheRefreshDecision,
   creditRefreshWindowDate,
+  expectedLatestKofiaDate,
   fetchKofiaCreditAndDepositRows,
   mergeCreditRows,
 } from "../worker/src/kofia-client.mjs";
@@ -1313,10 +1315,13 @@ export async function createThinkStockServer(options = {}) {
         String(requestUrl.searchParams.get("refresh") || "").toLowerCase(),
       );
       const windowDate = creditRefreshWindowDate();
-      const needsRefresh = forceRefresh
-        || !creditMacroCache
-        || Boolean(windowDate && creditMacroCache.lastCheckedWindow !== windowDate);
-      if (!needsRefresh) {
+      const refreshDecision = creditCacheRefreshDecision({
+        cached: creditMacroCache,
+        expectedDate: expectedLatestKofiaDate(),
+        refresh: forceRefresh,
+        windowDate,
+      });
+      if (!refreshDecision.needsRefresh) {
         await syncCreditRowsToWorker(creditMacroCache.rows).catch(() => false);
         sendJson(request, response, 200, { ok: true, cached: true, ...creditMacroCache });
         return;

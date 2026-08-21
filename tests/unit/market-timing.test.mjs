@@ -5,11 +5,15 @@ import test from "node:test";
 await import("../../docs/modules/macd-oscillator.js");
 await import("../../docs/modules/market-timing.js");
 const {
+  DEFAULT_KOREAN_VOLATILITY_POLICY,
   VOLATILITY_MAX_HISTORY_DAYS,
+  alignedSource,
   alignAsOf,
   buildExternalVolatilityTimingRows,
   buildMarketTimingSignals,
   buildVolatilityProfile,
+  classifyTimingRegime,
+  decorateTimingSignal,
 } = globalThis.ThinkStockMarketTiming;
 const { buildMacdOscillator } = globalThis.ThinkStockMacdOscillator;
 
@@ -49,6 +53,49 @@ test("as-of alignment never uses a future observation", () => {
     alignAsOf([dateAt(0), dateAt(1), dateAt(2)], [{ date: dateAt(1), value: 42 }], 7),
     [null, 42, 42],
   );
+});
+
+test("provider-specific availability lag is explicit and never reads ahead", () => {
+  const dates = [dateAt(0), dateAt(1), dateAt(2), dateAt(3)];
+  assert.deepEqual(alignedSource(
+    dates,
+    [{ date: dateAt(0), value: 42 }],
+    "value",
+    7,
+    2,
+  ), [null, null, 42, 42]);
+});
+
+test("timing regimes and evidence grades remain descriptive rather than probabilistic", () => {
+  assert.equal(classifyTimingRegime({
+    adrMin: 72,
+    fearMin: 20,
+    crisis: 20,
+    vkospiPercentile: 0.4,
+    vixPercentile: 0.4,
+  }), "stress");
+  assert.equal(classifyTimingRegime({
+    adrMin: 95,
+    fearMin: 50,
+    crisis: 10,
+    vkospiPercentile: 0.4,
+    vixPercentile: 0.4,
+    leadingChange: -0.2,
+    price20d: 5,
+  }), "slowdown");
+  const signal = decorateTimingSignal({
+    entryMode: "turning-point",
+    setupReasons: ["가격 조정", "ADR 과매도"],
+    triggerReasons: ["MACD 반전"],
+  });
+  assert.equal(signal.evidenceCount, 3);
+  assert.equal(signal.signalGrade, "보통");
+  assert.deepEqual(DEFAULT_KOREAN_VOLATILITY_POLICY, {
+    buyPercentile: 0.85,
+    sellPercentile: 0.2,
+    sellChange5: 8,
+    sellRebound20: 10,
+  });
 });
 
 test("delays the US VIX close by one day in Korean timing signals", () => {

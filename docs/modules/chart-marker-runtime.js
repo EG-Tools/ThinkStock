@@ -50,6 +50,57 @@
     return reasons.slice(0, Math.max(1, limit)).join(" · ") || fallback;
   }
 
+  function timingRegimeLabel(value) {
+    return ({
+      expansion: "상승",
+      slowdown: "둔화",
+      stress: "위험",
+      recovery: "회복",
+      range: "횡보",
+    })[String(value || "")] || "혼조";
+  }
+
+  function buildTimingSignalPopoverGroup(point) {
+    const meta = point?.data?.meta || {};
+    const values = Array.isArray(point?.customdata) ? point.customdata : [];
+    const date = String(point?.x || "").slice(0, 10);
+    if (meta.isMarketTimingBuyTrace) {
+      return {
+        name: values[0] || point.data.name || "타이밍",
+        plotDate: date,
+        events: [
+          { title: `매수 신호 · ${values[5] || "보통"}` },
+          { title: `근거: ${values[1] || "과매도·반전"}` },
+          { title: `ADR ${values[2] ?? "-"} · 공포 ${values[3] ?? "-"} · MACD ${values[4] ?? "-"}` },
+          { title: `시장 ${timingRegimeLabel(values[6])} · 근거 ${values[7] ?? "-"}개` },
+        ],
+      };
+    }
+    if (meta.isMarketTimingSellTrace) {
+      return {
+        name: values[0] || point.data.name || "타이밍",
+        plotDate: date,
+        events: [
+          { title: `매도 신호 · ${values[4] || "보통"}` },
+          { title: `근거: ${values[1] || "과열·추세 둔화"}` },
+          { title: `신용20일 ${values[2] ?? "-"}% · 고점대비 ${values[3] ?? "-"}%` },
+          { title: `시장 ${timingRegimeLabel(values[5])} · 근거 ${values[6] ?? "-"}개` },
+        ],
+      };
+    }
+    if (meta.isCrisisSignalTrace) {
+      return {
+        name: values[0] || point.data.name || "타이밍",
+        plotDate: date,
+        events: [
+          { title: `침체 ${values[1] ?? "경고"} · 종합 ${values[2] ?? "-"}점` },
+          { title: `금리 ${values[3] ?? "-"} · 고용 ${values[4] ?? "-"} · 신용 ${values[5] ?? "-"}` },
+        ],
+      };
+    }
+    return null;
+  }
+
   function createChartMarkerRuntime(scope = globalScope, options = {}) {
     const {
       colors = {},
@@ -294,6 +345,9 @@
           ], "과열·추세 둔화"),
           Number.isFinite(signal.creditChange) ? signal.creditChange.toFixed(1) : "-",
           Number.isFinite(signal.priceDrawdown60) ? signal.priceDrawdown60.toFixed(1) : "-",
+          signal.signalGrade || "보통",
+          signal.marketRegime || "range",
+          Number.isFinite(signal.evidenceCount) ? signal.evidenceCount : "-",
         ]),
         type: "scatter",
         mode: "markers",
@@ -328,6 +382,9 @@
           printable(signal.adrMin),
           printable(signal.fearMin),
           printable(signal.oscillator, 3),
+          signal.signalGrade || "보통",
+          signal.marketRegime || "range",
+          Number.isFinite(signal.evidenceCount) ? signal.evidenceCount : "-",
         ]),
         type: "scatter",
         mode: "markers",
@@ -550,7 +607,7 @@
       const first = records[0] || {};
       const latest = records.at(-1) || {};
       const signature = [
-        "market-timing-v4",
+        "market-timing-v5",
         sourceRevision,
         sourceTickers.join(","),
         first.date || "",
@@ -617,6 +674,7 @@
 
   globalScope.ThinkStockChartMarkerRuntime = Object.freeze({
     collectCrisisSignalEntries,
+    buildTimingSignalPopoverGroup,
     compactTimingReasons,
     createChartMarkerRuntime,
     findPointOnOrAfterDate,

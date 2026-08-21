@@ -14,6 +14,7 @@ function compactMetrics(value = {}) {
     improvementVsMomentum: finiteOrNull(value.improvementVsMomentum),
     scenarioAccuracy: finiteOrNull(value.scenarioAccuracy),
     scenarioBrierScore: finiteOrNull(value.scenarioBrierScore),
+    meanSignedError: finiteOrNull(value.meanSignedError),
     meanPredictedReturn: finiteOrNull(value.meanPredictedReturn),
     meanActualReturn: finiteOrNull(value.meanActualReturn),
   });
@@ -27,6 +28,8 @@ function compactHoldout(result = {}) {
     noChangeSkillPoints: finiteOrNull(result.delta?.noChangeSkillPoints),
     momentumSkillPoints: finiteOrNull(result.delta?.momentumSkillPoints),
     scenarioBrierReduction: finiteOrNull(result.delta?.scenarioBrierReduction),
+    signedBiasReduction: finiteOrNull(result.delta?.signedBiasReduction),
+    signedBiasAbsoluteIncrease: finiteOrNull(result.delta?.signedBiasAbsoluteIncrease),
   });
 }
 
@@ -63,8 +66,10 @@ function segmentRegressionSafety(comparison = {}) {
         if (samples < 20) return;
         const directionDelta = finiteOrNull(row?.delta?.directionAccuracyPoints);
         const errorReduction = finiteOrNull(row?.delta?.errorReduction);
+        const signedBiasIncrease = finiteOrNull(row?.delta?.signedBiasAbsoluteIncrease);
         if ((directionDelta !== null && directionDelta <= -5)
-          || (errorReduction !== null && errorReduction <= -0.05)) {
+          || (errorReduction !== null && errorReduction <= -0.05)
+          || (signedBiasIncrease !== null && signedBiasIncrease >= 0.025)) {
           issues.push(Object.freeze({
             family,
             name,
@@ -72,6 +77,7 @@ function segmentRegressionSafety(comparison = {}) {
             samples,
             directionAccuracyPoints: directionDelta,
             errorReduction,
+            signedBiasAbsoluteIncrease: signedBiasIncrease,
           }));
         }
       });

@@ -12,6 +12,10 @@ REQUIRED_FILES = (
     "styles.css",
     "sw.js",
     "assets/app.bundle.min.js",
+    "assets/ai-feature.bundle.min.js",
+    "assets/market-timing-feature.bundle.min.js",
+    "assets/stock-research-feature.bundle.min.js",
+    "assets/settings-feature.bundle.min.js",
 )
 
 

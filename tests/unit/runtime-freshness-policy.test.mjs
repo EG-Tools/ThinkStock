@@ -73,6 +73,41 @@ test("runs retries, fallback, and stale cache through one source plan", async ()
   assert.deepEqual(cacheResult, { value: "cached", source: "cache", stale: true, attempts: 1 });
 });
 
+test("source plan skips permanent HTTP failures and honors bounded rate-limit delays", async () => {
+  let authAttempts = 0;
+  const auth = await executeRuntimeSourcePlan("credit", {
+    primary: async () => {
+      authAttempts += 1;
+      const error = new Error("provider HTTP 403");
+      error.status = 403;
+      throw error;
+    },
+    fallback: async () => "mirror",
+  }, { delaysMs: [1, 2], sleep: async () => {} });
+  assert.equal(authAttempts, 1);
+  assert.equal(auth.source, "fallback");
+
+  const waits = [];
+  let attempts = 0;
+  await executeRuntimeSourcePlan("credit", {
+    primary: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        const error = new Error("provider HTTP 429");
+        error.status = 429;
+        error.retryAfterMs = 12_000;
+        throw error;
+      }
+      return "fresh";
+    },
+  }, {
+    delaysMs: [500],
+    maximumRetryDelayMs: 5_000,
+    sleep: async (delay) => waits.push(delay),
+  });
+  assert.deepEqual(waits, [5_000]);
+});
+
 test("confirms live prices again after the shared live interval", () => {
   const now = new Date("2026-08-10T00:30:00Z");
   assert.equal(shouldConfirmRuntimeSource("price", {

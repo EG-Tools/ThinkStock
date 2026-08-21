@@ -88,6 +88,29 @@ test("validation summary blocks a challenger with a severe segment regression", 
   assert.equal(summary.segments.markets.KOSDAQ[63].samples, 40);
 });
 
+test("validation summary blocks a challenger that increases segment direction bias", () => {
+  const input = validationInput();
+  input.comparison.archetypes = {
+    "range-dividend": {
+      126: {
+        after: { samples: 32, meanSignedError: -0.09 },
+        delta: {
+          directionAccuracyPoints: 1,
+          errorReduction: 0.01,
+          signedBiasReduction: -0.5,
+          signedBiasAbsoluteIncrease: 0.03,
+        },
+      },
+    },
+  };
+  const summary = buildAiValidationSummary(input);
+
+  assert.equal(summary.releaseDecision, "hold-for-segment-regression");
+  assert.equal(summary.promotionAllowed, false);
+  assert.equal(summary.segments.archetypes["range-dividend"][126].meanSignedError, -0.09);
+  assert.equal(summary.segmentSafety.issues[0].signedBiasAbsoluteIncrease, 0.03);
+});
+
 test("validation summary blocks promotion when historical company evidence is absent", () => {
   const input = validationInput();
   input.report.sourceCoverage.pointInTimeFeatureCoverage.snapshotAnchors = 0;

@@ -3,6 +3,7 @@ import "../docs/modules/admin-feature-access.js";
 import "../shared/adr-data.mjs";
 import "../shared/market-calendar.mjs";
 import "../shared/runtime-freshness-policy.mjs";
+import "../shared/runtime-provider-resilience.mjs";
 import "../shared/series-timeline-policy.mjs";
 import "../shared/runtime-api-contract.mjs";
 import "../shared/performance-budget.mjs";

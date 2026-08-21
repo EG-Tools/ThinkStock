@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  creditCacheFreshThrough,
+  creditCacheRefreshDecision,
   createKofiaClient,
   expectedLatestKofiaDate,
   fetchKofiaCreditAndDepositRows,
@@ -255,6 +257,49 @@ test("credit row merging ignores unpublished zero values", () => {
     kospi_credit: 21.4,
     kosdaq_credit: 5.8,
   }]);
+});
+
+test("credit cache skips a forced refresh when both components cover the expected date", () => {
+  const cached = {
+    schema: 5,
+    lastCheckedWindow: "2026-08-20",
+    rows: [
+      { date: "2026-08-19", kospi_credit: 24.4, kosdaq_credit: 6.8 },
+      { date: "2026-08-19", customer_deposit: 99.1 },
+    ],
+  };
+  assert.deepEqual(creditCacheFreshThrough(cached.rows), {
+    credit: "2026-08-19",
+    deposit: "2026-08-19",
+  });
+  assert.equal(creditCacheRefreshDecision({
+    cached,
+    expectedDate: "2026-08-19",
+    refresh: true,
+    requiredSchema: 5,
+    windowDate: "2026-08-20",
+  }).needsRefresh, false);
+});
+
+test("credit cache refreshes when either credit or deposit is behind", () => {
+  const decision = creditCacheRefreshDecision({
+    cached: {
+      schema: 5,
+      lastCheckedWindow: "2026-08-19",
+      rows: [
+        { date: "2026-08-18", customer_deposit: 98.7 },
+        { date: "2026-08-19", kospi_credit: 24.4, kosdaq_credit: 6.8 },
+      ],
+    },
+    expectedDate: "2026-08-19",
+    requiredSchema: 5,
+    windowDate: "2026-08-20",
+  });
+  assert.equal(decision.needsRefresh, true);
+  assert.deepEqual(decision.freshThrough, {
+    credit: "2026-08-19",
+    deposit: "2026-08-18",
+  });
 });
 
 test("Freesis parser keeps valid numbers and rejects masked payloads", () => {

@@ -429,7 +429,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = 1.8;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = 14;
-const APP_VERSION = "2.95";
+const APP_VERSION = "2.96";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -878,6 +878,7 @@ const tickerPriceStatusStore = tickerPriceRuntimeModule.createStatusStore({
 });
 const tickerVolumeSeriesByTicker = new Map();
 let tickerPricePayloadController = null;
+let tickerSeriesLoader = null;
 let currentDisclosureHighlight = null;
 let lastDisclosureTraceStats = { total: 0, candidates: 0, markers: 0 };
 let lastInsiderTradeTraceStats = { total: 0, candidates: 0, markers: 0 };
@@ -3657,120 +3658,45 @@ async function applySharedTickerPriceCache(ticker, displayName = "") {
   return priceCache.applied ? priceCache : applyResearchHistoryPriceCache(ticker, displayName);
 }
 
-async function ensureCustomTickerSeriesLoaded(ticker, options = {}) {
-  const key = String(ticker || "").trim().toUpperCase();
-  const forceRefresh = Boolean(options?.forceRefresh);
-  const displayName = String(options?.displayName || DISPLAY_NAMES[key] || "").trim();
-  const signal = options?.signal || null;
-  const hasPrefetchedLatest = Object.prototype.hasOwnProperty.call(options, "latestPoints");
-  const prefetchedLatest = hasPrefetchedLatest
-    ? normalizeTickerPricePoints(options.latestPoints)
-    : [];
-  throwIfAborted(signal);
-  const cacheInfo = await applySharedTickerPriceCache(key, displayName);
-  throwIfAborted(signal);
-  const hasExisting = (pricePayload?.records || []).some((row) => toNum(row?.[key]) !== null);
-  const historyCoverage = tickerPriceRuntimeModule.normalizeHistoryCoverage(cacheInfo.historyCoverage);
-  let latestExisting = cacheInfo.latestDate || getLatestTickerDateFromPricePayload(key);
-  if (hasExisting && options?.returnAfterCache === true) {
-    return {
-      ready: true,
-      cached: true,
-      deferredRefresh: true,
-      latestDate: latestExisting,
-    };
-  }
-  if (hasExisting && !forceRefresh) {
-    // Check the KRX-backed runtime endpoint on every boot without downloading history again.
-    try {
-      const latestPoints = hasPrefetchedLatest
-        ? prefetchedLatest
-        : await fetchLatestKrxTickerSeries(key, { signal });
-      if (latestPoints.length) {
-        mergeTickerSeriesIntoPricePayload(key, latestPoints);
-        latestExisting = getLatestTickerDateFromPricePayload(key);
-        await writeTickerPriceCache(key, getTickerPricePointsFromPayload(key), displayName, {
-          historyCoverage,
-        });
-      }
-    } catch (error) {
-      if (isAbortError(error) || signal?.aborted) throw error;
-      // Keep a usable local series; the normal incremental loader remains the fallback.
-    }
-    if (isTickerPriceCacheFresh(latestExisting, key)
-      && hasTickerVolumeHistory(key)
-      && historyCoverage === tickerPriceRuntimeModule.HISTORY_COVERAGE_FULL) {
-      return { ready: true, cached: true, deferredRefresh: false, latestDate: latestExisting };
-    }
-  }
+function getTickerSeriesLoader() {
+  if (tickerSeriesLoader) return tickerSeriesLoader;
+  tickerSeriesLoader = tickerPriceRuntimeModule.createSeriesLoader({
+    applySharedCache: applySharedTickerPriceCache,
+    assessPriceUpdate: (existingPoints, points, { rebaseSignal }) => (
+      tickerCacheInvalidationModule.assessPriceUpdate(existingPoints, points, {
+        rebaseSignal,
+        ratioThreshold: PRICE_CACHE_REBASE_RATIO_THRESHOLD,
+        boundaryDays: PRICE_CACHE_REBASE_BOUNDARY_DAYS,
+        maximumBoundaryDays: PRICE_CACHE_REBASE_BOUNDARY_DAYS,
+      })
+    ),
+    clearSeries: clearTickerSeriesFromPricePayload,
+    displayName: (key) => DISPLAY_NAMES[key] || "",
+    fetchHistory: fetchTickerHistorySeries,
+    fetchLatest: fetchLatestKrxTickerSeries,
+    findRebaseSignal: (existingPoints, points) => findTickerPriceRebaseSignal(existingPoints, points, {
+      ratioThreshold: PRICE_CACHE_REBASE_RATIO_THRESHOLD,
+      boundaryDays: PRICE_CACHE_REBASE_BOUNDARY_DAYS,
+    }),
+    getPoints: getTickerPricePointsFromPayload,
+    getStatus: (key) => tickerPriceStatusStore.get(key),
+    hasSeries: (key) => (pricePayload?.records || []).some((row) => toNum(row?.[key]) !== null),
+    hasVolumeHistory: hasTickerVolumeHistory,
+    invalidateCache: (key, assessment) => getTickerCacheInvalidator().invalidate(key, assessment),
+    isAbortError,
+    isCacheFresh: isTickerPriceCacheFresh,
+    latestDate: getLatestTickerDateFromPricePayload,
+    mergePoints: mergeTickerSeriesIntoPricePayload,
+    normalizePoints: normalizeTickerPricePoints,
+    setStatus: setTickerPriceStatus,
+    throwIfAborted,
+    writeCache: writeTickerPriceCache,
+  });
+  return tickerSeriesLoader;
+}
 
-  try {
-    const existingPoints = getTickerPricePointsFromPayload(key);
-    // Old cache records contain closes only; refill full history once to add hidden volume evidence.
-    const sinceDate = tickerPriceRuntimeModule.resolveHistoryFetchSinceDate({
-      hasExisting,
-      hasVolumeHistory: hasTickerVolumeHistory(key),
-      historyCoverage,
-      latestDate: getLatestTickerDateFromPricePayload(key),
-    });
-    let points = await fetchTickerHistorySeries(key, {
-      forceNetwork: forceRefresh,
-      sinceDate,
-      signal,
-      ...(hasPrefetchedLatest ? { latestPoints: prefetchedLatest } : {}),
-    });
-    throwIfAborted(signal);
-    if (!points.length) throw new Error(`${key} price history is empty`);
-    const rebaseSignal = sinceDate ? findTickerPriceRebaseSignal(existingPoints, points, {
-      ratioThreshold: PRICE_CACHE_REBASE_RATIO_THRESHOLD,
-      boundaryDays: PRICE_CACHE_REBASE_BOUNDARY_DAYS,
-    }) : null;
-    const cacheAssessment = tickerCacheInvalidationModule.assessPriceUpdate(existingPoints, points, {
-      rebaseSignal,
-      ratioThreshold: PRICE_CACHE_REBASE_RATIO_THRESHOLD,
-      boundaryDays: PRICE_CACHE_REBASE_BOUNDARY_DAYS,
-      maximumBoundaryDays: PRICE_CACHE_REBASE_BOUNDARY_DAYS,
-    });
-    if (cacheAssessment.fullHistoryRequired) {
-      points = await fetchTickerHistorySeries(key, {
-        forceNetwork: forceRefresh,
-        signal,
-        ...(hasPrefetchedLatest ? { latestPoints: prefetchedLatest } : {}),
-      });
-      throwIfAborted(signal);
-      if (!points.length) throw new Error(`${key} price history is empty`);
-      await getTickerCacheInvalidator().invalidate(key, cacheAssessment);
-      clearTickerSeriesFromPricePayload(key);
-    } else if (cacheAssessment.invalidateDerived) {
-      await getTickerCacheInvalidator().invalidate(key, cacheAssessment);
-    }
-    throwIfAborted(signal);
-    mergeTickerSeriesIntoPricePayload(key, points);
-    await writeTickerPriceCache(key, getTickerPricePointsFromPayload(key), displayName, {
-      historyCoverage: tickerPriceRuntimeModule.HISTORY_COVERAGE_FULL,
-    });
-    return {
-      ready: true,
-      cached: false,
-      deferredRefresh: false,
-      latestDate: getLatestTickerDateFromPricePayload(key),
-    };
-  } catch (err) {
-    if (hasExisting || cacheInfo.applied) {
-      const previous = tickerPriceStatusStore.get(key) || {};
-      setTickerPriceStatus(key, {
-        ...previous,
-        source: previous.source || "LOCAL_CACHE",
-        latestDate: previous.latestDate || latestExisting,
-        cached: true,
-        localCache: true,
-        stale: true,
-        warning: previous.warning || `최신 가격 갱신 실패: ${err?.message || err}`,
-      });
-      return { ready: true, cached: true, stale: true, deferredRefresh: false, latestDate: latestExisting };
-    }
-    throw err;
-  }
+function ensureCustomTickerSeriesLoaded(ticker, options = {}) {
+  return getTickerSeriesLoader().load(ticker, options);
 }
 
 const runtimeIndexRefreshService = runtimeIndexRefreshModule.createRuntimeIndexRefreshService({
@@ -5274,40 +5200,9 @@ function handleTimingSignalClick(evtData) {
     || candidate?.data?.meta?.isCrisisSignalTrace
   ));
   if (!point || !isDirectDisclosureTap(evtData, point)) return false;
-  const values = Array.isArray(point.customdata) ? point.customdata : [];
-  const meta = point.data.meta || {};
-  let events;
-  if (meta.isMarketTimingBuyTrace) {
-    events = [
-      { title: "매수 타이밍 · 투매 저점 확인" },
-      { title: `투매: ${values[1] || "심리·시장폭 과매도"}` },
-      { title: `저점: ${values[2] || "신저점 재시험"}` },
-      { title: `반전: ${values[3] || "MACD 상승 다이버전스"}` },
-      { title: `ADR 저점 ${values[4] ?? "-"} · 공포탐욕 저점 ${values[5] ?? "-"}` },
-      { title: `선행순환 변화 ${values[6] ?? "-"} · 침체점수 ${values[7] ?? "-"}` },
-      { title: `MACD ${values[8] ?? "-"} · 신용 20일 ${values[9] ?? "-"} (${values[10] ?? "-"} 백분위)` },
-    ];
-  } else if (meta.isMarketTimingSellTrace) {
-    events = [
-      { title: "매도 타이밍 · 상승 절정 확인" },
-      { title: `과열: ${values[1] || "가격·신용 과열"}` },
-      { title: `고점: ${values[2] || "고점 갱신 후 탄력 둔화"}` },
-      { title: `반전: ${values[3] || "MACD 상승 탄력 반전"}` },
-      { title: `신용 20일 ${values[4] ?? "-"}% · 과거 1년 백분위 ${values[5] ?? "-"}%` },
-      { title: `60일 고점 대비 ${values[6] ?? "-"}%` },
-    ];
-  } else {
-    events = [
-      { title: `침체 ${values[1] ?? "경고"} · 종합 ${values[2] ?? "-"}점` },
-      { title: `금리 ${values[3] ?? "-"} · 고용 ${values[4] ?? "-"} · 신용 ${values[5] ?? "-"}` },
-      { title: `10Y-2Y ${values[6] ?? "-"}% · 10Y-3M ${values[7] ?? "-"}%` },
-    ];
-  }
-  showDisclosurePopover({
-    name: values[0] || point.data.name || "타이밍",
-    plotDate: String(point.x || "").slice(0, 10),
-    events,
-  }, evtData.event);
+  const group = chartMarkerRuntimeModule.buildTimingSignalPopoverGroup(point);
+  if (!group) return false;
+  showDisclosurePopover(group, evtData.event);
   return true;
 }
 

@@ -13,6 +13,7 @@ import {
   executeRuntimeSourcePlan,
   sourcePolicy,
 } from "../../shared/runtime-freshness-policy.mjs";
+import { createProviderHttpError } from "../../shared/runtime-provider-resilience.mjs";
 import { mergeIndexRecords } from "../../shared/runtime-data-contract.mjs";
 import {
   evaluateNaverPriceFallback,
@@ -95,6 +96,7 @@ import {
 } from "./crisis-signal.mjs";
 import {
   createKofiaClient,
+  creditCacheRefreshDecision,
   creditRefreshWindowDate,
   expectedLatestKofiaDate,
   fetchKofiaCreditAndDepositRows,
@@ -533,7 +535,7 @@ export async function fetchLiveVkospiRows(env, rows, now = new Date()) {
       "Stockplus VKOSPI Browser Run",
     );
     if (!response.ok) {
-      throw new Error(`Stockplus VKOSPI Browser Run HTTP ${response.status}: ${body.slice(0, 160)}`);
+      throw createProviderHttpError("Stockplus VKOSPI Browser Run", response, body.slice(0, 160));
     }
     recentRows = vkospiRowsFromStockplusBrowserContent(body);
     if (!recentRows.length || recentRows.at(-1)?.date !== expectedDate) {
@@ -745,7 +747,7 @@ async function crisisSignalResponse(env, origin, refresh = false) {
               VIX_BROWSER_MAX_BYTES,
               "Yahoo VIX Browser Run",
             );
-            if (!response.ok) throw new Error(`Yahoo VIX Browser Run HTTP ${response.status}`);
+            if (!response.ok) throw createProviderHttpError("Yahoo VIX Browser Run", response);
             const rows = normalizeBrowserVixContent(body);
             if (!rows.length) throw new Error("Yahoo VIX Browser Run returned no usable rows");
             return { rows, error: "" };
@@ -921,22 +923,15 @@ async function creditMacroResponse(env, origin, refresh = false) {
     : null;
   const windowDate = creditRefreshWindowDate();
   const expectedDate = expectedLatestKofiaDate();
-  const cachedRows = Array.isArray(cached?.rows) ? cached.rows : [];
-  const latestCachedDateFor = (keys) => cachedRows
-    .filter((row) => keys.every((key) => Number(row?.[key]) > 0))
-    .at(-1)?.date || "";
-  const cachedFreshThrough = {
-    credit: latestCachedDateFor(["kospi_credit", "kosdaq_credit"]),
-    deposit: latestCachedDateFor(["customer_deposit"]),
-  };
-  const cacheCoversExpectedDate = Boolean(expectedDate)
-    && cachedFreshThrough.credit >= expectedDate
-    && cachedFreshThrough.deposit >= expectedDate;
-  const refreshRequested = refresh
-    || Boolean(windowDate && cached?.lastCheckedWindow !== windowDate);
-  const needsRefresh = !cached || cached.schema !== CREDIT_CACHE_SCHEMA
-    || (refreshRequested && !cacheCoversExpectedDate);
-  if (!needsRefresh) {
+  const refreshDecision = creditCacheRefreshDecision({
+    cached,
+    expectedDate,
+    refresh,
+    requiredSchema: CREDIT_CACHE_SCHEMA,
+    windowDate,
+  });
+  const cachedFreshThrough = refreshDecision.freshThrough;
+  if (!refreshDecision.needsRefresh) {
     const { warning: _staleSourceWarning, ...cleanCached } = cached;
     return jsonResponse({ ...cleanCached, ok: true, cached: true }, 200, origin);
   }
@@ -961,7 +956,7 @@ async function creditMacroResponse(env, origin, refresh = false) {
             "INDEXerGO Browser Run",
           );
           if (!response.ok) {
-            throw new Error(`INDEXerGO Browser Run HTTP ${response.status}: ${body.slice(0, 240)}`);
+            throw createProviderHttpError("INDEXerGO Browser Run", response, body.slice(0, 240));
           }
           try {
             const payload = JSON.parse(body);

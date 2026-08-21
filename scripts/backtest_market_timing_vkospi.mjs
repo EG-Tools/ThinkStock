@@ -7,7 +7,11 @@ await import("../docs/modules/market-timing.js");
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CACHE_DIR = path.join(ROOT, ".thinkstock-cache", "ai-backtest");
-const OUTPUT_PATH = path.join(CACHE_DIR, "market-timing-vkospi-candidates.json");
+const QUICK_MODE = process.argv.includes("--quick");
+const OUTPUT_PATH = path.join(
+  CACHE_DIR,
+  QUICK_MODE ? "market-timing-vkospi-candidates.quick.json" : "market-timing-vkospi-candidates.json",
+);
 const START_DATE = "2011-01-01";
 
 const { buildMacdOscillator } = globalThis.ThinkStockMacdOscillator;
@@ -97,6 +101,7 @@ function signalOutcome(signal, type, series, ticker) {
     vkospiPercentile: number(signal?.vkospiPercentile),
     vkospiChange5: number(signal?.vkospiChange5),
     vkospiChange20: number(signal?.vkospiChange20),
+    tags: Array.isArray(series.tags) ? series.tags : [],
   };
 }
 
@@ -139,6 +144,7 @@ function summarizeValidationSegments(rows) {
     ["2017-2021", "2017-01-01", "2021-12-31"],
     ["2022-2026", "2022-01-01", "2026-12-31"],
   ];
+  const archetypes = [...new Set(rows.flatMap((row) => row.tags || []))].sort();
   return {
     byMarket: Object.fromEntries(["KOSPI", "KOSDAQ"].map((market) => [
       market,
@@ -148,7 +154,36 @@ function summarizeValidationSegments(rows) {
       label,
       summarizeOutcomes(rows.filter((row) => row.actionDate >= start && row.actionDate <= end)),
     ])),
+    byArchetype: Object.fromEntries(archetypes.map((tag) => [
+      tag,
+      summarizeOutcomes(rows.filter((row) => row.tags?.includes(tag))),
+    ])),
   };
+}
+
+function validationSafety(baselineSegments, candidateSegments) {
+  const issues = [];
+  for (const family of ["byMarket", "byPeriod", "byArchetype"]) {
+    for (const [name, candidate] of Object.entries(candidateSegments?.[family] || {})) {
+      const baseline = baselineSegments?.[family]?.[name];
+      if (!baseline) continue;
+      for (const kind of ["index", "stock"]) {
+        for (const type of ["buy", "sell"]) {
+          const before = baseline?.[kind]?.[type];
+          const after = candidate?.[kind]?.[type];
+          if (Math.min(Number(before?.samples) || 0, Number(after?.samples) || 0) < 12) continue;
+          const beforeComposite = number(before?.composite);
+          const afterComposite = number(after?.composite);
+          if (beforeComposite === null || afterComposite === null) continue;
+          const delta = afterComposite - beforeComposite;
+          if (Number.isFinite(delta) && delta <= -0.05) {
+            issues.push({ family, name, kind, type, samples: after.samples, compositeDelta: rounded(delta) });
+          }
+        }
+      }
+    }
+  }
+  return { passed: issues.length === 0, issues };
 }
 
 function newSignalRows(candidateRows, baselineRows) {
@@ -178,10 +213,14 @@ const benchmarkMaps = Object.fromEntries(Object.entries(indexSeries).map(([ticke
   new Map(series.dates.map((date, index) => [date, series.prices[index]])),
 ]));
 
-const seriesEntries = [...new Map([
+const fastSelection = new Set(Object.values(priceUniverse.validationSampling?.fastSelection || {}).flat());
+const allSeriesEntries = [...new Map([
   ...Object.entries(priceUniverse.series || {}),
   ...Object.entries(indexSeries),
 ]).entries()];
+const seriesEntries = QUICK_MODE && fastSelection.size
+  ? allSeriesEntries.filter(([ticker]) => ticker.startsWith("^") || fastSelection.has(ticker))
+  : allSeriesEntries;
 const preparedSeries = seriesEntries.flatMap(([ticker, raw]) => {
   const macd = buildMacdOscillator({ dates: raw.dates || [], prices: raw.prices || [] });
   if (!macd) return [];
@@ -193,6 +232,7 @@ const preparedSeries = seriesEntries.flatMap(([ticker, raw]) => {
     oscillator: macd.normalized,
     benchmarkPrices: macd.dates.map((date) => benchmarkMap.get(date) ?? null),
     dateIndexes: new Map(macd.dates.map((date, index) => [date, index])),
+    tags: priceUniverse.validationSampling?.profiles?.[ticker]?.tags || [],
   }]];
 });
 
@@ -243,6 +283,7 @@ const candidates = policies.map((policy) => {
   const addedRows = newSignalRows(rows, baselineRows);
   const summary = summarizeOutcomes(rows);
   const added = summarizeOutcomes(addedRows);
+  const segments = summarizeValidationSegments(rows);
   const groups = ["all", "index", "stock"];
   const improvement = Object.fromEntries(groups.map((group) => [
     group,
@@ -256,14 +297,16 @@ const candidates = policies.map((policy) => {
     summary,
     added,
     improvement,
-    segments: summarizeValidationSegments(rows),
+    segments,
     addedSegments: summarizeValidationSegments(addedRows),
+    validationSafety: validationSafety(baselineSegments, segments),
   };
 });
 
 const report = {
   format: "thinkstock-market-timing-vkospi-backtest-v1",
   generatedAt: new Date().toISOString(),
+  mode: QUICK_MODE ? "quick-stratified" : "full",
   startDate: START_DATE,
   series: preparedSeries.length,
   stockSeries: preparedSeries.filter(([ticker]) => /^\d{6}\.(KS|KQ)$/.test(ticker)).length,
@@ -282,7 +325,7 @@ console.log(JSON.stringify({
   stockSeries: report.stockSeries,
   indexSeries: report.indexSeries,
   baseline: report.baseline,
-  candidates: report.candidates.map(({ policy, improvement, added }) => ({
+  candidates: report.candidates.map(({ policy, improvement, added, validationSafety: safety }) => ({
     policy,
     improvement,
     added: {
@@ -290,5 +333,6 @@ console.log(JSON.stringify({
       stockBuy: added.stock.buy,
       stockSell: added.stock.sell,
     },
+    validationSafety: safety,
   })),
 }, null, 2));

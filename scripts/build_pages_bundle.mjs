@@ -12,6 +12,28 @@ const e2eOutputDir = path.join(root, ".thinkstock-cache", "e2e");
 const e2eOutputFile = path.join(e2eOutputDir, "app.bundle.min.js");
 const e2eTemporaryOutputFile = path.join(e2eOutputDir, "app.bundle.next.js");
 const maxBundleBytes = 524_000;
+const featureBundles = Object.freeze([
+  Object.freeze({
+    entry: "ai-feature.mjs",
+    output: "ai-feature.bundle.min.js",
+    maxBytes: 320_000,
+  }),
+  Object.freeze({
+    entry: "market-timing-feature.mjs",
+    output: "market-timing-feature.bundle.min.js",
+    maxBytes: 180_000,
+  }),
+  Object.freeze({
+    entry: "stock-research-feature.mjs",
+    output: "stock-research-feature.bundle.min.js",
+    maxBytes: 180_000,
+  }),
+  Object.freeze({
+    entry: "settings-feature.mjs",
+    output: "settings-feature.bundle.min.js",
+    maxBytes: 100_000,
+  }),
+]);
 
 await mkdir(outputDir, { recursive: true });
 await mkdir(e2eOutputDir, { recursive: true });
@@ -36,6 +58,34 @@ async function buildBundle(outfile, diagnosticsEnabled) {
   });
 }
 
+async function buildFeatureBundle(definition) {
+  const outputFilePath = path.join(outputDir, definition.output);
+  const temporaryFile = `${outputFilePath}.next`;
+  await rm(temporaryFile, { force: true });
+  try {
+    await build({
+      entryPoints: [path.join(root, "scripts", "feature-entries", definition.entry)],
+      outfile: temporaryFile,
+      bundle: true,
+      minify: true,
+      format: "iife",
+      platform: "browser",
+      target: ["safari15"],
+      legalComments: "none",
+      charset: "utf8",
+      treeShaking: true,
+    });
+    const outputStats = await stat(temporaryFile);
+    if (outputStats.size > definition.maxBytes) {
+      throw new Error(`${definition.output} exceeds ${definition.maxBytes} bytes: ${outputStats.size}`);
+    }
+    await rename(temporaryFile, outputFilePath);
+    console.log(`Built ${path.relative(root, outputFilePath)} (${outputStats.size} bytes)`);
+  } finally {
+    await rm(temporaryFile, { force: true });
+  }
+}
+
 try {
   await buildBundle(temporaryOutputFile, false);
 
@@ -55,6 +105,7 @@ try {
   }
   await rename(e2eTemporaryOutputFile, e2eOutputFile);
   console.log(`Built ${path.relative(root, e2eOutputFile)} (${e2eOutputStats.size} bytes, test only)`);
+  for (const definition of featureBundles) await buildFeatureBundle(definition);
 } finally {
   await rm(temporaryOutputFile, { force: true });
   await rm(e2eTemporaryOutputFile, { force: true });

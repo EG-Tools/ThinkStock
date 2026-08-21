@@ -4,7 +4,7 @@ const LOCAL_ONLY_PATTERNS = [
 ];
 
 const GENERATED_ARTIFACT_PATTERNS = [
-  /^docs\/assets\/app\.bundle\.min\.js$/,
+  /^docs\/assets\/(?:app|ai-feature|market-timing-feature|stock-research-feature|settings-feature)\.bundle\.min\.js$/,
 ];
 
 const WEBKIT_PATTERNS = [
@@ -12,6 +12,7 @@ const WEBKIT_PATTERNS = [
   /^docs\/assets\/app\.bundle\.min\.js$/,
   /^docs\/modules\/(ai-|app-ui|broker-|cache-migrations|chart-|data-seed|disclosure|insider|main-chart|market-timing|optional-feature|runtime-(?:bootstrap|data|series|source)|startup|stock-research)/,
   /^scripts\/pages-entry\.mjs$/,
+  /^scripts\/feature-entries\//,
 ];
 
 const SERVICE_WORKER_PATTERNS = [
@@ -95,7 +96,10 @@ export function classifyChangedFiles(files) {
   const runWebBuild = normalized.some((file) => (
     /^(?:docs|shared)\//.test(file)
     && !SERVER_ONLY_PATTERNS.some((pattern) => pattern.test(file))
-  )) || normalized.some((file) => /^scripts\/(?:pages-entry|build_pages_bundle)\.mjs$/.test(file));
+  )) || normalized.some((file) => (
+    /^scripts\/(?:pages-entry|build_pages_bundle)\.mjs$/.test(file)
+    || file.startsWith("scripts/feature-entries/")
+  ));
   return Object.freeze({
     files: normalized,
     runUnit: normalized.length > 0,

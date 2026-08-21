@@ -35,6 +35,8 @@
     "backtest:ai:summary": "node scripts/run_ai_walkforward_validation.mjs --summary-only",
     "backtest:ai:accept": "node scripts/run_ai_walkforward_validation.mjs --accept",
     "backtest:broker-reports": "node scripts/backtest_broker_report_weights.mjs",
+    "backtest:timing": "node scripts/backtest_market_timing_vkospi.mjs",
+    "backtest:timing:quick": "node scripts/backtest_market_timing_vkospi.mjs --quick",
     "backtest:qlib:setup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup_qlib_env.ps1",
     "backtest:qlib:prepare": "node scripts/export_qlib_krx_manifest.mjs",
     "backtest:qlib:quick": "node scripts/run_qlib_krx_challenger.mjs --quick --no-audit",

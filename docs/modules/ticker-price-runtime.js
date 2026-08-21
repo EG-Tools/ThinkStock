@@ -271,12 +271,149 @@
     });
   }
 
+  function createSeriesLoader(options = {}) {
+    const required = [
+      "applySharedCache",
+      "assessPriceUpdate",
+      "clearSeries",
+      "fetchHistory",
+      "fetchLatest",
+      "getPoints",
+      "hasSeries",
+      "hasVolumeHistory",
+      "invalidateCache",
+      "isCacheFresh",
+      "latestDate",
+      "mergePoints",
+      "normalizePoints",
+      "setStatus",
+      "writeCache",
+    ];
+    required.forEach((name) => {
+      if (typeof options[name] !== "function") {
+        throw new Error(`ticker series loader dependency is missing: ${name}`);
+      }
+    });
+    const throwIfAborted = typeof options.throwIfAborted === "function"
+      ? options.throwIfAborted
+      : (signal) => {
+        if (signal?.aborted) throw signal.reason || new DOMException("Aborted", "AbortError");
+      };
+
+    async function load(ticker, loadOptions = {}) {
+      const key = normalizeTicker(ticker);
+      const forceRefresh = loadOptions.forceRefresh === true;
+      const displayName = String(loadOptions.displayName || options.displayName?.(key) || "").trim();
+      const signal = loadOptions.signal || null;
+      const hasPrefetchedLatest = Object.prototype.hasOwnProperty.call(loadOptions, "latestPoints");
+      const prefetchedLatest = hasPrefetchedLatest
+        ? options.normalizePoints(loadOptions.latestPoints)
+        : [];
+      throwIfAborted(signal);
+      const cacheInfo = await options.applySharedCache(key, displayName);
+      throwIfAborted(signal);
+      const hasExisting = options.hasSeries(key);
+      const historyCoverage = normalizeHistoryCoverage(cacheInfo.historyCoverage);
+      let latestExisting = cacheInfo.latestDate || options.latestDate(key);
+      if (hasExisting && loadOptions.returnAfterCache === true) {
+        return { ready: true, cached: true, deferredRefresh: true, latestDate: latestExisting };
+      }
+      if (hasExisting && !forceRefresh) {
+        try {
+          const latestPoints = hasPrefetchedLatest
+            ? prefetchedLatest
+            : await options.fetchLatest(key, { signal });
+          if (latestPoints.length) {
+            options.mergePoints(key, latestPoints);
+            latestExisting = options.latestDate(key);
+            await options.writeCache(key, options.getPoints(key), displayName, { historyCoverage });
+          }
+        } catch (error) {
+          if (options.isAbortError?.(error) || signal?.aborted) throw error;
+        }
+        if (options.isCacheFresh(latestExisting, key)
+          && options.hasVolumeHistory(key)
+          && historyCoverage === HISTORY_COVERAGE_FULL) {
+          return { ready: true, cached: true, deferredRefresh: false, latestDate: latestExisting };
+        }
+      }
+
+      try {
+        const existingPoints = options.getPoints(key);
+        const sinceDate = resolveHistoryFetchSinceDate({
+          hasExisting,
+          hasVolumeHistory: options.hasVolumeHistory(key),
+          historyCoverage,
+          latestDate: options.latestDate(key),
+        });
+        let points = await options.fetchHistory(key, {
+          forceNetwork: forceRefresh,
+          sinceDate,
+          signal,
+          ...(hasPrefetchedLatest ? { latestPoints: prefetchedLatest } : {}),
+        });
+        throwIfAborted(signal);
+        if (!points.length) throw new Error(`${key} price history is empty`);
+        const rebaseSignal = sinceDate ? options.findRebaseSignal?.(existingPoints, points) : null;
+        const assessment = options.assessPriceUpdate(existingPoints, points, { rebaseSignal });
+        if (assessment.fullHistoryRequired) {
+          points = await options.fetchHistory(key, {
+            forceNetwork: forceRefresh,
+            signal,
+            ...(hasPrefetchedLatest ? { latestPoints: prefetchedLatest } : {}),
+          });
+          throwIfAborted(signal);
+          if (!points.length) throw new Error(`${key} price history is empty`);
+          await options.invalidateCache(key, assessment);
+          options.clearSeries(key);
+        } else if (assessment.invalidateDerived) {
+          await options.invalidateCache(key, assessment);
+        }
+        throwIfAborted(signal);
+        options.mergePoints(key, points);
+        await options.writeCache(key, options.getPoints(key), displayName, {
+          historyCoverage: HISTORY_COVERAGE_FULL,
+        });
+        return {
+          ready: true,
+          cached: false,
+          deferredRefresh: false,
+          latestDate: options.latestDate(key),
+        };
+      } catch (error) {
+        if (hasExisting || cacheInfo.applied) {
+          const previous = options.getStatus?.(key) || {};
+          options.setStatus(key, {
+            ...previous,
+            source: previous.source || "LOCAL_CACHE",
+            latestDate: previous.latestDate || latestExisting,
+            cached: true,
+            localCache: true,
+            stale: true,
+            warning: previous.warning || `최신 가격 갱신 실패: ${error?.message || error}`,
+          });
+          return {
+            ready: true,
+            cached: true,
+            stale: true,
+            deferredRefresh: false,
+            latestDate: latestExisting,
+          };
+        }
+        throw error;
+      }
+    }
+
+    return Object.freeze({ load });
+  }
+
   globalScope.ThinkStockTickerPriceRuntime = Object.freeze({
     HISTORY_COVERAGE_FULL,
     HISTORY_COVERAGE_PARTIAL,
     HISTORY_COVERAGE_UNKNOWN,
     createStatusStore,
     createPayloadController,
+    createSeriesLoader,
     clearSeries,
     mergeSeries,
     latestSeriesDate,

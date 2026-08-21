@@ -117,6 +117,12 @@ const [adminFeatureAccess, adminSessionHandler, adminSession, workerConfig] = aw
   readFile(path.join(root, "worker", "src", "admin-session.mjs"), "utf8"),
   readFile(path.join(root, "worker", "wrangler.jsonc"), "utf8"),
 ]);
+const [aiFeatureEntry, marketTimingFeatureEntry, settingsFeatureEntry, stockResearchFeatureEntry] = await Promise.all([
+  readFile(path.join(root, "scripts", "feature-entries", "ai-feature.mjs"), "utf8"),
+  readFile(path.join(root, "scripts", "feature-entries", "market-timing-feature.mjs"), "utf8"),
+  readFile(path.join(root, "scripts", "feature-entries", "settings-feature.mjs"), "utf8"),
+  readFile(path.join(root, "scripts", "feature-entries", "stock-research-feature.mjs"), "utf8"),
+]);
 const packageJson = JSON.parse(packageJsonSource);
 const vkospiData = JSON.parse(vkospiDataSource);
 const appBundleGzipBytes = gzipSync(await readFile(path.join(root, "docs", "assets", "app.bundle.min.js"))).byteLength;
@@ -410,6 +416,8 @@ assert.ok(app.includes("ThinkStockOptionalFeatureRuntime")
 "market timing worker service is not wired into the app");
 assert.ok(!pagesEntry.includes('import "../docs/modules/market-timing-service.js"')
   && optionalFeatureRuntime.includes('loader.loadFeature("market-timing"')
+  && optionalFeatureRuntime.includes('"./assets/market-timing-feature.bundle.min.js"')
+  && marketTimingFeatureEntry.includes('import "../../docs/modules/market-timing-service.js"')
   && marketTimingWorker.includes("buildTimingModels")
   && marketTimingWorker.includes("source cache miss"),
 "market timing must load on demand and calculate in its worker");
@@ -417,6 +425,10 @@ assert.ok(!app.includes("marketTimingModelCache = new Map()"),
   "market timing model cache still lives in app.js");
 assert.ok(!pagesEntry.includes('import "../docs/modules/ai-scenario-paths.js"')
   && optionalFeatureRuntime.includes('loader.loadFeature("ai-forecast"')
+  && optionalFeatureRuntime.includes('"./assets/ai-feature.bundle.min.js"')
+  && aiFeatureEntry.includes('import "../../docs/modules/ai-forecast-math.js"')
+  && aiFeatureEntry.includes('import "../../docs/modules/ai-context-profile.js"')
+  && aiFeatureEntry.includes('import "../../docs/modules/ai-scenario-paths.js"')
   && aiForecastWorker.includes("./ai-forecast-math.js")
   && aiForecastWorker.includes("./ai-forecast-model.js")
   && aiForecastWorker.includes("./ai-scenario-paths.js")
@@ -426,14 +438,14 @@ assert.ok(!pagesEntry.includes('import "../docs/modules/ai-scenario-paths.js"')
   && aiScenarioPaths.includes("buildScenarioMorphologies"),
 "AI scenario modules must load on demand and stay shared with the forecast worker");
 assert.ok(!pagesEntry.includes('import "../docs/modules/ai-forecast-app.js"')
-  && optionalFeatureRuntime.includes('"./modules/ai-forecast-app.js"')
+  && aiFeatureEntry.includes('import "../../docs/modules/ai-forecast-app.js"')
   && app.includes("ThinkStockAiForecastApp")
   && aiForecastApp.includes("cancelCalculations")
   && aiForecastApp.includes("progressActive")
   && !app.includes("let aiForecastWorker"),
 "AI worker and progress orchestration is not separated from app.js");
 assert.ok(!pagesEntry.includes('import "../docs/modules/ai-forecast-traces.js"')
-  && optionalFeatureRuntime.includes('"./modules/ai-forecast-traces.js"')
+  && aiFeatureEntry.includes('import "../../docs/modules/ai-forecast-traces.js"')
   && app.includes("ThinkStockAiForecastTraces")
   && aiForecastTraces.includes("createAiForecastTraces")
   && aiForecastTraces.includes("isPrimaryAiScenario"),
@@ -606,15 +618,15 @@ assert.ok(pagesEntry.includes('import "../docs/modules/chart-hover-runtime.js"')
 "chart hover synchronization is not separated from app.js");
 assert.ok(pagesEntry.includes('import "../docs/modules/optional-feature-runtime.js"')
   && pagesEntry.includes('import "../docs/modules/stock-research-contract.js"')
+  && pagesEntry.includes('import "../docs/modules/stock-research-storage.js"')
   && pagesEntry.includes('import "../docs/modules/stock-research-app.js"')
   && optionalFeatureLoader.includes("loadFeature")
   && optionalFeatureRuntime.includes('loader.loadFeature("stock-research"')
-  && optionalFeatureRuntime.includes('"./modules/stock-research-contract.js"')
-  && optionalFeatureRuntime.includes('"./modules/stock-research-storage.js"')
-  && optionalFeatureRuntime.includes('"./modules/stock-research-navigation.js"')
-  && optionalFeatureRuntime.includes('"./modules/stock-research-filter.js"')
-  && optionalFeatureRuntime.includes('"./modules/stock-research-history-cache.js"')
-  && optionalFeatureRuntime.includes('"./modules/stock-research-worker-client.js"')
+  && optionalFeatureRuntime.includes('"./assets/stock-research-feature.bundle.min.js"')
+  && stockResearchFeatureEntry.includes('import "../../docs/modules/stock-research-navigation.js"')
+  && stockResearchFeatureEntry.includes('import "../../docs/modules/stock-research-filter.js"')
+  && stockResearchFeatureEntry.includes('import "../../docs/modules/stock-research-history-cache.js"')
+  && stockResearchFeatureEntry.includes('import "../../docs/modules/stock-research-worker-client.js"')
   && stockResearchContract.includes("CALCULATION_VERSION")
   && stockResearchContract.includes("CACHE_FORMAT_SCHEMA")
   && stockResearchApp.includes("createStockResearchApp")
@@ -629,12 +641,12 @@ assert.ok(pagesEntry.includes('import "../docs/modules/optional-feature-runtime.
   && !pagesEntry.includes('import "../docs/modules/stock-research-controller.js"'),
 "optional features are still part of the initial bundle");
 assert.ok(!pagesEntry.includes('import "../docs/modules/ai-forecast-cache.js"')
-  && optionalFeatureRuntime.includes('"./modules/ai-forecast-cache.js"')
+  && aiFeatureEntry.includes('import "../../docs/modules/ai-forecast-cache.js"')
   && aiForecastCache.includes("matchesInput")
   && app.includes("TICKER_AI_FORECAST_CACHE_STORE_NAME"),
 "AI input-fingerprint cache is incomplete");
 assert.ok(!pagesEntry.includes('import "../docs/modules/ai-forecast-quality-runtime.js"')
-  && optionalFeatureRuntime.includes('"./modules/ai-forecast-quality-runtime.js"')
+  && aiFeatureEntry.includes('import "../../docs/modules/ai-forecast-quality-runtime.js"')
   && app.includes("ThinkStockAiForecastQualityRuntime")
   && aiForecastQualityRuntime.includes("function createAiForecastQualityRuntime(")
   && !app.includes("aiForecastCalibrationPoolPromise"),
@@ -689,9 +701,10 @@ assert.ok(app.includes("ThinkStockSettingsPanelRuntime")
   && !pagesEntry.includes('import "../docs/modules/api-periods.js"')
   && !pagesEntry.includes('import "../docs/modules/settings-panel-runtime.js"')
   && optionalFeatureRuntime.includes('loader.loadFeature("settings"')
-  && optionalFeatureRuntime.includes('"./modules/api-periods.js"')
-  && optionalFeatureRuntime.includes('"./modules/release-notes.js"')
-  && optionalFeatureRuntime.includes('"./modules/settings-panel-runtime.js"')
+  && optionalFeatureRuntime.includes('"./assets/settings-feature.bundle.min.js"')
+  && settingsFeatureEntry.includes('import "../../docs/modules/api-periods.js"')
+  && settingsFeatureEntry.includes('import "../../docs/modules/release-notes.js"')
+  && settingsFeatureEntry.includes('import "../../docs/modules/settings-panel-runtime.js"')
   && apiPeriods.includes("createReminderStore")
   && apiPeriods.includes("파생상품지수 시세정보")
   && settingsPanelRuntime.includes("createSettingsPanelRuntime")
@@ -751,7 +764,10 @@ assert.ok(app.includes("ThinkStockChartMarkerRuntime")
   && pagesEntry.includes('import "../docs/modules/chart-marker-runtime.js"')
   && chartMarkerRuntime.includes("createFrame")
   && chartMarkerRuntime.includes("buildDisclosure")
-  && chartMarkerRuntime.includes("buildInsider"),
+  && chartMarkerRuntime.includes("buildInsider")
+  && chartMarkerRuntime.includes("buildTimingSignalPopoverGroup")
+  && app.includes("chartMarkerRuntimeModule.buildTimingSignalPopoverGroup(point)")
+  && !app.includes("매수 타이밍 · 투매 저점 확인"),
 "chart marker rendering is not separated or sharing one frame");
 assert.ok(app.includes("bindPointerDrag")
   && chartInteractionController.includes('addEventListener("pointermove"')

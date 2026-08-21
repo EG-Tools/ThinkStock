@@ -21,6 +21,10 @@ const WEB_SCRIPT_FILES = new Set([
   "scripts/pages-entry.mjs",
 ]);
 
+function isWebScript(relative) {
+  return WEB_SCRIPT_FILES.has(relative) || relative.startsWith("scripts/feature-entries/");
+}
+
 function normalizedRelative(file) {
   return String(file || "").replaceAll("\\", "/").replace(/^\.\//, "");
 }
@@ -32,11 +36,11 @@ export function shouldIncludeSource(relativeFile, scope = "all") {
   if (scope === "web") {
     return relative.startsWith("docs/")
       || relative.startsWith("shared/")
-      || WEB_SCRIPT_FILES.has(relative);
+      || isWebScript(relative);
   }
   if (scope === "runtime") {
     return relative.startsWith("worker/src/")
-      || (relative.startsWith("scripts/") && !WEB_SCRIPT_FILES.has(relative));
+      || (relative.startsWith("scripts/") && !isWebScript(relative));
   }
   return relative.startsWith("docs/")
     || relative.startsWith("shared/")

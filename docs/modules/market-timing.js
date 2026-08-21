@@ -11,6 +11,19 @@
   const KOREAN_VOLATILITY_RELATIONSHIP_DAYS = 126;
   const KOREAN_VOLATILITY_MINIMUM_OBSERVATIONS = 60;
   const STOCK_OVERHEAT_MEMORY_DAYS = 8;
+  const CREDIT_AVAILABILITY_LAG_DAYS = 0;
+  const DEFAULT_KOREAN_VOLATILITY_POLICY = Object.freeze({
+    buyPercentile: 0.85,
+    sellPercentile: 0.2,
+    sellChange5: 8,
+    sellRebound20: 10,
+  });
+  const DEFAULT_EXTERNAL_VOLATILITY_POLICY = Object.freeze({
+    buyPercentile: 0.8,
+    sellPercentile: 0.25,
+    sellChange5: 6,
+    sellRebound20: 8,
+  });
 
   const toNumber = (value) => (
     value != null && Number.isFinite(Number(value)) ? Number(value) : null
@@ -20,6 +33,53 @@
     const change = toNumber(value);
     if (change === null) return "";
     return `전일대비 ${Math.round(Math.abs(change))}% ${change >= 0 ? "상승" : "하락"}`;
+  }
+
+  function uniqueSignalReasons(signal) {
+    return [...new Set([
+      signal?.setupReasons,
+      signal?.sentimentTurnReasons,
+      signal?.stabilizationReasons,
+      signal?.triggerReasons,
+      signal?.sellSetupReasons,
+      signal?.sellDeteriorationReasons,
+      signal?.sellTriggerReasons,
+    ].flatMap((group) => (Array.isArray(group) ? group : []))
+      .map((reason) => String(reason || "").trim())
+      .filter(Boolean))];
+  }
+
+  function decorateTimingSignal(signal) {
+    const reasons = uniqueSignalReasons(signal);
+    const exceptional = ["extreme-daily", "overheat-continuation"].includes(signal?.entryMode);
+    return {
+      ...signal,
+      evidenceCount: reasons.length,
+      signalGrade: exceptional ? "이례" : (reasons.length >= 5 ? "강" : "보통"),
+    };
+  }
+
+  function classifyTimingRegime(point = {}) {
+    const stressCount = [
+      point.adrMin !== null && point.adrMin <= 80,
+      point.fearMin !== null && point.fearMin <= 25,
+      point.crisis !== null && point.crisis >= 50,
+      point.vkospiPercentile !== null && point.vkospiPercentile >= 0.8,
+      point.vixPercentile !== null && point.vixPercentile >= 0.8,
+    ].filter(Boolean).length;
+    if (stressCount >= 2) return "stress";
+    if ((point.priceDrawdown60 ?? 0) <= -10
+      && (point.macdSlope ?? -Infinity) > 0
+      && ((point.adrMin ?? Infinity) <= 85 || (point.fearMin ?? Infinity) <= 35)) {
+      return "recovery";
+    }
+    if ((point.leadingChange ?? 0) < -0.05
+      && (point.price20d ?? -Infinity) >= 0) return "slowdown";
+    if ((point.price20d ?? -Infinity) >= 3
+      && ((point.leadingChange ?? 0) >= 0 || (point.news ?? -Infinity) >= 100)) {
+      return "expansion";
+    }
+    return "range";
   }
 
   function stockOverheatMemory(prices, index, lookback = STOCK_OVERHEAT_MEMORY_DAYS) {
@@ -449,7 +509,7 @@
     const crisisNow = toNumber(crisis[index]);
     const koreanVolatilityNow = koreanVolatility || {};
     const externalVolatilityNow = externalVolatility || {};
-    return {
+    const point = {
       score: [adrMin !== null && adrMin <= 80, fearMin !== null && fearMin <= 25, creditWashedOut]
         .filter(Boolean).length,
       adrMin,
@@ -519,6 +579,7 @@
       volatilityScale: toNumber(volatilityProfile?.scale?.[index]) ?? 1,
       volatilityHistoryDays: toNumber(volatilityProfile?.historyDays?.[index]) ?? 0,
     };
+    return { ...point, marketRegime: classifyTimingRegime(point) };
   }
 
   function buildMarketTimingSignals(options = {}) {
@@ -539,10 +600,14 @@
     const koreanVolatilityPolicy = options.koreanVolatilityPolicy?.enabled === true
       ? {
         enabled: true,
-        buyPercentile: Number(options.koreanVolatilityPolicy.buyPercentile) || 0.8,
-        sellPercentile: Number(options.koreanVolatilityPolicy.sellPercentile) || 0.25,
-        sellChange5: Number(options.koreanVolatilityPolicy.sellChange5) || 6,
-        sellRebound20: Number(options.koreanVolatilityPolicy.sellRebound20) || 8,
+        buyPercentile: Number(options.koreanVolatilityPolicy.buyPercentile)
+          || DEFAULT_KOREAN_VOLATILITY_POLICY.buyPercentile,
+        sellPercentile: Number(options.koreanVolatilityPolicy.sellPercentile)
+          || DEFAULT_KOREAN_VOLATILITY_POLICY.sellPercentile,
+        sellChange5: Number(options.koreanVolatilityPolicy.sellChange5)
+          || DEFAULT_KOREAN_VOLATILITY_POLICY.sellChange5,
+        sellRebound20: Number(options.koreanVolatilityPolicy.sellRebound20)
+          || DEFAULT_KOREAN_VOLATILITY_POLICY.sellRebound20,
         maximumCorrelation: Number.isFinite(Number(
           options.koreanVolatilityPolicy.maximumCorrelation,
         )) ? Number(options.koreanVolatilityPolicy.maximumCorrelation) : -0.15,
@@ -561,10 +626,14 @@
     const externalVolatilityPolicy = options.externalVolatilityPolicy?.enabled === true
       ? {
         enabled: true,
-        buyPercentile: Number(options.externalVolatilityPolicy.buyPercentile) || 0.8,
-        sellPercentile: Number(options.externalVolatilityPolicy.sellPercentile) || 0.25,
-        sellChange5: Number(options.externalVolatilityPolicy.sellChange5) || 6,
-        sellRebound20: Number(options.externalVolatilityPolicy.sellRebound20) || 8,
+        buyPercentile: Number(options.externalVolatilityPolicy.buyPercentile)
+          || DEFAULT_EXTERNAL_VOLATILITY_POLICY.buyPercentile,
+        sellPercentile: Number(options.externalVolatilityPolicy.sellPercentile)
+          || DEFAULT_EXTERNAL_VOLATILITY_POLICY.sellPercentile,
+        sellChange5: Number(options.externalVolatilityPolicy.sellChange5)
+          || DEFAULT_EXTERNAL_VOLATILITY_POLICY.sellChange5,
+        sellRebound20: Number(options.externalVolatilityPolicy.sellRebound20)
+          || DEFAULT_EXTERNAL_VOLATILITY_POLICY.sellRebound20,
         maximumCorrelation: Number.isFinite(Number(
           options.externalVolatilityPolicy.maximumCorrelation,
         )) ? Number(options.externalVolatilityPolicy.maximumCorrelation) : -0.1,
@@ -604,7 +673,16 @@
       news: alignAsOf(dates, smoothedNewsRows, 10),
       // ECOS observations arrive about two months later; shift availability to prevent look-ahead.
       leading: alignedSource(dates, macroRows, "leading_cycle", 75, 60),
-      credit: alignedSource(dates, creditRows, creditKey, 10),
+      // The normalized runtime rows already carry the app's publication-date policy.
+      // A provider-specific lag can still be supplied explicitly without double-shifting it.
+      credit: alignedSource(
+        dates,
+        creditRows,
+        creditKey,
+        10,
+        Math.max(0, Number(options.creditAvailabilityLagDays)
+          || CREDIT_AVAILABILITY_LAG_DAYS),
+      ),
       crisis: alignedSource(dates, crisisRows, "score", 14),
       koreanVolatility: {
         value: alignedSource(dates, koreanVolatilityRows, "vkospi", 14),
@@ -662,19 +740,20 @@
     let lastOverheatContinuationExtremeIndex = -Infinity;
 
     function saveEpisodeSignal(list, episode, signal) {
-      const sameDateIndex = list.findIndex((existing) => existing?.date === signal?.date);
+      const decorated = decorateTimingSignal(signal);
+      const sameDateIndex = list.findIndex((existing) => existing?.date === decorated.date);
       if (sameDateIndex >= 0) {
         episode.signalSlot = sameDateIndex;
         const existingMode = list[sameDateIndex]?.entryMode;
         if (!["extreme-daily", "overheat-continuation"].includes(existingMode)) {
-          list[sameDateIndex] = signal;
+          list[sameDateIndex] = decorated;
         }
         return;
       }
-      if (Number.isInteger(episode.signalSlot)) list[episode.signalSlot] = signal;
+      if (Number.isInteger(episode.signalSlot)) list[episode.signalSlot] = decorated;
       else {
         episode.signalSlot = list.length;
-        list.push(signal);
+        list.push(decorated);
       }
     }
 
@@ -1148,12 +1227,13 @@
         && (result.oscillator ?? -Infinity) >= 0.2
         && volumeClimax;
       const riskDrivenSellArm = creditDrivenSellArm || clusteredOverheatArm;
+      const extendedOverheatArm = nearHigh && priceExtended
+        && (overheatSupportCount >= 2 || (priceStronglyExtended && overheatSupportCount >= 1));
       const recentSellArm = riskDrivenSellArm || stockClimaxArm || stockDistributionArm
         || stockMatureTopArm || stockLowVolatilityTopArm
         || stockParabolicArm
         || fearRotationTopArm || breadthSentimentDivergenceTopArm
-        || (nearHigh && priceExtended
-        && (overheatSupportCount >= 2 || (priceStronglyExtended && overheatSupportCount >= 1)));
+        || extendedOverheatArm;
       const longNearHigh = result.priceDrawdown120 !== null && result.priceDrawdown120 >= -1.2;
       const historicalCreditCrowded = result.creditChange !== null && result.creditPercentile !== null
         && result.creditChange >= 6
@@ -1399,7 +1479,7 @@
       scores,
       coverage: covered / count,
       strategy: koreanVolatilityPolicy.enabled || externalVolatilityPolicy.enabled
-        ? "episode-extreme-v15-volatility-candidates"
+        ? "episode-extreme-v16-regime-confirmed"
         : "episode-extreme-v13",
     };
   }
@@ -1413,16 +1493,23 @@
     VOLATILITY_RECENT_DAYS,
     KOREAN_VOLATILITY_RELATIONSHIP_DAYS,
     KOREAN_VOLATILITY_MINIMUM_OBSERVATIONS,
+    CREDIT_AVAILABILITY_LAG_DAYS,
+    DEFAULT_KOREAN_VOLATILITY_POLICY,
+    DEFAULT_EXTERNAL_VOLATILITY_POLICY,
     alignAsOf,
     buildVolatilityProfile,
     buildKoreanVolatilityTimingRows,
     buildExternalVolatilityTimingRows,
     buildRollingReturnRelationship,
     buildMarketTimingSignals,
+    classifyTimingRegime,
+    decorateTimingSignal,
+    alignedSource,
     rollingPercentile,
     rollingMarketRelationship,
     volumeProfile,
     scoreTimingPoint,
+    stockOverheatMemory,
     standardizedReturn,
     trailingAverage,
   });

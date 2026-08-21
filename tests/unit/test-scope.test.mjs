@@ -42,6 +42,21 @@ test("still treats a standalone generated bundle change as full validation", () 
   assert.equal(scope.validationProfile, "full");
 });
 
+test("feature entries rebuild the browser and retain WebKit coverage", () => {
+  const scope = classifyChangedFiles(["scripts/feature-entries/ai-feature.mjs"]);
+  assert.equal(scope.runWebBuild, true);
+  assert.equal(scope.runWebkitSmoke, true);
+  assert.equal(scope.runFullUnit, true);
+});
+
+test("feature bundle output is ignored when its source entry is present", () => {
+  const scope = classifyChangedFiles([
+    "scripts/feature-entries/ai-feature.mjs",
+    "docs/assets/ai-feature.bundle.min.js",
+  ]);
+  assert.deepEqual(scope.files, ["scripts/feature-entries/ai-feature.mjs"]);
+});
+
 test("affected test scope keeps runtime bootstrap changes under WebKit smoke coverage", () => {
   const scope = classifyChangedFiles(["docs/modules/runtime-bootstrap.js"]);
   assert.equal(scope.runFullUnit, false);

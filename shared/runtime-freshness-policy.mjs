@@ -2,6 +2,10 @@ import {
   isKoreanCurrentPriceWindow,
   koreanDateText,
 } from "./market-calendar.mjs";
+import {
+  classifyProviderError,
+  providerRetryDelayMs,
+} from "./runtime-provider-resilience.mjs";
 
 const SECOND_MS = 1000;
 const MINUTE_MS = 60 * SECOND_MS;
@@ -219,7 +223,7 @@ export async function executeRuntimeSourcePlan(kind, handlers = {}, options = {}
     : retryDelaysMs(kind);
   const isRetryable = typeof options.isRetryable === "function"
     ? options.isRetryable
-    : (error) => error?.retryable !== false;
+    : (error) => classifyProviderError(error).retryable;
   let lastError = null;
   let attempts = 0;
   for (let attempt = 0; attempt <= delays.length; attempt += 1) {
@@ -236,7 +240,9 @@ export async function executeRuntimeSourcePlan(kind, handlers = {}, options = {}
       if (error?.name === "AbortError" || signal?.aborted) throw error;
       lastError = error;
       if (attempt >= delays.length || !isRetryable(error, attempt)) break;
-      await wait(delays[attempt], signal, options.sleep);
+      await wait(providerRetryDelayMs(error, delays[attempt], {
+        maximumMs: options.maximumRetryDelayMs,
+      }), signal, options.sleep);
     }
   }
   if (typeof handlers.fallback === "function") {

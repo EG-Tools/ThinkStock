@@ -151,3 +151,66 @@ test("converts validated price cache records into research history", () => {
     priceSchema: 4,
   }), null);
 });
+
+test("series loader reuses a complete fresh cache after one latest-point check", async () => {
+  const calls = [];
+  const loader = runtime.createSeriesLoader({
+    applySharedCache: async () => ({
+      applied: true,
+      latestDate: "2026-08-20",
+      historyCoverage: runtime.HISTORY_COVERAGE_FULL,
+    }),
+    assessPriceUpdate: () => ({ invalidateDerived: false, fullHistoryRequired: false }),
+    clearSeries: () => {},
+    fetchHistory: async () => { throw new Error("history should not be fetched"); },
+    fetchLatest: async () => {
+      calls.push("latest");
+      return [{ date: "2026-08-20", close: 71000 }];
+    },
+    getPoints: () => [{ date: "2026-08-20", close: 71000, volume: 100 }],
+    hasSeries: () => true,
+    hasVolumeHistory: () => true,
+    invalidateCache: async () => {},
+    isCacheFresh: () => true,
+    latestDate: () => "2026-08-20",
+    mergePoints: () => calls.push("merge"),
+    normalizePoints: (points) => points,
+    setStatus: () => {},
+    writeCache: async () => calls.push("write"),
+  });
+
+  assert.deepEqual(await loader.load("005930.ks"), {
+    ready: true,
+    cached: true,
+    deferredRefresh: false,
+    latestDate: "2026-08-20",
+  });
+  assert.deepEqual(calls, ["latest", "merge", "write"]);
+});
+
+test("series loader invalidates derived caches before merging revised history", async () => {
+  const calls = [];
+  const history = [{ date: "2026-08-20", close: 70000, volume: 100 }];
+  const loader = runtime.createSeriesLoader({
+    applySharedCache: async () => ({ applied: true, historyCoverage: runtime.HISTORY_COVERAGE_FULL }),
+    assessPriceUpdate: () => ({ invalidateDerived: true, fullHistoryRequired: false }),
+    clearSeries: () => {},
+    fetchHistory: async () => history,
+    fetchLatest: async () => [],
+    findRebaseSignal: () => null,
+    getPoints: () => history,
+    hasSeries: () => true,
+    hasVolumeHistory: () => true,
+    invalidateCache: async () => calls.push("invalidate"),
+    isCacheFresh: () => false,
+    latestDate: () => "2026-08-20",
+    mergePoints: () => calls.push("merge"),
+    normalizePoints: (points) => points,
+    setStatus: () => {},
+    writeCache: async () => calls.push("write"),
+  });
+
+  const result = await loader.load("005930.KS", { forceRefresh: true });
+  assert.equal(result.cached, false);
+  assert.deepEqual(calls, ["invalidate", "merge", "write"]);
+});
