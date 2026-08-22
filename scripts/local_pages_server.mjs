@@ -1166,10 +1166,11 @@ export async function createThinkStockServer(options = {}) {
         const asOf = /^\d{4}-\d{2}-\d{2}$/.test(requestedAsOf)
           ? requestedAsOf
           : new Date().toISOString().slice(0, 10);
+        const name = String(requestUrl.searchParams.get("name") || "").trim();
         const source = requestUrl.searchParams.get("source") === "naver" ? "naver" : "hankyung";
         const sourceUrl = source === "naver"
           ? buildNaverReportListUrl(ticker)
-          : buildHankyungReportListUrl(ticker, { days, asOf });
+          : buildHankyungReportListUrl(ticker, { days, asOf, name });
         const upstream = await fetchImpl(sourceUrl, {
           headers: {
             Accept: "text/html,application/xhtml+xml",
@@ -1188,7 +1189,7 @@ export async function createThinkStockServer(options = {}) {
           : await readBoundedResponseText(upstream, BROKER_REPORT_LIST_MAX_BYTES, "Broker report list");
         const reports = (source === "naver"
           ? parseNaverReportListHtml(html, ticker)
-          : parseHankyungReportListHtml(html, ticker))
+          : parseHankyungReportListHtml(html, ticker, name))
           .filter((report) => reportAgeDays(report.publishedDate, asOf) < days);
         sendJson(request, response, 200, {
           ok: true,

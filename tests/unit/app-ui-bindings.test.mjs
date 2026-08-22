@@ -26,8 +26,15 @@ function fakeElement(dataset = {}) {
     setAttribute(name, value) {
       this[name] = String(value);
     },
+    getAttribute(name) {
+      return this[name] ?? null;
+    },
     addEventListener: (name, listener) => listeners.set(name, listener),
-    dispatch: (name) => listeners.get(name)?.(),
+    dispatch(name, event) {
+      const listener = listeners.get(name);
+      if (listener) return listener(event);
+      return name === "click" ? this.onclick?.() : undefined;
+    },
   };
 }
 
@@ -237,6 +244,61 @@ test("disclosure toggle starts background preparation when enabled", () => {
 });
 
 
+test("prepared toggle coalesces clicks and commits state after preparation", async () => {
+  const button = fakeElement();
+  let enabled = false;
+  let resolvePreparation;
+  const preparation = new Promise((resolve) => { resolvePreparation = resolve; });
+  const calls = [];
+  const bound = bindings.bindPreparedToggle({
+    button,
+    getEnabled: () => enabled,
+    setEnabled: (value) => { enabled = value; calls.push(["state", value]); },
+    prepare: () => preparation,
+    syncButton: () => calls.push(["sync", enabled]),
+    onChanged: (value) => calls.push(["changed", value]),
+  });
+  assert.equal(bound, true);
+  assert.equal(button.dataset.bound, "1");
+  assert.equal(typeof button.onclick, "function");
+  assert.equal(bindings.bindPreparedToggle({ button }), false);
+
+  const firstClick = button.dispatch("click");
+  const secondClick = button.dispatch("click");
+  assert.equal(button.getAttribute("aria-busy"), "true");
+  assert.equal(enabled, false);
+  resolvePreparation();
+  await Promise.all([firstClick, secondClick]);
+  assert.equal(enabled, true);
+  assert.equal(button.getAttribute("aria-busy"), "false");
+  assert.deepEqual(calls, [
+    ["sync", false],
+    ["state", true],
+    ["sync", true],
+    ["changed", true],
+  ]);
+});
+
+
+test("prepared toggle keeps disabled state when preparation fails", async () => {
+  const button = fakeElement();
+  let enabled = false;
+  let errors = 0;
+  bindings.bindPreparedToggle({
+    button,
+    getEnabled: () => enabled,
+    setEnabled: (value) => { enabled = value; },
+    prepare: async () => { throw new Error("failed"); },
+    onError: () => { errors += 1; },
+  });
+
+  await button.dispatch("click");
+  assert.equal(enabled, false);
+  assert.equal(errors, 1);
+  assert.equal(button.getAttribute("aria-busy"), "false");
+});
+
+
 test("manual refresh always clears the spinning state", async () => {
   const button = fakeElement();
   const loadCalls = [];
@@ -255,4 +317,58 @@ test("manual refresh always clears the spinning state", async () => {
   await button.dispatch("click");
   assert.deepEqual(loadCalls, [[false, { mergeWithExisting: true }]]);
   assert.equal(button.classList.contains("spinning"), false);
+});
+
+
+test("stock selection view keeps suggestion state and delegated actions in one binding", () => {
+  const container = fakeElement();
+  const suggestionList = fakeElement();
+  container.innerHTML = "";
+  suggestionList.innerHTML = "";
+  suggestionList.hidden = true;
+  container.contains = () => true;
+  suggestionList.contains = () => true;
+  suggestionList.querySelectorAll = () => [];
+  const document = {
+    getElementById(id) {
+      return id === "customStockButtons" ? container : suggestionList;
+    },
+  };
+  const removed = [];
+  const selected = [];
+  const view = bindings.createStockSelectionView({ document }, {
+    escapeHtml: (value) => String(value),
+    seriesColor: () => "#123456",
+    onRemove: (ticker) => removed.push(ticker),
+    onSuggestion: (item) => selected.push(item.ticker),
+  });
+
+  assert.equal(view.renderStocks([{ ticker: "005930.KS", name: "삼성전자" }]), 1);
+  assert.match(container.innerHTML, /005930\.KS/);
+  assert.equal(view.renderSuggestions([
+    { ticker: "005930.KS", name: "삼성전자", code: "005930", market: "KOSPI" },
+    { ticker: "000660.KS", name: "SK하이닉스", code: "000660", market: "KOSPI" },
+  ]), 2);
+  assert.equal(suggestionList.hidden, false);
+  assert.equal(view.moveSuggestion(1), 0);
+  assert.equal(view.moveSuggestion(1), 1);
+  assert.equal(view.activeSuggestion().ticker, "000660.KS");
+
+  container.dispatch("click", {
+    target: {
+      closest: () => ({ dataset: { removeSeries: "005930.KS" } }),
+    },
+    preventDefault() {},
+    stopPropagation() {},
+  });
+  assert.deepEqual(removed, ["005930.KS"]);
+
+  const suggestionButton = { dataset: { suggestIdx: "0" } };
+  suggestionList.dispatch("click", {
+    target: { closest: () => suggestionButton },
+  });
+  assert.deepEqual(selected, ["005930.KS"]);
+  view.hideSuggestions();
+  assert.equal(view.suggestionCount(), 0);
+  assert.equal(suggestionList.hidden, true);
 });

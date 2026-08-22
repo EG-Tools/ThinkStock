@@ -59,6 +59,15 @@ export function normalizeBrokerReportKey(value) {
   return REPORT_KEY_PATTERN.test(key) ? key : "";
 }
 
+export function normalizeBrokerReportName(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+}
+
 export function buildHankyungReportListUrl(ticker, options = {}) {
   const normalizedTicker = normalizeBrokerReportTicker(ticker);
   if (!normalizedTicker) throw new Error("Broker report ticker is invalid");
@@ -68,13 +77,13 @@ export function buildHankyungReportListUrl(ticker, options = {}) {
   const requestedDays = Math.round(Number(options.days) || 90);
   const days = requestedDays <= 90 ? 90 : 180;
   const code = normalizedTicker.slice(0, 6);
+  const name = normalizeBrokerReportName(options.name) || code;
   const query = new URLSearchParams({
     sdate: shiftIsoDate(asOf, -(days - 1)),
     edate: asOf,
-    search_value: "BUSINESS",
-    search_text: code,
+    search_value: "REPORT_TITLE",
+    search_text: name,
     business_code: code,
-    report_type: "CO",
     pagenum: "80",
     now_page: "1",
   });
@@ -128,9 +137,10 @@ export function decodeNaverReportListBytes(value) {
   return new TextDecoder().decode(bytes);
 }
 
-export function parseHankyungReportListHtml(html, expectedTicker = "") {
+export function parseHankyungReportListHtml(html, expectedTicker = "", expectedName = "") {
   const expected = normalizeBrokerReportTicker(expectedTicker);
   const expectedCode = expected.slice(0, 6);
+  const normalizedExpectedName = normalizeBrokerReportName(expectedName).toLowerCase();
   const records = [];
   const seen = new Set();
   const rowPattern = /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi;
@@ -145,21 +155,31 @@ export function parseHankyungReportListHtml(html, expectedTicker = "") {
     const publishedDate = String(cells[0] || "").slice(0, 10);
     if (!DATE_PATTERN.test(publishedDate)) continue;
     const titleMatch = rowHtml.match(/<a\b[^>]*href=["'][^"']*downpdf\?report_idx=\d+[^"']*["'][^>]*>([\s\S]*?)<\/a>/i);
-    const title = textFromHtml(titleMatch?.[1] || cells[1]);
-    const code = title.match(/\((\d{6})\)/)?.[1] || expectedCode;
+    const isGeneralListRow = /^(?:기업|산업|시장|경제|파생|외환|채권|펀드|퀀트|해외|기타|상향|하향)$/u
+      .test(String(cells[1] || "").trim());
+    const title = textFromHtml(titleMatch?.[1] || cells[isGeneralListRow ? 2 : 1]);
+    const titleCode = title.match(/\((\d{6})\)/)?.[1] || "";
+    const attachmentCode = rowHtml.match(/(?:title|alt)=["'][^"']*_(\d{6})_[^"']*\.pdf["']/i)?.[1] || "";
+    const nameMatches = Boolean(
+      expectedCode
+      && normalizedExpectedName
+      && title.toLowerCase().includes(normalizedExpectedName),
+    );
+    const code = titleCode || attachmentCode || (nameMatches ? expectedCode : "");
     if (!/^\d{6}$/.test(code) || (expectedCode && code !== expectedCode)) continue;
-    const targetPriceText = String(cells[2] || "").replace(/[^\d.-]/g, "");
+    const targetPriceText = String(isGeneralListRow ? "" : cells[2] || "").replace(/[^\d.-]/g, "");
     const targetPrice = Number(targetPriceText);
-    const broker = String(cells[5] || "").trim();
+    const broker = String(cells[isGeneralListRow ? 4 : 5] || "").trim();
     records.push(Object.freeze({
       id: reportId,
+      source: "hankyung",
       ticker: expected || `${code}.KS`,
       code,
       publishedDate,
       title,
       targetPrice: Number.isFinite(targetPrice) && targetPrice > 0 ? targetPrice : null,
-      recommendation: String(cells[3] || "").trim(),
-      analyst: String(cells[4] || "").trim(),
+      recommendation: isGeneralListRow ? "" : String(cells[3] || "").trim(),
+      analyst: String(cells[isGeneralListRow ? 3 : 4] || "").trim(),
       broker,
       sourceUrl: buildHankyungReportPdfUrl(reportId),
     }));

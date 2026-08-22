@@ -31,20 +31,34 @@
       if (!targetEl || !plotly?.Fx?.hover || xValue == null) return;
       setSyncing(true);
       const nearestPoint = findNearestHoverPoint(targetEl, xValue);
+      let usedPointFallback = false;
       try {
-        plotly.Fx.hover(targetEl, nearestPoint ? [nearestPoint] : [{ xval: xValue }], ["xy"]);
+        // xval lets Plotly rebuild the complete unified popup. A single point is
+        // only a compatibility fallback for chart types that reject xval.
+        plotly.Fx.hover(targetEl, [{ xval: xValue }], ["xy"]);
       } catch (_) {
         if (!nearestPoint) {
           requestFrame(() => setSyncing(false));
           return;
         }
         try {
-          plotly.Fx.hover(targetEl, [{ xval: xValue }], ["xy"]);
+          plotly.Fx.hover(targetEl, [nearestPoint], ["xy"]);
+          usedPointFallback = true;
         } catch (_) {
           // Plotly may reject a hover request while a chart is being replaced.
         }
       }
-      requestFrame(() => setSyncing(false));
+      requestFrame(() => {
+        const popupVisible = Boolean(targetEl.querySelector?.(".hoverlayer > g"));
+        if (!popupVisible && !usedPointFallback && nearestPoint) {
+          try {
+            plotly.Fx.hover(targetEl, [nearestPoint], ["xy"]);
+          } catch (_) {
+            // A render may detach the selected trace before this compatibility frame.
+          }
+        }
+        setSyncing(false);
+      });
     }
 
     function syncHoverToChart(targetEl, xValue) {
@@ -56,7 +70,9 @@
         const pending = pendingHoverSync;
         pendingHoverSync = null;
         hoverSyncFrame = 0;
-        if (!pending || pending.key === lastHoverSyncKey) return;
+        if (!pending) return;
+        const popupStillVisible = Boolean(pending.targetEl.querySelector?.(".hoverlayer > g"));
+        if (pending.key === lastHoverSyncKey && popupStillVisible) return;
         lastHoverSyncKey = pending.key;
         syncHoverToChartNow(pending.targetEl, pending.xValue);
       });

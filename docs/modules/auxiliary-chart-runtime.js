@@ -501,7 +501,11 @@
               "xaxis.range[1]": r1,
             }));
         });
+        el.on("plotly_beforehover", () => (
+          el.classList.contains("is-hover-waiting") ? false : undefined
+        ));
         el.on("plotly_hover", (eventData) => {
+          if (el.classList.contains("is-hover-waiting")) return;
           if (!chartSession.hoverShowPopup || syncState.hoverSyncing) return;
           const xValue = eventData?.points?.[0]?.x;
           if (!xValue) return;
@@ -921,7 +925,7 @@
           showlegend: false,
           visible: vkospiVisible,
           connectgaps: false,
-          line: { color: SERIES_COLORS.vkospi, width: 2 },
+          line: { color: SERIES_COLORS.vkospi, width: 1 },
           hoverinfo: chartSession.hoverShowPopup ? undefined : "skip",
           hovertemplate: chartSession.hoverShowPopup ? "VKOSPI. %{y:.2f}<extra></extra>" : undefined,
         },
@@ -936,7 +940,7 @@
           showlegend: false,
           visible: vixVisible,
           connectgaps: false,
-          line: { color: SERIES_COLORS.vix, width: 2 },
+          line: { color: SERIES_COLORS.vix, width: 1 },
           hoverinfo: chartSession.hoverShowPopup ? undefined : "skip",
           hovertemplate: chartSession.hoverShowPopup ? "VIX. %{y:.2f}<extra></extra>" : undefined,
         },
@@ -1188,7 +1192,11 @@
             }
           }
         });
+        el.on("plotly_beforehover", () => (
+          el.classList.contains("is-hover-waiting") ? false : undefined
+        ));
         el.on("plotly_hover", (eventData) => {
+          if (el.classList.contains("is-hover-waiting")) return;
           if (!chartSession.hoverShowPopup || syncState.hoverSyncing) return;
           const xValue = eventData?.points?.[0]?.x;
           if (!xValue) return;

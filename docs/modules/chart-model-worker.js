@@ -152,7 +152,7 @@ function buildMainChartModel(payload) {
     return {
       series,
       rawTexts,
-      baseLineWidth: macroCols.includes(series) ? 3 : 2,
+      baseLineWidth: 1,
       xValues,
       values,
       baseValues,

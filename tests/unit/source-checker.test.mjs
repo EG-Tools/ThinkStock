@@ -23,7 +23,8 @@ test("discovers newly added source modules automatically", async () => {
   const runtime = await collectSourceFiles("runtime");
 
   assert.equal(web.includes("docs/modules/chart-display-sampler.js"), true);
-  assert.equal(web.includes("docs/modules/chart-relayout-queue.js"), true);
+  assert.equal(web.includes("docs/modules/chart-render-scheduler.js"), true);
+  assert.equal(web.includes("docs/modules/chart-relayout-queue.js"), false);
   assert.equal(web.includes("shared/series-integrity.mjs"), true);
   assert.equal(runtime.includes("scripts/check_javascript_sources.mjs"), true);
   assert.equal(runtime.includes("worker/src/index.mjs"), true);

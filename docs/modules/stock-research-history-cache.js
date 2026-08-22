@@ -33,6 +33,9 @@
     if (!value || value.schema !== HISTORY_CACHE_SCHEMA || value.ticker !== key) return null;
     const rows = normalizeResearchHistoryRows(value.rows);
     if (rows.length < MINIMUM_HISTORY_ROWS) return null;
+    const integrity = globalScope.ThinkStockTickerPriceRuntime
+      ?.inspectPriceHistoryIntegrity?.(rows);
+    if (integrity && !integrity.clean) return null;
     const latestDate = rows.at(-1)?.date || "";
     const fingerprint = cacheLifecycle.contentFingerprint(rows);
     const issue = cacheLifecycle.cacheMetadataIssue(value, {

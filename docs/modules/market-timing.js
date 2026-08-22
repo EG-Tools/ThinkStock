@@ -1486,8 +1486,6 @@
       const broadBuyArm = broadCorrection && creditReset
         && (breadthWashedOut || deepCorrection);
       const buyArm = !extremeDailyBuy && (strongBuyArm || moderateBuyArm || broadBuyArm);
-      const freshLow = result.price !== null && result.low20 !== null
-        && result.price <= result.low20 * 1.002;
       const macdDivergence = result.oscillator !== null && result.oscillator < 0
         && result.macdSlope !== null && result.macdSlope > 0
         && (result.priorMacdSlope === null

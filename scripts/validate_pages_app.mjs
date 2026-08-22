@@ -48,7 +48,7 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractio
   stat(path.join(root, "docs", "vendor", "plotly-thinkstock-2.35.2.min.js")),
   stat(path.join(root, "docs", "assets", "app.bundle.min.js")),
 ]);
-const [deferredDiagnostics, dataHealth, pagesEntry, styles, insiderTrades, workerIndex, workerRouter, kofiaClient, marketTimingService, marketTimingWorker, aiScenarioPaths, aiForecastWorker, chartRenderScheduler, optionalFeatureLoader, optionalFeatureRuntime, stockResearchApp, aiForecastCache, aiForecastQualityRuntime, chartModelCache, chartPointerRuntime, chartHoverRuntime, chartMarkerRuntime, auxiliaryChartRuntime, mainChartEvents, apiPeriods, settingsPanelRuntime, aiForecastTraces, runtimeRefreshOrchestrator, progressView, disclosureProgress] = await Promise.all([
+const [deferredDiagnostics, dataHealth, pagesEntry, styles, insiderTrades, workerIndex, workerRouter, kofiaClient, marketTimingService, marketTimingWorker, aiScenarioPaths, aiForecastWorker, chartRenderScheduler, optionalFeatureRuntime, stockResearchApp, aiForecastCache, aiForecastQualityRuntime, chartModelCache, chartPointerRuntime, chartHoverRuntime, chartMarkerRuntime, auxiliaryChartRuntime, mainChartEvents, apiPeriods, settingsPanelRuntime, aiForecastTraces, runtimeRefreshOrchestrator, progressView, disclosureProgress] = await Promise.all([
   readFile(path.join(root, "docs", "modules", "deferred-diagnostics.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "data-health.js"), "utf8"),
   readFile(path.join(root, "scripts", "pages-entry.mjs"), "utf8"),
@@ -62,7 +62,6 @@ const [deferredDiagnostics, dataHealth, pagesEntry, styles, insiderTrades, worke
   readFile(path.join(root, "docs", "modules", "ai-scenario-paths.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "ai-forecast-worker.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "chart-render-scheduler.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "optional-feature-runtime.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "optional-feature-runtime.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "stock-research-app.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "ai-forecast-cache.js"), "utf8"),
@@ -80,6 +79,7 @@ const [deferredDiagnostics, dataHealth, pagesEntry, styles, insiderTrades, worke
   readFile(path.join(root, "docs", "modules", "control-state-view.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "disclosure-progress.js"), "utf8"),
 ]);
+const optionalFeatureLoader = optionalFeatureRuntime;
 const [aiForecastApp, runtimeDataApp, cacheMigrations, stockResearchContract, stockResearchStorage, stockResearchNavigation, stockResearchFilter, stockResearchHistoryCache, stockResearchWorkerClient, runtimeBootstrap, appStateController, controlStateView, cacheMaintenanceRuntime, runtimeSnapshotController, sharedRequestRegistry, chartUpdateCoordinator, webkitScopeRunner] = await Promise.all([
   readFile(path.join(root, "docs", "modules", "ai-forecast-app.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "runtime-data-app.js"), "utf8"),
@@ -126,8 +126,11 @@ const [aiFeatureEntry, marketTimingFeatureEntry, settingsFeatureEntry, stockRese
 const packageJson = JSON.parse(packageJsonSource);
 const vkospiData = JSON.parse(vkospiDataSource);
 const appBundleGzipBytes = gzipSync(await readFile(path.join(root, "docs", "assets", "app.bundle.min.js"))).byteLength;
-const APP_BUNDLE_MAX_BYTES = 500_000;
+// Keep validation aligned with the build ceiling so one accepted bundle cannot
+// fail later only because the two release gates use different byte limits.
+const APP_BUNDLE_MAX_BYTES = 524_000;
 const APP_BUNDLE_GZIP_MAX_BYTES = 175_000;
+const APP_SOURCE_MAX_LINES = 8_100;
 const precacheAssetsSource = sw.match(/const PRECACHE_ASSETS = \[([\s\S]*?)\];/)?.[1] || "";
 
 const appVersion = app.match(/const APP_VERSION = "([0-9]+\.[0-9]+)";/)?.[1];
@@ -392,9 +395,9 @@ assert.ok(runtimeRefreshOrchestrator.includes('criticalTask("indices", coreIndex
   && runtimeRefreshOrchestrator.includes("const criticalTotal = 2;"),
 "critical startup refresh tasks are not grouped");
 assert.ok(runtimeRefreshOrchestrator.includes("supplementalTasks: [")
-  && runtimeRefreshOrchestrator.includes("hiddenPriceTask,")
-  && runtimeRefreshOrchestrator.includes('scope: "hidden"'),
-"supplemental refresh tasks do not defer hidden stock prices");
+  && !runtimeRefreshOrchestrator.includes("hiddenPriceTask,")
+  && app.includes("ensureCustomTickerSeriesLoaded(key, { displayName, returnAfterCache: true })"),
+"hidden stock prices are not deferred until the stock becomes visible");
 assert.ok(runtimeRefreshOrchestrator.includes('reportCriticalProgress("chart", 96)')
   && runtimeDataApp.includes("onCriticalProgress: flow.onCriticalProgress"),
 "startup progress does not follow critical refresh completion");
@@ -518,7 +521,11 @@ assert.ok(auxiliaryChartRuntime.includes('text: "탐욕"'), "greed guide is miss
 assert.ok(auxiliaryChartRuntime.includes('text: "부정"'), "news sentiment negative guide is missing");
 assert.ok(auxiliaryChartRuntime.includes('text: "긍정"'), "news sentiment positive guide is missing");
 assert.ok(app.includes("CUSTOM_STOCK_PRELOAD_CONCURRENCY"), "custom stock preload concurrency guard is missing");
-assert.ok(runtimeRefresh.includes("const criticalPromise") && runtimeRefresh.includes("const supplementalPromise"), "refresh phases do not start in parallel");
+assert.ok(runtimeRefresh.includes("const criticalPromise")
+  && runtimeRefresh.includes("startSupplementalAfterCritical")
+  && runtimeRefresh.includes("runTaskFactoriesWithConcurrency")
+  && runtimeRefreshOrchestrator.includes("supplementalConcurrency: forceNetwork ? 3 : 2"),
+"refresh phases do not preserve critical-first bounded startup work");
 assert.ok(runtimeRefreshOrchestrator.includes("coreIndexTask")
   && runtimeRefreshOrchestrator.includes("preloadTask"),
 "price refresh tasks still run serially");
@@ -599,12 +606,21 @@ assert.ok(plotlyBuilder.includes('createHash("sha256")')
 assert.ok(deployWorkflow.includes("npm run vendor:sync"),
   "deployment does not rebuild the custom Plotly bundle");
 assert.ok(html.includes("./assets/app.bundle.min.js?v=dev"), "optimized app bundle is not loaded");
+assert.match(
+  html,
+  /\.\/assets\/app\.bundle\.min\.js\?v=dev&amp;build=\d+\.\d+&amp;asset=[a-f0-9]{12}/,
+  "local app bundle content fingerprint is missing",
+);
 assert.equal([...html.matchAll(/<script\b/g)].length, 1, "runtime scripts are not bundled");
 assert.ok(appBundle.size < APP_BUNDLE_MAX_BYTES, `initial app bundle is too large: ${appBundle.size} bytes`);
 assert.ok(appBundleGzipBytes < APP_BUNDLE_GZIP_MAX_BYTES,
   `compressed initial app bundle is too large: ${appBundleGzipBytes} bytes`);
+assert.ok(app.split(/\r?\n/).length <= APP_SOURCE_MAX_LINES,
+  `docs/app.js exceeded ${APP_SOURCE_MAX_LINES} lines; move cohesive logic into an existing module`);
 assert.ok(pagesEntry.includes('import "../docs/modules/chart-render-scheduler.js"')
   && chartRenderScheduler.includes("createChartRenderScheduler")
+  && chartRenderScheduler.includes("createLatestKeyedFrameQueue")
+  && !pagesEntry.includes('import "../docs/modules/chart-relayout-queue.js"')
   && !app.includes("let renderChartRafId"),
 "chart render scheduling is not separated from app.js");
 assert.ok(pagesEntry.includes('import "../docs/modules/chart-session-controller.js"')
@@ -794,7 +810,10 @@ assert.ok(!app.includes("function mainChartRestylePayload(")
   && !app.includes("function canApplyMainChartPartialUpdate("),
   "main chart rendering implementation still lives in app.js");
 assert.ok(app.includes('const DISCLOSURE_ICON_TEXT = "◆";'), "disclosure icon is not configured");
-assert.ok(app.includes("fetchSegmentedSeedText"), "segmented data loading is missing");
+assert.ok(app.includes("createSeedBundleLoader")
+  && dataSeedLoader.includes("createSeedBundleLoader")
+  && dataSeedLoader.includes("fetchSegmentedSeedText"),
+"segmented data loading is not owned by the seed loader");
 assert.ok(app.includes("ensureHistoricalDataLoaded"), "historical lazy loading is missing");
 assert.ok(app.includes("requestChartModelFromWorker"), "chart model worker client is missing");
 assert.ok(app.includes("initE2eDebugAccess"), "WebKit test diagnostics are missing");

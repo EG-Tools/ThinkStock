@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+await import("../../docs/modules/shared-request-registry.js");
 await import("../../docs/modules/runtime-refresh-orchestrator.js");
 
 const { runRefreshPhases } = globalThis.ThinkStockRuntimeRefresh;

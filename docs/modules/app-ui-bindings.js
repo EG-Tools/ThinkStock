@@ -212,6 +212,44 @@
     });
   }
 
+  function bindPreparedToggle(options = {}) {
+    const button = options.button;
+    if (!button || button.dataset?.bound === "1") return false;
+    if (button.dataset) button.dataset.bound = "1";
+    options.syncButton?.();
+    button.onclick = async () => {
+      if (options.canToggle && !options.canToggle()) return;
+      if (button.getAttribute?.("aria-busy") === "true") return;
+      const nextEnabled = !options.getEnabled?.();
+      if (nextEnabled && options.canEnable && !options.canEnable()) return;
+      const hasAsyncWork = nextEnabled && (options.prepare || options.onEnabled);
+      if (hasAsyncWork) button.setAttribute("aria-busy", "true");
+      try {
+        if (nextEnabled) await options.prepare?.();
+      } catch (error) {
+        if (hasAsyncWork) button.setAttribute("aria-busy", "false");
+        options.onError?.(error, "prepare");
+        return;
+      } finally {
+        if (hasAsyncWork && !options.onEnabled) button.setAttribute("aria-busy", "false");
+      }
+
+      options.setEnabled?.(nextEnabled);
+      options.syncButton?.();
+      options.saveState?.();
+      try {
+        if (nextEnabled) await options.onEnabled?.();
+        else await options.onDisabled?.();
+      } catch (error) {
+        options.onError?.(error, nextEnabled ? "enable" : "disable");
+      } finally {
+        if (hasAsyncWork) button.setAttribute("aria-busy", "false");
+        options.onChanged?.(nextEnabled);
+      }
+    };
+    return true;
+  }
+
   function bindCreditOffsetInput(options) {
     const input = options.input;
     if (!input) return;
@@ -254,14 +292,139 @@
     });
   }
 
+  function createStockSelectionView(scope = globalScope, options = {}) {
+    const document = scope.document;
+    const container = options.container || document?.getElementById?.("customStockButtons");
+    const suggestionList = options.suggestionList || document?.getElementById?.("stockSuggestList");
+    const escapeHtml = typeof options.escapeHtml === "function"
+      ? options.escapeHtml
+      : (value) => String(value ?? "");
+    const seriesColor = typeof options.seriesColor === "function"
+      ? options.seriesColor
+      : () => "#9ca3af";
+    let suggestionItems = [];
+    let activeSuggestionIndex = -1;
+    let suggestionHandler = typeof options.onSuggestion === "function" ? options.onSuggestion : null;
+
+    function setActiveSuggestion(index) {
+      const maxIndex = suggestionItems.length - 1;
+      if (!suggestionList || maxIndex < 0) {
+        activeSuggestionIndex = -1;
+        return -1;
+      }
+      let next = Number(index);
+      if (!Number.isFinite(next)) next = -1;
+      activeSuggestionIndex = Math.max(-1, Math.min(maxIndex, next));
+      suggestionList.querySelectorAll?.(".stock-suggest-item").forEach((node, nodeIndex) => {
+        const isActive = nodeIndex === activeSuggestionIndex;
+        node.classList.toggle("is-active", isActive);
+        node.setAttribute("aria-selected", isActive ? "true" : "false");
+        if (isActive) node.scrollIntoView?.({ block: "nearest" });
+      });
+      return activeSuggestionIndex;
+    }
+
+    function hideSuggestions() {
+      if (suggestionList) {
+        suggestionList.hidden = true;
+        suggestionList.innerHTML = "";
+      }
+      suggestionItems = [];
+      activeSuggestionIndex = -1;
+    }
+
+    function renderSuggestions(items) {
+      suggestionItems = Array.isArray(items) ? [...items] : [];
+      activeSuggestionIndex = -1;
+      if (!suggestionList || !suggestionItems.length) {
+        hideSuggestions();
+        return 0;
+      }
+      suggestionList.innerHTML = suggestionItems.map((item, index) => `
+        <button type="button" class="stock-suggest-item" data-suggest-idx="${index}" aria-selected="false">
+          <span class="stock-suggest-name">${escapeHtml(item.name)}</span>
+          <span class="stock-suggest-meta">${escapeHtml(item.code)} / ${escapeHtml(item.market)}</span>
+        </button>
+      `).join("");
+      suggestionList.hidden = false;
+      return suggestionItems.length;
+    }
+
+    function moveSuggestion(direction) {
+      if (!suggestionItems.length) return -1;
+      const delta = Number(direction) < 0 ? -1 : 1;
+      const next = activeSuggestionIndex < 0
+        ? (delta < 0 ? suggestionItems.length - 1 : 0)
+        : (activeSuggestionIndex + delta + suggestionItems.length) % suggestionItems.length;
+      return setActiveSuggestion(next);
+    }
+
+    function renderStocks(stocks) {
+      if (!container) return 0;
+      const items = Array.isArray(stocks) ? stocks : [];
+      container.innerHTML = items.map((item) => {
+        const ticker = String(item?.ticker || "");
+        const name = String(item?.name || ticker);
+        const color = seriesColor(ticker);
+        return `
+          <div class="custom-stock-chip" data-custom-series="${escapeHtml(ticker)}">
+            <button class="series-toggle-btn custom-stock-toggle-btn" data-series="${escapeHtml(ticker)}" style="--series-color:${escapeHtml(color)}">${escapeHtml(name)}</button>
+            <button class="stock-remove-btn" type="button" data-remove-series="${escapeHtml(ticker)}" aria-label="${escapeHtml(name)} remove">&times;</button>
+          </div>
+        `;
+      }).join("");
+      return items.length;
+    }
+
+    container?.addEventListener("click", (event) => {
+      const removeButton = event.target?.closest?.("[data-remove-series]");
+      if (!removeButton || !container.contains?.(removeButton)) return;
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      const ticker = String(removeButton.dataset?.removeSeries || "");
+      if (ticker) options.onRemove?.(ticker);
+    });
+
+    suggestionList?.addEventListener("mousemove", (event) => {
+      const button = event.target?.closest?.("[data-suggest-idx]");
+      if (!button || !suggestionList.contains?.(button)) return;
+      setActiveSuggestion(Number(button.dataset?.suggestIdx));
+    });
+    suggestionList?.addEventListener("click", (event) => {
+      const button = event.target?.closest?.("[data-suggest-idx]");
+      if (!button || !suggestionList.contains?.(button)) return;
+      const index = setActiveSuggestion(Number(button.dataset?.suggestIdx));
+      const item = suggestionItems[index];
+      if (item) suggestionHandler?.(item, index);
+    });
+
+    return Object.freeze({
+      activeSuggestion: (fallbackToFirst = false) => (
+        suggestionItems[activeSuggestionIndex >= 0 ? activeSuggestionIndex : (fallbackToFirst ? 0 : -1)] || null
+      ),
+      containsSuggestionTarget: (target) => Boolean(suggestionList?.contains?.(target)),
+      hideSuggestions,
+      moveSuggestion,
+      renderStocks,
+      renderSuggestions,
+      setSuggestionHandler: (handler) => {
+        suggestionHandler = typeof handler === "function" ? handler : null;
+      },
+      setActiveSuggestion,
+      suggestionCount: () => suggestionItems.length,
+    });
+  }
+
   globalScope.ThinkStockAppUiBindings = Object.freeze({
     bindCreditOffsetInput,
     bindDisclosureToggle,
     bindHoverToggle,
     bindManualRefresh,
+    bindPreparedToggle,
     bindChartRangeControls,
     bindChartToolsToggle,
     bindMainChartToolActions,
     createMainChartControlView,
+    createStockSelectionView,
   });
 }(typeof self !== "undefined" ? self : globalThis));

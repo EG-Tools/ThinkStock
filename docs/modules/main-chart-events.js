@@ -127,9 +127,11 @@
         }
       });
       element.on("plotly_beforehover", (eventData) => {
-        configureExactDateEventHover(element, eventData);
+        if (element.classList.contains("is-hover-waiting")) return false;
+        return configureExactDateEventHover(element, eventData);
       });
       element.on("plotly_hover", (eventData) => {
+        if (element.classList.contains("is-hover-waiting")) return;
         scheduleDisclosureHoverHighlight(eventData);
         if (!chartSession.hoverShowPopup || interactionState.hoverSyncing) return;
         const xValue = eventData?.points?.[0]?.x;

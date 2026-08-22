@@ -106,8 +106,6 @@
           });
       };
 
-      let releaseHiddenPriceRefresh = null;
-      const hiddenPriceGate = new Promise((resolve) => { releaseHiddenPriceRefresh = resolve; });
       let criticalStarted = 0;
       let criticalCompleted = 0;
       const criticalTotal = 2;
@@ -201,24 +199,25 @@
         }
       };
 
-      const hiddenPriceTask = async () => {
-        await hiddenPriceGate;
-        throwIfAborted(signal);
-        return trackSource(
-          "prices-hidden",
-          () => preloadCustomStocks({ forceRefresh: forceNetwork, signal, scope: "hidden" }),
-          { failedNames: [] },
-        ).then((result) => ({
-          info: [],
-          warnings: result.failedNames.length
-            ? [`일부 비활성 종목을 불러오지 못했습니다: ${result.failedNames.join(", ")}`]
-            : [],
-        })).catch((error) => {
+      const hiddenPreloadTask = async () => {
+        try {
+          const result = await preloadCustomStocks({
+            forceRefresh: forceNetwork,
+            signal,
+            scope: "hidden",
+          });
+          return {
+            info: [],
+            warnings: result.failedNames.length
+              ? [`일부 숨긴 종목을 불러오지 못했습니다: ${result.failedNames.join(", ")}`]
+              : [],
+          };
+        } catch (error) {
           if (isAbortError(error) || signal?.aborted) throw error;
-          return { info: [], warnings: [`Background price refresh failed: ${error.message}`] };
-        });
+          return { info: [], warnings: [`Hidden price refresh failed: ${error.message}`] };
+        }
       };
-    
+
       const adrTask = () => trackSource(
         "adr",
         () => refreshAdrFromWebWithRetry(signal, forceNetwork),
@@ -307,6 +306,8 @@
       };
     
       await runRefreshPhases({
+        startSupplementalAfterCritical: !forceNetwork,
+        supplementalConcurrency: forceNetwork ? 3 : 2,
         criticalTasks: [
           criticalTask("indices", coreIndexTask),
           criticalTask("prices-visible", preloadTask),
@@ -318,7 +319,7 @@
           ecosTask,
           creditTask,
           crisisTask,
-          hiddenPriceTask,
+          hiddenPreloadTask,
         ],
         onCritical: async (results) => {
           throwIfAborted(signal);
@@ -335,7 +336,6 @@
             ], false);
             await options.onCriticalReady({ changes, info: [...infoLines], warnings: [...warnLines] });
           }
-          releaseHiddenPriceRefresh?.();
         },
         onSupplemental: async (results) => {
           throwIfAborted(signal);
@@ -391,15 +391,32 @@
     ));
   }
 
+  function runTaskFactoriesWithConcurrency(taskFactories, concurrency) {
+    const mapWithConcurrency = global.ThinkStockSharedRequestRegistry?.mapWithConcurrency;
+    if (typeof mapWithConcurrency !== "function") {
+      throw new Error("shared concurrency helper is unavailable");
+    }
+    return mapWithConcurrency(taskFactories, concurrency, (factory) => (
+      Promise.resolve().then(() => factory())
+    ));
+  }
+
   async function runRefreshPhases(options = {}) {
     const criticalPromise = Promise.all(startTaskFactories(options.criticalTasks));
-    const supplementalPromise = Promise.all(startTaskFactories(options.supplementalTasks));
+    const supplementalConcurrency = Number(options.supplementalConcurrency);
+    const startSupplemental = () => (
+      Number.isFinite(supplementalConcurrency) && supplementalConcurrency > 0
+        ? runTaskFactoriesWithConcurrency(options.supplementalTasks, supplementalConcurrency)
+        : Promise.all(startTaskFactories(options.supplementalTasks))
+    );
+    let supplementalPromise = options.startSupplementalAfterCritical ? null : startSupplemental();
     // Prevent an early supplemental rejection from becoming unhandled while critical work finishes.
-    supplementalPromise.catch(() => {});
+    supplementalPromise?.catch(() => {});
 
     const criticalResults = await criticalPromise;
     if (typeof options.onCritical === "function") await options.onCritical(criticalResults);
 
+    supplementalPromise = supplementalPromise || startSupplemental();
     const supplementalResults = await supplementalPromise;
     if (typeof options.onSupplemental === "function") await options.onSupplemental(supplementalResults);
 
@@ -481,6 +498,7 @@
     retryOnce,
     retryRuntimeSource,
     retryWithDelays,
+    runTaskFactoriesWithConcurrency,
     runRefreshPhases,
     waitForDelay: waitForRetryDelay,
   };

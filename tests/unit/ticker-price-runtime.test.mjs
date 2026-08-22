@@ -56,6 +56,69 @@ test("merges, reads and clears a ticker series without changing other prices", (
   assert.deepEqual(payload.series, ["^KS11"]);
 });
 
+test("rejects a restored price snapshot with a stale corporate-action boundary", () => {
+  const stale = runtime.inspectPricePayloadIntegrity({
+    series: ["^KS11", "183300.KQ"],
+    records: [
+      { date: "2026-07-28", "^KS11": 4100, "183300.KQ": 109000 },
+      { date: "2026-08-20", "^KS11": 4200, "183300.KQ": 138500 },
+      { date: "2026-08-21", "^KS11": 4210, "183300.KQ": 27700 },
+    ],
+  });
+  assert.equal(stale.clean, false);
+  assert.equal(stale.ticker, "183300.KQ");
+  assert.equal(stale.firstDate, "2026-08-21");
+
+  const adjusted = runtime.inspectPricePayloadIntegrity({
+    series: ["183300.KQ"],
+    records: [
+      { date: "2026-07-28", "183300.KQ": 21800 },
+      { date: "2026-08-21", "183300.KQ": 27700 },
+    ],
+  });
+  assert.equal(adjusted.clean, true);
+});
+
+test("inspects Korean ticker columns even when a stale snapshot omitted them from series", () => {
+  const result = runtime.inspectPricePayloadIntegrity({
+    series: ["^KS11"],
+    records: [
+      { date: "2026-07-28", "183300.KQ": 21800 },
+      { date: "2026-08-20", "183300.KQ": 54400 },
+      { date: "2026-08-21", "183300.KQ": 27700 },
+    ],
+  });
+  assert.equal(result.clean, false);
+  assert.equal(result.ticker, "183300.KQ");
+});
+
+test("does not mistake a sparse multi-year history for a corporate action", () => {
+  const result = runtime.inspectPricePayloadIntegrity({
+    series: ["000001.KS"],
+    records: [
+      { date: "2003-01-02", "000001.KS": 5000 },
+      { date: "2026-08-10", "000001.KS": 13000 },
+    ],
+  });
+  assert.equal(result.clean, true);
+});
+
+test("drops a stale latest-price row that predates complete adjusted history", () => {
+  assert.deepEqual(runtime.filterLatestTailPoints([
+    { date: "2026-07-28", close: 21800 },
+    { date: "2026-08-21", close: 27700 },
+  ], [
+    { date: "2026-08-20", close: 54400 },
+  ]), []);
+  assert.deepEqual(runtime.filterLatestTailPoints([
+    { date: "2026-08-20", close: 27000 },
+  ], [
+    { date: "2026-08-21", close: 27700 },
+  ]), [
+    { date: "2026-08-21", close: 27700 },
+  ]);
+});
+
 test("uses a recent market confirmation before benchmark freshness", () => {
   assert.equal(runtime.isCacheFresh({
     latestDate: "2026-08-01",
@@ -188,6 +251,172 @@ test("converts validated price cache records into research history", () => {
   }), null);
 });
 
+test("rejects corporate-action contamination in both shared price caches", () => {
+  const rows = Array.from({ length: 252 }, (_, index) => ({
+    date: new Date(Date.UTC(2025, 0, 1 + index)).toISOString().slice(0, 10),
+    close: 20000 + index,
+  }));
+  rows.push(
+    { date: "2026-08-20", close: 54400 },
+    { date: "2026-08-21", close: 27700 },
+  );
+  const normalize = (values) => Array.isArray(values) ? values : [];
+  assert.equal(runtime.normalizeResearchHistoryCache({
+    schema: 1,
+    ticker: "183300.KQ",
+    rows,
+  }, "183300.KQ", normalize), null);
+  assert.equal(runtime.priceCacheToResearchHistory({
+    schema: 6,
+    ticker: "183300.KQ",
+    points: rows,
+  }, "183300.KQ", normalize, { priceSchema: 6 }), null);
+});
+
+test("series loader never inserts an older latest-price row into a complete cache", async () => {
+  const calls = [];
+  const points = [
+    { date: "2026-07-28", close: 21800, volume: 516832 },
+    { date: "2026-08-21", close: 27700, volume: 1595930 },
+  ];
+  const loader = runtime.createSeriesLoader({
+    applySharedCache: async () => ({
+      applied: true,
+      latestDate: "2026-08-21",
+      historyCoverage: runtime.HISTORY_COVERAGE_FULL,
+    }),
+    assessPriceUpdate: () => ({ invalidateDerived: false, fullHistoryRequired: false }),
+    clearSeries: () => {},
+    fetchHistory: async () => { throw new Error("history should not be fetched"); },
+    fetchLatest: async () => [{ date: "2026-08-20", close: 54400 }],
+    getPoints: () => points,
+    hasSeries: () => true,
+    hasVolumeHistory: () => true,
+    invalidateCache: async () => {},
+    isCacheFresh: () => true,
+    latestDate: () => "2026-08-21",
+    mergePoints: () => calls.push("merge"),
+    normalizePoints: (values) => values,
+    setStatus: () => {},
+    writeCache: async () => calls.push("write"),
+  });
+
+  const result = await loader.load("183300.KQ");
+  assert.equal(result.cached, true);
+  assert.deepEqual(calls, []);
+});
+
+test("uses a newer research session but keeps the price basis on equal dates", () => {
+  const priceHistory = {
+    latestDate: "2026-08-20",
+    source: "KRX",
+    rows: [{ date: "2026-08-20", close: 25050 }],
+  };
+  const newerResearch = {
+    latestDate: "2026-08-21",
+    source: "NAVER_LIVE",
+    rows: [{ date: "2026-08-21", close: 25800 }],
+  };
+  assert.equal(
+    runtime.selectPreferredResearchHistory(priceHistory, newerResearch),
+    newerResearch,
+  );
+  const sameDatePrice = { ...priceHistory, latestDate: "2026-08-21" };
+  assert.equal(
+    runtime.selectPreferredResearchHistory(sameDatePrice, newerResearch),
+    sameDatePrice,
+  );
+});
+
+test("repairs a same-day price cache that retained a pre-split boundary", () => {
+  const stalePrice = {
+    latestDate: "2026-08-21",
+    source: "LOCAL_CACHE",
+    rows: [
+      { date: "2026-07-28", close: 54400 },
+      { date: "2026-08-20", close: 69200 },
+      { date: "2026-08-21", close: 27700 },
+    ],
+  };
+  const adjustedResearch = {
+    latestDate: "2026-08-21",
+    source: "NAVER_FULL_HISTORY",
+    rows: [
+      { date: "2026-07-28", close: 21800 },
+      { date: "2026-08-21", close: 27700 },
+    ],
+  };
+
+  assert.equal(
+    runtime.selectPreferredResearchHistory(stalePrice, adjustedResearch),
+    adjustedResearch,
+  );
+});
+
+test("repairs an older split boundary after newer post-split sessions were cached", () => {
+  const stalePrice = {
+    latestDate: "2026-08-28",
+    rows: [
+      { date: "2026-07-28", close: 109000 },
+      { date: "2026-08-20", close: 138500 },
+      { date: "2026-08-21", close: 27700 },
+      { date: "2026-08-24", close: 28200 },
+      { date: "2026-08-28", close: 29000 },
+    ],
+  };
+  const adjustedResearch = {
+    latestDate: "2026-08-28",
+    rows: [
+      { date: "2026-07-28", close: 21800 },
+      { date: "2026-08-21", close: 27700 },
+      { date: "2026-08-24", close: 28200 },
+      { date: "2026-08-28", close: 29000 },
+    ],
+  };
+
+  assert.equal(runtime.inspectPriceHistoryIntegrity(stalePrice).anomalyCount, 1);
+  assert.equal(runtime.inspectPriceHistoryIntegrity(adjustedResearch).anomalyCount, 0);
+  assert.equal(
+    runtime.selectPreferredResearchHistory(stalePrice, adjustedResearch),
+    adjustedResearch,
+  );
+});
+
+test("payload replacement removes stale dates from an earlier price basis", () => {
+  let payload = {
+    records: [
+      { date: "2026-07-28", "183300.KQ": 54400 },
+      { date: "2026-08-20", "183300.KQ": 69200 },
+    ],
+    series: ["183300.KQ"],
+    display_names: { "183300.KQ": "코미코" },
+  };
+  const controller = runtime.createPayloadController({
+    getPayload: () => payload,
+    setPayload: (value) => { payload = value; },
+    normalizePoints: (points) => points.filter((point) => (
+      /^\d{4}-\d{2}-\d{2}$/.test(String(point?.date || ""))
+      && Number.isFinite(Number(point?.close))
+      && Number(point.close) > 0
+    )).map((point) => ({ date: point.date, close: Number(point.close) })),
+    toNumber: (value) => {
+      const number = Number(value);
+      return Number.isFinite(number) ? number : null;
+    },
+  });
+
+  controller.merge("183300.KQ", [
+    { date: "2026-07-28", close: 21800 },
+    { date: "2026-08-21", close: 27700 },
+  ], { replace: true });
+
+  assert.deepEqual(controller.points("183300.KQ"), [
+    { date: "2026-07-28", close: 21800 },
+    { date: "2026-08-21", close: 27700 },
+  ]);
+  assert.equal(payload.records.find((row) => row.date === "2026-08-20")?.["183300.KQ"], undefined);
+});
+
 test("series loader reuses a complete fresh cache after one latest-point check", async () => {
   const calls = [];
   const loader = runtime.createSeriesLoader({
@@ -249,4 +478,178 @@ test("series loader invalidates derived caches before merging revised history", 
   const result = await loader.load("005930.KS", { forceRefresh: true });
   assert.equal(result.cached, false);
   assert.deepEqual(calls, ["invalidate", "merge", "write"]);
+});
+
+test("series loader restores full adjusted history before accepting a corporate-action boundary", async () => {
+  const calls = [];
+  let currentPoints = [
+    { date: "2026-07-28", close: 54400, volume: 100 },
+  ];
+  const adjustedHistory = [
+    { date: "2026-07-27", close: 25446, volume: 120 },
+    { date: "2026-07-28", close: 21800, volume: 100 },
+    { date: "2026-08-21", close: 27700, volume: 140 },
+  ];
+  const loader = runtime.createSeriesLoader({
+    applySharedCache: async () => ({
+      applied: true,
+      latestDate: "2026-07-28",
+      historyCoverage: runtime.HISTORY_COVERAGE_FULL,
+    }),
+    assessPriceUpdate: (_existing, _incoming, { rebaseSignal }) => rebaseSignal
+      ? {
+        invalidateDerived: true,
+        invalidatePrice: true,
+        fullHistoryRequired: true,
+        reason: "corporate-action-boundary",
+      }
+      : { invalidateDerived: false, fullHistoryRequired: false },
+    clearSeries: () => {
+      calls.push("clear");
+      currentPoints = [];
+    },
+    fetchHistory: async (_ticker, options) => {
+      calls.push(`history:${options.sinceDate || "full"}`);
+      return adjustedHistory;
+    },
+    fetchLatest: async () => {
+      calls.push("latest");
+      return [{ date: "2026-08-21", close: 27700, volume: 140 }];
+    },
+    findRebaseSignal: () => ({ type: "boundary", ratio: 54400 / 27700 }),
+    getPoints: () => currentPoints,
+    hasSeries: () => currentPoints.length > 0,
+    hasVolumeHistory: () => currentPoints.some((point) => point.volume > 0),
+    invalidateCache: async () => calls.push("invalidate"),
+    isCacheFresh: () => true,
+    latestDate: () => currentPoints.at(-1)?.date || "",
+    mergePoints: (_ticker, points, options = {}) => {
+      calls.push(`merge:${options.replace === true ? "replace" : "append"}`);
+      currentPoints = options.replace === true ? [...points] : [...currentPoints, ...points];
+    },
+    normalizePoints: (points) => points,
+    setStatus: () => {},
+    writeCache: async () => calls.push("write"),
+  });
+
+  const result = await loader.load("183300.KQ");
+  assert.equal(result.cached, false);
+  assert.deepEqual(currentPoints, adjustedHistory);
+  assert.deepEqual(calls, [
+    "latest",
+    "history:full",
+    "invalidate",
+    "clear",
+    "merge:replace",
+    "write",
+  ]);
+});
+
+test("series loader repairs a corporate-action boundary already buried inside cache history", async () => {
+  const calls = [];
+  let currentPoints = [
+    { date: "2026-07-28", close: 109000, volume: 100 },
+    { date: "2026-08-20", close: 138500, volume: 100 },
+    { date: "2026-08-21", close: 27700, volume: 140 },
+    { date: "2026-08-24", close: 28200, volume: 130 },
+  ];
+  const adjustedHistory = [
+    { date: "2026-07-28", close: 21800, volume: 100 },
+    { date: "2026-08-21", close: 27700, volume: 140 },
+    { date: "2026-08-24", close: 28200, volume: 130 },
+  ];
+  const loader = runtime.createSeriesLoader({
+    applySharedCache: async () => ({
+      applied: true,
+      latestDate: "2026-08-24",
+      historyCoverage: runtime.HISTORY_COVERAGE_FULL,
+    }),
+    assessPriceUpdate: (_existing, _incoming, { rebaseSignal }) => rebaseSignal
+      ? { invalidateDerived: true, fullHistoryRequired: true }
+      : { invalidateDerived: false, fullHistoryRequired: false },
+    clearSeries: () => {
+      calls.push("clear");
+      currentPoints = [];
+    },
+    fetchHistory: async (_ticker, options) => {
+      calls.push(`history:${options.sinceDate || "full"}`);
+      return adjustedHistory;
+    },
+    fetchLatest: async () => {
+      calls.push("latest");
+      return [{ date: "2026-08-24", close: 28200, volume: 130 }];
+    },
+    getPoints: () => currentPoints,
+    hasSeries: () => currentPoints.length > 0,
+    hasVolumeHistory: () => true,
+    inspectHistoryIntegrity: runtime.inspectPriceHistoryIntegrity,
+    invalidateCache: async () => calls.push("invalidate"),
+    isCacheFresh: () => true,
+    latestDate: () => currentPoints.at(-1)?.date || "",
+    mergePoints: (_ticker, points, options = {}) => {
+      calls.push(`merge:${options.replace === true ? "replace" : "append"}`);
+      currentPoints = options.replace === true ? [...points] : [...currentPoints, ...points];
+    },
+    normalizePoints: (points) => points,
+    setStatus: () => {},
+    writeCache: async () => calls.push("write"),
+  });
+
+  const result = await loader.load("183300.KQ");
+  assert.equal(result.cached, false);
+  assert.deepEqual(currentPoints, adjustedHistory);
+  assert.deepEqual(calls, [
+    "history:full",
+    "invalidate",
+    "clear",
+    "merge:replace",
+    "write",
+  ]);
+});
+
+test("series loader preserves a complete cache when adjusted history is truncated", async () => {
+  const calls = [];
+  const originalPoints = Array.from({ length: 300 }, (_, index) => ({
+    date: new Date(Date.UTC(2025, 0, 1 + index)).toISOString().slice(0, 10),
+    close: 50000 + index,
+    volume: 100,
+  }));
+  let currentPoints = [...originalPoints];
+  const loader = runtime.createSeriesLoader({
+    applySharedCache: async () => ({
+      applied: true,
+      latestDate: originalPoints.at(-1).date,
+      historyCoverage: runtime.HISTORY_COVERAGE_FULL,
+    }),
+    assessPriceUpdate: (_existing, _incoming, { rebaseSignal }) => rebaseSignal
+      ? { invalidateDerived: true, fullHistoryRequired: true }
+      : { invalidateDerived: false, fullHistoryRequired: false },
+    clearSeries: () => {
+      calls.push("clear");
+      currentPoints = [];
+    },
+    fetchHistory: async () => {
+      calls.push("history");
+      return [{ date: "2026-08-21", close: 27700, volume: 100 }];
+    },
+    fetchLatest: async () => [{ date: "2026-08-21", close: 27700, volume: 100 }],
+    findRebaseSignal: () => ({ type: "boundary", ratio: 2 }),
+    getPoints: () => currentPoints,
+    getStatus: () => ({ source: "LOCAL_CACHE" }),
+    hasSeries: () => currentPoints.length > 0,
+    hasVolumeHistory: () => true,
+    invalidateCache: async () => calls.push("invalidate"),
+    isCacheFresh: () => true,
+    latestDate: () => currentPoints.at(-1)?.date || "",
+    mergePoints: () => calls.push("merge"),
+    normalizePoints: (points) => points,
+    setStatus: () => calls.push("stale"),
+    writeCache: async () => calls.push("write"),
+  });
+
+  const result = await loader.load("183300.KQ");
+  assert.equal(result.cached, true);
+  assert.equal(result.stale, true);
+  assert.deepEqual(currentPoints, originalPoints);
+  assert.deepEqual(calls, ["history", "stale"]);
 });

@@ -242,12 +242,76 @@
     return Object.freeze({ read, write });
   }
 
+  function createDisclosureStateController(options = {}) {
+    const dataService = options.dataService;
+    const getRows = options.getRows;
+    const setRows = options.setRows;
+    const getTickerCache = options.getTickerCache;
+    if (!dataService?.mergeRowsWithChange
+      || typeof getRows !== "function"
+      || typeof setRows !== "function"
+      || typeof getTickerCache !== "function") {
+      throw new Error("disclosure state controller dependencies are incomplete");
+    }
+
+    function normalizeTicker(ticker) {
+      return String(ticker || "").trim().toUpperCase();
+    }
+
+    function rowsForTicker(ticker) {
+      const target = normalizeTicker(ticker);
+      return dataService.sanitizeRows((getRows() || []).filter((row) => row.ticker === target));
+    }
+
+    function merge(incomingRows) {
+      const result = dataService.mergeRowsWithChange(getRows() || [], incomingRows);
+      setRows(result.rows);
+      if (result.changed) options.onChanged?.(result);
+      return result;
+    }
+
+    async function applyTickerCache(ticker) {
+      const target = normalizeTicker(ticker);
+      const record = await getTickerCache().read(target);
+      if (!record) return { applied: false, added: 0, latestDate: "" };
+      const merged = merge(record.rows);
+      return {
+        applied: true,
+        added: merged.added,
+        latestDate: record.latestDate || record.rows?.at(-1)?.date || "",
+      };
+    }
+
+    async function writeTicker(ticker) {
+      const target = normalizeTicker(ticker);
+      return getTickerCache().write(target, rowsForTicker(target));
+    }
+
+    function writeTickers(tickers) {
+      const targets = [...new Set((tickers || []).map(normalizeTicker).filter(Boolean))];
+      targets.forEach((ticker) => writeTicker(ticker).catch(() => {}));
+      return targets.length;
+    }
+
+    return Object.freeze({
+      applyTickerCache,
+      getRefreshEntry: (ticker) => dataService.getRefreshCacheEntry(ticker),
+      hasFreshRefresh: (ticker) => dataService.hasFreshRefresh(ticker),
+      merge,
+      rememberRefresh: (ticker, info) => dataService.rememberRefresh(ticker, info),
+      rowsForTicker,
+      writeTicker,
+      writeTickers,
+    });
+  }
+
   globalThis.ThinkStockDisclosurePolicy = Object.freeze({
     classifyDisclosureType,
     isImportantDisclosureTitle,
     isLowImpactDisclosureTitle,
     shouldDisplayDisclosure,
     createDisclosureDataService,
+    createDisclosureStateController,
     createTickerDisclosureCache,
   });
 })();

@@ -88,6 +88,68 @@ test("assigns unique random stock colors away from fixed series and the last rem
 });
 
 
+test("rejects stock colors that share a hue with a fixed index color", () => {
+  const assigned = module.assignCustomStockColors([
+    { ticker: "183300.KQ", name: "KIMICO", color: "#0da559" },
+  ], {
+    palette: ["#0da559", "#2beeee"],
+    reservedColors: ["#4ade80"],
+    minimumDistance: 90,
+    minimumHueDistance: 28,
+    random: () => 0,
+  });
+
+  assert.equal(assigned[0].color, "#2beeee");
+});
+
+
+test("custom stock lifecycle centralizes admission, removal colors, and scoped selection", () => {
+  const publications = [];
+  const lifecycle = module.createCustomStockLifecycle({
+    maxStocks: 2,
+    initialStocks: [{ ticker: "005930.KS", name: "삼성전자", color: "#d41111" }],
+    assignColors: (stocks, context) => module.assignCustomStockColors(stocks, {
+      palette: ["#d41111", "#2beeee", "#ee2bee"],
+      previousColorsByTicker: context.removedColors,
+      random: () => 0,
+    }),
+    onChange: (stocks) => publications.push(stocks),
+  });
+
+  assert.equal(lifecycle.beginAdd({ ticker: "005930.KS", name: "중복" }).reason, "duplicate");
+  const admission = lifecycle.beginAdd({ ticker: "000660.ks", name: "SK하이닉스" });
+  assert.equal(admission.ok, true);
+  assert.equal(lifecycle.beginAdd(admission.stock).reason, "loading");
+  assert.equal(lifecycle.commitAdd(admission.stock)?.ticker, "000660.KS");
+  lifecycle.finishAdd("000660.KS");
+  assert.equal(lifecycle.beginAdd({ ticker: "035420.KS", name: "NAVER" }).reason, "limit");
+  assert.deepEqual(lifecycle.select("visible", (ticker) => ticker === "005930.KS")
+    .map((stock) => stock.ticker), ["000660.KS"]);
+
+  const removed = lifecycle.remove("005930.KS");
+  assert.equal(removed.color, "#d41111");
+  const readd = lifecycle.beginAdd({ ticker: "005930.KS", name: "삼성전자" });
+  const restored = lifecycle.commitAdd(readd.stock);
+  assert.notEqual(restored.color, removed.color);
+  assert.ok(publications.length >= 4);
+});
+
+
+test("custom stock lifecycle removes failed batches without recoloring survivors", () => {
+  const lifecycle = module.createCustomStockLifecycle({
+    initialStocks: [
+      { ticker: "005930.KS", name: "삼성전자", color: "#d41111" },
+      { ticker: "000660.KS", name: "SK하이닉스", color: "#2beeee" },
+    ],
+    assignColors: (stocks) => stocks,
+  });
+
+  const removed = lifecycle.removeMany(["000660.KS"], { rememberColor: false });
+  assert.deepEqual(removed.map((stock) => stock.ticker), ["000660.KS"]);
+  assert.equal(lifecycle.get()[0].color, "#d41111");
+});
+
+
 test("loads legacy auxiliary visibility and keeps AI disabled at boot", () => {
   const chartState = state();
   let customStocks = [];

@@ -136,7 +136,6 @@
       getAdrRows,
       getCreditRows,
       getCrisisRows,
-      getCustomStocks,
       getDisclosureRows,
       getInsiderTradeRows,
       getMacroRows,

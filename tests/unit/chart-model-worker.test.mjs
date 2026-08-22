@@ -101,6 +101,7 @@ test("chart worker merges raw price, macro, and credit sources", () => {
     Array.from(response.result.selected),
     ["AAA", "leading_cycle", "customer_deposit", "kospi_credit", "kosdaq_credit"],
   );
+  assert.ok(response.result.seriesModels.every((model) => model.baseLineWidth === 1));
 });
 
 test("chart worker applies credit offset only as a horizontal date shift", () => {

@@ -172,6 +172,28 @@ test("builds sampled line traces without reconnecting missing source values", ()
   assert.deepEqual(result.baseValuesBySeries["^KS11"], [100, 103]);
 });
 
+test("reuses prepared line data until a transformed value array changes", () => {
+  const model = {
+    series: "005930.KS",
+    xValues: ["2026-01-01", "2026-01-02"],
+    values: [100, 102],
+    rawTexts: ["100", "102"],
+    baseValues: [100, 102],
+    baseLineWidth: 1,
+  };
+  const seriesModels = [model];
+  const first = renderer.buildLineTraces({ seriesModels, hiddenSeries: new Set() });
+  const second = renderer.buildLineTraces({ seriesModels, hiddenSeries: new Set(["005930.KS"]) });
+
+  assert.equal(second.traces[0].y, first.traces[0].y);
+  assert.equal(second.traces[0].visible, "legendonly");
+
+  model.values = [100, 110];
+  const transformed = renderer.buildLineTraces({ seriesModels, hiddenSeries: new Set() });
+  assert.notEqual(transformed.traces[0].y, first.traces[0].y);
+  assert.deepEqual(transformed.traces[0].y, [100, 110]);
+});
+
 test("centralizes chart date bounds and long-range ticks", () => {
   assert.deepEqual(renderer.dateBounds([
     [{ date: "2001-01-02" }, { date: "2001-01-03" }],

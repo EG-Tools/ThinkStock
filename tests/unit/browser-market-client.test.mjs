@@ -7,6 +7,8 @@ import {
 } from "../../shared/market-calendar.mjs";
 
 await import("../../docs/modules/browser-market-client.js");
+await import("../../docs/modules/ticker-price-runtime.js");
+const tickerPriceRuntime = globalThis.ThinkStockTickerPriceRuntime;
 
 function createClient(fetchJson = async () => ({}), options = {}) {
   return globalThis.ThinkStockBrowserMarketClient.createBrowserMarketClient({
@@ -20,6 +22,8 @@ function createClient(fetchJson = async () => ({}), options = {}) {
     dayMs: 86400000,
     baseInfoEndpoints: { KOSPI: "stocks" },
     indexEndpoints: { KOSPI: "index" },
+    filterLatestTailPoints: tickerPriceRuntime.filterLatestTailPoints,
+    inspectHistoryIntegrity: tickerPriceRuntime.inspectPriceHistoryIntegrity,
     ...options,
   });
 }
@@ -108,6 +112,23 @@ test("keeps Yahoo history but gives the latest KRX close priority", async () => 
 
   assert.deepEqual(await client.fetchTickerHistorySeries("383220.KS"), [
     { date: "2026-08-03", close: 61800 },
+  ]);
+});
+
+test("does not insert a stale pre-split KRX row behind newer adjusted history", async () => {
+  const client = createClient(async () => ({}), {
+    fetchPreferredHistory: async () => [
+      { date: "2026-07-28", close: 21800, volume: 516832 },
+      { date: "2026-08-21", close: 27700, volume: 1595930 },
+    ],
+    fetchLatestPrice: async () => [
+      { date: "2026-08-20", close: 54400 },
+    ],
+  });
+
+  assert.deepEqual(await client.fetchTickerHistorySeries("183300.KQ"), [
+    { date: "2026-07-28", close: 21800, volume: 516832 },
+    { date: "2026-08-21", close: 27700, volume: 1595930 },
   ]);
 });
 

@@ -3,6 +3,15 @@
 
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "2.99",
+      date: "2026.08.21",
+      items: Object.freeze([
+        "종목탐구·메인 차트 신호 가격 기준 통합",
+        "액면분할·기업행동 최신 경계 자동 복구",
+        "기업행동 복구 실패 시 기존 차트 안전 유지",
+      ]),
+    }),
+    Object.freeze({
       version: "2.98",
       date: "2026.08.21",
       items: Object.freeze([

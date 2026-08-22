@@ -125,9 +125,165 @@
     };
   }
 
+  function createPanelController(scope = globalScope, options = {}) {
+    const document = options.document || scope.document;
+    const panel = options.panel || document?.getElementById?.("coMovementPanel");
+    const readState = options.readState;
+    if (!document || !panel || typeof readState !== "function") {
+      throw new Error("co-movement panel dependencies are incomplete");
+    }
+
+    const requestFrame = options.requestFrame
+      || scope.requestAnimationFrame?.bind(scope)
+      || ((callback) => scope.setTimeout(callback, 0));
+    const cancelFrame = options.cancelFrame
+      || scope.cancelAnimationFrame?.bind(scope)
+      || scope.clearTimeout?.bind(scope);
+    let frame = 0;
+    let lastCalculationKey = "";
+    let lastPresentationKey = "";
+    let cachedSummary = null;
+    const counters = { calculations: 0, renders: 0, skipped: 0 };
+
+    function hide() {
+      lastCalculationKey = "";
+      cachedSummary = null;
+      if (panel.hidden && !panel.childNodes?.length) return;
+      panel.hidden = true;
+      panel.replaceChildren();
+      lastPresentationKey = "";
+      counters.renders += 1;
+    }
+
+    function calculationModel(state) {
+      const range = Array.isArray(state.range) && state.range.length === 2
+        ? state.range.map(Number)
+        : null;
+      const requestedMonths = Number(state.requestedMonths) || 1;
+      let visibleRows = state.rows;
+      let effectiveMonths = requestedMonths;
+      if (range?.every(Number.isFinite)) {
+        visibleRows = sliceRowsByDateRange(state.rows, range);
+        const spanDays = Math.max(1, (range[1] - range[0]) / DAY_MS);
+        if (spanDays <= 45) {
+          const tradingDays = visibleRows.reduce((count, row) => (
+            finiteNumber(row?.[state.targetKey]) !== null ? count + 1 : count
+          ), 0);
+          effectiveMonths = Math.max(1, tradingDays) / MONTH_DAYS;
+        } else {
+          effectiveMonths = spanDays / MONTH_DAYS;
+        }
+      }
+      const comparisons = Array.isArray(state.comparisons) ? state.comparisons : [];
+      const key = [
+        String(state.revision || ""),
+        state.targetKey,
+        state.targetName,
+        range?.join(":") || "full",
+        requestedMonths,
+        comparisons.map((item) => `${item.key}:${item.label}`).join(","),
+      ].join("|");
+      return { comparisons, effectiveMonths, key, visibleRows };
+    }
+
+    function applySummary(summary) {
+      if (!summary) {
+        hide();
+        return null;
+      }
+      const presentationKey = JSON.stringify(summary);
+      if (presentationKey === lastPresentationKey && !panel.hidden) {
+        counters.skipped += 1;
+        return summary;
+      }
+
+      const title = document.createElement("strong");
+      title.className = "co-movement-title";
+      title.textContent = `${summary.targetName} ${summary.periodLabel}`;
+      const nodes = [title];
+      summary.comparisons.forEach((comparison) => {
+        const metric = document.createElement("span");
+        metric.className = "co-movement-metric";
+        metric.append(`${comparison.label} `);
+        const value = document.createElement("b");
+        value.textContent = Number.isFinite(comparison.rate) ? `${comparison.rate}%` : "--";
+        metric.append(value);
+        metric.title = comparison.samples
+          ? `${comparison.startDate}~${comparison.endDate}, ${comparison.samples}회 변화 비교`
+          : "비교 가능한 데이터가 부족합니다.";
+        nodes.push(metric);
+      });
+      panel.replaceChildren(...nodes);
+      panel.setAttribute("aria-label", nodes.map((node) => node.textContent).join(", "));
+      panel.hidden = false;
+      lastPresentationKey = presentationKey;
+      counters.renders += 1;
+      return summary;
+    }
+
+    function renderNow() {
+      frame = 0;
+      options.syncControl?.();
+      const state = readState() || {};
+      if (!state.enabled || !state.targetKey || !Array.isArray(state.rows) || !state.rows.length) {
+        hide();
+        return null;
+      }
+      const model = calculationModel(state);
+      if (model.key !== lastCalculationKey) {
+        cachedSummary = buildSummary({
+          rows: model.visibleRows,
+          targetKey: state.targetKey,
+          targetName: state.targetName,
+          requestedMonths: model.effectiveMonths,
+          comparisons: model.comparisons,
+        });
+        lastCalculationKey = model.key;
+        counters.calculations += 1;
+      } else {
+        counters.skipped += 1;
+      }
+      return applySummary(cachedSummary);
+    }
+
+    function request() {
+      if (frame) return false;
+      frame = requestFrame(renderNow);
+      return true;
+    }
+
+    function flush() {
+      if (frame) cancelFrame?.(frame);
+      frame = 0;
+      return renderNow();
+    }
+
+    function invalidate() {
+      lastCalculationKey = "";
+      lastPresentationKey = "";
+      cachedSummary = null;
+    }
+
+    function dispose() {
+      if (frame) cancelFrame?.(frame);
+      frame = 0;
+      invalidate();
+    }
+
+    return Object.freeze({
+      dispose,
+      flush,
+      invalidate,
+      renderNow,
+      request,
+      stats: () => Object.freeze({ ...counters, pending: Boolean(frame) }),
+    });
+  }
+
   globalScope.ThinkStockCoMovement = Object.freeze({
     buildSummary,
     calculateDirectionalAgreement,
+    createPanelController,
     effectivePeriodLabel,
     formatPeriod,
     sliceRowsByDateRange,

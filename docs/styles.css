@@ -2137,6 +2137,13 @@ body {
   border-top: 0;
 }
 
+.disclosure-event-caption {
+  display: block;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 11px;
+  line-height: 1.25;
+}
+
 .disclosure-type {
   width: fit-content;
   padding: 2px 7px;
@@ -2226,6 +2233,7 @@ body {
 .legend .legendlines { display: none !important; }
 .hoverlayer .legendpoints { display: none !important; }
 .no-hover-popup .hoverlayer > g { display: none !important; }
+.chart-frame.is-hover-waiting .hoverlayer > g { display: none !important; }
 .chart-frame.is-line-dragging .hoverlayer > g { display: none !important; }
 
 .message-area { margin-top: 12px; }

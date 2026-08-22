@@ -102,3 +102,43 @@ test("ticker disclosure cache centralizes validation, touch and pruning", async 
   assert.equal(restored.lastAccessed, 2000);
   assert.equal((await cache.read("000000.KS")), null);
 });
+
+test("disclosure state controller keeps memory, refresh state, and ticker cache consistent", async () => {
+  let rows = [];
+  let changed = 0;
+  const records = new Map();
+  const service = policy.createDisclosureDataService({
+    classifyType: () => "important",
+    shouldDisplay: () => true,
+    refreshStore: {
+      read: () => ({}),
+      write: () => {},
+    },
+  });
+  const cache = {
+    read: async (ticker) => records.get(ticker) || null,
+    write: async (ticker, tickerRows) => {
+      records.set(ticker, { rows: tickerRows, latestDate: tickerRows.at(-1)?.date || "" });
+      return true;
+    },
+  };
+  const controller = policy.createDisclosureStateController({
+    dataService: service,
+    getRows: () => rows,
+    setRows: (nextRows) => { rows = nextRows; },
+    getTickerCache: () => cache,
+    onChanged: () => { changed += 1; },
+  });
+  const row = { ticker: "005930.KS", date: "2026-08-21", title: "Material disclosure" };
+
+  assert.equal(controller.merge([row]).added, 1);
+  assert.equal(controller.merge([row]).changed, false);
+  assert.equal(changed, 1);
+  assert.equal(await controller.writeTicker("005930.KS"), true);
+  rows = [];
+  const restored = await controller.applyTickerCache("005930.KS");
+  assert.equal(restored.applied, true);
+  assert.equal(restored.added, 1);
+  assert.equal(restored.latestDate, "2026-08-21");
+  assert.equal(controller.rowsForTicker("005930.ks").length, 1);
+});

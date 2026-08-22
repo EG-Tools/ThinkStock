@@ -101,13 +101,14 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
     expect(rawPrimaryStyles.every((style) => style.probability === highestProbability)).toBe(true);
     const [rawPrimaryStyle] = rawPrimaryStyles;
     expect(rawPrimaryStyle.emphasized).toBe(true);
-    expect(rawPrimaryStyle.width).toBe(2.9);
-    expect(rawPrimaryStyle.color).toContain("248, 248, 248");
+    expect(rawPrimaryStyle.width).toBe(1);
+    expect(rawPrimaryStyle.color).toBe("#ffffff");
     const secondaryStyles = styles.filter((style) => !style.rawPrimary);
     expect(secondaryStyles.every((style) => !style.emphasized)).toBe(true);
     expect(new Set(secondaryStyles.map((style) => style.width)).size).toBe(1);
     expect(new Set(secondaryStyles.map((style) => style.color)).size).toBe(1);
-    expect(secondaryStyles.every((style) => style.width < rawPrimaryStyle.width)).toBe(true);
+    expect(secondaryStyles.every((style) => style.width === rawPrimaryStyle.width)).toBe(true);
+    expect(secondaryStyles.every((style) => style.color === "#777777")).toBe(true);
     const primaryStyles = styles.filter((style) => style.primary);
     expect(primaryStyles.length).toBe(1);
     const [primaryStyle] = primaryStyles;
@@ -118,44 +119,71 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
     }
   });
   await page.waitForTimeout(250);
-  const thickLinePoint = await page.locator("#chart").evaluate((element) => {
-    const traces = (element.data || []).filter((trace) => trace?.meta?.isAiForecastScenarioTrace);
-    const thickestWidth = Math.max(...traces.map((trace) => Number(trace.line?.width) || 0));
-    const thick = traces.find((trace) => Number(trace.line?.width) === thickestWidth);
-    thick.meta.representativeReport = {
-      sourceUrl: "https://stock.pstatic.net/stock-research/company/57/20260723_company_184323000.pdf",
-      title: "RFHIC (218410) 참고 리포트",
-      publishedDate: "2026-07-23",
-      broker: "하나증권",
-    };
+  const reportMarkerPoint = await page.locator("#chart").evaluate(async (element) => {
+    const scenario = (element.data || []).find((trace) => (
+      trace?.meta?.isAiForecastScenarioTrace && trace?.meta?.isEmphasizedAiScenario
+    ));
+    const markerIndex = Math.round(((scenario?.x?.length || 1) - 1) * 0.5);
+    const reports = [
+      {
+        publishedDate: "2026-08-22",
+        broker: "현대차증권",
+        title: "가장 최신인 첫 번째 참고 리포트 제목은 화면 폭보다 아주 길게 작성되었습니다",
+        sourceUrl: "https://consensus.hankyung.com/analysis/downpdf?report_idx=31",
+      },
+      {
+        publishedDate: "2026-08-20",
+        broker: "미래에셋증권",
+        title: "두 번째 참고 리포트",
+        sourceUrl: "https://consensus.hankyung.com/analysis/downpdf?report_idx=30",
+      },
+      {
+        publishedDate: "2026-08-19",
+        broker: "키움증권",
+        title: "세 번째 참고 리포트",
+        sourceUrl: "https://consensus.hankyung.com/analysis/downpdf?report_idx=29",
+      },
+    ];
+    await globalThis.Plotly.addTraces(element, {
+      x: [scenario.x[markerIndex]],
+      y: [scenario.y[markerIndex]],
+      type: "scatter",
+      mode: "markers+text",
+      marker: { symbol: "circle", size: 20 },
+      text: ["R"],
+      meta: {
+        seriesKey: scenario.meta.seriesKey,
+        isAiReportMarkerTrace: true,
+        reports,
+      },
+    });
+    const marker = (element.data || []).find((trace) => trace?.meta?.isAiReportMarkerTrace);
     const xaxis = element?._fullLayout?.xaxis;
     const yaxis = element?._fullLayout?.yaxis;
     const rect = element.getBoundingClientRect();
-    for (let index = Math.floor((thick.x?.length || 0) * 0.7); index > 0; index -= 1) {
-      const x = rect.left + Number(xaxis?._offset || 0) + Number(xaxis?.d2p?.(thick.x[index]));
-      const y = rect.top + Number(yaxis?._offset || 0) + Number(yaxis?.d2p?.(thick.y[index]));
-      if (Number.isFinite(x) && Number.isFinite(y)
-        && x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) return { x, y };
-    }
-    return null;
+    const x = rect.left + Number(xaxis?._offset || 0) + Number(xaxis?.d2p?.(marker?.x?.[0]));
+    const y = rect.top + Number(yaxis?._offset || 0) + Number(yaxis?.d2p?.(marker?.y?.[0]));
+    return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
   });
-  expect(thickLinePoint).not.toBeNull();
-  if (isMobile) await page.touchscreen.tap(thickLinePoint.x, thickLinePoint.y);
-  else await page.mouse.click(thickLinePoint.x, thickLinePoint.y);
+  expect(reportMarkerPoint).not.toBeNull();
+  if (isMobile) await page.touchscreen.tap(reportMarkerPoint.x, reportMarkerPoint.y);
+  else await page.mouse.click(reportMarkerPoint.x, reportMarkerPoint.y);
   await expect(page.locator("#chart .disclosure-popover")).toBeVisible();
-  await expect(page.locator("#chart .disclosure-title-link")).toHaveCount(1);
-  await expect(page.locator("#chart .disclosure-title-link")).toHaveAttribute(
+  await expect(page.locator("#chart .disclosure-title-link")).toHaveCount(3);
+  await expect(page.locator("#chart .disclosure-title-link").first()).toHaveAttribute(
     "href",
-    "https://stock.pstatic.net/stock-research/company/57/20260723_company_184323000.pdf",
+    "https://consensus.hankyung.com/analysis/downpdf?report_idx=31",
   );
-  await expect(page.locator("#chart .disclosure-popover")).toContainText("2026-07-23");
-  await expect(page.locator("#chart .disclosure-popover")).not.toContainText("218410");
+  await expect(page.locator("#chart .disclosure-popover")).toContainText("26.08.22");
+  await expect(page.locator("#chart .disclosure-popover")).toContainText("현대차증권");
+  await expect(page.locator("#chart .disclosure-popover")).toContainText("26.08.20");
+  await expect(page.locator("#chart .disclosure-title-link").first()).toContainText("...");
   await page.locator("#chart .disclosure-popover").getByRole("button", { name: "공시 닫기" }).click();
-  await page.mouse.move(thickLinePoint.x, thickLinePoint.y);
+  await page.mouse.move(reportMarkerPoint.x, reportMarkerPoint.y);
   await expect(page.locator("#chart")).toHaveClass(/is-ai-report-hovering/);
   await expect.poll(() => page.locator("#chart").evaluate((element) => getComputedStyle(element).cursor))
     .toBe("pointer");
-  await page.mouse.click(thickLinePoint.x, thickLinePoint.y);
+  await page.mouse.click(reportMarkerPoint.x, reportMarkerPoint.y);
   await expect(page.locator("#chart .disclosure-popover")).toBeVisible();
   await page.locator("#chart .disclosure-popover").getByRole("button", { name: "공시 닫기" }).click();
   const horizonPoints = await page.locator("#chart").evaluate((element) => (

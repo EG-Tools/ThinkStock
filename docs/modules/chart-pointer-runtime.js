@@ -1,10 +1,69 @@
 (function initThinkStockChartPointerRuntime(globalScope) {
   "use strict";
 
+  function createHoverIdleController(scope = globalScope, options = {}) {
+    const delayMs = Math.max(0, Number(options.delayMs) || 0);
+    const waitingClass = String(options.waitingClass || "is-hover-waiting");
+    const setTimer = scope.setTimeout.bind(scope);
+    const clearTimer = scope.clearTimeout.bind(scope);
+    let timer = 0;
+    let pendingSample = null;
+    let waiting = false;
+
+    const elements = () => (options.getElements?.() || []).filter(Boolean);
+    const setWaiting = (value) => {
+      waiting = Boolean(value);
+      elements().forEach((element) => element.classList?.toggle(waitingClass, waiting));
+    };
+
+    function cancel() {
+      if (timer) clearTimer(timer);
+      timer = 0;
+      pendingSample = null;
+      setWaiting(false);
+    }
+
+    function schedule(sample) {
+      pendingSample = sample;
+      if (!waiting) {
+        setWaiting(true);
+        options.onWaitStart?.();
+      }
+      if (timer) clearTimer(timer);
+      timer = setTimer(() => {
+        timer = 0;
+        const latest = pendingSample;
+        pendingSample = null;
+        setWaiting(false);
+        if (latest) options.onIdle?.(latest);
+      }, delayMs);
+    }
+
+    return Object.freeze({ cancel, schedule, isWaiting: () => waiting });
+  }
+
+  function dispatchNativeHoverAtPoint(scope, sourceEl, clientX, clientY) {
+    if (!sourceEl || typeof scope.MouseEvent !== "function") return false;
+    const pointedElement = scope.document?.elementFromPoint?.(clientX, clientY);
+    const target = pointedElement && sourceEl.contains?.(pointedElement)
+      ? pointedElement
+      : sourceEl.querySelector?.(".nsewdrag, .drag");
+    if (!target?.dispatchEvent) return false;
+    target.dispatchEvent(new scope.MouseEvent("mousemove", {
+      bubbles: true,
+      cancelable: true,
+      clientX,
+      clientY,
+      view: scope,
+    }));
+    return true;
+  }
+
   function createChartPointerRuntime(scope = globalScope, options = {}) {
     const {
       CHART_GEOMETRY_CACHE_MS,
       DAY_MS,
+      HOVER_IDLE_DELAY_MS,
       LINE_HIT_TEST_INTERVAL_MS,
       MIN_CHART_VIEW_SPAN_MS,
       applyChartResetPolicy,
@@ -72,6 +131,16 @@
       if (!mainEl || !adrEl) return;
       getChartCursorSyncController().prepare([mainEl, macdEl, adrEl]);
       if (cursorMoveBound && chartInteractionsBound) return;
+
+      const hoverIdleController = createHoverIdleController(window, {
+        delayMs: HOVER_IDLE_DELAY_MS,
+        getElements: () => [mainEl, macdEl, adrEl],
+        onIdle: ({ sourceEl, clientX, clientY }) => {
+          if (!chartSession.hoverShowPopup || interactionState.handleDragging
+            || interactionState.viewportDragging || interactionState.wheelZooming) return;
+          dispatchNativeHoverAtPoint(window, sourceEl, clientX, clientY);
+        },
+      });
     
       let touchStartPoint = null;
       let dragState = null;
@@ -175,6 +244,7 @@
       const onLeave = (event) => {
         if (interactionState.handleDragging || interactionState.viewportDragging) return;
         if (event?.pointerType === "touch" && touchSelectionPinned) return;
+        hoverIdleController.cancel();
         pointerMoveController.cancel();
         setHoveredLineTarget(null);
         mainEl.classList.remove("is-disclosure-hovering", "is-ai-report-hovering");
@@ -243,6 +313,7 @@
           moved: false,
         };
         interactionState.viewportDragging = true;
+        hoverIdleController.cancel();
         touchSelectionPinned = false;
         sourceEl.classList.add("is-viewport-panning");
         pointerMoveController?.cancel();
@@ -274,6 +345,13 @@
         const sample = latestPointerSample(upEvent);
         previewSyncedCursor(st.sourceEl, sample.clientX, sample.clientY);
         schedulePointerMove(st.sourceEl, sample.clientX, sample.clientY, false);
+        if (!cancelled && upEvent.pointerType === "mouse" && chartSession.hoverShowPopup) {
+          hoverIdleController.schedule({
+            sourceEl: st.sourceEl,
+            clientX: sample.clientX,
+            clientY: sample.clientY,
+          });
+        }
         if (cancelled || !st.moved) {
           getChartRangeSyncController().cancel?.();
           return;
@@ -317,6 +395,7 @@
           anchorRatio,
         };
         interactionState.viewportDragging = true;
+        hoverIdleController.cancel();
         touchSelectionPinned = false;
         touchStartPoint = null;
         lastTouchTapAt = 0;
@@ -429,6 +508,7 @@
         if (event.ctrlKey || !Number.isFinite(event.deltaY) || event.deltaY === 0) return;
         event.preventDefault();
         if (interactionState.handleDragging || interactionState.viewportDragging) return;
+        hoverIdleController.cancel();
         interactionState.wheelZooming = true;
         const sourceEl = event.currentTarget;
         const geometry = getChartInteractionGeometry(sourceEl);
@@ -482,6 +562,7 @@
         if (event.target instanceof Element
           && event.target.closest(".disclosure-popover, .legend, .modebar-container")) return;
         const sourceEl = event.currentTarget;
+        hoverIdleController.cancel();
         const xa = sourceEl?._fullLayout?.xaxis;
         if (!xa) return;
         const isTouch = event.pointerType === "touch";
@@ -611,6 +692,26 @@
           event.currentTarget === mainEl,
         );
       };
+
+      const onPointerHoverPreview = (event) => {
+        if (event.pointerType !== "mouse" || !event.isPrimary || !chartSession.hoverShowPopup
+          || interactionState.handleDragging || interactionState.viewportDragging
+          || interactionState.wheelZooming) {
+          hoverIdleController.cancel();
+          return;
+        }
+        if (event.target instanceof Element
+          && event.target.closest(".disclosure-popover, .legend, .modebar-container")) {
+          hoverIdleController.cancel();
+          return;
+        }
+        const sample = latestPointerSample(event);
+        hoverIdleController.schedule({
+          sourceEl: event.currentTarget,
+          clientX: sample.clientX,
+          clientY: sample.clientY,
+        });
+      };
     
       const onPointerEnd = (event) => {
         if (event.pointerType === "touch") {
@@ -658,6 +759,7 @@
       };
     
       [mainEl, macdEl, adrEl].filter(Boolean).forEach((chartEl) => {
+        chartEl.addEventListener("pointermove", onPointerHoverPreview, { passive: true, capture: true });
         chartEl.addEventListener("pointerdown", onPointerDown, { passive: false, capture: true });
         chartEl.addEventListener("pointermove", onPointerMove, { passive: false });
         chartEl.addEventListener("pointerleave", onLeave);
@@ -680,6 +782,8 @@
   }
 
   globalScope.ThinkStockChartPointerRuntime = Object.freeze({
+    createHoverIdleController,
     createChartPointerRuntime,
+    dispatchNativeHoverAtPoint,
   });
 }(typeof self !== "undefined" ? self : globalThis));

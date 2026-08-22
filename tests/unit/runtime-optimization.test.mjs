@@ -40,6 +40,74 @@ test("DART request runtime exposes pending identities by request kind", async ()
   await request;
 });
 
+test("DART event lifecycle scopes work to visible stocks and coalesces insider refresh", async () => {
+  const disclosureCalls = [];
+  const insiderCalls = [];
+  const pendingCounts = [];
+  const timers = new Map();
+  let timerId = 0;
+  const lifecycle = globalThis.ThinkStockDartRequestRuntime.createDartEventLifecycle({}, {
+    tickerPattern: /^[0-9]{6}\.(KS|KQ)$/,
+    getStocks: () => [
+      { ticker: "005930.KS" },
+      { ticker: "000660.KS" },
+      { ticker: "005930.KS" },
+      { ticker: "invalid" },
+    ],
+    isHidden: (ticker) => ticker === "000660.KS",
+    isInsiderEnabled: () => true,
+    canUseGateway: () => true,
+    hasRequest: () => false,
+    concurrency: 2,
+    mapWithConcurrency: async (items, _limit, mapper) => Promise.all(items.map(mapper)),
+    requestDisclosure: async (ticker) => { disclosureCalls.push(ticker); return []; },
+    requestInsider: async (ticker) => { insiderCalls.push(ticker); return [{ ticker }]; },
+    onPendingChange: (count) => pendingCounts.push(count),
+    setTimer: (callback) => { timerId += 1; timers.set(timerId, callback); return timerId; },
+    clearTimer: (id) => timers.delete(id),
+  });
+
+  assert.deepEqual(lifecycle.targetTickers(), ["005930.KS", "000660.KS"]);
+  assert.deepEqual(lifecycle.targetTickers({ visible: true }), ["005930.KS"]);
+  await lifecycle.prepareVisibleDisclosures(null);
+  assert.deepEqual(disclosureCalls, ["005930.KS"]);
+  lifecycle.setInsiderPending("005930.KS", true);
+  lifecycle.setInsiderPending("005930.KS", false);
+  assert.deepEqual(pendingCounts, [1, 0]);
+  assert.equal(lifecycle.scheduleInsiderRefresh(), true);
+  assert.equal(lifecycle.scheduleInsiderRefresh(), false);
+  await timers.get(1)();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(insiderCalls, ["005930.KS"]);
+  lifecycle.markInsiderLoaded("005930.KS");
+  assert.equal(lifecycle.isInsiderLoaded("005930.KS"), true);
+  assert.equal(lifecycle.scheduleInsiderRefresh(), false);
+  assert.deepEqual(lifecycle.snapshot().visibleTickers, ["005930.KS"]);
+});
+
+test("progressive DART records merge pages and expose stable progress", async () => {
+  const pages = [];
+  const progress = [];
+  const rows = await globalThis.ThinkStockDartRequestRuntime.fetchProgressiveRecords({
+    since: "2026-08-01",
+    fetchPage: async ({ page, since }) => {
+      pages.push([page, since]);
+      return page === 1
+        ? { records: [{ id: 1 }], page: 1, totalPages: 2, nextPage: 2, checkedFrom: "2026-08-10" }
+        : { records: [{ id: 2 }], page: 2, totalPages: 2, nextPage: null, complete: true };
+    },
+    normalizeRecords: (records) => records,
+    mergeRecords: (existing, incoming) => [...existing, ...incoming],
+    onBatch: (_batch, state) => progress.push(state),
+  });
+
+  assert.deepEqual(pages, [[1, "2026-08-01"], [2, "2026-08-10"]]);
+  assert.deepEqual(rows, [{ id: 1 }, { id: 2 }]);
+  assert.equal(progress[0].complete, false);
+  assert.equal(progress[1].complete, true);
+  assert.equal(progress[1].accumulatedCount, 2);
+});
+
 test("AI input cache reuses projections and evicts the oldest entry", () => {
   const cache = globalThis.ThinkStockAiForecastInputCache.createAiForecastInputCache({ maxEntries: 2 });
   let builds = 0;

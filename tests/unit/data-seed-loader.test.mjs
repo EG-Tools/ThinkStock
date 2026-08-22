@@ -119,3 +119,44 @@ test("falls back to synchronous parsing when a worker response fails", async () 
   assert.deepEqual(await parser.parse({ value: 7 }), { recovered: 7 });
   parser.dispose();
 });
+
+
+test("bundle loader fetches one coherent segment and parses it once", async () => {
+  const calls = [];
+  const loader = loaderModule.createSeedBundleLoader({
+    seedLoader: {
+      fetchSegmentedSeedText: async (path, segment, forceNetwork) => {
+        calls.push(["segment", path, segment, forceNetwork]);
+        return { text: `${path}:${segment}`, usedFullFallback: false };
+      },
+      fetchSeedText: async (path, forceNetwork) => {
+        calls.push(["seed", path, forceNetwork]);
+        return path;
+      },
+    },
+    parser: {
+      parse: async (texts) => ({ keys: Object.keys(texts).sort() }),
+    },
+  });
+
+  const result = await loader.load({
+    segment: "history",
+    forceNetwork: true,
+    includeDisclosures: false,
+  });
+  assert.equal(result.segment, "history");
+  assert.equal(result.allCoreSeedsLoaded, true);
+  assert.equal(result.allUsedFullFallback, false);
+  assert.equal(calls.filter(([kind]) => kind === "segment").length, 4);
+  assert.deepEqual(calls.filter(([kind]) => kind === "seed"), [
+    ["seed", "./data/vkospi_data.json", true],
+  ]);
+  assert.deepEqual(result.parsed.keys, [
+    "adrText",
+    "creditText",
+    "disclosureText",
+    "macroText",
+    "priceText",
+    "vkospiText",
+  ]);
+});

@@ -24,7 +24,7 @@ test("proxies a bounded broker-report list without exposing a source credential"
   };
   try {
     const response = await handleRequest(
-      workerRequest("/api/broker-reports?ticker=035900.KQ&days=90&asOf=2026-08-15"),
+      workerRequest("/api/broker-reports?ticker=035900.KQ&name=JYP%20Ent.&days=90&asOf=2026-08-15"),
       { THINKSTOCK_ACCESS_TOKEN: "private" },
     );
     const payload = await response.json();
@@ -52,6 +52,8 @@ test("returns a verified bounded PDF through the authenticated gateway", async (
     );
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("Content-Type"), "application/pdf");
+    assert.match(response.headers.get("Content-Disposition"), /^inline;/);
+    assert.equal(response.headers.get("Cache-Control"), "private, no-store");
     assert.equal(new TextDecoder().decode(await response.arrayBuffer()), "%PDF-test-report");
   } finally {
     globalThis.fetch = originalFetch;

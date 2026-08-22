@@ -8,7 +8,7 @@
     throw new Error("broker research contracts failed to load");
   }
 
-  const CACHE_SCHEMA = 7;
+  const CACHE_SCHEMA = 9;
   const MAX_PDF_BYTES = 12 * 1024 * 1024;
   const MAX_PDF_PAGES = 12;
   const MAX_REPORTS_PER_TICKER = 40;
@@ -398,12 +398,17 @@
     const getAsOfDate = typeof options.getAsOfDate === "function"
       ? options.getAsOfDate
       : () => normalizedDate(new Date().toISOString());
+    const getTickerName = typeof options.getTickerName === "function"
+      ? options.getTickerName
+      : () => "";
 
     async function fetchList(ticker, days, source = "hankyung") {
       const url = new URL(listEndpoint, baseUrl);
       url.searchParams.set("ticker", normalizeTicker(ticker));
       url.searchParams.set("days", String(Math.max(1, Math.round(Number(days) || 90))));
       url.searchParams.set("asOf", normalizedDate(getAsOfDate()));
+      const name = String(getTickerName(normalizeTicker(ticker)) || "").trim();
+      if (name) url.searchParams.set("name", name);
       if (source === "naver") url.searchParams.set("source", "naver");
       const response = await fetchWithTimeout(url.toString(), {
         cache: "no-store",
@@ -566,22 +571,23 @@
           }));
           return reference;
         };
-        const referenceReport = publishReferenceReport(selected);
+        publishReferenceReport(selected);
         let complete = listErrors.length === 0;
         if (referenceOnly) {
-          const reference = referenceReport
-            ? Object.freeze({
-              reportId: referenceReport.id,
-              publishedDate: referenceReport.publishedDate,
-              availableDate: referenceReport.availableDate,
-              broker: referenceReport.broker,
-              title: referenceReport.title,
-              sourceUrl: referenceReport.sourceUrl,
-              signal: null,
-              confidence: 0,
-              quantitative: false,
-            })
-            : null;
+          const references = Object.freeze(selected.map((report) => Object.freeze({
+            reportId: report.id,
+            source: report.source,
+            sourceReportId: report.sourceReportId,
+            publishedDate: report.publishedDate,
+            availableDate: report.availableDate,
+            broker: report.broker,
+            title: report.title,
+            sourceUrl: report.sourceUrl,
+            signal: null,
+            confidence: 0,
+            quantitative: false,
+          })));
+          const reference = references[0] || null;
           const savedAt = nowMs;
           const summary = reference
             ? Object.freeze({
@@ -598,7 +604,7 @@
               primaryCoverage: 0,
               primaryConflict: false,
               targetRevisionChange: null,
-              representativeReports: Object.freeze({ reference }),
+              representativeReports: Object.freeze({ reference, references }),
             })
             : null;
           const record = {

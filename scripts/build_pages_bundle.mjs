@@ -1,4 +1,5 @@
-import { mkdir, rename, rm, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -6,6 +7,7 @@ import { build } from "esbuild";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outputDir = path.join(root, "docs", "assets");
+const indexFile = path.join(root, "docs", "index.html");
 const outputFile = path.join(outputDir, "app.bundle.min.js");
 const temporaryOutputFile = path.join(outputDir, "app.bundle.next.js");
 const e2eOutputDir = path.join(root, ".thinkstock-cache", "e2e");
@@ -86,6 +88,21 @@ async function buildFeatureBundle(definition) {
   }
 }
 
+async function stampLocalBundleFingerprint() {
+  const bundle = await readFile(outputFile);
+  const fingerprint = createHash("sha256").update(bundle).digest("hex").slice(0, 12);
+  const html = await readFile(indexFile, "utf8");
+  const nextHtml = html.replace(
+    /(<script defer src="\.\/assets\/app\.bundle\.min\.js\?v=dev(?:&amp;build=[^"&]+)?)(?:&amp;asset=[^"]+)?("><\/script>)/,
+    `$1&amp;asset=${fingerprint}$2`,
+  );
+  if (nextHtml === html && !html.includes(`asset=${fingerprint}`)) {
+    throw new Error("Local app bundle fingerprint could not be stamped");
+  }
+  await writeFile(indexFile, nextHtml, "utf8");
+  return fingerprint;
+}
+
 try {
   await buildBundle(temporaryOutputFile, false);
 
@@ -97,6 +114,8 @@ try {
   // server or browser still has the previous bundle mapped for reading.
   await rename(temporaryOutputFile, outputFile);
   console.log(`Built ${path.relative(root, outputFile)} (${outputStats.size} bytes)`);
+  const localFingerprint = await stampLocalBundleFingerprint();
+  console.log(`Stamped local bundle fingerprint ${localFingerprint}`);
 
   await buildBundle(e2eTemporaryOutputFile, true);
   const e2eOutputStats = await stat(e2eTemporaryOutputFile);

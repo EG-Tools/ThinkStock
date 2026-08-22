@@ -20,14 +20,43 @@
     );
   }
 
+  function colorHue(value) {
+    const color = normalizeHexColor(value);
+    if (!color) return null;
+    const channels = [1, 3, 5].map((offset) => Number.parseInt(color.slice(offset, offset + 2), 16) / 255);
+    const [red, green, blue] = channels;
+    const maximum = Math.max(...channels);
+    const minimum = Math.min(...channels);
+    const delta = maximum - minimum;
+    if (delta < 0.04) return null;
+    let sector = 0;
+    if (maximum === red) sector = ((green - blue) / delta) % 6;
+    else if (maximum === green) sector = ((blue - red) / delta) + 2;
+    else sector = ((red - green) / delta) + 4;
+    return ((sector * 60) + 360) % 360;
+  }
+
+  function hueDistance(first, second) {
+    const left = colorHue(first);
+    const right = colorHue(second);
+    if (!Number.isFinite(left) || !Number.isFinite(right)) return 180;
+    const distance = Math.abs(left - right);
+    return Math.min(distance, 360 - distance);
+  }
+
   function assignCustomStockColors(rawStocks, options = {}) {
     if (!Array.isArray(rawStocks)) return [];
     const reserved = [...new Set((options.reservedColors || []).map(normalizeHexColor).filter(Boolean))];
     const minimumDistance = Math.max(0, Number(options.minimumDistance) || 0);
+    const minimumHueDistance = Math.max(0, Number(options.minimumHueDistance) || 0);
+    const isSafeFromReserved = (color) => reserved.every((fixedColor) => (
+      colorDistance(color, fixedColor) >= minimumDistance
+      && hueDistance(color, fixedColor) >= minimumHueDistance
+    ));
     const palette = [...new Set((options.palette || []).map(normalizeHexColor).filter(Boolean))]
       .filter((color) => (
         !reserved.includes(color)
-        && reserved.every((fixedColor) => colorDistance(color, fixedColor) >= minimumDistance)
+        && isSafeFromReserved(color)
       ));
     if (!palette.length) return rawStocks.map((stock) => ({ ...stock }));
 
@@ -43,7 +72,7 @@
       const existingIsSafe = existing
         && !used.has(existing)
         && !reserved.includes(existing)
-        && reserved.every((fixedColor) => colorDistance(existing, fixedColor) >= minimumDistance);
+        && isSafeFromReserved(existing);
       if (existingIsSafe) {
         used.add(existing);
         return { ...stock, color: existing };
@@ -76,6 +105,114 @@
       output.push({ ticker, name, code, market, ...(color ? { color } : {}) });
     });
     return output.slice(0, Math.max(1, Number(maxStocks) || 20));
+  }
+
+  function createCustomStockLifecycle(options = {}) {
+    const maxStocks = Math.max(1, Number(options.maxStocks) || 20);
+    const maxRemovedColors = Math.max(1, Number(options.maxRemovedColors) || 100);
+    const assignColors = typeof options.assignColors === "function"
+      ? options.assignColors
+      : (stocks) => stocks.map((stock) => ({ ...stock }));
+    const onChange = typeof options.onChange === "function" ? options.onChange : () => {};
+    const loading = new Set();
+    const removedColors = new Map();
+    let stocks = [];
+
+    function publish(nextStocks, publishOptions = {}) {
+      const sanitized = sanitizeCustomStocks(nextStocks, maxStocks);
+      stocks = publishOptions.colorize === false
+        ? sanitized
+        : sanitizeCustomStocks(assignColors(sanitized, { removedColors }), maxStocks);
+      onChange(stocks.map((stock) => ({ ...stock })));
+      return stocks;
+    }
+
+    function normalizeCandidate(candidate) {
+      return sanitizeCustomStocks([candidate], 1)[0] || null;
+    }
+
+    function beginAdd(candidate) {
+      const normalized = normalizeCandidate(candidate);
+      if (!normalized) return { ok: false, reason: "invalid", stock: null };
+      if (stocks.some((stock) => stock.ticker === normalized.ticker)) {
+        return { ok: false, reason: "duplicate", stock: normalized };
+      }
+      if (stocks.length >= maxStocks) return { ok: false, reason: "limit", stock: normalized };
+      if (loading.has(normalized.ticker)) return { ok: false, reason: "loading", stock: normalized };
+      loading.add(normalized.ticker);
+      return { ok: true, reason: "", stock: normalized };
+    }
+
+    function commitAdd(candidate) {
+      const normalized = normalizeCandidate(candidate);
+      if (!normalized || !loading.has(normalized.ticker)) return null;
+      if (stocks.some((stock) => stock.ticker === normalized.ticker) || stocks.length >= maxStocks) {
+        loading.delete(normalized.ticker);
+        return null;
+      }
+      publish([...stocks, normalized]);
+      return stocks.find((stock) => stock.ticker === normalized.ticker) || null;
+    }
+
+    function finishAdd(ticker) {
+      loading.delete(String(ticker || "").trim().toUpperCase());
+    }
+
+    function rememberRemovedColor(stock) {
+      const ticker = String(stock?.ticker || "").trim().toUpperCase();
+      const color = normalizeHexColor(stock?.color);
+      if (!ticker || !color) return;
+      removedColors.delete(ticker);
+      removedColors.set(ticker, color);
+      while (removedColors.size > maxRemovedColors) {
+        removedColors.delete(removedColors.keys().next().value);
+      }
+    }
+
+    function remove(ticker, removeOptions = {}) {
+      const target = String(ticker || "").trim().toUpperCase();
+      const removed = stocks.find((stock) => stock.ticker === target) || null;
+      if (!removed) return null;
+      if (removeOptions.rememberColor !== false) rememberRemovedColor(removed);
+      loading.delete(target);
+      publish(stocks.filter((stock) => stock.ticker !== target), { colorize: false });
+      return removed;
+    }
+
+    function removeMany(tickers, removeOptions = {}) {
+      const targets = new Set((tickers || []).map((ticker) => String(ticker || "").trim().toUpperCase()));
+      if (!targets.size) return [];
+      const removed = stocks.filter((stock) => targets.has(stock.ticker));
+      if (!removed.length) return [];
+      if (removeOptions.rememberColor !== false) removed.forEach(rememberRemovedColor);
+      targets.forEach((ticker) => loading.delete(ticker));
+      publish(stocks.filter((stock) => !targets.has(stock.ticker)), { colorize: false });
+      return removed;
+    }
+
+    function select(scope = "all", isHidden = () => false) {
+      const mode = ["visible", "hidden"].includes(scope) ? scope : "all";
+      return stocks.filter((stock) => {
+        const hidden = Boolean(isHidden(stock.ticker));
+        return mode === "all" || (mode === "visible" ? !hidden : hidden);
+      });
+    }
+
+    publish(options.initialStocks || []);
+    return Object.freeze({
+      beginAdd,
+      commitAdd,
+      find: (ticker) => stocks.find((stock) => stock.ticker === String(ticker || "").trim().toUpperCase()) || null,
+      finishAdd,
+      get: () => stocks,
+      has: (ticker) => stocks.some((stock) => stock.ticker === String(ticker || "").trim().toUpperCase()),
+      isLoading: (ticker) => loading.has(String(ticker || "").trim().toUpperCase()),
+      loadingCount: () => loading.size,
+      remove,
+      removeMany,
+      replace: (nextStocks) => publish(nextStocks),
+      select,
+    });
   }
 
   function migrateAuxiliaryVisibility(state, persisted, config) {
@@ -210,6 +347,7 @@
     assignCustomStockColors,
     colorDistance,
     createAppStateController,
+    createCustomStockLifecycle,
     migrateAuxiliaryVisibility,
     normalizeHexColor,
     sanitizeCustomStocks,

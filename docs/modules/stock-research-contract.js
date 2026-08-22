@@ -2,7 +2,7 @@
   "use strict";
 
   const contract = Object.freeze({
-    CALCULATION_VERSION: "adaptive1000-recovery-v9",
+    CALCULATION_VERSION: "adaptive1000-recovery-v11",
     CACHE_FORMAT_SCHEMA: 1,
     HISTORY_CACHE_SCHEMA: 1,
     CACHE_KEY: "thinkstock-stock-research-v1",

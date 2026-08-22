@@ -5,14 +5,17 @@ import test from "node:test";
 import vm from "node:vm";
 
 
+const sharedSource = await readFile(path.resolve("docs/modules/shared-request-registry.js"), "utf8");
 const source = await readFile(path.resolve("docs/modules/runtime-refresh-orchestrator.js"), "utf8");
 const context = {};
+vm.runInNewContext(sharedSource, context);
 vm.runInNewContext(source, context);
 const {
   isRetryableRuntimeError,
   retryOnce,
   retryRuntimeSource,
   retryWithDelays,
+  runTaskFactoriesWithConcurrency,
   runRefreshPhases,
   waitForDelay,
 } = context.ThinkStockRuntimeRefresh;
@@ -63,6 +66,47 @@ test("does not run supplemental completion when critical work fails", async () =
     onSupplemental: () => { supplementalCompleted = true; },
   }), /critical failed/);
   assert.equal(supplementalCompleted, false);
+});
+
+test("startup can wait for critical rendering and bounds supplemental concurrency", async () => {
+  const critical = deferred();
+  const first = deferred();
+  const second = deferred();
+  const events = [];
+  const task = runRefreshPhases({
+    startSupplementalAfterCritical: true,
+    supplementalConcurrency: 1,
+    criticalTasks: [() => { events.push("critical-start"); return critical.promise; }],
+    supplementalTasks: [
+      () => { events.push("supplemental-1"); return first.promise; },
+      () => { events.push("supplemental-2"); return second.promise; },
+    ],
+    onCritical: () => events.push("critical-ready"),
+  });
+
+  await Promise.resolve();
+  assert.deepEqual(events, ["critical-start"]);
+  critical.resolve("critical");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(events, ["critical-start", "critical-ready", "supplemental-1"]);
+  first.resolve("first");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(events, ["critical-start", "critical-ready", "supplemental-1", "supplemental-2"]);
+  second.resolve("second");
+  await task;
+});
+
+test("bounded task execution preserves result order", async () => {
+  const active = { count: 0, maximum: 0 };
+  const results = await runTaskFactoriesWithConcurrency([0, 1, 2, 3].map((value) => async () => {
+    active.count += 1;
+    active.maximum = Math.max(active.maximum, active.count);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    active.count -= 1;
+    return value;
+  }), 2);
+  assert.deepEqual(Array.from(results), [0, 1, 2, 3]);
+  assert.equal(active.maximum, 2);
 });
 
 

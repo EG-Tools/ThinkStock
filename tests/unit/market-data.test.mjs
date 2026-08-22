@@ -76,6 +76,34 @@ test("detects overlap and boundary price rebases", () => {
   assert.equal(stable, null);
 });
 
+test("detects a corporate-action boundary after a long trading suspension", () => {
+  const signal = marketData.findTickerPriceRebaseSignal(
+    [{ date: "2026-07-28", close: 109000, volume: 100 }],
+    [{ date: "2026-08-21", close: 27700, volume: 120 }],
+    { boundaryDays: 3660 },
+  );
+
+  assert.equal(signal?.type, "boundary");
+  assert.equal(signal?.date, "2026-08-21");
+  assert.ok(signal?.ratio > 3.9);
+});
+
+test("detects a three-for-two adjusted-price overlap without flagging a daily limit move", () => {
+  const split = marketData.findTickerPriceRebaseSignal(
+    [{ date: "2026-08-20", close: 150, volume: 100 }],
+    [{ date: "2026-08-20", close: 100, volume: 100 }],
+    { ratioThreshold: 1.5 },
+  );
+  const dailyLimitMove = marketData.findTickerPriceRebaseSignal(
+    [{ date: "2026-08-20", close: 100, volume: 100 }],
+    [{ date: "2026-08-21", close: 70, volume: 100 }],
+    { ratioThreshold: 1.5 },
+  );
+
+  assert.equal(split?.type, "overlap");
+  assert.equal(dailyLimitMove, null);
+});
+
 test("removes explicit zero-volume placeholder prices", () => {
   assert.deepEqual(marketData.normalizeTickerPricePoints([
     { date: "2017-05-01", close: 286371, volume: 0 },

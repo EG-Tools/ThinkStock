@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/chart-relayout-queue.js");
-const { createLatestKeyedFrameQueue } = globalThis.ThinkStockChartRelayoutQueue;
+await import("../../docs/modules/chart-render-scheduler.js");
+const { createLatestKeyedFrameQueue } = globalThis.ThinkStockChartRenderScheduler;
 
 test("coalesces each target to its latest value inside one frame", async () => {
   let frame = null;

@@ -2590,11 +2590,12 @@ async function forecastJournalResponse(request, env, ticker, origin) {
 async function brokerReportsResponse(ticker, url, origin) {
   const days = Number(url.searchParams.get("days")) <= 90 ? 90 : 180;
   const requestedAsOf = String(url.searchParams.get("asOf") || "").slice(0, 10);
+  const name = String(url.searchParams.get("name") || "").trim();
   const source = url.searchParams.get("source") === "naver" ? "naver" : "hankyung";
   const asOf = isValidIsoDate(requestedAsOf) ? requestedAsOf : new Date().toISOString().slice(0, 10);
   const sourceUrl = source === "naver"
     ? buildNaverReportListUrl(ticker)
-    : buildHankyungReportListUrl(ticker, { days, asOf });
+    : buildHankyungReportListUrl(ticker, { days, asOf, name });
   try {
     const upstream = await fetch(sourceUrl, {
       headers: {
@@ -2614,7 +2615,7 @@ async function brokerReportsResponse(ticker, url, origin) {
       : await readBoundedResponseText(upstream, BROKER_REPORT_LIST_MAX_BYTES, "Broker report list");
     const reports = (source === "naver"
       ? parseNaverReportListHtml(html, ticker)
-      : parseHankyungReportListHtml(html, ticker))
+      : parseHankyungReportListHtml(html, ticker, name))
       .filter((report) => reportAgeDays(report.publishedDate, asOf) < days);
     return jsonResponse({
       ok: true,

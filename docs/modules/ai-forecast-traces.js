@@ -3,20 +3,22 @@
 
   const SCENARIO_KEYS = Object.freeze(["upside", "sideways", "downside"]);
   const PRIMARY_SCENARIO_STYLE = Object.freeze({
-    color: "rgba(248, 248, 248, 0.98)",
-    width: 2.9,
+    color: "#ffffff",
+    width: 1,
   });
   const SECONDARY_SCENARIO_STYLE = Object.freeze({
-    color: "rgba(138, 138, 138, 0.48)",
-    width: 1.8,
+    color: "#777777",
+    width: 1,
   });
+  const MAX_REFERENCE_REPORTS = 3;
 
   function resolveScenarioTraceStyle(isHighestProbability) {
     return isHighestProbability ? PRIMARY_SCENARIO_STYLE : SECONDARY_SCENARIO_STYLE;
   }
 
   function isThickestAiScenarioTrace(trace) {
-    if (!trace?.meta?.isAiForecastScenarioTrace) return false;
+    if (!trace?.meta?.isAiForecastScenarioTrace
+      || trace.meta.isEmphasizedAiScenario !== true) return false;
     const renderedWidth = Number(trace.line?.width);
     const thickestWidth = Number(trace.meta?.thickestAiScenarioLineWidth);
     return Number.isFinite(renderedWidth)
@@ -26,6 +28,58 @@
 
   function withoutStockCode(value) {
     return String(value || "").replace(/\s*\(\d{6}\)/g, "").replace(/\s{2,}/g, " ").trim();
+  }
+
+  function normalizeForecastReport(report) {
+    if (!report?.sourceUrl || !report?.title) return null;
+    try {
+      const url = new URL(String(report.sourceUrl));
+      const allowed = url.protocol === "https:" && (
+        url.hostname === "consensus.hankyung.com"
+        || (url.hostname === "stock.pstatic.net"
+          && /^\/stock-research\/company\/\d{1,4}\/20\d{6}_company_\d{1,12}\.pdf$/i.test(url.pathname))
+      );
+      if (!allowed) return null;
+      const source = url.hostname === "stock.pstatic.net" ? "naver" : "hankyung";
+      const suppliedReportId = String(report.reportId || report.id || "").trim();
+      const derivedReportId = source === "naver"
+        ? (url.pathname.match(/_company_(\d{1,12})\.pdf$/i)?.[1] || "")
+        : String(url.searchParams.get("report_idx") || "").trim();
+      return Object.freeze({
+        broker: String(report.broker || ""),
+        publishedDate: String(report.publishedDate || "").slice(0, 10),
+        reportId: suppliedReportId || (source === "naver" && derivedReportId
+          ? `naver-${derivedReportId}`
+          : derivedReportId),
+        source,
+        sourceUrl: url.toString(),
+        title: withoutStockCode(report.title),
+      });
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function latestReportsFromBrokerResearch(brokerResearch, maximum = MAX_REFERENCE_REPORTS) {
+    const representativeReports = brokerResearch?.representativeReports || {};
+    const candidates = [
+      ...(Array.isArray(representativeReports.references)
+        ? representativeReports.references
+        : []),
+      representativeReports.reference,
+      representativeReports.upside,
+      representativeReports.downside,
+    ];
+    const urls = new Set();
+    return Object.freeze(candidates
+      .map(normalizeForecastReport)
+      .filter((report) => {
+        if (!report || urls.has(report.sourceUrl)) return false;
+        urls.add(report.sourceUrl);
+        return true;
+      })
+      .sort((left, right) => right.publishedDate.localeCompare(left.publishedDate))
+      .slice(0, Math.max(1, Math.min(MAX_REFERENCE_REPORTS, Number(maximum) || MAX_REFERENCE_REPORTS))));
   }
 
   function buildRepresentativeReportLink(
@@ -39,29 +93,29 @@
   }
 
   function representativeReportFromForecastClick(eventData) {
-    const point = eventData?.points?.find((candidate) => (
+    const markerPoint = eventData?.points?.find((candidate) => (
+      candidate?.data?.meta?.isAiReportMarkerTrace
+      && Array.isArray(candidate?.data?.meta?.reports)
+    ));
+    const point = markerPoint || eventData?.points?.find((candidate) => (
       isThickestAiScenarioTrace(candidate?.data)
       && candidate?.data?.meta?.representativeReport
     ));
-    const report = point?.data?.meta?.representativeReport;
-    if (!report?.sourceUrl || !report?.title) return null;
-    try {
-      const url = new URL(String(report.sourceUrl));
-      const allowed = url.protocol === "https:" && (
-        url.hostname === "consensus.hankyung.com"
-        || (url.hostname === "stock.pstatic.net"
-          && /^\/stock-research\/company\/\d{1,4}\/20\d{6}_company_\d{1,12}\.pdf$/i.test(url.pathname))
-      );
-      if (!allowed) return null;
-      return Object.freeze({ point, report: Object.freeze({
-        broker: String(report.broker || ""),
-        publishedDate: String(report.publishedDate || "").slice(0, 10),
-        sourceUrl: url.toString(),
-        title: String(report.title || "").trim(),
-      }) });
-    } catch (_) {
-      return null;
-    }
+    if (!point) return null;
+    const candidates = markerPoint
+      ? point.data.meta.reports
+      : [point.data.meta.representativeReport];
+    const urls = new Set();
+    const reports = Object.freeze(candidates
+      .map(normalizeForecastReport)
+      .filter((report) => {
+        if (!report || urls.has(report.sourceUrl)) return false;
+        urls.add(report.sourceUrl);
+        return true;
+      })
+      .slice(0, MAX_REFERENCE_REPORTS));
+    if (!reports.length) return null;
+    return Object.freeze({ point, report: reports[0], reports });
   }
 
   function createAiForecastTraces(options = {}) {
@@ -321,8 +375,8 @@
           expectedReturn,
           flatBand: forecast.scenarios?.calibration?.flatBand,
         });
-        const representativeReport = options.brokerResearch?.representativeReports?.reference
-          || null;
+        const referenceReports = latestReportsFromBrokerResearch(options.brokerResearch);
+        const representativeReport = referenceReports[0] || null;
         const highestScenarioWeight = Math.max(...Object.values(scenarioPresentation.weights));
         SCENARIO_KEYS.forEach((scenarioKey) => {
           const scenario = forecast.scenarios?.[scenarioKey];
@@ -394,6 +448,39 @@
             },
           });
         });
+        const markerScenario = forecast.scenarios?.[scenarioPresentation.rawPrimaryKey];
+        if (referenceReports.length && markerScenario?.chartValues?.length && forecast.dates?.length) {
+          const markerIndex = Math.min(
+            forecast.dates.length - 1,
+            markerScenario.chartValues.length - 1,
+            Math.round((forecast.dates.length - 1) * 0.5),
+          );
+          traces.push({
+            x: [forecast.dates[markerIndex]],
+            y: [markerScenario.chartValues[markerIndex]],
+            type: MAIN_LINE_TRACE_TYPE,
+            mode: "markers+text",
+            name: `${labelName(series)} AI 리포트`,
+            showlegend: false,
+            cliponaxis: false,
+            hoverinfo: "skip",
+            marker: {
+              symbol: "circle",
+              size: 20,
+              color: "rgba(18, 18, 18, 0.96)",
+              line: { color: "rgba(255, 255, 255, 0.9)", width: 1 },
+            },
+            text: ["R"],
+            textposition: "middle center",
+            textfont: { color: "#ffffff", size: 10, family: "inherit" },
+            meta: {
+              ...commonMeta,
+              isAiReportMarkerTrace: true,
+              reports: referenceReports,
+              representativeReport,
+            },
+          });
+        }
         if (reportCalculationProgress && calculatedNow) {
           const seriesProgressLabel = `${labelName(series)} (${completedCalculations}/${calculationItems.length})`;
           setAiForecastProgress(100, `${seriesProgressLabel} 완료`);
@@ -413,6 +500,7 @@
     buildRepresentativeReportLink,
     createAiForecastTraces,
     isThickestAiScenarioTrace,
+    latestReportsFromBrokerResearch,
     representativeReportFromForecastClick,
     resolveScenarioTraceStyle,
     withoutStockCode,

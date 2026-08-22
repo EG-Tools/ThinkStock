@@ -5,6 +5,7 @@
   const KOREAN_EQUITY_PATTERN = /^\d{6}\.(?:KS|KQ)$/;
   const LONG_NON_TRADING_GAP_DAYS = 10;
   const NON_TRADING_MARKET_SESSIONS = 3;
+  const preparedLineDataCache = new WeakMap();
 
   function traceIdentity(trace) {
     if (trace?.meta?.isCrisisSignalTrace) return "crisis-signal";
@@ -19,6 +20,9 @@
     }
     if (trace?.meta?.isAiForecastScenarioTrace) {
       return `ai-scenario:${String(trace.meta.seriesKey || "")}:${String(trace.meta.aiTraceRole || "")}`;
+    }
+    if (trace?.meta?.isAiReportMarkerTrace) {
+      return `ai-report:${String(trace.meta.seriesKey || "")}`;
     }
     if (trace?.meta?.isAiForecastTrace) return `ai:${String(trace.meta.seriesKey || "")}`;
     const seriesKey = String(trace?.meta?.seriesKey || "");
@@ -414,18 +418,14 @@
     return { minDate, maxDate };
   }
 
-  function buildLineTraces(options = {}) {
-    const {
-      seriesModels = [],
-      displayIndexes = null,
-      displayPointCount = null,
-      hiddenSeries = new Set(),
-      lineTraceType = "scatter",
-      hoverShowPopup = false,
-      labelName = (series) => String(series || ""),
-      seriesColor = () => "#ffffff",
-      renderRevision = "",
-    } = options;
+  function preparedLineData(seriesModels, displayIndexes) {
+    const cached = preparedLineDataCache.get(seriesModels);
+    const valueRefs = seriesModels.map((model) => model?.values);
+    const unchanged = cached
+      && cached.displayIndexes === displayIndexes
+      && valueRefs.every((values, index) => values === cached.valueRefs[index]);
+    if (unchanged) return cached.lines;
+
     const pick = (values) => (
       Array.isArray(displayIndexes)
         ? displayIndexes.map((index) => values[index])
@@ -444,14 +444,12 @@
       ));
       return [market, times];
     }));
-    const baseValuesBySeries = {};
-    const traces = seriesModels.map((model) => {
+    const lines = seriesModels.map((model) => {
       const series = model?.series;
       const xValues = Array.isArray(model?.xValues) ? model.xValues : [];
       const values = Array.isArray(model?.values) ? model.values : [];
       const rawTexts = Array.isArray(model?.rawTexts) ? model.rawTexts : [];
       const baseValues = Array.isArray(model?.baseValues) ? model.baseValues : [];
-      const baseLineWidth = model?.baseLineWidth;
       const market = String(series || "").endsWith(".KQ") ? "KQ" : "KS";
       const renderValues = KOREAN_EQUITY_PATTERN.test(String(series || ""))
         ? carryNonTradingGaps(xValues, values, rawTexts, baseValues, { marketTimes: marketTimes[market] })
@@ -462,12 +460,48 @@
         pick(renderValues.text),
         pick(renderValues.base),
       );
-      baseValuesBySeries[series] = tracePoints.base;
+      return {
+        series,
+        baseLineWidth: model?.baseLineWidth,
+        sourcePointCount: xValues.length,
+        longGapFillPointCount: renderValues.filledPointCount,
+        ...tracePoints,
+      };
+    });
+    preparedLineDataCache.set(seriesModels, { displayIndexes, valueRefs, lines });
+    return lines;
+  }
+
+  function buildLineTraces(options = {}) {
+    const {
+      seriesModels = [],
+      displayIndexes = null,
+      displayPointCount = null,
+      hiddenSeries = new Set(),
+      lineTraceType = "scatter",
+      hoverShowPopup = false,
+      labelName = (series) => String(series || ""),
+      seriesColor = () => "#ffffff",
+      renderRevision = "",
+    } = options;
+    const baseValuesBySeries = {};
+    const traces = preparedLineData(seriesModels, displayIndexes).map((lineData) => {
+      const {
+        series,
+        baseLineWidth,
+        sourcePointCount,
+        longGapFillPointCount,
+        x,
+        y,
+        text,
+        base,
+      } = lineData;
+      baseValuesBySeries[series] = base;
       const color = seriesColor(series);
       return {
-        x: tracePoints.x,
-        y: tracePoints.y,
-        text: tracePoints.text,
+        x,
+        y,
+        text,
         type: lineTraceType,
         mode: "lines",
         name: labelName(series),
@@ -476,11 +510,11 @@
         meta: {
           seriesKey: series,
           baseLineWidth,
-           sourcePointCount: xValues.length,
-          longGapFillPointCount: renderValues.filledPointCount,
+          sourcePointCount,
+          longGapFillPointCount,
           displayPointCount: Number.isFinite(displayPointCount)
             ? displayPointCount
-            : tracePoints.x.length,
+            : x.length,
           renderFingerprint: [
             renderRevision,
             series,

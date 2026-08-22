@@ -155,8 +155,50 @@
     });
   }
 
+  function createSeedBundleLoader(options = {}) {
+    const seedLoader = options.seedLoader;
+    const parser = options.parser;
+    if (!seedLoader?.fetchSeedText || !seedLoader?.fetchSegmentedSeedText || !parser?.parse) {
+      throw new Error("seed bundle loader dependencies are incomplete");
+    }
+
+    async function load(loadOptions = {}) {
+      const segment = loadOptions.segment === "history" ? "history" : "recent";
+      const forceNetwork = Boolean(loadOptions.forceNetwork);
+      const includeDisclosures = loadOptions.includeDisclosures !== false;
+      const [priceSeed, macroSeed, creditSeed, adrSeed, vkospiText, disclosureText] = await Promise.all([
+        seedLoader.fetchSegmentedSeedText("./data/prices.json", segment, forceNetwork),
+        seedLoader.fetchSegmentedSeedText("./data/macro_data.json", segment, forceNetwork),
+        seedLoader.fetchSegmentedSeedText("./data/credit_data.json", segment, forceNetwork),
+        seedLoader.fetchSegmentedSeedText("./data/adr_data.json", segment, forceNetwork),
+        seedLoader.fetchSeedText("./data/vkospi_data.json", forceNetwork),
+        includeDisclosures
+          ? seedLoader.fetchSeedText("./data/disclosures.json", forceNetwork)
+          : Promise.resolve(null),
+      ]);
+      const coreSeeds = [priceSeed, macroSeed, creditSeed, adrSeed];
+      const parsed = await parser.parse({
+        priceText: priceSeed.text,
+        macroText: macroSeed.text,
+        creditText: creditSeed.text,
+        adrText: adrSeed.text,
+        vkospiText,
+        disclosureText,
+      });
+      return Object.freeze({
+        segment,
+        parsed,
+        allCoreSeedsLoaded: coreSeeds.every((seed) => Boolean(seed.text)),
+        allUsedFullFallback: coreSeeds.every((seed) => seed.usedFullFallback),
+      });
+    }
+
+    return Object.freeze({ load });
+  }
+
   globalScope.ThinkStockDataSeedLoader = Object.freeze({
     createDataSeedLoader,
+    createSeedBundleLoader,
     createSeedBundleParser,
   });
 }(typeof self !== "undefined" ? self : globalThis));

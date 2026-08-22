@@ -14,6 +14,7 @@ const { resolveScenarioPresentation } = context.ThinkStockAiForecastScenarios;
 const {
   buildRepresentativeReportLink,
   isThickestAiScenarioTrace,
+  latestReportsFromBrokerResearch,
   representativeReportFromForecastClick,
   resolveScenarioTraceStyle,
   withoutStockCode,
@@ -64,13 +65,14 @@ test("retains a directional representative when the expected move clears the fla
   assert.equal(presentation.decisive, false);
 });
 
-test("uses one bright style and one shared dim style for forecast scenarios", () => {
+test("uses one-pixel white and gray styles for forecast scenarios", () => {
   const highest = resolveScenarioTraceStyle(true);
   const secondary = resolveScenarioTraceStyle(false);
 
-  assert.match(highest.color, /248, 248, 248/);
-  assert.ok(highest.width > secondary.width);
-  assert.equal(secondary.color, "rgba(138, 138, 138, 0.48)");
+  assert.equal(highest.color, "#ffffff");
+  assert.equal(highest.width, 1);
+  assert.equal(secondary.width, 1);
+  assert.equal(secondary.color, "#777777");
   assert.equal(resolveScenarioTraceStyle(false).color, secondary.color);
   assert.equal(resolveScenarioTraceStyle(false).width, secondary.width);
 });
@@ -99,32 +101,67 @@ test("extracts one safe representative report only from a thickest AI scenario",
     publishedDate: "2026-07-23",
     broker: "Hana Securities",
   };
-  const thickTrace = { line: { width: 2.9 }, meta: {
+  const thickTrace = { line: { width: 1 }, meta: {
       isAiForecastScenarioTrace: true,
       isEmphasizedAiScenario: true,
-      thickestAiScenarioLineWidth: 2.9,
+      thickestAiScenarioLineWidth: 1,
       representativeReport: report,
   } };
   const selected = representativeReportFromForecastClick({
     points: [{ data: thickTrace }],
   });
   assert.equal(selected.report.title, "RFHIC report");
+  assert.equal(selected.reports.length, 1);
   assert.equal(selected.report.publishedDate, "2026-07-23");
   assert.equal(isThickestAiScenarioTrace(thickTrace), true);
   assert.equal(representativeReportFromForecastClick({
-    points: [{ data: { line: { width: 2.9 }, meta: { isAiForecastScenarioTrace: true, isEmphasizedAiScenario: true, thickestAiScenarioLineWidth: 2.9, representativeReport: {
+    points: [{ data: { line: { width: 1 }, meta: { isAiForecastScenarioTrace: true, isEmphasizedAiScenario: true, thickestAiScenarioLineWidth: 1, representativeReport: {
       ...report,
       sourceUrl: "https://example.com/report.pdf",
     } } } }],
   }), null);
   assert.equal(representativeReportFromForecastClick({
-    points: [{ data: { line: { width: 1.8 }, meta: {
+    points: [{ data: { line: { width: 1 }, meta: {
       isAiForecastScenarioTrace: true,
-      isEmphasizedAiScenario: true,
-      thickestAiScenarioLineWidth: 2.9,
+      isEmphasizedAiScenario: false,
+      thickestAiScenarioLineWidth: 1,
       representativeReport: report,
     } } }],
   }), null);
+});
+
+test("extracts up to three safe latest reports from the dedicated R marker", () => {
+  const reports = [
+    {
+      sourceUrl: "https://consensus.hankyung.com/analysis/downpdf?report_idx=31",
+      title: "Newest report (005930)",
+      publishedDate: "2026-08-22",
+    },
+    {
+      sourceUrl: "https://stock.pstatic.net/stock-research/company/57/20260820_company_184323001.pdf",
+      title: "Second report",
+      publishedDate: "2026-08-20",
+    },
+    {
+      sourceUrl: "https://consensus.hankyung.com/analysis/downpdf?report_idx=29",
+      title: "Third report",
+      publishedDate: "2026-08-19",
+    },
+  ];
+  const selected = representativeReportFromForecastClick({
+    points: [{ data: { meta: { isAiReportMarkerTrace: true, reports } } }],
+  });
+  assert.equal(selected.reports.length, 3);
+  assert.equal(selected.reports[0].title, "Newest report");
+
+  const latest = latestReportsFromBrokerResearch({
+    representativeReports: { references: [...reports].reverse() },
+  });
+  assert.deepEqual(Array.from(latest, (report) => report.publishedDate), [
+    "2026-08-22",
+    "2026-08-20",
+    "2026-08-19",
+  ]);
 });
 
 test("allows every AI scenario tied for the thickest rendered line", () => {
@@ -132,11 +169,12 @@ test("allows every AI scenario tied for the thickest rendered line", () => {
     line: { width },
     meta: {
       isAiForecastScenarioTrace: true,
-      thickestAiScenarioLineWidth: 2.9,
+      isEmphasizedAiScenario: width === 1,
+      thickestAiScenarioLineWidth: 1,
     },
   });
 
-  assert.equal(isThickestAiScenarioTrace(trace(2.9)), true);
-  assert.equal(isThickestAiScenarioTrace(trace(2.9)), true);
-  assert.equal(isThickestAiScenarioTrace(trace(1.8)), false);
+  assert.equal(isThickestAiScenarioTrace(trace(1)), true);
+  assert.equal(isThickestAiScenarioTrace(trace(1)), true);
+  assert.equal(isThickestAiScenarioTrace(trace(0.8)), false);
 });

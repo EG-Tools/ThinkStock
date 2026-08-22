@@ -17,6 +17,12 @@
     const fetchPreferredHistory = typeof options.fetchPreferredHistory === "function"
       ? options.fetchPreferredHistory
       : null;
+    const filterLatestTailPoints = typeof options.filterLatestTailPoints === "function"
+      ? options.filterLatestTailPoints
+      : (_existing, latest) => (Array.isArray(latest) ? latest : []);
+    const inspectHistoryIntegrity = typeof options.inspectHistoryIntegrity === "function"
+      ? options.inspectHistoryIntegrity
+      : null;
     const validateHistory = typeof options.validateHistory === "function"
       ? options.validateHistory
       : () => true;
@@ -184,11 +190,20 @@
       const hasPrefetchedLatest = Object.prototype.hasOwnProperty.call(requestOptions, "latestPoints");
       if (!hasPrefetchedLatest && fetchLatestPrice) tasks.push(fetchLatestPrice(ticker, requestOptions));
       const results = await Promise.allSettled(tasks);
-      const yahooPoints = results[0].status === "fulfilled" ? results[0].value : [];
-      const latestPoints = hasPrefetchedLatest
+      const historyPoints = results[0].status === "fulfilled" ? results[0].value : [];
+      const rawLatestPoints = hasPrefetchedLatest
         ? requestOptions.latestPoints
         : (results[1]?.status === "fulfilled" ? results[1].value : []);
-      const merged = mergePriceSeries(yahooPoints, latestPoints);
+      const latestPoints = filterLatestTailPoints(historyPoints, rawLatestPoints);
+      const merged = mergePriceSeries(historyPoints, latestPoints);
+      if (inspectHistoryIntegrity && merged.length) {
+        const mergedIntegrity = inspectHistoryIntegrity(merged);
+        if (mergedIntegrity?.anomalyCount > 0) {
+          const historyIntegrity = inspectHistoryIntegrity(historyPoints);
+          if (historyPoints.length && historyIntegrity?.anomalyCount === 0) return historyPoints;
+          throw new Error(`${ticker} merged price history failed integrity validation`);
+        }
+      }
       if (merged.length) return merged;
       throw results[0].reason || results[1]?.reason || new Error(`${ticker} price history is unavailable`);
     }

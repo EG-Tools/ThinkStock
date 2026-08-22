@@ -151,7 +151,6 @@
     )), 0.5);
     const volatility = annualizedVolatility(rows);
     const return20 = percentChange(rows, 20);
-    const return60 = percentChange(rows, 60);
     const riskyName = /(스팩|우B?$|우선주|레버리지|인버스|ETN|ETF)/i.test(String(item.name || ""));
     if (riskyName
       || !Number.isFinite(medianTradeValue) || medianTradeValue < 500_000_000

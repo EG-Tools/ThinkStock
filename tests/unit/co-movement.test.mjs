@@ -82,3 +82,81 @@ test("slices a sorted long history to the visible viewport", () => {
     Date.parse("2026-01-03T00:00:00Z"),
   ]), rows.slice(1, 3));
 });
+
+test("panel controller coalesces frames and skips unchanged calculations and DOM writes", () => {
+  const queued = [];
+  const canceled = [];
+  const elements = [];
+  const document = {
+    createElement(tagName) {
+      const element = {
+        tagName,
+        className: "",
+        textContent: "",
+        title: "",
+        append(...items) {
+          this.textContent += items.map((item) => (
+            typeof item === "string" ? item : item.textContent
+          )).join("");
+        },
+      };
+      elements.push(element);
+      return element;
+    },
+  };
+  const panel = {
+    hidden: true,
+    childNodes: [],
+    replaceChildren(...children) { this.childNodes = children; },
+    setAttribute(name, value) { this[name] = String(value); },
+  };
+  let range = [
+    Date.parse("2026-01-01T00:00:00Z"),
+    Date.parse("2026-01-05T00:00:00Z"),
+  ];
+  const rows = [
+    { date: "2026-01-01", stock: 100, market: 100 },
+    { date: "2026-01-02", stock: 101, market: 101 },
+    { date: "2026-01-03", stock: 102, market: 102 },
+    { date: "2026-01-04", stock: 101, market: 101 },
+    { date: "2026-01-05", stock: 103, market: 103 },
+  ];
+  const controller = coMovement.createPanelController({ document }, {
+    document,
+    panel,
+    requestFrame: (callback) => { queued.push(callback); return queued.length; },
+    cancelFrame: (frameId) => { canceled.push(frameId); },
+    readState: () => ({
+      enabled: true,
+      targetKey: "stock",
+      targetName: "테스트",
+      rows,
+      revision: "price:1",
+      range,
+      requestedMonths: 6,
+      comparisons: [{ key: "market", label: "시장" }],
+    }),
+  });
+
+  assert.equal(controller.request(), true);
+  assert.equal(controller.request(), false);
+  queued.shift()();
+  assert.equal(panel.hidden, false);
+  assert.equal(controller.stats().calculations, 1);
+  assert.equal(controller.stats().renders, 1);
+
+  controller.renderNow();
+  assert.equal(controller.stats().calculations, 1);
+  assert.equal(controller.stats().renders, 1);
+
+  range = [range[0], Date.parse("2026-01-04T00:00:00Z")];
+  controller.renderNow();
+  assert.equal(controller.stats().calculations, 2);
+
+  controller.request();
+  range = [range[0], Date.parse("2026-01-03T00:00:00Z")];
+  controller.flush();
+  assert.deepEqual(canceled, [1]);
+  assert.equal(controller.stats().pending, false);
+  assert.equal(controller.stats().calculations, 3);
+});

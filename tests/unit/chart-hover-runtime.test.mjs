@@ -5,13 +5,14 @@ await import("../../docs/modules/chart-hover-runtime.js");
 
 const hoverModule = globalThis.ThinkStockChartHoverRuntime;
 
-test("chart hover snaps touch input to the nearest concrete chart point", () => {
+test("chart hover requests the complete unified popup at the selected x value", () => {
   const frames = [];
   const hoverCalls = [];
+  let popupVisible = false;
   const scope = {
     Plotly: {
       Fx: {
-        hover: (...args) => hoverCalls.push(args),
+        hover: (...args) => { hoverCalls.push(args); popupVisible = true; },
         unhover: () => {},
       },
     },
@@ -28,6 +29,7 @@ test("chart hover snaps touch input to the nearest concrete chart point", () => 
   });
   const chart = {
     id: "chart",
+    querySelector: () => (popupVisible ? {} : null),
     data: [{
       x: ["2026-08-08", "2026-08-11"],
       meta: { seriesKey: "005930.KS" },
@@ -36,8 +38,14 @@ test("chart hover snaps touch input to the nearest concrete chart point", () => 
 
   runtime.syncHoverToChart(chart, "2026-08-10");
   frames.shift()();
-  assert.deepEqual(hoverCalls[0][1], [{ curveNumber: 0, pointNumber: 1 }]);
+  assert.deepEqual(hoverCalls[0][1], [{ xval: "2026-08-10" }]);
   assert.equal(runtime.nearestMainLineDate(chart, "2026-08-10"), "2026-08-11");
+
+  frames.shift()();
+  popupVisible = false;
+  runtime.syncHoverToChart(chart, "2026-08-10");
+  frames.shift()();
+  assert.equal(hoverCalls.length, 2);
 });
 
 test("chart hover exposes event markers only on the exact selected date", () => {

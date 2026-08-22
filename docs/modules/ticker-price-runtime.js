@@ -6,6 +6,9 @@
   const HISTORY_COVERAGE_PARTIAL = "partial";
   const HISTORY_COVERAGE_UNKNOWN = "unknown";
   const DEFAULT_CACHE_TOUCH_INTERVAL_MS = 24 * 60 * 60 * 1000;
+  const CORPORATE_ACTION_RATIO_THRESHOLD = 1.5;
+  const CORPORATE_ACTION_MAX_BOUNDARY_DAYS = 3660;
+  const INTEGRITY_MAX_TRANSITION_GAP_DAYS = 370;
 
   function normalizeTicker(ticker) {
     return String(ticker || "").trim().toUpperCase();
@@ -25,6 +28,18 @@
       && normalizeHistoryCoverage(options.historyCoverage) === HISTORY_COVERAGE_FULL
       && ISO_DATE_PATTERN.test(latestDate);
     return canExtendTail ? latestDate : "";
+  }
+
+  function filterLatestTailPoints(existingPoints, latestPoints) {
+    const existingDates = (Array.isArray(existingPoints) ? existingPoints : [])
+      .map((point) => String(point?.date || "").slice(0, 10))
+      .filter((date) => ISO_DATE_PATTERN.test(date));
+    if (!existingDates.length) return Array.isArray(latestPoints) ? latestPoints : [];
+    const latestExistingDate = existingDates.sort().at(-1);
+    return (Array.isArray(latestPoints) ? latestPoints : []).filter((point) => {
+      const date = String(point?.date || "").slice(0, 10);
+      return ISO_DATE_PATTERN.test(date) && date >= latestExistingDate;
+    });
   }
 
   function shouldTouchCacheRecord(lastAccessed, nowMs = Date.now(), intervalMs = DEFAULT_CACHE_TOUCH_INTERVAL_MS) {
@@ -162,6 +177,7 @@
     if (Number(value?.schema) !== schema
       || normalizeTicker(value?.ticker) !== key
       || rows.length < minimumPoints) return null;
+    if (!inspectPriceHistoryIntegrity(rows).clean) return null;
     return {
       ...value,
       schema,
@@ -181,6 +197,7 @@
     if (Number(value?.schema) !== priceSchema
       || normalizeTicker(value?.ticker) !== key
       || rows.length < minimumPoints) return null;
+    if (!inspectPriceHistoryIntegrity(rows).clean) return null;
     const now = typeof options.now === "function" ? options.now() : Date.now();
     return {
       schema: researchSchema,
@@ -192,6 +209,131 @@
       lastAccessed: now,
       rows,
     };
+  }
+
+  function inspectPriceHistoryIntegrity(history, options = {}) {
+    const sourceRows = Array.isArray(history?.rows)
+      ? history.rows
+      : (Array.isArray(history) ? history : []);
+    const threshold = Math.max(1.31, Number(options.ratioThreshold)
+      || CORPORATE_ACTION_RATIO_THRESHOLD);
+    const maximumGapMs = Math.max(7, Number(options.maximumTransitionGapDays)
+      || INTEGRITY_MAX_TRANSITION_GAP_DAYS) * 24 * 60 * 60 * 1000;
+    const rows = sourceRows
+      .map((point) => ({
+        date: String(point?.date || "").slice(0, 10),
+        close: Number(point?.close),
+      }))
+      .filter((point) => /^\d{4}-\d{2}-\d{2}$/.test(point.date)
+        && Number.isFinite(point.close)
+        && point.close > 0)
+      .sort((left, right) => left.date.localeCompare(right.date));
+    let anomalyCount = 0;
+    let maxRatio = 1;
+    let firstDate = "";
+    for (let index = 1; index < rows.length; index += 1) {
+      const previous = rows[index - 1];
+      const current = rows[index];
+      const gapMs = Date.parse(`${current.date}T00:00:00Z`) - Date.parse(`${previous.date}T00:00:00Z`);
+      if (!Number.isFinite(gapMs) || gapMs > maximumGapMs) continue;
+      const ratio = Math.max(previous.close, current.close) / Math.min(previous.close, current.close);
+      if (!Number.isFinite(ratio) || ratio < threshold) continue;
+      anomalyCount += 1;
+      if (!firstDate) firstDate = current.date;
+      maxRatio = Math.max(maxRatio, ratio);
+    }
+    return Object.freeze({
+      anomalyCount,
+      clean: anomalyCount === 0,
+      firstDate,
+      maxRatio,
+      points: rows.length,
+    });
+  }
+
+  function inspectPricePayloadIntegrity(payload, options = {}) {
+    const records = Array.isArray(payload?.records) ? payload.records : [];
+    const tickerPattern = options.tickerPattern || /^\d{6}\.(KS|KQ)$/;
+    const declaredSeries = Array.isArray(payload?.series) ? payload.series : [];
+    const tickerSet = new Set();
+    declaredSeries.forEach((value) => {
+      const ticker = normalizeTicker(value);
+      if (tickerPattern.test(ticker)) tickerSet.add(ticker);
+    });
+    records.forEach((row) => {
+      if (!row || typeof row !== "object") return;
+      Object.keys(row).forEach((value) => {
+        const ticker = normalizeTicker(value);
+        if (tickerPattern.test(ticker)) tickerSet.add(ticker);
+      });
+    });
+    const tickers = [...tickerSet];
+    const threshold = Math.max(1.31, Number(options.ratioThreshold)
+      || CORPORATE_ACTION_RATIO_THRESHOLD);
+    const maximumGapMs = Math.max(7, Number(options.maximumTransitionGapDays)
+      || INTEGRITY_MAX_TRANSITION_GAP_DAYS) * 24 * 60 * 60 * 1000;
+    for (const ticker of tickers) {
+      let previousClose = null;
+      let previousDate = "";
+      let points = 0;
+      let anomalyCount = 0;
+      let firstDate = "";
+      let maxRatio = 1;
+      let requiresSortedFallback = false;
+      for (const row of records) {
+        const date = String(row?.date || "").slice(0, 10);
+        const close = Number(row?.[ticker]);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(close) || close <= 0) continue;
+        if (previousDate && date < previousDate) {
+          requiresSortedFallback = true;
+          break;
+        }
+        points += 1;
+        const gapMs = previousDate
+          ? Date.parse(`${date}T00:00:00Z`) - Date.parse(`${previousDate}T00:00:00Z`)
+          : 0;
+        if (previousClose !== null && Number.isFinite(gapMs) && gapMs <= maximumGapMs) {
+          const ratio = Math.max(previousClose, close) / Math.min(previousClose, close);
+          if (Number.isFinite(ratio) && ratio >= threshold) {
+            anomalyCount += 1;
+            if (!firstDate) firstDate = date;
+            maxRatio = Math.max(maxRatio, ratio);
+          }
+        }
+        previousClose = close;
+        previousDate = date;
+      }
+      const integrity = requiresSortedFallback
+        ? inspectPriceHistoryIntegrity(records.map((row) => ({ date: row?.date, close: row?.[ticker] })), options)
+        : { anomalyCount, clean: anomalyCount === 0, firstDate, maxRatio, points };
+      if (!integrity.clean) return Object.freeze({ ...integrity, ticker, clean: false });
+    }
+    return Object.freeze({ anomalyCount: 0, clean: true, firstDate: "", maxRatio: 1, ticker: "" });
+  }
+
+  function selectPreferredResearchHistory(priceHistory, researchHistory) {
+    if (!priceHistory) return researchHistory || null;
+    if (!researchHistory) return priceHistory;
+    const priceDate = String(priceHistory.latestDate || priceHistory.rows?.at?.(-1)?.date || "").slice(0, 10);
+    const researchDate = String(researchHistory.latestDate || researchHistory.rows?.at?.(-1)?.date || "").slice(0, 10);
+    if (researchDate > priceDate) return researchHistory;
+    if (priceDate > researchDate) return priceHistory;
+    const priceIntegrity = inspectPriceHistoryIntegrity(priceHistory);
+    const researchIntegrity = inspectPriceHistoryIntegrity(researchHistory);
+    const researchCoverageIsComplete = shouldReplaceFullHistory(
+      priceHistory.rows,
+      researchHistory.rows,
+    );
+    if (researchCoverageIsComplete
+      && researchIntegrity.anomalyCount < priceIntegrity.anomalyCount) {
+      return researchHistory;
+    }
+    if (priceIntegrity.anomalyCount < researchIntegrity.anomalyCount) {
+      return priceHistory;
+    }
+    // The price cache owns the adjusted-price basis. A research record only wins
+    // when it is newer or clearly repairs a same-day corporate-action boundary.
+    return priceHistory;
   }
 
   function shouldReplaceFullHistory(existingPoints, incomingPoints, options = {}) {
@@ -327,23 +469,52 @@
       const hasExisting = options.hasSeries(key);
       const historyCoverage = normalizeHistoryCoverage(cacheInfo.historyCoverage);
       let latestExisting = cacheInfo.latestDate || options.latestDate(key);
-      if (hasExisting && loadOptions.returnAfterCache === true) {
+      let latestBoundaryAssessment = null;
+      if (hasExisting && typeof options.inspectHistoryIntegrity === "function") {
+        const integrity = options.inspectHistoryIntegrity(options.getPoints(key));
+        if (integrity?.anomalyCount > 0) {
+          latestBoundaryAssessment = options.assessPriceUpdate(
+            options.getPoints(key),
+            [],
+            {
+              rebaseSignal: {
+                type: "overlap",
+                date: integrity.firstDate,
+                ratio: integrity.maxRatio,
+                source: "cached-history-integrity",
+              },
+            },
+          );
+        }
+      }
+      if (hasExisting && loadOptions.returnAfterCache === true && !latestBoundaryAssessment) {
         return { ready: true, cached: true, deferredRefresh: true, latestDate: latestExisting };
       }
-      if (hasExisting && !forceRefresh) {
+      if (hasExisting && !forceRefresh && !latestBoundaryAssessment) {
         try {
-          const latestPoints = hasPrefetchedLatest
+          const rawLatestPoints = hasPrefetchedLatest
             ? prefetchedLatest
             : await options.fetchLatest(key, { signal });
+          const latestPoints = filterLatestTailPoints(options.getPoints(key), rawLatestPoints);
           if (latestPoints.length) {
-            options.mergePoints(key, latestPoints);
-            latestExisting = options.latestDate(key);
-            await options.writeCache(key, options.getPoints(key), displayName, { historyCoverage });
+            const existingPoints = options.getPoints(key);
+            const rebaseSignal = options.findRebaseSignal?.(existingPoints, latestPoints) || null;
+            const assessment = options.assessPriceUpdate(existingPoints, latestPoints, { rebaseSignal });
+            if (assessment.fullHistoryRequired) {
+              // Keep the known-good series visible until a complete adjusted history succeeds.
+              latestBoundaryAssessment = assessment;
+            } else {
+              if (assessment.invalidateDerived) await options.invalidateCache(key, assessment);
+              options.mergePoints(key, latestPoints);
+              latestExisting = options.latestDate(key);
+              await options.writeCache(key, options.getPoints(key), displayName, { historyCoverage });
+            }
           }
         } catch (error) {
           if (options.isAbortError?.(error) || signal?.aborted) throw error;
         }
-        if (options.isCacheFresh(latestExisting, key)
+        if (!latestBoundaryAssessment
+          && options.isCacheFresh(latestExisting, key)
           && options.hasVolumeHistory(key)
           && historyCoverage === HISTORY_COVERAGE_FULL) {
           return { ready: true, cached: true, deferredRefresh: false, latestDate: latestExisting };
@@ -352,7 +523,7 @@
 
       try {
         const existingPoints = options.getPoints(key);
-        const sinceDate = resolveHistoryFetchSinceDate({
+        const sinceDate = latestBoundaryAssessment ? "" : resolveHistoryFetchSinceDate({
           hasExisting,
           hasVolumeHistory: options.hasVolumeHistory(key),
           historyCoverage,
@@ -366,9 +537,17 @@
         });
         throwIfAborted(signal);
         if (!points.length) throw new Error(`${key} price history is empty`);
+        if (typeof options.inspectHistoryIntegrity === "function") {
+          const fetchedIntegrity = options.inspectHistoryIntegrity(points);
+          if (fetchedIntegrity?.anomalyCount > 0) {
+            throw new Error(`${key} fetched price history failed integrity validation`);
+          }
+        }
+        let fetchedFullHistory = !sinceDate;
         const rebaseSignal = sinceDate ? options.findRebaseSignal?.(existingPoints, points) : null;
-        const assessment = options.assessPriceUpdate(existingPoints, points, { rebaseSignal });
-        if (assessment.fullHistoryRequired) {
+        const assessment = latestBoundaryAssessment
+          || options.assessPriceUpdate(existingPoints, points, { rebaseSignal });
+        if (assessment.fullHistoryRequired && sinceDate) {
           points = await options.fetchHistory(key, {
             forceNetwork: forceRefresh,
             signal,
@@ -376,13 +555,26 @@
           });
           throwIfAborted(signal);
           if (!points.length) throw new Error(`${key} price history is empty`);
+          if (typeof options.inspectHistoryIntegrity === "function") {
+            const fetchedIntegrity = options.inspectHistoryIntegrity(points);
+            if (fetchedIntegrity?.anomalyCount > 0) {
+              throw new Error(`${key} full price history failed integrity validation`);
+            }
+          }
+          fetchedFullHistory = true;
+        }
+        const replaceFullHistory = fetchedFullHistory
+          && shouldReplaceFullHistory(existingPoints, points);
+        if (assessment.fullHistoryRequired && !replaceFullHistory) {
+          throw new Error(`${key} adjusted price history is incomplete`);
+        }
+        if (assessment.fullHistoryRequired) {
           await options.invalidateCache(key, assessment);
           options.clearSeries(key);
         } else if (assessment.invalidateDerived) {
           await options.invalidateCache(key, assessment);
         }
         throwIfAborted(signal);
-        const replaceFullHistory = !sinceDate && shouldReplaceFullHistory(existingPoints, points);
         options.mergePoints(key, points, { replace: replaceFullHistory });
         await options.writeCache(key, options.getPoints(key), displayName, {
           historyCoverage: HISTORY_COVERAGE_FULL,
@@ -421,6 +613,9 @@
   }
 
   globalScope.ThinkStockTickerPriceRuntime = Object.freeze({
+    CORPORATE_ACTION_MAX_BOUNDARY_DAYS,
+    CORPORATE_ACTION_RATIO_THRESHOLD,
+    filterLatestTailPoints,
     HISTORY_COVERAGE_FULL,
     HISTORY_COVERAGE_PARTIAL,
     HISTORY_COVERAGE_UNKNOWN,
@@ -432,9 +627,12 @@
     latestSeriesDate,
     seriesPoints,
     isCacheFresh,
+    inspectPriceHistoryIntegrity,
+    inspectPricePayloadIntegrity,
     normalizeHistoryCoverage,
     normalizeResearchHistoryCache,
     priceCacheToResearchHistory,
+    selectPreferredResearchHistory,
     resolveHistoryFetchSinceDate,
     shouldTouchCacheRecord,
     shouldReplaceFullHistory,

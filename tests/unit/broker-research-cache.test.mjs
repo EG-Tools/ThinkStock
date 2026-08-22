@@ -280,7 +280,7 @@ test("replaces a pre-Naver empty cache with an available RFHIC reference report"
     extractReport: async (_bytes, metadata) => parsedReport(metadata),
   });
 
-  assert.equal(service.CACHE_SCHEMA, 7);
+  assert.equal(service.CACHE_SCHEMA, 9);
   assert.equal(service.normalizeCacheRecord(oldRecord, "218410.KQ"), null);
   const result = await service.loadTicker("218410.KQ", {
     onReferenceReport: (report) => phases.push(`reference:${report.sourceUrl}`),

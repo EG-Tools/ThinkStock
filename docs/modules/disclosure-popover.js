@@ -2,12 +2,20 @@
   function buildPopoverHtml(group, options = {}) {
     const escapeHtml = options.escapeHtml || ((value) => String(value || ""));
     const fallbackName = options.fallbackName || (() => "");
-    const items = (group?.events || []).map((event) => {
+    const items = (group?.events || []).map((event, eventIndex) => {
       const title = escapeHtml(event.title);
+      const caption = String(event.caption || "").trim();
+      const captionHtml = caption
+        ? `<span class="disclosure-event-caption">${escapeHtml(caption)}</span>`
+        : "";
+      const linkAction = String(event.linkAction || "").trim();
+      const actionAttributes = linkAction
+        ? ` data-link-action="${escapeHtml(linkAction)}" data-event-index="${eventIndex}"`
+        : "";
       const titleHtml = event.url
-        ? `<a class="disclosure-title-link" href="${escapeHtml(event.url)}" target="_blank" rel="noopener">${title}</a>`
+        ? `<a class="disclosure-title-link" href="${escapeHtml(event.url)}" target="_blank" rel="noopener"${actionAttributes}>${title}</a>`
         : `<strong>${title}</strong>`;
-      return `<li>${titleHtml}</li>`;
+      return `<li>${captionHtml}${titleHtml}</li>`;
     }).join("");
     return `
       <div class="disclosure-popover-head">
@@ -53,6 +61,17 @@
       const chart = scope.document?.getElementById(chartId);
       if (!popover || !chart || !group?.events?.length) return false;
       popover.innerHTML = buildPopoverHtml(group, options);
+      if (typeof options.onLinkAction === "function") {
+        popover.querySelectorAll("a[data-link-action]").forEach((link) => {
+          link.addEventListener("click", (event) => {
+            const eventIndex = Number(link.dataset.eventIndex);
+            const item = group.events?.[eventIndex];
+            if (!item) return;
+            const handled = options.onLinkAction(item, event, link);
+            if (handled !== false) event.preventDefault();
+          });
+        });
+      }
       popover.querySelector("button")?.addEventListener("click", (event) => {
         event.stopPropagation();
         hide();
