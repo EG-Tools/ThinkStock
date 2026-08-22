@@ -1605,7 +1605,13 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
       const now = Date.now();
       for (let index = 1; index <= 5; index += 1) {
         const ticker = `${String(index).padStart(6, "0")}.KS`;
-        store.put({ ticker, savedAt: now - index, lastAccessed: now - index }, ticker);
+        store.put({
+          schema: 6,
+          ticker,
+          savedAt: now - index,
+          lastAccessed: now - index,
+          points: [{ date: "2026-08-21", close: 1000 + index }],
+        }, ticker);
       }
       tx.oncomplete = () => { db.close(); resolve(); };
       tx.onerror = () => reject(tx.error);

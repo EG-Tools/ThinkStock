@@ -70,3 +70,24 @@ test("coalesces scheduled pruning and records one transaction", async () => {
     scheduledPrunes: 0,
   });
 });
+
+test("repairs invalid records before applying retention pruning", async () => {
+  const calls = [];
+  const runtime = module.createCacheMaintenanceRuntime(globalThis, {
+    lifecyclePolicy: policy(),
+    validators: { prices: (record) => record.valid === true },
+    store: {
+      readRecord: async () => null,
+      deleteRecord: async () => {},
+      repairStore: async (_store, validate) => {
+        calls.push(validate({ valid: false }));
+        return 2;
+      },
+      pruneStore: async () => 1,
+    },
+  });
+  assert.equal(await runtime.pruneStore("prices"), 3);
+  assert.deepEqual(calls, [false]);
+  assert.equal(runtime.stats().repaired, 2);
+  assert.equal(runtime.stats().deleted, 3);
+});

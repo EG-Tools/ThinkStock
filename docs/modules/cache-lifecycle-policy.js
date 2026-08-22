@@ -26,6 +26,7 @@
     [stores.tickerResearchHistory]: Object.freeze({ maxRecords: 1020, maxIdleDays: 240 }),
     [stores.stockResearchResults]: Object.freeze({ maxRecords: 12, maxIdleDays: 240 }),
     [stores.tickerBrokerResearch]: Object.freeze({ maxRecords: 80, maxIdleDays: 365 }),
+    [stores.tickerTimingModels]: Object.freeze({ maxRecords: 1020, maxIdleDays: 240 }),
   });
 
   function storePolicy(storeName, overrides = {}) {

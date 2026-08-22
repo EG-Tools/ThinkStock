@@ -80,6 +80,7 @@
         buildMarketTimingSignals: scope.ThinkStockMarketTiming.buildMarketTimingSignals,
         evaluateMarketTimingModel: scope.ThinkStockMarketTimingEvaluation.evaluateMarketTimingModel,
         summarizeMarketTimingQuality: scope.ThinkStockMarketTimingEvaluation.summarizeMarketTimingQuality,
+        cache: options.marketTimingCache || null,
       });
       return marketTimingService;
     }

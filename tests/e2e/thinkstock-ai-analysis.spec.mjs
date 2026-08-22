@@ -761,7 +761,7 @@ test("co-movement toggle shows only the last visible stock for the selected peri
         { ticker: "005930.KS", name: "삼성전자", code: "005930", market: "KOSPI" },
         { ticker: "000660.KS", name: "SK하이닉스", code: "000660", market: "KOSPI" },
       ],
-      showCoMovement: false,
+      showCoMovement: true,
     }));
   });
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
@@ -792,6 +792,10 @@ test("co-movement toggle shows only the last visible stock for the selected peri
     "apiOptionsBtn",
   ]);
 
+  await expect(page.locator("#coMovementToggle")).toHaveClass(/is-active/);
+  await expect(page.locator("#coMovementPanel")).toBeVisible();
+  await expect(page.locator("#coMovementPanel")).toContainText("SK하이닉스 1년");
+  await page.locator("#coMovementToggle").click();
   await expect(page.locator("#coMovementPanel")).toBeHidden();
   await page.locator("#coMovementToggle").click();
   await expect(page.locator("#coMovementToggle")).toHaveClass(/is-active/);
@@ -1499,11 +1503,16 @@ test("MACD automatically follows visible stock charts", async ({ page }) => {
     return {
       labels: macdTraces.map((trace) => trace.name),
       macroVisible: mainTraces.some((trace) => trace?.meta?.seriesKey === "^KS11"),
+      onePixelLines: macdTraces.every((trace) => (
+        trace?.type === "scatter"
+        && trace?.mode === "lines"
+        && trace?.line?.width === 1
+      )),
       colorsMatch: macdTraces.every((trace) => {
         const mainTrace = mainTraces.find((candidate) => (
           candidate?.meta?.seriesKey === trace.meta.macdSeriesKey
         ));
-        return mainTrace?.line?.color === trace?.marker?.color;
+        return mainTrace?.line?.color === trace?.line?.color;
       }),
       indicatorLabel: (macdElement?.layout?.annotations || []).some((annotation) => (
         annotation?.text === "MACD" && annotation?.xanchor === "left"
@@ -1513,6 +1522,7 @@ test("MACD automatically follows visible stock charts", async ({ page }) => {
   expect(macdPresentation.macroVisible).toBe(true);
   expect(macdPresentation.labels).toContain("삼성전자");
   expect(macdPresentation.labels.every((label) => !label.endsWith(" MACD"))).toBe(true);
+  expect(macdPresentation.onePixelLines).toBe(true);
   expect(macdPresentation.colorsMatch).toBe(true);
   expect(macdPresentation.indicatorLabel).toBe(true);
 

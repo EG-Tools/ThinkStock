@@ -4,6 +4,60 @@ import test from "node:test";
 await import("../../docs/modules/ticker-price-runtime.js");
 const runtime = globalThis.ThinkStockTickerPriceRuntime;
 
+test("price cache repository owns validation, metadata and retention mutations", async () => {
+  const records = new Map();
+  const removed = [];
+  const stored = [];
+  const repository = runtime.createCacheRepository({
+    storeName: "tickerPrices",
+    schema: 5,
+    now: () => 1234,
+    normalizePoints: (points) => (Array.isArray(points) ? points : [])
+      .map((point) => ({ date: String(point.date || ""), close: Number(point.close) }))
+      .filter((point) => point.date && Number.isFinite(point.close)),
+    inspectIntegrity: (points) => ({ clean: points.length > 0 }),
+    fingerprint: (points) => `fp-${points.length}-${points.at(-1)?.close}`,
+    recordIssue: (record, expected) => (
+      Number(record?.schema) === expected.schema
+      && record?.ticker === expected.key
+      && record?.contentFingerprint === expected.contentFingerprint
+        ? ""
+        : "invalid"
+    ),
+    withMetadata: (record, metadata) => ({ ...record, cacheMeta: metadata }),
+    normalizeStatus: (ticker, status) => ({ ...status, ticker }),
+    getStatus: () => null,
+    displayName: () => "삼성전자",
+    readActiveRecord: async (_storeName, ticker) => records.get(ticker) || null,
+    writeRecord: async (_storeName, ticker, record) => { records.set(ticker, record); },
+    writeRecords: async (_storeName, entries) => {
+      entries.forEach(([ticker, record]) => records.set(ticker, record));
+    },
+    deleteRecord: async (_storeName, ticker) => {
+      removed.push(ticker);
+      records.delete(ticker);
+    },
+    retention: {
+      planAdmission: () => ({ rankingRequired: false, touchUpdates: [], evictKeys: [] }),
+      commitAdmission: (ticker) => stored.push(ticker),
+      noteRemoved: (ticker) => removed.push(`noted:${ticker}`),
+      noteAccess: () => {},
+      noteStored: () => {},
+    },
+  });
+
+  assert.equal(await repository.write("005930.ks", [
+    { date: "2026-08-21", close: 71000 },
+  ]), true);
+  assert.equal(stored.at(-1), "005930.KS");
+  assert.equal(records.get("005930.KS").displayName, "삼성전자");
+  assert.equal((await repository.read("005930.KS")).points[0].close, 71000);
+
+  records.set("005930.KS", { schema: 5, ticker: "005930.KS", points: [] });
+  assert.equal(await repository.read("005930.KS"), null);
+  assert.equal(records.has("005930.KS"), false);
+});
+
 test("stores normalized ticker price status and selects the visible ticker", () => {
   const store = runtime.createStatusStore({
     tickerPattern: /^\d{6}\.(KS|KQ)$/,

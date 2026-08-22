@@ -52,6 +52,151 @@
     return current < previous || current - previous >= interval;
   }
 
+  function createCacheRepository(options = {}) {
+    const storeName = String(options.storeName || "");
+    const schema = Number(options.schema);
+    const normalizePoints = options.normalizePoints;
+    const inspectIntegrity = options.inspectIntegrity || inspectPriceHistoryIntegrity;
+    const runMutation = options.runMutation || ((operation) => operation());
+    const now = typeof options.now === "function" ? options.now : Date.now;
+    if (!storeName || !Number.isFinite(schema) || typeof normalizePoints !== "function") {
+      throw new Error("ticker price cache repository dependencies are incomplete");
+    }
+
+    async function remove(rawTicker) {
+      const ticker = normalizeTicker(rawTicker);
+      if (!ticker) return false;
+      return runMutation(async () => {
+        await options.ensureRetention?.();
+        await options.deleteRecord?.(storeName, ticker);
+        options.retention?.noteRemoved?.(ticker);
+        return true;
+      });
+    }
+
+    async function read(rawTicker) {
+      const ticker = normalizeTicker(rawTicker);
+      if (!ticker) return null;
+      try {
+        await options.ensureRetention?.();
+        const record = await options.readActiveRecord?.(storeName, ticker);
+        if (!record) {
+          options.retention?.noteRemoved?.(ticker);
+          return null;
+        }
+        const points = normalizePoints(record.points, ticker);
+        if (!inspectIntegrity(points).clean) {
+          await remove(ticker);
+          return null;
+        }
+        const contentFingerprint = options.fingerprint(points, ["close", "volume"], {
+          tail: 96,
+          logicVersion: "ticker-price-cache-v1",
+        });
+        const issue = options.recordIssue(record, {
+          schema,
+          key: ticker,
+          contentCount: points.length,
+          latestDate: points.at(-1)?.date || "",
+          contentFingerprint,
+          source: "ticker-price",
+          revision: String(schema),
+        });
+        if (issue) {
+          await remove(ticker);
+          return null;
+        }
+        options.retention?.noteAccess?.(ticker);
+        const nextRecord = options.withMetadata({
+          ...record,
+          points,
+          historyCoverage: normalizeHistoryCoverage(record.historyCoverage),
+          priceIntegrityVersion: PRICE_HISTORY_INTEGRITY_VERSION,
+          contentFingerprint,
+        }, {
+          source: "ticker-price",
+          asOf: points.at(-1)?.date || "",
+          revision: String(schema),
+          contentFingerprint,
+          now: now(),
+          touch: true,
+        });
+        if (!record.contentFingerprint
+          || !record.cacheMeta
+          || Number(record.priceIntegrityVersion) !== PRICE_HISTORY_INTEGRITY_VERSION) {
+          await options.writeRecord(storeName, ticker, nextRecord).catch(() => {});
+          options.retention?.noteStored?.(ticker, nextRecord);
+        }
+        return nextRecord;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    async function write(rawTicker, rawPoints, displayName = "", writeOptions = {}) {
+      const ticker = normalizeTicker(rawTicker);
+      const points = normalizePoints(rawPoints, ticker);
+      if (!ticker || !points.length) return false;
+      if (!inspectIntegrity(points).clean) {
+        await remove(ticker).catch(() => false);
+        return false;
+      }
+      return runMutation(async () => {
+        await options.ensureRetention?.();
+        const timestamp = now();
+        const historyCoverage = normalizeHistoryCoverage(writeOptions.historyCoverage);
+        const contentFingerprint = options.fingerprint(points, ["close", "volume"], {
+          tail: 96,
+          logicVersion: "ticker-price-cache-v1",
+        });
+        const record = options.withMetadata({
+          schema,
+          ticker,
+          displayName: String(displayName || options.displayName?.(ticker) || ticker).trim(),
+          savedAt: timestamp,
+          lastAccessed: timestamp,
+          latestDate: points.at(-1)?.date || "",
+          historyCoverage,
+          priceIntegrityVersion: PRICE_HISTORY_INTEGRITY_VERSION,
+          contentFingerprint,
+          status: options.normalizeStatus(ticker, options.getStatus?.(ticker) || {
+            source: "LOCAL_CACHE",
+            latestDate: points.at(-1)?.date || "",
+            localCache: true,
+          }),
+          points,
+        }, {
+          source: "ticker-price",
+          asOf: points.at(-1)?.date || "",
+          revision: String(schema),
+          contentFingerprint,
+          now: timestamp,
+          savedAt: timestamp,
+          touch: true,
+        });
+        const admission = options.retention?.planAdmission?.(ticker) || {
+          rankingRequired: false,
+          touchUpdates: [],
+          evictKeys: [],
+        };
+        if (admission.rankingRequired) {
+          if (admission.touchUpdates?.length) {
+            await options.writeRecords(storeName, admission.touchUpdates.map(({ key, record: value }) => [key, value]))
+              .catch(() => {});
+          }
+          for (const evictKey of admission.evictKeys || []) {
+            await options.deleteRecord(storeName, evictKey);
+          }
+        }
+        await options.writeRecord(storeName, ticker, record);
+        options.retention?.commitAdmission?.(ticker, record, admission.evictKeys || []);
+        return true;
+      }).catch(() => false);
+    }
+
+    return Object.freeze({ read, remove, write });
+  }
+
   function createStatusStore(options = {}) {
     const tickerPattern = options.tickerPattern || /^\d{6}\.(KS|KQ)$/;
     const now = typeof options.now === "function" ? options.now : Date.now;
@@ -651,6 +796,7 @@
     HISTORY_COVERAGE_PARTIAL,
     HISTORY_COVERAGE_UNKNOWN,
     createStatusStore,
+    createCacheRepository,
     createPayloadController,
     createSeriesLoader,
     clearSeries,

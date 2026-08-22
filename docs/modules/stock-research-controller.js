@@ -141,6 +141,7 @@
     const onBlockedStateChanged = options.onBlockedStateChanged || (() => {});
     const historyCache = options.historyCache || null;
     const resultCache = options.resultCache || null;
+    const timingCache = options.timingCache || null;
     const getSharedSources = options.getSharedSources || (() => {
       const data = getData();
       const records = Array.isArray(data.priceRecords) ? data.priceRecords : [];
@@ -921,7 +922,9 @@
         const removedCount = universeChanges.removed.length;
         setProgress(8, canIncrement ? "편입·기존 종목 순환 확인" : "최초 탐구 계산 준비", `0 / ${scanRecords.length}`);
         let preloadedHistory = new Map();
+        let preloadedTiming = new Map();
         const pendingHistoryWrites = new Map();
+        const pendingTimingWrites = new Map();
         let historyWriteChain = Promise.resolve();
         const flushPendingHistoryWrites = async (force = false) => {
           if (typeof historyCache?.writeMany !== "function"
@@ -950,6 +953,16 @@
             preloadedHistory = new Map();
           }
         }
+        if (scanRecords.length && typeof timingCache?.readMany === "function") {
+          try {
+            preloadedTiming = await timingCache.readMany(scanRecords.map((item) => (
+              String(item?.ticker || "").trim().toUpperCase()
+            )));
+            if (!(preloadedTiming instanceof Map)) preloadedTiming = new Map();
+          } catch (_) {
+            preloadedTiming = new Map();
+          }
+        }
         if (scanRecords.length) {
           const laneCount = researchWorkerLaneCount(scope.navigator, scanRecords.length);
           if (typeof scope.Worker !== "function") throw new Error("이 브라우저는 백그라운드 계산을 지원하지 않습니다.");
@@ -974,7 +987,19 @@
               );
               const tickerAnalysisDate = latestResearchDate(historyRows, universe.baseDate);
               if (tickerAnalysisDate > latestAnalyzedDate) latestAnalyzedDate = tickerAnalysisDate;
-              const candidate = await lane.analyze(item, historyRows, tickerAnalysisDate, ANALYSIS_FILTER);
+              const analysis = await lane.analyze(
+                item,
+                historyRows,
+                tickerAnalysisDate,
+                ANALYSIS_FILTER,
+                preloadedTiming.get(ticker) || null,
+              );
+              const candidate = analysis && ("candidate" in analysis || "timingCacheRecord" in analysis)
+                ? (analysis.candidate || null)
+                : (analysis || null);
+              if (analysis?.timingCacheRecord?.model) {
+                pendingTimingWrites.set(ticker, analysis.timingCacheRecord);
+              }
               const previousSignal = cached?.universeState?.[ticker]?.signalFingerprint || "";
               const nextSignal = candidateSignalFingerprint(candidate);
               if (canIncrement && previousSignal && previousSignal !== nextSignal) signalChanges += 1;
@@ -999,6 +1024,9 @@
         }));
         await flushPendingHistoryWrites(true);
         await historyWriteChain;
+        if (pendingTimingWrites.size && typeof timingCache?.writeMany === "function") {
+          await timingCache.writeMany(pendingTimingWrites).catch(() => {});
+        }
         const candidatePool = candidates
           .map(({ score: _score, ...candidate }) => candidate);
         const candidateOrder = normalizeCandidateOrder(candidatePool, [], random);

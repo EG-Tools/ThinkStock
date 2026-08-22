@@ -198,3 +198,33 @@ test("exposes a compact timing-quality summary for diagnostics", async () => {
 
   assert.deepEqual(service.stats().quality, { evaluatedModels: 1 });
 });
+
+test("reuses a persisted timing model only when its input fingerprint matches", async () => {
+  const records = new Map();
+  const sources = {
+    dates: ["2026-01-02", "2026-01-05"],
+    pricesByTicker: { "^KS11": [100, 101] },
+    volumesByTicker: {},
+    macroRows: [{ date: "2026-01-05", leading_cycle: 101 }],
+  };
+  const cache = {
+    readMany: async (keys) => new Map(keys.map((key) => [key, records.get(key)])),
+    writeMany: async (entries) => entries.forEach((value, key) => records.set(key, value)),
+  };
+  const first = createMarketTimingService({}, {
+    cache,
+    buildMacdOscillator: ({ dates, prices }) => ({ dates, prices, normalized: prices.map(() => 0) }),
+    buildMarketTimingSignals: ({ indexKey }) => ({ indexKey, signals: [{ date: "2026-01-05" }] }),
+  });
+  await first.prepare({ signature: "first-session", targets: ["^KS11"], sources });
+  assert.equal(records.has("^KS11"), true);
+
+  const second = createMarketTimingService({}, {
+    cache,
+    createWorker: () => { throw new Error("worker should not run on cache hit"); },
+  });
+  await second.prepare({ signature: "second-session", targets: ["^KS11"], sources });
+  assert.deepEqual(second.get("^KS11").signals, [{ date: "2026-01-05" }]);
+  assert.equal(second.stats().persistentCacheHits, 1);
+  assert.equal(second.stats().modelCalculations, 0);
+});

@@ -344,6 +344,33 @@
       });
     }
 
+    async function repairStore(storeName, validate) {
+      if (typeof validate !== "function") return 0;
+      return withDatabase(async (db) => {
+        const transaction = db.transaction(storeName, "readwrite");
+        const store = transaction.objectStore(storeName);
+        let deleted = 0;
+        const request = store.openCursor();
+        request.onsuccess = () => {
+          const cursor = request.result;
+          if (!cursor) return;
+          let valid = false;
+          try { valid = validate(cursor.value, cursor.key) !== false; } catch (_) { valid = false; }
+          if (!valid) {
+            cursor.delete();
+            deleted += 1;
+          }
+          cursor.continue();
+        };
+        request.onerror = () => transaction.abort();
+        await transactionDone(transaction, {
+          error: "IndexedDB cache repair failed",
+          abort: "IndexedDB cache repair aborted",
+        });
+        return deleted;
+      });
+    }
+
     return Object.freeze({
       close,
       open,
@@ -358,6 +385,7 @@
       writeSnapshot,
       deleteSnapshot,
       pruneStore,
+      repairStore,
     });
   }
 

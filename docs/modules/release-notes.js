@@ -3,6 +3,18 @@
 
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.02",
+      date: "2026.08.22",
+      items: Object.freeze([
+        "입력 우선 백그라운드 작업 통합",
+        "메인차트·종목탐구 신호 계산 캐시 공유",
+        "오래되거나 손상된 캐시 자동 정리",
+        "가격·캐시 책임과 앱 구조 정돈",
+        "중복 차트 렌더링 및 보조차트 갱신 절감",
+        "부팅 동행율 표시와 MACD 선 두께 보정",
+      ]),
+    }),
+    Object.freeze({
       version: "3.01",
       date: "2026.08.22",
       items: Object.freeze([

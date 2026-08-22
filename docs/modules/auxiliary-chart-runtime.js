@@ -413,11 +413,12 @@
         traces.push({
           x: thinned.dates,
           y: thinned.values,
-          type: "bar",
+          type: "scatter",
+          mode: "lines",
           name: labelName(series),
-          marker: {
+          line: {
             color: baseColor,
-            line: { width: 0 },
+            width: 1,
           },
           opacity: visibleSeries.length > 1 ? 0.78 : 0.9,
           hoverinfo: chartSession.hoverShowPopup ? undefined : "skip",

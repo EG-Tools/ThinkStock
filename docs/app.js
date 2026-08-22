@@ -422,6 +422,7 @@ const TICKER_AI_FORECAST_JOURNAL_STORE_NAME = runtimeStorageContract.stores.tick
 const TICKER_RESEARCH_HISTORY_STORE_NAME = runtimeStorageContract.stores.tickerResearchHistory;
 const STOCK_RESEARCH_RESULTS_STORE_NAME = runtimeStorageContract.stores.stockResearchResults;
 const TICKER_BROKER_RESEARCH_STORE_NAME = runtimeStorageContract.stores.tickerBrokerResearch;
+const TICKER_TIMING_MODEL_STORE_NAME = runtimeStorageContract.stores.tickerTimingModels;
 const GRANULAR_CACHE_SCHEMA_VERSION = 6;
 const TICKER_DISCLOSURE_CACHE_SCHEMA_VERSION = 2;
 const GRANULAR_CACHE_PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -429,7 +430,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = tickerPriceRuntimeModule.CORPORATE_ACTION_RATIO_THRESHOLD;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = tickerPriceRuntimeModule.CORPORATE_ACTION_MAX_BOUNDARY_DAYS;
-const APP_VERSION = "3.01";
+const APP_VERSION = "3.02";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -443,7 +444,7 @@ function getAppBuildVersion() {
 const APP_BUILD_VERSION = getAppBuildVersion();
 const cacheMigrator = cacheMigrationsModule.createCacheMigrator(globalThis, {
   markerKey: "thinkstock-cache-migrations-v1",
-  currentVersion: 3,
+  currentVersion: 4,
   migrations: [
     {
       version: 1,
@@ -476,6 +477,13 @@ const cacheMigrator = cacheMigrationsModule.createCacheMigrator(globalThis, {
         try { globalThis.sessionStorage?.removeItem(API_SETTINGS_SESSION_KEY); } catch (_) {}
       },
     },
+    {
+      version: 4,
+      migrate: ({ storage }) => {
+        ["thinkstock-v1", "thinkstock-v2", "thinkstock-v3", "thinkstock-v4"]
+          .forEach((key) => storage?.removeItem(key));
+      },
+    },
   ],
 });
 const optionalFeatureLoader = optionalFeatureLoaderModule.createOptionalFeatureLoader(globalThis, {
@@ -485,6 +493,10 @@ const optionalFeatureRuntime = optionalFeatureRuntimeModule.createOptionalFeatur
   loader: optionalFeatureLoader,
   version: APP_BUILD_VERSION,
   buildMacdOscillator,
+  marketTimingCache: {
+    readMany: (tickers) => indexedCacheStore.readRecords(TICKER_TIMING_MODEL_STORE_NAME, tickers),
+    writeMany: (entries) => indexedCacheStore.writeRecords(TICKER_TIMING_MODEL_STORE_NAME, entries),
+  },
 });
 const runtimeDataApp = runtimeDataAppModule.createRuntimeDataApp(globalThis, {
   isAbortError,
@@ -517,6 +529,7 @@ const indexedCacheStore = appStorageModule.createIndexedCacheStore(globalThis, {
     TICKER_RESEARCH_HISTORY_STORE_NAME,
     STOCK_RESEARCH_RESULTS_STORE_NAME,
     TICKER_BROKER_RESEARCH_STORE_NAME,
+    TICKER_TIMING_MODEL_STORE_NAME,
   ],
 });
 const tickerSeriesCacheRetention = seriesCacheRetentionModule.createSeriesCacheRetention({
@@ -524,17 +537,35 @@ const tickerSeriesCacheRetention = seriesCacheRetentionModule.createSeriesCacheR
 });
 let tickerSeriesCacheRetentionInitPromise = null;
 let tickerPriceCacheMutationQueue = Promise.resolve();
+const backgroundTaskScheduler = backgroundStockRefreshModule.createBackgroundTaskScheduler(globalThis);
 const granularCacheMaintenance = cacheMaintenanceRuntimeModule.createCacheMaintenanceRuntime(globalThis, {
   store: indexedCacheStore,
   lifecyclePolicy: cacheLifecyclePolicyModule,
   pruneIntervalMs: GRANULAR_CACHE_PRUNE_INTERVAL_MS,
+  scheduler: backgroundTaskScheduler,
+  validators: {
+    [TICKER_PRICE_CACHE_STORE_NAME]: (record, key) => (
+      Number(record?.schema) === GRANULAR_CACHE_SCHEMA_VERSION
+      && String(record?.ticker || "").toUpperCase() === String(key || "").toUpperCase()
+      && tickerPriceRuntimeModule.inspectPriceHistoryIntegrity(record?.points).clean
+    ),
+    [TICKER_TIMING_MODEL_STORE_NAME]: (record, key) => (
+      Number(record?.schema) === 1
+      && String(record?.ticker || "").toUpperCase() === String(key || "").toUpperCase()
+      && record?.model && typeof record.model === "object"
+      && typeof record?.fingerprint === "string"
+    ),
+  },
   storeNames: [
+    TICKER_PRICE_CACHE_STORE_NAME,
     TICKER_DISCLOSURE_CACHE_STORE_NAME,
     TICKER_AI_ANALYSIS_CACHE_STORE_NAME,
     TICKER_AI_FORECAST_CACHE_STORE_NAME,
     TICKER_AI_FORECAST_JOURNAL_STORE_NAME,
     TICKER_RESEARCH_HISTORY_STORE_NAME,
+    STOCK_RESEARCH_RESULTS_STORE_NAME,
     TICKER_BROKER_RESEARCH_STORE_NAME,
+    TICKER_TIMING_MODEL_STORE_NAME,
   ],
 });
 const dartGatewaySettingsStore = appStorageModule.createApiSettingsStore(globalThis, {
@@ -573,6 +604,7 @@ const APP_CACHE_INDEXED_STORE_NAMES = Object.freeze([
   TICKER_RESEARCH_HISTORY_STORE_NAME,
   STOCK_RESEARCH_RESULTS_STORE_NAME,
   TICKER_BROKER_RESEARCH_STORE_NAME,
+  TICKER_TIMING_MODEL_STORE_NAME,
 ]);
 const APP_CACHE_LOCAL_STORAGE_KEYS = Object.freeze([
   DATA_CACHE_LOCAL_KEY,
@@ -911,6 +943,7 @@ const tickerPriceStatusStore = tickerPriceRuntimeModule.createStatusStore({
 });
 const tickerVolumeSeriesByTicker = new Map();
 let tickerPricePayloadController = null;
+let tickerPriceCacheRepository = null;
 let tickerSeriesLoader = null;
 let currentDisclosureHighlight = null;
 let lastDisclosureTraceStats = { total: 0, candidates: 0, markers: 0 };
@@ -919,6 +952,7 @@ let baseTraceValues = {};
 let adrFinalRetryController = null;
 let chartVisualFrameCoordinator = null;
 let coMovementPanelController = null;
+let coMovementPanelControllerPromise = null;
 let chartMarkerRuntime = null;
 let historicalDataLoaded = false;
 let historicalDataLoadPromise = null;
@@ -1711,14 +1745,7 @@ function runTickerPriceCacheMutation(operation) {
 }
 
 async function removeTickerPriceCacheRecord(key) {
-  const normalized = String(key || "").trim().toUpperCase();
-  if (!normalized) return false;
-  return runTickerPriceCacheMutation(async () => {
-    await ensureTickerSeriesCacheRetention();
-    await deleteIndexedDbRecord(TICKER_PRICE_CACHE_STORE_NAME, normalized);
-    tickerSeriesCacheRetention.noteRemoved(normalized);
-    return true;
-  });
+  return getTickerPriceCacheRepository().remove(key);
 }
 
 async function removeInvalidGranularCacheRecord(storeName, key) {
@@ -3009,26 +3036,33 @@ function syncCoMovementToggleButton() {
 
 async function getCoMovementPanelController() {
   if (coMovementPanelController) return coMovementPanelController;
-  coMovementModule ||= await optionalFeatureRuntime.ensureCoMovement();
-  coMovementPanelController = coMovementModule.createPanelController(window, {
-    panel: document.getElementById("coMovementPanel"),
-    syncControl: syncCoMovementToggleButton,
-    readState: () => {
-      const targetKey = resolveCoMovementTarget();
-      const model = chartSession.currentMainChartModel;
-      return {
-        enabled: chartSession.showCoMovement,
-        targetKey,
-        targetName: labelName(targetKey),
-        rows: model?.rows,
-        revision: model?.renderRevision,
-        range: getCurrentXRangeMs(document.getElementById("chart")),
-        requestedMonths: chartSession.activeMonths,
-        comparisons: CO_MOVEMENT_COMPARISONS,
-      };
-    },
-  });
-  return coMovementPanelController;
+  coMovementPanelControllerPromise ||= (async () => {
+    coMovementModule ||= await optionalFeatureRuntime.ensureCoMovement();
+    coMovementPanelController ||= coMovementModule.createPanelController(window, {
+      panel: document.getElementById("coMovementPanel"),
+      syncControl: syncCoMovementToggleButton,
+      readState: () => {
+        const targetKey = resolveCoMovementTarget();
+        const model = chartSession.currentMainChartModel;
+        return {
+          enabled: chartSession.showCoMovement,
+          targetKey,
+          targetName: labelName(targetKey),
+          rows: model?.rows,
+          revision: model?.renderRevision,
+          range: getCurrentXRangeMs(document.getElementById("chart")),
+          requestedMonths: chartSession.activeMonths,
+          comparisons: CO_MOVEMENT_COMPARISONS,
+        };
+      },
+    });
+    return coMovementPanelController;
+  })();
+  try {
+    return await coMovementPanelControllerPromise;
+  } finally {
+    coMovementPanelControllerPromise = null;
+  }
 }
 
 async function renderCoMovementPanel() {
@@ -3392,64 +3426,32 @@ function isTickerPriceCacheFresh(latestDate, ticker) {
   });
 }
 
+function getTickerPriceCacheRepository() {
+  if (tickerPriceCacheRepository) return tickerPriceCacheRepository;
+  tickerPriceCacheRepository = tickerPriceRuntimeModule.createCacheRepository({
+    storeName: TICKER_PRICE_CACHE_STORE_NAME,
+    schema: GRANULAR_CACHE_SCHEMA_VERSION,
+    normalizePoints: normalizeTickerPricePointsForTicker,
+    inspectIntegrity: tickerPriceRuntimeModule.inspectPriceHistoryIntegrity,
+    ensureRetention: ensureTickerSeriesCacheRetention,
+    retention: tickerSeriesCacheRetention,
+    runMutation: runTickerPriceCacheMutation,
+    readActiveRecord: readLifecycleCacheRecord,
+    writeRecord: writeIndexedDbRecord,
+    writeRecords: (storeName, entries) => indexedCacheStore.writeRecords(storeName, entries),
+    deleteRecord: deleteIndexedDbRecord,
+    fingerprint: seriesIntegrityModule.fingerprintDatedSeries,
+    recordIssue: cacheRecordHealthModule.granularRecordIssue,
+    withMetadata: cacheLifecyclePolicyModule.withCacheMetadata,
+    normalizeStatus: normalizeTickerPriceStatus,
+    getStatus: (ticker) => tickerPriceStatusStore.get(ticker),
+    displayName: (ticker) => DISPLAY_NAMES[ticker] || ticker,
+  });
+  return tickerPriceCacheRepository;
+}
+
 async function readTickerPriceCache(ticker) {
-  const key = String(ticker || "").trim().toUpperCase();
-  if (!key) return null;
-  try {
-    await ensureTickerSeriesCacheRetention();
-    const record = await readLifecycleCacheRecord(TICKER_PRICE_CACHE_STORE_NAME, key);
-    if (!record) {
-      tickerSeriesCacheRetention.noteRemoved(key);
-      return null;
-    }
-    const points = normalizeTickerPricePointsForTicker(record.points, key);
-    if (!tickerPriceRuntimeModule.inspectPriceHistoryIntegrity(points).clean) {
-      await removeTickerPriceCacheRecord(key);
-      return null;
-    }
-    const contentFingerprint = seriesIntegrityModule.fingerprintDatedSeries(
-      points,
-      ["close", "volume"],
-      { tail: 96, logicVersion: "ticker-price-cache-v1" },
-    );
-    const issue = cacheRecordHealthModule.granularRecordIssue(record, {
-      schema: GRANULAR_CACHE_SCHEMA_VERSION,
-      key,
-      contentCount: points.length,
-      latestDate: points.at(-1)?.date || "",
-      contentFingerprint,
-      source: "ticker-price",
-      revision: String(GRANULAR_CACHE_SCHEMA_VERSION),
-    });
-    if (issue) {
-      await removeTickerPriceCacheRecord(key);
-      return null;
-    }
-    tickerSeriesCacheRetention.noteAccess(key);
-    const nextRecord = cacheLifecyclePolicyModule.withCacheMetadata({
-      ...record,
-      points,
-      historyCoverage: tickerPriceRuntimeModule.normalizeHistoryCoverage(record.historyCoverage),
-      priceIntegrityVersion: tickerPriceRuntimeModule.PRICE_HISTORY_INTEGRITY_VERSION,
-      contentFingerprint,
-    }, {
-      source: "ticker-price",
-      asOf: points.at(-1)?.date || "",
-      revision: String(GRANULAR_CACHE_SCHEMA_VERSION),
-      contentFingerprint,
-      now: Date.now(),
-      touch: true,
-    });
-    if (!record.contentFingerprint
-      || !record.cacheMeta
-      || Number(record.priceIntegrityVersion) !== tickerPriceRuntimeModule.PRICE_HISTORY_INTEGRITY_VERSION) {
-      await writeIndexedDbRecord(TICKER_PRICE_CACHE_STORE_NAME, key, nextRecord).catch(() => {});
-      tickerSeriesCacheRetention.noteStored(key, nextRecord);
-    }
-    return nextRecord;
-  } catch (_) {
-    return null;
-  }
+  return getTickerPriceCacheRepository().read(ticker);
 }
 
 function normalizeResearchHistoryCacheForTicker(value, ticker) {
@@ -3519,63 +3521,7 @@ async function readSharedResearchHistoryCaches(tickers) {
 }
 
 async function writeTickerPriceCache(ticker, points, displayName = "", options = {}) {
-  const key = String(ticker || "").trim().toUpperCase();
-  const normalized = normalizeTickerPricePointsForTicker(points, key);
-  if (!key || !normalized.length) return false;
-  if (!tickerPriceRuntimeModule.inspectPriceHistoryIntegrity(normalized).clean) {
-    await removeTickerPriceCacheRecord(key).catch(() => false);
-    return false;
-  }
-  return runTickerPriceCacheMutation(async () => {
-    await ensureTickerSeriesCacheRetention();
-    const now = Date.now();
-    const historyCoverage = tickerPriceRuntimeModule.normalizeHistoryCoverage(options.historyCoverage);
-    const contentFingerprint = seriesIntegrityModule.fingerprintDatedSeries(
-      normalized,
-      ["close", "volume"],
-      { tail: 96, logicVersion: "ticker-price-cache-v1" },
-    );
-    const record = cacheLifecyclePolicyModule.withCacheMetadata({
-      schema: GRANULAR_CACHE_SCHEMA_VERSION,
-      ticker: key,
-      displayName: String(displayName || DISPLAY_NAMES[key] || key).trim(),
-      savedAt: now,
-      lastAccessed: now,
-      latestDate: normalized[normalized.length - 1].date,
-      historyCoverage,
-      priceIntegrityVersion: tickerPriceRuntimeModule.PRICE_HISTORY_INTEGRITY_VERSION,
-      contentFingerprint,
-      status: normalizeTickerPriceStatus(key, tickerPriceStatusStore.get(key) || {
-        source: "LOCAL_CACHE",
-        latestDate: normalized[normalized.length - 1].date,
-        localCache: true,
-      }),
-      points: normalized,
-    }, {
-      source: "ticker-price",
-      asOf: normalized.at(-1)?.date || "",
-      revision: String(GRANULAR_CACHE_SCHEMA_VERSION),
-      contentFingerprint,
-      now,
-      savedAt: now,
-      touch: true,
-    });
-    const admission = tickerSeriesCacheRetention.planAdmission(key);
-    if (admission.rankingRequired) {
-      if (admission.touchUpdates.length) {
-        await indexedCacheStore.writeRecords(
-          TICKER_PRICE_CACHE_STORE_NAME,
-          admission.touchUpdates.map(({ key: touchedKey, record: touchedRecord }) => [touchedKey, touchedRecord]),
-        ).catch(() => {});
-      }
-      for (const evictKey of admission.evictKeys) {
-        await deleteIndexedDbRecord(TICKER_PRICE_CACHE_STORE_NAME, evictKey);
-      }
-    }
-    await writeIndexedDbRecord(TICKER_PRICE_CACHE_STORE_NAME, key, record);
-    tickerSeriesCacheRetention.commitAdmission(key, record, admission.evictKeys);
-    return true;
-  }).catch(() => false);
+  return getTickerPriceCacheRepository().write(ticker, points, displayName, options);
 }
 
 async function applyTickerPriceCache(ticker, displayName = "") {
@@ -4159,7 +4105,7 @@ function setupStockResearch(msgEl) {
       workerUrl: `./modules/stock-research-worker.js?v=${encodeURIComponent(APP_BUILD_VERSION)}`,
       canRun: () => adminAccessGranted,
       getData: () => ({ priceRecords: pricePayload?.records, adrRows, macroRows, creditRows, crisisRows }),
-    historyCache: {
+      historyCache: {
         read: readSharedResearchHistoryCache,
         readMany: readSharedResearchHistoryCaches,
         write: (ticker, record) => writeIndexedDbRecord(TICKER_RESEARCH_HISTORY_STORE_NAME, ticker, record),
@@ -4170,11 +4116,15 @@ function setupStockResearch(msgEl) {
         clear: () => indexedCacheStore.clearStore(TICKER_RESEARCH_HISTORY_STORE_NAME),
       prune: () => scheduleGranularCachePrune(TICKER_RESEARCH_HISTORY_STORE_NAME, 420),
     },
-    resultCache: {
-      read: (key) => indexedCacheStore.readRecord(STOCK_RESEARCH_RESULTS_STORE_NAME, key),
-      write: (key, value) => indexedCacheStore.writeRecord(STOCK_RESEARCH_RESULTS_STORE_NAME, key, value),
-      clear: () => indexedCacheStore.clearStore(STOCK_RESEARCH_RESULTS_STORE_NAME),
-    },
+      resultCache: {
+        read: (key) => indexedCacheStore.readRecord(STOCK_RESEARCH_RESULTS_STORE_NAME, key),
+        write: (key, value) => indexedCacheStore.writeRecord(STOCK_RESEARCH_RESULTS_STORE_NAME, key, value),
+        clear: () => indexedCacheStore.clearStore(STOCK_RESEARCH_RESULTS_STORE_NAME),
+      },
+      timingCache: {
+        readMany: (tickers) => indexedCacheStore.readRecords(TICKER_TIMING_MODEL_STORE_NAME, tickers),
+        writeMany: (entries) => indexedCacheStore.writeRecords(TICKER_TIMING_MODEL_STORE_NAME, entries),
+      },
       isAdded: (ticker) => customStocks.some((item) => item.ticker === ticker),
       addStock: (candidate) => addCustomStock(candidate, msgEl),
       removeStock: (ticker) => removeCustomStock(ticker),
@@ -6827,7 +6777,11 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
     chartSession.currentStart = new Date(renderedFrameRange[0]).toISOString().slice(0, 10);
     chartSession.currentEnd = new Date(renderedFrameRange[1]).toISOString().slice(0, 10);
   }
-  coMovementPanelController?.flush();
+  if (chartSession.showCoMovement && !coMovementPanelController) {
+    void renderCoMovementPanel();
+  } else {
+    coMovementPanelController?.flush();
+  }
   markEventMarkerRenderApplied(eventMarkerRevisionsAtStart);
   if (chartSession.autoChartReset && aiForecastTraces.length && tracesExceedVisibleYRange(
     aiForecastTraces,
@@ -6848,7 +6802,9 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
   getMainChartEvents().bind(el);
 
   const mainRangeForAdr = el._fullLayout?.xaxis?.range?.slice() || (savedXRange ? [...savedXRange] : null);
-  if (!invalidation.shouldAbort?.() && chartUpdateCoordinatorModule.shouldUpdateAuxiliary(invalidation)) {
+  if (renderMode !== "skipped"
+    && !invalidation.shouldAbort?.()
+    && chartUpdateCoordinatorModule.shouldUpdateAuxiliary(invalidation)) {
     await Promise.allSettled([
       renderMacdChart(mainRangeForAdr ? [...mainRangeForAdr] : null),
       renderAdrChart(mainRangeForAdr ? [...mainRangeForAdr] : null),
@@ -7599,6 +7555,7 @@ function getRuntimeRefreshOrchestrator() {
     scheduleHiddenStockRefresh: (refreshOptions) => {
       if (!backgroundStockRefresh) {
         backgroundStockRefresh = backgroundStockRefreshModule.createBackgroundStockRefresh(globalThis, {
+          scheduler: backgroundTaskScheduler,
           hasHidden: () => getCustomStockLifecycle().select(
             "hidden",
             (ticker) => chartSession.hiddenSeries.has(ticker),

@@ -26,7 +26,7 @@
       worker.postMessage({ id, ...payload });
     });
     return request({ type: "init", shared }).then(() => ({
-      analyze: (item, rows, asOfDate, filter) => request({
+      analyze: (item, rows, asOfDate, filter, timingCacheRecord = null) => request({
         type: "analyze",
         item,
         rows,
@@ -36,7 +36,8 @@
         includeSell: filter.includeSell,
         todayOnly: filter.todayOnly,
         collectAllSignals: filter.collectAllSignals === true,
-      }).then((result) => result.candidate || null),
+        timingCacheRecord,
+      }),
       terminate: () => worker.terminate(),
     }));
   }

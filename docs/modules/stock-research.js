@@ -124,7 +124,7 @@
     });
     if (!macd) return null;
     const benchmark = new Map((options.benchmarkRows || []).map((row) => [row.date, number(row.close)]));
-    const timing = options.buildMarketTimingSignals({
+    const timing = options.timingModel || options.buildMarketTimingSignals({
       indexKey: item.ticker,
       dates: macd.dates,
       prices: macd.prices,
@@ -141,6 +141,7 @@
       externalVolatilityPolicy: options.externalVolatilityPolicy || {},
       ...(behaviorPolicy ? { behaviorPolicy } : {}),
     });
+    options.onTimingModel?.(timing);
     const dateIndexes = new Map(rows.map((row, index) => [row.date, index]));
     const latestIndex = rows.length - 1;
     const recentSignalStartIndex = Math.max(0, latestIndex - RECENT_SIGNAL_WINDOW + 1);
