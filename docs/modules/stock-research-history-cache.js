@@ -50,6 +50,11 @@
       schema: HISTORY_CACHE_SCHEMA,
       ticker: key,
       latestDate,
+      historyCoverage: String(value?.historyCoverage || "").toLowerCase() === "full"
+        ? "full"
+        : "partial",
+      priceIntegrityVersion: globalScope.ThinkStockTickerPriceRuntime
+        ?.PRICE_HISTORY_INTEGRITY_VERSION || 1,
       rows,
     }, {
       source: "stock-research-history",
@@ -85,6 +90,11 @@
       ticker: key,
       asOfDate: String(payload?.asOfDate || rows.at(-1)?.date || "").slice(0, 10),
       latestDate: rows.at(-1)?.date || "",
+      historyCoverage: payload?.partial === true
+        ? (cachedRecord?.historyCoverage || "partial")
+        : "full",
+      priceIntegrityVersion: globalScope.ThinkStockTickerPriceRuntime
+        ?.PRICE_HISTORY_INTEGRITY_VERSION || 1,
       source: String(payload?.source || cachedRecord?.source || ""),
       savedAt: Date.now(),
       lastAccessed: Date.now(),

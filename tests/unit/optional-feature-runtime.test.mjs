@@ -23,6 +23,7 @@ test("loads each optional feature only once and creates one timing service", asy
     ThinkStockAiForecastQualityRuntime: { createAiForecastQualityRuntime() {} },
     ThinkStockMarketTimingEvaluation: { evaluateMarketTimingModel() {} },
     ThinkStockMarketTiming: { buildMarketTimingSignals() {} },
+    ThinkStockCoMovement: { createCoMovementPanelController() {} },
     ThinkStockMarketTimingService: {
       createMarketTimingService: (_scope, options) => ({ options }),
     },
@@ -54,6 +55,7 @@ test("loads each optional feature only once and creates one timing service", asy
   });
 
   assert.equal(await runtime.ensureAi(), await runtime.ensureAi());
+  assert.equal(await runtime.ensureCoMovement(), await runtime.ensureCoMovement());
   assert.equal(await runtime.ensureMarketTiming(), await runtime.ensureMarketTiming());
   assert.equal(await runtime.ensureStockResearch(), await runtime.ensureStockResearch());
   assert.equal(await runtime.ensureSettings(), await runtime.ensureSettings());

@@ -3,6 +3,20 @@
 
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.01",
+      date: "2026.08.22",
+      items: Object.freeze([
+        "가격·액면분할 캐시 무결성 강화",
+        "숨은 종목의 부팅 후 계산 분리",
+        "종목탐구 증분 캐시 재사용 검증",
+        "공시·신호 마커 선택 판정 공통화",
+        "증권사별 최신 리포트 중복 제거",
+        "동행율 선택 기능 지연 로딩",
+        "AI 예측 승격 검증 및 안정 모델 유지",
+        "초기 로딩 및 기타 구조 최적화",
+      ]),
+    }),
+    Object.freeze({
       version: "3.00",
       date: "2026.08.22",
       items: Object.freeze([

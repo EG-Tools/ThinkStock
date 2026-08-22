@@ -9,6 +9,7 @@
   const CORPORATE_ACTION_RATIO_THRESHOLD = 1.5;
   const CORPORATE_ACTION_MAX_BOUNDARY_DAYS = 3660;
   const INTEGRITY_MAX_TRANSITION_GAP_DAYS = 370;
+  const PRICE_HISTORY_INTEGRITY_VERSION = 4;
 
   function normalizeTicker(ticker) {
     return String(ticker || "").trim().toUpperCase();
@@ -184,6 +185,8 @@
       ticker: key,
       asOfDate: String(value?.asOfDate || rows.at(-1)?.date || "").slice(0, 10),
       latestDate: rows.at(-1)?.date || "",
+      historyCoverage: normalizeHistoryCoverage(value?.historyCoverage),
+      priceIntegrityVersion: PRICE_HISTORY_INTEGRITY_VERSION,
       rows,
     };
   }
@@ -207,6 +210,8 @@
       source: value?.status?.source || "ticker-price-cache",
       savedAt: Number(value?.savedAt) || now,
       lastAccessed: now,
+      historyCoverage: normalizeHistoryCoverage(value?.historyCoverage),
+      priceIntegrityVersion: PRICE_HISTORY_INTEGRITY_VERSION,
       rows,
     };
   }
@@ -228,6 +233,8 @@
         && Number.isFinite(point.close)
         && point.close > 0)
       .sort((left, right) => left.date.localeCompare(right.date));
+    const density = globalScope.ThinkStockMarketCalendar
+      ?.inspectDailyPriceHistoryDensity?.(rows, options.densityOptions) || { dense: true };
     let anomalyCount = 0;
     let maxRatio = 1;
     let firstDate = "";
@@ -244,10 +251,12 @@
     }
     return Object.freeze({
       anomalyCount,
-      clean: anomalyCount === 0,
+      clean: anomalyCount === 0 && density.dense !== false,
+      density,
       firstDate,
       maxRatio,
       points: rows.length,
+      sparse: density.dense === false,
     });
   }
 
@@ -279,6 +288,7 @@
       let anomalyCount = 0;
       let firstDate = "";
       let maxRatio = 1;
+      const validDates = [];
       let requiresSortedFallback = false;
       for (const row of records) {
         const date = String(row?.date || "").slice(0, 10);
@@ -289,6 +299,7 @@
           break;
         }
         points += 1;
+        validDates.push(date);
         const gapMs = previousDate
           ? Date.parse(`${date}T00:00:00Z`) - Date.parse(`${previousDate}T00:00:00Z`)
           : 0;
@@ -303,9 +314,19 @@
         previousClose = close;
         previousDate = date;
       }
+      const density = globalScope.ThinkStockMarketCalendar
+        ?.inspectDailyPriceHistoryDensity?.(validDates, options.densityOptions) || { dense: true };
       const integrity = requiresSortedFallback
         ? inspectPriceHistoryIntegrity(records.map((row) => ({ date: row?.date, close: row?.[ticker] })), options)
-        : { anomalyCount, clean: anomalyCount === 0, firstDate, maxRatio, points };
+        : {
+          anomalyCount,
+          clean: anomalyCount === 0 && density.dense !== false,
+          density,
+          firstDate,
+          maxRatio,
+          points,
+          sparse: density.dense === false,
+        };
       if (!integrity.clean) return Object.freeze({ ...integrity, ticker, clean: false });
     }
     return Object.freeze({ anomalyCount: 0, clean: true, firstDate: "", maxRatio: 1, ticker: "" });
@@ -316,14 +337,23 @@
     if (!researchHistory) return priceHistory;
     const priceDate = String(priceHistory.latestDate || priceHistory.rows?.at?.(-1)?.date || "").slice(0, 10);
     const researchDate = String(researchHistory.latestDate || researchHistory.rows?.at?.(-1)?.date || "").slice(0, 10);
-    if (researchDate > priceDate) return researchHistory;
-    if (priceDate > researchDate) return priceHistory;
-    const priceIntegrity = inspectPriceHistoryIntegrity(priceHistory);
-    const researchIntegrity = inspectPriceHistoryIntegrity(researchHistory);
+    const priceCoverage = normalizeHistoryCoverage(priceHistory.historyCoverage);
+    const researchCoverage = normalizeHistoryCoverage(researchHistory.historyCoverage);
     const researchCoverageIsComplete = shouldReplaceFullHistory(
       priceHistory.rows,
       researchHistory.rows,
     );
+    if (researchDate > priceDate) {
+      // A short scanner history must never replace a complete adjusted-price
+      // cache merely because it contains one newer trading day.
+      if (priceCoverage === HISTORY_COVERAGE_FULL
+        && researchCoverage !== HISTORY_COVERAGE_FULL
+        && !researchCoverageIsComplete) return priceHistory;
+      return researchHistory;
+    }
+    if (priceDate > researchDate) return priceHistory;
+    const priceIntegrity = inspectPriceHistoryIntegrity(priceHistory);
+    const researchIntegrity = inspectPriceHistoryIntegrity(researchHistory);
     if (researchCoverageIsComplete
       && researchIntegrity.anomalyCount < priceIntegrity.anomalyCount) {
       return researchHistory;
@@ -615,6 +645,7 @@
   globalScope.ThinkStockTickerPriceRuntime = Object.freeze({
     CORPORATE_ACTION_MAX_BOUNDARY_DAYS,
     CORPORATE_ACTION_RATIO_THRESHOLD,
+    PRICE_HISTORY_INTEGRITY_VERSION,
     filterLatestTailPoints,
     HISTORY_COVERAGE_FULL,
     HISTORY_COVERAGE_PARTIAL,

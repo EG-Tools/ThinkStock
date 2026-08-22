@@ -328,6 +328,30 @@ test("uses a newer research session but keeps the price basis on equal dates", (
   );
 });
 
+test("does not replace complete price history with a short newer scanner history", () => {
+  const priceHistory = {
+    latestDate: "2026-08-20",
+    historyCoverage: "full",
+    rows: Array.from({ length: 500 }, (_, index) => ({
+      date: new Date(Date.UTC(2024, 0, index + 1)).toISOString().slice(0, 10),
+      close: 10000 + index,
+    })),
+  };
+  const scannerHistory = {
+    latestDate: "2026-08-21",
+    historyCoverage: "partial",
+    rows: Array.from({ length: 252 }, (_, index) => ({
+      date: new Date(Date.UTC(2025, 0, index + 1)).toISOString().slice(0, 10),
+      close: 12000 + index,
+    })),
+  };
+
+  assert.equal(
+    runtime.selectPreferredResearchHistory(priceHistory, scannerHistory),
+    priceHistory,
+  );
+});
+
 test("repairs a same-day price cache that retained a pre-split boundary", () => {
   const stalePrice = {
     latestDate: "2026-08-21",

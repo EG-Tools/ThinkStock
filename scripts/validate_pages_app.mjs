@@ -418,8 +418,10 @@ assert.ok(app.includes("ThinkStockOptionalFeatureRuntime")
   && marketTimingService.includes("buildTimingModels"),
 "market timing worker service is not wired into the app");
 assert.ok(!pagesEntry.includes('import "../docs/modules/market-timing-service.js"')
+  && !pagesEntry.includes('import "../docs/modules/co-movement.js"')
   && optionalFeatureRuntime.includes('loader.loadFeature("market-timing"')
   && optionalFeatureRuntime.includes('"./assets/market-timing-feature.bundle.min.js"')
+  && marketTimingFeatureEntry.includes('import "../../docs/modules/co-movement.js"')
   && marketTimingFeatureEntry.includes('import "../../docs/modules/market-timing-service.js"')
   && marketTimingWorker.includes("buildTimingModels")
   && marketTimingWorker.includes("source cache miss"),

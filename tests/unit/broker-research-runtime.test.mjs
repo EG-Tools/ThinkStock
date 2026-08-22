@@ -33,6 +33,23 @@ test("preserves three latest reference links for the chart report marker", () =>
   assert.equal(summary.representativeReports.reference, references[0]);
 });
 
+test("keeps only the newest report from each brokerage", () => {
+  const summary = runtime.toReferenceOnlySummary({
+    representativeReports: {
+      references: [
+        { reportId: "3", publishedDate: "2026-08-22", broker: "미래에셋증권", sourceUrl: "https://example.com/a" },
+        { reportId: "2", publishedDate: "2026-08-21", broker: "미래에셋", sourceUrl: "https://example.com/b" },
+        { reportId: "1", publishedDate: "2026-08-20", broker: "교보증권", sourceUrl: "https://example.com/c" },
+      ],
+    },
+  });
+
+  assert.deepEqual(
+    summary.representativeReports.references.map((report) => report.reportId),
+    ["3", "1"],
+  );
+});
+
 test("strips historical quantitative report fields while preserving the reference", () => {
   const summary = runtime.toReferenceOnlySummary({
     reportCount: 3,

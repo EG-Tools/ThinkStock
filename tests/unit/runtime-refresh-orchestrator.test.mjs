@@ -44,6 +44,7 @@ test("unavailable live index and prices keep saved data and allow supplemental r
   let bootstrapCalls = 0;
   const progress = [];
   const messages = [];
+  const hiddenSchedules = [];
   const revisions = Object.freeze({ price: 1, macro: 1, credit: 1, crisis: 1, adr: 1, disclosure: 1 });
   const orchestrator = createRuntimeRefreshOrchestrator({
     applyRuntimeRefreshChanges: async () => ({
@@ -85,6 +86,7 @@ test("unavailable live index and prices keep saved data and allow supplemental r
     runRefreshPhases,
     runtimeDataApp: { notePhase: (name) => phases.push(name) },
     scheduleAdrFinalRetry: () => {},
+    scheduleHiddenStockRefresh: (options) => hiddenSchedules.push(options),
     scheduleLastRuntimeSnapshotSave: () => {},
     setMessage: (_element, lines) => messages.push(...lines),
     setRuntimeRefreshStatus: () => {},
@@ -99,9 +101,10 @@ test("unavailable live index and prices keep saved data and allow supplemental r
 
   assert.deepEqual(phases, ["criticalReady", "supplementalReady"]);
   assert.equal(bootstrapCalls, 1);
-  assert.deepEqual(preloadScopes, ["visible", "hidden"]);
+  assert.deepEqual(preloadScopes, ["visible"]);
   assert.equal(preloadPayloads[0]?.ok, true);
-  assert.equal(preloadPayloads[1], null);
+  assert.equal(hiddenSchedules.length, 1);
+  assert.equal(hiddenSchedules[0].forceRefresh, false);
   assert.equal(indexPayloads[0]?.ok, true);
   assert.equal(progress.at(-1).percent, 96);
   assert.equal(messages.some((line) => line.includes("price HTTP 503")), true);

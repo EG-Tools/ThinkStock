@@ -6,6 +6,8 @@
     if (!loader?.loadFeature) throw new Error("optional feature loader is required");
     const version = String(options.version || "dev");
     let ai = null;
+    let coMovement = null;
+    let marketTimingBundle = null;
     let marketTimingService = null;
     let stockResearch = null;
     let settings = null;
@@ -46,15 +48,32 @@
       return ai;
     }
 
-    async function ensureMarketTiming() {
-      if (marketTimingService) return marketTimingService;
-      await loader.loadFeature("market-timing", [
+    async function ensureMarketTimingBundle() {
+      if (marketTimingBundle) return marketTimingBundle;
+      marketTimingBundle = loader.loadFeature("market-timing", [
         "./assets/market-timing-feature.bundle.min.js",
       ], () => Boolean(
-        scope.ThinkStockMarketTimingEvaluation
+        scope.ThinkStockCoMovement
+        && scope.ThinkStockMarketTimingEvaluation
         && scope.ThinkStockMarketTiming
         && scope.ThinkStockMarketTimingService
-      ));
+      )).catch((error) => {
+        marketTimingBundle = null;
+        throw error;
+      });
+      return marketTimingBundle;
+    }
+
+    async function ensureCoMovement() {
+      if (coMovement) return coMovement;
+      await ensureMarketTimingBundle();
+      coMovement = scope.ThinkStockCoMovement;
+      return coMovement;
+    }
+
+    async function ensureMarketTiming() {
+      if (marketTimingService) return marketTimingService;
+      await ensureMarketTimingBundle();
       marketTimingService = scope.ThinkStockMarketTimingService.createMarketTimingService(scope, {
         workerUrl: `./modules/market-timing-worker.js?v=${encodeURIComponent(version)}`,
         buildMacdOscillator: options.buildMacdOscillator,
@@ -103,7 +122,13 @@
       return settings;
     }
 
-    return Object.freeze({ ensureAi, ensureMarketTiming, ensureSettings, ensureStockResearch });
+    return Object.freeze({
+      ensureAi,
+      ensureCoMovement,
+      ensureMarketTiming,
+      ensureSettings,
+      ensureStockResearch,
+    });
   }
 
   globalScope.ThinkStockOptionalFeatureRuntime = Object.freeze({ createOptionalFeatureRuntime });

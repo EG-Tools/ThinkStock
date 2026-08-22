@@ -24,6 +24,8 @@ if (!runtimeRefreshModule) throw new Error("Runtime refresh module failed to loa
 const { retryOnce, runRefreshPhases, waitForDelay } = runtimeRefreshModule;
 const runtimeRefreshOrchestratorModule = globalThis.ThinkStockRuntimeRefreshOrchestrator;
 if (!runtimeRefreshOrchestratorModule) throw new Error("Runtime refresh orchestrator module failed to load");
+const backgroundStockRefreshModule = globalThis.ThinkStockBackgroundStockRefresh;
+if (!backgroundStockRefreshModule) throw new Error("Background stock refresh module failed to load");
 const sharedRequestRegistryModule = globalThis.ThinkStockSharedRequestRegistry;
 if (!sharedRequestRegistryModule) throw new Error("Shared request registry module failed to load");
 const { mapWithConcurrency } = sharedRequestRegistryModule;
@@ -216,8 +218,7 @@ function normalizeChartRightPaddingDays(value) {
 }
 const mainChartEventsModule = globalThis.ThinkStockMainChartEvents;
 if (!mainChartEventsModule) throw new Error("Main chart events module failed to load");
-const coMovementModule = globalThis.ThinkStockCoMovement;
-if (!coMovementModule) throw new Error("Co-movement module failed to load");
+let coMovementModule = globalThis.ThinkStockCoMovement || null;
 const insiderTradesModule = globalThis.ThinkStockInsiderTrades;
 if (!insiderTradesModule) throw new Error("Insider trades module failed to load");
 const {
@@ -428,7 +429,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = tickerPriceRuntimeModule.CORPORATE_ACTION_RATIO_THRESHOLD;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = tickerPriceRuntimeModule.CORPORATE_ACTION_MAX_BOUNDARY_DAYS;
-const APP_VERSION = "3.00";
+const APP_VERSION = "3.01";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -1049,6 +1050,7 @@ let settingsPanelLoadPromise = null;
 let runtimeSeriesController = null;
 let aiForecastTracesRuntime = null;
 let runtimeRefreshOrchestrator = null;
+let backgroundStockRefresh = null;
 let viewportRelayoutQueue = null;
 let handleUpdateTimer = 0;
 let disclosureHoverTimer = 0;
@@ -3005,8 +3007,9 @@ function syncCoMovementToggleButton() {
   return mainChartControlView.syncCoMovement();
 }
 
-function getCoMovementPanelController() {
+async function getCoMovementPanelController() {
   if (coMovementPanelController) return coMovementPanelController;
+  coMovementModule ||= await optionalFeatureRuntime.ensureCoMovement();
   coMovementPanelController = coMovementModule.createPanelController(window, {
     panel: document.getElementById("coMovementPanel"),
     syncControl: syncCoMovementToggleButton,
@@ -3028,8 +3031,19 @@ function getCoMovementPanelController() {
   return coMovementPanelController;
 }
 
-function renderCoMovementPanel() {
-  return getCoMovementPanelController().request();
+async function renderCoMovementPanel() {
+  if (!chartSession.showCoMovement) {
+    const panel = document.getElementById("coMovementPanel");
+    if (panel) panel.hidden = true;
+    syncCoMovementToggleButton();
+    return null;
+  }
+  try {
+    return (await getCoMovementPanelController()).request();
+  } catch (error) {
+    recordRuntimeError("co-movement-panel", error);
+    return null;
+  }
 }
 
 const scheduleCoMovementPanelRender = renderCoMovementPanel;
@@ -3416,6 +3430,7 @@ async function readTickerPriceCache(ticker) {
       ...record,
       points,
       historyCoverage: tickerPriceRuntimeModule.normalizeHistoryCoverage(record.historyCoverage),
+      priceIntegrityVersion: tickerPriceRuntimeModule.PRICE_HISTORY_INTEGRITY_VERSION,
       contentFingerprint,
     }, {
       source: "ticker-price",
@@ -3425,7 +3440,9 @@ async function readTickerPriceCache(ticker) {
       now: Date.now(),
       touch: true,
     });
-    if (!record.contentFingerprint || !record.cacheMeta) {
+    if (!record.contentFingerprint
+      || !record.cacheMeta
+      || Number(record.priceIntegrityVersion) !== tickerPriceRuntimeModule.PRICE_HISTORY_INTEGRITY_VERSION) {
       await writeIndexedDbRecord(TICKER_PRICE_CACHE_STORE_NAME, key, nextRecord).catch(() => {});
       tickerSeriesCacheRetention.noteStored(key, nextRecord);
     }
@@ -3526,6 +3543,7 @@ async function writeTickerPriceCache(ticker, points, displayName = "", options =
       lastAccessed: now,
       latestDate: normalized[normalized.length - 1].date,
       historyCoverage,
+      priceIntegrityVersion: tickerPriceRuntimeModule.PRICE_HISTORY_INTEGRITY_VERSION,
       contentFingerprint,
       status: normalizeTickerPriceStatus(key, tickerPriceStatusStore.get(key) || {
         source: "LOCAL_CACHE",
@@ -3623,14 +3641,14 @@ async function applyResearchHistoryPriceCache(ticker, displayName = "") {
     localCache: true,
   });
   await writeTickerPriceCache(key, record.rows, displayName, {
-    historyCoverage: tickerPriceRuntimeModule.HISTORY_COVERAGE_PARTIAL,
+    historyCoverage: tickerPriceRuntimeModule.normalizeHistoryCoverage(record.historyCoverage),
   });
   return {
     applied: true,
     count: record.rows.length,
     latestDate: record.latestDate,
     researchCache: true,
-    historyCoverage: tickerPriceRuntimeModule.HISTORY_COVERAGE_PARTIAL,
+    historyCoverage: tickerPriceRuntimeModule.normalizeHistoryCoverage(record.historyCoverage),
   };
 }
 
@@ -3953,7 +3971,8 @@ async function preloadCustomStocks(options = {}) {
       latestPointsByTicker = null;
     }
   }
-  const results = await mapWithConcurrency(items, CUSTOM_STOCK_PRELOAD_CONCURRENCY, async (item) => {
+  const preloadConcurrency = scope === "hidden" ? 1 : CUSTOM_STOCK_PRELOAD_CONCURRENCY;
+  const results = await mapWithConcurrency(items, preloadConcurrency, async (item) => {
     const hadExisting = (pricePayload?.records || []).some((row) => toNum(row?.[item.ticker]) !== null);
     try {
       await ensureCustomTickerSeriesLoaded(item.ticker, {
@@ -3980,12 +3999,15 @@ async function preloadCustomStocks(options = {}) {
   const failedNames = failedResults.map((item) => item.name);
   recordPerfSample("preloadCustomStocks", perfStartedAt, {
     stocks: items.length,
-    concurrency: CUSTOM_STOCK_PRELOAD_CONCURRENCY,
+    concurrency: preloadConcurrency,
     failed: failed.length,
     scope,
   });
 
   if (!failed.length) return { failedNames: [], processed: items.length, scope };
+  if (options.preserveFailed === true) {
+    return { failedNames, processed: items.length, scope };
+  }
 
   getCustomStockLifecycle().removeMany(failed, { rememberColor: false });
   failed.forEach((ticker) => {
@@ -5127,20 +5149,12 @@ function showDisclosurePopover(group, sourceEvent) {
 function isDirectDisclosureTap(evtData, point) {
   const sourceEvent = evtData?.event;
   const chart = document.getElementById("chart");
-  const clientX = Number(sourceEvent?.clientX);
-  const clientY = Number(sourceEvent?.clientY);
-  const xAxis = point?.xaxis;
-  const yAxis = point?.yaxis;
-  if (!chart || !Number.isFinite(clientX) || !Number.isFinite(clientY)
-    || typeof xAxis?.d2p !== "function" || typeof yAxis?.d2p !== "function") return false;
-
-  const rect = chart.getBoundingClientRect();
-  const markerX = Number(xAxis._offset || 0) + xAxis.d2p(point.x);
-  const markerY = Number(yAxis._offset || 0) + yAxis.d2p(point.y);
   const hitRadius = isTouchDevice()
     ? DISCLOSURE_TOUCH_HIT_RADIUS_PX
     : DISCLOSURE_MOUSE_HIT_RADIUS_PX;
-  return Math.hypot(clientX - rect.left - markerX, clientY - rect.top - markerY) <= hitRadius;
+  return chartEventLayerModule.isPlotlyPointAtClientPoint(chart, point, sourceEvent, {
+    radius: hitRadius,
+  });
 }
 
 function handleDisclosureClick(evtData) {
@@ -6813,7 +6827,7 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
     chartSession.currentStart = new Date(renderedFrameRange[0]).toISOString().slice(0, 10);
     chartSession.currentEnd = new Date(renderedFrameRange[1]).toISOString().slice(0, 10);
   }
-  getCoMovementPanelController().flush();
+  coMovementPanelController?.flush();
   markEventMarkerRenderApplied(eventMarkerRevisionsAtStart);
   if (chartSession.autoChartReset && aiForecastTraces.length && tracesExceedVisibleYRange(
     aiForecastTraces,
@@ -7582,6 +7596,19 @@ function getRuntimeRefreshOrchestrator() {
     runRefreshPhases,
     runtimeDataApp,
     scheduleAdrFinalRetry,
+    scheduleHiddenStockRefresh: (refreshOptions) => {
+      if (!backgroundStockRefresh) {
+        backgroundStockRefresh = backgroundStockRefreshModule.createBackgroundStockRefresh(globalThis, {
+          hasHidden: () => getCustomStockLifecycle().select(
+            "hidden",
+            (ticker) => chartSession.hiddenSeries.has(ticker),
+          ).length > 0,
+          refresh: preloadCustomStocks,
+          onError: (error) => recordRuntimeError("hidden-stock-refresh", error),
+        });
+      }
+      return backgroundStockRefresh.schedule(refreshOptions);
+    },
     scheduleLastRuntimeSnapshotSave,
     setMessage,
     setRuntimeRefreshStatus,

@@ -3,6 +3,15 @@
 
   const MAX_REFERENCE_REPORTS = 3;
 
+  function brokerKey(report) {
+    const normalized = String(report?.broker || "")
+      .normalize("NFKC")
+      .replace(/[\s._-]+/g, "")
+      .replace(/(?:증권|투자증권|금융투자)$/u, "")
+      .toLowerCase();
+    return normalized || `unknown:${String(report?.sourceUrl || report?.reportId || "")}`;
+  }
+
   function mergeReferenceReports(current, nextReference) {
     const candidates = [
       ...(Array.isArray(current?.representativeReports?.references)
@@ -12,6 +21,7 @@
       nextReference,
     ].filter((report) => report?.sourceUrl);
     const urls = new Set();
+    const brokers = new Set();
     return Object.freeze(candidates
       .sort((left, right) => (
         String(right?.publishedDate || "").localeCompare(String(left?.publishedDate || ""))
@@ -19,8 +29,10 @@
       ))
       .filter((report) => {
         const key = String(report.sourceUrl);
-        if (urls.has(key)) return false;
+        const broker = brokerKey(report);
+        if (urls.has(key) || brokers.has(broker)) return false;
         urls.add(key);
+        brokers.add(broker);
         return true;
       })
       .slice(0, MAX_REFERENCE_REPORTS));

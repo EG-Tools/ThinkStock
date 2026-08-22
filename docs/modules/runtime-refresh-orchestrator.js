@@ -38,6 +38,7 @@
       runRefreshPhases,
       runtimeDataApp,
       scheduleAdrFinalRetry,
+      scheduleHiddenStockRefresh,
       scheduleLastRuntimeSnapshotSave,
       setMessage,
       setRuntimeRefreshStatus,
@@ -199,25 +200,6 @@
         }
       };
 
-      const hiddenPreloadTask = async () => {
-        try {
-          const result = await preloadCustomStocks({
-            forceRefresh: forceNetwork,
-            signal,
-            scope: "hidden",
-          });
-          return {
-            info: [],
-            warnings: result.failedNames.length
-              ? [`일부 숨긴 종목을 불러오지 못했습니다: ${result.failedNames.join(", ")}`]
-              : [],
-          };
-        } catch (error) {
-          if (isAbortError(error) || signal?.aborted) throw error;
-          return { info: [], warnings: [`Hidden price refresh failed: ${error.message}`] };
-        }
-      };
-
       const adrTask = () => trackSource(
         "adr",
         () => refreshAdrFromWebWithRetry(signal, forceNetwork),
@@ -319,7 +301,6 @@
           ecosTask,
           creditTask,
           crisisTask,
-          hiddenPreloadTask,
         ],
         onCritical: async (results) => {
           throwIfAborted(signal);
@@ -345,6 +326,10 @@
           runtimeDataApp.notePhase("supplementalReady");
         },
       });
+
+      // Hidden tickers are not required for the current frame. Refresh them
+      // later, outside the visible startup and supplemental critical path.
+      scheduleHiddenStockRefresh?.({ forceRefresh: forceNetwork, signal });
     
       if (refreshedDart) {
         if (state.lastDisclosureTraceStats.markers > 0) {

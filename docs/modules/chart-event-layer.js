@@ -102,6 +102,23 @@
     return best;
   }
 
+  function isPlotlyPointAtClientPoint(element, point, sourceEvent, options = {}) {
+    const clientX = Number(sourceEvent?.clientX);
+    const clientY = Number(sourceEvent?.clientY);
+    const xAxis = point?.xaxis;
+    const yAxis = point?.yaxis;
+    if (!element || !Number.isFinite(clientX) || !Number.isFinite(clientY)
+      || typeof xAxis?.d2p !== "function" || typeof yAxis?.d2p !== "function") return false;
+    const rect = options.geometry?.rect || element.getBoundingClientRect();
+    const markerX = Number(xAxis._offset || 0) + xAxis.d2p(point.x);
+    const markerY = Number(yAxis._offset || 0) + yAxis.d2p(point.y);
+    const radius = Math.max(1, Number(options.radius) || 1);
+    return Math.hypot(
+      clientX - rect.left - markerX,
+      clientY - rect.top - markerY,
+    ) <= radius;
+  }
+
   function invalidateMarkerPixels(element) {
     if (element) markerPixelCache.delete(element);
   }
@@ -166,6 +183,7 @@
   globalScope.ThinkStockChartEventLayer = Object.freeze({
     getMarkerPixelIndex,
     findMarkerAtClientPoint,
+    isPlotlyPointAtClientPoint,
     invalidateMarkerPixels,
     buildPointIndex,
     findPointOnDate,
