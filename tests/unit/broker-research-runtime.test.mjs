@@ -111,6 +111,31 @@ test("opens report bytes through a temporary memory URL without persistent stora
   assert.deepEqual(revoked, ["blob:thinkstock-report"]);
 });
 
+test("shows a loading message in the report tab before PDF retrieval completes", async () => {
+  let html = "";
+  let resolvePdf;
+  const popup = {
+    document: {
+      open() {},
+      write(value) { html += value; },
+      close() {},
+    },
+    location: { replace() {} },
+  };
+  const openReport = runtime.createInlineReportOpener({
+    Blob,
+    URL: { createObjectURL: () => "blob:report", revokeObjectURL() {} },
+    open: () => popup,
+    setTimeout() {},
+  }, () => new Promise((resolve) => { resolvePdf = resolve; }));
+
+  assert.equal(openReport({ sourceUrl: "https://example.com/report.pdf" }), true);
+  assert.match(html, /리포트를 불러오고 있습니다/);
+  assert.match(html, /잠시 기다려 주세요/);
+  resolvePdf(new Uint8Array([37, 80, 68, 70]).buffer);
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
 test("falls back to the source report when inline retrieval fails", async () => {
   const navigated = [];
   const openReport = runtime.createInlineReportOpener({

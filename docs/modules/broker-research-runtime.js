@@ -56,6 +56,37 @@
 
   const mergeReferenceSummary = toReferenceOnlySummary;
 
+  function renderReportLoadingPage(popup) {
+    const document = popup?.document;
+    if (!document?.open || !document?.write || !document?.close) return false;
+    try {
+      document.open();
+      document.write(`<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ThinkStock 리포트</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #090a09; color: #f1f3f2; font-family: sans-serif; }
+    main { display: grid; justify-items: center; gap: 18px; padding: 32px; text-align: center; }
+    i { width: 34px; height: 34px; border: 3px solid #294436; border-top-color: #48dc8d; border-radius: 50%; animation: spin .8s linear infinite; }
+    b { font-size: 17px; }
+    span { color: #9ba49f; font-size: 14px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body><main><i></i><b>리포트를 불러오고 있습니다.</b><span>잠시 기다려 주세요.</span></main></body>
+</html>`);
+      document.close();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   function createInlineReportOpener(scope, fetchPdf, options = {}) {
     const revokeDelayMs = Math.max(30000, Number(options.revokeDelayMs) || 5 * 60 * 1000);
 
@@ -81,6 +112,7 @@
       }
       // Let the anchor keep its normal source URL when a popup is blocked.
       if (!popup) return false;
+      renderReportLoadingPage(popup);
 
       Promise.resolve(fetchPdf(report))
         .then((bytes) => {
@@ -149,6 +181,7 @@
     createBrokerResearchRuntime,
     createInlineReportOpener,
     mergeReferenceSummary,
+    renderReportLoadingPage,
     toReferenceOnlySummary,
   });
 }(typeof self !== "undefined" ? self : globalThis));
