@@ -8,7 +8,7 @@
     throw new Error("broker research contracts failed to load");
   }
 
-  const CACHE_SCHEMA = 9;
+  const CACHE_SCHEMA = 10;
   const MAX_PDF_BYTES = 12 * 1024 * 1024;
   const MAX_PDF_PAGES = 12;
   const MAX_REPORTS_PER_TICKER = 40;
