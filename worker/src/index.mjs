@@ -162,6 +162,8 @@ const DART_MAJORSTOCK_URL = "https://opendart.fss.or.kr/api/majorstock.json";
 const DART_DOCUMENT_URL = "https://opendart.fss.or.kr/api/document.xml";
 const BROKER_REPORT_LIST_MAX_BYTES = 2 * 1024 * 1024;
 const BROKER_REPORT_PDF_MAX_BYTES = 12 * 1024 * 1024;
+const BROKER_REPORT_PDF_CACHE_VERSION = 1;
+const BROKER_REPORT_PDF_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60;
 const KRX_STOCK_BASE_URL = "https://data-dbg.krx.co.kr/svc/apis/sto";
 const KRX_INDEX_BASE_URL = "https://data-dbg.krx.co.kr/svc/apis/idx";
 const NAVER_STOCK_PRICE_URL = "https://api.finance.naver.com/siseJson.naver";
@@ -2632,7 +2634,26 @@ async function brokerReportsResponse(ticker, url, origin) {
   }
 }
 
-async function brokerReportPdfResponse(url, origin) {
+function brokerReportPdfCacheKey(url, source, reportId) {
+  const cacheUrl = new URL(url.origin);
+  cacheUrl.pathname = `/__thinkstock-cache/broker-report-pdf/v${BROKER_REPORT_PDF_CACHE_VERSION}/${source}/${reportId}`;
+  return new Request(cacheUrl.toString(), { method: "GET" });
+}
+
+function brokerReportPdfGatewayResponse(body, reportId, origin, cacheStatus, contentLength = "") {
+  const headers = {
+    ...corsHeaders(origin),
+    "Cache-Control": "private, no-store",
+    "Content-Disposition": `inline; filename=broker-report-${reportId}.pdf`,
+    "Content-Type": "application/pdf",
+    "X-Content-Type-Options": "nosniff",
+    "X-ThinkStock-Report-Cache": cacheStatus,
+  };
+  if (contentLength) headers["Content-Length"] = String(contentLength);
+  return new Response(body, { status: 200, headers });
+}
+
+async function brokerReportPdfResponse(url, origin, workerContext = null) {
   let sourceUrl = "";
   let reportId = "";
   const source = url.searchParams.get("source") === "naver" ? "naver" : "hankyung";
@@ -2648,6 +2669,20 @@ async function brokerReportPdfResponse(url, origin) {
     return jsonResponse({ ok: false, error: "Broker report id is invalid" }, 400, origin);
   }
   try {
+    const cache = globalThis.caches?.default || null;
+    const cacheKey = cache ? brokerReportPdfCacheKey(url, source, reportId) : null;
+    const cached = cacheKey
+      ? await readCacheBestEffort("broker-report-pdf", () => cache.match(cacheKey))
+      : null;
+    if (cached?.body) {
+      return brokerReportPdfGatewayResponse(
+        cached.body,
+        reportId,
+        origin,
+        "HIT",
+        cached.headers.get("Content-Length") || "",
+      );
+    }
     const upstream = await fetch(sourceUrl, {
       headers: {
         Accept: "application/pdf",
@@ -2665,17 +2700,29 @@ async function brokerReportPdfResponse(url, origin) {
     if (new TextDecoder().decode(bytes.slice(0, 5)) !== "%PDF-") {
       throw new Error("Broker report response is not a PDF");
     }
-    return new Response(bytes, {
-      status: 200,
-      headers: {
-        ...corsHeaders(origin),
-        "Cache-Control": "private, no-store",
-        "Content-Disposition": `inline; filename=broker-report-${reportId}.pdf`,
-        "Content-Length": String(bytes.byteLength),
-        "Content-Type": "application/pdf",
-        "X-Content-Type-Options": "nosniff",
-      },
-    });
+    if (cacheKey) {
+      const cacheWrite = writeCachesBestEffort("broker-report-pdf", [() => cache.put(
+        cacheKey,
+        new Response(bytes.slice(), {
+          status: 200,
+          headers: {
+            "Cache-Control": `public, max-age=${BROKER_REPORT_PDF_CACHE_TTL_SECONDS}, immutable`,
+            "Content-Length": String(bytes.byteLength),
+            "Content-Type": "application/pdf",
+            "X-Content-Type-Options": "nosniff",
+          },
+        }),
+      )]);
+      if (workerContext?.waitUntil) workerContext.waitUntil(cacheWrite);
+      else await cacheWrite;
+    }
+    return brokerReportPdfGatewayResponse(
+      bytes,
+      reportId,
+      origin,
+      cacheKey ? "MISS" : "BYPASS",
+      bytes.byteLength,
+    );
   } catch (error) {
     return jsonResponse({
       ok: false,
@@ -2762,7 +2809,9 @@ const ROUTE_HANDLERS = Object.freeze({
     },
   ),
   "broker-reports": ({ ticker, origin, url }) => brokerReportsResponse(ticker, url, origin),
-  "broker-report-pdf": ({ origin, url }) => brokerReportPdfResponse(url, origin),
+  "broker-report-pdf": ({ origin, url, workerContext }) => (
+    brokerReportPdfResponse(url, origin, workerContext)
+  ),
   "insider-trades": ({ env, workerContext, ticker, corpCode, origin, url }) => (
     insiderTradeResponse(
       env,

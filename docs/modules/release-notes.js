@@ -3,6 +3,15 @@
 
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.00",
+      date: "2026.08.22",
+      items: Object.freeze([
+        "AI 분석 PDF 세션 재사용",
+        "리포트 중복 다운로드 제거",
+        "Cloudflare 리포트 자동 캐시",
+      ]),
+    }),
+    Object.freeze({
       version: "2.99",
       date: "2026.08.21",
       items: Object.freeze([

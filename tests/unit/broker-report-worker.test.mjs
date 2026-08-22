@@ -60,6 +60,52 @@ test("returns a verified bounded PDF through the authenticated gateway", async (
   }
 });
 
+test("serves a previously verified report PDF from the edge cache", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = Object.getOwnPropertyDescriptor(globalThis, "caches");
+  const entries = new Map();
+  let upstreamCalls = 0;
+  const waitUntilTasks = [];
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: {
+      default: {
+        match: async (request) => entries.get(request.url)?.clone() || null,
+        put: async (request, response) => { entries.set(request.url, response.clone()); },
+      },
+    },
+  });
+  globalThis.fetch = async () => {
+    upstreamCalls += 1;
+    return new Response(new TextEncoder().encode("%PDF-cached-report"), { status: 200 });
+  };
+  const context = { waitUntil: (task) => waitUntilTasks.push(task) };
+  try {
+    const first = await handleRequest(
+      workerRequest("/api/broker-report-pdf?reportId=651738"),
+      { THINKSTOCK_ACCESS_TOKEN: "private" },
+      context,
+    );
+    assert.equal(first.headers.get("X-ThinkStock-Report-Cache"), "MISS");
+    assert.equal(new TextDecoder().decode(await first.arrayBuffer()), "%PDF-cached-report");
+    await Promise.all(waitUntilTasks);
+
+    const second = await handleRequest(
+      workerRequest("/api/broker-report-pdf?reportId=651738"),
+      { THINKSTOCK_ACCESS_TOKEN: "private" },
+      context,
+    );
+    assert.equal(second.headers.get("X-ThinkStock-Report-Cache"), "HIT");
+    assert.equal(second.headers.get("Cache-Control"), "private, no-store");
+    assert.equal(new TextDecoder().decode(await second.arrayBuffer()), "%PDF-cached-report");
+    assert.equal(upstreamCalls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalCaches) Object.defineProperty(globalThis, "caches", originalCaches);
+    else delete globalThis.caches;
+  }
+});
+
 test("uses Naver Finance as an explicit secondary report source", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {

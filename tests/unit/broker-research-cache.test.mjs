@@ -422,3 +422,41 @@ test("shares one authenticated transport for report lists and PDFs", async () =>
   assert.equal(calls[0].timeout, 25000);
   assert.equal(calls[1].timeout, 35000);
 });
+
+test("reuses AI-downloaded PDF bytes and joins concurrent report opens", async () => {
+  let transportCalls = 0;
+  let resolveResponse;
+  const responseTask = new Promise((resolve) => { resolveResponse = resolve; });
+  const client = createBrokerReportClient(globalThis, {
+    baseUrl: "https://example.test/app/",
+    listEndpoint: "./reports",
+    pdfEndpoint: "./report-pdf",
+    fetchWithTimeout: async () => {
+      transportCalls += 1;
+      return responseTask;
+    },
+  });
+  const report = { id: "77", source: "hankyung" };
+  const first = client.fetchPdf(report);
+  const second = client.fetchPdf(report);
+  assert.equal(transportCalls, 1);
+  assert.deepEqual(client.pdfMemoryCacheStats(), { bytes: 0, entries: 0, pending: 1 });
+
+  resolveResponse({
+    ok: true,
+    status: 200,
+    arrayBuffer: async () => new Uint8Array([37, 80, 68, 70]).buffer,
+    json: async () => null,
+  });
+  const [firstBytes, secondBytes] = await Promise.all([first, second]);
+  assert.notEqual(firstBytes, secondBytes);
+  assert.deepEqual([...new Uint8Array(firstBytes)], [37, 80, 68, 70]);
+  assert.deepEqual([...new Uint8Array(secondBytes)], [37, 80, 68, 70]);
+  assert.deepEqual(client.pdfMemoryCacheStats(), { bytes: 4, entries: 1, pending: 0 });
+
+  const thirdBytes = await client.fetchPdf(report);
+  assert.equal(transportCalls, 1);
+  assert.deepEqual([...new Uint8Array(thirdBytes)], [37, 80, 68, 70]);
+  client.clearPdfMemoryCache();
+  assert.deepEqual(client.pdfMemoryCacheStats(), { bytes: 0, entries: 0, pending: 0 });
+});

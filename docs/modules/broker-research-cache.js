@@ -10,6 +10,8 @@
 
   const CACHE_SCHEMA = 10;
   const MAX_PDF_BYTES = 12 * 1024 * 1024;
+  const DEFAULT_PDF_MEMORY_CACHE_BYTES = 24 * 1024 * 1024;
+  const DEFAULT_PDF_MEMORY_CACHE_ENTRIES = 3;
   const MAX_PDF_PAGES = 12;
   const MAX_REPORTS_PER_TICKER = 40;
   const MAX_ACTIVE_REPORTS = 3;
@@ -401,6 +403,69 @@
     const getTickerName = typeof options.getTickerName === "function"
       ? options.getTickerName
       : () => "";
+    const pdfMemoryCacheMaxBytes = Math.max(
+      MAX_PDF_BYTES,
+      Number(options.pdfMemoryCacheMaxBytes) || DEFAULT_PDF_MEMORY_CACHE_BYTES,
+    );
+    const pdfMemoryCacheMaxEntries = Math.max(
+      1,
+      Math.min(12, Math.round(Number(options.pdfMemoryCacheMaxEntries)
+        || DEFAULT_PDF_MEMORY_CACHE_ENTRIES)),
+    );
+    const pdfMemoryCache = new Map();
+    const pendingPdfRequests = new Map();
+    let pdfMemoryCacheBytes = 0;
+
+    function pdfRequestKey(report) {
+      const reportId = typeof report === "object" ? report?.id || report?.reportId : report;
+      const source = typeof report === "object" && report?.source === "naver" ? "naver" : "hankyung";
+      return `${source}:${String(reportId || "").trim()}`;
+    }
+
+    function readPdfMemoryCache(key) {
+      const cached = pdfMemoryCache.get(key);
+      if (!cached) return null;
+      pdfMemoryCache.delete(key);
+      pdfMemoryCache.set(key, cached);
+      return cached.bytes.slice(0);
+    }
+
+    function writePdfMemoryCache(key, value) {
+      const bytes = value instanceof ArrayBuffer
+        ? value.slice(0)
+        : toUint8Array(value).slice().buffer;
+      if (!bytes.byteLength || bytes.byteLength > pdfMemoryCacheMaxBytes) return bytes;
+      const previous = pdfMemoryCache.get(key);
+      if (previous) {
+        pdfMemoryCacheBytes -= previous.bytes.byteLength;
+        pdfMemoryCache.delete(key);
+      }
+      while (pdfMemoryCache.size && (
+        pdfMemoryCache.size >= pdfMemoryCacheMaxEntries
+        || pdfMemoryCacheBytes + bytes.byteLength > pdfMemoryCacheMaxBytes
+      )) {
+        const oldestKey = pdfMemoryCache.keys().next().value;
+        const oldest = pdfMemoryCache.get(oldestKey);
+        pdfMemoryCacheBytes -= oldest?.bytes?.byteLength || 0;
+        pdfMemoryCache.delete(oldestKey);
+      }
+      pdfMemoryCache.set(key, { bytes });
+      pdfMemoryCacheBytes += bytes.byteLength;
+      return bytes.slice(0);
+    }
+
+    function clearPdfMemoryCache() {
+      pdfMemoryCache.clear();
+      pdfMemoryCacheBytes = 0;
+    }
+
+    function pdfMemoryCacheStats() {
+      return Object.freeze({
+        bytes: pdfMemoryCacheBytes,
+        entries: pdfMemoryCache.size,
+        pending: pendingPdfRequests.size,
+      });
+    }
 
     async function fetchList(ticker, days, source = "hankyung") {
       const url = new URL(listEndpoint, baseUrl);
@@ -424,24 +489,39 @@
     async function fetchPdf(report) {
       const reportId = typeof report === "object" ? report?.id || report?.reportId : report;
       const source = typeof report === "object" && report?.source === "naver" ? "naver" : "hankyung";
+      const requestKey = pdfRequestKey(report);
+      const cached = readPdfMemoryCache(requestKey);
+      if (cached) return cached;
+      if (pendingPdfRequests.has(requestKey)) {
+        return (await pendingPdfRequests.get(requestKey)).slice(0);
+      }
       const url = new URL(pdfEndpoint, baseUrl);
       url.searchParams.set("reportId", String(reportId || ""));
       if (source === "naver") {
         url.searchParams.set("source", "naver");
         url.searchParams.set("sourceUrl", safeSourceUrl(report?.sourceUrl));
       }
-      const response = await fetchWithTimeout(url.toString(), {
-        cache: "no-store",
-        headers: getHeaders(),
-      }, Math.max(1000, Number(options.pdfTimeoutMs) || 35000));
-      if (!response.ok) {
-        const payload = await response.json().catch(() => null);
-        throw new Error(payload?.error || `Broker report PDF HTTP ${response.status}`);
-      }
-      return response.arrayBuffer();
+      const task = (async () => {
+        const response = await fetchWithTimeout(url.toString(), {
+          cache: "no-store",
+          headers: getHeaders(),
+        }, Math.max(1000, Number(options.pdfTimeoutMs) || 35000));
+        if (!response.ok) {
+          const payload = await response.json().catch(() => null);
+          throw new Error(payload?.error || `Broker report PDF HTTP ${response.status}`);
+        }
+        return writePdfMemoryCache(requestKey, await response.arrayBuffer());
+      })().finally(() => pendingPdfRequests.delete(requestKey));
+      pendingPdfRequests.set(requestKey, task);
+      return (await task).slice(0);
     }
 
-    return Object.freeze({ fetchList, fetchPdf });
+    return Object.freeze({
+      clearPdfMemoryCache,
+      fetchList,
+      fetchPdf,
+      pdfMemoryCacheStats,
+    });
   }
 
   function createBrokerResearchCache(scope = globalScope, options = {}) {
@@ -836,6 +916,8 @@
 
   globalScope.ThinkStockBrokerResearchCache = Object.freeze({
     CACHE_SCHEMA,
+    DEFAULT_PDF_MEMORY_CACHE_BYTES,
+    DEFAULT_PDF_MEMORY_CACHE_ENTRIES,
     MAX_ACTIVE_REPORTS,
     MAX_PDF_BYTES,
     createBrokerReportClient,

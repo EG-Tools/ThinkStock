@@ -170,9 +170,13 @@
     const openReport = createInlineReportOpener(scope, client.fetchPdf, options);
     return Object.freeze({
       ...cache,
-      dispose: () => workerClient?.dispose?.(),
+      dispose: () => {
+        workerClient?.dispose?.();
+        client.clearPdfMemoryCache?.();
+      },
       mergeReferenceSummary,
       openReport,
+      pdfMemoryCacheStats: client.pdfMemoryCacheStats,
       toReferenceOnlySummary,
     });
   }
