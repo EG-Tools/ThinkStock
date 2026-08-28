@@ -12,6 +12,7 @@ import {
   RESEARCH_SUMMARY_HISTORY_QUALITY_VERSION,
   RESEARCH_SUMMARY_SCHEMA,
 } from "../../shared/stock-research-summary.mjs";
+import { fetchCompanyAnalysis } from "../../worker/src/company-analysis.mjs";
 
 import {
   handleRequest,
@@ -1819,6 +1820,34 @@ test("builds the current WiseReport dynamic financial summary request", () => {
   assert.equal(new URL(quarterRequest.url).searchParams.get("freq_typ"), "Q");
 });
 
+test("requests both WiseReport summaries with browser-compatible headers", async () => {
+  const overviewHtml = `<script>$.ajax({ data: {
+    cmp_cd: '218410', fin_typ: 0, freq_typ: 'A', extY: 1, extQ: 1,
+    encparam: 'encoded-value', id: 'financial-target'
+  } });</script>`;
+  const summaryHtml = `<table><thead><tr>
+    <th class="r03c01">2025/12</th><th class="r03c02">2026/12(E)</th>
+  </tr></thead><tbody>
+    <tr><th>매출액</th><td title="1,300"></td><td title="1,600"></td></tr>
+    <tr><th>EPS(원)</th><td title="1,200"></td><td title="1,800"></td></tr>
+  </tbody></table>`;
+  const requests = [];
+  const fetchImpl = async (url, options = {}) => {
+    requests.push({ url: String(url), headers: options.headers || {} });
+    if (String(url).includes("c1010001.aspx")) return new Response(overviewHtml);
+    if (String(url).includes("cF1001.aspx")) return new Response(summaryHtml);
+    return new Response("");
+  };
+
+  const result = await fetchCompanyAnalysis("218410.KQ", fetchImpl);
+  const summaries = requests.filter((entry) => entry.url.includes("cF1001.aspx"));
+  assert.equal(summaries.length, 2);
+  assert.equal(summaries.every((entry) => /Mozilla\/5\.0/.test(entry.headers["User-Agent"])), true);
+  assert.equal(summaries.every((entry) => entry.headers["X-Requested-With"] === "XMLHttpRequest"), true);
+  assert.equal(result.financialSummaryVersion, 3);
+  assert.equal(result.financials.some((record) => record.estimate && record.eps === 1800), true);
+});
+
 test("parses embedded quarterly earnings without a second upstream request", () => {
   const html = `<script>var EarnigList = function() {
     var res = {"yymm":["202512","202603","202606"],"data":[
@@ -1898,7 +1927,7 @@ test("returns today's accumulated analysis cache without an upstream request", a
   const cache = memoryKv({
     "analysis:218410.KQ": JSON.stringify({
       schema: 4,
-      financialSummaryVersion: 2,
+      financialSummaryVersion: 3,
       ticker: "218410.KQ",
       savedAt: Date.now(),
       consensus: null,
@@ -1917,7 +1946,7 @@ test("returns today's accumulated analysis cache without an upstream request", a
   assert.equal(payload.snapshots.length, 1);
   const migrated = JSON.parse(cache.values.get("analysis:218410.KQ"));
   assert.equal(migrated.schema, 5);
-  assert.equal(migrated.financialSummaryVersion, 2);
+  assert.equal(migrated.financialSummaryVersion, 3);
   assert.equal(migrated.snapshots.length, 1);
   assert.deepEqual(migrated.snapshots[0].financials, financials);
 });

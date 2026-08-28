@@ -17,9 +17,20 @@ const COMPANY_NEWS_URL = "https://finance.naver.com/item/main.naver";
 const MAX_OVERVIEW_BYTES = 900_000;
 const MAX_FINANCIAL_SUMMARY_BYTES = 500_000;
 const MAX_NEWS_BYTES = 600_000;
+const COMPANY_BROWSER_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+  + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 
 export const ANALYSIS_CACHE_SCHEMA = 5;
-export const FINANCIAL_SUMMARY_VERSION = 2;
+export const FINANCIAL_SUMMARY_VERSION = 3;
+
+function companyHtmlHeaders(extra = {}) {
+  return {
+    Accept: "text/html,application/xhtml+xml,*/*;q=0.8",
+    "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.7",
+    "User-Agent": COMPANY_BROWSER_USER_AGENT,
+    ...extra,
+  };
+}
 
 function decodeHtmlEntities(value) {
   const named = {
@@ -454,7 +465,7 @@ export async function fetchCompanyAnalysis(ticker, fetchImpl = fetch) {
   const overviewUrl = `${COMPANY_OVERVIEW_URL}?cmp_cd=${encodeURIComponent(code)}`;
   const newsUrl = `${COMPANY_NEWS_URL}?code=${encodeURIComponent(code)}`;
   const request = (url) => fetchImpl(url, {
-    headers: { Accept: "text/html", "Accept-Language": "ko-KR,ko;q=0.9" },
+    headers: companyHtmlHeaders(),
     signal: AbortSignal.timeout(20000),
   });
   const [overviewResult, newsResult] = await Promise.allSettled([
@@ -478,11 +489,11 @@ export async function fetchCompanyAnalysis(ticker, fetchImpl = fetch) {
   ].filter((entry) => entry.request);
   const financialResults = await Promise.allSettled(financialRequests.map(async (entry) => {
     const response = await fetchImpl(entry.request.url, {
-      headers: {
-        Accept: "text/html",
-        "Accept-Language": "ko-KR,ko;q=0.9",
+      headers: companyHtmlHeaders({
+        Accept: "text/html, */*; q=0.01",
         Referer: entry.request.referer,
-      },
+        "X-Requested-With": "XMLHttpRequest",
+      }),
       signal: AbortSignal.timeout(20000),
     });
     if (!response.ok) throw new Error(`Financial summary HTTP ${response.status}`);
@@ -491,16 +502,18 @@ export async function fetchCompanyAnalysis(ticker, fetchImpl = fetch) {
       html: await boundedText(response, MAX_FINANCIAL_SUMMARY_BYTES),
     };
   }));
-  const financialSummary = mergeFinancialRecords([], financialResults.flatMap((result) => (
+  const parsedFinancialResults = financialResults.map((result) => (
     result.status === "fulfilled"
       ? parseFinancialSummaryHtml(result.value.html, ticker, { frequency: result.value.frequency })
       : []
-  )));
+  ));
+  const financialSummary = mergeFinancialRecords([], parsedFinancialResults.flat());
   if (!financialSummary.length && overviewHtml) {
     financialSummary.push(...parseFinancialSummaryHtml(overviewHtml, ticker));
   }
   const financialSummaryVersion = financialRequests.length === 2
     && financialResults.every((result) => result.status === "fulfilled")
+    && parsedFinancialResults.every((records) => records.length > 0)
     ? FINANCIAL_SUMMARY_VERSION
     : 0;
   const earningsTrend = parseEarningsTrendHtml(overviewHtml, ticker);
