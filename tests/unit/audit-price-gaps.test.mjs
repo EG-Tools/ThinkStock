@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   auditPriceGapRecords,
   countDatesBetween,
+  detectIsolatedPriceSpikes,
   parseNaverChartRows,
 } from "../../scripts/audit_price_gaps.mjs";
 
@@ -53,4 +54,21 @@ test("separates a stock-only halt from a market-wide closure", () => {
   assert.equal(result.stockSpecific[0].ticker, "000002.KS");
   assert.equal(result.stockSpecific[0].marketSessions, 2);
   assert.equal(result.marketClosureGapCount, 2);
+});
+
+test("detects one-day price spikes without rejecting a sustained split boundary", () => {
+  const isolated = detectIsolatedPriceSpikes([
+    { date: "2026-08-01", "000001.KS": 100, "000002.KS": 100 },
+    { date: "2026-08-02", "000001.KS": 500, "000002.KS": 500 },
+    { date: "2026-08-03", "000001.KS": 102, "000002.KS": 510 },
+  ]);
+
+  assert.deepEqual(isolated, [{
+    series: "000001.KS",
+    date: "2026-08-02",
+    previous: 100,
+    current: 500,
+    next: 102,
+    multiple: 5,
+  }]);
 });

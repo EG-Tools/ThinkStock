@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../shared/runtime-foundation.mjs");
-await import("../../shared/series-integrity.mjs");
-await import("../../docs/modules/runtime-series-merge.js");
-const merge = globalThis.ThinkStockRuntimeSeriesMerge;
+import * as merge from "../../docs/modules/runtime-series-merge.mjs";
 
 test("normalizes duplicate dated values through one shared path", () => {
   assert.deepEqual(merge.normalizeDatedRows([

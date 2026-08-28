@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/chart-viewport-controller.js");
-const viewport = globalThis.ThinkStockChartViewportController;
+import * as viewport from "../../docs/modules/chart-viewport-controller.mjs";
 
 test("centered zoom changes the visible span by ten percent without moving its center", () => {
   assert.deepEqual(viewport.centeredZoomRange([20, 80], [0, 100], -1, { ratio: 0.1 }), [23, 77]);
@@ -77,6 +76,28 @@ test("wheel range clamps empty margins while preserving the longest visible seri
     ],
   };
   assert.deepEqual(cache.get(chart), [0, 20]);
+});
+
+test("data range cache keeps full history metadata behind a viewport slice", () => {
+  const cache = viewport.createDataRangeCache({
+    toMilliseconds: Number,
+    shouldInclude: (trace) => trace.visible !== "legendonly",
+  });
+  const chart = {
+    data: [
+      {
+        x: [80, 90],
+        meta: { fullDataStartMs: 0, fullDataEndMs: 100 },
+      },
+      {
+        x: [30, 40],
+        visible: "legendonly",
+        meta: { fullDataStartMs: -100, fullDataEndMs: 200 },
+      },
+    ],
+  };
+
+  assert.deepEqual(cache.get(chart), [0, 100]);
 });
 
 test("blank-area pan preserves the visible span and stops at both data edges", () => {
@@ -185,6 +206,27 @@ test("render viewport plan reconciles a full-range composition change", () => {
   assert.equal(plan.pendingCompositionViewport, null);
 });
 
+test("an explicit viewport reset discards an older composition snapshot", () => {
+  const plan = viewport.buildRenderViewportPlan({
+    preserveZoom: false,
+    autoChartReset: true,
+    pendingCompositionViewport: {
+      viewRange: [Date.parse("2025-08-01"), Date.parse("2026-08-01")],
+      dataRange: [Date.parse("2020-01-01"), Date.parse("2026-08-01")],
+      forceFitFull: false,
+    },
+    nextVisibleDataRange: [Date.parse("2020-01-01"), Date.parse("2026-08-01")],
+    currentXRange: ["2025-08-01", "2026-08-01"],
+    observedStart: "2026-05-01",
+    observedEnd: "2026-08-01",
+  });
+
+  assert.equal(plan.savedXRange, null);
+  assert.equal(plan.pinnedXRange, null);
+  assert.equal(plan.pendingCompositionViewport, null);
+  assert.deepEqual(plan.defaultXRange, ["2026-05-01", "2026-08-01"]);
+});
+
 test("render viewport plan reveals the forecast once and extends only to its last date", () => {
   const plan = viewport.buildRenderViewportPlan({
     preserveZoom: false,
@@ -204,6 +246,26 @@ test("render viewport plan reveals the forecast once and extends only to its las
     new Date("2027-02-01").toISOString(),
   ]);
   assert.deepEqual(plan.defaultXRange, ["2026-02-01", "2027-02-01"]);
+  assert.equal(plan.revealAiForecastRange, false);
+});
+
+test("AI reveal keeps the current one-year history and appends six forecast months", () => {
+  const plan = viewport.buildRenderViewportPlan({
+    preserveZoom: true,
+    autoChartReset: true,
+    currentXRange: ["2025-08-24", "2026-08-24"],
+    showAiForecast: true,
+    aiForecastTraces: [{ x: ["2026-08-24", "2027-02-24"] }],
+    futureTraces: [{ x: ["2026-08-24", "2027-02-24"] }],
+    revealAiForecastRange: true,
+    observedStart: "2016-08-24",
+    observedEnd: "2026-08-24",
+  });
+
+  assert.deepEqual(plan.savedXRange, [
+    new Date("2025-08-24").toISOString(),
+    new Date("2027-02-24").toISOString(),
+  ]);
   assert.equal(plan.revealAiForecastRange, false);
 });
 
@@ -232,6 +294,172 @@ test("render viewport plan adds the configured empty days after observed and for
     forecast.defaultXRange[1],
     new Date(Date.parse("2027-02-01") + (10 * dayMs)).toISOString(),
   );
+});
+
+test("render viewport plan includes future EPS without pretending AI is enabled", () => {
+  const plan = viewport.buildRenderViewportPlan({
+    preserveZoom: false,
+    showAiForecast: false,
+    aiForecastTraces: [],
+    futureTraces: [{ x: ["2026-06-30", "2027-12-31"], meta: { isEpsTrace: true } }],
+    observedStart: "2026-02-01",
+    observedEnd: "2026-08-24",
+  });
+
+  assert.deepEqual(plan.defaultXRange, ["2026-02-01", "2027-12-31"]);
+  assert.equal(plan.revealAiForecastRange, false);
+});
+
+test("EPS reveal keeps one history year and appends its full three-year outlook", () => {
+  const epsTrace = {
+    x: ["2026-06-30", "2029-08-24"],
+    meta: { isEpsTrace: true },
+  };
+  const plan = viewport.buildRenderViewportPlan({
+    preserveZoom: true,
+    autoChartReset: true,
+    currentXRange: ["2025-08-24", "2026-08-24"],
+    showAiForecast: false,
+    showEps: true,
+    aiForecastTraces: [],
+    epsForecastTraces: [epsTrace],
+    futureTraces: [epsTrace],
+    revealEpsForecastRange: true,
+    observedStart: "2016-08-24",
+    observedEnd: "2026-08-24",
+  });
+
+  assert.deepEqual(plan.savedXRange, [
+    new Date("2025-08-24").toISOString(),
+    new Date("2029-08-24").toISOString(),
+  ]);
+  assert.equal(plan.revealEpsForecastRange, false);
+});
+
+test("future overlays never extend a historical viewport", () => {
+  const epsTrace = {
+    x: ["2026-06-30", "2029-08-24"],
+    meta: { isEpsTrace: true },
+  };
+  const aiTrace = { x: ["2026-08-24", "2027-02-24"] };
+  const plan = viewport.buildRenderViewportPlan({
+    preserveZoom: true,
+    autoChartReset: true,
+    currentXRange: ["2021-01-01", "2022-01-01"],
+    showAiForecast: true,
+    showEps: true,
+    aiForecastTraces: [aiTrace],
+    epsForecastTraces: [epsTrace],
+    futureTraces: [aiTrace, epsTrace],
+    revealAiForecastRange: true,
+    revealEpsForecastRange: true,
+    futureRevealLatestToleranceMs: 3 * 24 * 60 * 60 * 1000,
+    observedStart: "2016-08-24",
+    observedEnd: "2026-08-24",
+  });
+
+  assert.deepEqual(plan.savedXRange, ["2021-01-01", "2022-01-01"]);
+  assert.equal(plan.revealAiForecastRange, false);
+  assert.equal(plan.revealEpsForecastRange, false);
+});
+
+test("disabling EPS restores the shared future-overlay entry viewport", () => {
+  const visibleRange = [Date.parse("2016-01-01"), Date.parse("2026-08-24")];
+  const plan = viewport.buildRenderViewportPlan({
+    preserveZoom: true,
+    autoChartReset: true,
+    currentXRange: ["2025-08-24", "2029-08-24"],
+    nextVisibleDataRange: visibleRange,
+    restoreFutureOverlayViewport: {
+      range: [Date.parse("2025-08-24"), Date.parse("2026-08-24")],
+      userViewportPinned: true,
+    },
+    showAiForecast: false,
+    showEps: false,
+    trimFutureOverlayRange: true,
+    observedStart: "2016-01-01",
+    observedEnd: "2026-08-24",
+  });
+
+  assert.deepEqual(plan.savedXRange, [
+    new Date("2025-08-24").toISOString(),
+    new Date("2026-08-24").toISOString(),
+  ]);
+  assert.equal(plan.restoreFutureOverlayViewport, null);
+  assert.equal(plan.trimFutureOverlayRange, false);
+  assert.equal(plan.userViewportPinned, true);
+});
+
+test("disabling AI keeps the farther EPS outlook visible", () => {
+  const epsTrace = {
+    x: ["2026-06-30", "2029-08-24"],
+    meta: { isEpsTrace: true },
+  };
+  const plan = viewport.buildRenderViewportPlan({
+    preserveZoom: true,
+    autoChartReset: true,
+    currentXRange: ["2026-02-24", "2029-08-24"],
+    showAiForecast: false,
+    aiForecastTraces: [],
+    epsForecastTraces: [epsTrace],
+    futureTraces: [epsTrace],
+    trimAiForecastRange: true,
+    observedStart: "2016-08-24",
+    observedEnd: "2026-08-24",
+  });
+
+  assert.deepEqual(plan.savedXRange, ["2026-02-24", "2029-08-24"]);
+  assert.equal(plan.trimAiForecastRange, false);
+});
+
+test("enabling EPS while AI is visible preserves history and extends only the future end", () => {
+  const aiTrace = { x: ["2026-08-24", "2027-02-24"] };
+  const epsTrace = {
+    x: ["2026-06-30", "2029-08-24"],
+    meta: { isEpsTrace: true },
+  };
+  const plan = viewport.buildRenderViewportPlan({
+    preserveZoom: true,
+    autoChartReset: true,
+    currentXRange: ["2025-08-24", "2027-02-24"],
+    showAiForecast: true,
+    showEps: true,
+    aiForecastTraces: [aiTrace],
+    epsForecastTraces: [epsTrace],
+    futureTraces: [aiTrace, epsTrace],
+    revealEpsForecastRange: true,
+    observedStart: "2016-08-24",
+    observedEnd: "2026-08-24",
+  });
+
+  assert.deepEqual(plan.savedXRange, [
+    new Date("2025-08-24").toISOString(),
+    new Date("2029-08-24").toISOString(),
+  ]);
+  assert.equal(plan.revealEpsForecastRange, false);
+});
+
+test("disabling EPS while AI remains preserves history and trims to the AI end", () => {
+  const aiTrace = { x: ["2026-08-24", "2027-02-24"] };
+  const plan = viewport.buildRenderViewportPlan({
+    preserveZoom: true,
+    autoChartReset: true,
+    currentXRange: ["2025-08-24", "2029-08-24"],
+    showAiForecast: true,
+    showEps: false,
+    aiForecastTraces: [aiTrace],
+    epsForecastTraces: [],
+    futureTraces: [aiTrace],
+    trimFutureOverlayRange: true,
+    observedStart: "2016-08-24",
+    observedEnd: "2026-08-24",
+  });
+
+  assert.deepEqual(plan.savedXRange, [
+    new Date("2025-08-24").toISOString(),
+    new Date("2027-02-24").toISOString(),
+  ]);
+  assert.equal(plan.trimFutureOverlayRange, false);
 });
 
 test("render viewport plan restores the entry viewport after AI is disabled", () => {
@@ -358,4 +586,83 @@ test("range sync keeps one active request and only the newest pending range", as
   assert.deepEqual(applied.map((range) => [range.startMs, range.endMs]), [[10, 20], [30, 40]]);
   release();
   await controller.flush();
+});
+
+test("linked range sync flushes and cancels its companion queue", async () => {
+  let frame = null;
+  const calls = [];
+  const companion = {
+    busy: true,
+    cancelPending() { calls.push("cancel-companion"); this.busy = false; },
+    async flush() { calls.push("flush-companion"); this.busy = false; },
+    isBusy() { return this.busy; },
+    stats() { return { pending: Number(this.busy) }; },
+  };
+  const controller = viewport.createLinkedRangeSyncController({}, {
+    requestFrame: (callback) => { frame = callback; return 1; },
+    cancelFrame: () => calls.push("cancel-frame"),
+    applyRange: ({ startMs, endMs }) => calls.push(`apply:${startMs}-${endMs}`),
+    getCompanionQueue: () => companion,
+  });
+
+  controller.schedule(10, 20);
+  assert.equal(controller.isBusy(), true);
+  frame();
+  await controller.flush();
+  assert.deepEqual(calls, ["apply:10-20", "flush-companion"]);
+  assert.equal(controller.isBusy(), false);
+  assert.deepEqual(controller.stats().companions, { pending: 0 });
+
+  controller.schedule(20, 30);
+  controller.cancel();
+  assert.deepEqual(calls.slice(-2), ["cancel-frame", "cancel-companion"]);
+});
+
+test("future overlay controller captures once and restores after the final overlay closes", () => {
+  let revision = 4;
+  const controller = viewport.createFutureOverlayController({
+    toMilliseconds: (value) => typeof value === "number" ? value : Date.parse(value),
+    getPinnedRange: () => [100, 200],
+    getCurrentRange: () => [90, 210],
+    getInteractionRevision: () => revision,
+    getUserViewportPinned: () => true,
+  });
+
+  controller.enable("ai");
+  assert.deepEqual(controller.planState(), {
+    restoreFutureOverlayViewport: null,
+    revealAiForecastRange: true,
+    revealEpsForecastRange: false,
+    trimFutureOverlayRange: false,
+  });
+  controller.applyPlan({});
+  controller.enable("eps");
+  controller.disable("ai", { ai: false, eps: true });
+  assert.equal(controller.planState().trimFutureOverlayRange, true);
+
+  controller.disable("eps", { ai: false, eps: false });
+  assert.deepEqual(controller.planState().restoreFutureOverlayViewport, {
+    range: [100, 200],
+    interactionRevision: 4,
+    userViewportPinned: true,
+  });
+  assert.equal(controller.planState().trimFutureOverlayRange, false);
+  revision += 1;
+});
+
+test("future overlay controller trims instead of restoring after user viewport interaction", () => {
+  let revision = 1;
+  let clamped = 0;
+  const controller = viewport.createFutureOverlayController({
+    toMilliseconds: Number,
+    getPinnedRange: () => [10, 20],
+    getInteractionRevision: () => revision,
+    clampToObservedData: () => { clamped += 1; },
+  });
+  controller.enable("eps");
+  revision = 2;
+  assert.equal(controller.disable("eps", { ai: false, eps: false }), false);
+  assert.equal(controller.planState().restoreFutureOverlayViewport, null);
+  assert.equal(controller.planState().trimFutureOverlayRange, true);
+  assert.equal(clamped, 1);
 });

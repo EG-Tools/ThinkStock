@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 
-await import("../../docs/modules/cache-maintenance-runtime.js");
-const module = globalThis.ThinkStockCacheMaintenanceRuntime;
+import * as module from "../../docs/modules/cache-maintenance-runtime.mjs";
 
 
 function policy() {
@@ -71,6 +70,33 @@ test("coalesces scheduled pruning and records one transaction", async () => {
   });
 });
 
+test("scheduled maintenance uses cooperative checkpoints around expensive store work", async () => {
+  const checkpoints = [];
+  let scheduledTask = null;
+  const runtime = module.createCacheMaintenanceRuntime(globalThis, {
+    lifecyclePolicy: policy(),
+    scheduler: {
+      enqueue(_key, task) {
+        scheduledTask = task;
+        return Promise.resolve(0);
+      },
+      cancel() {},
+    },
+    store: {
+      readRecord: async () => null,
+      deleteRecord: async () => {},
+      pruneStore: async () => 0,
+    },
+  });
+
+  runtime.schedulePrune("prices", null, 0);
+  await scheduledTask({
+    signal: null,
+    checkpoint: async () => { checkpoints.push("yield"); },
+  });
+  assert.deepEqual(checkpoints, ["yield", "yield"]);
+});
+
 test("repairs invalid records before applying retention pruning", async () => {
   const calls = [];
   const runtime = module.createCacheMaintenanceRuntime(globalThis, {
@@ -90,4 +116,72 @@ test("repairs invalid records before applying retention pruning", async () => {
   assert.deepEqual(calls, [false]);
   assert.equal(runtime.stats().repaired, 2);
   assert.equal(runtime.stats().deleted, 3);
+});
+
+test("persists the maintenance interval across application restarts", async () => {
+  let persisted = {};
+  let pruneCalls = 0;
+  const stateStore = {
+    read: () => persisted,
+    write: (value) => { persisted = structuredClone(value); },
+  };
+  const createRuntime = (currentTime, timerSink = null) => module.createCacheMaintenanceRuntime(
+    globalThis,
+    {
+      lifecyclePolicy: policy(),
+      pruneIntervalMs: 1000,
+      now: () => currentTime,
+      stateStore,
+      setTimer: (callback) => {
+        if (timerSink) timerSink.callback = callback;
+        return 1;
+      },
+      clearTimer: () => {},
+      store: {
+        readRecord: async () => null,
+        deleteRecord: async () => {},
+        pruneStore: async () => { pruneCalls += 1; return 0; },
+      },
+    },
+  );
+
+  await createRuntime(5000).pruneStore("prices");
+  assert.equal(pruneCalls, 1);
+  assert.equal(persisted.prunedAt.prices, 5000);
+
+  assert.equal(await createRuntime(5500).schedulePrune("prices"), 0);
+  assert.equal(pruneCalls, 1);
+
+  const timer = {};
+  const dueRuntime = createRuntime(7001, timer);
+  const dueTask = dueRuntime.schedulePrune("prices", null, 10);
+  timer.callback();
+  await dueTask;
+  assert.equal(pruneCalls, 2);
+});
+
+test("runs a full repair only once for each cache schema version", async () => {
+  let persisted = {};
+  let repairCalls = 0;
+  const stateStore = {
+    read: () => persisted,
+    write: (value) => { persisted = structuredClone(value); },
+  };
+  const createRuntime = () => module.createCacheMaintenanceRuntime(globalThis, {
+    lifecyclePolicy: policy(),
+    validators: { prices: (record) => record.valid === true },
+    repairVersions: { prices: "price-6" },
+    stateStore,
+    store: {
+      readRecord: async () => null,
+      deleteRecord: async () => {},
+      repairStore: async () => { repairCalls += 1; return 0; },
+      pruneStore: async () => 0,
+    },
+  });
+
+  await createRuntime().pruneStore("prices");
+  await createRuntime().pruneStore("prices");
+  assert.equal(repairCalls, 1);
+  assert.equal(persisted.repairVersions.prices, "price-6");
 });

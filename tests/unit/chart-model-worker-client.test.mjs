@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/chart-model-worker-client.js");
-const { createChartModelWorkerClient } = globalThis.ThinkStockChartModelWorkerClient;
+import { createChartModelWorkerClient } from "../../docs/modules/chart-model-worker-client.mjs";
 
 class FakeWorker {
   static instances = [];
 
-  constructor(url) {
+  constructor(url, options) {
     this.url = url;
+    this.options = options;
     this.messages = [];
     this.terminated = false;
     FakeWorker.instances.push(this);
@@ -27,6 +27,26 @@ class FakeWorker {
     this.terminated = true;
   }
 }
+
+test("can opt into a module worker without changing the request protocol", async () => {
+  FakeWorker.instances = [];
+  const client = createChartModelWorkerClient({
+    Worker: FakeWorker,
+    setTimeout,
+    clearTimeout,
+  }, {
+    workerUrl: "worker.mjs",
+    workerType: "module",
+    workerName: "thinkstock-chart",
+  });
+
+  const request = client.request({ value: 1 });
+  const worker = FakeWorker.instances[0];
+  assert.deepEqual(worker.options, { type: "module", name: "thinkstock-chart" });
+  worker.respond(0, { value: 1 });
+  assert.deepEqual(await request, { value: 1 });
+  client.dispose();
+});
 
 test("latest same-type request wins without restarting the worker", async () => {
   FakeWorker.instances = [];
@@ -57,6 +77,12 @@ test("latest same-type request wins without restarting the worker", async () => 
     activeType: "",
     queuedTypes: [],
     workerActive: true,
+    lifecycle: {
+      disposed: false,
+      idleMs: 60000,
+      idleRuns: 0,
+      timerPending: true,
+    },
   });
   client.dispose();
 });

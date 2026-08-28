@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-
-await import("../../docs/modules/market-timing-service.js");
-const { createMarketTimingService } = globalThis.ThinkStockMarketTimingService;
+import { createMarketTimingService } from "../../docs/modules/market-timing-service.mjs";
 
 class FakeWorker {
   constructor() {
@@ -25,6 +23,12 @@ class FakeWorker {
   terminate() {}
 }
 
+test("uses the current global scope when no explicit scope is supplied", () => {
+  const service = createMarketTimingService();
+  assert.equal(service.stats().modelCount, 0);
+  service.dispose();
+});
+
 test("transfers timing sources once per data signature and caches each model", async () => {
   const worker = new FakeWorker();
   const service = createMarketTimingService({}, {
@@ -46,6 +50,77 @@ test("transfers timing sources once per data signature and caches each model", a
   assert.equal(service.stats().modelCalculations, 2);
   assert.equal(service.stats().targetCacheHits, 2);
   assert.equal(service.stats().workerRequests, 2);
+});
+
+test("keeps unaffected ticker models when only one ticker input changes", async () => {
+  const worker = new FakeWorker();
+  const service = createMarketTimingService({}, {
+    createWorker: () => worker,
+    workerUrl: "timing-worker.js",
+  });
+  const firstSources = {
+    dates: ["2026-01-02", "2026-01-05"],
+    pricesByTicker: {
+      "^KS11": [100, 101],
+      "^KQ11": [200, 202],
+      "005930.KS": [50, 52],
+      "000660.KS": [80, 81],
+    },
+    volumesByTicker: {},
+  };
+  await service.prepare({
+    signature: "prices-1",
+    targets: ["005930.KS", "000660.KS"],
+    sources: firstSources,
+  });
+  const preserved = service.get("000660.KS");
+
+  await service.prepare({
+    signature: "prices-2",
+    targets: ["005930.KS", "000660.KS"],
+    sources: {
+      ...firstSources,
+      pricesByTicker: {
+        ...firstSources.pricesByTicker,
+        "005930.KS": [50, 53],
+      },
+    },
+  });
+
+  assert.equal(worker.messages.length, 2);
+  assert.deepEqual(worker.messages[1].targets, ["005930.KS"]);
+  assert.equal(service.get("000660.KS"), preserved);
+  assert.equal(service.stats().modelCalculations, 3);
+  assert.equal(service.stats().modelCount, 2);
+  assert.equal(service.stats().fingerprintCount, 2);
+});
+
+test("invalidates one in-memory timing model without clearing its peers", async () => {
+  const worker = new FakeWorker();
+  const service = createMarketTimingService({}, {
+    createWorker: () => worker,
+    workerUrl: "timing-worker.js",
+  });
+  const sources = {
+    dates: ["2026-01-02"],
+    pricesByTicker: {
+      "^KS11": [100],
+      "^KQ11": [200],
+      "005930.KS": [50],
+      "000660.KS": [80],
+    },
+    volumesByTicker: {},
+  };
+  await service.prepare({
+    signature: "prices-1",
+    targets: ["005930.KS", "000660.KS"],
+    sources,
+  });
+
+  assert.equal(service.invalidate("005930.ks"), true);
+  assert.equal(service.has("005930.KS"), false);
+  assert.equal(service.has("000660.KS"), true);
+  assert.equal(service.stats().fingerprintCount, 1);
 });
 
 test("falls back to the local calculator when Worker is unavailable", async () => {

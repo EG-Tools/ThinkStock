@@ -1,13 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../shared/runtime-foundation.mjs");
-await import("../../shared/series-integrity.mjs");
-await import("../../docs/modules/data-health.js");
-await import("../../docs/modules/runtime-data-transaction.js");
-await import("../../docs/modules/runtime-series-quality-gate.js");
-
-const gate = globalThis.ThinkStockRuntimeSeriesQualityGate;
+import * as gate from "../../docs/modules/runtime-series-quality-gate.mjs";
 
 test("accepts an ordinary index tail and rejects zero or implausible jumps", () => {
   const currentPayload = {

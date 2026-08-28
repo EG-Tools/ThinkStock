@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/series-cache-retention.js");
-const retentionModule = globalThis.ThinkStockSeriesCacheRetention;
+import * as retentionModule from "../../docs/modules/series-cache-retention.mjs";
 
 function records(count, start = 1) {
   return Array.from({ length: count }, (_, index) => ({

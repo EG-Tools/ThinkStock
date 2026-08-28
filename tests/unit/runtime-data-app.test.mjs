@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/runtime-data-app.js");
-
-const { createRuntimeDataApp } = globalThis.ThinkStockRuntimeDataApp;
+import { createRuntimeDataApp } from "../../docs/modules/runtime-data-app.mjs";
 
 function createScope() {
   const status = {
@@ -70,6 +68,22 @@ test("runtime refresh shares one in-flight request until a forced refresh supers
   assert.deepEqual(await forced, { ok: true });
 });
 
+test("runtime app aborts its active refresh when disposed", async () => {
+  let activeSignal = null;
+  const app = createRuntimeDataApp(createScope(), {
+    runRefresh: (_element, { signal }) => new Promise((resolve) => {
+      activeSignal = signal;
+      signal.addEventListener("abort", () => resolve({ cancelled: true }), { once: true });
+    }),
+  });
+
+  const refresh = app.refresh(null);
+  app.dispose();
+
+  assert.equal(activeSignal.aborted, true);
+  assert.deepEqual(await refresh, { cancelled: true });
+});
+
 test("runtime startup restores the last view before loading history and rendering", async () => {
   const calls = [];
   const app = createRuntimeDataApp(createScope(), { runRefresh: async () => ({ ok: true }) });
@@ -104,7 +118,57 @@ test("runtime startup releases the loader at the critical phase", async () => {
   });
 
   assert.equal(refreshOptions.awaitCriticalRender, true);
+  assert.equal(refreshOptions.awaitSupplementalRender, true);
+  assert.equal(refreshOptions.deferSupplementalUntilReady, true);
+  assert.equal(refreshOptions.incrementalSupplementalRender, true);
   assert.equal(refreshOptions.onCriticalProgress, onCriticalProgress);
+});
+
+test("runtime startup settles a fast supplemental refresh before releasing completion", async () => {
+  let releaseSupplemental = null;
+  const supplemental = new Promise((resolve) => { releaseSupplemental = resolve; });
+  const app = createRuntimeDataApp(globalThis, {
+    runRefresh: async (_element, options) => {
+      options.onCriticalReady();
+      await supplemental;
+      return { ok: true };
+    },
+  });
+
+  const startup = app.refreshDuringStartup(null, { settleAfterCriticalMs: 100 });
+  releaseSupplemental();
+
+  assert.deepEqual(await startup, {
+    critical: { ok: true },
+    settled: true,
+  });
+});
+
+test("runtime startup does not hold completion behind a slow supplemental refresh", async () => {
+  let releaseSupplemental = null;
+  let settleTimer = null;
+  const supplemental = new Promise((resolve) => { releaseSupplemental = resolve; });
+  const scope = {
+    setTimeout(callback) { settleTimer = callback; return 1; },
+    clearTimeout() {},
+  };
+  const app = createRuntimeDataApp(scope, {
+    runRefresh: async (_element, options) => {
+      options.onCriticalReady();
+      await supplemental;
+      return { ok: true };
+    },
+  });
+
+  const startup = app.refreshDuringStartup(null, { settleAfterCriticalMs: 100 });
+  await Promise.resolve();
+  settleTimer();
+
+  assert.deepEqual(await startup, {
+    critical: { ok: true },
+    settled: false,
+  });
+  releaseSupplemental();
 });
 
 test("runtime startup cannot hang when a refresh finishes before reporting its phase", async () => {

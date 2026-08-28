@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-
-await import("../../shared/runtime-foundation.mjs");
-await import("../../docs/modules/cache-lifecycle-policy.js");
-const { granularRecordIssue } = globalThis.ThinkStockCacheRecordHealth;
+import { granularRecordIssue } from "../../docs/modules/cache-lifecycle-policy.mjs";
 
 test("accepts a current granular cache record", () => {
   assert.equal(granularRecordIssue({

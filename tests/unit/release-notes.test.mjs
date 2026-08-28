@@ -2,9 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-await import("../../docs/modules/release-notes.js");
-
-const { RELEASES, createReleaseNotesNavigator } = globalThis.ThinkStockReleaseNotes;
+import { RELEASES, createReleaseNotesNavigator } from "../../docs/modules/release-notes.mjs";
 const appSource = await readFile(new URL("../../docs/app.js", import.meta.url), "utf8");
 const appVersion = appSource.match(/const APP_VERSION = "([^"]+)";/)?.[1];
 

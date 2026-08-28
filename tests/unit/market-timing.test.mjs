@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
+import macdOscillator from "../../docs/modules/macd-oscillator.mjs";
+import marketTiming from "../../docs/modules/market-timing.mjs";
 
-await import("../../docs/modules/macd-oscillator.js");
-await import("../../docs/modules/market-timing.js");
 const {
   DEFAULT_KOREAN_VOLATILITY_POLICY,
   PROMOTED_RUNTIME_BEHAVIOR_POLICY,
@@ -19,8 +19,8 @@ const {
   decorateTimingSignal,
   pricePathEfficiency,
   timingCalibrationObjective,
-} = globalThis.ThinkStockMarketTiming;
-const { buildMacdOscillator } = globalThis.ThinkStockMacdOscillator;
+} = marketTiming;
+const { buildMacdOscillator } = macdOscillator;
 
 function dateAt(index) {
   return new Date(Date.UTC(2025, 0, 1 + index)).toISOString().slice(0, 10);

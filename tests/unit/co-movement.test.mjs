@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/co-movement.js");
-const coMovement = globalThis.ThinkStockCoMovement;
+import { coMovement } from "../../docs/modules/co-movement.mjs";
 
 test("calculates directional agreement from non-flat common changes", () => {
   const result = coMovement.calculateDirectionalAgreement([
@@ -159,4 +158,59 @@ test("panel controller coalesces frames and skips unchanged calculations and DOM
   assert.deepEqual(canceled, [1]);
   assert.equal(controller.stats().pending, false);
   assert.equal(controller.stats().calculations, 3);
+});
+
+test("panel controller waits for the final viewport before recalculating", () => {
+  const timers = [];
+  const cleared = [];
+  const frames = [];
+  const document = {
+    createElement: () => ({
+      textContent: "",
+      append(...items) {
+        this.textContent += items.map((item) => (
+          typeof item === "string" ? item : item.textContent
+        )).join("");
+      },
+    }),
+  };
+  const panel = {
+    hidden: true,
+    childNodes: [],
+    replaceChildren(...children) { this.childNodes = children; },
+    setAttribute() {},
+  };
+  const controller = coMovement.createPanelController({ document }, {
+    document,
+    panel,
+    requestFrame: (callback) => { frames.push(callback); return frames.length; },
+    cancelFrame() {},
+    setTimer: (callback) => { timers.push(callback); return timers.length; },
+    clearTimer: (timerId) => { cleared.push(timerId); },
+    readState: () => ({
+      enabled: true,
+      targetKey: "stock",
+      targetName: "테스트",
+      rows: [
+        { date: "2026-01-01", stock: 100, market: 100 },
+        { date: "2026-01-02", stock: 101, market: 101 },
+        { date: "2026-01-03", stock: 102, market: 102 },
+        { date: "2026-01-04", stock: 103, market: 103 },
+      ],
+      revision: "price:1",
+      range: [Date.parse("2026-01-01T00:00:00Z"), Date.parse("2026-01-04T00:00:00Z")],
+      requestedMonths: 6,
+      comparisons: [{ key: "market", label: "시장" }],
+    }),
+  });
+
+  controller.requestDeferred();
+  controller.requestDeferred();
+  assert.deepEqual(cleared, [1]);
+  assert.equal(controller.stats().pending, true);
+  timers.at(-1)();
+  assert.equal(frames.length, 1);
+  frames.shift()();
+  assert.equal(controller.stats().calculations, 1);
+  assert.equal(controller.stats().pending, false);
 });

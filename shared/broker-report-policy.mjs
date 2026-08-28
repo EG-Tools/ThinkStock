@@ -193,13 +193,3 @@ export function evaluateBrokerReportEvents(events, priceByTicker, options = {}) 
     observations: Object.freeze(observations),
   });
 }
-
-globalThis.ThinkStockBrokerReportPolicy = Object.freeze({
-  BROKER_REPORT_POLICY_VERSION,
-  DEFAULT_BROKER_REPORT_POLICY,
-  brokerReportEvaluationEvent,
-  evaluateBrokerReportEvents,
-  reportAvailableDate,
-  reportIsAvailableAt,
-  scoreBrokerReportEvidence,
-});

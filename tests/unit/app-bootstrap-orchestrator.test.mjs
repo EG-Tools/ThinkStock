@@ -1,0 +1,364 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  createAppBootstrapOrchestrator,
+  createApplicationLifecycleRuntime,
+  createFeatureLifecycleDescriptors,
+  createLazyRuntimeRegistry,
+  createStartupCompletionGate,
+  createStartupTaskRuntime,
+} from "../../docs/modules/app-bootstrap-orchestrator.mjs";
+
+test("one feature registry owns refresh and restored activation predicates", () => {
+  const enabled = () => true;
+  const aiRefresh = () => "refresh";
+  const aiRestore = () => "restore";
+  const lifecycle = createFeatureLifecycleDescriptors([
+    { name: "dart", enabled, restore: () => "dart" },
+    { name: "ai", enabled, refresh: aiRefresh, restore: aiRestore },
+    { name: "eps", enabled: () => false, refresh: () => "eps" },
+  ]);
+
+  assert.deepEqual(lifecycle.optionalRefreshes.map((item) => item.name), ["ai", "eps"]);
+  assert.deepEqual(lifecycle.restoredActivations.map((item) => item.name), ["dart", "ai"]);
+  assert.equal(lifecycle.optionalRefreshes[0].enabled, enabled);
+  assert.equal(lifecycle.optionalRefreshes[0].run, aiRefresh);
+  assert.equal(lifecycle.restoredActivations[1].run, aiRestore);
+  assert.equal(Object.isFrozen(lifecycle.optionalRefreshes), true);
+});
+
+test("runs application startup phases in one deterministic order", async () => {
+  const calls = [];
+  const messageElement = { id: "messageArea" };
+  const orchestrator = createAppBootstrapOrchestrator({
+    document: { getElementById: () => messageElement },
+    scheduleServiceWorker: () => calls.push("service-worker"),
+    loader: {
+      show: () => calls.push("loader-show"),
+      hide: () => calls.push("loader-hide"),
+      progress: (percent) => calls.push(`progress-${percent}`),
+    },
+    performance: {
+      start: () => {
+        calls.push("perf-start");
+        return 7;
+      },
+      finishPhase: (label, startedAt) => calls.push(`phase-${label}-${startedAt}`),
+      finish: (startedAt) => calls.push(`perf-finish-${startedAt}`),
+    },
+    setup: () => calls.push("setup"),
+    preparePlotly: async () => {
+      calls.push("plotly");
+      return "ready";
+    },
+    prepareInitialData: async ({ plotlyReadyTask }) => {
+      calls.push(`initial-${(await plotlyReadyTask).plotly}`);
+      return "snapshot";
+    },
+    bindControls: () => calls.push("controls"),
+    afterControls: () => calls.push("after-controls"),
+    waitForFirstPaint: () => calls.push("paint"),
+    refreshDuringStartup: ({ restoredSnapshot }) => calls.push(`refresh-${restoredSnapshot}`),
+    afterStartupRefresh: () => calls.push("after-refresh"),
+    scheduleDiagnostics: () => calls.push("diagnostics"),
+  });
+
+  await orchestrator.boot();
+
+  assert.deepEqual(calls, [
+    "perf-start",
+    "service-worker",
+    "loader-show",
+    "progress-4",
+    "perf-start",
+    "setup",
+    "phase-setup-7",
+    "progress-10",
+    "perf-start",
+    "perf-start",
+    "plotly",
+    "phase-plotly-7",
+    "initial-ready",
+    "phase-data-7",
+    "perf-start",
+    "controls",
+    "phase-controls-7",
+    "perf-start",
+    "after-controls",
+    "phase-features-7",
+    "perf-start",
+    "paint",
+    "phase-paint-7",
+    "progress-84",
+    "perf-start",
+    "refresh-snapshot",
+    "phase-refresh-7",
+    "perf-start",
+    "after-refresh",
+    "phase-fit-7",
+    "progress-100",
+    "loader-hide",
+    "perf-finish-7",
+    "diagnostics",
+  ]);
+});
+
+test("finalizes startup after a top-level failure", async () => {
+  const calls = [];
+  const failure = new Error("startup failed");
+  const orchestrator = createAppBootstrapOrchestrator({
+    document: { getElementById: () => null },
+    loader: { hide: () => calls.push("hide") },
+    setup: () => { throw failure; },
+    onError: (_element, error) => calls.push(error.message),
+    scheduleDiagnostics: () => calls.push("diagnostics"),
+  });
+
+  await orchestrator.boot();
+  assert.deepEqual(calls, ["startup failed", "hide", "diagnostics"]);
+});
+
+test("application setup and cleanup are each committed once", () => {
+  const calls = [];
+  const runtime = createApplicationLifecycleRuntime({
+    setupSteps: [
+      (message) => calls.push(`setup-a:${message.id}`),
+      () => calls.push("setup-b"),
+    ],
+    cleanupSteps: [
+      () => calls.push("cleanup-a"),
+      () => calls.push("cleanup-b"),
+    ],
+  });
+
+  assert.equal(runtime.setup({ id: "message" }), true);
+  assert.equal(runtime.setup({ id: "ignored" }), false);
+  assert.equal(runtime.dispose(), true);
+  assert.equal(runtime.dispose(), false);
+  assert.deepEqual(calls, ["setup-a:message", "setup-b", "cleanup-a", "cleanup-b"]);
+});
+
+test("initial data preserves the active viewport before applying automatic scale", async () => {
+  const calls = [];
+  const runtime = createApplicationLifecycleRuntime({
+    initialData: {
+      runtime: {
+        async prepareInitialData(options) {
+          calls.push("prepare");
+          assert.equal(options.needsHistorical(), true);
+          await options.renderMain();
+          return "snapshot";
+        },
+      },
+      needsHistorical: () => true,
+      shouldPreserveViewport: () => true,
+      renderMain: (preserve) => calls.push(`render:${preserve}`),
+      shouldAutoFit: () => true,
+      fitCurrentChart: () => calls.push("fit"),
+    },
+  });
+
+  assert.equal(await runtime.prepareInitialData({}), "snapshot");
+  assert.deepEqual(calls, ["prepare", "render:true", "fit"]);
+});
+
+test("runtime refresh runs only enabled optional features in order", async () => {
+  const calls = [];
+  const runtime = createApplicationLifecycleRuntime({
+    refresh: {
+      runData: () => calls.push("data"),
+      renderMain: (preserve) => calls.push(`render:${preserve}`),
+      shouldAutoFit: () => true,
+      fitCurrentChart: () => calls.push("fit"),
+    },
+    optionalRefreshes: [
+      { name: "ai", enabled: () => true, run: () => calls.push("ai") },
+      { name: "eps", enabled: () => false, run: () => calls.push("eps") },
+      { name: "insider", enabled: () => true, run: () => calls.push("insider") },
+    ],
+  });
+
+  await runtime.refreshRuntime(null, { force: true });
+  assert.deepEqual(calls, ["data", "render:true", "fit", "ai", "insider"]);
+});
+
+test("restored feature activation does not block the startup sequence", async () => {
+  let resolveBackground;
+  const background = new Promise((resolve) => { resolveBackground = resolve; });
+  const calls = [];
+  const runtime = createApplicationLifecycleRuntime({
+    restoredActivations: [
+      { name: "ai", enabled: () => true, run: () => background.then(() => calls.push("ai")) },
+      { name: "eps", enabled: () => false, run: () => calls.push("eps") },
+    ],
+    afterActivation: () => calls.push("ready"),
+  });
+
+  runtime.activateRestoredFeatures();
+  assert.deepEqual(calls, ["ready"]);
+  resolveBackground();
+  await background;
+  assert.deepEqual(calls, ["ready", "ai"]);
+});
+
+test("restored features can be deferred without delaying control readiness", () => {
+  const scheduled = [];
+  const calls = [];
+  const runtime = createApplicationLifecycleRuntime({
+    restoredActivations: [
+      { name: "dart", enabled: () => true, run: () => calls.push("dart") },
+      { name: "eps", enabled: () => false, run: () => calls.push("eps") },
+      { name: "insider", enabled: () => true, run: () => calls.push("insider") },
+    ],
+    scheduleRestoredActivation: (task, context) => scheduled.push({ task, context }),
+    afterActivation: () => calls.push("ready"),
+  });
+
+  runtime.activateRestoredFeatures();
+  assert.deepEqual(calls, ["ready"]);
+  assert.deepEqual(scheduled.map(({ context }) => [context.feature.name, context.index]), [
+    ["dart", 0],
+    ["insider", 2],
+  ]);
+  scheduled.forEach(({ task }) => task());
+  assert.deepEqual(calls, ["ready", "dart", "insider"]);
+});
+
+test("lazy runtime registry creates services once and disposes them in reverse order", () => {
+  const calls = [];
+  const registry = createLazyRuntimeRegistry();
+  const first = registry.get("first", () => ({ dispose: () => calls.push("first") }));
+  const same = registry.get("first", () => ({ dispose: () => calls.push("duplicate") }));
+  registry.get("second", () => ({ destroy: () => calls.push("second") }));
+
+  assert.equal(first, same);
+  assert.equal(registry.size(), 2);
+  assert.equal(registry.peek("first"), first);
+  assert.equal(registry.disposeAll(), 2);
+  assert.deepEqual(calls, ["second", "first"]);
+  assert.equal(registry.size(), 0);
+});
+
+test("lazy runtime registry shares async creation and retries after failure", async () => {
+  const registry = createLazyRuntimeRegistry();
+  let attempts = 0;
+  const create = async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("temporary failure");
+    return { ready: true };
+  };
+
+  const failed = registry.getAsync("feature", create);
+  assert.equal(registry.has("feature"), true);
+  await assert.rejects(failed, /temporary failure/);
+  assert.equal(registry.has("feature"), false);
+
+  const first = registry.getAsync("feature", create);
+  const second = registry.getAsync("feature", create);
+  assert.equal(first, second);
+  assert.equal(await first, await second);
+  assert.equal(attempts, 2);
+  assert.equal(registry.size(), 1);
+});
+
+test("lazy runtime registry clears every entry even when one disposer fails", () => {
+  const registry = createLazyRuntimeRegistry();
+  const calls = [];
+  registry.get("first", () => ({ dispose() { calls.push("first"); } }));
+  registry.get("second", () => ({ dispose() { calls.push("second"); throw new Error("cleanup failed"); } }));
+
+  assert.throws(() => registry.disposeAll(), /cleanup failed/);
+  assert.deepEqual(calls, ["second", "first"]);
+  assert.equal(registry.size(), 0);
+});
+
+test("startup completion gate releases deferred work exactly once", () => {
+  const scheduled = [];
+  const calls = [];
+  const gate = createStartupCompletionGate((task, taskOptions) => scheduled.push({ task, taskOptions }));
+
+  assert.equal(gate.defer(() => calls.push("before-a"), { priority: 4 }), true);
+  assert.equal(gate.defer(null), false);
+  assert.equal(gate.defer(() => calls.push("before-b")), true);
+  assert.equal(gate.pendingCount(), 2);
+  assert.equal(gate.isReleased(), false);
+
+  assert.equal(gate.release(), true);
+  assert.equal(gate.release(), false);
+  assert.equal(gate.pendingCount(), 0);
+  assert.equal(gate.isReleased(), true);
+  assert.equal(scheduled.length, 2);
+  assert.deepEqual(scheduled[0].taskOptions, { priority: 4 });
+  scheduled.splice(0).forEach(({ task }) => task());
+  assert.deepEqual(calls, ["before-a", "before-b"]);
+
+  assert.equal(gate.defer(() => calls.push("after")), true);
+  assert.equal(scheduled.length, 1);
+  scheduled.shift().task();
+  assert.deepEqual(calls, ["before-a", "before-b", "after"]);
+});
+
+test("startup task runtime yields before and after supplemental work", async () => {
+  const enqueued = [];
+  const errors = [];
+  const scheduler = {
+    enqueue(key, task, options) {
+      enqueued.push({ key, task, options });
+      return Promise.resolve(true);
+    },
+  };
+  const runtime = createStartupTaskRuntime({
+    scheduler,
+    recordError: (...args) => errors.push(args),
+  });
+  const calls = [];
+
+  runtime.defer(() => calls.push("deferred"), { priority: 3 });
+  assert.equal(enqueued.length, 0);
+  runtime.release();
+  assert.equal(enqueued[0].key, "startup-deferred-1");
+  assert.equal(enqueued[0].options.priority, 3);
+  const deferredCheckpoints = [];
+  assert.equal(await enqueued[0].task({
+    checkpoint: async () => { deferredCheckpoints.push("yield"); },
+  }), 1);
+  assert.deepEqual(deferredCheckpoints, ["yield", "yield"]);
+
+  const scheduled = runtime.scheduleSupplemental(async () => {
+    calls.push("task");
+    return "ready";
+  }, { index: 2 });
+  assert.equal(enqueued[1].key, "startup-supplemental-1");
+  assert.equal(enqueued[1].options.priority, -4);
+  const checkpoints = [];
+  assert.equal(await enqueued[1].task({
+    checkpoint: async () => { checkpoints.push("yield"); },
+  }), "ready");
+  assert.deepEqual(checkpoints, ["yield", "yield"]);
+  assert.deepEqual(calls, ["deferred", "task"]);
+  assert.deepEqual(errors, []);
+  await scheduled;
+});
+
+test("startup task runtime serializes visible work through the interaction-aware scheduler", () => {
+  const enqueued = [];
+  const scheduler = {
+    enqueue(key, task, options) {
+      enqueued.push({ key, task, options });
+      return Promise.resolve(true);
+    },
+  };
+  const runtime = createStartupTaskRuntime({ scheduler });
+
+  runtime.defer(() => "visible", { userVisible: true, delayMs: 120 });
+  runtime.release();
+
+  assert.equal(enqueued.length, 1);
+  assert.equal(enqueued[0].key, "startup-deferred-1");
+  assert.deepEqual(enqueued[0].options, {
+    delayMs: 120,
+    group: "startup-deferred",
+    priority: 20,
+  });
+});

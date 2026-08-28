@@ -17,6 +17,14 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
   await stubExternalRefreshes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await page.locator("#chartRange6Months").click();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const [start, end] = element._fullLayout.xaxis.range.map(Date.parse);
+    return (end - start) / 86400000;
+  })).toBeLessThan(190);
+  const entryRange = await page.locator("#chart").evaluate((element) => (
+    element._fullLayout.xaxis.range.map(Date.parse)
+  ));
 
   await page.locator("#aiForecastToggle").click();
   await expect(page.locator("#aiForecastToggle")).toHaveClass(/is-active/);
@@ -24,6 +32,16 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length
   )), { timeout: 30000 }).toBeGreaterThan(0);
+  await expect.poll(() => page.locator("#chart").evaluate((element, before) => {
+    const forecastEnd = Math.max(...(element.data || [])
+      .filter((trace) => trace?.meta?.isAiForecastScenarioTrace)
+      .flatMap((trace) => (trace.x || []).map(Date.parse).filter(Number.isFinite)));
+    const [start, end] = element._fullLayout.xaxis.range.map(Date.parse);
+    return {
+      historyStartPreserved: Math.abs(start - before[0]) <= 86400000,
+      futureVisible: end >= forecastEnd,
+    };
+  }, entryRange)).toEqual({ historyStartPreserved: true, futureVisible: true });
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const [rangeStart, rangeEnd] = (element?._fullLayout?.xaxis?.range || []).map(Date.parse);
     const [rangeLow, rangeHigh] = (element?._fullLayout?.yaxis?.range || []).map(Number);
@@ -179,6 +197,7 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
   await expect(page.locator("#chart .disclosure-popover")).toContainText("26.08.20");
   await expect(page.locator("#chart .disclosure-title-link").first()).toContainText("...");
   await page.locator("#chart .disclosure-popover").getByRole("button", { name: "공시 닫기" }).click();
+  await page.locator("#chart .disclosure-popover").evaluate((element) => element.remove());
   await page.mouse.move(reportMarkerPoint.x, reportMarkerPoint.y);
   await expect(page.locator("#chart")).toHaveClass(/is-ai-report-hovering/);
   await expect.poll(() => page.locator("#chart").evaluate((element) => getComputedStyle(element).cursor))
@@ -190,6 +209,63 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
     (element.data || []).find((trace) => trace?.meta?.isAiForecastTrace)?.x?.length || 0
   ));
   expect(horizonPoints).toBe(127);
+  const linkedDrag = await page.locator("#chart").evaluate((element) => {
+      const scenario = (element.data || []).find((trace) => trace?.meta?.isAiForecastScenarioTrace);
+      const seriesKey = scenario?.meta?.seriesKey;
+      const priceTraceIndex = (element.data || []).findIndex((trace) => (
+        trace?.meta?.overlayKind === "price" && trace?.meta?.seriesKey === seriesKey
+      ));
+      const priceTrace = element.data?.[priceTraceIndex];
+      const xAxis = element?._fullLayout?.xaxis;
+      const yAxis = element?._fullLayout?.yaxis;
+      const rect = element.getBoundingClientRect();
+      const range = (xAxis?.range || []).map(Date.parse);
+      const midpoint = (range[0] + range[1]) / 2;
+      const candidates = (priceTrace?.x || []).flatMap((date, index) => {
+        const time = Date.parse(date);
+        const value = Number(priceTrace?.y?.[index]);
+        return Number.isFinite(time) && Number.isFinite(value)
+          && time >= range[0] && time <= range[1]
+          ? [{ index, distance: Math.abs(time - midpoint) }]
+          : [];
+      }).sort((left, right) => left.distance - right.distance);
+      const pointIndex = candidates[0]?.index ?? -1;
+      if (priceTraceIndex < 0 || pointIndex < 0 || !xAxis || !yAxis) return null;
+      return {
+        seriesKey,
+        priceTraceIndex,
+        pointIndex,
+        x: rect.left + xAxis._offset + xAxis.d2p(priceTrace.x[pointIndex]),
+        y: rect.top + yAxis._offset + yAxis.l2p(Number(priceTrace.y[pointIndex])),
+        priceBefore: Number(priceTrace.y[pointIndex]),
+        scenarioBefore: (element.data || [])
+          .filter((trace) => trace?.meta?.isAiForecastScenarioTrace
+            && trace?.meta?.seriesKey === seriesKey)
+          .map((trace) => Number(trace.y?.[0])),
+      };
+    });
+    expect(linkedDrag).not.toBeNull();
+    await page.mouse.move(linkedDrag.x, linkedDrag.y);
+    await page.mouse.down();
+    await page.mouse.move(linkedDrag.x, linkedDrag.y + 24);
+    await expect.poll(() => page.evaluate(() => (
+      Object.keys(window.ThinkStockE2E.getSeriesTransforms().offsets).length
+    ))).toBeGreaterThan(0);
+    const linkedMovement = await page.locator("#chart").evaluate((element, before) => {
+      const price = element.data?.[before.priceTraceIndex];
+      const priceDelta = Number(price?.y?.[before.pointIndex]) - before.priceBefore;
+      const scenarioDeltas = (element.data || [])
+        .filter((trace) => trace?.meta?.isAiForecastScenarioTrace
+          && trace?.meta?.seriesKey === before.seriesKey)
+        .map((trace, index) => Number(trace.y?.[0]) - before.scenarioBefore[index]);
+      return { priceDelta, scenarioDeltas };
+    }, linkedDrag);
+    expect(Math.abs(linkedMovement.priceDelta)).toBeGreaterThan(0.1);
+    expect(linkedMovement.scenarioDeltas).toHaveLength(3);
+    expect(linkedMovement.scenarioDeltas.every((delta) => (
+      Math.abs(delta - linkedMovement.priceDelta) < 0.05
+    ))).toBe(true);
+  await page.mouse.up();
   const observedEnd = await page.locator("#chart").evaluate((element) => Math.max(
     ...(element.data || [])
       .filter((trace) => !trace?.meta?.isAiForecastScenarioTrace && Array.isArray(trace?.x))
@@ -316,6 +392,46 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     Date.parse(element?._fullLayout?.xaxis?.range?.[1])
   ))).toBeLessThanOrEqual(observedEnd);
+
+  const historicalRange = await page.locator("#chart").evaluate((element) => {
+    const timestamps = (element.data || [])
+      .filter((trace) => (
+        trace?.meta?.seriesKey
+        && !trace?.meta?.isAiForecastTrace
+        && !trace?.meta?.isEpsTrace
+        && !trace?.meta?.isGroupedHoverTrace
+        && String(trace?.mode || "").includes("lines")
+      ))
+      .flatMap((trace) => (trace.x || []).map(Date.parse).filter(Number.isFinite));
+    const dataStart = Math.min(...timestamps);
+    const dataEnd = Math.max(...timestamps);
+    const dataSpan = dataEnd - dataStart;
+    const start = dataStart + (dataSpan * 0.2);
+    return [start, Math.min(dataEnd - (30 * 86400000), start + (365 * 86400000))];
+  });
+  await page.evaluate((range) => window.ThinkStockE2E.setViewportRangeForTest(range), historicalRange);
+  await expect.poll(() => page.locator("#chart").evaluate((element, expected) => {
+    const actual = element._fullLayout.xaxis.range.map(Date.parse);
+    return Math.max(Math.abs(actual[0] - expected[0]), Math.abs(actual[1] - expected[1]));
+  }, historicalRange)).toBeLessThanOrEqual(1000);
+
+  await page.locator("#aiForecastToggle").click();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length
+  )), { timeout: 30000 }).toBeGreaterThan(0);
+  await expect.poll(() => page.locator("#chart").evaluate((element, expected) => {
+    const actual = element._fullLayout.xaxis.range.map(Date.parse);
+    return Math.max(Math.abs(actual[0] - expected[0]), Math.abs(actual[1] - expected[1]));
+  }, historicalRange)).toBeLessThanOrEqual(1000);
+
+  await page.locator("#aiForecastToggle").click();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length
+  ))).toBe(0);
+  await expect.poll(() => page.locator("#chart").evaluate((element, expected) => {
+    const actual = element._fullLayout.xaxis.range.map(Date.parse);
+    return Math.max(Math.abs(actual[0] - expected[0]), Math.abs(actual[1] - expected[1]));
+  }, historicalRange)).toBeLessThanOrEqual(1000);
 });
 
 test("AI explains insufficient price history and fades the message", async ({ page }) => {
@@ -700,6 +816,8 @@ test("market timing applies to a visible stock series", async ({ page }) => {
       customStocks: [
         { ticker: "005930.KS", name: "삼성전자", code: "005930", market: "KOSPI" },
       ],
+      showDisclosures: true,
+      showInsiderTrades: true,
       showRecessionSignals: true,
     }));
   });
@@ -715,11 +833,11 @@ test("market timing applies to a visible stock series", async ({ page }) => {
   const timingMarkerStyles = await page.locator("#chart").evaluate((element) => (
     (element.data || [])
       .filter((trace) => trace?.meta?.isMarketTimingBuyTrace || trace?.meta?.isMarketTimingSellTrace)
-      .map((trace) => ({ symbol: trace.marker?.symbol, size: trace.marker?.size }))
+      .map((trace) => ({ text: trace.text?.[0], size: trace.textfont?.size }))
   ));
   expect(timingMarkerStyles.length).toBeGreaterThan(0);
-  expect(timingMarkerStyles.every(({ symbol, size }) => (
-    ["triangle-up", "triangle-down"].includes(symbol) && size >= 13
+  expect(timingMarkerStyles.every(({ text, size }) => (
+    ["▲", "▼"].includes(text) && size === 15
   ))).toBe(true);
 
   const maximumTimingMarkerGap = async () => {
@@ -733,11 +851,133 @@ test("market timing applies to a visible stock series", async ({ page }) => {
   )), { timeout: 20000 }).toBeGreaterThan(0);
   await expect.poll(maximumTimingMarkerGap).toBeLessThan(24);
 
+  const rangeBeforeWheel = await page.locator("#chart").evaluate((element) => (
+    (element?._fullLayout?.xaxis?.range || []).map((value) => Date.parse(value))
+  ));
+  const wheelPoint = await page.locator("#chart").evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const axis = element?._fullLayout?.xaxis;
+    return {
+      x: rect.left + axis._offset + (axis._length * 0.55),
+      y: rect.top + axis._offset + 4,
+    };
+  });
+  await page.locator("#chart").evaluate((element, point) => {
+    element.dispatchEvent(new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      clientX: point.x,
+      clientY: point.y,
+      deltaY: -600,
+    }));
+  }, wheelPoint);
+  expect(await page.locator("#chart").evaluate((element) => (
+    element.classList.contains("is-series-transform-marker-hidden")
+  ))).toBe(false);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const range = (element?._fullLayout?.xaxis?.range || []).map((value) => Date.parse(value));
+    return range.length === 2 ? range[1] - range[0] : Number.POSITIVE_INFINITY;
+  })).toBeLessThan(rangeBeforeWheel[1] - rangeBeforeWheel[0]);
+  await expect(page.locator("#chart")).not.toHaveClass(/is-series-transform-marker-hidden/);
+  await expect.poll(maximumTimingMarkerGap).toBeLessThan(24);
+
+  const panStart = await page.locator("#chart").evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const xAxis = element?._fullLayout?.xaxis;
+    const yAxis = element?._fullLayout?.yaxis;
+    return {
+      x: rect.left + xAxis._offset + (xAxis._length * 0.5),
+      y: rect.top + yAxis._offset + 3,
+    };
+  });
+  const rangeBeforePan = await page.locator("#chart").evaluate((element) => (
+    (element?._fullLayout?.xaxis?.range || []).map((value) => Date.parse(value))
+  ));
+  await page.mouse.move(panStart.x, panStart.y);
+  await page.mouse.down();
+  await page.mouse.move(panStart.x + 90, panStart.y, { steps: 5 });
+  expect(await page.locator("#chart").evaluate((element) => (
+    element.classList.contains("is-series-transform-marker-hidden")
+  ))).toBe(false);
+  await page.mouse.up();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    Date.parse(element?._fullLayout?.xaxis?.range?.[0] || "")
+  ))).not.toBe(rangeBeforePan[0]);
+  await expect(page.locator("#chart")).not.toHaveClass(/is-series-transform-marker-hidden/);
+  await expect.poll(maximumTimingMarkerGap).toBeLessThan(24);
+
   const kospiToggle = page.locator('.series-toggle-btn[data-series="^KS11"]');
   await kospiToggle.click();
   await expect.poll(maximumTimingMarkerGap).toBeLessThan(24);
   await kospiToggle.click();
   await expect.poll(maximumTimingMarkerGap).toBeLessThan(24);
+
+  await page.locator("#chart").evaluate(async (element) => {
+    const range = element?._fullLayout?.xaxis?.range || [];
+    const start = Date.parse(range[0]);
+    const end = Date.parse(range[1]);
+    const middle = start + ((end - start) / 2);
+    await window.Plotly.relayout(element, {
+      "xaxis.range[0]": new Date(middle - ((end - start) * 0.12)).toISOString(),
+      "xaxis.range[1]": new Date(middle + ((end - start) * 0.12)).toISOString(),
+    });
+  });
+  await expect.poll(maximumTimingMarkerGap).toBeLessThan(24);
+  const scaleToggle = page.locator("#resetHandles");
+  await scaleToggle.click();
+  await expect(scaleToggle).toHaveAttribute("aria-pressed", "false");
+  await scaleToggle.click();
+  await expect(scaleToggle).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(maximumTimingMarkerGap).toBeLessThan(24);
+});
+
+test("timing hover wraps reasons and its shared hit area opens the popover", async ({ page, isMobile }) => {
+  await stubExternalRefreshes(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 360,
+      customStocks: [
+        { ticker: "005930.KS", name: "삼성전자", code: "005930", market: "KOSPI" },
+      ],
+      showRecessionSignals: true,
+    }));
+  });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const traceIndex = (element.data || []).findIndex((trace) => (
+      trace?.meta?.isMarketTimingBuyTrace || trace?.meta?.isMarketTimingSellTrace
+    ));
+    if (traceIndex < 0) return null;
+    const trace = element.data[traceIndex];
+    const rect = element.getBoundingClientRect();
+    const xaxis = element?._fullLayout?.xaxis;
+    const yaxis = element?._fullLayout?.yaxis;
+    const x = rect.left + Number(xaxis?._offset || 0) + Number(xaxis?.d2p?.(trace.x?.[0]));
+    const y = rect.top + Number(yaxis?._offset || 0) + Number(yaxis?.d2p?.(trace.y?.[0]));
+    return Number.isFinite(x) && Number.isFinite(y) ? { x, y, traceIndex } : null;
+  })).not.toBeNull();
+
+  const target = await page.locator("#chart").evaluate((element) => {
+    const traceIndex = (element.data || []).findIndex((trace) => (
+      trace?.meta?.isMarketTimingBuyTrace || trace?.meta?.isMarketTimingSellTrace
+    ));
+    const trace = element.data[traceIndex];
+    window.Plotly.Fx.hover(element, [{ curveNumber: traceIndex, pointNumber: 0 }]);
+    const rect = element.getBoundingClientRect();
+    const xaxis = element?._fullLayout?.xaxis;
+    const yaxis = element?._fullLayout?.yaxis;
+    return {
+      x: rect.left + Number(xaxis?._offset || 0) + Number(xaxis?.d2p?.(trace.x?.[0])),
+      y: rect.top + Number(yaxis?._offset || 0) + Number(yaxis?.d2p?.(trace.y?.[0])),
+    };
+  });
+  await expect(page.locator("#chart .hoverlayer")).not.toContainText("<br>");
+  if (isMobile) await page.touchscreen.tap(target.x + 12, target.y);
+  else await page.mouse.click(target.x + 12, target.y);
+  await expect(page.locator("#chart .disclosure-popover")).toBeVisible();
+  await expect(page.locator("#chart .disclosure-popover")).toContainText("근거:");
 });
 
 test("co-movement toggle shows only the last visible stock for the selected period", async ({ page }) => {
@@ -773,6 +1013,7 @@ test("co-movement toggle shows only the last visible stock for the selected peri
     page.locator("#insiderTradeToggle").boundingBox(),
     page.locator("#disclosureToggle").boundingBox(),
     page.locator("#recessionToggle").boundingBox(),
+    page.locator("#epsToggle").boundingBox(),
     page.locator("#aiForecastToggle").boundingBox(),
   ]);
   expect(chartButtonOrder.every(Boolean)).toBe(true);
@@ -836,6 +1077,11 @@ test("co-movement toggle shows only the last visible stock for the selected peri
       };
     }, { ticker, date });
     expect(point).not.toBeNull();
+    const hit = await page.evaluate(({ x, y }) => {
+      const target = window.ThinkStockE2E?.getLineDragTargetAt?.(x, y);
+      return target ? { seriesKey: target.seriesKey, traceIndex: target.traceIndex } : null;
+    }, point);
+    expect(hit?.seriesKey).toBe(ticker);
     await page.mouse.click(point.x, point.y);
   };
   await clickStockLine("005930.KS", "2026-01-14");
@@ -1040,36 +1286,37 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     (element.data || []).filter((trace) => trace?.meta?.isInsiderTradeTrace).map((trace) => ({
       side: trace.meta.insiderTradeSide,
-      symbol: trace.marker.symbol,
-      color: trace.marker.color,
+      text: trace.text?.[0],
+      color: trace.textfont?.color,
       yaxis: trace.yaxis,
       paired: trace.customdata?.[0]?.[2],
       dates: trace.x,
     }))
   ))).toEqual([
-    { side: "buy", symbol: "triangle-up", color: "#b91c1c", yaxis: "y", paired: true, dates: ["2026-04-14"] },
-    { side: "sell", symbol: "triangle-down", color: "#1d4ed8", yaxis: "y", paired: true, dates: ["2026-04-14"] },
+    { side: "buy", text: "▲", color: "#b91c1c", yaxis: "y", paired: true, dates: ["2026-04-14"] },
+    { side: "sell", text: "▼", color: "#1d4ed8", yaxis: "y", paired: true, dates: ["2026-04-14"] },
   ]);
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
-    const disclosure = (element.data || []).find((trace) => trace?.meta?.isDisclosureTrace);
-    const insiders = (element.data || []).filter((trace) => trace?.meta?.isInsiderTradeTrace);
+    const html = (element.data || [])
+      .filter((trace) => trace?.meta?.isGroupedHoverTrace)
+      .flatMap((trace) => trace.text || [])
+      .join("\n");
     return {
-      disclosure: disclosure?.hovertemplate?.[0] || "",
-      buy: insiders.find((trace) => trace.meta.insiderTradeSide === "buy")?.hovertemplate?.[0] || "",
-      sell: insiders.find((trace) => trace.meta.insiderTradeSide === "sell")?.hovertemplate?.[0] || "",
+      disclosure: html.includes("공시"),
+      buy: html.includes("내부자거래 : 매수"),
+      sell: html.includes("내부자거래 : 매도"),
     };
   })).toEqual({
-    disclosure: expect.stringContaining('<span style="color:#f59e0b"><b>공시</b></span>'),
-    buy: expect.stringContaining('<span style="color:#b91c1c"><b>내부자거래 : 매수</b></span>'),
-    sell: expect.stringContaining('<span style="color:#1d4ed8"><b>내부자거래 : 매도</b></span>'),
+    disclosure: true,
+    buy: true,
+    sell: true,
   });
   const eventHoverTemplates = await page.locator("#chart").evaluate((element) => (
     (element.data || [])
       .filter((trace) => trace?.meta?.isDisclosureTrace || trace?.meta?.isInsiderTradeTrace)
       .flatMap((trace) => trace.hovertemplate || [])
   ));
-  expect(eventHoverTemplates.every((template) => !template.includes("삼성전자"))).toBe(true);
-  expect(eventHoverTemplates.every((template) => !template.includes("2026-04-14"))).toBe(true);
+  expect(eventHoverTemplates.every((template) => !template)).toBe(true);
   expect(await page.evaluate(() => {
     const hoverLayer = document.createElement("div");
     hoverLayer.className = "hoverlayer";
@@ -1119,17 +1366,74 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
     insiderBelowLine: true,
   });
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
-    [...element.querySelectorAll(".scatterlayer path.point")]
-      .filter((point) => ["rgb(185, 28, 28)", "rgb(29, 78, 216)"].includes(point.style.fill))
+    [...element.querySelectorAll(".scatterlayer .textpoint text")]
+      .filter((point) => ["▲", "▼"].includes(point.textContent?.trim())
+        && ["rgb(185, 28, 28)", "rgb(29, 78, 216)"].includes(getComputedStyle(point).fill))
       .map((point) => getComputedStyle(point).display)
-  ))).toEqual(["inline", "inline"]);
+  ))).toEqual(["block", "block"]);
+
+  const insiderBuyPoint = await page.locator("#chart").evaluate((element) => {
+    const marker = [...element.querySelectorAll(".scatterlayer .textpoint text")]
+      .find((point) => point.textContent?.trim() === "▲"
+        && getComputedStyle(point).fill === "rgb(185, 28, 28)");
+    const rect = marker?.getBoundingClientRect();
+    return rect ? { x: (rect.left + rect.right) / 2, y: (rect.top + rect.bottom) / 2 } : null;
+  });
+  expect(insiderBuyPoint).not.toBeNull();
+  await page.mouse.move(insiderBuyPoint.x, insiderBuyPoint.y);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    element.classList.contains("is-event-marker-hovering")
+  ))).toBe(true);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const marker = [...element.querySelectorAll(".scatterlayer .textpoint text")]
+      .find((point) => point.textContent?.trim() === "▲"
+        && getComputedStyle(point).fill === "rgb(185, 28, 28)");
+    return Number.parseFloat(getComputedStyle(marker).fontSize);
+  })).toBe(18);
+  await page.mouse.click(insiderBuyPoint.x, insiderBuyPoint.y);
+  await expect(page.locator("#chart .disclosure-popover")).toBeVisible();
+  await expect(page.locator("#chart .disclosure-popover")).toContainText("내부자거래 : 매수");
+  await expect(page.locator("#chart .disclosure-popover")).toContainText("홍길동");
+  await page.locator("#chart .disclosure-popover").evaluate((node) => node.remove());
+  await expect(page.locator("#chart .disclosure-popover")).toBeVisible();
+  await expect(page.locator("#chart .disclosure-popover")).toContainText("홍길동");
+  await page.locator("#chart .disclosure-popover button").click();
+  await expect(page.locator("#chart .disclosure-popover")).toBeHidden();
+  await page.mouse.move(1, 1);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    element.classList.contains("is-event-marker-hovering")
+  ))).toBe(false);
+
+  const insiderSellPoint = await page.locator("#chart").evaluate((element) => {
+    const marker = [...element.querySelectorAll(".scatterlayer .textpoint text")]
+      .find((point) => point.textContent?.trim() === "▼"
+        && getComputedStyle(point).fill === "rgb(29, 78, 216)");
+    const rect = marker?.getBoundingClientRect();
+    return rect ? { x: (rect.left + rect.right) / 2, y: (rect.top + rect.bottom) / 2 } : null;
+  });
+  expect(insiderSellPoint).not.toBeNull();
+  await page.mouse.move(insiderSellPoint.x, insiderSellPoint.y);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const marker = [...element.querySelectorAll(".scatterlayer .textpoint text")]
+      .find((point) => point.textContent?.trim() === "▼"
+        && getComputedStyle(point).fill === "rgb(29, 78, 216)");
+    return Number.parseFloat(getComputedStyle(marker).fontSize);
+  })).toBe(18);
+  await page.mouse.click(insiderSellPoint.x, insiderSellPoint.y);
+  await expect(page.locator("#chart .disclosure-popover")).toBeVisible();
+  await expect(page.locator("#chart .disclosure-popover")).toContainText("내부자거래 : 매도");
+  await expect(page.locator("#chart .disclosure-popover")).toContainText("김주주");
+  await page.locator("#chart .disclosure-popover button").click();
+  await page.mouse.move(1, 1);
   });
 
   const readPairedMarkerGeometry = () => page.locator("#chart").evaluate((element) => {
-    const points = [...element.querySelectorAll(".scatterlayer path.point")]
-      .filter((point) => ["rgb(185, 28, 28)", "rgb(29, 78, 216)"].includes(point.style.fill));
-    const buy = points.find((point) => point.style.fill === "rgb(185, 28, 28)")?.getBoundingClientRect();
-    const sell = points.find((point) => point.style.fill === "rgb(29, 78, 216)")?.getBoundingClientRect();
+    const points = [...element.querySelectorAll(".scatterlayer .textpoint text")]
+      .filter((point) => ["▲", "▼"].includes(point.textContent?.trim()));
+    const buy = points.find((point) => getComputedStyle(point).fill === "rgb(185, 28, 28)")
+      ?.getBoundingClientRect();
+    const sell = points.find((point) => getComputedStyle(point).fill === "rgb(29, 78, 216)")
+      ?.getBoundingClientRect();
     if (!buy || !sell) return null;
     const stock = (element.data || []).find((trace) => trace?.meta?.seriesKey === "005930.KS");
     const stockIndex = stock?.x?.indexOf("2026-04-14") ?? -1;
@@ -1142,8 +1446,28 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
       horizontallyAligned: Math.abs((buy.left + buy.right) - (sell.left + sell.right)) < 1,
       buyAboveSell: buy.top < sell.top,
       lineClearance: buy.top - stockLineY,
-      verticalClearance: sell.top - buy.bottom,
+      centerSeparation: ((sell.top + sell.bottom) - (buy.top + buy.bottom)) / 2,
     };
+  });
+  const readEventMarkerClearances = () => page.locator("#chart").evaluate((element) => {
+    const stock = (element.data || []).find((trace) => trace?.meta?.seriesKey === "005930.KS");
+    const stockIndex = stock?.x?.indexOf("2026-04-14") ?? -1;
+    const axis = element?._fullLayout?.yaxis;
+    if (stockIndex < 0 || !axis || typeof axis.l2p !== "function") return [];
+    const stockPixel = axis.l2p(Number(stock.y[stockIndex]));
+    return (element.data || []).flatMap((trace) => {
+      const kind = trace?.meta?.isDisclosureTrace
+        ? "disclosure"
+        : trace?.meta?.isInsiderTradeTrace
+          ? `insider-${trace.meta.insiderTradeSide || ""}`
+          : "";
+      if (!kind) return [];
+      return (trace.x || []).flatMap((date, index) => (
+        String(date).slice(0, 10) === "2026-04-14" && Number.isFinite(Number(trace.y?.[index]))
+          ? [{ kind, gap: Math.abs(axis.l2p(Number(trace.y[index])) - stockPixel) }]
+          : []
+      ));
+    }).sort((left, right) => left.kind.localeCompare(right.kind));
   });
   const pairedMarkerGeometry = await test.step("align same-day insider markers around the stock line", async () => {
     const geometry = await readPairedMarkerGeometry();
@@ -1151,11 +1475,11 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
       horizontallyAligned: true,
       buyAboveSell: true,
       lineClearance: expect.any(Number),
-      verticalClearance: expect.any(Number),
+      centerSeparation: expect.any(Number),
     });
     expect(geometry.lineClearance).toBeGreaterThanOrEqual(1);
-    expect(geometry.verticalClearance).toBeGreaterThanOrEqual(0);
-    expect(geometry.verticalClearance).toBeLessThanOrEqual(4);
+    expect(geometry.centerSeparation).toBeGreaterThan(0);
+    expect(geometry.centerSeparation).toBeLessThanOrEqual(16);
     return geometry;
   });
 
@@ -1200,6 +1524,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   await scaleHandle.hover();
   await page.mouse.down();
   await expect(scaleHandle).toHaveClass(/dragging/);
+  await expect(page.locator("#chart")).not.toHaveClass(/is-series-transform-marker-hidden/);
   await page.mouse.move(
     scaleHandleBox.x + scaleHandleBox.width / 2,
     scaleHandleBox.y + scaleHandleBox.height / 2 - 45,
@@ -1208,10 +1533,8 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   await expect.poll(() => page.evaluate(() => (
     Object.keys(window.ThinkStockE2E.getSeriesTransforms().scales).length
   ))).toBeGreaterThan(0);
-  await expect.poll(async () => Math.abs(
-    (await readPairedMarkerGeometry()).lineClearance - pairedMarkerGeometry.lineClearance,
-  )).toBeLessThanOrEqual(2);
   await page.mouse.up();
+  await expect(page.locator("#chart")).not.toHaveClass(/is-series-transform-marker-hidden/);
   await page.waitForTimeout(150);
   const scaleYRangeAfter = await page.locator("#chart").evaluate((element) => (
     [...element._fullLayout.yaxis.range]
@@ -1222,7 +1545,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
     (await readPairedMarkerGeometry()).lineClearance - pairedMarkerGeometry.lineClearance,
   )).toBeLessThanOrEqual(2);
   await expect.poll(async () => Math.abs(
-    (await readPairedMarkerGeometry()).verticalClearance - pairedMarkerGeometry.verticalClearance,
+    (await readPairedMarkerGeometry()).centerSeparation - pairedMarkerGeometry.centerSeparation,
   )).toBeLessThanOrEqual(2);
 
   const transformsBeforeFit = await page.evaluate(() => window.ThinkStockE2E.getSeriesTransforms());
@@ -1235,7 +1558,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
     (await readPairedMarkerGeometry()).lineClearance - pairedMarkerGeometry.lineClearance,
   )).toBeLessThanOrEqual(2);
   await expect.poll(async () => Math.abs(
-    (await readPairedMarkerGeometry()).verticalClearance - pairedMarkerGeometry.verticalClearance,
+    (await readPairedMarkerGeometry()).centerSeparation - pairedMarkerGeometry.centerSeparation,
   )).toBeLessThanOrEqual(2);
   await waitForChartRenderIdle(page);
   const lineDragStart = await page.locator("#chart").evaluate((element) => {
@@ -1307,6 +1630,85 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
     return yRange[0] < minimum && yRange[1] > maximum;
   });
   await expect.poll(fittedRangeCoversVisibleLines).toBe(true);
+  const autoScaleMarkerGapsBefore = await readEventMarkerClearances();
+  expect(autoScaleMarkerGapsBefore.map((item) => item.kind)).toEqual([
+    "disclosure",
+    "insider-buy",
+    "insider-sell",
+  ]);
+  const expectMarkerGapsToMatch = (actual, expected) => {
+    expect(actual.map((item) => item.kind)).toEqual(expected.map((item) => item.kind));
+    actual.forEach((item, index) => {
+      expect(Math.abs(item.gap - expected[index].gap)).toBeLessThanOrEqual(2);
+    });
+  };
+
+  const autoScaleOffsetHandle = page.locator('.y-handle-left[title="삼성전자 (위치)"]');
+  const autoScaleOffsetBox = await waitForBoundingBox(autoScaleOffsetHandle);
+  await page.mouse.move(
+    autoScaleOffsetBox.x + autoScaleOffsetBox.width / 2,
+    autoScaleOffsetBox.y + autoScaleOffsetBox.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    autoScaleOffsetBox.x + autoScaleOffsetBox.width / 2,
+    autoScaleOffsetBox.y + autoScaleOffsetBox.height / 2 + 28,
+    { steps: 3 },
+  );
+  expectMarkerGapsToMatch(await readEventMarkerClearances(), autoScaleMarkerGapsBefore);
+  await page.mouse.up();
+  const autoScaleOffsetGapsAtRelease = await readEventMarkerClearances();
+  expectMarkerGapsToMatch(autoScaleOffsetGapsAtRelease, autoScaleMarkerGapsBefore);
+  await page.waitForTimeout(220);
+  expectMarkerGapsToMatch(await readEventMarkerClearances(), autoScaleMarkerGapsBefore);
+
+  const autoScaleLineStart = await page.locator("#chart").evaluate((element) => {
+    const trace = (element.data || []).find((item) => item?.meta?.seriesKey === "005930.KS");
+    const xAxis = element?._fullLayout?.xaxis;
+    const yAxis = element?._fullLayout?.yaxis;
+    const rect = element.getBoundingClientRect();
+    const pointIndex = Math.max(0, Math.floor((trace?.x?.length || 1) / 2));
+    if (!trace || !xAxis || !yAxis || !Number.isFinite(Number(trace.y?.[pointIndex]))) return null;
+    return {
+      x: rect.left + xAxis._offset + xAxis.d2p(trace.x[pointIndex]),
+      y: rect.top + yAxis._offset + yAxis.l2p(Number(trace.y[pointIndex])),
+    };
+  });
+  expect(autoScaleLineStart).not.toBeNull();
+  const autoScaleLineGapsBefore = await readEventMarkerClearances();
+  await page.mouse.move(autoScaleLineStart.x, autoScaleLineStart.y);
+  await page.mouse.down();
+  await page.mouse.move(autoScaleLineStart.x, autoScaleLineStart.y - 24, { steps: 3 });
+  expectMarkerGapsToMatch(await readEventMarkerClearances(), autoScaleLineGapsBefore);
+  await page.mouse.up();
+  const autoScaleLineGapsAtRelease = await readEventMarkerClearances();
+  expectMarkerGapsToMatch(autoScaleLineGapsAtRelease, autoScaleLineGapsBefore);
+  await page.waitForTimeout(220);
+  expectMarkerGapsToMatch(await readEventMarkerClearances(), autoScaleLineGapsBefore);
+
+  const autoScaleHandle = page.locator('.y-handle-right[title="삼성전자 (스케일)"]');
+  const autoScaleHandleBox = await waitForBoundingBox(autoScaleHandle);
+  await page.mouse.move(
+    autoScaleHandleBox.x + autoScaleHandleBox.width / 2,
+    autoScaleHandleBox.y + autoScaleHandleBox.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    autoScaleHandleBox.x + autoScaleHandleBox.width / 2,
+    autoScaleHandleBox.y + autoScaleHandleBox.height / 2 - 36,
+    { steps: 3 },
+  );
+  const autoScaleMarkerGapsDuring = await readEventMarkerClearances();
+  autoScaleMarkerGapsDuring.forEach((item, index) => {
+    expect(Math.abs(item.gap - autoScaleMarkerGapsBefore[index].gap)).toBeLessThanOrEqual(2);
+  });
+  await page.mouse.up();
+  const autoScaleMarkerGapsAtRelease = await readEventMarkerClearances();
+  await page.waitForTimeout(220);
+  const autoScaleMarkerGapsSettled = await readEventMarkerClearances();
+  autoScaleMarkerGapsSettled.forEach((item, index) => {
+    expect(Math.abs(item.gap - autoScaleMarkerGapsAtRelease[index].gap)).toBeLessThanOrEqual(2);
+  });
   });
 
   await test.step("limit event hover to exact dates and update visible tickers", async () => {
@@ -1331,7 +1733,9 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   await moveNativeHoverToDate("2026-01-14");
   await expect.poll(eventHoverInfo).toEqual(["skip", "skip", "skip"]);
   await moveNativeHoverToDate("2026-04-14");
-  await expect.poll(eventHoverInfo).toEqual(["all", "all", "all"]);
+  await expect.poll(eventHoverInfo).toEqual(["skip", "skip", "skip"]);
+  await expect(page.locator("#chart .hoverlayer")).not.toContainText("▲");
+  await expect(page.locator("#chart .hoverlayer")).not.toContainText("▼");
   expect(authorization).toBe("Bearer private");
 
   const insiderMarkerTickers = () => page.locator("#chart").evaluate((element) => (

@@ -110,5 +110,3 @@ const api = Object.freeze({
   normalizeAdrRows,
   parseAdrChartRows,
 });
-
-if (typeof globalThis !== "undefined") globalThis.ThinkStockAdrData = api;

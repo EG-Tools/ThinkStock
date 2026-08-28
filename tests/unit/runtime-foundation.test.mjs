@@ -4,10 +4,15 @@ import test from "node:test";
 import {
   RUNTIME_STORAGE_CONTRACT,
   boundedOrNull,
+  escapeHtml,
   finiteOrNull,
   normalizedIsoDate,
   positiveOrNull,
 } from "../../shared/runtime-foundation.mjs";
+
+test("escapes external text through one shared HTML contract", () => {
+  assert.equal(escapeHtml(`<RFHIC & "DART">`), "&lt;RFHIC &amp; &quot;DART&quot;&gt;");
+});
 
 test("runtime value contract rejects missing and malformed numeric values", () => {
   assert.equal(finiteOrNull(null), null);

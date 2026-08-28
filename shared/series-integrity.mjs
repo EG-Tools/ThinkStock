@@ -329,5 +329,3 @@ const api = Object.freeze({
   planSeriesRepairDates,
   weekdayDates,
 });
-
-if (typeof globalThis !== "undefined") globalThis.ThinkStockSeriesIntegrity = api;

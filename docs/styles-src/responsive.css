@@ -1,0 +1,89 @@
+@media (max-width: 820px) {
+  body { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+  .series-row.base-row:nth-child(2) { gap: 5px; }
+  .stock-research-btn,
+  .top-control-toggle { font-size: 11px; }
+  .stock-research-panel { max-height: 92svh; padding: 15px; border-radius: 17px; }
+  .stock-research-actions { gap: 7px; }
+  .stock-research-disclaimer { margin-top: 8px; }
+  .stock-research-refresh-btn { min-height: 42px; }
+  .stock-research-list { height: 374px; grid-auto-rows: minmax(66px, auto); }
+  .stock-research-item { min-height: 66px; }
+  .stock-research-item-main { min-height: 66px; }
+  .app-shell { width: min(100vw - 18px, 720px); padding-top: 12px; }
+  .hero { padding-top: 14px; }
+  .hero h1 { font-size: clamp(30px, 9vw, 44px); }
+  .hero-title-row {
+    flex-direction: row;
+    align-items: flex-end;
+    gap: 10px;
+  }
+  .stock-add-panel-inline { width: min(162px, 43vw); }
+  .top-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    justify-content: start;
+  }
+  .data-attribution { margin-inline: 10px; }
+  .data-source-links { gap: 5px; }
+  .data-source-links a { min-height: 29px; padding-inline: 8px; }
+  .credit-offset-wrap {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 4px 8px;
+    gap: 5px;
+  }
+  .credit-offset-input { width: 40px; font-size: 11px; padding: 3px 4px; }
+  .series-toggle-btn {
+    font-size: 11px;
+    padding: 8px 6px;
+    line-height: 1.2;
+  }
+  .series-row.base-row .series-toggle-btn:first-child { white-space: normal; }
+  .custom-stock-chip .series-toggle-btn { padding: 7px 28px 7px 8px; }
+  .stock-remove-btn { width: 16px; height: 16px; font-size: 11px; right: 7px; }
+  .chart-frame { border-radius: 22px; min-height: 350px; }
+  #chart.chart-frame { min-height: 366px; }
+  .chart-reset-btn,
+  .chart-side-btn,
+  .chart-recession-btn,
+  .chart-ai-btn {
+    min-height: 28px;
+    max-width: calc(100% - var(--chart-control-left) - 12px);
+    padding: 5px 10px;
+    line-height: 16px;
+    white-space: nowrap;
+    overflow: visible;
+  }
+  .chart-frame-macd { min-height: 175px; max-height: 225px; }
+  .chart-frame-adr { min-height: 535px; max-height: 575px; }
+  .api-settings-panel {
+    width: calc(100vw - 12px);
+    margin: 6px;
+    max-height: 82vh;
+  }
+}
+
+@media (max-width: 480px) {
+  .stock-research-header { gap: 3px; }
+  .stock-research-header h2 { font-size: 15px; }
+  .stock-research-filters { gap: 3px; margin-left: 0; }
+  .stock-research-filters button {
+    min-width: 34px;
+    height: 28px;
+    padding: 0 5px;
+    font-size: 10px;
+  }
+  .stock-research-header-blocked-btn {
+    height: 28px;
+    padding: 0 6px;
+    font-size: 10px;
+  }
+  .stock-research-close-btn {
+    width: 28px;
+    height: 28px;
+    flex-basis: 28px;
+  }
+}

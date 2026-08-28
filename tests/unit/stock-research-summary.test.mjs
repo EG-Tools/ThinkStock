@@ -4,11 +4,13 @@ import test from "node:test";
 import {
   normalizeResearchMinimum,
   normalizeResearchSummary,
+  RESEARCH_SUMMARY_HISTORY_QUALITY_VERSION,
+  RESEARCH_SUMMARY_SCHEMA,
   researchSummaryCacheKey,
 } from "../../shared/stock-research-summary.mjs";
+import contract from "../../docs/modules/stock-research-contract.js";
 
-await import("../../docs/modules/stock-research-contract.js");
-const { CALCULATION_VERSION } = globalThis.ThinkStockStockResearchContract;
+const { CALCULATION_VERSION } = contract;
 
 test("allows one signal as the research minimum", () => {
   assert.equal(normalizeResearchMinimum(1), 1);
@@ -18,7 +20,8 @@ test("allows one signal as the research minimum", () => {
 
 test("normalizes a compact cross-device stock-research summary", () => {
   const summary = normalizeResearchSummary({
-    schema: 1,
+    schema: RESEARCH_SUMMARY_SCHEMA,
+    historyQualityVersion: RESEARCH_SUMMARY_HISTORY_QUALITY_VERSION,
     strategy: "top400-recovery-v1",
     baseDate: "2026-08-07",
     analysisDate: "2026-08-06",
@@ -59,12 +62,16 @@ test("normalizes a compact cross-device stock-research summary", () => {
     KOSDAQ: "kosdaq-sources",
   });
   assert.equal(summary.universeSize, 400);
-  assert.equal(researchSummaryCacheKey(summary.strategy, 5), "research-summary:1:top400-recovery-v1:5:400");
+  assert.equal(
+    researchSummaryCacheKey(summary.strategy, 5),
+    `research-summary:${RESEARCH_SUMMARY_SCHEMA}:top400-recovery-v1:5:400`,
+  );
 });
 
 test("keeps cross-device summaries separate for 600 and 1000 stock searches", () => {
   const payload = {
-    schema: 1,
+    schema: RESEARCH_SUMMARY_SCHEMA,
+    historyQualityVersion: RESEARCH_SUMMARY_HISTORY_QUALITY_VERSION,
     strategy: "adaptive1000-recovery-v8",
     baseDate: "2026-08-13",
     minimumBuySignals: 1,
@@ -81,7 +88,10 @@ test("keeps cross-device summaries separate for 600 and 1000 stock searches", ()
 
   assert.equal(summary.universeSize, 600);
   assert.equal(summary.scanned, 600);
-  assert.equal(researchSummaryCacheKey(payload.strategy, 1, 600), "research-summary:1:adaptive1000-recovery-v8:1:600");
+  assert.equal(
+    researchSummaryCacheKey(payload.strategy, 1, 600),
+    `research-summary:${RESEARCH_SUMMARY_SCHEMA}:adaptive1000-recovery-v8:1:600`,
+  );
   assert.equal(normalizeResearchSummary(payload, {
     strategy: payload.strategy,
     minimum: 1,
@@ -91,7 +101,8 @@ test("keeps cross-device summaries separate for 600 and 1000 stock searches", ()
 
 test("rejects a mismatched strategy or minimum", () => {
   const payload = {
-    schema: 1,
+    schema: RESEARCH_SUMMARY_SCHEMA,
+    historyQualityVersion: RESEARCH_SUMMARY_HISTORY_QUALITY_VERSION,
     strategy: "top400-recovery-v1",
     baseDate: "2026-08-07",
     minimumBuySignals: 5,
@@ -103,7 +114,8 @@ test("rejects a mismatched strategy or minimum", () => {
 
 test("keeps sell-only and combined signal profiles in the shared summary", () => {
   const summary = normalizeResearchSummary({
-    schema: 1,
+    schema: RESEARCH_SUMMARY_SCHEMA,
+    historyQualityVersion: RESEARCH_SUMMARY_HISTORY_QUALITY_VERSION,
     strategy: CALCULATION_VERSION,
     baseDate: "2026-08-11",
     minimumBuySignals: 2,

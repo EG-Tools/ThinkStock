@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-
-await import("../../docs/modules/chart-adjustments.js");
-const adjustments = globalThis.ThinkStockChartAdjustments;
+import adjustments from "../../docs/modules/chart-adjustments.mjs";
 
 test("applies the same centered scale and vertical offset used by the main chart", () => {
   assert.deepEqual(adjustments.transformValues([90, 100, 110, null], 2, 5), [85, 105, 125, null]);
+  const output = new Array(4);
+  assert.equal(adjustments.transformValuesInto([90, 100, 110, null], 2, 5, output), output);
+  assert.deepEqual(output, [85, 105, 125, null]);
   assert.equal(adjustments.resolveScale({}, "leading_cycle"), 20);
   assert.equal(adjustments.resolveScale({ "005930.KS": 1.5 }, "005930.KS"), 1.5);
+  assert.deepEqual(adjustments.invertTransformValues([85, 105, 125, null], 2, 5), [90, 100, 110, null]);
 });
 
 test("converts pointer movement into chart offset and scale", () => {
@@ -62,6 +64,44 @@ test("reuses parsed dates and scans only the visible slice during live fitting",
   } finally {
     Date.parse = originalParse;
   }
+});
+
+test("fits long visible ranges with cached extrema blocks while ignoring gaps", () => {
+  const dates = Array.from({ length: 512 }, (_, index) => (
+    new Date(Date.UTC(2024, 0, index + 1)).toISOString()
+  ));
+  const values = dates.map((_, index) => index);
+  values[130] = null;
+  values[255] = Number.NaN;
+  const trace = { x: dates, y: values };
+  const range = [dates[64], dates[447]];
+  assert.deepEqual(adjustments.fitRangeForTraces([trace], range, {
+    paddingRatio: 0,
+    minimumPadding: 0,
+  }), [64, 447]);
+  assert.deepEqual(adjustments.fitRangeForTraces([trace], range, {
+    paddingRatio: 0,
+    minimumPadding: 0,
+  }), [64, 447]);
+});
+
+test("fits long visible ranges with cached extrema blocks while ignoring gaps", () => {
+  const dates = Array.from({ length: 512 }, (_, index) => (
+    new Date(Date.UTC(2024, 0, index + 1)).toISOString()
+  ));
+  const values = dates.map((_, index) => index);
+  values[130] = null;
+  values[255] = Number.NaN;
+  const trace = { x: dates, y: values };
+  const range = [dates[64], dates[447]];
+  assert.deepEqual(adjustments.fitRangeForTraces([trace], range, {
+    paddingRatio: 0,
+    minimumPadding: 0,
+  }), [64, 447]);
+  assert.deepEqual(adjustments.fitRangeForTraces([trace], range, {
+    paddingRatio: 0,
+    minimumPadding: 0,
+  }), [64, 447]);
 });
 
 test("manual chart edits only expand the current viewport when a trace would be clipped", () => {

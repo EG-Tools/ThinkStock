@@ -1,5 +1,7 @@
 import { finiteOrNull } from "./runtime-foundation.mjs";
 
+/** @typedef {{date?: string} & Record<string, unknown>} RuntimeDataRow */
+
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const CREDIT_KEYS = Object.freeze(["customer_deposit", "kospi_credit", "kosdaq_credit"]);
 
@@ -12,6 +14,12 @@ function requireSuccess(payload, label) {
   return payload;
 }
 
+/**
+ * @param {RuntimeDataRow[]} rows
+ * @param {string[]} keys
+ * @param {{positiveOnly?: boolean}} [options]
+ * @returns {RuntimeDataRow[]}
+ */
 function normalizeRows(rows, keys, options = {}) {
   const positiveOnly = options.positiveOnly === true;
   const output = [];
@@ -331,5 +339,3 @@ const api = Object.freeze({
   normalizeCrisisSignalPayload,
   normalizeRuntimePayload,
 });
-
-if (typeof globalThis !== "undefined") globalThis.ThinkStockRuntimeDataContract = api;

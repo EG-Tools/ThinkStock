@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/ai-forecast-quality-runtime.js");
-const module = globalThis.ThinkStockAiForecastQualityRuntime;
+import * as module from "../../docs/modules/ai-forecast-quality-runtime.mjs";
 
 function createFeature() {
   const mergeForecastRecords = (existing, incoming) => {

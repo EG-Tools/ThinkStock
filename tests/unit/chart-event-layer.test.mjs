@@ -1,8 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/chart-event-layer.js");
-const eventLayer = globalThis.ThinkStockChartEventLayer;
+import * as eventLayer from "../../docs/modules/chart-event-layer.mjs";
+
+test("all point markers share one mouse and touch hit-area policy", () => {
+  assert.equal(eventLayer.interactiveMarkerHitRadius(false), 26);
+  assert.equal(eventLayer.interactiveMarkerHitRadius(true), 36);
+});
+
+test("all chart lines share a restrained one-pixel highlight increase", () => {
+  assert.equal(eventLayer.interactiveLineWidth(1, false), 1);
+  assert.equal(eventLayer.interactiveLineWidth(1, true), 2);
+  assert.equal(eventLayer.interactiveLineWidth(2, true), 3);
+});
 
 test("indexes only exact chart dates for disclosures and insider trades", () => {
   const index = eventLayer.buildPointIndex([
@@ -125,4 +135,63 @@ test("selects timing and disclosure markers through one interactive index", () =
     traceIndex: 0,
     pointIndex: 0,
   });
+});
+
+test("highlights a marker through its trace node without reading every marker rectangle", () => {
+  const attributes = new Map();
+  const point = {
+    style: {},
+    classList: { toggle() {} },
+    setAttribute: (name, value) => attributes.set(name, value),
+  };
+  const group = {
+    classList: { contains: (name) => name === "traceabc" },
+    querySelectorAll: () => [point],
+  };
+  const element = {
+    data: [{ uid: "abc", marker: { color: ["orange"], line: { color: "black", width: 1 } } }],
+    _fullData: [{ uid: "abc" }],
+    querySelectorAll: () => [group],
+  };
+
+  assert.equal(eventLayer.setMarkerHighlighted(element, 0, 0, true, {
+    highlightFill: "white",
+    highlightStroke: "yellow",
+    highlightStrokeWidth: 3,
+  }), true);
+  assert.equal(point.style.fill, "white");
+  assert.equal(attributes.get("stroke-width"), "3");
+
+  assert.equal(eventLayer.setMarkerHighlighted(element, 0, 0, false), true);
+  assert.equal(point.style.fill, "orange");
+  assert.equal(point.style.stroke, "black");
+  assert.equal(point.style.strokeWidth, "1px");
+});
+
+test("text event markers share the same one-pixel hover enlargement", () => {
+  const attributes = new Map();
+  const point = {
+    style: {},
+    classList: { toggle() {} },
+    setAttribute: (name, value) => attributes.set(name, value),
+  };
+  const group = {
+    classList: { contains: (name) => name === "traceevent" },
+    querySelectorAll: () => [point],
+  };
+  const element = {
+    data: [{ uid: "event", mode: "text", textfont: { color: "#b91c1c", size: 15 } }],
+    _fullData: [{ uid: "event" }],
+    querySelectorAll: () => [group],
+  };
+
+  assert.equal(eventLayer.setMarkerHighlighted(element, 0, 0, true, {
+    highlightSizeDelta: 1,
+  }), true);
+  assert.equal(point.style.fill, "#b91c1c");
+  assert.equal(point.style.fontSize, "16px");
+  assert.equal(attributes.get("font-size"), "16");
+
+  assert.equal(eventLayer.setMarkerHighlighted(element, 0, 0, false), true);
+  assert.equal(point.style.fontSize, "15px");
 });

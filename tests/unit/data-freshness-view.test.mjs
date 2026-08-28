@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/data-freshness-view.js");
-const view = globalThis.ThinkStockDataFreshnessView;
+import * as view from "../../docs/modules/data-freshness-controller.mjs";
 
 test("renders price freshness with its runtime source and warning", () => {
   const element = { innerHTML: "" };

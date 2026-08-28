@@ -1,14 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import test from "node:test";
-import vm from "node:vm";
-
-
-const source = await readFile(path.resolve("docs/modules/disclosure-popover.js"), "utf8");
-const context = {};
-vm.runInNewContext(source, context);
-const popover = context.ThinkStockDisclosurePopover;
+import * as popover from "../../docs/modules/disclosure-popover.mjs";
 
 
 test("builds linked disclosure titles without summary labels", () => {

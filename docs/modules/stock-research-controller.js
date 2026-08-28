@@ -1,15 +1,15 @@
-(function initThinkStockStockResearchController(globalScope) {
-  "use strict";
+"use strict";
 
-  const storageModule = globalScope.ThinkStockStockResearchStorage;
+const globalScope = typeof self !== "undefined" ? self : globalThis;
+  const storageModule = require("./stock-research-storage.js");
   if (!storageModule) throw new Error("stock research storage module failed to load");
-  const navigationModule = globalScope.ThinkStockStockResearchNavigation;
+  const navigationModule = require("./stock-research-navigation.js");
   if (!navigationModule) throw new Error("stock research navigation module failed to load");
-  const filterModule = globalScope.ThinkStockStockResearchFilter;
+  const filterModule = require("./stock-research-filter.js");
   if (!filterModule) throw new Error("stock research filter module failed to load");
-  const historyCacheModule = globalScope.ThinkStockStockResearchHistoryCache;
+  const historyCacheModule = require("./stock-research-history-cache.js");
   if (!historyCacheModule) throw new Error("stock research history cache module failed to load");
-  const workerClientModule = globalScope.ThinkStockStockResearchWorkerClient;
+  const workerClientModule = require("./stock-research-worker-client.js");
   if (!workerClientModule) throw new Error("stock research worker client failed to load");
   const {
     CACHE_KEY,
@@ -60,11 +60,15 @@
     candidateResearchMarketDate,
     latestResearchDate,
     researchMarketDateLabel,
+    researchMarketDateIsCurrent,
     resolveResearchMarketDates,
     visibleCandidateReasons,
   } = filterModule;
   const {
     HISTORY_CACHE_SCHEMA,
+    HISTORY_QUALITY_VERSION,
+    configureCacheLifecycle,
+    configureTickerPriceRuntime,
     mergeResearchHistoryPayload,
     mergeUniversePointIntoHistoryCache,
     normalizeHistoryCacheRecord,
@@ -102,6 +106,8 @@
   }
 
   function createController(scope = globalScope, options = {}) {
+    configureCacheLifecycle(options.cacheLifecycle);
+    configureTickerPriceRuntime(options.tickerPriceRuntime);
     const research = options.research;
     if (!research) throw new Error("stock research model is required");
     const calculationVersion = research.CALCULATION_VERSION || research.STRATEGY_VERSION;
@@ -113,6 +119,7 @@
     const requestTimeoutMs = Math.max(1000, Number(options.requestTimeoutMs) || 90000);
     const getAccessToken = options.getAccessToken || (() => "");
     const getData = options.getData || (() => ({}));
+    const getExpectedLatestTradingDate = options.getExpectedLatestTradingDate || (() => "");
     const fetchJson = options.fetchJson || (async (url, init = {}) => {
       const accessToken = String(getAccessToken() || "").trim();
       if (!isLocalRuntime && !accessToken) {
@@ -164,7 +171,7 @@
     const historyUrl = String(options.historyUrl || `${endpointRoot}/history`);
     const profileUrl = String(options.profileUrl || `${endpointRoot}/profile`);
     const summaryUrl = String(options.summaryUrl || `${endpointRoot}/summary`);
-    const workerUrl = String(options.workerUrl || "./modules/stock-research-worker.js?v=dev");
+    const workerUrl = String(options.workerUrl || "./assets/stock-research-worker.bundle.min.js?v=dev");
     const DEFAULT_FILTER = Object.freeze({ includeBuy: true, includeSell: false, todayOnly: false });
     const ANALYSIS_FILTER = Object.freeze({
       includeBuy: true,
@@ -200,6 +207,7 @@
     let resultCacheHydrationPromise = null;
     let persistTimer = 0;
     let pendingPersistPayload = null;
+    let progressView = null;
 
     const elements = {};
     const element = (id) => scope.document.getElementById(id);
@@ -327,10 +335,18 @@
     }
 
     function setProgress(percent, text, count = "") {
-      elements.progress.hidden = false;
-      elements.progressText.textContent = text;
+      if (progressView) progressView.paint(percent, text, { visible: true });
+      else {
+        elements.progress.hidden = false;
+        elements.progressText.textContent = text;
+        elements.progressBar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+      }
       elements.progressCount.textContent = count;
-      elements.progressBar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+    }
+
+    function hideProgress() {
+      if (progressView) progressView.setVisible(false);
+      else if (elements.progress) elements.progress.hidden = true;
     }
 
     function persistBlocked() {
@@ -347,9 +363,19 @@
       return activeFilter.includeSell ? "매도신호" : "매수신호";
     }
 
-    function candidateMatchesFilter(candidate, minimum = effectiveMinimum(), marketDates = null) {
+    function expectedResearchDate() {
+      try { return String(getExpectedLatestTradingDate() || "").slice(0, 10); }
+      catch (_) { return ""; }
+    }
+
+    function candidateMatchesFilter(
+      candidate,
+      minimum = effectiveMinimum(),
+      marketDates = null,
+      expectedDate = "",
+    ) {
       if (activeFilter.todayOnly) {
-        return candidateMatchesTodayFilter(candidate, activeFilter, marketDates || {});
+        return candidateMatchesTodayFilter(candidate, activeFilter, marketDates || {}, expectedDate);
       }
       return candidateMeetsSignalMinimum(candidate, activeFilter, minimum);
     }
@@ -378,12 +404,18 @@
       elements.minimumIncrease.disabled = running || activeFilter.todayOnly || minimumBuySignals >= MINIMUM_HIGH;
     }
 
-    function getMinimumCandidatePool(marketDates = null) {
+    function getMinimumCandidatePool(marketDates = null, expectedDate = "") {
       const source = Array.isArray(cached?.candidatePool) ? cached.candidatePool : (cached?.candidates || []);
       const references = marketDates || (activeFilter.todayOnly
         ? resolveResearchMarketDates(getSharedSources())
         : null);
-      return source.filter((candidate) => candidateMatchesFilter(candidate, effectiveMinimum(), references));
+      const expected = activeFilter.todayOnly ? (expectedDate || expectedResearchDate()) : "";
+      return source.filter((candidate) => candidateMatchesFilter(
+        candidate,
+        effectiveMinimum(),
+        references,
+        expected,
+      ));
     }
 
     function getEligibleCandidatePool() {
@@ -396,7 +428,8 @@
       const marketDates = activeFilter.todayOnly
         ? resolveResearchMarketDates(getSharedSources())
         : null;
-      const fullPool = getMinimumCandidatePool(marketDates);
+      const expectedDate = activeFilter.todayOnly ? expectedResearchDate() : "";
+      const fullPool = getMinimumCandidatePool(marketDates, expectedDate);
       const preferred = fresh
         ? []
         : (Array.isArray(cached?.candidateOrder)
@@ -410,7 +443,7 @@
       const currentPage = pageCount > 0
         ? Math.max(0, Math.min(pageCount - 1, Math.round(Number(cached?.candidatePageIndex) || 0)))
         : 0;
-      return { pool, order, storedOrder, pageCount, currentPage, marketDates };
+      return { pool, order, storedOrder, pageCount, currentPage, marketDates, expectedDate };
     }
 
     function syncNavigationControls() {
@@ -526,7 +559,7 @@
       );
       const storedAnalysisDate = String(cached?.analysisDate || cached?.baseDate || "");
       const analysisDate = activeFilter.todayOnly
-        ? researchMarketDateLabel(navigation.marketDates)
+        ? researchMarketDateLabel(navigation.marketDates, navigation.expectedDate)
         : storedAnalysisDate;
       const compositionText = !activeFilter.todayOnly
         && cached?.baseDate && storedAnalysisDate && cached.baseDate !== storedAnalysisDate
@@ -733,7 +766,7 @@
       } finally {
         enrichingCachedProfiles = false;
         scope.setTimeout(() => {
-          if (!running && !enrichingCachedProfiles) elements.progress.hidden = true;
+          if (!running && !enrichingCachedProfiles) hideProgress();
         }, 900);
       }
     }
@@ -750,6 +783,7 @@
       if (payload?.ok !== true
         || payload?.schema !== CACHE_SCHEMA
         || payload?.strategy !== calculationVersion
+        || Number(payload?.historyQualityVersion) !== HISTORY_QUALITY_VERSION
         || normalizeMinimum(payload?.minimumBuySignals) !== MINIMUM_LOW
         || normalizeUniverseSize(payload?.universeSize) !== universeSize
         || !/^\d{4}-\d{2}-\d{2}$/.test(String(payload?.baseDate || ""))) return null;
@@ -759,6 +793,7 @@
         formatSchema: CACHE_SCHEMA,
         strategy: calculationVersion,
         calculationVersion,
+        historyQualityVersion: HISTORY_QUALITY_VERSION,
         filterKey: analysisFilterKey,
         baseDate: payload.baseDate,
         analysisDate: String(payload.analysisDate || payload.baseDate),
@@ -797,6 +832,8 @@
           formatSchema: CACHE_SCHEMA,
           strategy: calculationVersion,
           calculationVersion,
+          signalLogicVersion: calculationVersion,
+          historyQualityVersion: HISTORY_QUALITY_VERSION,
           baseDate: payload.baseDate,
           analysisDate: payload.analysisDate || payload.baseDate,
           incrementalDate: payload.incrementalDate || "",
@@ -1037,6 +1074,7 @@
           formatSchema: CACHE_SCHEMA,
           strategy: calculationVersion,
           calculationVersion,
+          historyQualityVersion: HISTORY_QUALITY_VERSION,
           filterKey: analysisFilterKey,
           baseDate: universe.baseDate,
           analysisDate: (!canIncrement || sharedChanged || scanRecords.length > 0)
@@ -1067,7 +1105,7 @@
           canIncrement
             ? `편입 ${universeChanges.added.length} · 변경 ${universeChanges.changed.length} · 신호 ${signalChanges} · 탈락 ${removedCount}`
             : `${records.length}종목`);
-        scope.setTimeout(() => { if (!running) elements.progress.hidden = true; }, 900);
+        scope.setTimeout(() => { if (!running) hideProgress(); }, 900);
       } catch (error) {
         cached = previous;
         render();
@@ -1119,6 +1157,14 @@
       });
       if (Object.entries(elements).some(([key, value]) => key !== "blockedButton" && !value)) return;
       if (bindSettingsButtons && !elements.blockedButton) return;
+      const createProgressView = options.createProgressView;
+      if (typeof createProgressView === "function") {
+        progressView = createProgressView(scope, {
+          getRoot: () => elements.progress,
+          getText: () => elements.progressText,
+          getBar: () => elements.progressBar,
+        });
+      }
       if (bindOpenButton) elements.button.addEventListener("click", open);
       elements.close.addEventListener("click", () => { elements.modal.hidden = true; });
       elements.refresh.addEventListener("click", () => runSearch());
@@ -1159,7 +1205,7 @@
     });
   }
 
-  globalScope.ThinkStockStockResearchController = Object.freeze({
+  const stockResearchController = Object.freeze({
     CACHE_KEY,
     CACHE_VARIANTS_KEY,
     CACHE_SCHEMA,
@@ -1175,7 +1221,9 @@
     UNIVERSE_SIZE_STEP,
     DISPLAY_LIMIT,
     HISTORY_CACHE_SCHEMA,
+    HISTORY_QUALITY_VERSION,
     candidateSignalFingerprint,
+    configureCacheLifecycle,
     createController,
     diffUniverse,
     diffUniverseState,
@@ -1192,6 +1240,7 @@
     candidateMatchesTodayFilter,
     candidateMeetsSignalMinimum,
     researchMarketDateLabel,
+    researchMarketDateIsCurrent,
     researchWorkerLaneCount,
     mergeResearchHistoryPayload,
     mergeUniversePointIntoHistoryCache,
@@ -1207,4 +1256,5 @@
     selectRandomBatch,
     visibleCandidateReasons,
   });
-}(typeof self !== "undefined" ? self : globalThis));
+
+module.exports = stockResearchController;

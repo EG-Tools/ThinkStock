@@ -1,24 +1,14 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import test from "node:test";
-import vm from "node:vm";
-
-
-const sharedSource = await readFile(path.resolve("docs/modules/shared-request-registry.js"), "utf8");
-const source = await readFile(path.resolve("docs/modules/runtime-refresh-orchestrator.js"), "utf8");
-const context = {};
-vm.runInNewContext(sharedSource, context);
-vm.runInNewContext(source, context);
-const {
+import {
   isRetryableRuntimeError,
   retryOnce,
   retryRuntimeSource,
   retryWithDelays,
   runTaskFactoriesWithConcurrency,
   runRefreshPhases,
-  waitForDelay,
-} = context.ThinkStockRuntimeRefresh;
+  waitForRetryDelay as waitForDelay,
+} from "../../docs/modules/runtime-refresh-orchestrator.mjs";
 
 
 function deferred() {
@@ -94,6 +84,32 @@ test("startup can wait for critical rendering and bounds supplemental concurrenc
   assert.deepEqual(events, ["critical-start", "critical-ready", "supplemental-1", "supplemental-2"]);
   second.resolve("second");
   await task;
+});
+
+test("startup supplemental work can run through an interaction-aware scheduler", async () => {
+  const events = [];
+  const result = await runRefreshPhases({
+    startSupplementalAfterCritical: true,
+    supplementalConcurrency: 1,
+    criticalTasks: [async () => { events.push("critical"); return "critical"; }],
+    supplementalTasks: [
+      async () => { events.push("first"); return 1; },
+      async () => { events.push("second"); return 2; },
+    ],
+    runSupplementalTask: async (task, index) => {
+      events.push(`scheduled-${index}`);
+      return task();
+    },
+  });
+
+  assert.deepEqual(events, [
+    "critical",
+    "scheduled-0",
+    "first",
+    "scheduled-1",
+    "second",
+  ]);
+  assert.deepEqual(result.supplementalResults, [1, 2]);
 });
 
 test("bounded task execution preserves result order", async () => {

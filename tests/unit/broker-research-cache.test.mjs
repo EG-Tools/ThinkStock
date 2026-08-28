@@ -1,19 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../shared/runtime-foundation.mjs");
-await import("../../shared/runtime-freshness-policy.mjs");
-await import("../../shared/broker-report-policy.mjs");
-await import("../../docs/modules/broker-report-parser.js");
-await import("../../docs/modules/broker-research-cache.js");
+import parser from "../../docs/modules/broker-report-parser.mjs";
+import brokerResearchCache from "../../docs/modules/broker-research-cache.mjs";
 
-const parser = globalThis.ThinkStockBrokerReportParser;
 const {
   createBrokerReportClient,
   createBrokerResearchCache,
   latestReportsByBroker,
   normalizedBrokerKey,
-} = globalThis.ThinkStockBrokerResearchCache;
+} = brokerResearchCache;
 
 test("selects the newest report from each of three different brokers", () => {
   const selected = latestReportsByBroker([

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import macdOscillator from "../../docs/modules/macd-oscillator.mjs";
 
-await import("../../docs/modules/macd-oscillator.js");
-const { buildMacdOscillator, thinMacdPoints } = globalThis.ThinkStockMacdOscillator;
+const { buildMacdOscillator, thinMacdPoints } = macdOscillator;
 
 test("builds a standard 12-26-9 MACD oscillator without changing source alignment", () => {
   const dates = Array.from({ length: 80 }, (_, index) => `2026-01-${String(index + 1).padStart(2, "0")}`);

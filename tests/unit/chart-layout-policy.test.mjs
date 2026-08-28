@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/chart-viewport-controller.js");
-const policy = globalThis.ThinkStockChartLayoutPolicy;
+import * as policy from "../../docs/modules/chart-viewport-controller.mjs";
 
 test("handle policy keeps fixed side rails and every plot area horizontally aligned", () => {
   assert.deepEqual(policy.resolve(true), {

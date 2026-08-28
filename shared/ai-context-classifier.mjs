@@ -49,11 +49,3 @@ export function classifyProbabilisticRegime(features = {}) {
   ].sort((left, right) => right[1] - left[1]);
   return probabilities[0][1] > 0 ? probabilities[0][0] : "unclassified";
 }
-
-globalThis.ThinkStockAiContextClassifier = Object.freeze({
-  AI_ARCHETYPE_THRESHOLDS,
-  classifyProbabilisticRegime,
-  classifyStructuralArchetype,
-  classifyStructuralArchetypes,
-  structuralArchetypeScores,
-});

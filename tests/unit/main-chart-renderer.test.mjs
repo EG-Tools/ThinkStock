@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 
-await import("../../docs/modules/main-chart-renderer.js");
-const renderer = globalThis.ThinkStockMainChartRenderer;
+const { mainChartRenderer: renderer } = await import("../../docs/modules/main-chart-renderer.mjs");
 
 
 function trace(seriesKey, values = [1, 2]) {
@@ -16,6 +15,135 @@ function trace(seriesKey, values = [1, 2]) {
   };
 }
 
+test("classifies chart overlays through one compatibility contract", () => {
+  assert.deepEqual(renderer.chartOverlayDescriptor(trace("005930.KS")), {
+    adjustable: true,
+    event: false,
+    grouped: false,
+    hoverPriority: 100,
+    identity: "series:005930.KS",
+    kind: "price",
+    rangeRole: "historical",
+    seriesKey: "005930.KS",
+  });
+  const eps = {
+    ...trace("eps:005930.KS"),
+    meta: { overlayKind: "eps", seriesKey: "eps:005930.KS", isEpsTrace: true },
+  };
+  assert.equal(renderer.chartOverlayDescriptor(eps).adjustable, true);
+  assert.equal(renderer.chartOverlayDescriptor(eps).hoverPriority, 10);
+  assert.equal(renderer.chartOverlayDescriptor(eps).rangeRole, "future");
+  assert.equal(renderer.traceIdentity(eps), "series:eps:005930.KS");
+  const disclosure = { meta: { overlayKind: "disclosure", isDisclosureTrace: true } };
+  assert.equal(renderer.chartOverlayDescriptor(disclosure).event, true);
+  assert.equal(renderer.chartOverlayDescriptor(disclosure).hoverPriority, 20);
+  assert.equal(renderer.chartOverlayDescriptor(disclosure).rangeRole, "none");
+  assert.equal(renderer.traceIdentity(disclosure), "disclosure");
+});
+
+test("main chart composition builds line, EPS, AI, and event layers in one pipeline", async () => {
+  let prepared = 0;
+  const model = {
+    rows: [
+      { date: "2026-08-24", TEST: 100 },
+      { date: "2026-08-25", TEST: 105 },
+    ],
+    selected: ["TEST"],
+    seriesModels: [{
+      series: "TEST",
+      xValues: ["2026-08-24", "2026-08-25"],
+      values: [100, 105],
+      rawTexts: ["100", "105"],
+      baseValues: [100, 105],
+      baseLineWidth: 1,
+    }],
+  };
+  const result = await renderer.buildMainChartComposition({
+    model,
+    hiddenSeries: new Set(),
+    labelName: (value) => value,
+    seriesColor: () => "#ffffff",
+    buildEpsTraceModel: () => ({
+      traces: [{ meta: { overlayKind: "eps", seriesKey: "eps:TEST" } }],
+      baseValuesBySeries: { "eps:TEST": [1, 2] },
+    }),
+    buildAiForecastTraces: async () => [{ meta: { overlayKind: "ai-scenario", seriesKey: "TEST" } }],
+    prepareEventModels: async () => { prepared += 1; },
+    buildEventArguments: () => ({ ready: true }),
+    buildEventTraces: ({ ready }) => ready ? [{ meta: { overlayKind: "timing-buy" } }] : [],
+  });
+
+  assert.equal(prepared, 1);
+  assert.deepEqual(result.traces.map((item) => item.meta?.overlayKind), [
+    "price",
+    "eps",
+    "ai-scenario",
+    "timing-buy",
+  ]);
+  assert.deepEqual(result.baseValuesBySeries["eps:TEST"], [1, 2]);
+  assert.equal(result.displayPointCount, 2);
+});
+
+test("main chart composition reuses prepared future overlays during viewport frames", async () => {
+  const model = {
+    rows: [{ date: "2026-08-24", TEST: 100 }],
+    selected: ["TEST"],
+    seriesModels: [{
+      series: "TEST",
+      xValues: ["2026-08-24"],
+      values: [100],
+      baseValues: [100],
+      rawTexts: ["100"],
+      baseLineWidth: 1,
+    }],
+  };
+  const eps = { meta: { overlayKind: "eps", seriesKey: "eps:TEST" } };
+  const ai = { meta: { overlayKind: "ai-scenario", seriesKey: "TEST" } };
+  let rebuiltEps = 0;
+  let rebuiltAi = 0;
+  const result = await renderer.buildMainChartComposition({
+    model,
+    hiddenSeries: new Set(),
+    prebuiltEpsTraceModel: { traces: [eps], baseValuesBySeries: { "eps:TEST": [120] } },
+    prebuiltAiForecastTraces: [ai],
+    buildEpsTraceModel: () => { rebuiltEps += 1; return { traces: [] }; },
+    buildAiForecastTraces: () => { rebuiltAi += 1; return []; },
+  });
+
+  assert.equal(rebuiltEps, 0);
+  assert.equal(rebuiltAi, 0);
+  assert.equal(result.epsTraces[0], eps);
+  assert.equal(result.aiForecastTraces[0], ai);
+  assert.deepEqual(result.baseValuesBySeries["eps:TEST"], [120]);
+});
+
+test("main chart composition reuses prepared event traces during viewport frames", async () => {
+  const event = { meta: { overlayKind: "timing-buy", isMarketTimingBuyTrace: true } };
+  let rebuiltEvents = 0;
+  const result = await renderer.buildMainChartComposition({
+    model: {
+      rows: [{ date: "2026-08-24", TEST: 100 }],
+      selected: ["TEST"],
+      seriesModels: [{
+        series: "TEST",
+        xValues: ["2026-08-24"],
+        values: [100],
+        baseValues: [100],
+        rawTexts: ["100"],
+        baseLineWidth: 1,
+      }],
+    },
+    hiddenSeries: new Set(),
+    labelName: (value) => value,
+    seriesColor: () => "#ffffff",
+    prebuiltEventTraces: [event],
+    buildEventArguments: () => { rebuiltEvents += 1; return {}; },
+    buildEventTraces: () => { rebuiltEvents += 1; return []; },
+  });
+
+  assert.equal(rebuiltEvents, 0);
+  assert.equal(result.traces.at(-1), event);
+});
 
 test("joins valid trading points across internal calendar gaps", () => {
   const points = renderer.finiteTracePoints(
@@ -31,6 +159,107 @@ test("joins valid trading points across internal calendar gaps", () => {
     text: ["100", "103"],
     base: [100, 103],
   });
+});
+
+test("groups price, EPS, disclosures, and signals by series in one hover entry", () => {
+  const rfhicPrice = {
+    ...trace("218410.KQ", [100, 110]),
+    x: ["2024-03-29", "2024-04-01"],
+    text: ["32,000", "33,000"],
+    line: { color: "#b6df00" },
+    hovertemplate: "%{text}<extra>RFHIC</extra>",
+  };
+  const hynixPrice = {
+    ...trace("000660.KS", [90, 95]),
+    x: ["2024-03-29", "2024-04-01"],
+    text: ["180,000", "182,000"],
+    line: { color: "#14b8a6" },
+    hovertemplate: "%{text}<extra>SK하이닉스</extra>",
+  };
+  const eps = {
+    type: "scatter",
+    mode: "lines",
+    x: ["2024-03-31"],
+    y: [160],
+    text: ["2024년 1분기 EPS 850"],
+    hovertemplate: "%{text}<extra>RFHIC EPS</extra>",
+    meta: { isEpsTrace: true, seriesKey: "eps:218410.KQ" },
+  };
+  const timing = {
+    type: "scatter",
+    mode: "markers",
+    x: ["2024-03-29", "2024-03-29"],
+    y: [165, 88],
+    customdata: [["RFHIC", "과매도·반전"], ["SK하이닉스", "추세 눌림"]],
+    hovertemplate: "<b>%{customdata[0]} 매수 신호</b><br>근거 · %{customdata[1]}<extra></extra>",
+    meta: {
+      isMarketTimingBuyTrace: true,
+      pointTickers: ["218410.KQ", "000660.KS"],
+    },
+  };
+  const disclosure = {
+    type: "scatter",
+    mode: "text",
+    x: ["2024-03-29"],
+    y: [170],
+    hovertemplate: ["<b>공시</b><br>분기보고서<extra></extra>"],
+    meta: { isDisclosureTrace: true, pointTickers: ["218410.KQ"] },
+  };
+  const traces = [rfhicPrice, hynixPrice, eps, timing, disclosure];
+  const grouped = renderer.buildGroupedHoverTraces({
+    enabled: true,
+    traces,
+    seriesOrder: ["218410.KQ", "000660.KS"],
+    labelName: (series) => series === "218410.KQ" ? "RFHIC" : "SK하이닉스",
+  });
+  const cacheBeforeReuse = renderer.groupedHoverCacheStats();
+  const reusedGrouped = renderer.buildGroupedHoverTraces({
+    enabled: true,
+    traces,
+    seriesOrder: ["218410.KQ", "000660.KS"],
+    labelName: (series) => series === "218410.KQ" ? "RFHIC" : "SK하이닉스",
+  });
+  const cacheAfterReuse = renderer.groupedHoverCacheStats();
+
+  assert.deepEqual(grouped.map((item) => item.meta.hoverGroupTicker), ["218410.KQ", "000660.KS"]);
+  assert.equal(cacheAfterReuse.hits, cacheBeforeReuse.hits + 1);
+  assert.notEqual(reusedGrouped[0], grouped[0]);
+  assert.equal(reusedGrouped[0].text, grouped[0].text);
+  assert.equal(grouped.every((item) => item.type === "scattergl"), true);
+  const epsHoverIndex = grouped[0].x.indexOf("2024-03-31");
+  assert.ok(epsHoverIndex >= 0);
+  assert.match(grouped[0].text[0], /RFHIC<\/b> · 가격 32,000/);
+  assert.match(grouped[0].text[epsHoverIndex], /RFHIC<\/b> · 가격 32,000/);
+  assert.match(grouped[0].text[epsHoverIndex], /EPS · 1분기 850/);
+  assert.doesNotMatch(grouped[0].text[epsHoverIndex], /2024\.3\.31/);
+  assert.equal(
+    grouped[0].hovertemplate,
+    "%{text}<extra></extra>",
+  );
+  assert.equal(grouped[1].hovertemplate, grouped[0].hovertemplate);
+  assert.equal(
+    grouped[0].meta.pointHoverTemplate,
+    "%{x|%Y.%-m.%-d}<br>%{customdata}<extra></extra>",
+  );
+  assert.equal(renderer.buildLayout().xaxis.hoverformat, "%Y.%-m.%-d");
+  assert.match(grouped[0].text[0], /<br>공시/);
+  assert.match(grouped[0].text[0], /<br>매수 신호/);
+  assert.match(
+    grouped[0].text[epsHoverIndex],
+    /<br>EPS/,
+  );
+  assert.doesNotMatch(grouped[0].text[epsHoverIndex], /<b>EPS<\/b>/);
+  assert.equal(grouped[0].customdata[epsHoverIndex], grouped[0].text[epsHoverIndex]);
+  assert.doesNotMatch(grouped[0].customdata[epsHoverIndex], /&nbsp;/);
+  assert.deepEqual(grouped[0].marker.size, [1, 36, 1]);
+  assert.equal(grouped[0].marker.opacity, 0);
+  assert.equal(grouped[0].marker.line.width, 0);
+  assert.deepEqual(grouped[0].y, [100, 160, 110]);
+  assert.match(grouped[0].text[0], /────────────/);
+  assert.doesNotMatch(grouped[0].text[0], /RFHIC EPS|RFHIC 매수/);
+  assert.match(grouped[1].text[0], /SK하이닉스<\/b> · 가격 180,000/);
+  assert.doesNotMatch(grouped[1].text[0], /────────────/);
+  assert.equal(traces.every((item) => item.hoverinfo === "skip"), true);
 });
 
 test("keeps long Korean stock trading suspensions flat until trading resumes", () => {
@@ -133,8 +362,12 @@ test("anchors drag handles to endpoints inside the visible date range", () => {
 });
 
 test("creates scale handles only for real series traces", () => {
-  const values = { "005930.KS": [100, 101] };
+  const values = { "005930.KS": [100, 101], "eps:005930.KS": [100, 112] };
   assert.equal(renderer.isSeriesHandleTrace(trace("005930.KS"), values), true);
+  assert.equal(renderer.isSeriesHandleTrace({
+    ...trace("eps:005930.KS"),
+    meta: { seriesKey: "eps:005930.KS", isEpsTrace: true },
+  }, values), true);
   assert.equal(renderer.isSeriesHandleTrace({
     ...trace("005930.KS"),
     meta: { seriesKey: "005930.KS", isAiForecastTrace: true },
@@ -147,6 +380,19 @@ test("creates scale handles only for real series traces", () => {
     ...trace("005930.KS"),
     meta: { seriesKey: "005930.KS", isAiForecastScenarioTrace: true },
   }, values), false);
+  assert.equal(renderer.isSeriesHandleTrace({
+    ...trace("005930.KS"),
+    meta: { seriesKey: "005930.KS", isAiReportMarkerTrace: true },
+  }, values), false);
+  assert.equal(renderer.isSeriesHandleTrace({
+    ...trace("005930.KS"),
+    meta: { seriesKey: "005930.KS", isGroupedHoverTrace: true },
+  }, values), false);
+  assert.deepEqual(renderer.adjustableSeriesKeys([
+    trace("005930.KS"),
+    { ...trace("eps:005930.KS"), meta: { seriesKey: "eps:005930.KS", isEpsTrace: true } },
+    { ...trace("005930.KS"), meta: { seriesKey: "005930.KS", isAiForecastTrace: true } },
+  ], values), ["005930.KS", "eps:005930.KS", ""]);
 });
 
 test("builds sampled line traces without reconnecting missing source values", () => {
@@ -169,6 +415,8 @@ test("builds sampled line traces without reconnecting missing source values", ()
   assert.deepEqual(result.traces[0].x, ["2026-01-01", "2026-01-03"]);
   assert.deepEqual(result.traces[0].y, [100, 103]);
   assert.equal(result.traces[0].meta.displayPointCount, 3);
+  assert.equal(result.traces[0].meta.fullDataStartMs, Date.parse("2026-01-01"));
+  assert.equal(result.traces[0].meta.fullDataEndMs, Date.parse("2026-01-03"));
   assert.deepEqual(result.baseValuesBySeries["^KS11"], [100, 103]);
 });
 
@@ -192,6 +440,67 @@ test("reuses prepared line data until a transformed value array changes", () => 
   const transformed = renderer.buildLineTraces({ seriesModels, hiddenSeries: new Set() });
   assert.notEqual(transformed.traces[0].y, first.traces[0].y);
   assert.deepEqual(transformed.traces[0].y, [100, 110]);
+});
+
+test("reuses normalized line data across recent viewport slices", () => {
+  const model = {
+    series: "^KS11",
+    xValues: ["2026-01-01", "2026-01-02", "2026-01-03"],
+    values: [100, 102, 104],
+    rawTexts: ["100", "102", "104"],
+    baseValues: [100, 102, 104],
+    baseLineWidth: 1,
+  };
+  const seriesModels = [model];
+  const before = renderer.lineDataCacheStats();
+  const first = renderer.buildLineTraces({
+    seriesModels,
+    displayIndexes: [0, 1],
+    renderRevision: "model-a|window:left",
+  });
+  const repeated = renderer.buildLineTraces({
+    seriesModels,
+    displayIndexes: [0, 1],
+    renderRevision: "model-a|window:left",
+  });
+  const shifted = renderer.buildLineTraces({
+    seriesModels,
+    displayIndexes: [1, 2],
+    renderRevision: "model-a|window:right",
+  });
+  const after = renderer.lineDataCacheStats();
+
+  assert.equal(repeated.traces[0].y, first.traces[0].y);
+  assert.deepEqual(shifted.traces[0].y, [102, 104]);
+  assert.equal(after.normalizedMisses, before.normalizedMisses + 1);
+  assert.equal(after.normalizedHits, before.normalizedHits + 2);
+  assert.equal(after.viewportMisses, before.viewportMisses + 2);
+  assert.equal(after.viewportHits, before.viewportHits + 1);
+});
+
+test("invalidates normalized line data when a source array changes", () => {
+  const model = {
+    series: "^KS11",
+    xValues: ["2026-01-01", "2026-01-02"],
+    values: [100, 102],
+    rawTexts: ["100", "102"],
+    baseValues: [100, 102],
+    baseLineWidth: 1,
+  };
+  const seriesModels = [model];
+  const first = renderer.buildLineTraces({
+    seriesModels,
+    renderRevision: "same-revision",
+  });
+
+  model.xValues = ["2026-01-03", "2026-01-04"];
+  const updated = renderer.buildLineTraces({
+    seriesModels,
+    renderRevision: "same-revision",
+  });
+
+  assert.notEqual(updated.traces[0].x, first.traces[0].x);
+  assert.deepEqual(updated.traces[0].x, ["2026-01-03", "2026-01-04"]);
 });
 
 test("centralizes chart date bounds and long-range ticks", () => {
@@ -235,6 +544,62 @@ test("combines compatible trace and viewport updates into one Plotly call", asyn
   assert.deepEqual(calls[0][2].line, [null]);
   assert.equal(calls[0][3]["xaxis.tickmode"], "auto");
   assert.equal(calls[0][3]["xaxis.tickvals"], null);
+});
+
+test("updates only changed traces after render state has been remembered", async () => {
+  const first = trace("^KS11", [1, 2]);
+  const second = trace("005930.KS", [3, 4]);
+  const element = {
+    data: [first, second],
+    _fullLayout: { xaxis: {}, yaxis: {} },
+  };
+  const calls = [];
+  const plotly = {
+    update: async (...args) => calls.push(args),
+    react: async () => { throw new Error("unexpected full render"); },
+  };
+  const layout = {
+    hovermode: false,
+    xaxis: { range: ["2026-01-01", "2026-01-02"] },
+    yaxis: { range: [0, 5] },
+  };
+
+  await renderer.render(plotly, element, [first, second], layout, {});
+  await renderer.render(plotly, element, [first, { ...second, y: [3, 5] }], layout, {});
+
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1][3], [1]);
+  assert.deepEqual(calls[1][1].y, [[3, 5]]);
+  assert.deepEqual(calls[1][2], {});
+});
+
+test("uses a layout-only Plotly update when trace data is unchanged", async () => {
+  const series = trace("^KS11", [1, 2]);
+  const element = {
+    data: [series],
+    _fullLayout: { xaxis: {}, yaxis: {} },
+  };
+  const calls = [];
+  const plotly = {
+    update: async () => {},
+    relayout: async (...args) => calls.push(args),
+    react: async () => { throw new Error("unexpected full render"); },
+  };
+  const layout = {
+    hovermode: false,
+    xaxis: { range: ["2026-01-01", "2026-01-02"] },
+    yaxis: { range: [0, 3] },
+  };
+
+  await renderer.render(plotly, element, [series], layout, {});
+  const result = await renderer.render(plotly, element, [series], {
+    ...layout,
+    xaxis: { range: ["2026-01-02", "2026-01-03"] },
+  }, {});
+
+  assert.equal(result.updateScope, "layout");
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0][1]["xaxis.range"], ["2026-01-02", "2026-01-03"]);
 });
 
 test("skips an identical render after the first successful Plotly update", async () => {
@@ -286,6 +651,27 @@ test("uses an explicit line render revision instead of walking large line arrays
   assert.equal(renderer.renderFingerprint(result.traces, { xaxis: {}, yaxis: {} }, {}), first);
   result.traces[0].meta.renderFingerprint = "model-43|^KS11";
   assert.notEqual(renderer.renderFingerprint(result.traces, { xaxis: {}, yaxis: {} }, {}), first);
+});
+
+test("invalidates a remembered render fingerprint after a direct live restyle", async () => {
+  const element = { _fullLayout: { xaxis: {}, yaxis: {} }, data: [] };
+  const traces = [{
+    x: ["2026-01-01"],
+    y: [100],
+    type: "scatter",
+    mode: "lines",
+    meta: { overlayKind: "price", seriesKey: "^KS11", renderFingerprint: "model-a" },
+  }];
+  const layout = { xaxis: { range: ["2026-01-01", "2026-01-02"] }, yaxis: {} };
+  const plotly = {
+    react: async (target, nextTraces) => { target.data = nextTraces; },
+    update: async () => {},
+  };
+
+  assert.equal((await renderer.render(plotly, element, traces, layout, {})).mode, "full");
+  assert.equal((await renderer.render(plotly, element, traces, layout, {})).mode, "skipped");
+  assert.equal(renderer.invalidateRenderFingerprint(element), true);
+  assert.notEqual((await renderer.render(plotly, element, traces, layout, {})).mode, "skipped");
 });
 
 
@@ -451,7 +837,16 @@ test("replaces one same-count series without rebuilding unchanged traces", async
   assert.deepEqual(element.data.map(renderer.traceIdentity), ["series:^KS11", "series:000660.KS"]);
 });
 
-test("updates only event markers for marker-only invalidations", async () => {
+test("updates event markers and their grouped hover summaries for marker-only invalidations", async () => {
+  const groupedHover = {
+    type: "scattergl",
+    mode: "markers",
+    x: ["2026-01-01", "2026-01-02"],
+    y: [1, 2],
+    text: ["old", "old"],
+    meta: { isGroupedHoverTrace: true, hoverGroupTicker: "005930.KS" },
+  };
+  const nextGroupedHover = { ...groupedHover, text: ["new disclosure", "new insider"] };
   const disclosure = {
     ...trace("disclosure", [2, 2]),
     mode: "markers",
@@ -459,14 +854,14 @@ test("updates only event markers for marker-only invalidations", async () => {
   };
   const nextDisclosure = { ...disclosure, y: [3, 3] };
   const element = {
-    data: [trace("^KS11"), trace("005930.KS"), disclosure],
+    data: [groupedHover, trace("^KS11"), trace("005930.KS"), disclosure],
     _fullLayout: { xaxis: {}, yaxis: {} },
   };
   const calls = [];
   const result = await renderer.render({
     update: async (...args) => calls.push(args),
     react: async () => { throw new Error("unexpected full render"); },
-  }, element, [trace("^KS11"), trace("005930.KS"), nextDisclosure], {
+  }, element, [nextGroupedHover, trace("^KS11"), trace("005930.KS"), nextDisclosure], {
     hovermode: false,
     xaxis: { range: ["2026-01-01", "2026-01-02"] },
     yaxis: { range: [0, 4] },
@@ -478,8 +873,15 @@ test("updates only event markers for marker-only invalidations", async () => {
     updateScope: "markers",
   });
   assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0][3], [2]);
-  assert.deepEqual(calls[0][1].y, [[3, 3]]);
+  assert.deepEqual(calls[0][3], [0, 3]);
+  assert.deepEqual(calls[0][1].text, [["new disclosure", "new insider"], null]);
+  assert.deepEqual(calls[0][1].y, [[1, 2], [3, 3]]);
+});
+
+test("recognizes marker-only invalidations through one shared policy", () => {
+  assert.equal(renderer.isMarkerOnlyInvalidation({ updateClasses: ["markers", "markers"] }), true);
+  assert.equal(renderer.isMarkerOnlyInvalidation({ updateClasses: ["markers", "viewport"] }), false);
+  assert.equal(renderer.isMarkerOnlyInvalidation({ updateClasses: [] }), false);
 });
 
 

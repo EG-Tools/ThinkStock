@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/admin-feature-access.js");
-
-const { createAdminFeatureAccess } = globalThis.ThinkStockAdminFeatureAccess;
+import { createAdminFeatureAccess } from "../../docs/modules/admin-feature-access.mjs";
 
 function createButton(title = "original") {
   const classes = new Set();

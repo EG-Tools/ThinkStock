@@ -3,19 +3,11 @@ import { stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { staticContentType } from "./static_content_type.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "docs");
 const e2eBundlePath = path.resolve(root, "..", ".thinkstock-cache", "e2e", "app.bundle.min.js");
 const port = Number(process.env.PORT || 4173);
-const mimeTypes = {
-  ".css": "text/css; charset=utf-8",
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".webmanifest": "application/manifest+json; charset=utf-8",
-};
-
 createServer(async (request, response) => {
   try {
     const url = new URL(request.url || "/", `http://${request.headers.host || "127.0.0.1"}`);
@@ -32,7 +24,7 @@ createServer(async (request, response) => {
     response.writeHead(200, {
       "cache-control": "no-store",
       "content-length": info.size,
-      "content-type": mimeTypes[path.extname(filePath).toLowerCase()] || "application/octet-stream",
+      "content-type": staticContentType(filePath),
     });
     createReadStream(filePath).pipe(response);
   } catch (_) {

@@ -1,3 +1,5 @@
+import { jsonResponse } from "./http-runtime.mjs";
+
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const FORECAST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,120}$/;
 const FORECAST_MODEL_PATTERN = /^[A-Za-z0-9._:+/-]{1,80}$/;
@@ -26,6 +28,8 @@ export const FORECAST_JOURNAL_INPUT_LIMIT = 120;
 const DENSE_RECORDS = 24;
 const WEEKLY_RECORDS = 24;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const FORECAST_JOURNAL_SCHEMA = 1;
+const FORECAST_JOURNAL_BODY_LIMIT = 512 * 1024;
 
 function finiteNumber(value, { min = -Infinity, max = Infinity } = {}) {
   const number = Number(value);
@@ -359,4 +363,100 @@ export function compactForecastJournalRecords(values, maxRecords = FORECAST_JOUR
     selected.add(record.id);
   }
   return sorted.filter((record) => selected.has(record.id)).slice(0, limit).reverse();
+}
+
+async function readForecastJournal(env, ticker) {
+  if (!env.DISCLOSURE_CACHE) return null;
+  try {
+    const value = await env.DISCLOSURE_CACHE.get(`forecast-journal:${ticker}`, "json");
+    if (!value) return { schema: FORECAST_JOURNAL_SCHEMA, ticker, savedAt: 0, records: [] };
+    if (value.schema !== FORECAST_JOURNAL_SCHEMA || value.ticker !== ticker) return null;
+    return {
+      schema: FORECAST_JOURNAL_SCHEMA,
+      ticker,
+      savedAt: timestamp(value.savedAt) || 0,
+      records: mergeForecastJournalRecords(value.records, [], ticker),
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+async function writeForecastJournal(env, ticker, records) {
+  const payload = {
+    schema: FORECAST_JOURNAL_SCHEMA,
+    ticker,
+    savedAt: Date.now(),
+    records,
+  };
+  await env.DISCLOSURE_CACHE.put(`forecast-journal:${ticker}`, JSON.stringify(payload));
+  return payload;
+}
+
+async function readJournalRequestBody(request) {
+  const contentLength = Number(request.headers.get("Content-Length") || 0);
+  if (Number.isFinite(contentLength) && contentLength > FORECAST_JOURNAL_BODY_LIMIT) {
+    const error = new Error("Forecast journal request is too large");
+    error.status = 413;
+    throw error;
+  }
+  const reader = request.body?.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let bytesRead = 0;
+  if (reader) {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytesRead += value.byteLength;
+      if (bytesRead > FORECAST_JOURNAL_BODY_LIMIT) {
+        await reader.cancel("Forecast journal request is too large");
+        const error = new Error("Forecast journal request is too large");
+        error.status = 413;
+        throw error;
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+  }
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch (_) {
+    throw journalValidationError("Forecast journal body must be valid JSON");
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload) || !Array.isArray(payload.records)) {
+    throw journalValidationError("Forecast journal records are required");
+  }
+  if (payload.records.length > FORECAST_JOURNAL_INPUT_LIMIT) {
+    throw journalValidationError(`Forecast journal accepts at most ${FORECAST_JOURNAL_INPUT_LIMIT} records`);
+  }
+  return payload;
+}
+
+export async function forecastJournalResponse(request, env, ticker, origin) {
+  if (!env.DISCLOSURE_CACHE) {
+    return jsonResponse({ ok: false, error: "Forecast journal storage is not configured" }, 503, origin);
+  }
+  if (request.method === "GET") {
+    const journal = await readForecastJournal(env, ticker);
+    if (!journal) return jsonResponse({ ok: false, error: "Forecast journal cache is invalid" }, 503, origin);
+    return jsonResponse({ ok: true, ...journal }, 200, origin);
+  }
+  try {
+    const payload = await readJournalRequestBody(request);
+    if (payload.ticker !== undefined && String(payload.ticker).trim().toUpperCase() !== ticker) {
+      throw journalValidationError("Forecast journal ticker does not match the request");
+    }
+    const cached = await readForecastJournal(env, ticker);
+    if (!cached) throw new Error("Forecast journal cache is invalid");
+    const records = mergeForecastJournalRecords(cached.records, payload.records, ticker, { strictIncoming: true });
+    const saved = await writeForecastJournal(env, ticker, records);
+    return jsonResponse({ ok: true, ...saved }, 200, origin);
+  } catch (error) {
+    return jsonResponse({
+      ok: false,
+      error: error?.message || "Forecast journal update failed",
+    }, error?.status || 503, origin);
+  }
 }

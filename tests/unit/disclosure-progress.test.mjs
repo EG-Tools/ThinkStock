@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/control-state-view.js");
-await import("../../docs/modules/disclosure-progress.js");
-const { createDisclosureProgress } = globalThis.ThinkStockDisclosureProgress;
+const { createDisclosureProgress } = await import("../../docs/modules/task-progress-runtime.mjs");
 
 test("disclosure progress aggregates real per-ticker completion and avoids instant flashes", () => {
   const root = { hidden: true };

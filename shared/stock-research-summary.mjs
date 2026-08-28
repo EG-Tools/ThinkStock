@@ -2,7 +2,8 @@ const TICKER_PATTERN = /^\d{6}\.(KS|KQ)$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const STRATEGY_PATTERN = /^[A-Za-z0-9._-]{1,80}$/;
 
-export const RESEARCH_SUMMARY_SCHEMA = 1;
+export const RESEARCH_SUMMARY_SCHEMA = 2;
+export const RESEARCH_SUMMARY_HISTORY_QUALITY_VERSION = 2;
 export const RESEARCH_SUMMARY_BODY_LIMIT = 1024 * 1024;
 export const RESEARCH_SUMMARY_DEFAULT_UNIVERSE_SIZE = 400;
 
@@ -116,7 +117,11 @@ export function normalizeResearchSummary(value, expected = {}) {
   const analysisDate = date(value.analysisDate) || baseDate;
   const incrementalDate = date(value.incrementalDate);
   const universeSize = normalizeResearchUniverseSize(value.universeSize);
-  if (value.schema !== RESEARCH_SUMMARY_SCHEMA || !strategy || !baseDate) return null;
+  const historyQualityVersion = Math.round(finite(value.historyQualityVersion, 1, 100) ?? 0);
+  if (value.schema !== RESEARCH_SUMMARY_SCHEMA
+    || historyQualityVersion !== RESEARCH_SUMMARY_HISTORY_QUALITY_VERSION
+    || !strategy
+    || !baseDate) return null;
   if (expected.strategy && strategy !== expected.strategy) return null;
   if (expected.minimum !== undefined && minimumBuySignals !== normalizeResearchMinimum(expected.minimum)) return null;
   if (expected.universeSize !== undefined
@@ -140,6 +145,8 @@ export function normalizeResearchSummary(value, expected = {}) {
   return {
     schema: RESEARCH_SUMMARY_SCHEMA,
     strategy,
+    signalLogicVersion: text(value.signalLogicVersion || strategy, 80),
+    historyQualityVersion,
     baseDate,
     analysisDate,
     incrementalDate,

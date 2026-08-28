@@ -1,27 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import vm from "node:vm";
-import { readFile } from "node:fs/promises";
-
-
-const source = await readFile(new URL("../../docs/modules/app-storage.js", import.meta.url), "utf8");
+import * as appStorageModule from "../../docs/modules/app-storage.mjs";
 
 function loadModule(scope = {}) {
-  const context = vm.createContext({
-    ...scope,
-    self: scope,
-    globalThis: scope,
-    Object,
-    String,
-    Number,
-    Date,
-    JSON,
-    Set,
-    Promise,
-    Error,
-  });
-  vm.runInContext(source, context);
-  return scope.ThinkStockAppStorage;
+  void scope;
+  return appStorageModule;
 }
 
 function createStorage(initial = {}) {
@@ -63,6 +46,33 @@ function createIndexedDb() {
           return {
             get: (key) => resultRequest(values.get(key)),
             getAll: () => resultRequest([...values.values()]),
+            openCursor: () => {
+              const entries = [...values.entries()];
+              const request = { result: null, error: null };
+              let index = 0;
+              const advance = () => {
+                const entry = entries[index];
+                if (!entry) {
+                  request.result = null;
+                  request.onsuccess?.();
+                  queueComplete();
+                  return;
+                }
+                const [key, value] = entry;
+                request.result = {
+                  key,
+                  primaryKey: key,
+                  value,
+                  continue() {
+                    index += 1;
+                    setTimeout(advance, 0);
+                  },
+                };
+                request.onsuccess?.();
+              };
+              setTimeout(advance, 0);
+              return request;
+            },
             put: (value, key) => { values.set(key, value); queueComplete(); },
             delete: (key) => { values.delete(key); queueComplete(); },
             clear: () => { values.clear(); queueComplete(); },
@@ -204,4 +214,22 @@ test("IndexedDB connection is reused and batch records share one transaction", a
 
   store.close();
   assert.equal(indexedDB.stats.closes, 1);
+});
+
+test("IndexedDB metadata reads omit large cached payload fields", async () => {
+  const indexedDB = createIndexedDb();
+  const store = appStorageModule.createIndexedCacheStore({ indexedDB }, {
+    dbName: "metadata-db",
+    storeNames: ["prices"],
+  });
+  const hugePoints = Array.from({ length: 1000 }, (_, index) => ({ date: index, close: index }));
+  await store.writeRecords("prices", new Map([
+    ["A.KS", { ticker: "A.KS", lastAccessed: 20, savedAt: 10, points: hugePoints }],
+    ["B.KQ", { ticker: "B.KQ", lastAccessed: 30, points: hugePoints }],
+  ]));
+
+  assert.deepEqual(await store.readRecordMetadata("prices", ["ticker", "lastAccessed", "savedAt"]), [
+    { key: "A.KS", ticker: "A.KS", lastAccessed: 20, savedAt: 10 },
+    { key: "B.KQ", ticker: "B.KQ", lastAccessed: 30 },
+  ]);
 });

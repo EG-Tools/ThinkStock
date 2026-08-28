@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-
-
-await import("../../docs/modules/data-payload.js");
-await import("../../docs/modules/market-data.js");
-const marketData = globalThis.ThinkStockMarketData;
+import marketData from "../../docs/modules/market-data.mjs";
 
 test("normalizes full fear-greed history and rejects invalid rows", () => {
   assert.deepEqual(marketData.normalizeFearGreedRows({
@@ -176,6 +172,9 @@ test("keeps credit values fixed while dates are shifted independently", () => {
   assert.deepEqual(twoDayOffset.rows, zeroOffset.rows);
   assert.equal(marketData.shiftIsoDateByDays("2026-01-03", -2), "2026-01-01");
   assert.equal(marketData.shiftIsoDateByDays("invalid", -2), "invalid");
+  assert.equal(marketData.shiftIsoDateByMonths("2026-08-31", 6), "2026-02-28");
+  assert.equal(marketData.shiftIsoDateByMonths("2024-08-31", 6), "2024-02-29");
+  assert.equal(marketData.shiftIsoDateByMonths("invalid", 6), "invalid");
 });
 
 test("treats unpublished zero credit balances as missing values", () => {

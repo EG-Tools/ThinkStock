@@ -2,10 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 
-await import("../../shared/series-integrity.mjs");
-await import("../../shared/series-timeline-policy.mjs");
-await import("../../docs/modules/data-health.js");
-const dataHealth = globalThis.ThinkStockDataHealth;
+import * as dataHealth from "../../docs/modules/data-health.mjs";
 
 
 test("builds freshness ranges from finite series values", () => {

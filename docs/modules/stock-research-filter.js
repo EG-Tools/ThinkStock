@@ -1,7 +1,6 @@
-(function initThinkStockStockResearchFilter(globalScope) {
-  "use strict";
+"use strict";
 
-  const contract = globalScope.ThinkStockStockResearchContract;
+  const contract = require("./stock-research-contract.js");
   if (!contract) throw new Error("stock research contract failed to load");
 
   function visibleCandidateReasons(reasons) {
@@ -58,18 +57,33 @@
     return market ? String(marketDates?.[market] || "").slice(0, 10) : "";
   }
 
-  function candidateMatchesTodayFilter(candidate, filter = {}, marketDates = {}) {
+  function researchMarketDateIsCurrent(marketDate, expectedDate = "") {
+    const reference = String(marketDate || "").slice(0, 10);
+    const expected = String(expectedDate || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(reference)) return false;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(expected)) return true;
+    return reference >= expected;
+  }
+
+  function candidateMatchesTodayFilter(candidate, filter = {}, marketDates = {}, expectedDate = "") {
     const referenceDate = candidateResearchMarketDate(candidate, marketDates);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(referenceDate)) return false;
+    if (!researchMarketDateIsCurrent(referenceDate, expectedDate)) return false;
+    const candidateDate = String(candidate?.latestDate || candidate?.asOfDate || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(candidateDate) || candidateDate !== referenceDate) return false;
     const buyDate = String(candidate?.lastBuyDate || "").slice(0, 10);
     const sellDate = String(candidate?.lastSellDate || candidate?.sellDate || "").slice(0, 10);
     return (filter?.includeBuy === true && buyDate === referenceDate)
       || (filter?.includeSell === true && sellDate === referenceDate);
   }
 
-  function researchMarketDateLabel(marketDates = {}) {
+  function researchMarketDateLabel(marketDates = {}, expectedDate = "") {
     const kospi = String(marketDates?.KOSPI || "").slice(0, 10);
     const kosdaq = String(marketDates?.KOSDAQ || "").slice(0, 10);
+    const delayed = [
+      !researchMarketDateIsCurrent(kospi, expectedDate) ? "코스피" : "",
+      !researchMarketDateIsCurrent(kosdaq, expectedDate) ? "코스닥" : "",
+    ].filter(Boolean);
+    if (delayed.length) return `${delayed.join("·")} 최신가격 지연`;
     if (kospi && kosdaq && kospi === kosdaq) return kospi;
     return [
       kospi ? `코스피 ${kospi}` : "",
@@ -77,14 +91,16 @@
     ].filter(Boolean).join(" · ") || "최신 거래일 미확인";
   }
 
-  globalScope.ThinkStockStockResearchFilter = Object.freeze({
+  const stockResearchFilter = Object.freeze({
     candidateMatchesTodayFilter,
     candidateMeetsSignalMinimum,
     candidateResearchMarket,
     candidateResearchMarketDate,
     latestResearchDate,
     researchMarketDateLabel,
+    researchMarketDateIsCurrent,
     resolveResearchMarketDates,
     visibleCandidateReasons,
   });
-}(typeof self !== "undefined" ? self : globalThis));
+
+module.exports = stockResearchFilter;

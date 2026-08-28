@@ -1,10 +1,11 @@
-(function initThinkStockStockResearchNavigation(globalScope) {
-  "use strict";
+"use strict";
+
+const stockResearchContract = require("./stock-research-contract.js");
 
   const DISPLAY_LIMIT = 5;
   const MAX_UNIVERSE_STATE = Math.max(
     400,
-    Number(globalScope.ThinkStockStockResearchContract?.UNIVERSE_SIZE_HIGH) || 1000,
+    Number(stockResearchContract?.UNIVERSE_SIZE_HIGH) || 1000,
   );
 
   function tickerOf(value) {
@@ -233,7 +234,7 @@
       .filter(Boolean);
   }
 
-  globalScope.ThinkStockStockResearchNavigation = Object.freeze({
+  const stockResearchNavigation = Object.freeze({
     MAX_UNIVERSE_STATE,
     DISPLAY_LIMIT,
     candidateSignalFingerprint,
@@ -249,4 +250,5 @@
     universeFingerprint,
     universeMetadataFingerprint,
   });
-}(typeof self !== "undefined" ? self : globalThis));
+
+module.exports = stockResearchNavigation;

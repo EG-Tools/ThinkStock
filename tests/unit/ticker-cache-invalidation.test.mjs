@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createTickerCacheInvalidationContract } from "../../docs/modules/ticker-cache-invalidation.mjs";
+import * as cacheLifecycle from "../../docs/modules/cache-lifecycle-policy.mjs";
 
-await import("../../shared/runtime-foundation.mjs");
-await import("../../docs/modules/cache-lifecycle-policy.js");
-await import("../../docs/modules/ticker-cache-invalidation.js");
-const cache = globalThis.ThinkStockTickerCacheInvalidation;
+const cache = createTickerCacheInvalidationContract(cacheLifecycle);
 
 test("keeps append-only price tails and ignores a live latest-price revision", () => {
   const existing = [
@@ -50,9 +49,10 @@ test("requests full history and clears all related caches at a corporate-action 
   assert.deepEqual(result.stores, [
     "tickerPrices",
     "tickerResearchHistory",
+    "tickerTimingModels",
     "tickerAiForecast",
   ]);
-  assert.equal(removed.length, 3);
+  assert.equal(removed.length, 4);
   assert.equal(memoryTicker, "005930.KS");
 });
 
@@ -74,12 +74,19 @@ test("invalidates only forecast output when company analysis changes", async () 
 
 test("maps source revisions to deterministic dependent cache stores", () => {
   assert.deepEqual(cache.storesForSources(["macro", "price"]), [
+    "tickerTimingModels",
     "tickerAiForecast",
     "tickerResearchHistory",
   ]);
   assert.deepEqual(cache.storesForSources(["price"], { includePrice: true }), [
     "tickerPrices",
     "tickerResearchHistory",
+    "tickerTimingModels",
+    "tickerAiForecast",
+  ]);
+  assert.deepEqual(cache.storesForSources(["eps", "report"]), ["tickerAiForecast"]);
+  assert.deepEqual(cache.storesForSources(["volume"]), [
+    "tickerTimingModels",
     "tickerAiForecast",
   ]);
 });

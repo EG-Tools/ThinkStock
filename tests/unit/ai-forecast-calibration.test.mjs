@@ -3,8 +3,7 @@ import test from "node:test";
 
 await import("../../shared/runtime-foundation.mjs");
 await import("../../shared/ai-context-classifier.mjs");
-await import("../../docs/modules/ai-forecast-calibration.js");
-const calibration = globalThis.ThinkStockAiForecastCalibration;
+const { default: calibration } = await import("../../docs/modules/ai-forecast-calibration.mjs");
 
 const audit = (overrides = {}) => ({
   format: "ai-audit-v1",

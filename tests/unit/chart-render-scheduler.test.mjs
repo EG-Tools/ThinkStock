@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/chart-render-scheduler.js");
-
-const { createChartRenderScheduler } = globalThis.ThinkStockChartRenderScheduler;
+import { createChartRenderScheduler } from "../../docs/modules/chart-update-coordinator.mjs";
 
 test("coalesces render requests and lets reset-range requests win", async () => {
   const frames = [];
@@ -44,6 +42,70 @@ test("coalesces typed invalidations and passes one combined render description",
   assert.equal(renders[0].requestCount, 2);
   assert.equal(renders[0].shouldAbort(), false);
   assert.equal(scheduler.stats().coalescedRequests, 1);
+  assert.equal(scheduler.stats().lastTransactionId, 1);
+  assert.equal(scheduler.stats().completedTransactionId, 1);
+});
+
+test("an immediate render absorbs and cancels an older queued frame", async () => {
+  const frames = new Map();
+  const cancelled = [];
+  const renders = [];
+  let nextFrameId = 1;
+  const scheduler = createChartRenderScheduler({}, {
+    requestFrame: (callback) => {
+      const id = nextFrameId;
+      nextFrameId += 1;
+      frames.set(id, callback);
+      return id;
+    },
+    cancelFrame: (id) => {
+      cancelled.push(id);
+      frames.delete(id);
+    },
+    render: async (preserveZoom, invalidation) => {
+      renders.push({ preserveZoom, reasons: invalidation.reasons });
+    },
+  });
+
+  scheduler.request(true, { reason: "older-layout", updateClass: "viewport" });
+  await scheduler.run(false);
+
+  assert.deepEqual(cancelled, [1]);
+  assert.equal(frames.size, 0);
+  assert.deepEqual(renders, [{ preserveZoom: false, reasons: ["older-layout"] }]);
+  assert.equal(scheduler.stats().framePending, false);
+});
+
+test("an explicit render cannot be downgraded to queued marker-only work", async () => {
+  const frames = new Map();
+  const renders = [];
+  let nextFrameId = 1;
+  const scheduler = createChartRenderScheduler({}, {
+    requestFrame: (callback) => {
+      const id = nextFrameId;
+      nextFrameId += 1;
+      frames.set(id, callback);
+      return id;
+    },
+    cancelFrame: (id) => frames.delete(id),
+    render: async (preserveZoom, invalidation) => {
+      renders.push({
+        preserveZoom,
+        reasons: invalidation.reasons,
+        updateClasses: invalidation.updateClasses,
+      });
+    },
+  });
+
+  scheduler.request(true, { reason: "event-marker-data", updateClass: "markers" });
+  await scheduler.run(false);
+
+  assert.equal(frames.size, 0);
+  assert.deepEqual(renders, [{
+    preserveZoom: false,
+    reasons: ["event-marker-data", "immediate"],
+    updateClasses: ["markers", "data"],
+  }]);
 });
 
 test("marks an in-flight data transaction stale and runs one replacement", async () => {
@@ -71,6 +133,8 @@ test("marks an in-flight data transaction stale and runs one replacement", async
   assert.equal(invalidations.length, 2);
   assert.deepEqual(invalidations[1].reasons, ["viewport"]);
   assert.equal(scheduler.stats().supersededTransactions, 1);
+  assert.equal(scheduler.stats().lastTransactionId, 2);
+  assert.equal(scheduler.stats().completedTransactionId, 2);
 });
 
 test("defers rendering while chart interaction is active", () => {
@@ -89,4 +153,52 @@ test("defers rendering while chart interaction is active", () => {
   busy = false;
   timerCallback();
   assert.equal(scheduler.stats().framePending, true);
+});
+
+test("deferred marker work stays marker-only instead of gaining a phantom data request", async () => {
+  let busy = true;
+  let timerCallback = null;
+  const frames = [];
+  const renders = [];
+  const scheduler = createChartRenderScheduler({}, {
+    deferDelayMs: 50,
+    isInteractionBusy: () => busy,
+    setTimer: (callback) => { timerCallback = callback; return 1; },
+    clearTimer: () => {},
+    requestFrame: (callback) => { frames.push(callback); return frames.length; },
+    cancelFrame: () => {},
+    render: async (_preserveZoom, invalidation) => renders.push(invalidation),
+  });
+  scheduler.request(true, { reason: "disclosure-toggle", updateClass: "markers" });
+  busy = false;
+  timerCallback();
+  frames.shift()();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(renders[0].reasons, ["disclosure-toggle"]);
+  assert.deepEqual(renders[0].updateClasses, ["markers"]);
+  assert.equal(renders[0].requestCount, 1);
+  assert.equal(scheduler.stats().invalidationCounts.data || 0, 0);
+});
+
+test("whenSettled waits through rendering and final layout work", async () => {
+  const frames = [];
+  let releaseLayout;
+  const layoutGate = new Promise((resolve) => { releaseLayout = resolve; });
+  const scheduler = createChartRenderScheduler({}, {
+    requestFrame: (callback) => { frames.push(callback); return frames.length; },
+    cancelFrame: () => {},
+    render: async () => {},
+    afterBatch: () => layoutGate,
+  });
+
+  scheduler.request(true);
+  let settled = false;
+  const waiting = scheduler.whenSettled().then(() => { settled = true; });
+  frames.shift()();
+  await Promise.resolve();
+  assert.equal(settled, false);
+  releaseLayout();
+  await waiting;
+  assert.equal(settled, true);
 });

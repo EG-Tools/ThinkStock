@@ -44,5 +44,3 @@ const api = Object.freeze({
   parseRuntimeApiVersion,
   runtimeApiCompatibility,
 });
-
-if (typeof globalThis !== "undefined") globalThis.ThinkStockRuntimeApiContract = api;

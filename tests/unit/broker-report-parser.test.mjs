@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../shared/runtime-foundation.mjs");
-await import("../../shared/broker-report-policy.mjs");
-await import("../../docs/modules/broker-report-parser.js");
-
-const parser = globalThis.ThinkStockBrokerReportParser;
+import parser from "../../docs/modules/broker-report-parser.mjs";
 
 function jypPages() {
   return [{

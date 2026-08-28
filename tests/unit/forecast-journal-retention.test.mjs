@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import test from "node:test";
-import vm from "node:vm";
+import * as browserJournal from "../../docs/modules/ai-forecast-journal.mjs";
 
 import {
   compactForecastJournalRecords,
@@ -11,14 +9,6 @@ import {
 } from "../../worker/src/forecast-journal.mjs";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const browserContext = {};
-vm.createContext(browserContext);
-vm.runInContext(
-  await readFile(path.resolve("docs/modules/ai-forecast-journal.js"), "utf8"),
-  browserContext,
-);
-const browserJournal = browserContext.ThinkStockAiForecastJournal;
-
 function recordAt(index) {
   const base = Date.parse("2025-10-01T00:00:00Z") + (index * DAY_MS);
   const asOf = new Date(base).toISOString().slice(0, 10);

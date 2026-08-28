@@ -1,6 +1,19 @@
+/**
+ * @typedef {object} WorkerRoute
+ * @property {string} id
+ * @property {string} path
+ * @property {readonly string[]} methods
+ * @property {boolean} [authenticated]
+ * @property {boolean} [ticker]
+ * @property {boolean} [corpCode]
+ * @property {string} [provider]
+ */
+
+/** @type {readonly WorkerRoute[]} */
 const ROUTES = Object.freeze([
   { id: "health", path: "/health", methods: ["GET"], authenticated: false },
   { id: "dart-disclosures", path: "/api/dart/disclosures", methods: ["GET"], ticker: true, corpCode: true, provider: "dart" },
+  { id: "eps-history", path: "/api/dart/eps-history", methods: ["GET"], ticker: true, corpCode: true, provider: "dart" },
   { id: "insider-trades", path: "/api/dart/insider-trades", methods: ["GET"], ticker: true, corpCode: true, provider: "dart" },
   { id: "auth-check", path: "/api/auth/check", methods: ["GET"] },
   { id: "admin-session", path: "/api/admin/session", methods: ["POST"] },
@@ -24,6 +37,11 @@ const ROUTES = Object.freeze([
   { id: "forecast-journal", path: "/api/forecast-journal", methods: ["GET", "POST"], ticker: true },
 ]);
 
+/**
+ * @param {string} pathname
+ * @param {string} [method]
+ * @returns {Readonly<WorkerRoute>|null}
+ */
 export function matchRequestRoute(pathname, method = "GET") {
   const path = String(pathname || "");
   const verb = String(method || "GET").toUpperCase();
@@ -37,6 +55,12 @@ export function queryFlag(value) {
   return ["1", "true", "yes"].includes(String(value || "").toLowerCase());
 }
 
+/**
+ * @template T
+ * @param {WorkerRoute|null} route
+ * @param {Record<string, (context: T, route: WorkerRoute) => unknown>} handlers
+ * @param {T} context
+ */
 export function dispatchRequestRoute(route, handlers, context) {
   const handler = handlers?.[route?.id];
   return typeof handler === "function" ? handler(context, route) : null;

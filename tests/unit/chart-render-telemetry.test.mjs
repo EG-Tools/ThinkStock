@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/chart-render-telemetry.js");
+import { createChartRenderTelemetry } from "../../docs/modules/performance-monitor.mjs";
 
 test("records render modes, causes, duration, and fallback paths", () => {
   let timestamp = 10;
-  const telemetry = globalThis.ThinkStockChartRenderTelemetry.createChartRenderTelemetry({
+  const telemetry = createChartRenderTelemetry({
     performance: { now: () => timestamp },
   });
-  const token = telemetry.begin({ updateClasses: ["viewport", "marker"] });
+  const token = telemetry.begin({
+    updateClasses: ["viewport", "marker"],
+    traceCount: 4,
+    seriesCount: 1,
+    overlayCount: 3,
+    pointCount: 4200,
+  });
   timestamp = 18.4;
   telemetry.complete(token, { mode: "full", fallbacks: ["partial"] });
   const snapshot = telemetry.snapshot();
@@ -29,11 +35,30 @@ test("records render modes, causes, duration, and fallback paths", () => {
     full: 1,
     total: 1,
   });
+  assert.deepEqual(snapshot.byTraceBand["2-5"], {
+    renders: 1,
+    full: 1,
+    averageMs: 8.4,
+    maximumMs: 8.4,
+    maximumPoints: 4200,
+  });
+  assert.deepEqual(snapshot.bySeriesBand["1"], {
+    renders: 1,
+    full: 1,
+    averageMs: 8.4,
+    maximumMs: 8.4,
+    maximumOverlays: 3,
+    maximumPoints: 4200,
+  });
   assert.deepEqual(snapshot.recent[0], {
     transactionId: 0,
     requestCount: 1,
     mode: "full",
     durationMs: 8.4,
+    traceCount: 4,
+    seriesCount: 1,
+    overlayCount: 3,
+    pointCount: 4200,
     updateClasses: ["viewport", "marker"],
     fallbacks: ["partial"],
   });
@@ -41,7 +66,7 @@ test("records render modes, causes, duration, and fallback paths", () => {
 
 test("keeps only a bounded recent render trail and classifies unknown updates", () => {
   let timestamp = 0;
-  const telemetry = globalThis.ThinkStockChartRenderTelemetry.createChartRenderTelemetry({
+  const telemetry = createChartRenderTelemetry({
     performance: { now: () => timestamp },
   }, { recentLimit: 2 });
 
@@ -60,7 +85,7 @@ test("keeps only a bounded recent render trail and classifies unknown updates", 
 });
 
 test("counts selective marker-only updates separately", () => {
-  const telemetry = globalThis.ThinkStockChartRenderTelemetry.createChartRenderTelemetry({
+  const telemetry = createChartRenderTelemetry({
     performance: { now: () => 1 },
   });
   telemetry.complete(telemetry.begin({ updateClasses: ["markers"] }), {
@@ -73,7 +98,7 @@ test("counts selective marker-only updates separately", () => {
 });
 
 test("records unchanged render skips as successful reuse", () => {
-  const telemetry = globalThis.ThinkStockChartRenderTelemetry.createChartRenderTelemetry({
+  const telemetry = createChartRenderTelemetry({
     performance: { now: () => 1 },
   });
   telemetry.complete(telemetry.begin({ updateClasses: ["viewport"] }), {

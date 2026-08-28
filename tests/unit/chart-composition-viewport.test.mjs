@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/chart-viewport-controller.js");
-const viewport = globalThis.ThinkStockChartCompositionViewport;
+import * as viewport from "../../docs/modules/chart-viewport-controller.mjs";
 
 test("captures visible series and source-aware latest tolerance before composition changes", () => {
   const captured = viewport.captureCompositionViewport({

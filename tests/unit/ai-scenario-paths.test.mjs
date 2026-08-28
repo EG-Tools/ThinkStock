@@ -5,8 +5,10 @@ import test from "node:test";
 import vm from "node:vm";
 
 const source = await readFile(path.resolve("docs/modules/ai-scenario-paths.js"), "utf8");
+const mathSource = await readFile(path.resolve("docs/modules/ai-forecast-math.js"), "utf8");
 const context = {};
 vm.createContext(context);
+vm.runInContext(mathSource, context);
 vm.runInContext(source, context);
 
 const {

@@ -120,5 +120,3 @@ const api = Object.freeze({
   priceRatio,
   validateNaverPriceTail,
 });
-
-if (typeof globalThis !== "undefined") globalThis.ThinkStockNaverMarketPrice = api;

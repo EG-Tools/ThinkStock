@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/broker-report-worker-client.js");
-
-const { createBrokerReportWorkerClient } = globalThis.ThinkStockBrokerReportWorkerClient;
+import { createBrokerReportWorkerClient } from "../../docs/modules/broker-research-runtime.mjs";
 
 test("reuses one PDF worker and transfers a private byte copy", async () => {
   const workers = [];

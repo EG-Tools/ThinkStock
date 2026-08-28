@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import auxiliaryChartModel from "../../docs/modules/auxiliary-chart-model.mjs";
 
 
-await import("../../docs/modules/auxiliary-chart-model.js");
+await import("../../docs/modules/chart-loader.mjs");
+const { auxiliaryChartRuntime: auxiliaryRuntime } = await import("../../docs/modules/auxiliary-chart-runtime.mjs");
 const {
   buildAuxiliaryChartModel,
   buildAuxiliaryPanelLayout,
@@ -16,7 +18,193 @@ const {
   NEWS_MOVING_AVERAGE_MAX_DAYS,
   normalizeNewsMovingAverageDays,
   rollingAverage,
-} = globalThis.ThinkStockAuxiliaryChartModel;
+} = auxiliaryChartModel;
+
+test("updates stable auxiliary chart topology without rebuilding Plotly", async () => {
+  const firstTrace = {
+    type: "scatter",
+    mode: "lines",
+    x: ["2026-01-01", "2026-01-02"],
+    y: [100, 101],
+    name: "ADR KOSPI",
+    meta: { auxiliarySeriesKey: "adr_kospi" },
+  };
+  const layout = {
+    xaxis: { range: ["2026-01-01", "2026-01-02"] },
+    yaxis: { domain: [0, 1], anchor: "x" },
+  };
+  const element = { data: [], _fullLayout: null };
+  const calls = [];
+  const plotly = {
+    react: async (target, traces) => {
+      calls.push("react");
+      target.data = traces;
+      target._fullLayout = { xaxis: {} };
+    },
+    update: async (target, payload) => {
+      calls.push("update");
+      target.data = target.data.map((trace, index) => ({
+        ...trace,
+        x: payload.x[index],
+        y: payload.y[index],
+      }));
+    },
+  };
+
+  assert.deepEqual(
+    await auxiliaryRuntime.renderAuxiliaryPlot(plotly, element, [firstTrace], layout, {}),
+    { mode: "full", attemptedPartial: false },
+  );
+  const nextTrace = { ...firstTrace, y: [102, 104] };
+  assert.deepEqual(
+    await auxiliaryRuntime.renderAuxiliaryPlot(plotly, element, [nextTrace], layout, {}),
+    { mode: "partial", attemptedPartial: true, updateScope: "traces" },
+  );
+  assert.deepEqual(calls, ["react", "update"]);
+  assert.deepEqual(element.data[0].y, [102, 104]);
+});
+
+test("updates only changed auxiliary traces and skips identical frames", async () => {
+  const traces = ["first", "second"].map((series, index) => ({
+    type: "scatter",
+    mode: "lines",
+    x: ["2026-01-01", "2026-01-02"],
+    y: [100 + index, 101 + index],
+    meta: { auxiliarySeriesKey: series, renderFingerprint: `${series}:1` },
+  }));
+  const layout = { xaxis: {}, yaxis: { domain: [0, 1] } };
+  const element = { data: [], _fullLayout: null };
+  const updates = [];
+  const plotly = {
+    react: async (target, next) => {
+      target.data = next;
+      target._fullLayout = { xaxis: {} };
+    },
+    update: async (_target, payload, layoutPayload, indexes) => {
+      updates.push({ payload, layoutPayload, indexes });
+    },
+  };
+
+  await auxiliaryRuntime.renderAuxiliaryPlot(plotly, element, traces, layout, {});
+  const next = [
+    traces[0],
+    {
+      ...traces[1],
+      y: [202, 204],
+      meta: { ...traces[1].meta, renderFingerprint: "second:2" },
+    },
+  ];
+  assert.deepEqual(
+    await auxiliaryRuntime.renderAuxiliaryPlot(plotly, element, next, layout, {}),
+    { mode: "partial", attemptedPartial: true, updateScope: "traces" },
+  );
+  assert.deepEqual(updates[0].indexes, [1]);
+  assert.deepEqual(updates[0].payload.y, [[202, 204]]);
+  assert.deepEqual(updates[0].layoutPayload, {});
+  assert.deepEqual(
+    await auxiliaryRuntime.renderAuxiliaryPlot(plotly, element, next, layout, {}),
+    { mode: "skipped", attemptedPartial: true, updateScope: "unchanged" },
+  );
+  assert.equal(updates.length, 1);
+});
+
+test("relayouts an unchanged auxiliary trace set without restyling it", async () => {
+  const trace = {
+    type: "scatter",
+    mode: "lines",
+    x: ["2026-01-01"],
+    y: [100],
+    meta: { auxiliarySeriesKey: "adr_kospi", renderFingerprint: "adr:1" },
+  };
+  const element = { data: [], _fullLayout: null };
+  const calls = [];
+  const plotly = {
+    react: async (target, traces) => {
+      target.data = traces;
+      target._fullLayout = { xaxis: {} };
+    },
+    update: async () => calls.push("update"),
+    relayout: async () => calls.push("relayout"),
+  };
+  await auxiliaryRuntime.renderAuxiliaryPlot(plotly, element, [trace], {
+    xaxis: { range: ["2026-01-01", "2026-01-02"] },
+    yaxis: { domain: [0, 1] },
+  }, {});
+  const result = await auxiliaryRuntime.renderAuxiliaryPlot(plotly, element, [trace], {
+    xaxis: { range: ["2026-01-02", "2026-01-03"] },
+    yaxis: { domain: [0, 1] },
+  }, {});
+  assert.deepEqual(result, { mode: "partial", attemptedPartial: true, updateScope: "layout" });
+  assert.deepEqual(calls, ["relayout"]);
+});
+
+test("auxiliary model resolver coalesces work, caches the result, and falls back safely", async () => {
+  let workerCalls = 0;
+  let fallbackCalls = 0;
+  let releaseWorker;
+  const resolver = auxiliaryRuntime.createAuxiliaryChartModelResolver({
+    requestModel: async () => {
+      workerCalls += 1;
+      return new Promise((resolve) => { releaseWorker = resolve; });
+    },
+    buildModel: () => {
+      fallbackCalls += 1;
+      return { rows: ["fallback"] };
+    },
+    normalizeModel: (value) => value?.rows ? value : null,
+  });
+  const first = resolver.resolve("same", { sources: {} });
+  const second = resolver.resolve("same", { sources: {} });
+  releaseWorker({ rows: ["worker"] });
+  assert.equal(await first, await second);
+  assert.deepEqual(await resolver.resolve("same", { sources: {} }), { rows: ["worker"] });
+  assert.equal(workerCalls, 1);
+  assert.equal(resolver.stats().coalesced, 1);
+  assert.equal(resolver.stats().hits, 1);
+
+  resolver.invalidate();
+  const fallback = auxiliaryRuntime.createAuxiliaryChartModelResolver({
+    requestModel: async () => { throw new Error("worker unavailable"); },
+    buildModel: ({ adrRows }) => {
+      fallbackCalls += 1;
+      return { rows: adrRows };
+    },
+    normalizeModel: (value) => value,
+  });
+  assert.deepEqual(await fallback.resolve("fallback", {
+    sources: { adrRows: [1, 2], macroRows: [] },
+  }), { rows: [1, 2] });
+  assert.equal(fallback.source(), "sync");
+  assert.equal(fallback.stats().fallbacks, 1);
+  assert.equal(fallbackCalls, 1);
+});
+
+test("rebuilds auxiliary charts when panel topology changes", async () => {
+  const trace = {
+    type: "scatter",
+    mode: "lines",
+    x: ["2026-01-01"],
+    y: [100],
+    meta: { auxiliarySeriesKey: "adr_kospi" },
+  };
+  const element = { data: [], _fullLayout: null };
+  const calls = [];
+  const plotly = {
+    react: async (target, traces) => {
+      calls.push("react");
+      target.data = traces;
+      target._fullLayout = { xaxis: {} };
+    },
+    update: async () => calls.push("update"),
+  };
+  await auxiliaryRuntime.renderAuxiliaryPlot(plotly, element, [trace], {
+    xaxis: {}, yaxis: { domain: [0, 1] },
+  }, {});
+  await auxiliaryRuntime.renderAuxiliaryPlot(plotly, element, [trace], {
+    xaxis: {}, yaxis: { domain: [0.5, 1] }, yaxis2: { domain: [0, 0.45] },
+  }, {});
+  assert.deepEqual(calls, ["react", "react"]);
+});
 
 test("auxiliary panels collapse without leaving an empty axis domain", () => {
   const full = buildAuxiliaryPanelLayout({
@@ -37,9 +225,9 @@ test("auxiliary panels collapse without leaving an empty axis domain", () => {
   assert.equal(full.bottomAxis, "y4");
   assert.deepEqual(full.axes, {
     adr: "y",
-    fearGreed: "y2",
-    newsSentiment: "y3",
-    vkospi: "y4",
+    vkospi: "y2",
+    fearGreed: "y3",
+    newsSentiment: "y4",
   });
   assert.deepEqual(collapsed.activeKeys, ["adr", "newsSentiment"]);
   assert.equal(collapsed.chartHeight, 371);
@@ -52,7 +240,7 @@ test("auxiliary panels collapse without leaving an empty axis domain", () => {
 });
 
 test("all auxiliary panel combinations keep fixed pixel heights and compact cleanly", () => {
-  const keys = ["adr", "fearGreed", "newsSentiment", "vkospi"];
+  const keys = ["adr", "vkospi", "fearGreed", "newsSentiment"];
   const targetPixels = { adr: 180, fearGreed: 85, newsSentiment: 85, vkospi: 85 };
 
   for (let mask = 0; mask < 16; mask += 1) {
@@ -356,4 +544,37 @@ test("viewport ranges preserve the same result for unsorted fallback dates", () 
   assert.deepEqual(ranges.adr, [77.5, 121.2]);
   assert.deepEqual(ranges.news, [88, 112]);
   assert.deepEqual(ranges.vkospi, [15, 25]);
+});
+
+test("viewport ranges do not inspect data for hidden auxiliary panels", () => {
+  const hiddenValues = [];
+  Object.defineProperty(hiddenValues, 0, {
+    configurable: true,
+    get() {
+      throw new Error("hidden panel values must not be inspected");
+    },
+  });
+  hiddenValues.length = 1;
+
+  const ranges = buildAuxiliaryViewportRanges({
+    dates: ["2026-01-01"],
+    kospiValues: hiddenValues,
+    kosdaqValues: hiddenValues,
+    newsDates: ["2026-01-01"],
+    newsValues: hiddenValues,
+    vkospiDates: ["2026-01-01"],
+    vkospiValues: hiddenValues,
+    vixDates: ["2026-01-01"],
+    vixValues: hiddenValues,
+  }, ["2026-01-01", "2026-01-01"], {
+    activePanels: {
+      adr: false,
+      newsSentiment: false,
+      vkospi: false,
+    },
+  });
+
+  assert.deepEqual(ranges.adr, [77.5, 121.2]);
+  assert.deepEqual(ranges.news, [88, 112]);
+  assert.deepEqual(ranges.vkospi, [7.6, 42.4]);
 });

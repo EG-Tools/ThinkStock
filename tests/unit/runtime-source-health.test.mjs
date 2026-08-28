@@ -1,14 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../shared/runtime-freshness-policy.mjs");
-await import("../../docs/modules/runtime-source-health.js");
-
-const {
+import {
   createRuntimeSourceHealth,
   MAX_BLOCK_AGE_MS,
   summarizeSourceStates,
-} = globalThis.ThinkStockRuntimeSourceHealth;
+} from "../../docs/modules/runtime-source-health.mjs";
 
 function createStorage() {
   const values = new Map();
@@ -43,6 +40,42 @@ test("manual refresh bypasses source backoff and success closes the circuit", ()
   health.success("credit", { latestDate: "2026-08-11" });
   assert.equal(health.canAttempt("credit").allowed, true);
   assert.equal(health.snapshot().credit.failureCount, 0);
+});
+
+test("records request success and observed quality in one source update", () => {
+  let now = 7_000;
+  const health = createRuntimeSourceHealth(globalThis, { now: () => now, storage: null });
+  health.failure("macro", new Error("offline"));
+  now = 8_000;
+  const recorded = health.recordSuccess("macro", {
+    firstDate: "2005-01-01",
+    latestDate: "2026-08-13",
+    anomalyCount: 1,
+    revision: "macro:8",
+  });
+
+  assert.equal(recorded.state, "ready");
+  assert.equal(recorded.lastSuccessAt, 8_000);
+  assert.equal(recorded.observedAt, 8_000);
+  assert.equal(recorded.failureCount, 0);
+  assert.equal(recorded.qualityState, "stale");
+  assert.equal(recorded.anomalyCount, 1);
+  assert.equal(recorded.lastError, "");
+  assert.equal(recorded.revision, "macro:8");
+});
+
+test("a failed refresh preserves the latest successful source coverage", () => {
+  let now = 100;
+  const health = createRuntimeSourceHealth(globalThis, { now: () => now, storage: null });
+  health.success("credit", { latestDate: "2026-08-10", detail: "3 rows" });
+  now = 200;
+  const failed = health.failure("credit", new Error("HTTP 503"));
+
+  assert.equal(failed.state, "stale");
+  assert.equal(failed.lastSuccessAt, 100);
+  assert.equal(failed.latestDate, "2026-08-10");
+  assert.equal(failed.lastError, "HTTP 503");
+  assert.equal(health.snapshot().credit.failureCount, 1);
 });
 
 test("a stale persisted failure cannot block a later session indefinitely", () => {
@@ -121,4 +154,40 @@ test("bounds repeated provider failures and recovers after the maximum backoff",
   health.success("credit", { latestDate: "2026-08-13" });
   assert.equal(health.snapshot().credit.failureCount, 0);
   assert.equal(health.snapshot().credit.latestDate, "2026-08-13");
+});
+
+test("coalesces rapid source updates into one persisted snapshot", () => {
+  const values = new Map();
+  const writes = [];
+  const timers = [];
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    removeItem: (key) => values.delete(key),
+    setItem: (key, value) => {
+      values.set(key, String(value));
+      writes.push(String(value));
+    },
+  };
+  const health = createRuntimeSourceHealth(globalThis, {
+    storage,
+    persistDelayMs: 350,
+    setTimer: (callback, delay) => {
+      timers.push({ callback, delay });
+      return timers.length;
+    },
+    clearTimer: () => {},
+  });
+
+  health.success("macro", { latestDate: "2026-08-12" });
+  health.observe("macro", { latestDate: "2026-08-12", revision: "macro:2" });
+  health.success("credit", { latestDate: "2026-08-13" });
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].delay, 350);
+  assert.equal(writes.length, 0);
+
+  timers[0].callback();
+  assert.equal(writes.length, 1);
+  const persisted = JSON.parse(writes[0]);
+  assert.equal(persisted.macro.revision, "macro:2");
+  assert.equal(persisted.credit.latestDate, "2026-08-13");
 });

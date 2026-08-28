@@ -206,17 +206,3 @@ export function isKoreanCurrentPriceWindow(date = new Date(), options = {}) {
   const close = (closeHour * 60) + closeMinute;
   return minutes >= open && minutes < close;
 }
-
-const api = Object.freeze({
-  koreanDateText,
-  shiftIsoDate,
-  isKoreanTradingDate,
-  isKoreanMarketPricePoint,
-  inspectDailyPriceHistoryDensity,
-  latestKoreanTradingDateOnOrBefore,
-  latestWeekdayOnOrBefore,
-  expectedLatestKoreanTradingDate,
-  isKoreanCurrentPriceWindow,
-});
-
-globalThis.ThinkStockMarketCalendar = api;

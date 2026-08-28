@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/chart-model-cache.js");
-const module = globalThis.ThinkStockChartModelCache;
+import * as module from "../../docs/modules/chart-model-cache.mjs";
 
 test("reuses recent chart compositions across visibility toggles", async () => {
   const cache = module.createChartModelCache({ maxEntries: 3 });
@@ -87,7 +86,13 @@ test("keeps small recent compositions but bounds long-history memory weight", as
     misses: 3,
     coalesced: 0,
     evictions: 1,
+    entryEvictions: 0,
+    weightEvictions: 1,
+    stores: 3,
     clears: 0,
+    requests: 3,
+    hitRate: 0,
+    reuseRate: 0,
     entries: 2,
     pending: 0,
     maxEntries: 3,
@@ -127,5 +132,51 @@ test("reuses a source fingerprint until its data revision changes", () => {
   assert.equal(first, same);
   assert.notEqual(first, changed);
   assert.equal(scans, 2);
-  assert.deepEqual(cache.stats(), { entries: 2, hits: 1, misses: 2, maxEntries: 2 });
+  assert.deepEqual(cache.stats(), {
+    entries: 2,
+    hits: 1,
+    misses: 2,
+    evictions: 0,
+    hitRate: 1 / 3,
+    maxEntries: 2,
+  });
+});
+
+test("invalidates every revisioned calculation for only the changed series", () => {
+  const cache = module.createSeriesDerivedCache({ maxEntries: 4 });
+  let builds = 0;
+  const build = (value) => () => {
+    builds += 1;
+    return value;
+  };
+
+  assert.equal(cache.resolve("005930", "price-1", build("samsung-1")), "samsung-1");
+  assert.equal(cache.resolve("005930", "price-2", build("samsung-2")), "samsung-2");
+  assert.equal(cache.resolve("000660", "price-1", build("hynix-1")), "hynix-1");
+  assert.equal(cache.resolve("005930", "price-2", build("unexpected")), "samsung-2");
+  assert.equal(builds, 3);
+
+  assert.equal(cache.invalidate("005930"), 2);
+  assert.equal(cache.resolve("000660", "price-1", build("unexpected")), "hynix-1");
+  assert.equal(cache.resolve("005930", "price-2", build("samsung-new")), "samsung-new");
+  assert.deepEqual(cache.stats(), {
+    hits: 2,
+    misses: 4,
+    evictions: 0,
+    invalidations: 1,
+    entries: 2,
+    maxEntries: 4,
+    series: 2,
+  });
+});
+
+test("bounds revisioned series calculations with least-recently-used eviction", () => {
+  const cache = module.createSeriesDerivedCache({ maxEntries: 2 });
+  cache.resolve("a", "1", () => "a1");
+  cache.resolve("b", "1", () => "b1");
+  cache.resolve("a", "1", () => "unexpected");
+  cache.resolve("c", "1", () => "c1");
+
+  assert.equal(cache.resolve("b", "1", () => "b1-new"), "b1-new");
+  assert.equal(cache.stats().evictions, 2);
 });

@@ -1,0 +1,75 @@
+.ui-modal {
+  position: fixed;
+  inset: 0;
+  z-index: var(--ui-modal-z-index, 2000);
+  display: flex;
+  align-items: var(--ui-modal-align, center);
+  justify-content: var(--ui-modal-justify, center);
+  padding: var(--ui-modal-padding, 0);
+}
+
+.ui-modal[hidden] {
+  display: none !important;
+}
+
+.ui-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: var(--ui-modal-backdrop, rgba(0, 0, 0, 0.62));
+  backdrop-filter: var(--ui-modal-backdrop-filter, none);
+}
+
+.ui-dialog-panel {
+  position: relative;
+  width: var(--ui-dialog-width, min(560px, calc(100vw - 16px)));
+  max-height: var(--ui-dialog-max-height, 84vh);
+  overflow: auto;
+  margin: var(--ui-dialog-margin, 0);
+  padding: var(--ui-dialog-padding, 14px);
+  border: var(--ui-dialog-border, 1px solid var(--border));
+  border-radius: var(--ui-dialog-radius, 20px);
+  background: var(--ui-dialog-background, #131313);
+  box-shadow: var(--ui-dialog-shadow, var(--shadow));
+  color: var(--ui-dialog-color, var(--ink));
+}
+
+.ui-circle-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--ui-circle-button-size, 30px);
+  height: var(--ui-circle-button-size, 30px);
+  flex: 0 0 var(--ui-circle-button-size, 30px);
+  padding: 0;
+  border: var(--ui-circle-button-border, 1px solid var(--border));
+  border-radius: 50%;
+  background: var(--ui-circle-button-background, rgba(255, 255, 255, 0.06));
+  color: var(--ui-circle-button-color, var(--ink));
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ui-circle-button:hover:not(:disabled) {
+  background: var(--ui-circle-button-hover-background, rgba(255, 255, 255, 0.12));
+}
+
+.ui-circle-button:disabled,
+.ui-compact-control:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+
+.ui-compact-control {
+  min-height: 29px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.ui-compact-control[aria-pressed="true"] {
+  border-color: rgba(46, 218, 127, 0.62);
+  background: rgba(24, 128, 72, 0.16);
+  color: #45de85;
+}

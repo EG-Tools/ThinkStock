@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/cache-migrations.js");
-
-const { createCacheMigrator } = globalThis.ThinkStockCacheMigrations;
+import { createCacheMigrator } from "../../docs/modules/cache-maintenance-runtime.mjs";
 
 function createStorage(initial = {}) {
   const values = new Map(Object.entries(initial));

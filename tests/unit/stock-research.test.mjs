@@ -1,20 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseNaverResearchProfile } from "../../shared/research-profile.mjs";
+import * as cacheLifecycle from "../../docs/modules/cache-lifecycle-policy.mjs";
 
-await import("../../shared/runtime-foundation.mjs");
-await import("../../docs/modules/stock-research-contract.js");
-await import("../../docs/modules/stock-research-storage.js");
-await import("../../docs/modules/stock-research-navigation.js");
-await import("../../docs/modules/stock-research-filter.js");
-await import("../../docs/modules/cache-lifecycle-policy.js");
-await import("../../docs/modules/stock-research-history-cache.js");
-await import("../../docs/modules/stock-research-worker-client.js");
-await import("../../docs/modules/stock-research.js");
-await import("../../docs/modules/stock-research-controller.js");
-
-const research = globalThis.ThinkStockStockResearch;
-const controller = globalThis.ThinkStockStockResearchController;
+const { default: research } = await import("../../docs/modules/stock-research.js");
+const { default: controller } = await import("../../docs/modules/stock-research-controller.js");
+controller.configureCacheLifecycle(cacheLifecycle);
 
 test("uses the newest ticker history date when the KRX universe date is delayed", () => {
   assert.equal(controller.latestResearchDate([

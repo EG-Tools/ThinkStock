@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/chart-cursor-sync.js");
-const cursorSync = globalThis.ThinkStockChartCursorSync;
+import * as cursorSync from "../../docs/modules/chart-cursor-sync.mjs";
 
 function fakeChart(offset, length, left = 0) {
   const lines = new Map();

@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/broker-research-runtime.js");
-
-const runtime = globalThis.ThinkStockBrokerResearchRuntime;
+import * as runtime from "../../docs/modules/broker-research-runtime.mjs";
 
 test("never replaces a newer reference report with an older parsed result", () => {
   const july = {
@@ -94,6 +92,71 @@ test("constructs one report client, cache, and background extraction lane", asyn
   assert.equal(await service.loadTicker(), "loaded");
   service.dispose();
   assert.equal(disposed, true);
+});
+
+test("owns broker request state, cache hydration, and forced request ordering", async () => {
+  const requestCalls = [];
+  const stateSizes = [];
+  const cacheModule = {
+    CACHE_SCHEMA: 10,
+    createBrokerReportClient: () => ({
+      fetchList() {},
+      fetchPdf() {},
+      clearPdfMemoryCache() {},
+    }),
+    createBrokerResearchCache: () => ({
+      loadTicker: async (_ticker, options) => {
+        options.onReferenceReport({
+          reportId: "new",
+          broker: "교보증권",
+          publishedDate: "2026-08-27",
+          sourceUrl: "https://example.com/new.pdf",
+        });
+        return { summary: { representativeReports: {} } };
+      },
+    }),
+  };
+  const app = runtime.createBrokerResearchApp({}, {
+    cacheModule,
+    parser: {
+      PARSER_REVISION: "quant-v3",
+      reportSummaryFingerprint: () => "fingerprint",
+    },
+    requestRegistry: {
+      run: async (key, task, options) => {
+        requestCalls.push({ key, options });
+        return task();
+      },
+      has: () => true,
+      tag: () => "normal",
+    },
+    getAsOfDate: () => "2026-08-27",
+    readRecord: async () => ({
+      summary: {
+        representativeReports: {
+          reference: {
+            reportId: "old",
+            broker: "미래에셋증권",
+            publishedDate: "2026-08-20",
+            sourceUrl: "https://example.com/old.pdf",
+          },
+        },
+      },
+    }),
+    onStateChange: ({ pendingTickers }) => stateSizes.push(pendingTickers.size),
+  });
+
+  const summary = await app.request("000660.KS", { forceNetwork: true });
+  assert.deepEqual(stateSizes, [1, 0]);
+  assert.deepEqual(requestCalls, [{
+    key: "broker-research:000660.KS",
+    options: { tag: "force", afterCurrent: true },
+  }]);
+  assert.equal(app.pendingTickers.size, 0);
+  assert.equal(app.summaries.get("000660.KS"), summary);
+  assert.equal(summary.representativeReports.reference.reportId, "new");
+  app.dispose();
+  assert.equal(app.summaries.size, 0);
 });
 
 

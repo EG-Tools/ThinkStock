@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import vm from "node:vm";
-import { readFile } from "node:fs/promises";
-
-
-const source = await readFile(new URL("../../docs/modules/startup-loader.js", import.meta.url), "utf8");
+import { createStartupLoader } from "../../docs/modules/app-bootstrap-orchestrator.mjs";
 
 test("startup loader owns title progress and delayed completion state", () => {
   const classes = new Set();
@@ -12,6 +8,7 @@ test("startup loader owns title progress and delayed completion state", () => {
   const styles = new Map();
   const animationFrames = [];
   const timers = [];
+  let completed = 0;
   const title = {
     textContent: "Think Stock",
     dataset: {},
@@ -23,6 +20,7 @@ test("startup loader owns title progress and delayed completion state", () => {
     },
   };
   const scope = {
+    performance: { now: () => 12 },
     document: { querySelector: () => title },
     requestAnimationFrame: (callback) => {
       animationFrames.push(callback);
@@ -35,17 +33,12 @@ test("startup loader owns title progress and delayed completion state", () => {
     },
     clearTimeout: () => {},
   };
-  const context = vm.createContext({
-    ...scope,
-    self: scope,
-    globalThis: scope,
-    Object,
-    String,
-    Number,
-    Math,
+  const loader = createStartupLoader(scope, {
+    onComplete: ({ startedAt }) => {
+      assert.equal(startedAt, 12);
+      completed += 1;
+    },
   });
-  vm.runInContext(source, context);
-  const loader = scope.ThinkStockStartupLoader.createStartupLoader(scope);
 
   loader.show();
   assert.equal(classes.has("is-loading"), true);
@@ -60,6 +53,11 @@ test("startup loader owns title progress and delayed completion state", () => {
 
   loader.hide();
   assert.equal(classes.has("is-loading"), true);
+  for (let index = 0; index < 100 && animationFrames.length; index += 1) {
+    animationFrames.shift()();
+  }
+  assert.equal(loader.isComplete(), true);
+  assert.equal(completed, 1);
   timers.shift()();
   assert.equal(classes.has("is-loading"), false);
 });

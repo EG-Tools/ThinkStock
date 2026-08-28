@@ -1,14 +1,51 @@
-(function initThinkStockStockResearchHistoryCache(globalScope) {
-  "use strict";
+"use strict";
 
-  const contract = globalScope.ThinkStockStockResearchContract;
+  const contract = require("./stock-research-contract.js");
   if (!contract) throw new Error("stock research contract failed to load");
-  const { HISTORY_CACHE_SCHEMA } = contract;
+  const { HISTORY_CACHE_SCHEMA, HISTORY_QUALITY_VERSION } = contract;
   const MINIMUM_HISTORY_ROWS = contract.RECENT_SIGNAL_WINDOW;
-  const cacheLifecycle = globalScope.ThinkStockCacheLifecyclePolicy;
-  if (!cacheLifecycle?.withCacheMetadata) throw new Error("cache lifecycle policy is required");
-  const isKoreanMarketPricePoint = globalScope.ThinkStockMarketCalendar?.isKoreanMarketPricePoint
-    || (() => true);
+  let tickerPriceRuntime = null;
+  function configureTickerPriceRuntime(runtime) {
+    tickerPriceRuntime = runtime?.inspectPriceHistoryIntegrity ? runtime : null;
+    return tickerPriceRuntime;
+  }
+  const historyCoverageVersion = () => tickerPriceRuntime?.HISTORY_COVERAGE_VERSION || 1;
+  let cacheLifecycle = null;
+  function configureCacheLifecycle(runtime) {
+    cacheLifecycle = runtime?.withCacheMetadata ? runtime : null;
+    return cacheLifecycle;
+  }
+  function requireCacheLifecycle() {
+    if (!cacheLifecycle) throw new Error("cache lifecycle policy is required");
+    return cacheLifecycle;
+  }
+  let marketCalendar = null;
+  function configureMarketCalendar(runtime) {
+    marketCalendar = runtime?.isKoreanTradingDate ? runtime : null;
+    return marketCalendar;
+  }
+  const isKoreanMarketPricePoint = (...args) => (
+    marketCalendar?.isKoreanMarketPricePoint?.(...args) ?? true
+  );
+  const isKoreanTradingDate = (date) => (
+    marketCalendar?.isKoreanTradingDate?.(date) ?? (() => {
+      const weekday = new Date(`${date}T00:00:00Z`).getUTCDay();
+      return weekday !== 0 && weekday !== 6;
+    })()
+  );
+
+  function expectedTradingDatesAfter(anchorDate, targetDate) {
+    const anchorTime = Date.parse(`${String(anchorDate || "").slice(0, 10)}T00:00:00Z`);
+    const target = String(targetDate || "").slice(0, 10);
+    const targetTime = Date.parse(`${target}T00:00:00Z`);
+    if (!Number.isFinite(anchorTime) || !Number.isFinite(targetTime) || anchorTime >= targetTime) return [];
+    const dates = [];
+    for (let timestamp = anchorTime + 86400000; timestamp <= targetTime; timestamp += 86400000) {
+      const date = new Date(timestamp).toISOString().slice(0, 10);
+      if (isKoreanTradingDate(date)) dates.push(date);
+    }
+    return dates;
+  }
 
   function normalizeResearchHistoryRows(rows) {
     const byDate = new Map();
@@ -29,32 +66,38 @@
   }
 
   function normalizeHistoryCacheRecord(value, ticker) {
+    const lifecycle = requireCacheLifecycle();
     const key = String(ticker || "").trim().toUpperCase();
-    if (!value || value.schema !== HISTORY_CACHE_SCHEMA || value.ticker !== key) return null;
+    if (!value
+      || value.schema !== HISTORY_CACHE_SCHEMA
+      || Number(value.historyQualityVersion) !== HISTORY_QUALITY_VERSION
+      || value.ticker !== key) return null;
     const rows = normalizeResearchHistoryRows(value.rows);
     if (rows.length < MINIMUM_HISTORY_ROWS) return null;
-    const integrity = globalScope.ThinkStockTickerPriceRuntime
-      ?.inspectPriceHistoryIntegrity?.(rows);
+    const integrity = tickerPriceRuntime?.inspectPriceHistoryIntegrity?.(rows);
     if (integrity && !integrity.clean) return null;
     const latestDate = rows.at(-1)?.date || "";
-    const fingerprint = cacheLifecycle.contentFingerprint(rows);
-    const issue = cacheLifecycle.cacheMetadataIssue(value, {
+    const fingerprint = lifecycle.contentFingerprint(rows);
+    const issue = lifecycle.cacheMetadataIssue(value, {
       source: "stock-research-history",
       revision: String(HISTORY_CACHE_SCHEMA),
       contentFingerprint: fingerprint,
       allowMissingTimestamp: true,
     });
     if (issue) return null;
-    return cacheLifecycle.withCacheMetadata({
+    return lifecycle.withCacheMetadata({
       ...value,
       schema: HISTORY_CACHE_SCHEMA,
       ticker: key,
       latestDate,
-      historyCoverage: String(value?.historyCoverage || "").toLowerCase() === "full"
+      historyCoverage: Number(value?.historyCoverageVersion) === historyCoverageVersion()
+        && String(value?.historyCoverage || "").toLowerCase() === "full"
         ? "full"
         : "partial",
-      priceIntegrityVersion: globalScope.ThinkStockTickerPriceRuntime
-        ?.PRICE_HISTORY_INTEGRITY_VERSION || 1,
+      historyCoverageVersion: historyCoverageVersion(),
+      historyQualityVersion: HISTORY_QUALITY_VERSION,
+      historyValidationDate: String(value?.historyValidationDate || value?.asOfDate || "").slice(0, 10),
+      priceIntegrityVersion: tickerPriceRuntime?.PRICE_HISTORY_INTEGRITY_VERSION || 1,
       rows,
     }, {
       source: "stock-research-history",
@@ -65,11 +108,12 @@
   }
 
   function withHistoryMetadata(record, now = Date.now()) {
-    return cacheLifecycle.withCacheMetadata(record, {
+    const lifecycle = requireCacheLifecycle();
+    return lifecycle.withCacheMetadata(record, {
       source: "stock-research-history",
       asOf: record?.latestDate,
       revision: String(HISTORY_CACHE_SCHEMA),
-      contentFingerprint: cacheLifecycle.contentFingerprint(record?.rows || []),
+      contentFingerprint: lifecycle.contentFingerprint(record?.rows || []),
       now,
       savedAt: now,
       touch: true,
@@ -79,6 +123,7 @@
   function mergeResearchHistoryPayload(cachedValue, payload, ticker) {
     const key = String(ticker || "").trim().toUpperCase();
     const cachedRecord = normalizeHistoryCacheRecord(cachedValue, key);
+    if (Number(payload?.historyQualityVersion) !== HISTORY_QUALITY_VERSION) return null;
     const incoming = normalizeResearchHistoryRows(payload?.rows);
     if (!incoming.length) return null;
     const rows = payload?.partial === true && cachedRecord && payload?.reset !== true
@@ -92,9 +137,14 @@
       latestDate: rows.at(-1)?.date || "",
       historyCoverage: payload?.partial === true
         ? (cachedRecord?.historyCoverage || "partial")
-        : "full",
-      priceIntegrityVersion: globalScope.ThinkStockTickerPriceRuntime
-        ?.PRICE_HISTORY_INTEGRITY_VERSION || 1,
+        : (Number(payload?.historyCoverageVersion) === historyCoverageVersion()
+          && String(payload?.historyCoverage || "").toLowerCase() === "full"
+          ? "full"
+          : "partial"),
+      historyCoverageVersion: historyCoverageVersion(),
+      historyQualityVersion: HISTORY_QUALITY_VERSION,
+      historyValidationDate: String(payload?.historyValidationDate || payload?.asOfDate || "").slice(0, 10),
+      priceIntegrityVersion: tickerPriceRuntime?.PRICE_HISTORY_INTEGRITY_VERSION || 1,
       source: String(payload?.source || cachedRecord?.source || ""),
       savedAt: Date.now(),
       lastAccessed: Date.now(),
@@ -124,6 +174,7 @@
           ...record,
           asOfDate: date,
           latestDate: date,
+          historyValidationDate: date,
           savedAt: Date.now(),
           lastAccessed: Date.now(),
           rows,
@@ -131,13 +182,22 @@
       };
     }
 
-    const fromTime = Date.parse(`${latest.date}T00:00:00Z`);
-    const toTime = Date.parse(`${date}T00:00:00Z`);
     const maxGapDays = Math.max(1, Number(options.maxGapDays) || 14);
     const ratioThreshold = Math.max(1.1, Number(options.ratioThreshold) || 1.8);
-    const gapDays = Math.round((toTime - fromTime) / 86400000);
+    const verifiedThrough = String(record.historyValidationDate || "").slice(0, 10);
+    const anchorDate = /^\d{4}-\d{2}-\d{2}$/.test(verifiedThrough) && verifiedThrough >= latest.date
+      ? verifiedThrough
+      : latest.date;
+    const expectedDates = expectedTradingDatesAfter(anchorDate, date);
+    const gapDays = Math.round((Date.parse(`${date}T00:00:00Z`)
+      - Date.parse(`${latest.date}T00:00:00Z`)) / 86400000);
     const ratio = Math.max(close / latest.close, latest.close / close);
-    if (!Number.isFinite(gapDays) || gapDays > maxGapDays || !Number.isFinite(ratio) || ratio >= ratioThreshold) {
+    if (expectedDates.length !== 1
+      || expectedDates[0] !== date
+      || !Number.isFinite(gapDays)
+      || gapDays > maxGapDays
+      || !Number.isFinite(ratio)
+      || ratio >= ratioThreshold) {
       return null;
     }
     return {
@@ -146,6 +206,7 @@
         ...record,
         asOfDate: date,
         latestDate: date,
+        historyValidationDate: date,
         savedAt: Date.now(),
         lastAccessed: Date.now(),
         rows: [...record.rows, { date, close, volume: normalizedVolume }],
@@ -161,12 +222,17 @@
     return `${baseUrl}?${query}`;
   }
 
-  globalScope.ThinkStockStockResearchHistoryCache = Object.freeze({
+  const stockResearchHistoryCache = Object.freeze({
     HISTORY_CACHE_SCHEMA,
+    HISTORY_QUALITY_VERSION,
+    configureCacheLifecycle,
+    configureMarketCalendar,
+    configureTickerPriceRuntime,
     mergeResearchHistoryPayload,
     mergeUniversePointIntoHistoryCache,
     normalizeHistoryCacheRecord,
     normalizeResearchHistoryRows,
     researchHistoryRequestUrl,
   });
-}(typeof self !== "undefined" ? self : globalThis));
+
+module.exports = stockResearchHistoryCache;

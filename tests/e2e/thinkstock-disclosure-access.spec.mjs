@@ -131,7 +131,14 @@ test("new stock loads its own Cloudflare DART disclosures", async ({ page }) => 
   ))).toBe(false);
   await page.locator("#disclosureToggle").click();
   await expect(page.locator("#disclosureToggle")).toHaveAttribute("aria-pressed", "true");
-  await expect(page.locator("#chart .textpoint text").filter({ hasText: "◆" }).first()).toBeVisible();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const trace = (element.data || []).find((candidate) => candidate?.meta?.isDisclosureTrace);
+    return trace?.meta?.overlayKind === "disclosure"
+      && String(trace?.mode || "").includes("text")
+      && (trace?.text || []).includes("◆")
+      ? trace.x?.length || 0
+      : 0;
+  })).toBeGreaterThan(0);
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const stockTrace = (element.data || []).find((trace) => trace?.meta?.seriesKey === "000660.KS");
     const disclosureTrace = (element.data || []).find((trace) => trace?.meta?.isDisclosureTrace);
@@ -273,11 +280,12 @@ test("general mode locks private analysis features", async ({ page }) => {
       showCoMovement: true,
       showRecessionSignals: true,
       showDisclosures: true,
+      showEps: true,
     }));
   });
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
 
-  for (const id of ["disclosureToggle", "insiderTradeToggle", "coMovementToggle", "recessionToggle", "aiForecastToggle"]) {
+  for (const id of ["disclosureToggle", "epsToggle", "insiderTradeToggle", "coMovementToggle", "recessionToggle", "aiForecastToggle"]) {
     await expect(page.locator(`#${id}`)).toBeDisabled();
     await expect(page.locator(`#${id}`)).toHaveAttribute("aria-disabled", "true");
     await expect(page.locator(`#${id}`)).toHaveAttribute("aria-pressed", "false");
@@ -303,7 +311,7 @@ test("administrator code unlocks private analysis features", async ({ page }) =>
   await expect(page.locator("#adminAccessStatus")).toHaveClass(/is-active/);
   await expect(page.locator("#adminAccessCodeInput")).toHaveValue(/^.{10}$/);
   expect(await page.locator("#adminAccessCodeInput").inputValue()).not.toBe(adminCode);
-  for (const id of ["disclosureToggle", "insiderTradeToggle", "coMovementToggle", "recessionToggle", "aiForecastToggle", "stockResearchBtn"]) {
+  for (const id of ["disclosureToggle", "epsToggle", "insiderTradeToggle", "coMovementToggle", "recessionToggle", "aiForecastToggle", "stockResearchBtn"]) {
     await expect(page.locator(`#${id}`)).toBeEnabled();
     await expect(page.locator(`#${id}`)).toHaveAttribute("aria-disabled", "false");
   }
@@ -399,7 +407,14 @@ test("new stock loads its deployed disclosure file without a gateway token", asy
   await page.locator(".stock-suggest-item").filter({ hasText: "SK하이닉스" }).click();
 
   await expect.poll(() => requestedStaticDisclosure).toBe(true);
-  await expect(page.locator("#chart .textpoint text").filter({ hasText: "◆" }).first()).toBeVisible();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const trace = (element.data || []).find((candidate) => candidate?.meta?.isDisclosureTrace);
+    return trace?.meta?.overlayKind === "disclosure"
+      && String(trace?.mode || "").includes("text")
+      && (trace?.text || []).includes("◆")
+      ? trace.x?.length || 0
+      : 0;
+  })).toBeGreaterThan(0);
   expect(gatewayApiRequests).toBe(0);
 });
 

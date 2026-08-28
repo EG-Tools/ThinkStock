@@ -11,6 +11,9 @@ test("service worker registers and precaches the offline shell", async ({ contex
   await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
   await expect(page.locator("#appVersionText")).toHaveText(/^\d+\.\d+$/);
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  // Auxiliary traces are viewport-virtualized, so request the cached long range
+  // before checking that the offline data shell contains historical coverage.
+  await page.evaluate(() => window.ThinkStockE2E.setActiveMonthsForTest(360));
   await expect.poll(() => page.locator("#chart-adr").evaluate((element) => {
     const counts = Object.fromEntries((element.data || [])
       .filter((trace) => ["fear_greed", "vix"].includes(trace?.meta?.auxiliarySeriesKey))
@@ -25,7 +28,6 @@ test("service worker registers and precaches the offline shell", async ({ contex
   expect(bundledIndicatorHistory.fear_greed).toBeGreaterThan(250);
   expect(bundledIndicatorHistory.vix).toBeGreaterThan(250);
 
-  await page.evaluate(() => window.ThinkStockE2E.setActiveMonthsForTest(360));
   await expect.poll(() => page.locator("#chart-adr").evaluate((element) => {
     const trace = (element.data || []).find((item) => (
       item?.meta?.auxiliarySeriesKey === "news_sentiment"
@@ -47,8 +49,10 @@ test("service worker registers and precaches the offline shell", async ({ contex
     "/data/vkospi_data.json",
     "/assets/app.bundle.min.js",
     "/modules/cache-refresh-policy.js",
-    "/modules/data-worker.js",
-    "/modules/chart-model-worker.js",
+    "/modules/data-worker.mjs",
+    "/modules/data-worker-runtime.mjs",
+    "/modules/chart-model-worker.mjs",
+    "/modules/chart-model-worker-runtime.mjs",
     "/vendor/plotly-thinkstock-2.35.2.min.js",
   ]));
 

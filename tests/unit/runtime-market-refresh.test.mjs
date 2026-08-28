@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/runtime-market-refresh.js");
-
-const { createRuntimeMarketRefresh } = globalThis.ThinkStockRuntimeMarketRefresh;
+import { createRuntimeMarketRefresh } from "../../docs/modules/runtime-market-refresh.mjs";
 
 test("macro refresh keeps healthy components when another component fails", async () => {
   const controller = {

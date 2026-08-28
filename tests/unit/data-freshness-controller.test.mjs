@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/data-freshness-controller.js");
+import { createDataFreshnessController } from "../../docs/modules/data-freshness-controller.mjs";
 
 test("freshness controller renders and records source quality only once per revision", () => {
   const rendered = [];
   const observed = [];
-  const controller = globalThis.ThinkStockDataFreshnessController.createDataFreshnessController({
+  const controller = createDataFreshnessController({
     dataHealth: {
       DEFAULT_SERIES_POLICIES: {},
       buildFreshnessItems: (groups) => groups.map((group) => ({

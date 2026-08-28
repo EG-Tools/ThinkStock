@@ -1,16 +1,12 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import test from "node:test";
-import vm from "node:vm";
-
-const source = await readFile(path.resolve("docs/modules/chart-pointer-runtime.js"), "utf8");
-const context = { clearTimeout, setTimeout };
-vm.runInNewContext(source, context);
-const {
+import { readFile } from "node:fs/promises";
+import {
   createHoverIdleController,
   dispatchNativeHoverAtPoint,
-} = context.ThinkStockChartPointerRuntime;
+} from "../../docs/modules/chart-pointer-runtime.mjs";
+
+const context = { clearTimeout, setTimeout };
 
 function fakeElement() {
   const classes = new Set();
@@ -103,4 +99,15 @@ test("idle hover replays one native mouse move at the last pointer position", ()
   assert.equal(events[0].type, "mousemove");
   assert.equal(events[0].clientX, 120);
   assert.equal(events[0].clientY, 240);
+});
+
+test("each chart uses one pointer-move pipeline for cursor and idle hover work", async () => {
+  const source = await readFile(
+    new URL("../../docs/modules/chart-pointer-runtime.mjs", import.meta.url),
+    "utf8",
+  );
+  const bindings = source.match(/listen\(chartEl, "pointermove"/g) || [];
+  assert.equal(bindings.length, 1);
+  assert.equal(source.includes("onPointerHoverPreview"), false);
+  assert.match(source, /hoverIdleController\.schedule\(\{[\s\S]*schedulePointerMove/);
 });

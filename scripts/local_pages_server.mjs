@@ -14,7 +14,6 @@ import {
   expectedLatestKoreanTradingDate,
   inspectDailyPriceHistoryDensity,
   isKoreanCurrentPriceWindow,
-  isKoreanMarketPricePoint,
   koreanDateText,
 } from "../shared/market-calendar.mjs";
 import {
@@ -68,6 +67,11 @@ import {
   recordFromDartItem,
 } from "../shared/dart-disclosure.mjs";
 import {
+  completedDartEpsYearRange,
+  DART_EPS_HISTORY_VERSION,
+  fetchDartEpsYear,
+} from "../shared/dart-financial-history.mjs";
+import {
   buildHankyungReportListUrl,
   buildHankyungReportPdfUrl,
   buildNaverReportListUrl,
@@ -81,6 +85,25 @@ import {
   readBoundedResponseBytes,
   readBoundedResponseText,
 } from "../worker/src/http-runtime.mjs";
+import {
+  appendableResearchUniversePoint,
+  detectResearchHistoryRebase as detectLocalResearchHistoryRebase,
+  mergeResearchHistoryRows,
+  normalizeResearchHistoryRows as normalizeLocalResearchHistoryRows,
+  parseNaverResearchHistory as parseLocalResearchHistory,
+  projectResearchHistoryPayload as projectLocalResearchHistory,
+  RESEARCH_HISTORY_CACHE_SCHEMA,
+  RESEARCH_HISTORY_COVERAGE_VERSION,
+  RESEARCH_HISTORY_OVERLAP_DAYS,
+  RESEARCH_HISTORY_QUALITY_VERSION,
+  researchHistoryCacheIsCurrent,
+  researchHistoryPointFromUniverse as localResearchHistoryPointFromUniverse,
+} from "../worker/src/research-data.mjs";
+import {
+  fetchCompanyAnalysis,
+} from "../worker/src/company-analysis.mjs";
+import { insiderTradeResponse } from "../worker/src/dart-handler.mjs";
+import { staticContentType } from "./static_content_type.mjs";
 
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -109,16 +132,6 @@ const STOCK_RESEARCH_PROFILE_FRESH_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_NAVER_PROFILE_BYTES = 512 * 1024;
 const BROKER_REPORT_LIST_MAX_BYTES = 2 * 1024 * 1024;
 const BROKER_REPORT_PDF_MAX_BYTES = 12 * 1024 * 1024;
-const MIME_TYPES = {
-  ".css": "text/css; charset=utf-8",
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".mjs": "text/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".webmanifest": "application/manifest+json; charset=utf-8",
-};
-
 
 export function parseEnvText(text) {
   const values = {};
@@ -423,91 +436,13 @@ export async function fetchLocalResearchUniverse(fetchImpl, apiKey, now = new Da
   throw new Error("KRX 시가총액 상위 종목을 불러오지 못했습니다.");
 }
 
-export function parseLocalResearchHistory(text) {
-  const rows = new Map();
-  for (const match of String(text || "").matchAll(/<item\s+data="(\d{8})\|[^|]*\|[^|]*\|[^|]*\|([^|]+)\|([^"]+)"/g)) {
-    const rawDate = match[1];
-    const date = `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`;
-    const close = krxIndexNumber(match[2]);
-    const volume = krxIndexNumber(match[3]);
-    if (!Number.isFinite(close) || close <= 0) continue;
-    if (!isKoreanMarketPricePoint(date, volume)) continue;
-    rows.set(date, { date, close, volume: Number.isFinite(volume) && volume >= 0 ? volume : null });
-  }
-  return [...rows.values()].sort((left, right) => left.date.localeCompare(right.date));
-}
-
-export function normalizeLocalResearchHistoryRows(sourceRows) {
-  const rows = new Map();
-  (Array.isArray(sourceRows) ? sourceRows : []).forEach((row) => {
-    const date = String(row?.date || "").slice(0, 10);
-    const close = Number(row?.close);
-    const volume = row?.volume == null || String(row.volume).trim() === ""
-      ? null
-      : Number(row.volume);
-    if (!Number.isFinite(close) || close <= 0 || !isKoreanMarketPricePoint(date, volume)) return;
-    rows.set(date, {
-      date,
-      close,
-      volume: Number.isFinite(volume) && volume >= 0 ? volume : null,
-    });
-  });
-  return [...rows.values()].sort((left, right) => left.date.localeCompare(right.date));
-}
-
-export function detectLocalResearchHistoryRebase(existingRows, incomingRows, threshold = 1.8) {
-  const existingByDate = new Map((Array.isArray(existingRows) ? existingRows : [])
-    .map((row) => [String(row?.date || ""), Number(row?.close)]));
-  const ratios = (Array.isArray(incomingRows) ? incomingRows : []).flatMap((row) => {
-    const existing = existingByDate.get(String(row?.date || ""));
-    const incoming = Number(row?.close);
-    return Number.isFinite(existing) && existing > 0 && Number.isFinite(incoming) && incoming > 0
-      ? [existing / incoming]
-      : [];
-  }).sort((left, right) => left - right);
-  if (ratios.length < 3) return false;
-  const middle = Math.floor(ratios.length / 2);
-  const medianRatio = ratios.length % 2
-    ? ratios[middle]
-    : (ratios[middle - 1] + ratios[middle]) / 2;
-  const scaled = medianRatio >= threshold || medianRatio <= (1 / threshold);
-  if (!scaled) return false;
-  const relativeDeviation = ratios.reduce((sum, ratio) => (
-    sum + Math.abs((ratio / medianRatio) - 1)
-  ), 0) / ratios.length;
-  return relativeDeviation <= 0.04;
-}
-
-export function localResearchHistoryPointFromUniverse(existingRows, universeItem, asOfDate, threshold = 1.8) {
-  const rows = Array.isArray(existingRows) ? existingRows : [];
-  const latest = rows.at(-1);
-  const date = String(universeItem?.date || "").slice(0, 10);
-  const expected = String(asOfDate || "").slice(0, 10);
-  const close = Number(universeItem?.close);
-  const latestClose = Number(latest?.close);
-  const latestTime = Date.parse(`${String(latest?.date || "")}T00:00:00Z`);
-  const pointTime = Date.parse(`${date}T00:00:00Z`);
-  if (
-    !latest
-    || date !== expected
-    || !Number.isFinite(close)
-    || close <= 0
-    || !Number.isFinite(latestClose)
-    || latestClose <= 0
-    || !Number.isFinite(latestTime)
-    || !Number.isFinite(pointTime)
-    || !isKoreanMarketPricePoint(date, universeItem?.volume)
-  ) return null;
-  const calendarGap = Math.round((pointTime - latestTime) / 86400000);
-  const ratio = close / latestClose;
-  if (calendarGap < 1 || calendarGap > 5 || ratio >= threshold || ratio <= (1 / threshold)) return null;
-  const volume = Number(universeItem?.volume);
-  return {
-    date,
-    close,
-    volume: Number.isFinite(volume) && volume >= 0 ? volume : null,
-  };
-}
+export {
+  detectLocalResearchHistoryRebase,
+  localResearchHistoryPointFromUniverse,
+  normalizeLocalResearchHistoryRows,
+  parseLocalResearchHistory,
+  projectLocalResearchHistory,
+};
 
 function fiveYearsBefore(dateText) {
   const date = new Date(`${dateText}T00:00:00Z`);
@@ -523,36 +458,6 @@ function yearsBefore(dateText, years) {
   date.setUTCFullYear(date.getUTCFullYear() - Math.max(1, Number(years) || 1));
   if (date.getUTCMonth() !== month) date.setUTCDate(0);
   return date.toISOString().slice(0, 10);
-}
-
-export function projectLocalResearchHistory(
-  payload,
-  sinceDate = "",
-  forceFull = false,
-  overlapDays = 35,
-) {
-  const rows = Array.isArray(payload?.rows) ? payload.rows : [];
-  const since = String(sinceDate || "").slice(0, 10);
-  const latestDate = String(payload?.latestDate || rows.at(-1)?.date || "").slice(0, 10);
-  const validSince = /^\d{4}-\d{2}-\d{2}$/.test(since) && since <= latestDate;
-  const reset = payload?.rebased === true && validSince && !forceFull;
-  if (forceFull || !validSince || reset) {
-    return {
-      ...payload,
-      partial: false,
-      reset,
-      fullRowCount: rows.length,
-    };
-  }
-  const overlapStart = shiftIsoDate(since, -Math.max(7, Number(overlapDays) || 35));
-  return {
-    ...payload,
-    rows: rows.filter((row) => String(row?.date || "") >= overlapStart),
-    partial: true,
-    reset: false,
-    overlapStart,
-    fullRowCount: rows.length,
-  };
 }
 
 export async function fetchLocalResearchHistory(
@@ -576,8 +481,16 @@ export async function fetchLocalResearchHistory(
   const cachedRows = Array.isArray(cached?.rows) ? cached.rows : [];
   const existing = normalizeLocalResearchHistoryRows(cachedRows);
   const cachedRowsAreClean = existing.length === cachedRows.length;
-  if (cached?.asOfDate === asOfDate && existing.length >= 252 && cachedRowsAreClean) {
-    return { ...cached, ok: true, cached: true };
+  const cachedHistoryCoverage = String(cached?.historyCoverage || "").trim().toLowerCase();
+  const cachedHistoryCoverageVersion = Number(cached?.historyCoverageVersion) || 0;
+  const requiresFullBackfill = fullHistory && (
+    cachedHistoryCoverage !== "full"
+    || cachedHistoryCoverageVersion !== RESEARCH_HISTORY_COVERAGE_VERSION
+  );
+  const historyPolicyIsCurrent = cached?.schema === RESEARCH_HISTORY_CACHE_SCHEMA
+    && Number(cached?.historyQualityVersion) === RESEARCH_HISTORY_QUALITY_VERSION;
+  if (cachedRowsAreClean && researchHistoryCacheIsCurrent(cached, asOfDate, { fullHistory })) {
+    return { ...cached, rows: existing, ok: true, cached: true };
   }
   const latestDate = existing.at(-1)?.date || "";
   const cutoff = fullHistory ? yearsBefore(asOfDate, 30) : fiveYearsBefore(asOfDate);
@@ -587,25 +500,24 @@ export async function fetchLocalResearchHistory(
     await writeFile(temporaryPath, JSON.stringify(payload), "utf8");
     await rename(temporaryPath, cachePath);
   };
-  if (existing.length >= 252 && latestDate === asOfDate) {
-    const payload = { ...cached, schema: 1, ticker: target, asOfDate, latestDate, rows: existing };
-    await persist(payload).catch(() => false);
-    return { ok: true, cached: true, ...payload };
-  }
-  const latestUniversePoint = localResearchHistoryPointFromUniverse(
-    existing,
-    universeItem,
-    asOfDate,
-  );
-  if (existing.length >= 252 && latestUniversePoint) {
-    const rows = [...existing.filter((row) => row?.date >= cutoff), latestUniversePoint];
+  const latestUniversePoint = historyPolicyIsCurrent && !requiresFullBackfill
+    ? appendableResearchUniversePoint(existing, universeItem, asOfDate, {
+      verifiedThrough: cached?.historyValidationDate,
+    })
+    : null;
+  if (existing.length >= 252 && latestUniversePoint && !requiresFullBackfill) {
+    const rows = mergeResearchHistoryRows(existing, [latestUniversePoint], cutoff);
     const payload = {
-      schema: 1,
+      schema: RESEARCH_HISTORY_CACHE_SCHEMA,
       ticker: target,
       asOfDate,
       latestDate: latestUniversePoint.date,
+      historyValidationDate: asOfDate,
+      historyQualityVersion: RESEARCH_HISTORY_QUALITY_VERSION,
       rebased: false,
       source: "KRX",
+      historyCoverage: fullHistory ? "full" : "partial",
+      historyCoverageVersion: RESEARCH_HISTORY_COVERAGE_VERSION,
       rows,
     };
     await persist(payload).catch(() => false);
@@ -626,37 +538,51 @@ export async function fetchLocalResearchHistory(
     if (!response.ok) throw new Error(`Naver history HTTP ${response.status}`);
     return parseLocalResearchHistory(await response.text());
   };
-  const startDate = latestDate ? shiftIsoDate(latestDate, -21) : cutoff;
+  const startDate = requiresFullBackfill
+    ? cutoff
+    : (latestDate ? shiftIsoDate(latestDate, -RESEARCH_HISTORY_OVERLAP_DAYS) : cutoff);
   try {
-  let incoming = await requestRows(startDate);
-  let mergeBase = existing;
-  let rebased = false;
-  if (existing.length && detectLocalResearchHistoryRebase(existing, incoming)) {
-    incoming = await requestRows(cutoff);
-    mergeBase = [];
-    rebased = true;
-  }
-  const merged = new Map();
-  [...mergeBase, ...incoming].forEach((row) => {
-    if (row?.date >= cutoff && Number(row?.close) > 0) merged.set(row.date, row);
-  });
-  const rows = [...merged.values()].sort((left, right) => left.date.localeCompare(right.date));
-  if (rows.length < 252) throw new Error("가격 이력이 1년 미만입니다.");
-  if (fullHistory) {
-    const olderDensity = inspectDailyPriceHistoryDensity(rows, { beforeDate: fiveYearsBefore(asOfDate) });
-    if (!olderDensity.dense) throw new Error("과거 가격 이력이 일별 자료가 아닙니다.");
-  }
-  const payload = {
-    schema: 1,
-    ticker: target,
-    asOfDate,
-    latestDate: rows.at(-1).date,
-    rebased,
-    source: fullHistory ? "NAVER_FULL_HISTORY" : "NAVER_HISTORY",
-    rows,
-  };
-  await persist(payload).catch(() => false);
-  return { ...payload, ok: true, cached: false };
+    let incoming = await requestRows(startDate);
+    let mergeBase = requiresFullBackfill ? [] : existing;
+    let rebased = false;
+    if (existing.length && detectLocalResearchHistoryRebase(existing, incoming)) {
+      incoming = await requestRows(cutoff);
+      mergeBase = [];
+      rebased = true;
+    }
+    const providerMerged = mergeResearchHistoryRows(mergeBase, incoming, cutoff);
+    const verifiedUniversePoint = localResearchHistoryPointFromUniverse(
+      providerMerged,
+      universeItem,
+      asOfDate,
+    );
+    const rows = mergeResearchHistoryRows(
+      providerMerged,
+      verifiedUniversePoint ? [verifiedUniversePoint] : [],
+      cutoff,
+    );
+    if (rows.length < 252) throw new Error("가격 이력이 1년 미만입니다.");
+    if (fullHistory) {
+      const olderDensity = inspectDailyPriceHistoryDensity(rows, { beforeDate: fiveYearsBefore(asOfDate) });
+      if (!olderDensity.dense) throw new Error("과거 가격 이력이 일별 자료가 아닙니다.");
+    }
+    const payload = {
+      schema: RESEARCH_HISTORY_CACHE_SCHEMA,
+      ticker: target,
+      asOfDate,
+      latestDate: rows.at(-1).date,
+      historyValidationDate: asOfDate,
+      historyQualityVersion: RESEARCH_HISTORY_QUALITY_VERSION,
+      rebased,
+      source: verifiedUniversePoint
+        ? (fullHistory ? "NAVER_FULL_HISTORY+KRX" : "NAVER_HISTORY+KRX")
+        : (fullHistory ? "NAVER_FULL_HISTORY" : "NAVER_HISTORY"),
+      historyCoverage: fullHistory ? "full" : "partial",
+      historyCoverageVersion: RESEARCH_HISTORY_COVERAGE_VERSION,
+      rows,
+    };
+    await persist(payload).catch(() => false);
+    return { ...payload, ok: true, cached: false };
   } catch (error) {
     if (existing.length >= 252) {
       return {
@@ -722,6 +648,30 @@ async function writeJsonAtomic(filePath, payload) {
   const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   await writeFile(temporary, JSON.stringify(payload), "utf8");
   await rename(temporary, filePath);
+}
+
+function createLocalWorkerCache(cacheDir) {
+  const filePathFor = (key) => path.join(
+    cacheDir,
+    `${createHash("sha256").update(String(key)).digest("hex")}.json`,
+  );
+  return {
+    async get(key, type) {
+      const cached = await readJson(filePathFor(key));
+      if (!cached || cached.key !== key) return null;
+      return type === "json" ? cached.value : JSON.stringify(cached.value);
+    },
+    async put(key, value) {
+      let decoded = value;
+      try {
+        decoded = JSON.parse(value);
+      } catch (_) {
+        // Keep non-JSON values compatible with the minimal KV interface.
+      }
+      await mkdir(cacheDir, { recursive: true });
+      await writeJsonAtomic(filePathFor(key), { key, value: decoded });
+    },
+  };
 }
 
 async function readRequestJson(request, maxBytes = RESEARCH_SUMMARY_BODY_LIMIT) {
@@ -866,7 +816,9 @@ export class DartGateway {
     await mkdir(this.cacheDir, { recursive: true });
     const cutoff = Date.now() - STALE_CACHE_MAX_AGE_MS;
     const names = await readdir(this.cacheDir).catch(() => []);
-    await Promise.all(names.filter((name) => name.endsWith(".json")).map(async (name) => {
+    await Promise.all(names.filter((name) => (
+      name.endsWith(".json") && !name.startsWith(`eps-history-v${DART_EPS_HISTORY_VERSION}-`)
+    )).map(async (name) => {
       const filePath = path.join(this.cacheDir, name);
       try {
         if ((await stat(filePath)).mtimeMs < cutoff) await unlink(filePath);
@@ -987,6 +939,55 @@ export class DartGateway {
     this.pending.set(target, task);
     return task;
   }
+
+  async epsHistoryYear(ticker, businessYear, options = {}) {
+    const target = String(ticker || "").trim().toUpperCase();
+    const year = Math.trunc(Number(businessYear));
+    if (!TICKER_PATTERN.test(target) || year < 2015) {
+      throw new Error("EPS 조회 종목 또는 사업연도가 올바르지 않습니다.");
+    }
+    const pendingKey = `eps:${target}:${year}`;
+    if (this.pending.has(pendingKey)) return this.pending.get(pendingKey);
+    const task = (async () => {
+      const cachePath = path.join(
+        this.cacheDir,
+        `eps-history-v${DART_EPS_HISTORY_VERSION}-${target}-${year}.json`,
+      );
+      const cached = await readJson(cachePath);
+      if (!options.force
+        && cached?.version === DART_EPS_HISTORY_VERSION
+        && cached?.ticker === target
+        && Number(cached?.businessYear) === year
+        && Array.isArray(cached?.records)) {
+        return { ...cached, cached: true };
+      }
+      if (!this.apiKey) throw new Error(".env.local에 DART_API_KEY가 없습니다.");
+      const corpCode = /^\d{8}$/.test(String(options.corpCode || ""))
+        ? String(options.corpCode)
+        : await this.corpCode(target.slice(0, 6));
+      if (!corpCode) throw new Error("DART 회사코드를 찾지 못했습니다.");
+      const result = await fetchDartEpsYear({
+        apiKey: this.apiKey,
+        corpCode,
+        ticker: target,
+        businessYear: year,
+        fetchImpl: this.fetchImpl,
+        headers: { "User-Agent": "ThinkStock-Local/1.0" },
+      });
+      const payload = {
+        version: DART_EPS_HISTORY_VERSION,
+        ticker: target,
+        businessYear: year,
+        savedAt: Date.now(),
+        records: result.records,
+        emptyReports: result.emptyReports,
+      };
+      await writeJsonAtomic(cachePath, payload).catch(() => false);
+      return { ...payload, cached: false };
+    })().finally(() => this.pending.delete(pendingKey));
+    this.pending.set(pendingKey, task);
+    return task;
+  }
 }
 
 function corsHeaders(request) {
@@ -1037,7 +1038,7 @@ async function serveStatic(response, pathname, headOnly = false, dataMirrorDir =
   response.writeHead(200, {
     "cache-control": "no-cache",
     "content-length": info.size,
-    "content-type": MIME_TYPES[path.extname(filePath).toLowerCase()] || "application/octet-stream",
+    "content-type": staticContentType(filePath),
     "x-content-type-options": "nosniff",
   });
   if (headOnly) response.end();
@@ -1088,8 +1089,12 @@ export async function createThinkStockServer(options = {}) {
       files: 0,
       warning: error?.message || String(error),
     }));
-  const gateway = options.gateway || new DartGateway(apiKey);
+  const gateway = options.gateway || new DartGateway(apiKey, { fetchImpl });
   await gateway.initialize();
+  const localWorkerCache = options.insiderCache || createLocalWorkerCache(
+    options.insiderCacheDir || path.join(CACHE_DIR, "worker-kv"),
+  );
+  const insiderTradeResponseImpl = options.insiderTradeResponseImpl || insiderTradeResponse;
   let coreIndexCache = null;
   let creditMacroCache = null;
   let lastCreditWorkerSyncSignature = "";
@@ -1551,12 +1556,80 @@ export async function createThinkStockServer(options = {}) {
       }
       return;
     }
+    if (requestUrl.pathname === "/api/analysis") {
+      try {
+        const ticker = String(requestUrl.searchParams.get("ticker") || "").trim().toUpperCase();
+        if (!TICKER_PATTERN.test(ticker)) throw new Error("종목코드 형식이 올바르지 않습니다.");
+        const analysis = await fetchCompanyAnalysis(ticker, fetchImpl);
+        sendJson(request, response, 200, {
+          ok: true,
+          ticker,
+          savedAt: Date.now(),
+          financialSummaryVersion: Math.max(0, Number(analysis.financialSummaryVersion) || 0),
+          consensus: analysis.consensus || null,
+          financials: analysis.financials || [],
+          news: analysis.news || [],
+          cached: false,
+        });
+      } catch (error) {
+        sendJson(request, response, 503, { ok: false, error: error?.message || String(error) });
+      }
+      return;
+    }
+    if (requestUrl.pathname === "/api/dart/eps-history") {
+      try {
+        const ticker = String(requestUrl.searchParams.get("ticker") || "").trim().toUpperCase();
+        const businessYear = Math.trunc(Number(requestUrl.searchParams.get("year")));
+        const range = completedDartEpsYearRange({ asOf: koreanDateText(nowProvider()) });
+        if (!TICKER_PATTERN.test(ticker)) throw new Error("종목코드 형식이 올바르지 않습니다.");
+        if (businessYear < range.startYear || businessYear > range.endYear) {
+          throw new Error("완료된 EPS 사업연도 범위를 벗어났습니다.");
+        }
+        const result = await gateway.epsHistoryYear(ticker, businessYear, {
+          corpCode: requestUrl.searchParams.get("corpCode"),
+          force: ["1", "true", "yes"].includes(String(requestUrl.searchParams.get("force") || "").toLowerCase()),
+        });
+        sendJson(request, response, 200, {
+          ok: true,
+          ...result,
+          startYear: range.startYear,
+          endYear: range.endYear,
+        });
+      } catch (error) {
+        sendJson(request, response, 503, { ok: false, error: error?.message || String(error) });
+      }
+      return;
+    }
+    if (requestUrl.pathname === "/api/dart/insider-trades") {
+      try {
+        const ticker = String(requestUrl.searchParams.get("ticker") || "").trim().toUpperCase();
+        if (!TICKER_PATTERN.test(ticker)) throw new Error("종목코드 형식이 올바르지 않습니다.");
+        if (!apiKey) throw new Error(".env.local에 DART_API_KEY가 없습니다.");
+        const requestedCorpCode = String(requestUrl.searchParams.get("corpCode") || "").trim();
+        const corpCode = /^\d{8}$/.test(requestedCorpCode)
+          ? requestedCorpCode
+          : await gateway.corpCode(ticker.slice(0, 6));
+        if (!corpCode) throw new Error("DART 회사코드를 찾지 못했습니다.");
+        const force = ["1", "true", "yes"].includes(
+          String(requestUrl.searchParams.get("force") || "").toLowerCase(),
+        );
+        const result = await insiderTradeResponseImpl({
+          DART_API_KEY: apiKey,
+          DISCLOSURE_CACHE: localWorkerCache,
+          fetch: fetchImpl,
+        }, null, ticker, corpCode, String(request.headers.origin || ""), force);
+        const payload = await result.json();
+        sendJson(request, response, result.status, payload);
+      } catch (error) {
+        sendJson(request, response, 503, { ok: false, error: error?.message || String(error) });
+      }
+      return;
+    }
     if ([
       "/api/macro",
       "/api/credit",
       "/api/crisis-signal",
       "/api/indices",
-      "/api/dart/insider-trades",
     ].includes(requestUrl.pathname)) {
       if (!workerAccessToken) {
         sendJson(request, response, 503, { ok: false, error: ".env.local에 THINKSTOCK_ACCESS_TOKEN이 없습니다." });

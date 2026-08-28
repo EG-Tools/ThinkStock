@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 
-await import("../../docs/modules/data-seed-loader.js");
-const loaderModule = globalThis.ThinkStockDataSeedLoader;
+import * as loaderModule from "../../docs/modules/data-seed-loader.mjs";
 
 
 test("loads a recent segment before considering the full payload", async () => {
@@ -88,7 +87,7 @@ test("reuses one seed parsing worker across recent and history payloads", async 
   }
 
   const parser = loaderModule.createSeedBundleParser({}, {
-    workerUrl: "./modules/data-worker.js?v=2.78",
+    workerUrl: "./modules/data-worker.mjs?v=2.78",
     createWorker: (url) => new FakeWorker(url),
     parseSync: (texts) => ({ fallback: texts.segment }),
   });
@@ -99,6 +98,43 @@ test("reuses one seed parsing worker across recent and history payloads", async 
   assert.deepEqual(parser.stats(), { active: true, pending: 0 });
   parser.dispose();
   assert.equal(workers[0].terminated, true);
+});
+
+
+test("releases the seed parsing worker after its idle window", async () => {
+  const timers = new Map();
+  let timerSequence = 0;
+  let terminated = false;
+  class FakeWorker {
+    postMessage(message) {
+      queueMicrotask(() => this.onmessage?.({
+        data: { id: message.id, ok: true, result: { parsed: true } },
+      }));
+    }
+
+    terminate() {
+      terminated = true;
+    }
+  }
+  const parser = loaderModule.createSeedBundleParser({}, {
+    createWorker: () => new FakeWorker(),
+    parseSync: () => ({ parsed: false }),
+    workerIdleMs: 5000,
+    setTimer: (callback) => {
+      const id = ++timerSequence;
+      timers.set(id, callback);
+      return id;
+    },
+    clearTimer: (id) => timers.delete(id),
+  });
+
+  assert.deepEqual(await parser.parse({}), { parsed: true });
+  assert.equal(parser.stats().active, true);
+  assert.equal(timers.size, 1);
+  [...timers.values()][0]();
+  assert.equal(terminated, true);
+  assert.equal(parser.stats().active, false);
+  parser.dispose();
 });
 
 
@@ -159,4 +195,44 @@ test("bundle loader fetches one coherent segment and parses it once", async () =
     "priceText",
     "vkospiText",
   ]);
+});
+
+test("sharded DART registry loads only the requested stock-code prefix", async () => {
+  const requests = [];
+  const registry = loaderModule.createShardedCorpCodeRegistry({
+    runRequest: async (kind, identity, factory) => {
+      requests.push([kind, identity]);
+      return factory();
+    },
+    fetchText: async (path) => {
+      if (path.endsWith("dart_corp_codes.json")) {
+        return JSON.stringify({
+          format: "stock-to-corp-shards-v1",
+          prefix_length: 2,
+          files: { "00": "data/dart_corp_codes_00.json" },
+        });
+      }
+      return JSON.stringify({
+        format: "stock-to-corp-shard-v1",
+        codes: [{ stock_code: "005930", corp_code: "00126380", corp_name: "삼성전자" }],
+      });
+    },
+  });
+
+  assert.equal(await registry.ensure("005930"), true);
+  assert.equal(registry.get("005930").corp_code, "00126380");
+  assert.deepEqual(registry.loadedShards(), ["00"]);
+  assert.deepEqual(requests, [["corp-manifest", "global"], ["corp-shard", "00"]]);
+});
+
+test("sharded DART registry accepts the legacy flat map seed", async () => {
+  const registry = loaderModule.createShardedCorpCodeRegistry({
+    runRequest: async (_kind, _identity, factory) => factory(),
+    fetchText: async () => JSON.stringify({
+      codes: { "218410": "01099940" },
+    }),
+  });
+
+  assert.equal(await registry.ensure("218410"), true);
+  assert.equal(registry.get("218410").corp_code, "01099940");
 });

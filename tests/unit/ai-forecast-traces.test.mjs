@@ -3,22 +3,20 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import vm from "node:vm";
-
-const source = await readFile(path.resolve("docs/modules/ai-forecast-scenarios.js"), "utf8");
-const traceSource = await readFile(path.resolve("docs/modules/ai-forecast-traces.js"), "utf8");
-const context = { URL };
-vm.createContext(context);
-vm.runInContext(source, context);
-vm.runInContext(traceSource, context);
-const { resolveScenarioPresentation } = context.ThinkStockAiForecastScenarios;
-const {
+import {
   buildRepresentativeReportLink,
   isThickestAiScenarioTrace,
   latestReportsFromBrokerResearch,
   representativeReportFromForecastClick,
   resolveScenarioTraceStyle,
   withoutStockCode,
-} = context.ThinkStockAiForecastTraces;
+} from "../../docs/modules/ai-forecast-traces.mjs";
+
+const source = await readFile(path.resolve("docs/modules/ai-forecast-scenarios.js"), "utf8");
+const context = { URL };
+vm.createContext(context);
+vm.runInContext(source, context);
+const { resolveScenarioPresentation } = context.ThinkStockAiForecastScenarios;
 
 function scenarios(upside, sideways, downside) {
   return {

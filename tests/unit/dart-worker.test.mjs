@@ -8,6 +8,10 @@ import {
   shiftIsoDate,
 } from "../../shared/market-calendar.mjs";
 import { expectedLatestKofiaDate } from "../../worker/src/kofia-client.mjs";
+import {
+  RESEARCH_SUMMARY_HISTORY_QUALITY_VERSION,
+  RESEARCH_SUMMARY_SCHEMA,
+} from "../../shared/stock-research-summary.mjs";
 
 import {
   handleRequest,
@@ -23,12 +27,14 @@ import {
   mergeInsiderRecords,
   mergeRecords,
   parseFreesisPayload,
+  parseLargestShareholderDocument,
   parseNaverPriceText,
   parseNaverResearchHistory,
   detectResearchHistoryRebase,
   projectResearchHistoryPayload,
   evaluateNaverPriceFallback,
   fetchLiveVkospiRows,
+  financialSummaryRequestFromOverview,
   parseMajorHolderDocument,
   parseConsensusHtml,
   parseEarningsTrendHtml,
@@ -1011,7 +1017,8 @@ test("stores and returns an authenticated stock-research summary", async () => {
     method: "POST",
     token: "private",
     body: {
-      schema: 1,
+      schema: RESEARCH_SUMMARY_SCHEMA,
+      historyQualityVersion: RESEARCH_SUMMARY_HISTORY_QUALITY_VERSION,
       strategy: "top400-recovery-v1",
       baseDate: "2026-08-07",
       minimumBuySignals: 5,
@@ -1376,19 +1383,45 @@ test("parses every major-holder transaction row from one DART original document"
   assert.equal(mergeInsiderRecords([], rows).length, 2);
 });
 
+test("parses KRX largest-shareholder change rows as insider trades", () => {
+  const xml = `<DOCUMENT><TABLE>
+    <TR><TD colspan="2"><SPAN>성명</SPAN></TD><TD><SPAN>이상명</SPAN></TD><TD><SPAN>생년월일</SPAN></TD><TD><SPAN>680907</SPAN></TD></TR>
+    <TR><TD colspan="2"><SPAN>최대주주 및 발행회사와의 관계</SPAN></TD><TD><SPAN>계열사임원</SPAN></TD></TR>
+    <TR><TD><SPAN>변경일</SPAN></TD><TD><SPAN>변경원인</SPAN></TD><TD><SPAN>주식의 종류</SPAN></TD><TD><SPAN>변경전주식수</SPAN></TD><TD><SPAN>증감주식수</SPAN></TD><TD><SPAN>변경후주식수</SPAN></TD></TR>
+    <TR><TD><SPAN>2026-07-31</SPAN></TD><TD><SPAN>장내매수(+)</SPAN></TD><TD><SPAN>보통주식</SPAN></TD><TD><SPAN>70</SPAN></TD><TD><SPAN>100</SPAN></TD><TD><SPAN>170</SPAN></TD></TR>
+    <TR><TD colspan="2"><SPAN>성명</SPAN></TD><TD><SPAN>오세록</SPAN></TD><TD><SPAN>생년월일</SPAN></TD><TD><SPAN>710329</SPAN></TD></TR>
+    <TR><TD colspan="2"><SPAN>최대주주 및 발행회사와의 관계</SPAN></TD><TD><SPAN>계열사임원</SPAN></TD></TR>
+    <TR><TD><SPAN>변경일</SPAN></TD><TD><SPAN>변경원인</SPAN></TD><TD><SPAN>주식의 종류</SPAN></TD><TD><SPAN>변경전주식수</SPAN></TD><TD><SPAN>증감주식수</SPAN></TD><TD><SPAN>변경후주식수</SPAN></TD></TR>
+    <TR><TD><SPAN>2026-07-31</SPAN></TD><TD><SPAN>기타(-)</SPAN></TD><TD><SPAN>보통주식</SPAN></TD><TD><SPAN>50</SPAN></TD><TD><SPAN>-50</SPAN></TD><TD><SPAN>0</SPAN></TD></TR>
+  </TABLE></DOCUMENT>`;
+  const rows = parseLargestShareholderDocument("005300.KS", xml, {
+    rcept_no: "20260731800809",
+  });
+
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((row) => [row.date, row.reporter, row.side, row.sharesChanged]), [
+    ["2026-07-31", "이상명", "buy", 100],
+    ["2026-07-31", "오세록", "sell", -50],
+  ]);
+  assert.equal(rows[0].role, "최대주주등 · 계열사임원");
+  assert.equal(rows[0].recordType, "largest-shareholder-change");
+  assert.equal(rows[0].receiptNo, "20260731800809");
+});
+
 test("returns three years of authenticated insider trades and caches the result", async () => {
   const originalFetch = globalThis.fetch;
   let fetchCount = 0;
   const cache = memoryKv();
   globalThis.fetch = async (url) => {
     fetchCount += 1;
-    if (new URL(url).pathname === "/api/majorstock.json") {
+    const pathname = new URL(url).pathname;
+    if (["/api/majorstock.json", "/api/list.json"].includes(pathname)) {
       return new Response(JSON.stringify({ status: "013", list: [] }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
     }
-    assert.equal(new URL(url).pathname, "/api/elestock.json");
+    assert.equal(pathname, "/api/elestock.json");
     return new Response(JSON.stringify({
       status: "000",
       list: [
@@ -1425,7 +1458,7 @@ test("returns three years of authenticated insider trades and caches the result"
     const second = await handleRequest(request(path, { token: "private" }), env);
     const secondPayload = await second.json();
     assert.equal(secondPayload.cached, true);
-    assert.equal(fetchCount, 2);
+    assert.equal(fetchCount, 3);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1454,6 +1487,12 @@ test("combines DART majorstock originals with insider ownership records", async 
         list: [{ rcept_no: receiptNo, rcept_dt: "20260721", repror: "MORGANSTANLEY&COINTLPLC", stkrt: "5.07" }],
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
+    if (pathname === "/api/list.json") {
+      return new Response(JSON.stringify({ status: "013", list: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     assert.equal(pathname, "/api/document.xml");
     return new Response(archive, {
       status: 200,
@@ -1481,6 +1520,65 @@ test("combines DART majorstock originals with insider ownership records", async 
   }
 });
 
+test("combines KRX largest-shareholder change disclosures with insider records", async () => {
+  const originalFetch = globalThis.fetch;
+  const cache = memoryKv();
+  const receiptNo = "20260731800809";
+  const xml = `<DOCUMENT><TABLE>
+    <TR><TD colspan="2"><SPAN>성명</SPAN></TD><TD><SPAN>이상명</SPAN></TD></TR>
+    <TR><TD colspan="2"><SPAN>최대주주 및 발행회사와의 관계</SPAN></TD><TD><SPAN>계열사임원</SPAN></TD></TR>
+    <TR><TD><SPAN>변경일</SPAN></TD><TD><SPAN>변경원인</SPAN></TD><TD><SPAN>주식의 종류</SPAN></TD><TD><SPAN>변경전주식수</SPAN></TD><TD><SPAN>증감주식수</SPAN></TD><TD><SPAN>변경후주식수</SPAN></TD></TR>
+    <TR><TD><SPAN>2026-07-31</SPAN></TD><TD><SPAN>장내매수(+)</SPAN></TD><TD><SPAN>보통주식</SPAN></TD><TD><SPAN>70</SPAN></TD><TD><SPAN>100</SPAN></TD><TD><SPAN>170</SPAN></TD></TR>
+  </TABLE></DOCUMENT>`;
+  const archive = zipSync({ [`${receiptNo}.xml`]: strToU8(xml) });
+  globalThis.fetch = async (url) => {
+    const pathname = new URL(url).pathname;
+    if (["/api/elestock.json", "/api/majorstock.json"].includes(pathname)) {
+      return new Response(JSON.stringify({ status: "013", list: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (pathname === "/api/list.json") {
+      return new Response(JSON.stringify({
+        status: "000",
+        total_page: 1,
+        list: [{
+          rcept_dt: "20260731",
+          rcept_no: receiptNo,
+          report_nm: "최대주주등소유주식변동신고서",
+        }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    assert.equal(pathname, "/api/document.xml");
+    return new Response(archive, {
+      status: 200,
+      headers: { "Content-Type": "application/zip", "Content-Length": String(archive.byteLength) },
+    });
+  };
+
+  try {
+    const response = await handleRequest(request(
+      "/api/dart/insider-trades?ticker=005300.KS&corpCode=00120571&force=1",
+      { token: "private" },
+    ), {
+      DART_API_KEY: "secret",
+      THINKSTOCK_ACCESS_TOKEN: "private",
+      DISCLOSURE_CACHE: cache,
+    });
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.records.length, 1);
+    assert.deepEqual(
+      [payload.records[0].date, payload.records[0].reporter, payload.records[0].side],
+      ["2026-07-31", "이상명", "buy"],
+    );
+    assert.equal(payload.latestDate, "2026-07-31");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("reports a safe warning when every major-holder original document fails", async () => {
   const originalFetch = globalThis.fetch;
   const receiptNo = "20260721001006";
@@ -1503,6 +1601,12 @@ test("reports a safe warning when every major-holder original document fails", a
         status: "000",
         list: [{ rcept_no: receiptNo, rcept_dt: "20260721", repror: "MORGANSTANLEY" }],
       }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (pathname === "/api/list.json") {
+      return new Response(JSON.stringify({ status: "013", list: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
     }
     return new Response("blocked", { status: 403 });
   };
@@ -1534,6 +1638,54 @@ test("parses Naver WiseReport consensus values", () => {
   assert.equal(result.opinion, 4);
   assert.equal(result.targetPrice, 132600);
   assert.equal(result.institutions, 5);
+});
+
+test("returns and caches one completed DART EPS year", async () => {
+  const originalFetch = globalThis.fetch;
+  const cache = memoryKv();
+  let fetchCount = 0;
+  globalThis.fetch = async (url) => {
+    fetchCount += 1;
+    const query = new URL(url).searchParams;
+    const reportCode = query.get("reprt_code");
+    const amounts = { "11013": 100, "11012": 120, "11014": 140, "11011": 520 };
+    const cumulative = { "11013": 100, "11012": 220, "11014": 360, "11011": 520 };
+    return new Response(JSON.stringify({
+      status: "000",
+      list: [{
+        rcept_no: reportCode === "11011" ? "20260331000001" : "20251114000001",
+        reprt_code: reportCode,
+        bsns_year: "2025",
+        corp_code: "01078178",
+        stock_code: "218410",
+        fs_div: "CFS",
+        sj_div: "IS",
+        account_id: "ifrs-full_BasicEarningsLossPerShare",
+        account_nm: "기본주당이익",
+        thstrm_amount: String(amounts[reportCode]),
+        thstrm_add_amount: String(cumulative[reportCode]),
+      }],
+    }), { status: 200 });
+  };
+  try {
+    const env = {
+      DART_API_KEY: "dart",
+      THINKSTOCK_ACCESS_TOKEN: "private",
+      DISCLOSURE_CACHE: cache,
+    };
+    const path = "/api/dart/eps-history?ticker=218410.KQ&corpCode=01078178&year=2025";
+    const first = await handleRequest(request(path, { token: "private" }), env);
+    const firstPayload = await first.json();
+    const second = await handleRequest(request(path, { token: "private" }), env);
+    const secondPayload = await second.json();
+    assert.equal(first.status, 200);
+    assert.equal(firstPayload.cached, false);
+    assert.equal(firstPayload.records.filter((row) => row.frequency === "quarter").length, 4);
+    assert.equal(secondPayload.cached, true);
+    assert.equal(fetchCount, 4);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("keeps the newest DART page when a later progressive page fails", async () => {
@@ -1599,7 +1751,7 @@ test("parses annual and quarterly WiseReport financial summaries", () => {
     <tr><th>매출액</th><td title="1,000"></td><td title="1,300"></td><td title="320"></td><td title="410"></td></tr>
     <tr><th>영업이익(발표기준)</th><td title="100"></td><td title="180"></td><td title="42"></td><td title="61"></td></tr>
     <tr><th>당기순이익(지배)</th><td title="70"></td><td title="120"></td><td title="31"></td><td title="48"></td></tr>
-    <tr><th>EPS</th><td title="700"></td><td title="1,200"></td><td title="310"></td><td title="480"></td></tr>
+    <tr><th>EPS(원)</th><td title="700"></td><td title="1,200"></td><td title="310"></td><td title="480"></td></tr>
   </tbody></table>`;
   const result = parseFinancialSummaryHtml(html, "218410.KQ");
   assert.equal(result.length, 4);
@@ -1614,6 +1766,57 @@ test("parses annual and quarterly WiseReport financial summaries", () => {
     eps: 1200,
   });
   assert.equal(result[3].frequency, "quarter");
+});
+
+test("keeps every WiseReport Y and Q column in its requested frequency", () => {
+  const annualHtml = `<table><thead><tr>
+    <th class="r03c01">2021/12</th><th class="r03c02">2022/12</th>
+    <th class="r03c03">2027/12(E)</th><th class="r03c04">2028/12(E)</th>
+  </tr></thead><tbody>
+    <tr><th>매출액</th><td title="1,000"></td><td title="1,100"></td><td title="1,400"></td><td title="1,600"></td></tr>
+    <tr><th>EPS(원)</th><td title="100"></td><td title="120"></td><td title="180"></td><td title="220"></td></tr>
+  </tbody></table>`;
+  const quarterHtml = `<table><thead><tr>
+    <th class="r03c01">2025/06</th><th class="r03c02">2025/09</th>
+    <th class="r03c03">2026/12(E)</th><th class="r03c04">2027/03(E)</th>
+  </tr></thead><tbody>
+    <tr><th>매출액</th><td title="250"></td><td title="270"></td><td title="350"></td><td title="380"></td></tr>
+    <tr><th>EPS(원)</th><td title="25"></td><td title="31"></td><td title="48"></td><td title="52"></td></tr>
+  </tbody></table>`;
+  const annual = parseFinancialSummaryHtml(annualHtml, "218410.KQ", { frequency: "annual" });
+  const quarter = parseFinancialSummaryHtml(quarterHtml, "218410.KQ", { frequency: "quarter" });
+
+  assert.deepEqual(annual.map((record) => [record.period, record.frequency, record.estimate]), [
+    ["2021-12", "annual", false],
+    ["2022-12", "annual", false],
+    ["2027-12", "annual", true],
+    ["2028-12", "annual", true],
+  ]);
+  assert.deepEqual(quarter.map((record) => [record.period, record.frequency, record.estimate]), [
+    ["2025-06", "quarter", false],
+    ["2025-09", "quarter", false],
+    ["2026-12", "quarter", true],
+    ["2027-03", "quarter", true],
+  ]);
+});
+
+test("builds the current WiseReport dynamic financial summary request", () => {
+  const html = `<script>$.ajax({ data: {
+    cmp_cd: '218410', fin_typ: 0, freq_typ: 'A', extY: 1, extQ: 1,
+    encparam: 'encoded-value', id: 'financial-target'
+  } });</script>`;
+  const request = financialSummaryRequestFromOverview(html, "218410.KQ");
+  assert.ok(request);
+  assert.match(request.url, /company\/ajax\/cF1001\.aspx/);
+  assert.equal(new URL(request.url).searchParams.get("cmp_cd"), "218410");
+  assert.equal(new URL(request.url).searchParams.get("encparam"), "encoded-value");
+  assert.equal(new URL(request.url).searchParams.get("id"), "financial-target");
+  assert.match(request.referer, /cmp_cd=218410/);
+
+  const annualRequest = financialSummaryRequestFromOverview(html, "218410.KQ", { frequency: "Y" });
+  const quarterRequest = financialSummaryRequestFromOverview(html, "218410.KQ", { frequency: "Q" });
+  assert.equal(new URL(annualRequest.url).searchParams.get("freq_typ"), "Y");
+  assert.equal(new URL(quarterRequest.url).searchParams.get("freq_typ"), "Q");
 });
 
 test("parses embedded quarterly earnings without a second upstream request", () => {
@@ -1695,6 +1898,7 @@ test("returns today's accumulated analysis cache without an upstream request", a
   const cache = memoryKv({
     "analysis:218410.KQ": JSON.stringify({
       schema: 4,
+      financialSummaryVersion: 2,
       ticker: "218410.KQ",
       savedAt: Date.now(),
       consensus: null,
@@ -1713,6 +1917,7 @@ test("returns today's accumulated analysis cache without an upstream request", a
   assert.equal(payload.snapshots.length, 1);
   const migrated = JSON.parse(cache.values.get("analysis:218410.KQ"));
   assert.equal(migrated.schema, 5);
+  assert.equal(migrated.financialSummaryVersion, 2);
   assert.equal(migrated.snapshots.length, 1);
   assert.deepEqual(migrated.snapshots[0].financials, financials);
 });

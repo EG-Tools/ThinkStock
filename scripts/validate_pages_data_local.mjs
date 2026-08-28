@@ -3,9 +3,9 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { detectIsolatedPriceSpikes } from "./audit_price_gaps.mjs";
 
-await import("../docs/modules/data-health.js");
-const dataHealth = globalThis.ThinkStockDataHealth;
+import * as dataHealth from "../docs/modules/data-health.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BUNDLED_DATA_DIR = path.join(ROOT, "docs", "data");
@@ -60,6 +60,9 @@ async function validateDirectory(dataDir, label) {
           values.forEach((value, index) => {
             assert.ok(value === null || (typeof value === "number" && Number.isFinite(value)),
               `${label} ${file} ${key} value is invalid at ${dates[index]}`);
+            if (datasetName === "prices" && value !== null) {
+              assert.ok(value > 0, `${label} ${file} ${key} price is not positive at ${dates[index]}`);
+            }
           });
         });
       }
@@ -91,6 +94,12 @@ async function validateDirectory(dataDir, label) {
     const issues = dataHealth.detectRecentChanges(rows, policies);
     assert.deepEqual(issues, [], `${label} ${datasetName} contains suspicious recent values: ${JSON.stringify(issues)}`);
   });
+
+  const priceRows = (rowsByDataset.get("prices") || [])
+    .sort((left, right) => String(left.date).localeCompare(String(right.date)));
+  const isolatedPriceSpikes = detectIsolatedPriceSpikes(priceRows);
+  assert.deepEqual(isolatedPriceSpikes, [],
+    `${label} prices contain isolated spike values: ${JSON.stringify(isolatedPriceSpikes)}`);
 
   const macroRows = (rowsByDataset.get("macro_data") || [])
     .filter((row) => Number.isFinite(Number(row.news_sentiment)) && Number(row.news_sentiment) > 0)

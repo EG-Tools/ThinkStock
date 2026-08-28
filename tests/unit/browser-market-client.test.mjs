@@ -5,13 +5,11 @@ import {
   inspectDailyPriceHistoryDensity,
   isKoreanMarketPricePoint,
 } from "../../shared/market-calendar.mjs";
-
-await import("../../docs/modules/browser-market-client.js");
-await import("../../docs/modules/ticker-price-runtime.js");
-const tickerPriceRuntime = globalThis.ThinkStockTickerPriceRuntime;
+import { createBrowserMarketClient } from "../../docs/modules/browser-market-client.mjs";
+import tickerPriceRuntime from "../../docs/modules/ticker-price-runtime.mjs";
 
 function createClient(fetchJson = async () => ({}), options = {}) {
-  return globalThis.ThinkStockBrowserMarketClient.createBrowserMarketClient({
+  return createBrowserMarketClient({
     fetchJson,
     appendCacheBust: (url) => `${url}&cache=1`,
     shiftDays: (dateText, days) => {

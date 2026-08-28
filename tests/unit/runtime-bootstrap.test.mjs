@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/runtime-bootstrap.js");
-
-const { createRuntimeBootstrapService } = globalThis.ThinkStockRuntimeBootstrap;
+import { createRuntimeBootstrapService } from "../../docs/modules/runtime-bootstrap.mjs";
 
 test("runtime bootstrap sends only visible stock tickers with the oldest index date", async () => {
   let request = null;

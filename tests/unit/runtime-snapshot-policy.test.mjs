@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 
-await import("../../docs/modules/runtime-snapshot-controller.js");
-const policy = globalThis.ThinkStockRuntimeSnapshotPolicy;
+import * as policy from "../../docs/modules/runtime-snapshot-controller.mjs";
 
 
 test("tracks component revisions and reuses only current cached values", () => {

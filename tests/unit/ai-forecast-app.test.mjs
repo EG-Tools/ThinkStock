@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/control-state-view.js");
-await import("../../docs/modules/ai-forecast-app.js");
-
-const { createAiForecastApp } = globalThis.ThinkStockAiForecastApp;
+import { createProgressView } from "../../docs/modules/control-state-view.mjs";
+import { createAiForecastApp } from "../../docs/modules/ai-forecast-app.mjs";
 
 function createProgressScope() {
   const elements = {
@@ -27,6 +25,7 @@ test("AI forecast app falls back when workers are unavailable", async () => {
   const scope = createProgressScope();
   const app = createAiForecastApp(scope, {
     buildFallback: (options) => ({ ticker: options.ticker, source: "fallback" }),
+    createProgressView,
   });
 
   assert.deepEqual(await app.run({ ticker: "005930.KS" }), {
@@ -37,7 +36,7 @@ test("AI forecast app falls back when workers are unavailable", async () => {
 
 test("AI forecast progress never moves backward and hides after completion", () => {
   const scope = createProgressScope();
-  const app = createAiForecastApp(scope);
+  const app = createAiForecastApp(scope, { createProgressView });
 
   app.startProgress("prepare");
   app.setProgress(45, "calculate");
@@ -60,11 +59,32 @@ test("AI forecast app resolves pending work as cancelled when targets change", a
     terminate() { this.terminated = true; }
   }
   const scope = { ...createProgressScope(), Worker: FakeWorker };
-  const app = createAiForecastApp(scope, { workerUrl: "forecast-worker.js" });
+  const app = createAiForecastApp(scope, { workerUrl: "forecast-worker.js", createProgressView });
   const request = app.run({ ticker: "000660.KS" });
 
   assert.equal(workerInstance.message.id, 1);
   app.cancelCalculations();
   assert.equal(await request, null);
   assert.equal(workerInstance.terminated, true);
+});
+
+test("AI forecast app coalesces render requests while inputs are prepared", async () => {
+  const scope = createProgressScope();
+  const app = createAiForecastApp(scope, { createProgressView });
+  let renders = 0;
+  const render = () => { renders += 1; return true; };
+
+  await app.withRenderHold(async () => {
+    app.requestRender(render);
+    app.requestRender(render);
+    assert.equal(renders, 0);
+  });
+  assert.equal(renders, 1);
+
+  await app.withRenderHold(async () => {
+    app.requestRender(render);
+  }, { flush: false });
+  assert.equal(renders, 1);
+  assert.equal(app.requestRender(render), true);
+  assert.equal(renders, 2);
 });

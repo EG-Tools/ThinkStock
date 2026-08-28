@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/chart-session-controller.js");
-const { createMainSeriesController } = globalThis.ThinkStockMainSeriesController;
+import { createMainSeriesController } from "../../docs/modules/chart-session-controller.mjs";
 
 test("enforces one visible-series limit for indices, macro data, and stocks", () => {
   const hidden = new Set(["C"]);

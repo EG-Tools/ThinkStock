@@ -1,31 +1,43 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import test from "node:test";
-import vm from "node:vm";
-
-import * as snapshotEngine from "../../shared/ai-analysis-snapshots.mjs";
-import * as newsEvidenceEngine from "../../shared/ai-news-evidence.mjs";
-import "../../shared/runtime-foundation.mjs";
-
-await import("../../docs/modules/cache-lifecycle-policy.js");
-
-const source = await readFile(path.resolve("docs/modules/ai-analysis-cache.js"), "utf8");
-const context = {
-  ThinkStockAiAnalysisSnapshots: snapshotEngine,
-  ThinkStockAiNewsEvidence: newsEvidenceEngine,
-  ThinkStockCacheLifecyclePolicy: globalThis.ThinkStockCacheLifecyclePolicy,
-  ThinkStockRuntimeFoundation: globalThis.ThinkStockRuntimeFoundation,
-};
-vm.createContext(context);
-vm.runInContext(source, context);
-const {
+import {
+  FINANCIAL_SUMMARY_VERSION,
   SCHEMA_VERSION,
+  hasCurrentFinancialSummary,
+  hasDartEpsHistoryCoverage,
   isAnalysisFresh,
   mergeFinancialRecords,
   mergeSnapshots,
   normalizeAnalysisRecord,
-} = context.ThinkStockAiAnalysisCache;
+} from "../../docs/modules/ai-analysis-cache.mjs";
+
+test("refreshes legacy partial EPS caches once and accepts current coverage", () => {
+  const legacy = normalizeAnalysisRecord("218410.KQ", {
+    savedAt: Date.UTC(2026, 7, 24),
+    financials: [{
+      ticker: "218410.KQ",
+      period: "2024-12",
+      frequency: "annual",
+      estimate: false,
+      eps: 700,
+    }],
+  });
+  assert.equal(hasCurrentFinancialSummary(legacy), false);
+
+  const current = normalizeAnalysisRecord("218410.KQ", {
+    savedAt: Date.UTC(2026, 7, 24),
+    financialSummaryVersion: FINANCIAL_SUMMARY_VERSION,
+    financials: [{
+      ticker: "218410.KQ",
+      period: "2021-12",
+      frequency: "annual",
+      estimate: false,
+      eps: 100,
+    }],
+  }, legacy);
+  assert.equal(current.financialSummaryVersion, FINANCIAL_SUMMARY_VERSION);
+  assert.equal(hasCurrentFinancialSummary(current), true);
+});
 
 test("merges complementary financial fields without erasing cached values", () => {
   const records = mergeFinancialRecords([{
@@ -83,6 +95,88 @@ test("preserves accumulated financial periods while applying new analysis", () =
   assert.equal(result.lastAccessed, now);
   assert.equal(result.cacheMeta.source, "ai-analysis");
   assert.ok(result.cacheMeta.contentFingerprint);
+});
+
+test("retains 2021 EPS after the upstream rolling window advances to 2030", () => {
+  const existing = normalizeAnalysisRecord("218410.KQ", {
+    savedAt: Date.UTC(2026, 7, 24),
+    financialSummaryVersion: FINANCIAL_SUMMARY_VERSION,
+    financials: [{
+      ticker: "218410.KQ",
+      period: "2021-12",
+      frequency: "annual",
+      estimate: false,
+      eps: 120,
+    }],
+  });
+  const refreshed = normalizeAnalysisRecord("218410.KQ", {
+    savedAt: Date.UTC(2030, 7, 24),
+    financialSummaryVersion: FINANCIAL_SUMMARY_VERSION,
+    financials: [{
+      ticker: "218410.KQ",
+      period: "2025-12",
+      frequency: "annual",
+      estimate: false,
+      eps: 300,
+    }, {
+      ticker: "218410.KQ",
+      period: "2030-06",
+      frequency: "quarter",
+      estimate: false,
+      eps: 90,
+    }],
+  }, existing);
+
+  assert.deepEqual(
+    [...refreshed.financials].map((record) => record.period),
+    ["2021-12", "2025-12", "2030-06"],
+  );
+});
+
+test("keeps DART actual EPS when a later Naver refresh overlaps the same period", () => {
+  const existing = normalizeAnalysisRecord("218410.KQ", {
+    savedAt: 10,
+    financials: [{
+      ticker: "218410.KQ",
+      period: "2025-12",
+      frequency: "quarter",
+      estimate: false,
+      eps: 474,
+      source: "DART",
+      epsDerived: true,
+    }],
+    dartEpsHistoryVersion: 1,
+    dartEpsCompletedYears: [2025],
+    dartEpsHistoryStartYear: 2016,
+    dartEpsHistoryEndYear: 2025,
+  }, null, 10);
+  const refreshed = normalizeAnalysisRecord("218410.KQ", {
+    savedAt: 20,
+    financials: [{
+      ticker: "218410.KQ",
+      period: "2025-12",
+      frequency: "quarter",
+      estimate: false,
+      eps: 999,
+    }],
+  }, existing, 20);
+
+  assert.equal(refreshed.financials[0].eps, 474);
+  assert.equal(refreshed.financials[0].source, "DART");
+  assert.equal(refreshed.financials[0].epsDerived, true);
+});
+
+test("tracks completed DART EPS years independently from records", () => {
+  const record = normalizeAnalysisRecord("218410.KQ", {
+    savedAt: 10,
+    financials: [{ ticker: "218410.KQ", period: "2025-12", frequency: "annual", eps: 100 }],
+    dartEpsHistoryVersion: 1,
+    dartEpsCompletedYears: [2016, 2017, 2018],
+    dartEpsHistoryStartYear: 2016,
+    dartEpsHistoryEndYear: 2018,
+  }, null, 10);
+  assert.equal(hasDartEpsHistoryCoverage(record, { startYear: 2016, endYear: 2018 }, 1), true);
+  assert.equal(hasDartEpsHistoryCoverage(record, { startYear: 2016, endYear: 2019 }, 1), false);
 });
 
 test("checks analysis age without discarding today's cached record", () => {

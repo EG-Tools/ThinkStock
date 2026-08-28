@@ -326,19 +326,25 @@ async function installDataRoutes(page, options = {}) {
         format: "stock-to-corp-shards-v1",
         prefix_length: 2,
         total: 1,
-        files: { "00": "data/dart_corp_codes/00.json" },
-        counts: { "00": 1 },
+        files: {
+          "00": "data/dart_corp_codes/00.json",
+          "21": "data/dart_corp_codes/21.json",
+        },
+        counts: { "00": 2, "21": 1 },
       } });
       return;
     }
     if (name === "krx_universe.json") {
-      await route.fulfill({ json: {
-        format: "krx-universe-v1",
-        total: 2,
-        records: [
+      const records = Array.isArray(options.krxUniverseRecords)
+        ? options.krxUniverseRecords
+        : [
           { ticker: "000660.KS", code: "000660", name: "SK하이닉스", market: "KOSPI" },
           { ticker: "005930.KS", code: "005930", name: "삼성전자", market: "KOSPI" },
-        ],
+        ];
+      await route.fulfill({ json: {
+        format: "krx-universe-v1",
+        total: records.length,
+        records,
       } });
       return;
     }
@@ -380,6 +386,7 @@ async function installDataRoutes(page, options = {}) {
       codes: {
         "005930": "00126380",
         "000660": "00164779",
+        "218410": "01078178",
       },
     } });
   });

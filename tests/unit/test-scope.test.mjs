@@ -10,7 +10,7 @@ test("affected test scope ignores local-only iPhone preview files", () => {
 });
 
 test("affected test scope selects WebKit smoke for shared app UI changes", () => {
-  const scope = classifyChangedFiles(["docs/app.js", "docs/modules/ai-forecast-app.js"]);
+  const scope = classifyChangedFiles(["docs/app.js", "docs/modules/ai-forecast-app.mjs"]);
   assert.equal(scope.runUnit, true);
   assert.equal(scope.runFullUnit, true);
   assert.equal(scope.runWebkitSmoke, true);
@@ -57,15 +57,36 @@ test("feature bundle output is ignored when its source entry is present", () => 
   assert.deepEqual(scope.files, ["scripts/feature-entries/ai-feature.mjs"]);
 });
 
+test("all lazy feature outputs are ignored when browser source also changed", () => {
+  const scope = classifyChangedFiles([
+    "docs/modules/optional-feature-runtime.mjs",
+    "docs/assets/auxiliary-chart-feature.bundle.min.js",
+    "docs/assets/dart-feature.bundle.min.js",
+    "docs/assets/diagnostics-runtime-feature.bundle.min.js",
+  ]);
+  assert.deepEqual(scope.files, ["docs/modules/optional-feature-runtime.mjs"]);
+});
+
+test("EPS source changes rebuild the app and retain WebKit coverage", () => {
+  const scope = classifyChangedFiles([
+    "docs/modules/eps-chart.mjs",
+    "docs/assets/eps-feature.bundle.min.js",
+  ]);
+  assert.deepEqual(scope.files, ["docs/modules/eps-chart.mjs"]);
+  assert.equal(scope.runWebBuild, true);
+  assert.equal(scope.runWebkitSmoke, true);
+  assert.deepEqual(scope.unitTests, ["tests/unit/eps-chart.test.mjs"]);
+});
+
 test("affected test scope keeps runtime bootstrap changes under WebKit smoke coverage", () => {
-  const scope = classifyChangedFiles(["docs/modules/runtime-bootstrap.js"]);
+  const scope = classifyChangedFiles(["docs/modules/runtime-bootstrap.mjs"]);
   assert.equal(scope.runFullUnit, false);
   assert.equal(scope.runWebkitSmoke, true);
   assert.deepEqual(scope.unitTests, ["tests/unit/runtime-bootstrap.test.mjs"]);
 });
 
 test("broker report runtime changes retain WebKit smoke coverage", () => {
-  const scope = classifyChangedFiles(["docs/modules/broker-research-cache.js"]);
+  const scope = classifyChangedFiles(["docs/modules/broker-research-cache.mjs"]);
   assert.equal(scope.runWebkitSmoke, true);
   assert.deepEqual(scope.unitTests, ["tests/unit/broker-research-cache.test.mjs"]);
 });

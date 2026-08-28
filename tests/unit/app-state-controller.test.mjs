@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 
-await import("../../docs/modules/app-state-controller.js");
-const module = globalThis.ThinkStockAppStateController;
+import * as module from "../../docs/modules/app-state-controller.mjs";
 
 
 function state() {
@@ -20,6 +19,7 @@ function state() {
     chartRightPaddingDays: 0,
     newsSentimentMovingAverageDays: 1,
     showDisclosures: true,
+    showEps: true,
     showInsiderTrades: false,
     showCoMovement: false,
     showChartTools: true,
@@ -150,7 +150,7 @@ test("custom stock lifecycle removes failed batches without recoloring survivors
 });
 
 
-test("loads legacy auxiliary visibility and keeps AI disabled at boot", () => {
+test("loads legacy auxiliary visibility and keeps AI and EPS disabled at boot", () => {
   const chartState = state();
   let customStocks = [];
   let creditOffset = 2;
@@ -169,6 +169,7 @@ test("loads legacy auxiliary visibility and keeps AI disabled at boot", () => {
         chartRightPaddingDays: 12,
         newsSentimentMovingAverageDays: 5,
         showChartTools: false,
+        showEps: true,
         customStocks: [{ ticker: "005930.KS", name: "삼성전자" }],
       }),
       write: () => {},
@@ -188,6 +189,7 @@ test("loads legacy auxiliary visibility and keeps AI disabled at boot", () => {
   assert.equal(chartState.activeMonths, 12);
   assert.equal(chartState.showAiForecast, false);
   assert.equal(chartState.showChartTools, false);
+  assert.equal(chartState.showEps, false);
   assert.equal(chartState.chartRightPaddingDays, 12);
   assert.deepEqual([...chartState.hiddenAuxiliaryPanels].sort(), ["adr", "fearGreed"]);
   assert.deepEqual([...chartState.hiddenAuxiliarySeries], []);
@@ -213,6 +215,7 @@ test("saves one normalized application state record", () => {
   assert.equal(saved.creditOffset, -2);
   assert.equal(saved.showAiForecast, undefined);
   assert.equal(saved.showChartTools, true);
+  assert.equal(saved.showEps, undefined);
   assert.equal(saved.chartRightPaddingDays, 0);
   assert.deepEqual(saved.customStocks, [{ ticker: "005930.KS", name: "삼성전자" }]);
 });

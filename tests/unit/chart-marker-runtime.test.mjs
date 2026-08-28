@@ -2,8 +2,70 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 await import("../../shared/series-integrity.mjs");
-await import("../../docs/modules/chart-marker-runtime.js");
-const markerModule = globalThis.ThinkStockChartMarkerRuntime;
+const { chartMarkerRuntime: markerModule } = await import("../../docs/modules/chart-marker-runtime.mjs");
+
+test("event marker registry owns marker identity, layer, and interaction policy", () => {
+  const traces = {
+    crisis: { meta: { isCrisisSignalTrace: true } },
+    buy: { meta: { isMarketTimingBuyTrace: true } },
+    sell: { meta: { isMarketTimingSellTrace: true } },
+    insider: { meta: { isInsiderTradeTrace: true, insiderTradeSide: "buy" } },
+    disclosure: { meta: { isDisclosureTrace: true } },
+  };
+  assert.equal(markerModule.eventMarkerIdentity(traces.crisis), "crisis-signal");
+  assert.equal(markerModule.eventMarkerIdentity(traces.buy), "market-timing-buy");
+  assert.equal(markerModule.eventMarkerIdentity(traces.sell), "market-timing-sell");
+  assert.equal(markerModule.eventMarkerIdentity(traces.insider), "insider:buy");
+  assert.equal(markerModule.eventMarkerIdentity(traces.disclosure), "disclosure");
+  assert.equal(markerModule.eventMarkerLayer(traces.buy), "timing");
+  assert.equal(markerModule.isTimingSignalTrace(traces.crisis), true);
+  assert.equal(markerModule.isDirectlyInteractiveEventMarkerTrace(traces.disclosure), true);
+  assert.equal(markerModule.isDirectlyInteractiveEventMarkerTrace(traces.insider), true);
+});
+
+test("event marker popovers prefer the payload embedded in each marker trace", () => {
+  const group = {
+    name: "RFHIC",
+    plotDate: "2026-07-31",
+    events: [{ title: "내부자거래 : 매수", tone: "insider-buy" }],
+  };
+  assert.equal(markerModule.buildEventMarkerPopoverGroup({
+    pointIndex: 0,
+    data: { meta: { isInsiderTradeTrace: true, eventGroups: [group] } },
+  }), group);
+});
+
+test("event markers share one typography contract", () => {
+  assert.deepEqual(markerModule.buildEventMarkerTextFont("#fff", 15), {
+    color: "#fff",
+    family: markerModule.EVENT_MARKER_FONT_FAMILY,
+    size: 15,
+  });
+  assert.equal(markerModule.CHART_MARKER_DEFAULTS.constants.eventMarkerTextSize, 15);
+  assert.equal(markerModule.CHART_MARKER_DEFAULTS.constants.disclosureIconText, "◆");
+  assert.equal(markerModule.CHART_MARKER_DEFAULTS.colors.disclosure, "#fde047");
+  assert.equal(Object.isFrozen(markerModule.CHART_MARKER_DEFAULTS.constants), true);
+});
+
+test("event marker specs and trace materialization share the registry order", () => {
+  const specs = markerModule.createEventMarkerSpecs({
+    disclosure: { enabled: true, build: () => ({ meta: { isDisclosureTrace: true } }) },
+    insider: {
+      enabled: true,
+      build: () => [
+        { meta: { isInsiderTradeTrace: true, insiderTradeSide: "sell" } },
+        { meta: { isInsiderTradeTrace: true, insiderTradeSide: "buy" } },
+      ],
+    },
+  });
+  assert.deepEqual(specs.map((spec) => spec.id), [
+    "crisis", "timing-buy", "timing-sell", "insider", "disclosure",
+  ]);
+  assert.deepEqual(
+    markerModule.materializeEventMarkerTraces(specs).map(markerModule.eventMarkerIdentity),
+    ["insider:sell", "insider:buy", "disclosure"],
+  );
+});
 
 test("timing hover reasons stay concise while preserving the strongest evidence", () => {
   assert.equal(markerModule.compactTimingReasons([
@@ -11,13 +73,16 @@ test("timing hover reasons stay concise while preserving the strongest evidence"
     ["추세 이탈", "신용 과열"],
   ]), "신용 과열 · 가격·거래량 둔화 괴리");
   assert.equal(markerModule.compactTimingReasons([], "복합 신호"), "복합 신호");
+  assert.equal(markerModule.compactTimingReasons([
+    ["시장폭·심리 괴리 단기 과열", "변동성 대비 급등"],
+  ], "복합 신호", 2, "<br>· "), "시장폭·심리 괴리 단기 …<br>· 변동성 대비 급등");
 });
 
 test("timing signal popovers reuse the compact marker payload", () => {
   const group = markerModule.buildTimingSignalPopoverGroup({
     x: "2026-08-21",
     customdata: [
-      "삼성전자", "신용 과열 · MACD 반전", "8.2", "-1.3", "강", "slowdown", 5,
+      "삼성전자", "신용 과열<br>· MACD 반전", "8.2", "-1.3", "강", "slowdown", 5,
       "trend-exhaustion", "추세형",
     ],
     data: { name: "타이밍 매도신호", meta: { isMarketTimingSellTrace: true } },
@@ -26,7 +91,8 @@ test("timing signal popovers reuse the compact marker payload", () => {
   assert.equal(group.plotDate, "2026-08-21");
   assert.deepEqual(group.events.map((event) => event.title), [
     "매도 신호 · 강",
-    "근거: 신용 과열 · MACD 반전",
+    "근거: 신용 과열",
+    "· MACD 반전",
     "신용20일 8.2% · 고점대비 -1.3%",
     "시장 둔화 · 근거 5개",
     "추세 소진 · 추세형",
@@ -83,6 +149,9 @@ function createRuntime(overrides = {}) {
       disclosureIconText: "◆",
       disclosureTextSize: 13,
       disclosureTraceName: "공시",
+      eventMarkerDownText: "▼",
+      eventMarkerTextSize: 15,
+      eventMarkerUpText: "▲",
     },
     chartEventLayer: {
       buildPointIndex(_models, tickers) {
@@ -99,7 +168,10 @@ function createRuntime(overrides = {}) {
       },
     },
     chartSession,
-    buildInsiderMarkerTraces: (groups) => [{ groups }],
+    buildInsiderMarkerTraces: (groups, options) => {
+      counters.insiderTextSize = options?.textSize;
+      return [{ groups }];
+    },
     dataRevisionSignature: () => "revision",
     ensureMarketTimingFeature: async () => {},
     escapeHtml: (value) => String(value),
@@ -160,8 +232,17 @@ test("one marker frame shares its date index and spacing across every marker lay
   assert.equal(sell.count, 1);
   assert.equal(buy.trace.customdata[0][1], "과매도 · 전일대비 27% 하락");
   assert.equal(sell.trace.customdata[0][1], "과열 · 전일대비 27% 상승");
+  assert.match(buy.trace.hovertemplate[0], /근거: 과매도<br>· 전일대비 27% 하락/);
+  assert.match(sell.trace.hovertemplate[0], /근거: 과열<br>· 전일대비 27% 상승/);
+  assert.equal(buy.trace.mode, "text");
+  assert.equal(buy.trace.text[0], "▲");
+  assert.equal(sell.trace.mode, "text");
+  assert.equal(sell.trace.text[0], "▼");
   assert.equal(disclosure.stats.markers, 1);
+  assert.equal(disclosure.trace.mode, "text");
+  assert.equal(disclosure.trace.text[0], "◆");
   assert.equal(insider.stats.markers, 1);
+  assert.equal(counters.insiderTextSize, buy.trace.textfont.size);
   assert.deepEqual(disclosure.trace.x, ["2026-08-04"]);
   assert.equal(
     disclosure.groups.get("d|005930.KS|2026-08-04").events[0].title,

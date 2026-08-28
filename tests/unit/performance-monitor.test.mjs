@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 
-await import("../../docs/modules/performance-monitor.js");
-const { createPerformanceMonitor } = globalThis.ThinkStockPerformanceMonitor;
+import {
+  createPerformanceMonitor,
+  createRuntimeDiagnosticStateCollector,
+} from "../../docs/modules/performance-monitor.mjs";
+import { createBrowserPerformanceMonitor } from "../../docs/modules/performance-diagnostics.mjs";
 
 
 function createScope(search = "") {
@@ -68,8 +71,9 @@ test("records samples and uses percentile frame timing", () => {
   const harness = createScope("?perf=1");
   const monitor = createPerformanceMonitor(harness.scope);
   const api = monitor.init();
+  api.attachBrowserMetricsProvider(createBrowserPerformanceMonitor(harness.scope));
   assert.equal(monitor.isEnabled(), true);
-  assert.equal(harness.scope.ThinkStockPerf, api);
+  assert.equal(harness.scope.ThinkStockPerf, undefined);
 
   const startedAt = monitor.startSample();
   harness.setNow(112.34);
@@ -102,6 +106,8 @@ test("records samples and uses percentile frame timing", () => {
     p95AuxiliaryRender: 0,
     runtimeRefreshes: 0,
     maxRuntimeRefresh: 0,
+    startupVisuals: 0,
+    p95StartupVisual: 0,
     appStarts: 0,
     p95AppStartup: 0,
     slowOperations: 0,
@@ -116,6 +122,7 @@ test("persists enable state and stops frame monitoring when disabled", () => {
   const harness = createScope();
   const monitor = createPerformanceMonitor(harness.scope);
   const api = monitor.init();
+  api.attachBrowserMetricsProvider(createBrowserPerformanceMonitor(harness.scope));
   assert.equal(monitor.isEnabled(), false);
   assert.equal(monitor.startSample(), 100);
 
@@ -125,7 +132,17 @@ test("persists enable state and stops frame monitoring when disabled", () => {
   assert.equal(api.disable(), false);
   assert.equal(harness.stored.has("thinkstock-perf-debug"), false);
   assert.equal(harness.pendingFrames(), 0);
-  assert.equal(harness.observers[0].disconnected, false);
+  assert.equal(harness.observers[0].disconnected, true);
+});
+
+test("does not start continuous browser observers before delayed diagnostics attach", () => {
+  const harness = createScope();
+  const monitor = createPerformanceMonitor(harness.scope);
+  const api = monitor.init();
+
+  assert.equal(harness.pendingFrames(), 0);
+  assert.equal(harness.observers.length, 0);
+  assert.equal(api.summary().longTasks, 0);
 });
 
 
@@ -145,6 +162,9 @@ test("records bounded browser long tasks with attribution", () => {
   const harness = createScope("?perf=1");
   const monitor = createPerformanceMonitor(harness.scope, { longTaskSampleLimit: 2 });
   const api = monitor.init();
+  api.attachBrowserMetricsProvider(createBrowserPerformanceMonitor(harness.scope, {
+    longTaskSampleLimit: 2,
+  }));
 
   harness.emitLongTasks([
     { duration: 55.54, startTime: 10, name: "self", attribution: [] },
@@ -180,6 +200,8 @@ test("records bounded browser long tasks with attribution", () => {
     p95AuxiliaryRender: 0,
     runtimeRefreshes: 0,
     maxRuntimeRefresh: 0,
+    startupVisuals: 0,
+    p95StartupVisual: 0,
     appStarts: 0,
     p95AppStartup: 0,
     slowOperations: 0,
@@ -290,4 +312,24 @@ test("ranks bounded operation profiles by their p95 duration", () => {
   assert.deepEqual(api.getOperationProfiles(1).map((profile) => profile.label), ["renderChart"]);
   api.clear();
   assert.deepEqual(api.getOperationProfiles(), []);
+});
+
+test("collects independent runtime diagnostic sections without breaking the app", () => {
+  const errors = [];
+  let current = 1;
+  const collector = createRuntimeDiagnosticStateCollector({
+    current: () => current,
+    optional: () => undefined,
+    failed: () => { throw new Error("unavailable"); },
+  }, {
+    onError: (error, section) => errors.push([section, error.message]),
+  });
+
+  assert.deepEqual(collector.snapshot(), { current: 1, failed: null });
+  current = 2;
+  assert.deepEqual(collector.snapshot(), { current: 2, failed: null });
+  assert.deepEqual(errors, [
+    ["failed", "unavailable"],
+    ["failed", "unavailable"],
+  ]);
 });

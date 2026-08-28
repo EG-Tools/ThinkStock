@@ -7,12 +7,13 @@ import {
 
 const PANELS = Object.freeze({
   adr: Object.freeze({ title: "ADR", series: ["adr_kospi", "adr_kosdaq"], pixels: 180 }),
+  vkospi: Object.freeze({ title: "변동성", series: ["vkospi", "vix"], pixels: 85 }),
   fearGreed: Object.freeze({ title: "공포탐욕", series: ["fear_greed"], pixels: 85 }),
   newsSentiment: Object.freeze({ title: "뉴스심리", series: ["news_sentiment"], pixels: 85 }),
-  vkospi: Object.freeze({ title: "변동성", series: ["vkospi", "vix"], pixels: 85 }),
 });
 
 test("auxiliary panels remain painted across toggle combinations", async ({ page }) => {
+  test.setTimeout(75_000);
   const simultaneousRuntimeDate = "2026-07-15";
   const continuousAuxiliaryDates = [
     "2026-07-06",
@@ -217,8 +218,13 @@ test("auxiliary panels remain painted across toggle combinations", async ({ page
     });
   };
 
-  const allPanels = ["adr", "fearGreed", "newsSentiment", "vkospi"];
+  const allPanels = ["adr", "vkospi", "fearGreed", "newsSentiment"];
+  const volatilityReactivatedOrder = ["adr", "fearGreed", "newsSentiment", "vkospi"];
   await assertActivePanels(allPanels);
+  await panelToggle("vkospi").click();
+  await assertActivePanels(["adr", "fearGreed", "newsSentiment"]);
+  await panelToggle("vkospi").click();
+  await assertActivePanels(volatilityReactivatedOrder);
   expect(await chart.evaluate((element) => {
     const representative = element.querySelector(".auxiliary-representative-toggle");
     const panelTitle = element.querySelector(".auxiliary-panel-title");
@@ -274,7 +280,7 @@ test("auxiliary panels remain painted across toggle combinations", async ({ page
       `.auxiliary-series-toggle[data-auxiliary-series="${seriesKey}"]`,
     ).click();
   }
-  await assertActivePanels(allPanels);
+  await assertActivePanels(volatilityReactivatedOrder);
   expect(await chart.evaluate((element) => {
     const adrHover = (element.data || []).find((trace) => trace.name === "ADR HOVER");
     const fearGreed = (element.data || []).find(
@@ -293,7 +299,7 @@ test("auxiliary panels remain painted across toggle combinations", async ({ page
   });
 
   let currentMask = 15;
-  let currentOrder = [...allPanels];
+  let currentOrder = [...volatilityReactivatedOrder];
   for (let targetMask = 15; targetMask >= 0; targetMask -= 1) {
     for (let index = 0; index < allPanels.length; index += 1) {
       const bit = 1 << index;

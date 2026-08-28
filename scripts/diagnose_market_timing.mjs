@@ -1,16 +1,14 @@
 import fs from "node:fs";
+import { buildMacdOscillator } from "../docs/modules/macd-oscillator.mjs";
+import marketTiming from "../docs/modules/market-timing.mjs";
 
-await import("../docs/modules/macd-oscillator.js");
-await import("../docs/modules/market-timing.js");
-
-const { buildMacdOscillator } = globalThis.ThinkStockMacdOscillator;
 const {
   alignAsOf,
   buildMarketTimingSignals,
   rollingPercentile,
   scoreTimingPoint,
   trailingAverage,
-} = globalThis.ThinkStockMarketTiming;
+} = marketTiming;
 
 const BASE_URL = process.env.THINKSTOCK_LOCAL_URL || "http://127.0.0.1:8787";
 const SIGNAL_START = process.env.SIGNAL_START || "2026-01-01";

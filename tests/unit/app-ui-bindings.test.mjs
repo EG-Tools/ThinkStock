@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 
-await import("../../docs/modules/app-ui-bindings.js");
-const bindings = globalThis.ThinkStockAppUiBindings;
+import * as bindings from "../../docs/modules/app-ui-bindings.mjs";
 
 
 function fakeElement(dataset = {}) {
@@ -255,6 +254,7 @@ test("prepared toggle coalesces clicks and commits state after preparation", asy
     getEnabled: () => enabled,
     setEnabled: (value) => { enabled = value; calls.push(["state", value]); },
     prepare: () => preparation,
+    beforeEnable: () => { calls.push(["settled", enabled]); },
     syncButton: () => calls.push(["sync", enabled]),
     onChanged: (value) => calls.push(["changed", value]),
   });
@@ -273,10 +273,30 @@ test("prepared toggle coalesces clicks and commits state after preparation", asy
   assert.equal(button.getAttribute("aria-busy"), "false");
   assert.deepEqual(calls, [
     ["sync", false],
+    ["settled", false],
     ["state", true],
     ["sync", true],
     ["changed", true],
   ]);
+});
+
+
+test("prepared toggle leaves state disabled when the pre-enable boundary fails", async () => {
+  const button = fakeElement();
+  let enabled = false;
+  let errors = 0;
+  bindings.bindPreparedToggle({
+    button,
+    getEnabled: () => enabled,
+    setEnabled: (value) => { enabled = value; },
+    beforeEnable: async () => { throw new Error("viewport did not settle"); },
+    onError: () => { errors += 1; },
+  });
+
+  await button.dispatch("click");
+  assert.equal(enabled, false);
+  assert.equal(errors, 1);
+  assert.equal(button.getAttribute("aria-busy"), "false");
 });
 
 
@@ -317,6 +337,53 @@ test("manual refresh always clears the spinning state", async () => {
   await button.dispatch("click");
   assert.deepEqual(loadCalls, [[false, { mergeWithExisting: true }]]);
   assert.equal(button.classList.contains("spinning"), false);
+});
+
+
+test("chart application controls bind fixed chart ids through one orchestration entry", async () => {
+  const ids = [
+    "chartRange6Months",
+    "chartRange1Year",
+    "chartRange3Years",
+    "chartJumpLatest",
+    "chartCursorModeBtn",
+    "aiForecastToggle",
+  ];
+  const elements = new Map(ids.map((id) => [id, fakeElement()]));
+  elements.get("chartRange6Months").dataset.months = "6";
+  elements.get("chartRange1Year").dataset.months = "12";
+  elements.get("chartRange3Years").dataset.months = "36";
+  const calls = [];
+  let aiEnabled = false;
+  bindings.bindChartApplicationControls({
+    document: { getElementById: (id) => elements.get(id) || null },
+  }, {
+    range: {
+      selectMonths: (months) => { calls.push(["range", months]); return true; },
+      jumpLatest: () => { calls.push(["latest"]); return true; },
+    },
+    cycleCursorLineMode: () => calls.push(["cursor"]),
+    ai: {
+      getEnabled: () => aiEnabled,
+      setEnabled: (value) => { aiEnabled = value; },
+      prepare: async () => calls.push(["prepare-ai"]),
+      onChanged: (value) => calls.push(["ai", value]),
+    },
+  });
+
+  elements.get("chartRange6Months").dispatch("click");
+  elements.get("chartJumpLatest").dispatch("click");
+  elements.get("chartCursorModeBtn").dispatch("click");
+  await elements.get("aiForecastToggle").dispatch("click");
+
+  assert.equal(aiEnabled, true);
+  assert.deepEqual(calls, [
+    ["range", 6],
+    ["latest"],
+    ["cursor"],
+    ["prepare-ai"],
+    ["ai", true],
+  ]);
 });
 
 
@@ -371,4 +438,52 @@ test("stock selection view keeps suggestion state and delegated actions in one b
   view.hideSuggestions();
   assert.equal(view.suggestionCount(), 0);
   assert.equal(suggestionList.hidden, true);
+});
+
+test("stock search panel owns search, keyboard, and submission wiring", async () => {
+  const input = fakeElement();
+  const suggestionList = fakeElement();
+  input.value = "삼성";
+  suggestionList.hidden = true;
+  const documentListeners = new Map();
+  const document = {
+    addEventListener: (name, listener) => documentListeners.set(name, listener),
+    getElementById(id) {
+      return id === "stockSearchInput" ? input : suggestionList;
+    },
+  };
+  const rendered = [];
+  const submitted = [];
+  let hidden = 0;
+  let moved = 0;
+  const item = { ticker: "005930.KS", name: "삼성전자" };
+  const view = {
+    activeSuggestion: () => item,
+    containsSuggestionTarget: () => false,
+    hideSuggestions: () => { hidden += 1; },
+    moveSuggestion: (direction) => { moved += direction; },
+    renderSuggestions: (items) => { rendered.push(items); return items.length; },
+    setSuggestionHandler: (handler) => { view.select = handler; },
+    suggestionCount: () => 1,
+  };
+  const controller = bindings.bindStockSearchPanel({ document }, {
+    view,
+    loadUniverse: async () => {},
+    filterUniverse: (keyword) => keyword === "삼성" ? [item] : [],
+    onSubmit: async (selected) => submitted.push(selected.ticker),
+  });
+
+  assert.ok(controller);
+  assert.equal(await controller.refreshSuggestions(), 1);
+  assert.deepEqual(rendered, [[item]]);
+  input.dispatch("keydown", { key: "ArrowDown", preventDefault() {} });
+  assert.equal(moved, 1);
+  await controller.submitSuggestion(item);
+  assert.deepEqual(submitted, ["005930.KS"]);
+  assert.equal(input.value, "");
+  assert.equal(hidden, 1);
+
+  documentListeners.get("click")({ target: {} });
+  assert.equal(hidden, 2);
+  assert.equal(bindings.bindStockSearchPanel({ document }, { view }), null);
 });

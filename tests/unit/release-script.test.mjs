@@ -30,15 +30,16 @@ test("release script can skip only the duplicate local verification", async () =
   assert.match(launcher, /-SkipVerification/);
 });
 
-test("release reuses local full WebKit verification while direct runs stay fail-safe", async () => {
+test("release reuses local full WebKit verification while CI splits browser scopes", async () => {
   const source = await readFile(new URL("../../scripts/release_pages.ps1", import.meta.url), "utf8");
   const workflow = await readFile(new URL("../../.github/workflows/deploy-pages.yml", import.meta.url), "utf8");
   assert.match(source, /\$GitHubVerificationScope = "smoke"/);
   assert.match(source, /Invoke-Checked npm @\("run", "verify:release"\)/);
   assert.match(source, /verification_scope=\$GitHubVerificationScope/);
   assert.match(workflow, /verification_scope:[\s\S]*default: full/);
-  assert.match(workflow, /run_webkit_scope\.mjs release \$\{\{ inputs\.verification_scope \}\}/);
-  assert.doesNotMatch(workflow, /matrix\.target/);
+  assert.match(workflow, /target: \[mobile, desktop, sw\]/);
+  assert.match(workflow, /run_webkit_scope\.mjs \$\{\{ matrix\.target \}\} \$\{\{ inputs\.verification_scope \}\}/);
+  assert.match(workflow, /fail-fast: false/);
 });
 
 test("release script always publishes the authoritative local version", async () => {

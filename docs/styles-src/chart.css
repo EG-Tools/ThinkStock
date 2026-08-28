@@ -1,0 +1,311 @@
+.chart-frame {
+  position: relative;
+  touch-action: pan-y;
+  margin-top: 8px;
+  min-height: 437px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 28px;
+  box-shadow: var(--shadow);
+  padding: 0;
+  overflow: hidden;
+  cursor: default;
+}
+
+#chart.chart-frame {
+  min-height: 451px;
+}
+
+.chart-frame .main-svg,
+.chart-frame .main-svg * {
+  cursor: default !important;
+}
+
+.chart-frame.is-line-hovering,
+.chart-frame.is-event-marker-hovering,
+.chart-frame.is-ai-report-hovering,
+.chart-frame.is-line-hovering .main-svg,
+.chart-frame.is-event-marker-hovering .main-svg,
+.chart-frame.is-ai-report-hovering .main-svg,
+.chart-frame.is-line-hovering .main-svg *,
+.chart-frame.is-event-marker-hovering .main-svg *,
+.chart-frame.is-ai-report-hovering .main-svg * {
+  cursor: pointer !important;
+}
+
+#chart .scatterlayer .trace.scatter.is-eps-point-highlighted .points path.point {
+  transition: stroke-width 80ms ease;
+  stroke-width: 3px !important;
+}
+
+.chart-frame.is-line-dragging,
+.chart-frame.is-line-dragging .main-svg,
+.chart-frame.is-line-dragging .main-svg * {
+  cursor: ns-resize !important;
+}
+
+.chart-frame.chart-frame-macd .main-svg .legend,
+.chart-frame.chart-frame-macd .main-svg .legend * {
+  cursor: pointer !important;
+}
+
+.synced-cursor-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.35);
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(0);
+  will-change: transform, opacity;
+  z-index: 90;
+}
+
+.synced-cursor-horizontal-line {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.35);
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(0);
+  will-change: transform, opacity;
+  z-index: 90;
+}
+
+/* Cursor lines are rendered by the lightweight synchronized overlays above. */
+.chart-frame .spikeline {
+  display: none !important;
+}
+
+.is-viewport-panning .synced-cursor-line,
+.is-viewport-panning .synced-cursor-horizontal-line {
+  opacity: 0 !important;
+}
+
+.chart-frame-adr {
+  min-height: 570px;
+  max-height: 610px;
+}
+
+.chart-frame-macd {
+  min-height: 190px;
+  max-height: 250px;
+}
+
+.chart-frame-macd[hidden] { display: none !important; }
+
+.disclosure-popover {
+  position: absolute;
+  z-index: 130;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: min(230px, calc(100% - 24px));
+  padding: 9px 10px;
+  border: 1px solid rgba(251, 191, 36, 0.28);
+  border-radius: 14px;
+  background: rgba(14, 14, 12, 0.94);
+  box-shadow: 0 18px 34px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(12px);
+  color: rgba(255, 255, 255, 0.9);
+  pointer-events: auto;
+  touch-action: pan-y;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.disclosure-popover[hidden] { display: none !important; }
+
+.disclosure-popover-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.disclosure-popover-head b {
+  display: block;
+  font-size: 13px;
+}
+
+.disclosure-popover-head span {
+  display: block;
+  margin-top: 2px;
+  color: rgba(255, 255, 255, 0.52);
+  font-size: 11px;
+}
+
+.disclosure-popover-head button {
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  margin: -5px -6px 0 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 21px;
+  line-height: 1;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.disclosure-popover ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.disclosure-popover li {
+  display: grid;
+  gap: 2px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.disclosure-popover li:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.disclosure-event-caption {
+  display: block;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.disclosure-type {
+  width: fit-content;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(251, 191, 36, 0.13);
+  color: #fbbf24;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.disclosure-popover strong,
+.disclosure-title-link {
+  font-size: 12px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.disclosure-title-link {
+  display: inline;
+  line-height: 1.35;
+}
+
+.disclosure-popover p {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.disclosure-popover a {
+  display: block;
+  color: #fbbf24;
+  text-decoration: none;
+  font-weight: 700;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: rgba(251, 191, 36, 0.2);
+}
+
+.disclosure-popover li[data-event-tone="insider-buy"] strong,
+.disclosure-popover li[data-event-tone="insider-buy"] a {
+  color: #b91c1c;
+}
+
+.disclosure-popover li[data-event-tone="insider-sell"] strong,
+.disclosure-popover li[data-event-tone="insider-sell"] a {
+  color: #1d4ed8;
+}
+
+.data-freshness {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 20px 4px;
+}
+
+.freshness-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.freshness-chip strong {
+  color: #d4d4d4;
+  font-weight: 700;
+}
+
+.freshness-chip small {
+  color: #93c5fd;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.freshness-chip.is-cache small { color: #c4b5fd; }
+
+.freshness-chip.is-stale {
+  border-color: rgba(250, 204, 21, 0.28);
+  background: rgba(250, 204, 21, 0.08);
+}
+
+.freshness-chip.is-anomaly {
+  border-color: rgba(248, 113, 113, 0.48);
+  background: rgba(248, 113, 113, 0.12);
+  color: #fca5a5;
+}
+
+.freshness-chip.is-empty {
+  opacity: 0.62;
+}
+
+.chart-frame-adr .cartesianlayer .point { display: none !important; }
+.legend .legendlines { display: none !important; }
+.hoverlayer .legendpoints { display: none !important; }
+.no-hover-popup .hoverlayer > g { display: none !important; }
+.chart-frame.is-hover-waiting .hoverlayer > g { display: none !important; }
+.chart-frame.is-line-dragging .hoverlayer > g { display: none !important; }
+
+/* Plotly renders unified and point tooltips with different SVG elements. */
+.chart-frame { --chart-hover-font-size: 11px; }
+#chart { --chart-hover-font-size: 12px; }
+
+.chart-frame .hoverlayer > g.hovertext > path,
+.chart-frame .hoverlayer > g.legend > rect.bg {
+  fill: var(--chart-hover-bg) !important;
+  stroke: var(--chart-hover-border) !important;
+  stroke-width: 1px !important;
+}
+
+.chart-frame .hoverlayer > g.hovertext text.nums,
+.chart-frame .hoverlayer > g.legend text.legendtitletext,
+.chart-frame .hoverlayer > g.legend text.legendtext {
+  fill: var(--chart-hover-color) !important;
+  font-family: var(--chart-font-family) !important;
+  font-size: var(--chart-hover-font-size) !important;
+  font-weight: 400;
+}
+
+.message-area { margin-top: 12px; }
+.message { padding: 12px 14px; border-radius: 18px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border); color: var(--muted); }
+.message.error { background: rgba(187, 67, 40, 0.2); color: #f87171; }

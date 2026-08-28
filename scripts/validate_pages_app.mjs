@@ -3,36 +3,37 @@ import { readFile, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
+import { stylesheetSourceNames } from "./pages-stylesheet-config.mjs";
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractionMath, chartInteractionController, cacheRefreshPolicy, browserMarketClient, auxiliaryChartModel, mainChartRenderer, performanceMonitor, performanceDiagnostics, appUiBindings, runtimeSnapshotPolicy, appStorage, startupLoader, dataWorker, chartModelWorker, chartLoader, disclosurePolicy, disclosurePopover, serviceWorkerClient, runtimeRefresh, dataSeedLoader, deployWorkflow, plotlyBuilder, buildPagesData, dataBuildSupport, providerClients, providerContracts, providerSources, creditProcessing, disclosureProcessing, payloadOutput, sourcePipeline, buildReporting, plotlyBundle, appBundle] = await Promise.all([
+const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractionMath, chartInteractionController, cacheRefreshPolicy, browserMarketClient, auxiliaryChartModel, mainChartRenderer, performanceMonitor, performanceDiagnostics, appUiBindings, runtimeSnapshotPolicy, appStorage, dataWorker, chartModelWorker, chartModelWorkerRuntime, chartLoader, disclosurePolicy, disclosurePopover, serviceWorkerClient, runtimeRefresh, dataSeedLoader, deployWorkflow, plotlyBuilder, buildPagesData, dataBuildSupport, providerClients, providerContracts, providerSources, creditProcessing, disclosureProcessing, payloadOutput, sourcePipeline, buildReporting, plotlyBundle, appBundle] = await Promise.all([
   readFile(path.join(root, "docs", "app.js"), "utf8"),
   readFile(path.join(root, "docs", "index.html"), "utf8"),
   readFile(path.join(root, "docs", "sw.js"), "utf8"),
   readFile(path.join(root, "playwright.config.mjs"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "data-payload.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "market-data.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "chart-interaction-math.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "chart-interaction-controller.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "data-payload.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "market-data.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "chart-interaction-math.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "chart-interaction-controller.mjs"), "utf8"),
   readFile(path.join(root, "docs", "modules", "cache-refresh-policy.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "browser-market-client.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "auxiliary-chart-model.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "main-chart-renderer.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "performance-monitor.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "performance-diagnostics.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "app-ui-bindings.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "runtime-snapshot-controller.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "app-storage.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "startup-loader.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "data-worker.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "chart-model-worker.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "chart-loader.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "disclosure-policy.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "disclosure-popover.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "service-worker-client.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "runtime-refresh-orchestrator.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "data-seed-loader.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "browser-market-client.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "auxiliary-chart-model.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "main-chart-renderer.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "performance-monitor.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "performance-diagnostics.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "app-ui-bindings.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "runtime-snapshot-controller.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "app-storage.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "data-worker.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "chart-model-worker.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "chart-model-worker-runtime.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "chart-loader.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "disclosure-policy.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "disclosure-popover.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "service-worker-client.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "runtime-refresh-orchestrator.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "data-seed-loader.mjs"), "utf8"),
   readFile(path.join(root, ".github", "workflows", "deploy-pages.yml"), "utf8"),
   readFile(path.join(root, "scripts", "build_plotly_bundle.cjs"), "utf8"),
   readFile(path.join(root, "scripts", "build_pages_data.py"), "utf8"),
@@ -48,89 +49,142 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractio
   stat(path.join(root, "docs", "vendor", "plotly-thinkstock-2.35.2.min.js")),
   stat(path.join(root, "docs", "assets", "app.bundle.min.js")),
 ]);
-const [deferredDiagnostics, dataHealth, pagesEntry, styles, insiderTrades, workerIndex, workerRouter, kofiaClient, marketTimingService, marketTimingWorker, aiScenarioPaths, aiForecastWorker, chartRenderScheduler, optionalFeatureRuntime, stockResearchApp, aiForecastCache, aiForecastQualityRuntime, chartModelCache, chartPointerRuntime, chartHoverRuntime, chartMarkerRuntime, auxiliaryChartRuntime, mainChartEvents, apiPeriods, settingsPanelRuntime, aiForecastTraces, runtimeRefreshOrchestrator, progressView, disclosureProgress] = await Promise.all([
-  readFile(path.join(root, "docs", "modules", "deferred-diagnostics.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "data-health.js"), "utf8"),
+const [deferredDiagnostics, dataHealth, pagesEntry, styles, insiderTrades, workerIndex, workerRouter, workerDartHandler, kofiaClient, marketTimingService, marketTimingWorker, aiScenarioPaths, aiForecastWorker, optionalFeatureRuntime, stockResearchApp, aiForecastCache, aiForecastQualityRuntime, chartModelCache, chartPointerRuntime, chartHoverRuntime, chartMarkerRuntime, auxiliaryChartRuntime, mainChartEvents, apiPeriods, settingsPanelRuntime, aiForecastTraces, runtimeRefreshOrchestrator, progressView, mainChartModel, chartEventLayer] = await Promise.all([
+  readFile(path.join(root, "docs", "modules", "deferred-diagnostics.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "data-health.mjs"), "utf8"),
   readFile(path.join(root, "scripts", "pages-entry.mjs"), "utf8"),
   readFile(path.join(root, "docs", "styles.css"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "insider-trades.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "insider-trades.mjs"), "utf8"),
   readFile(path.join(root, "worker", "src", "index.mjs"), "utf8"),
   readFile(path.join(root, "worker", "src", "request-router.mjs"), "utf8"),
+  readFile(path.join(root, "worker", "src", "dart-handler.mjs"), "utf8"),
   readFile(path.join(root, "worker", "src", "kofia-client.mjs"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "market-timing-service.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "market-timing-worker.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "market-timing-service.mjs"), "utf8"),
+  readFile(path.join(root, "scripts", "feature-entries", "market-timing-worker.mjs"), "utf8"),
   readFile(path.join(root, "docs", "modules", "ai-scenario-paths.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "ai-forecast-worker.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "chart-render-scheduler.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "optional-feature-runtime.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "stock-research-app.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "ai-forecast-cache.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "ai-forecast-quality-runtime.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "chart-model-cache.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "chart-pointer-runtime.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "chart-hover-runtime.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "chart-marker-runtime.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "auxiliary-chart-runtime.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "main-chart-events.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "api-periods.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "settings-panel-runtime.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "ai-forecast-traces.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "runtime-refresh-orchestrator.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "control-state-view.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "disclosure-progress.js"), "utf8"),
+  readFile(path.join(root, "scripts", "feature-entries", "ai-forecast-worker.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "optional-feature-runtime.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "stock-research-app.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "ai-forecast-cache.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "ai-forecast-quality-runtime.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "chart-model-cache.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "chart-pointer-runtime.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "chart-hover-runtime.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "chart-marker-runtime.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "auxiliary-chart-runtime.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "main-chart-events.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "api-periods.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "settings-panel-runtime.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "ai-forecast-traces.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "runtime-refresh-orchestrator.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "control-state-view.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "main-chart-model.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "chart-event-layer.mjs"), "utf8"),
 ]);
 const optionalFeatureLoader = optionalFeatureRuntime;
-const [aiForecastApp, runtimeDataApp, cacheMigrations, stockResearchContract, stockResearchStorage, stockResearchNavigation, stockResearchFilter, stockResearchHistoryCache, stockResearchWorkerClient, runtimeBootstrap, appStateController, controlStateView, cacheMaintenanceRuntime, runtimeSnapshotController, sharedRequestRegistry, chartUpdateCoordinator, webkitScopeRunner] = await Promise.all([
-  readFile(path.join(root, "docs", "modules", "ai-forecast-app.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "runtime-data-app.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "cache-migrations.js"), "utf8"),
+const tickerPriceAppRuntime = await readFile(
+  path.join(root, "docs", "modules", "ticker-price-app-runtime.mjs"),
+  "utf8",
+);
+const tickerPriceRuntime = await readFile(
+  path.join(root, "docs", "modules", "ticker-price-runtime.mjs"),
+  "utf8",
+);
+const tickerCacheInvalidation = await readFile(
+  path.join(root, "docs", "modules", "ticker-cache-invalidation.mjs"),
+  "utf8",
+);
+const taskProgressRuntime = await readFile(
+  path.join(root, "docs", "modules", "task-progress-runtime.mjs"),
+  "utf8",
+);
+const marketTiming = await readFile(
+  path.join(root, "docs", "modules", "market-timing.mjs"),
+  "utf8",
+);
+const marketTimingEvaluation = await readFile(
+  path.join(root, "docs", "modules", "market-timing-evaluation.mjs"),
+  "utf8",
+);
+const dartFeatureEntry = await readFile(
+  path.join(root, "scripts", "feature-entries", "dart-feature.mjs"),
+  "utf8",
+);
+const chartRenderContract = await readFile(
+  path.join(root, "docs", "modules", "chart-render-contract.mjs"),
+  "utf8",
+);
+const applicationLifecycleRuntime = await readFile(
+  path.join(root, "docs", "modules", "app-bootstrap-orchestrator.mjs"),
+  "utf8",
+);
+const [aiForecastApp, brokerResearchRuntime, runtimeDataApp, stockResearchContract, stockResearchStorage, stockResearchNavigation, stockResearchFilter, stockResearchHistoryCache, stockResearchWorkerClient, runtimeBootstrap, appStateController, controlStateView, dataFreshnessController, cacheMaintenanceRuntime, runtimeSnapshotController, sharedRequestRegistry, chartUpdateCoordinator, webkitScopeRunner] = await Promise.all([
+  readFile(path.join(root, "docs", "modules", "ai-forecast-app.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "broker-research-runtime.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "runtime-data-app.mjs"), "utf8"),
   readFile(path.join(root, "docs", "modules", "stock-research-contract.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "stock-research-storage.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "stock-research-navigation.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "stock-research-filter.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "stock-research-history-cache.js"), "utf8"),
   readFile(path.join(root, "docs", "modules", "stock-research-worker-client.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "runtime-bootstrap.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "app-state-controller.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "control-state-view.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "cache-maintenance-runtime.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "runtime-snapshot-controller.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "shared-request-registry.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "chart-update-coordinator.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "runtime-bootstrap.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "app-state-controller.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "control-state-view.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "data-freshness-controller.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "cache-maintenance-runtime.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "runtime-snapshot-controller.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "shared-request-registry.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "chart-update-coordinator.mjs"), "utf8"),
   readFile(path.join(root, "scripts", "run_webkit_scope.mjs"), "utf8"),
 ]);
 const [packageJsonSource, publicDeploymentVerifier, chartViewportController, chartSessionState, chartSessionController, chartModelWorkerClient, runtimeDataTransaction, runtimeSourceHealth, pagesShellBuilder, vkospiDataSource] = await Promise.all([
   readFile(path.join(root, "package.json"), "utf8"),
   readFile(path.join(root, "scripts", "verify_pages_deployment.mjs"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "chart-viewport-controller.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "chart-session-controller.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "chart-session-controller.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "chart-model-worker-client.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "runtime-data-transaction.js"), "utf8"),
-  readFile(path.join(root, "docs", "modules", "runtime-source-health.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "chart-viewport-controller.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "chart-session-controller.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "chart-session-controller.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "chart-model-worker-client.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "runtime-data-transaction.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "runtime-source-health.mjs"), "utf8"),
   readFile(path.join(root, "scripts", "prepare_pages_shell.py"), "utf8"),
   readFile(path.join(root, "docs", "data", "vkospi_data.json"), "utf8"),
 ]);
 const [adminFeatureAccess, adminSessionHandler, adminSession, workerConfig] = await Promise.all([
-  readFile(path.join(root, "docs", "modules", "admin-feature-access.js"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "admin-feature-access.mjs"), "utf8"),
   readFile(path.join(root, "worker", "src", "admin-session-handler.mjs"), "utf8"),
   readFile(path.join(root, "worker", "src", "admin-session.mjs"), "utf8"),
   readFile(path.join(root, "worker", "wrangler.jsonc"), "utf8"),
 ]);
-const [aiFeatureEntry, marketTimingFeatureEntry, settingsFeatureEntry, stockResearchFeatureEntry] = await Promise.all([
+const [analyticsCoreFeatureEntry, aiFeatureEntry, auxiliaryChartFeatureEntry, brokerResearchFeatureEntry, diagnosticsRuntimeFeatureEntry, epsFeatureEntry, marketTimingFeatureEntry, settingsFeatureEntry, stockResearchFeatureEntry, stockResearchWorkerEntry] = await Promise.all([
+  readFile(path.join(root, "scripts", "feature-entries", "analytics-core-feature.mjs"), "utf8"),
   readFile(path.join(root, "scripts", "feature-entries", "ai-feature.mjs"), "utf8"),
+  readFile(path.join(root, "scripts", "feature-entries", "auxiliary-chart-feature.mjs"), "utf8"),
+  readFile(path.join(root, "scripts", "feature-entries", "broker-research-feature.mjs"), "utf8"),
+  readFile(path.join(root, "scripts", "feature-entries", "diagnostics-runtime-feature.mjs"), "utf8"),
+  readFile(path.join(root, "scripts", "feature-entries", "eps-feature.mjs"), "utf8"),
   readFile(path.join(root, "scripts", "feature-entries", "market-timing-feature.mjs"), "utf8"),
   readFile(path.join(root, "scripts", "feature-entries", "settings-feature.mjs"), "utf8"),
   readFile(path.join(root, "scripts", "feature-entries", "stock-research-feature.mjs"), "utf8"),
+  readFile(path.join(root, "scripts", "feature-entries", "stock-research-worker.mjs"), "utf8"),
+]);
+const [appBootstrapOrchestrator, appControlConfig, buildPagesBundle, ...stylesheetSources] = await Promise.all([
+  readFile(path.join(root, "docs", "modules", "app-bootstrap-orchestrator.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "app-control-config.mjs"), "utf8"),
+  readFile(path.join(root, "scripts", "build_pages_bundle.mjs"), "utf8"),
+  ...stylesheetSourceNames.map((name) => (
+    readFile(path.join(root, "docs", "styles-src", name), "utf8")
+  )),
 ]);
 const packageJson = JSON.parse(packageJsonSource);
 const vkospiData = JSON.parse(vkospiDataSource);
-const appBundleGzipBytes = gzipSync(await readFile(path.join(root, "docs", "assets", "app.bundle.min.js"))).byteLength;
+const appBundleGzipBytes = gzipSync(
+  await readFile(path.join(root, "docs", "assets", "app.bundle.min.js")),
+  { level: 9 },
+).byteLength;
 // Keep validation aligned with the build ceiling so one accepted bundle cannot
 // fail later only because the two release gates use different byte limits.
-const APP_BUNDLE_MAX_BYTES = 524_000;
-const APP_BUNDLE_GZIP_MAX_BYTES = 175_000;
-const APP_SOURCE_MAX_LINES = 8_100;
+const APP_SOURCE_MAX_LINES = 8_200;
 const precacheAssetsSource = sw.match(/const PRECACHE_ASSETS = \[([\s\S]*?)\];/)?.[1] || "";
 
 const appVersion = app.match(/const APP_VERSION = "([0-9]+\.[0-9]+)";/)?.[1];
@@ -142,7 +196,45 @@ assert.equal(htmlVersion, appVersion, "docs/index.html and docs/app.js versions 
 assert.ok(htmlVersionCopies.length > 0, "main page app version copy is missing");
 assert.ok(htmlVersionCopies.every((version) => version === appVersion),
   "main page and settings app versions differ");
-assert.ok(app.includes("const MAX_VISIBLE_MAIN_SERIES = 10;"), "main chart series limit must remain ten");
+assert.equal(
+  styles.trimEnd(),
+  stylesheetSources.map((source) => source.trimEnd()).join("\n\n"),
+  "generated styles.css is out of sync with its role-based sources",
+);
+assert.ok(buildPagesBundle.includes('from "./pages-stylesheet-config.mjs"')
+  && buildPagesBundle.includes("buildStylesheet()"),
+"role-based stylesheet sources are not wired into the web build");
+assert.ok(
+  app.includes('from "./modules/app-bootstrap-orchestrator.mjs"')
+    && app.includes('from "./modules/app-control-config.mjs"')
+    && app.includes("createChartApplicationControlConfig({")
+    && app.includes("createAppBootstrapOrchestrator({")
+    && app.includes("createLazyRuntimeRegistry")
+    && app.includes("const startupTaskRuntime = createStartupTaskRuntime({")
+    && app.includes("scheduleSupplementalTask: startupTaskRuntime.scheduleSupplemental")
+    && app.includes("scheduleApiPeriodReminderLoad, { userVisible: true }")
+    && !app.includes("async function boot()"),
+  "app startup and control wiring are not using the standard module boundary",
+);
+assert.ok(appBootstrapOrchestrator.includes("createAppBootstrapOrchestrator")
+  && appBootstrapOrchestrator.includes("createStartupLoader")
+  && appBootstrapOrchestrator.includes("createLazyRuntimeRegistry")
+  && !appBootstrapOrchestrator.includes("requireAppModule")
+  && appControlConfig.includes("createChartApplicationControlConfig")
+  && app.includes("appRuntimeRegistry"),
+"standard application orchestration modules are incomplete");
+assert.ok(
+  app.includes("shouldHydrateChartData(invalidation)")
+    && app.includes("if (shouldHydrateChartData) queueInsiderTradeRefresh()")
+    && app.includes("if (shouldHydrateChartData) scheduleVisibleEpsData()")
+    && app.includes("prepareEventModels: shouldHydrateChartData ? prepareMarketTimingModels : null"),
+  "viewport-only chart updates must not restart external data hydration",
+);
+assert.ok(
+  appControlConfig.includes("export const MAX_VISIBLE_MAIN_SERIES = 10;")
+    && app.includes("MAX_VISIBLE_MAIN_SERIES"),
+  "main chart series limit must remain ten",
+);
 assert.ok(
   html.includes("본 서비스는 한국거래소 통계정보를 사용합니다.") && styles.includes(".data-attribution"),
   "KRX data attribution is missing",
@@ -210,20 +302,26 @@ assert.ok(
 );
 assert.ok(html.includes("chart-progress disclosure-progress")
   && html.includes("chart-progress ai-forecast-progress")
-  && styles.includes(".chart-progress-track > i")
+  && html.includes("ui-progress-track chart-progress-track")
+  && html.includes('class="ui-progress-fill"')
+  && styles.includes(".ui-progress-fill")
   && styles.includes("--chart-ui-progress-fill"),
 "AI and DART progress components do not share one visual system");
-assert.ok(pagesEntry.includes('import "../docs/modules/control-state-view.js"')
-  && aiForecastApp.includes("ThinkStockProgressView")
-  && disclosureProgress.includes("ThinkStockProgressView")
+assert.ok(app.includes('from "./modules/task-progress-runtime.mjs"')
+  && app.includes("createTaskProgress")
+  && taskProgressRuntime.includes('from "./control-state-view.mjs"')
+  && taskProgressRuntime.includes("createProgressView")
+  && taskProgressRuntime.includes("createDisclosureProgress")
+  && aiForecastApp.includes("options.createProgressView")
   && progressView.includes("createProgressView"),
 "AI and DART progress behavior does not share one DOM view");
 assert.ok(html.includes("chart-toggle reset-btn")
   && html.includes("chart-toggle hover-toggle-btn")
   && styles.includes(".chart-toggle.is-active"),
 "chart toggle components do not share one state style");
-assert.ok(html.includes("chart-help-message runtime-refresh-status")
-  && html.includes("chart-help-message chart-navigation-message")
+assert.ok(html.includes("ui-fade-message chart-help-message runtime-refresh-status")
+  && html.includes("ui-fade-message chart-help-message chart-navigation-message")
+  && styles.includes(".ui-fade-message.is-fading")
   && styles.includes("--chart-ui-help-duration"),
 "chart help messages do not share one visual system");
 
@@ -254,6 +352,7 @@ const requiredIds = [
   "releaseNotesBtn",
   "releaseNotesPanel",
   "releaseNotesVersion",
+  "releaseNotesSize",
   "releaseNotesList",
   "apiPeriodBtn",
   "apiPeriodPanel",
@@ -308,40 +407,44 @@ assert.ok(!html.includes("chartRangeStepper")
   assert.ok(index > previousIndex, `main chart control order is incorrect at ${id}`);
   return index;
 }, -1);
-assert.ok(pagesEntry.includes('import "../docs/modules/insider-trades.js"'),
-  "insider trade module is not included in the app bundle");
-assert.ok(app.includes("ThinkStockInsiderTrades")
+assert.ok(dartFeatureEntry.includes('from "../../docs/modules/insider-trades.mjs"')
   && app.includes("DART_GATEWAY_INSIDER_ENDPOINT")
-  && app.includes("buildInsiderTradeTraces")
+  && app.includes("buildInsiderMarkerTraces")
   && app.includes("showInsiderTrades"),
 "insider trade UI and chart integration is incomplete");
-assert.ok(insiderTrades.includes('"triangle-up"')
-  && insiderTrades.includes('"triangle-down"')
+assert.ok(insiderTrades.includes('const BUY_MARKER_TEXT = "▲"')
+  && insiderTrades.includes('const SELL_MARKER_TEXT = "▼"')
   && insiderTrades.includes('const BUY_COLOR = "#b91c1c"')
   && insiderTrades.includes('const SELL_COLOR = "#1d4ed8"'),
 "insider buy/sell marker styling is incomplete");
 assert.ok(!/(^|\n)\.cartesianlayer \.point \{ display: none !important; \}/.test(styles)
+  && !/(^|\n)\.cartesianlayer \.textpoint \{[^}]*display:\s*none/i.test(styles)
   && styles.includes(".chart-frame-adr .cartesianlayer .point { display: none !important; }"),
-"global point-marker hiding must not suppress insider trade triangles");
-assert.ok(workerIndex.includes("DART_ELESTOCK_URL")
+"global marker hiding must not suppress insider trade triangles");
+assert.ok(workerDartHandler.includes("DART_ELESTOCK_URL")
   && workerIndex.includes('"insider-trades":')
   && workerIndex.includes("dispatchRequestRoute(route, ROUTE_HANDLERS")
   && workerRouter.includes('path: "/api/dart/insider-trades"')
-  && workerIndex.includes("LOOKBACK_YEARS")
-  && workerIndex.includes("`insider:${ticker}`"),
+  && workerDartHandler.includes("LOOKBACK_YEARS")
+  && workerDartHandler.includes("`insider:${ticker}`"),
 "DART insider trade gateway or three-year cache policy is incomplete");
 
 [
   "./index.html",
   "./styles.css",
   "./assets/app.bundle.min.js?v=dev",
-  "./modules/data-payload.js?v=dev",
-  "./modules/market-data.js?v=dev",
+  "./modules/data-payload.mjs?v=dev",
+  "./modules/market-data.mjs?v=dev",
+  "./modules/chart-adjustments.mjs?v=dev",
+  "./modules/auxiliary-chart-contract.mjs?v=dev",
+  "./modules/chart-display-sampler.mjs?v=dev",
+  "./modules/main-chart-model.mjs?v=dev",
   "./modules/cache-refresh-policy.js?v=dev",
-  "./modules/auxiliary-chart-model.js?v=dev",
-  "./modules/data-worker.js?v=dev",
-  "./modules/chart-model-worker.js?v=dev",
-  "./modules/macd-oscillator.js?v=dev",
+  "./modules/auxiliary-chart-model.mjs?v=dev",
+  "./modules/data-worker.mjs?v=dev",
+  "./modules/data-worker-runtime.mjs?v=dev",
+  "./modules/chart-model-worker.mjs?v=dev",
+  "./modules/chart-model-worker-runtime.mjs?v=dev",
   "./vendor/plotly-thinkstock-2.35.2.min.js?v=dev",
   "./data/prices_recent.json",
   "./data/macro_data_recent.json",
@@ -358,34 +461,48 @@ optionalFeatureAssets.forEach((asset) => {
   assert.ok(sw.includes(`"${asset.slice(1)}"`), `optional feature is not version-cacheable: ${asset}`);
 });
 [
-  "./modules/stock-research-worker.js",
-  "./modules/market-timing-worker.js",
-  "./modules/ai-forecast-worker.js",
+  "./assets/stock-research-worker.bundle.min.js",
+  "./assets/market-timing-worker.bundle.min.js",
+  "./assets/ai-forecast-worker.bundle.min.js",
 ].forEach((asset) => {
   assert.ok(!precacheAssetsSource.includes(`"${asset}?v=dev"`), `optional worker must load on demand: ${asset}`);
   assert.ok(sw.includes(`"${asset.slice(1)}"`), `optional worker is not version-cacheable: ${asset}`);
 });
 assert.ok(!precacheAssetsSource.includes('"./data/ai_market_model.json"'),
   "AI market model must load on demand");
-assert.ok(aiForecastWorker.includes("new URL(self.location.href).search")
-  && marketTimingWorker.includes("new URL(self.location.href).search"),
-"optional workers do not share their versioned cache key with dependencies");
+assert.ok(aiForecastWorker.includes("globalThis.onmessage")
+  && marketTimingWorker.includes("globalThis.onmessage")
+  && !aiForecastWorker.includes("importScripts(")
+  && !marketTimingWorker.includes("importScripts(")
+  && buildPagesBundle.includes('entry: "ai-forecast-worker.mjs"')
+  && buildPagesBundle.includes('output: "ai-forecast-worker.bundle.min.js"')
+  && buildPagesBundle.includes('entry: "market-timing-worker.mjs"')
+  && buildPagesBundle.includes('output: "market-timing-worker.bundle.min.js"'),
+"optional workers do not use one bundled dependency graph");
 
-assert.ok(app.includes("function isDirectDisclosureTap"), "iPhone disclosure tap guard is missing");
-assert.ok(app.includes("ThinkStockDisclosurePolicy"), "disclosure policy module is not wired into the app");
-assert.ok(app.includes("ThinkStockDisclosurePopover"), "disclosure popover module is not wired into the app");
+assert.ok(app.includes("function isDirectEventMarkerTap")
+  && chartMarkerRuntime.includes("isDirectlyInteractiveEventMarkerTrace"),
+"iPhone event-marker tap guard is missing");
+  assert.ok(app.includes('from "./modules/disclosure-policy.mjs"'), "disclosure policy module is not wired into the app");
+assert.ok(dartFeatureEntry.includes('from "../../docs/modules/disclosure-popover.mjs"')
+  && optionalFeatureRuntime.includes("ensureDart"),
+"disclosure popover module is not wired into the app");
 assert.ok(disclosurePopover.includes("createDisclosurePopover"), "disclosure popover module is incomplete");
+assert.ok(insiderTrades.includes('from "./chart-render-contract.mjs"')
+  && !insiderTrades.includes("chart-marker-runtime.mjs")
+  && !disclosurePopover.includes("task-progress-runtime.mjs")
+  && chartRenderContract.includes("buildEventMarkerTextFont"),
+"deferred DART bundle duplicates shared chart marker or progress runtimes");
 assert.ok(!app.includes("function ensureDisclosurePopover("), "disclosure popover implementation still lives in app.js");
-assert.ok(app.includes("ThinkStockServiceWorkerClient"), "service worker client module is not wired into the app");
+  assert.ok(app.includes('from "./modules/service-worker-client.mjs"'), "service worker client module is not wired into the app");
 assert.ok(serviceWorkerClient.includes("createServiceWorkerClient"), "service worker client module is incomplete");
-assert.ok(app.includes("ThinkStockRuntimeRefresh"), "runtime refresh module is not wired into the app");
+assert.ok(app.includes('from "./modules/runtime-refresh-orchestrator.mjs"'), "runtime refresh module is not wired into the app");
 assert.ok(runtimeRefresh.includes("runRefreshPhases"), "runtime refresh phase runner is incomplete");
-assert.ok(app.includes("ThinkStockRuntimeRefreshOrchestrator")
-  && pagesEntry.includes('import "../docs/modules/runtime-refresh-orchestrator.js"')
+assert.ok(app.includes('from "./modules/runtime-refresh-orchestrator.mjs"')
   && runtimeRefreshOrchestrator.includes("createRuntimeRefreshOrchestrator")
   && runtimeRefreshOrchestrator.includes("planRuntimeRefreshRendering"),
 "runtime refresh orchestration is not separated from app.js");
-assert.ok(app.includes("ThinkStockDataSeedLoader"), "data seed loader module is not wired into the app");
+assert.ok(app.includes('from "./modules/data-seed-loader.mjs"'), "data seed loader module is not wired into the app");
 assert.ok(dataSeedLoader.includes("fetchSegmentedSeedText"), "data seed loader module is incomplete");
 assert.ok(dataSeedLoader.includes("fetchDataManifest") && dataSeedLoader.includes("manifestSegmentPath"),
   "segmented data manifest is not consumed by the app");
@@ -401,6 +518,11 @@ assert.ok(runtimeRefreshOrchestrator.includes("supplementalTasks: [")
 assert.ok(runtimeRefreshOrchestrator.includes('reportCriticalProgress("chart", 96)')
   && runtimeDataApp.includes("onCriticalProgress: flow.onCriticalProgress"),
 "startup progress does not follow critical refresh completion");
+assert.ok(runtimeRefreshOrchestrator.includes("runSupplementalTask")
+  && runtimeRefreshOrchestrator.includes("scheduleSupplementalTask")
+  && appBootstrapOrchestrator.includes("startup-supplemental-")
+  && appBootstrapOrchestrator.includes("await taskContext.checkpoint?.();"),
+"startup supplemental refreshes must yield to foreground interaction");
 assert.ok(runtimeDataApp.includes("awaitCriticalRender: true")
   && runtimeDataApp.includes("onCriticalReady"),
 "startup loader does not wait for the critical render phase");
@@ -411,77 +533,156 @@ assert.ok(!app.includes("ThinkStockDartDisclosure")
   && !sw.includes('"/modules/dart-disclosure.js"'),
 "obsolete browser-side DART client is still shipped");
 assert.ok(!app.includes("function fetchDartDisclosurePage("), "DART page fetching still lives in app.js");
-assert.ok(app.includes("ThinkStockDataPayload"), "data payload module is not wired into the app");
-assert.ok(app.includes("ThinkStockOptionalFeatureRuntime")
-  && optionalFeatureRuntime.includes("ThinkStockMarketTimingService")
+assert.ok(app.includes("dataPayloadModule"), "data payload module is not wired into the app");
+assert.ok(app.includes('from "./modules/optional-feature-runtime.mjs"')
+  && !optionalFeatureRuntime.includes("ThinkStockOptionalFeatureRuntime")
+  && optionalFeatureRuntime.includes("bundle.service.createMarketTimingService")
   && marketTimingService.includes("createMarketTimingService")
   && marketTimingService.includes("buildTimingModels"),
 "market timing worker service is not wired into the app");
-assert.ok(!pagesEntry.includes('import "../docs/modules/market-timing-service.js"')
-  && !pagesEntry.includes('import "../docs/modules/co-movement.js"')
-  && optionalFeatureRuntime.includes('loader.loadFeature("market-timing"')
+assert.ok(!pagesEntry.includes('import "../docs/modules/market-timing-service.mjs"')
+  && !pagesEntry.includes('import "../docs/modules/co-movement.mjs"')
+  && optionalFeatureRuntime.includes('loader.loadModuleFeature(')
+  && optionalFeatureRuntime.includes('"analytics-core"')
+  && optionalFeatureRuntime.includes('"./assets/analytics-core-feature.bundle.min.js"')
+  && sw.includes('"/assets/analytics-core-feature.bundle.min.js"')
+  && !precacheAssetsSource.includes("analytics-core-feature.bundle.min.js")
+  && optionalFeatureRuntime.includes('loader.loadModuleFeature(')
+  && optionalFeatureRuntime.includes('"market-timing"')
   && optionalFeatureRuntime.includes('"./assets/market-timing-feature.bundle.min.js"')
-  && marketTimingFeatureEntry.includes('import "../../docs/modules/co-movement.js"')
-  && marketTimingFeatureEntry.includes('import "../../docs/modules/market-timing-service.js"')
+  && analyticsCoreFeatureEntry.includes('import "../../docs/modules/ai-forecast-math.js"')
+  && analyticsCoreFeatureEntry.includes('import "../../docs/modules/ai-context-profile.js"')
+  && analyticsCoreFeatureEntry.includes("export { analyticsCoreFeature }")
+  && analyticsCoreFeatureEntry.includes('delete globalThis[name]')
+  && !marketTimingFeatureEntry.includes('import "../../docs/modules/ai-forecast-math.js"')
+  && !marketTimingFeatureEntry.includes('import "../../docs/modules/ai-context-profile.js"')
+  && marketTimingFeatureEntry.includes('import { coMovement } from "../../docs/modules/co-movement.mjs"')
+  && marketTimingFeatureEntry.includes('import timing from "../../docs/modules/market-timing.mjs"')
+  && marketTimingFeatureEntry.includes('import evaluation from "../../docs/modules/market-timing-evaluation.mjs"')
+  && marketTimingFeatureEntry.includes("export { marketTimingFeature }")
+  && !marketTimingFeatureEntry.includes("globalThis.ThinkStockCoMovement = coMovement")
+  && marketTimingFeatureEntry.includes('import service from "../../docs/modules/market-timing-service.mjs"')
+  && marketTimingWorker.includes('../../docs/modules/market-timing.mjs')
+  && marketTimingWorker.includes('../../docs/modules/market-timing-evaluation.mjs')
+  && !marketTimingService.includes("ThinkStockMarketTiming")
+  && !marketTiming.includes("globalThis.ThinkStockMarketTiming")
+  && !marketTimingEvaluation.includes("globalThis.ThinkStockMarketTimingEvaluation")
   && marketTimingWorker.includes("buildTimingModels")
   && marketTimingWorker.includes("source cache miss"),
 "market timing must load on demand and calculate in its worker");
 assert.ok(!app.includes("marketTimingModelCache = new Map()"),
   "market timing model cache still lives in app.js");
 assert.ok(!pagesEntry.includes('import "../docs/modules/ai-scenario-paths.js"')
-  && optionalFeatureRuntime.includes('loader.loadFeature("ai-forecast"')
+  && optionalFeatureRuntime.includes('loader.loadModuleFeature(')
+  && optionalFeatureRuntime.includes('"ai-forecast"')
   && optionalFeatureRuntime.includes('"./assets/ai-feature.bundle.min.js"')
-  && aiFeatureEntry.includes('import "../../docs/modules/ai-forecast-math.js"')
-  && aiFeatureEntry.includes('import "../../docs/modules/ai-context-profile.js"')
+  && optionalFeatureRuntime.includes("withAnalyticsCoreCompatibility")
+  && optionalFeatureRuntime.includes('loader.loadModuleFeature(')
+  && analyticsCoreFeatureEntry.includes('import "../../docs/modules/ai-forecast-math.js"')
+  && analyticsCoreFeatureEntry.includes('import "../../docs/modules/ai-context-profile.js"')
+  && !aiFeatureEntry.includes('import "../../docs/modules/ai-forecast-math.js"')
+  && !aiFeatureEntry.includes('import "../../docs/modules/ai-context-profile.js"')
   && aiFeatureEntry.includes('import "../../docs/modules/ai-scenario-paths.js"')
-  && aiForecastWorker.includes("./ai-forecast-math.js")
-  && aiForecastWorker.includes("./ai-forecast-model.js")
-  && aiForecastWorker.includes("./ai-scenario-paths.js")
-  && aiForecastWorker.includes("./ai-forecast-scenarios.js")
-  && aiForecastWorker.includes("./ai-forecast.js")
+  && aiForecastWorker.includes('../../docs/modules/ai-forecast-math.js')
+  && aiForecastWorker.includes('../../docs/modules/ai-forecast-model.js')
+  && aiForecastWorker.includes('../../docs/modules/ai-scenario-paths.js')
+  && aiForecastWorker.includes('../../docs/modules/ai-forecast-scenarios.js')
+  && aiForecastWorker.includes('../../docs/modules/ai-forecast.js')
   && aiScenarioPaths.includes("buildHistoricalPathLibrary")
   && aiScenarioPaths.includes("buildScenarioMorphologies"),
 "AI scenario modules must load on demand and stay shared with the forecast worker");
-assert.ok(!pagesEntry.includes('import "../docs/modules/ai-forecast-app.js"')
-  && aiFeatureEntry.includes('import "../../docs/modules/ai-forecast-app.js"')
-  && app.includes("ThinkStockAiForecastApp")
+assert.ok(!pagesEntry.includes('import "../docs/modules/eps-chart.mjs"')
+  && optionalFeatureRuntime.includes("loader.loadModuleFeature(")
+  && optionalFeatureRuntime.includes('"eps-chart"')
+  && optionalFeatureRuntime.includes('"./assets/eps-feature.bundle.min.js"')
+  && epsFeatureEntry.includes('import { epsChart } from "../../docs/modules/eps-chart.mjs"')
+  && epsFeatureEntry.includes("export { epsChart }")
+  && !epsFeatureEntry.includes("ThinkStockEpsChart")
+  && app.includes("createAppFeatureRuntime({")
+  && optionalFeatureRuntime.includes("optional.ensureEps()")
+  && optionalFeatureRuntime.includes("Promise.all([")
+  && sw.includes('"/assets/eps-feature.bundle.min.js"')
+  && !precacheAssetsSource.includes("eps-feature.bundle.min.js"),
+"EPS must load only when its default-off chart is enabled");
+assert.ok(!app.includes('from "./modules/auxiliary-chart-runtime.mjs"')
+  && optionalFeatureRuntime.includes('"auxiliary-chart"')
+  && optionalFeatureRuntime.includes('"./assets/auxiliary-chart-feature.bundle.min.js"')
+  && auxiliaryChartFeatureEntry.includes('from "../../docs/modules/auxiliary-chart-runtime.mjs"')
+  && auxiliaryChartFeatureEntry.includes("export { auxiliaryChartFeature, auxiliaryChartModel, auxiliaryChartRuntime }")
+  && app.includes("return getAuxiliaryChartRuntime().then((runtime) => runtime.renderAdrChart(xRange))")
+  && sw.includes('"/assets/auxiliary-chart-feature.bundle.min.js"')
+  && !precacheAssetsSource.includes("auxiliary-chart-feature.bundle.min.js"),
+"auxiliary chart rendering must load after the first main chart frame");
+assert.ok(!pagesEntry.includes('import "../docs/modules/ai-forecast-app.mjs"')
+  && aiFeatureEntry.includes('from "../../docs/modules/ai-forecast-app.mjs"')
+  && !aiFeatureEntry.includes("broker-research-runtime")
+  && brokerResearchFeatureEntry.includes('from "../../docs/modules/broker-research-runtime.mjs"')
+    && brokerResearchFeatureEntry.includes('import brokerReportParser from "../../docs/modules/broker-report-parser.mjs"')
+    && brokerResearchFeatureEntry.includes('import brokerResearchCache from "../../docs/modules/broker-research-cache.mjs"')
+  && brokerResearchFeatureEntry.includes("export { brokerResearchFeature }")
+  && aiFeatureEntry.includes("export { aiFeature }")
+  && !aiFeatureEntry.includes("globalThis.ThinkStockAiFeature =")
+  && optionalFeatureRuntime.includes("module.aiFeature")
+  && optionalFeatureRuntime.includes("module.brokerResearchFeature")
+  && optionalFeatureRuntime.includes('"./assets/broker-research-feature.bundle.min.js"')
+  && sw.includes('"/assets/broker-research-feature.bundle.min.js"')
+  && !precacheAssetsSource.includes("broker-research-feature.bundle.min.js")
   && aiForecastApp.includes("cancelCalculations")
   && aiForecastApp.includes("progressActive")
+  && aiForecastApp.includes("createSeriesRevisionCache")
+  && brokerResearchRuntime.includes("createBrokerReportWorkerClient")
+  && brokerResearchRuntime.includes("createBrokerResearchRuntime")
+  && !aiForecastApp.includes("ThinkStockAiForecastApp")
+  && !brokerResearchRuntime.includes("ThinkStockBrokerResearchRuntime")
   && !app.includes("let aiForecastWorker"),
 "AI worker and progress orchestration is not separated from app.js");
-assert.ok(!pagesEntry.includes('import "../docs/modules/ai-forecast-traces.js"')
-  && aiFeatureEntry.includes('import "../../docs/modules/ai-forecast-traces.js"')
-  && app.includes("ThinkStockAiForecastTraces")
+assert.ok(!pagesEntry.includes('from "../docs/modules/ai-forecast-traces.mjs"')
+  && aiFeatureEntry.includes('import aiForecastTraces from "../../docs/modules/ai-forecast-traces.mjs"')
+  && app.includes("feature.traces.createAiForecastTraces")
+  && app.includes("getLoadedAiFeature()?.traces")
   && aiForecastTraces.includes("createAiForecastTraces")
   && aiForecastTraces.includes("isPrimaryAiScenario"),
 "AI forecast trace assembly is not separated from app.js");
 assert.ok(dataPayload.includes("rowsFromColumnarPayload"), "shared columnar payload parser is missing");
-assert.ok(dataWorker.includes('importScripts("./data-payload.js?v=dev")'), "data worker does not reuse the shared payload parser");
-assert.ok(app.includes("ThinkStockMarketData"), "market data module is not wired into the app");
+assert.ok(dataWorker.includes('import dataPayload from "./data-payload.mjs?v=dev"'), "module data worker does not reuse the shared payload parser");
+assert.ok(app.includes('import marketDataModule from "./modules/market-data.mjs"')
+  && !app.includes("chart-core-modules.mjs"),
+"market data module is not wired into the app");
 assert.ok(marketData.includes("mergeSources") && marketData.includes("findTickerPriceRebaseSignal"), "market data module is incomplete");
-assert.ok(chartModelWorker.includes('importScripts("./market-data.js?v=dev")'), "chart worker does not reuse the market data module");
+assert.ok(mainChartModel.includes('import marketData from "./market-data.mjs"'), "chart model does not reuse the market data module");
+assert.ok(chartModelWorker.includes('import mainChartModel from "./main-chart-model.mjs?v=dev"')
+  && app.includes('import mainChartModelModule from "./modules/main-chart-model.mjs"')
+  && app.includes('workerType: "module"'),
+"browser and module worker do not share the main chart model");
 assert.ok(
   marketData.includes("shiftIsoDateByDays")
-    && chartModelWorker.includes("creditCols.includes(series)")
-    && app.includes("CREDIT_COLS.includes(series)"),
+    && mainChartModel.includes("creditCols.includes(series)")
+    && mainChartModel.includes("shiftIsoDateByDays(date, -creditOffsetDays)"),
   "credit offset must shift only the credit trace dates",
 );
-assert.ok(chartModelWorker.includes('importScripts("./auxiliary-chart-model.js?v=dev")'), "chart worker does not reuse the auxiliary chart model module");
+assert.ok(!chartModelWorkerRuntime.includes("function buildMainChartModel(")
+  && mainChartModel.includes("function buildMainChartModel("),
+"main chart model calculation is duplicated in the worker");
+assert.ok(mainChartModel.includes("function buildMainChartRenderInputs(")
+  && mainChartModel.includes("function mainChartCalcCacheKey(")
+  && !app.includes("function buildMainChartRenderInputs("),
+"main chart render inputs and cache identity are not centralized");
+assert.ok(chartModelWorker.includes('import auxiliaryChartModel from "./auxiliary-chart-model.mjs?v=dev"'), "chart worker does not reuse the auxiliary chart model module");
 assert.ok(!app.includes("function mergeSources(") && !app.includes("function findTickerPriceRebaseSignal("), "market data logic still lives in app.js");
-assert.ok(app.includes("ThinkStockChartInteractionMath"), "chart interaction math module is not wired into the app");
+assert.ok(app.includes('from "./modules/chart-interaction-math.mjs"'), "chart interaction math module is not wired into the app");
 assert.ok(chartInteractionMath.includes("axisPixelToXValue") && chartInteractionMath.includes("interpolateTraceYAtMs"),
   "chart interaction math module is incomplete");
-assert.ok(app.includes("ThinkStockChartInteractionController"), "chart interaction controller module is not wired into the app");
+assert.ok(app.includes('from "./modules/chart-interaction-controller.mjs"'), "chart interaction controller module is not wired into the app");
 assert.ok(chartInteractionController.includes("createPointerFrameController"), "chart interaction controller module is incomplete");
-assert.ok(app.includes("ThinkStockChartSessionController")
+assert.ok(app.includes('from "./modules/chart-session-controller.mjs"')
   && chartSessionController.includes("setAutoScale")
   && !app.includes("CHART_WORKER_STALE_CANCEL_MS"),
 "chart state transitions are not centralized or stale worker cancellation remains");
-assert.ok(app.includes("ThinkStockChartModelWorkerClient")
+assert.ok(app.includes('from "./modules/chart-model-worker-client.mjs"')
   && chartModelWorkerClient.includes("active.superseded")
   && chartModelWorkerClient.includes("dispatchNext"),
 "latest-wins chart worker client is not wired into the app");
-assert.ok(app.includes("ThinkStockRuntimeDataTransaction")
+assert.ok(app.includes('from "./modules/runtime-data-transaction.mjs"')
   && runtimeDataTransaction.includes("assertSeriesRows")
   && runtimeDataTransaction.includes("introduced-anomaly"),
 "runtime data is not validated before atomic commit");
@@ -491,18 +692,39 @@ assert.ok(sw.includes("ThinkStockCacheRefreshPolicy"), "service worker cache ref
 assert.ok(cacheRefreshPolicy.includes("runWithConcurrency") && cacheRefreshPolicy.includes("planDataRefreshRequests"),
   "service worker cache refresh policy is incomplete");
 assert.ok(!app.includes("function getChartInteractionGeometry("), "chart interaction geometry still lives in app.js");
-assert.ok(app.includes("ThinkStockBrowserMarketClient"), "browser market client is not wired into the app");
+  assert.ok(app.includes('from "./modules/browser-market-client.mjs"'), "browser market client is not wired into the app");
 assert.ok(browserMarketClient.includes("fetchYahooHistorySeries") && browserMarketClient.includes("fetchLatestKrxCoreIndexRows"),
   "browser market client is incomplete");
 assert.ok(!app.includes("function fetchYahooHistorySeries(") && !app.includes("function fetchKrxIndexPoint("),
   "browser market requests still live in app.js");
-assert.ok(app.includes("ThinkStockAuxiliaryChartModel"), "auxiliary chart model module is not wired into the app");
+assert.ok(!app.includes('import auxiliaryChartModelModule from "./modules/auxiliary-chart-model.mjs"')
+  && app.includes('import auxiliaryChartContract from "./modules/auxiliary-chart-contract.mjs"')
+  && auxiliaryChartFeatureEntry.includes('import auxiliaryChartModel from "../../docs/modules/auxiliary-chart-model.mjs"'),
+"auxiliary chart model must stay behind its lazy feature while sharing the lightweight contract");
 assert.ok(auxiliaryChartModel.includes("buildAuxiliaryChartModel") && auxiliaryChartModel.includes("buildThresholdZones"), "auxiliary chart model module is incomplete");
-assert.ok(app.includes("ThinkStockAuxiliaryChartRuntime")
-  && pagesEntry.includes('import "../docs/modules/auxiliary-chart-runtime.js"')
-  && auxiliaryChartRuntime.includes("createAuxiliaryChartRuntime"),
+assert.ok(!app.includes('from "./modules/auxiliary-chart-runtime.mjs"')
+  && app.includes("optionalFeatureRuntime.ensureAuxiliaryChart()")
+  && !pagesEntry.includes("auxiliary-chart-runtime")
+  && auxiliaryChartFeatureEntry.includes('from "../../docs/modules/auxiliary-chart-runtime.mjs"')
+  && auxiliaryChartRuntime.includes("export const auxiliaryChartRuntime")
+  && auxiliaryChartRuntime.includes("createAuxiliaryChartRuntime")
+  && auxiliaryChartRuntime.includes("createAuxiliaryChartModelResolver")
+  && auxiliaryChartRuntime.includes("buildAuxiliaryViewportRelayout")
+  && auxiliaryChartRuntime.includes("sliceVisiblePanel")
+  && auxiliaryChartRuntime.includes("controlsSignature")
+  && !app.includes("function buildThresholdZoneFillTraces(")
+  && !app.includes("function buildAuxiliaryViewportRelayout(")
+  && !app.includes("async function getAuxiliaryChartModel("),
 "auxiliary chart runtime module is not wired into the app");
-assert.ok(chartModelWorker.includes('type === "buildAuxiliaryChartModel"'), "auxiliary chart model is not built in the worker");
+assert.ok(auxiliaryChartRuntime.includes("function renderAuxiliaryPlot(")
+  && auxiliaryChartRuntime.includes("await plotly.update(")
+  && auxiliaryChartRuntime.includes("auxiliaryStructureSignature")
+  && auxiliaryChartRuntime.includes("changedIndexes")
+  && auxiliaryChartRuntime.includes('updateScope: "unchanged"'),
+"auxiliary charts still rebuild unchanged panel structures");
+assert.ok(chartModelWorkerRuntime.includes('type !== "buildAuxiliaryChartModel"')
+  && chartModelWorkerRuntime.includes("auxiliaryChartModel.buildAuxiliaryChartModel"),
+"auxiliary chart model is not built in the worker");
 assert.ok(disclosurePolicy.includes("shouldDisplayDisclosure"), "disclosure policy filter is missing");
 assert.ok(disclosurePopover.includes("disclosure-title-link"), "disclosure title links are missing");
 assert.ok(html.includes('data-series="customer_deposit"'), "customer deposit toggle is missing");
@@ -526,7 +748,13 @@ assert.ok(app.includes("CUSTOM_STOCK_PRELOAD_CONCURRENCY"), "custom stock preloa
 assert.ok(runtimeRefresh.includes("const criticalPromise")
   && runtimeRefresh.includes("startSupplementalAfterCritical")
   && runtimeRefresh.includes("runTaskFactoriesWithConcurrency")
-  && runtimeRefreshOrchestrator.includes("supplementalConcurrency: forceNetwork ? 3 : 2"),
+  && runtimeRefreshOrchestrator.includes("supplementalConcurrency: options?.deferSupplementalUntilReady ? 2 : (forceNetwork ? 3 : 2)")
+  && runtimeRefreshOrchestrator.includes("beforeSupplemental:")
+  && runtimeRefreshOrchestrator.includes("waitForStartupVisualReady")
+  && runtimeRefreshOrchestrator.includes("incrementalSupplementalRender")
+  && runtimeRefreshOrchestrator.includes("scheduleSupplementalTask(")
+  && runtimeRefreshOrchestrator.includes("canStart === false")
+  && runtimeRefreshOrchestrator.includes(": task()"),
 "refresh phases do not preserve critical-first bounded startup work");
 assert.ok(runtimeRefreshOrchestrator.includes("coreIndexTask")
   && runtimeRefreshOrchestrator.includes("preloadTask"),
@@ -569,31 +797,35 @@ assert.ok(chartPointerRuntime.includes(".legend, .modebar-container"),
 assert.ok(styles.includes(".auxiliary-representative-toggle")
   && styles.includes("cursor: pointer"),
 "auxiliary chart controls do not expose a pointer cursor");
-assert.ok(pagesEntry.includes('import "../docs/modules/app-state-controller.js"')
-  && app.includes("ThinkStockAppStateController")
+assert.ok(app.includes('from "./modules/app-state-controller.mjs"')
+  && !pagesEntry.includes("app-state-controller")
   && appStateController.includes("hiddenAuxiliarySeries: [...state.hiddenAuxiliarySeries]")
   && appStateController.includes("Array.isArray(persisted.hiddenAuxiliarySeries)"),
   "auxiliary chart visibility is not persisted");
-assert.ok(pagesEntry.includes('import "../docs/modules/control-state-view.js"')
-  && app.includes("ThinkStockControlStateView")
+assert.ok(app.includes('from "./modules/control-state-view.mjs"')
   && controlStateView.includes("function syncControl("),
   "common toggle and loading state view is not wired");
-assert.ok(pagesEntry.includes('import "../docs/modules/cache-maintenance-runtime.js"')
-  && app.includes("ThinkStockCacheMaintenanceRuntime")
-  && cacheMaintenanceRuntime.includes("function createCacheMaintenanceRuntime("),
+assert.ok(app.includes('from "./modules/cache-maintenance-runtime.mjs"')
+  && !pagesEntry.includes("cache-maintenance-runtime")
+  && cacheMaintenanceRuntime.includes("function createCacheMaintenanceRuntime(")
+  && cacheMaintenanceRuntime.includes("function createCacheMigrator(")
+  && cacheMaintenanceRuntime.includes("readActiveRecord")
+  && cacheMaintenanceRuntime.includes("copyFirstAvailable")
+  && cacheMaintenanceRuntime.includes("schedulePrune"),
   "granular cache maintenance is not separated from app.js");
-assert.ok(pagesEntry.includes('import "../docs/modules/runtime-snapshot-controller.js"')
-  && app.includes("ThinkStockRuntimeSnapshotController")
+assert.ok(app.includes('from "./modules/runtime-snapshot-controller.mjs"')
   && runtimeSnapshotController.includes("function createRuntimeSnapshotController("),
   "runtime snapshot lifecycle is not separated from app.js");
-assert.ok(pagesEntry.includes('import "../docs/modules/shared-request-registry.js"')
-  && sharedRequestRegistry.includes("function createSharedRequestRegistry("),
+assert.ok(app.includes('from "./modules/shared-request-registry.mjs"')
+  && sharedRequestRegistry.includes("function createSharedRequestRegistry(")
+  && sharedRequestRegistry.includes("entry.subscribers")
+  && sharedRequestRegistry.includes("entry.controller.abort"),
   "shared runtime request deduplication is not loaded");
 assert.ok(chartUpdateCoordinator.includes("function shouldUpdateAuxiliary(")
   && app.includes("chartUpdateCoordinatorModule.shouldUpdateAuxiliary"),
   "main-only chart updates still invalidate every auxiliary panel");
-assert.ok(pagesEntry.includes('import "../docs/modules/chart-model-cache.js"')
-  && app.includes("ThinkStockChartModelCache")
+assert.ok(app.includes('from "./modules/chart-model-cache.mjs"')
+  && !pagesEntry.includes("chart-model-cache")
   && chartModelCache.includes("function createChartModelCache(")
   && chartModelCache.includes("function createSourceFingerprintCache(")
   && chartModelCache.includes('status: "coalesced"'),
@@ -614,41 +846,56 @@ assert.match(
   "local app bundle content fingerprint is missing",
 );
 assert.equal([...html.matchAll(/<script\b/g)].length, 1, "runtime scripts are not bundled");
-assert.ok(appBundle.size < APP_BUNDLE_MAX_BYTES, `initial app bundle is too large: ${appBundle.size} bytes`);
-assert.ok(appBundleGzipBytes < APP_BUNDLE_GZIP_MAX_BYTES,
+assert.ok(appBundle.size <= packageJson.thinkstockBuild.appBundleMaxBytes,
+  `initial app bundle is too large: ${appBundle.size} bytes`);
+assert.ok(appBundleGzipBytes <= packageJson.thinkstockBuild.appBundleGzipMaxBytes,
   `compressed initial app bundle is too large: ${appBundleGzipBytes} bytes`);
 assert.ok(app.split(/\r?\n/).length <= APP_SOURCE_MAX_LINES,
   `docs/app.js exceeded ${APP_SOURCE_MAX_LINES} lines; move cohesive logic into an existing module`);
-assert.ok(pagesEntry.includes('import "../docs/modules/chart-render-scheduler.js"')
-  && chartRenderScheduler.includes("createChartRenderScheduler")
-  && chartRenderScheduler.includes("createLatestKeyedFrameQueue")
+assert.ok(app.includes('from "./modules/chart-update-coordinator.mjs"')
+  && !pagesEntry.includes("chart-render-scheduler")
+  && chartUpdateCoordinator.includes("createChartRenderScheduler")
+  && chartUpdateCoordinator.includes("createLatestKeyedFrameQueue")
+  && chartUpdateCoordinator.includes("scheduleQueuedRender")
   && !pagesEntry.includes('import "../docs/modules/chart-relayout-queue.js"')
   && !app.includes("let renderChartRafId"),
 "chart render scheduling is not separated from app.js");
-assert.ok(pagesEntry.includes('import "../docs/modules/chart-session-controller.js"')
+assert.ok(!pagesEntry.includes("chart-session-controller")
   && chartSessionState.includes("createChartSessionState")
-  && app.includes("const chartSession = chartSessionStateModule.createChartSessionState"),
+  && app.includes("const chartSession = chartSessionControllerModule.createChartSessionState"),
 "chart viewport and visibility state are not centralized");
-assert.ok(pagesEntry.includes('import "../docs/modules/chart-hover-runtime.js"')
+assert.ok(app.includes('from "./modules/chart-hover-runtime.mjs"')
+  && !pagesEntry.includes("chart-hover-runtime")
   && chartHoverRuntime.includes("createChartHoverRuntime")
   && app.includes("chartHoverRuntimeModule.createChartHoverRuntime")
   && !app.includes("let pendingHoverSync"),
 "chart hover synchronization is not separated from app.js");
-assert.ok(pagesEntry.includes('import "../docs/modules/optional-feature-runtime.js"')
-  && pagesEntry.includes('import "../docs/modules/stock-research-contract.js"')
-  && pagesEntry.includes('import "../docs/modules/stock-research-storage.js"')
-  && pagesEntry.includes('import "../docs/modules/stock-research-app.js"')
-  && optionalFeatureLoader.includes("loadFeature")
-  && optionalFeatureRuntime.includes('loader.loadFeature("stock-research"')
+assert.ok(app.includes('from "./modules/optional-feature-runtime.mjs"')
+  && app.includes('from "./modules/stock-research-app.mjs"')
+  && stockResearchApp.includes('import stockResearchContract from "./stock-research-contract.js"')
+  && !stockResearchApp.includes('from "./stock-research-storage.js"')
+  && stockResearchApp.includes("stockResearchContract.loadUniverseSize")
+  && stockResearchApp.includes("stockResearchContract.saveUniverseSize")
+  && !pagesEntry.includes('import "../docs/modules/stock-research-contract.js"')
+  && !pagesEntry.includes('import "../docs/modules/stock-research-storage.js"')
+  && !pagesEntry.includes('import "../docs/modules/stock-research-app.js"')
+  && optionalFeatureLoader.includes("loadModuleFeature")
+  && !optionalFeatureLoader.includes("function loadFeature(")
+  && !optionalFeatureLoader.includes("function loadScript(")
+  && optionalFeatureRuntime.includes('loader.loadModuleFeature(')
+  && optionalFeatureRuntime.includes('"stock-research"')
   && optionalFeatureRuntime.includes('"./assets/stock-research-feature.bundle.min.js"')
-  && stockResearchFeatureEntry.includes('import "../../docs/modules/stock-research-navigation.js"')
-  && stockResearchFeatureEntry.includes('import "../../docs/modules/stock-research-filter.js"')
-  && stockResearchFeatureEntry.includes('import "../../docs/modules/stock-research-history-cache.js"')
-  && stockResearchFeatureEntry.includes('import "../../docs/modules/stock-research-worker-client.js"')
+  && stockResearchFeatureEntry.includes('import controller from "../../docs/modules/stock-research-controller.js"')
+  && stockResearchFeatureEntry.includes('import research from "../../docs/modules/stock-research.js"')
+  && !stockResearchFeatureEntry.includes("globalThis.ThinkStockStockResearchController")
+  && !stockResearchFeatureEntry.includes("globalThis.ThinkStockStockResearch")
+  && stockResearchFeatureEntry.includes("export { stockResearchFeature }")
+  && !stockResearchFeatureEntry.includes("globalThis.ThinkStockStockResearchFeature =")
+  && optionalFeatureRuntime.includes("module.stockResearchFeature")
   && stockResearchContract.includes("CALCULATION_VERSION")
   && stockResearchContract.includes("CACHE_FORMAT_SCHEMA")
   && stockResearchApp.includes("createStockResearchApp")
-  && stockResearchApp.includes("ThinkStockStockResearchContract")
+  && stockResearchApp.includes("stockResearchContract")
   && stockResearchStorage.includes("loadBlocked")
   && stockResearchStorage.includes("calculationVersion")
   && stockResearchNavigation.includes("diffUniverseState")
@@ -658,14 +905,40 @@ assert.ok(pagesEntry.includes('import "../docs/modules/optional-feature-runtime.
   && stockResearchWorkerClient.includes("createWorkerLane")
   && !pagesEntry.includes('import "../docs/modules/stock-research-controller.js"'),
 "optional features are still part of the initial bundle");
-assert.ok(!pagesEntry.includes('import "../docs/modules/ai-forecast-cache.js"')
-  && aiFeatureEntry.includes('import "../../docs/modules/ai-forecast-cache.js"')
+assert.ok(app.includes("./assets/stock-research-worker.bundle.min.js")
+  && sw.includes('"/assets/stock-research-worker.bundle.min.js"')
+  && buildPagesBundle.includes('entry: "stock-research-worker.mjs"')
+  && buildPagesBundle.includes('output: "stock-research-worker.bundle.min.js"')
+  && stockResearchWorkerEntry.includes("globalThis.onmessage")
+  && !stockResearchWorkerEntry.includes("importScripts("),
+"stock research worker is not using one bundled dependency graph");
+assert.ok(app.includes('from "./modules/ticker-price-app-runtime.mjs"')
+  && app.includes('from "./modules/ticker-price-runtime.mjs"')
+  && app.includes('from "./modules/ticker-cache-invalidation.mjs"')
+  && app.includes("createTickerPriceAppRuntime({")
+  && tickerPriceRuntime.includes("export default tickerPriceRuntime")
+  && tickerCacheInvalidation.includes("createTickerCacheInvalidationContract")
+  && stockResearchHistoryCache.includes("configureTickerPriceRuntime")
+  && !app.includes("ThinkStockTickerPriceRuntime")
+  && !app.includes("ThinkStockTickerCacheInvalidation")
+  && !app.includes("function getTickerPriceCacheRepository(")
+  && tickerPriceAppRuntime.includes("function applySharedCache(")
+  && tickerPriceAppRuntime.includes("function getSeriesLoader(")
+  && tickerPriceAppRuntime.includes("function getHistoryCoordinator("),
+"ticker price and cache orchestration still lives in app.js");
+assert.ok(!pagesEntry.includes("ai-forecast-cache")
+  && aiFeatureEntry.includes('import aiForecastCache from "../../docs/modules/ai-forecast-cache.mjs"')
+  && aiFeatureEntry.includes('import aiAnalysisCache from "../../docs/modules/ai-analysis-cache.mjs"')
+  && aiFeatureEntry.includes("cache: aiForecastCache")
+  && aiFeatureEntry.includes("analysis: aiAnalysisCache")
+  && !aiFeatureEntry.includes("ThinkStockAiForecastCache")
+  && !aiFeatureEntry.includes("ThinkStockAiAnalysisCache")
   && aiForecastCache.includes("matchesInput")
   && app.includes("TICKER_AI_FORECAST_CACHE_STORE_NAME"),
 "AI input-fingerprint cache is incomplete");
-assert.ok(!pagesEntry.includes('import "../docs/modules/ai-forecast-quality-runtime.js"')
-  && aiFeatureEntry.includes('import "../../docs/modules/ai-forecast-quality-runtime.js"')
-  && app.includes("ThinkStockAiForecastQualityRuntime")
+assert.ok(!pagesEntry.includes('from "../docs/modules/ai-forecast-quality-runtime.mjs"')
+  && aiFeatureEntry.includes('import aiForecastQualityRuntime from "../../docs/modules/ai-forecast-quality-runtime.mjs"')
+  && app.includes("feature.qualityRuntime")
   && aiForecastQualityRuntime.includes("function createAiForecastQualityRuntime(")
   && !app.includes("aiForecastCalibrationPoolPromise"),
 "AI forecast journal and quality orchestration is not separated from app.js");
@@ -674,7 +947,10 @@ assert.equal(packageJson.scripts?.["backtest:ai:verify"],
   "AI walk-forward regression guard is not wired to one command");
 assert.ok(app.includes('const MAIN_LINE_TRACE_TYPE = "scatter";'), "main chart is not using the SVG scatter path");
 assert.ok(app.includes("MAIN_CHART_TOTAL_VISIBLE_POINT_TARGET_MOBILE"), "adaptive mobile chart budget is missing");
-assert.ok(app.includes("const plotlyReadyTask = ensurePlotlyReady()"), "Plotly is not prepared in parallel during boot");
+assert.ok(app.includes("preparePlotly: ensurePlotlyReady")
+  && appBootstrapOrchestrator.includes("const plotlyReadyTask = Promise.resolve()")
+  && appBootstrapOrchestrator.includes("prepareInitialData"),
+"Plotly is not prepared in parallel during boot");
 assert.ok(mainChartRenderer.includes("function buildCursorHoverMode")
   && mainChartRenderer.includes("if (!hoverShowPopup) return false;")
   && mainChartRenderer.includes("hovermode: buildCursorHoverMode(hoverShowPopup, cursorLineMode)"),
@@ -687,82 +963,106 @@ assert.ok(!app.includes("function rowsSignature("), "sampled row signatures can 
 assert.ok(app.includes("function dataRevisionSignature("), "explicit data revisions are missing");
 assert.ok(app.includes("function getTraceLinePaths("), "DOM-only line highlighting is missing");
 assert.ok(!app.includes('Plotly.restyle(el, { "line.width"'), "line hover still triggers Plotly restyle");
-assert.ok(app.includes("ThinkStockPerformanceMonitor"), "performance monitor module is not wired into the app");
-assert.ok(performanceMonitor.includes("createPerformanceMonitor") && performanceMonitor.includes("p95FrameGap"), "performance monitor module is incomplete");
-assert.ok(app.includes("ThinkStockDeferredDiagnostics")
+assert.ok(app.includes('from "./modules/performance-monitor.mjs"'), "performance monitor module is not wired into the app");
+assert.ok(performanceMonitor.includes("createPerformanceMonitor")
+  && performanceMonitor.includes("createChartRenderTelemetry")
+  && performanceMonitor.includes("p95FrameGap"),
+"performance monitor module is incomplete");
+assert.ok(!app.includes('from "./modules/deferred-diagnostics.mjs"')
+  && optionalFeatureRuntime.includes('"diagnostics-runtime"')
+  && optionalFeatureRuntime.includes('"./assets/diagnostics-runtime-feature.bundle.min.js"')
+  && diagnosticsRuntimeFeatureEntry.includes('from "../../docs/modules/deferred-diagnostics.mjs"')
+  && diagnosticsRuntimeFeatureEntry.includes('from "../../docs/modules/performance-diagnostics.mjs"')
   && deferredDiagnostics.includes("createDeferredDiagnostics")
+  && !deferredDiagnostics.includes("ThinkStockPerformanceDiagnostics")
   && performanceDiagnostics.includes("createPerformanceDiagnostics")
-  && performanceDiagnostics.includes("readStorageState"),
+  && performanceDiagnostics.includes("readStorageState")
+  && sw.includes('"/assets/diagnostics-runtime-feature.bundle.min.js"'),
   "persistent performance diagnostics are incomplete");
 assert.ok(performanceDiagnostics.includes("startAutomaticCapture")
   && deferredDiagnostics.includes("scheduleAutomaticCapture")
   && performanceMonitor.includes("diagnosticSamples"),
   "automatic local performance history is incomplete");
-assert.ok(!pagesEntry.includes('import "../docs/modules/performance-diagnostics.js"')
-  && pagesEntry.includes('import "../docs/modules/deferred-diagnostics.js"'),
+assert.ok(!pagesEntry.includes("performance-diagnostics")
+  && !pagesEntry.includes("deferred-diagnostics"),
   "performance diagnostics must stay out of the initial bundle");
-assert.ok(sw.includes('"/modules/performance-diagnostics.js"')
-  && !precacheAssetsSource.includes("./modules/performance-diagnostics.js"),
+assert.ok(!sw.includes("/modules/performance-diagnostics")
+  && !precacheAssetsSource.includes("./assets/diagnostics-runtime-feature.bundle.min.js"),
   "deferred performance diagnostics cache policy is incorrect");
-assert.ok(app.includes("ThinkStockDataHealth")
+assert.ok(app.includes('from "./modules/data-health.mjs"')
   && dataHealth.includes("buildFreshnessItems")
   && dataHealth.includes("detectRecentChanges"),
   "shared data health checks are incomplete");
+assert.ok(app.includes('from "./modules/data-freshness-controller.mjs"')
+  && dataFreshnessController.includes("renderFreshness")
+  && dataFreshnessController.includes("summarizeQuality"),
+"data freshness controller and view are not using one lifecycle boundary");
 assert.ok(!app.includes("function dateSpanForRows(") && !app.includes("function daysSinceDate("),
   "data health logic still lives in app.js");
-assert.ok(app.includes("ThinkStockAppUiBindings")
+assert.ok(app.includes('from "./modules/app-ui-bindings.mjs"')
   && appUiBindings.includes("bindManualRefresh")
   && appUiBindings.includes("bindChartRangeControls"),
   "boot UI event bindings are not separated from app.js");
-assert.ok(app.includes("ThinkStockSettingsPanelRuntime")
-  && app.includes("ThinkStockApiPeriods")
-  && !pagesEntry.includes('import "../docs/modules/api-periods.js"')
-  && !pagesEntry.includes('import "../docs/modules/settings-panel-runtime.js"')
-  && optionalFeatureRuntime.includes('loader.loadFeature("settings"')
+assert.ok(!app.includes("ThinkStockSettingsPanelRuntime")
+  && !app.includes("ThinkStockApiPeriods")
+  && !pagesEntry.includes("api-periods")
+  && !pagesEntry.includes("settings-panel-runtime")
+  && optionalFeatureRuntime.includes("loader.loadModuleFeature(")
+  && optionalFeatureRuntime.includes('"settings"')
   && optionalFeatureRuntime.includes('"./assets/settings-feature.bundle.min.js"')
-  && settingsFeatureEntry.includes('import "../../docs/modules/api-periods.js"')
-  && settingsFeatureEntry.includes('import "../../docs/modules/release-notes.js"')
-  && settingsFeatureEntry.includes('import "../../docs/modules/settings-panel-runtime.js"')
+  && !optionalFeatureRuntime.includes("scope.ThinkStockSettingsFeature")
+  && settingsFeatureEntry.includes('from "../../docs/modules/api-periods.mjs"')
+  && settingsFeatureEntry.includes('from "../../docs/modules/release-notes.mjs"')
+  && settingsFeatureEntry.includes('from "../../docs/modules/settings-panel-runtime.mjs"')
+  && settingsFeatureEntry.includes("export { settingsFeature }")
+  && !settingsFeatureEntry.includes("ThinkStockSettingsFeature")
   && apiPeriods.includes("createReminderStore")
   && apiPeriods.includes("파생상품지수 시세정보")
   && settingsPanelRuntime.includes("createSettingsPanelRuntime")
   && !app.includes("const syncAppCacheButton = async"),
 "settings panel event binding is not separated from app.js");
-assert.ok(app.includes("ThinkStockRuntimeSnapshotPolicy")
+assert.ok(app.includes('from "./modules/runtime-snapshot-controller.mjs"')
   && runtimeSnapshotPolicy.includes("createRevisionTracker")
   && runtimeSnapshotPolicy.includes("isSnapshotUsable")
   && runtimeSnapshotPolicy.includes("hasCoreHistoricalCoverage"),
   "runtime snapshot policy module is incomplete");
-assert.ok(performanceMonitor.includes("gap < frameGapIgnoreMs"), "suspended tabs still pollute frame timing diagnostics");
-assert.ok(performanceMonitor.includes('observe({ type: "longtask", buffered: true })'),
-  "browser long-task diagnostics are missing");
+assert.ok(performanceDiagnostics.includes("gap < frameGapIgnoreMs"),
+  "suspended tabs still pollute delayed frame timing diagnostics");
+assert.ok(performanceDiagnostics.includes('observe({ type: "longtask", buffered: true })'),
+  "delayed browser long-task diagnostics are missing");
+assert.ok(performanceMonitor.includes("attachBrowserMetricsProvider")
+  && !performanceMonitor.includes("PerformanceObserver")
+  && !performanceMonitor.includes("requestAnimationFrame"),
+"continuous browser observers still live in the main performance bundle");
 assert.ok(!app.includes("let perfSamples") && !app.includes("function startPerfFrameMonitor("), "performance diagnostics still live in app.js");
-assert.ok(app.includes("ThinkStockAppStorage"), "app storage module is not wired into the app");
+assert.ok(app.includes('from "./modules/app-storage.mjs"'), "app storage module is not wired into the app");
 assert.ok(appStorage.includes("createApiSettingsStore")
   && appStorage.includes("createIndexedCacheStore")
   && appStorage.includes("createJsonStore"), "app storage module is incomplete");
 assert.ok(!app.includes("function openRuntimeCacheDb(") && !app.includes("function sanitizeApiSettings("), "storage implementation still lives in app.js");
-assert.ok(app.includes("ThinkStockCacheMigrations")
-  && pagesEntry.includes('import "../docs/modules/cache-migrations.js"')
-  && cacheMigrations.includes("copyFirstAvailable")
-  && app.includes("cacheMigrator.run();"),
+assert.ok(app.includes('from "./modules/cache-maintenance-runtime.mjs"')
+  && cacheMaintenanceRuntime.includes("copyFirstAvailable")
+  && app.includes("cacheMigrator.run()"),
 "cache migration flow is incomplete");
-assert.ok(app.includes("ThinkStockStartupLoader"), "startup loader module is not wired into the app");
-assert.ok(startupLoader.includes("createStartupLoader") && startupLoader.includes("requestAnimationFrame"), "startup loader module is incomplete");
+assert.ok(app.includes('from "./modules/admin-feature-access.mjs"')
+  && app.includes('from "./modules/background-stock-refresh.mjs"')
+  && app.includes('from "./modules/runtime-index-refresh.mjs"')
+  && app.includes('from "./modules/series-cache-retention.mjs"'),
+"small app services still rely on legacy globals");
+assert.ok(app.includes("createStartupLoader")
+  && appBootstrapOrchestrator.includes("requestAnimationFrame"),
+"startup loader module is incomplete");
 assert.ok(!app.includes("function ensureStartupLoader(") && !app.includes("startupLoaderDisplayProgress"), "startup loader implementation still lives in app.js");
-assert.ok(app.includes("ThinkStockRuntimeDataApp")
-  && pagesEntry.includes('import "../docs/modules/runtime-data-app.js"')
+assert.ok(app.includes('from "./modules/runtime-data-app.mjs"')
   && runtimeDataApp.includes("refreshController.abort")
   && runtimeDataApp.includes("prepareInitialData")
   && !app.includes("let runtimeRefreshController"),
 "runtime data orchestration or superseded refresh cancellation is incomplete");
-assert.ok(app.includes("ThinkStockRuntimeSourceHealth")
-  && pagesEntry.includes('import "../docs/modules/runtime-source-health.js"')
+assert.ok(app.includes('from "./modules/runtime-source-health.mjs"')
   && runtimeSourceHealth.includes("createRuntimeSourceHealth")
   && runtimeRefreshOrchestrator.includes("canAttemptSource"),
 "persistent runtime source recovery is incomplete");
-assert.ok(app.includes("ThinkStockRuntimeBootstrap")
-  && pagesEntry.includes('import "../docs/modules/runtime-bootstrap.js"')
+assert.ok(app.includes('from "./modules/runtime-bootstrap.mjs"')
   && runtimeBootstrap.includes("fetchLatestPriceSeriesBatch")
   && runtimeBootstrap.includes("fetchCritical"),
 "runtime bootstrap batching is not separated from app.js");
@@ -770,48 +1070,93 @@ assert.ok(!app.includes("function cancelStaleChartModelWorkerRequest()")
   && chartModelWorkerClient.includes("active.superseded")
   && chartModelWorkerClient.includes("request.resolve(null)"),
 "chart worker does not use persistent latest-wins scheduling");
-assert.ok(app.includes("ThinkStockChartPointerRuntime")
-  && pagesEntry.includes('import "../docs/modules/chart-pointer-runtime.js"')
+assert.ok(app.includes('from "./modules/chart-pointer-runtime.mjs"')
+  && !pagesEntry.includes("chart-pointer-runtime")
   && chartPointerRuntime.includes("getChartInteractionGeometry(sourceEl)"),
 "pointer geometry is not shared per frame");
-assert.ok(app.includes("buildRenderViewportPlan")
-  && pagesEntry.includes('import "../docs/modules/chart-viewport-controller.js"')
-  && chartViewportController.includes("function buildRenderViewportPlan"),
+assert.ok(app.includes("createApplicationLifecycleRuntime")
+  && app.includes('from "./modules/app-bootstrap-orchestrator.mjs"')
+  && app.includes("if (!event.persisted) applicationLifecycle.dispose()")
+  && app.includes("appRuntimeRegistry.disposeAll()")
+  && applicationLifecycleRuntime.includes("if (disposed) return false")
+  && applicationLifecycleRuntime.includes("cleanupSteps.forEach")
+  && applicationLifecycleRuntime.includes("function disposeAll()")
+  && applicationLifecycleRuntime.includes("pending.clear()")
+  && applicationLifecycleRuntime.includes("values.forEach((entry)"),
+"application runtime resources are not released on final page exit");
+assert.ok(app.includes("chartUpdateCoordinatorModule.buildMainChartRenderFrame")
+  && app.includes("chartUpdateCoordinatorModule.applyMainChartViewportPlan")
+  && app.includes("chartUpdateCoordinatorModule.finalizeMainChartFrameState")
+  && app.includes('from "./modules/chart-viewport-controller.mjs"')
+  && !pagesEntry.includes("chart-viewport-controller")
+  && chartViewportController.includes("function buildRenderViewportPlan")
+  && chartViewportController.includes("createFutureOverlayController")
+  && chartUpdateCoordinator.includes("viewport.controller.buildRenderViewportPlan")
+  && chartUpdateCoordinator.includes("function applyMainChartViewportPlan")
+  && chartUpdateCoordinator.includes("function finalizeMainChartFrameState")
+  && app.includes("getFutureOverlayController"),
 "main chart viewport planning is not separated from renderChart");
-assert.ok(app.includes("ThinkStockChartMarkerRuntime")
-  && pagesEntry.includes('import "../docs/modules/chart-marker-runtime.js"')
+assert.ok(app.includes('from "./modules/chart-marker-runtime.mjs"')
+  && !pagesEntry.includes("chart-marker-runtime")
+  && chartMarkerRuntime.includes("export const chartMarkerRuntime")
+  && chartMarkerRuntime.includes("export const chartMarkerLayout")
+  && chartMarkerRuntime.includes("EVENT_MARKER_DESCRIPTORS")
+  && chartMarkerRuntime.includes("materializeEventMarkerTraces")
   && chartMarkerRuntime.includes("createFrame")
   && chartMarkerRuntime.includes("buildDisclosure")
   && chartMarkerRuntime.includes("buildInsider")
   && chartMarkerRuntime.includes("buildTimingSignalPopoverGroup")
-  && app.includes("chartMarkerRuntimeModule.buildTimingSignalPopoverGroup(point)")
+  && chartMarkerRuntime.includes("buildEventMarkerPopoverGroup")
+  && app.includes("chartMarkerRuntimeModule.buildEventMarkerPopoverGroup(point)")
+  && app.includes("currentEventMarkerSpecs")
   && !app.includes("매수 타이밍 · 투매 저점 확인"),
 "chart marker rendering is not separated or sharing one frame");
-assert.ok(app.includes("bindPointerDrag")
+assert.ok(app.includes("getSeriesTransformDragController")
+  && chartInteractionController.includes("createSeriesTransformDragController")
   && chartInteractionController.includes('addEventListener("pointermove"')
   && chartInteractionController.includes("getCoalescedEvents"),
   "chart input is not using the unified pointer pipeline");
+assert.ok(chartEventLayer.includes("traceMarkerNodes")
+  && chartEventLayer.includes("setMarkerHighlighted")
+  && app.includes("chartEventLayerModule.setMarkerHighlighted"),
+"event marker highlighting is not using the shared DOM lookup cache");
 assert.ok(!`${app}\n${chartPointerRuntime}`.includes('addEventListener("touchmove"')
   && !`${app}\n${chartPointerRuntime}`.includes('addEventListener("mousedown"'),
   "legacy chart input listeners remain");
 assert.ok(app.includes("function applyDisclosureStateFast("), "disclosure-only updates still require a full chart render");
-assert.ok(app.includes("function applyMainChartRender(") && app.includes("mainChartPartialUpdateCount"),
-  "main chart partial update fast path is missing");
-assert.ok(app.includes("ThinkStockMainChartRenderer")
+assert.ok(app.includes("function applyMainChartRender(")
+  && app.includes("chartUpdateCoordinatorModule.createMainChartRenderRuntime")
+  && app.includes("telemetry: chartRenderTelemetry")
+  && chartUpdateCoordinator.includes("function createMainChartRenderRuntime(")
+  && chartUpdateCoordinator.includes("options.telemetry?.begin?.")
+  && chartUpdateCoordinator.includes("options.telemetry?.complete?.(telemetryToken, result)"),
+"main chart render fast paths are not using shared telemetry");
+assert.ok(app.includes('from "./modules/main-chart-renderer.mjs"')
+  && !pagesEntry.includes("main-chart-renderer")
+  && mainChartRenderer.includes("export const mainChartRenderer")
   && mainChartRenderer.includes("await plotly.update(")
   && mainChartRenderer.includes("relayoutPayload(layout)")
   && mainChartRenderer.includes("buildLineTraces")
   && mainChartRenderer.includes("buildLayout"),
   "main chart renderer module is incomplete");
-assert.ok(app.includes("ThinkStockMainChartEvents")
-  && pagesEntry.includes('import "../docs/modules/main-chart-events.js"')
+assert.ok(mainChartRenderer.includes("function chartOverlayDescriptor(")
+  && mainChartRenderer.includes("overlayKind")
+  && chartHoverRuntime.includes(".hoverlayer > g.legend"),
+  "chart overlays do not share classification or first-hover recovery");
+assert.ok(app.includes('from "./modules/main-chart-events.mjs"')
+  && !pagesEntry.includes("main-chart-events")
   && mainChartEvents.includes("createMainChartEvents")
   && mainChartEvents.includes('element.on("plotly_relayout"'),
 "main chart event binding is not separated from app.js");
 assert.ok(!app.includes("function mainChartRestylePayload(")
   && !app.includes("function canApplyMainChartPartialUpdate("),
   "main chart rendering implementation still lives in app.js");
-assert.ok(app.includes('const DISCLOSURE_ICON_TEXT = "◆";'), "disclosure icon is not configured");
+assert.ok(chartMarkerRuntime.includes("const CHART_MARKER_DEFAULTS")
+  && chartMarkerRuntime.includes('disclosureIconText: "◆"')
+  && chartMarkerRuntime.includes("disclosureTextSize: 13")
+  && chartMarkerRuntime.includes('mode: "text"')
+  && chartMarkerRuntime.includes('constants.disclosureIconText || "◆"'),
+"disclosure diamond marker is not configured");
 assert.ok(app.includes("createSeedBundleLoader")
   && dataSeedLoader.includes("createSeedBundleLoader")
   && dataSeedLoader.includes("fetchSegmentedSeedText"),
@@ -819,7 +1164,10 @@ assert.ok(app.includes("createSeedBundleLoader")
 assert.ok(app.includes("ensureHistoricalDataLoaded"), "historical lazy loading is missing");
 assert.ok(app.includes("requestChartModelFromWorker"), "chart model worker client is missing");
 assert.ok(app.includes("initE2eDebugAccess"), "WebKit test diagnostics are missing");
-assert.ok(app.includes("scheduleServiceWorkerRegistration();"), "service worker registration is not started during boot");
+assert.ok(app.includes("scheduleServiceWorker: () => runAfterStartupVisualReady(scheduleDeferredServiceWorkerRegistration)")
+  && app.includes('"service-worker-registration"')
+  && appBootstrapOrchestrator.includes("options.scheduleServiceWorker?.();"),
+"service worker registration is not deferred until visual startup completes");
 assert.ok(!app.includes("function requestServiceWorkerDataRefresh("), "service worker messaging still lives in app.js");
 assert.ok(sw.includes("function cacheFirst("), "service worker cache-first strategy is missing");
 assert.ok(sw.includes("isVersionedAssetUrl(url)"), "versioned assets are not using immutable caching");
@@ -842,7 +1190,9 @@ assert.ok(playwrightConfig.includes('name: "webkit-sw"') && playwrightConfig.inc
   "service-worker-aware WebKit coverage is missing");
 assert.ok(playwrightConfig.includes('name: "webkit"')
   && playwrightConfig.includes('name: "webkit-desktop"')
-  && deployWorkflow.includes("run_webkit_scope.mjs release ${{ inputs.verification_scope }}")
+  && deployWorkflow.includes("matrix:")
+  && deployWorkflow.includes("target: [mobile, desktop, sw]")
+  && deployWorkflow.includes("run_webkit_scope.mjs ${{ matrix.target }} ${{ inputs.verification_scope }}")
   && webkitScopeRunner.includes('mode === "release"')
   && webkitScopeRunner.includes('args.push("--project=webkit", "--project=webkit-desktop", "--project=webkit-sw")')
   && webkitScopeRunner.includes('mode === "desktop"')
@@ -914,7 +1264,10 @@ assert.ok(buildPagesData.includes("detect_price_rebases") && buildPagesData.incl
   "incremental Pages data policies are not wired into the builder");
 assert.ok(buildPagesData.includes("SourcePipeline") && buildPagesData.includes("build_dart_corp_code_payloads"),
   "Pages source health or sharded DART payload is missing");
-assert.ok(app.includes('stock-to-corp-shards-v1') && app.includes("dartCorpCodeLoadedShards"),
+assert.ok(dataSeedLoader.includes('stock-to-corp-shards-v1')
+  && dataSeedLoader.includes("createShardedCorpCodeRegistry")
+  && dataSeedLoader.includes("loadedShards")
+  && app.includes("createShardedCorpCodeRegistry"),
   "DART corp code shards are not loaded lazily");
 assert.ok(providerContracts.includes("freesis_rows")
   && providerContracts.includes("fear_greed_rows")

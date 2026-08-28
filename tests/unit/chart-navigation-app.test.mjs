@@ -1,11 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/chart-viewport-controller.js");
-await import("../../docs/modules/chart-navigation-app.js");
-
-const viewport = globalThis.ThinkStockChartViewportController;
-const { createChartNavigation } = globalThis.ThinkStockChartNavigationApp;
+import * as viewport from "../../docs/modules/chart-viewport-controller.mjs";
+import { createChartNavigation } from "../../docs/modules/chart-navigation-app.mjs";
 
 function fakeElement() {
   const classes = new Set();
@@ -202,6 +199,7 @@ test("period presets keep the requested history before a right-side blank margin
   const latest = Date.parse("2026-08-01");
   const padding = 30 * dayMs;
   const applied = [];
+  const renderRequests = [];
   const navigation = createChartNavigation({}, {
     viewport,
     dayMs,
@@ -210,7 +208,8 @@ test("period presets keep the requested history before a right-side blank margin
     getRightPaddingMs: () => padding,
     toMilliseconds: Date.parse,
     shiftMonths: () => "2026-02-01",
-    applyRange: (...args) => applied.push(args),
+    applyRange: (...args) => { applied.push(args); return true; },
+    requestRender: (request) => renderRequests.push(request),
   });
 
   assert.equal(navigation.showLatestPeriod(6), true);
@@ -218,4 +217,51 @@ test("period presets keep the requested history before a right-side blank margin
     Date.parse("2026-02-01"),
     latest + padding,
   ]);
+  assert.deepEqual(renderRequests, [{
+    preserveZoom: true,
+    range: [
+      Date.parse("2026-02-01"),
+      latest + padding,
+    ],
+    reason: "range-preset",
+    updateClass: "viewport-range",
+  }]);
+});
+
+test("a rejected period range does not queue a stale viewport render", () => {
+  const renderRequests = [];
+  const navigation = createChartNavigation({}, {
+    viewport,
+    getElement: fakeElement,
+    getDataRange: () => [0, 1000],
+    toMilliseconds: () => 200,
+    shiftMonths: () => "ignored",
+    applyRange: () => false,
+    requestRender: (request) => renderRequests.push(request),
+  });
+
+  assert.equal(navigation.showLatestPeriod(6), true);
+  assert.deepEqual(renderRequests, []);
+});
+
+test("period presets expose their buffered render completion", async () => {
+  let completeRender;
+  let settled = false;
+  const navigation = createChartNavigation({}, {
+    viewport,
+    getElement: fakeElement,
+    getDataRange: () => [0, 1000],
+    toMilliseconds: () => 200,
+    shiftMonths: () => "ignored",
+    applyRange: () => true,
+    requestRender: () => new Promise((resolve) => { completeRender = resolve; }),
+  });
+
+  assert.equal(navigation.showLatestPeriod(6), true);
+  const wait = navigation.whenRangeSettled().then(() => { settled = true; });
+  await Promise.resolve();
+  assert.equal(settled, false);
+  completeRender();
+  await wait;
+  assert.equal(settled, true);
 });

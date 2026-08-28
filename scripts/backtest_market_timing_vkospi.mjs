@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { runInThisContext } from "node:vm";
 import { buildRandomValidationBatches } from "../shared/ai-validation-sampling.mjs";
 import { buildTimingSignalOutcome } from "../shared/market-timing-outcomes.mjs";
+import { buildMacdOscillator } from "../docs/modules/macd-oscillator.mjs";
+import currentMarketTimingApi from "../docs/modules/market-timing.mjs";
 import {
   average,
   timingComposite as composite,
@@ -27,9 +29,6 @@ import {
 } from "../shared/market-timing-evaluation.mjs";
 
 const RUN_STARTED_AT = Date.now();
-
-await import("../docs/modules/macd-oscillator.js");
-await import("../docs/modules/market-timing.js");
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CACHE_DIR = path.join(ROOT, ".thinkstock-cache", "ai-backtest");
@@ -68,29 +67,45 @@ const OUTPUT_PATH = path.join(
 );
 const START_DATE = "2011-01-01";
 
-const { buildMacdOscillator } = globalThis.ThinkStockMacdOscillator;
-const currentMarketTimingApi = globalThis.ThinkStockMarketTiming;
 const {
   buildKoreanVolatilityTimingRows,
   buildMarketTimingSignals,
 } = currentMarketTimingApi;
 
-function loadHeadMarketTimingApi() {
-  const source = execFileSync("git", ["show", "HEAD:docs/modules/market-timing.js"], {
-    cwd: ROOT,
-    encoding: "utf8",
-    windowsHide: true,
-  });
-  runInThisContext(source, { filename: "HEAD:docs/modules/market-timing.js" });
+function readHeadSource(repositoryPath) {
+  try {
+    return execFileSync("git", ["show", `HEAD:${repositoryPath}`], {
+      cwd: ROOT,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+    });
+  } catch (_) {
+    return "";
+  }
+}
+
+async function loadHeadMarketTimingApi() {
+  const moduleSource = readHeadSource("docs/modules/market-timing.mjs");
+  if (moduleSource) {
+    const encoded = Buffer.from(moduleSource, "utf8").toString("base64");
+    const module = await import(`data:text/javascript;base64,${encoded}`);
+    return module.default;
+  }
+  const legacySource = readHeadSource("docs/modules/market-timing.js");
+  if (!legacySource) throw new Error("HEAD market timing source is unavailable");
+  const previous = globalThis.ThinkStockMarketTiming;
+  runInThisContext(legacySource, { filename: "HEAD:docs/modules/market-timing.js" });
   const headApi = globalThis.ThinkStockMarketTiming;
-  globalThis.ThinkStockMarketTiming = currentMarketTimingApi;
+  if (previous === undefined) delete globalThis.ThinkStockMarketTiming;
+  else globalThis.ThinkStockMarketTiming = previous;
   if (typeof headApi?.buildMarketTimingSignals !== "function") {
     throw new Error("HEAD market timing API could not be loaded");
   }
   return headApi;
 }
 
-const headMarketTimingApi = HEAD_COMPARE_MODE ? loadHeadMarketTimingApi() : null;
+const headMarketTimingApi = HEAD_COMPARE_MODE ? await loadHeadMarketTimingApi() : null;
 
 function readJson(filename) {
   return JSON.parse(fs.readFileSync(filename, "utf8"));

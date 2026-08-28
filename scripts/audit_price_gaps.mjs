@@ -53,6 +53,44 @@ export function countDatesBetween(sortedDates, start, end) {
   return Math.max(0, count);
 }
 
+export function detectIsolatedPriceSpikes(rows, options = {}) {
+  const records = Array.isArray(rows) ? rows : [];
+  const seriesKeys = Array.isArray(options.seriesKeys) && options.seriesKeys.length
+    ? [...new Set(options.seriesKeys.map((key) => String(key || "").trim()).filter(Boolean))]
+    : [...new Set(records.flatMap((row) => Object.keys(row || {})).filter((key) => key !== "date"))];
+  const stockMultiple = Math.max(2, Number(options.stockMultiple) || 3.5);
+  const indexMultiple = Math.max(1.2, Number(options.indexMultiple) || 1.6);
+  const surroundingMultiple = Math.max(1, Number(options.surroundingMultiple) || 2);
+  const issues = [];
+
+  seriesKeys.forEach((series) => {
+    const points = records
+      .map((row) => ({ date: String(row?.date || "").slice(0, 10), value: Number(row?.[series]) }))
+      .filter((point) => /^\d{4}-\d{2}-\d{2}$/.test(point.date) && Number.isFinite(point.value) && point.value > 0)
+      .sort((left, right) => left.date.localeCompare(right.date));
+    const threshold = series.startsWith("^") ? indexMultiple : stockMultiple;
+    for (let index = 1; index < points.length - 1; index += 1) {
+      const previous = points[index - 1];
+      const current = points[index];
+      const next = points[index + 1];
+      const firstChange = Math.max(current.value / previous.value, previous.value / current.value);
+      const reversal = Math.max(current.value / next.value, next.value / current.value);
+      const surroundingChange = Math.max(next.value / previous.value, previous.value / next.value);
+      if (firstChange < threshold || reversal < threshold || surroundingChange > surroundingMultiple) continue;
+      issues.push(Object.freeze({
+        series,
+        date: current.date,
+        previous: previous.value,
+        current: current.value,
+        next: next.value,
+        multiple: Math.round(Math.max(firstChange, reversal) * 100) / 100,
+      }));
+    }
+  });
+
+  return Object.freeze(issues);
+}
+
 export function auditPriceGapRecords(recordsByTicker, options = {}) {
   const minimumCalendarDays = Math.max(2, Number(options.minimumCalendarDays) || 10);
   const calendars = { KS: new Set(), KQ: new Set() };

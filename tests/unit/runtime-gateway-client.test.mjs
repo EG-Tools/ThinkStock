@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/shared-request-registry.js");
-await import("../../docs/modules/runtime-gateway-client.js");
-const module = globalThis.ThinkStockRuntimeGatewayClient;
+import * as module from "../../docs/modules/runtime-gateway-client.mjs";
+import { createSharedRequestRegistry } from "../../docs/modules/shared-request-registry.mjs";
 
 test("requests startup indices and visible prices through one endpoint", async () => {
   let request = null;
@@ -285,6 +284,31 @@ test("routes local insider trades without exposing the access token", async () =
   assert.equal(Object.hasOwn(request.init.headers, "Authorization"), false);
 });
 
+test("routes one completed DART EPS year through the local gateway", async () => {
+  let request = null;
+  const client = module.createRuntimeGatewayClient({
+    isLocal: true,
+    getAccessToken: () => "secret",
+    fetchWithTimeout: async (url, init) => {
+      request = { url, init };
+      return new Response(JSON.stringify({ ok: true, records: [] }), { status: 200 });
+    },
+    endpoints: { epsHistory: "https://worker.example/api/dart/eps-history" },
+    localEndpoints: { epsHistory: "./api/dart/eps-history" },
+  });
+
+  await client.fetchEpsHistory({
+    ticker: "218410.KQ",
+    corpCode: "01078178",
+    year: 2025,
+  });
+  assert.match(request.url, /^\.\/api\/dart\/eps-history\?/);
+  assert.match(request.url, /ticker=218410.KQ/);
+  assert.match(request.url, /corpCode=01078178/);
+  assert.match(request.url, /year=2025/);
+  assert.equal(Object.hasOwn(request.init.headers, "Authorization"), false);
+});
+
 test("shares simultaneous identical gateway requests", async () => {
   let calls = 0;
   let release;
@@ -305,4 +329,37 @@ test("shares simultaneous identical gateway requests", async () => {
   await Promise.all([first, second]);
   assert.equal(calls, 1);
   assert.equal(client.requestStats().sharedHits, 1);
+});
+
+test("uses the app registry and queues one forced refresh behind a normal request", async () => {
+  const registry = createSharedRequestRegistry();
+  const releases = [];
+  const urls = [];
+  const client = module.createRuntimeGatewayClient({
+    requestRegistry: registry,
+    fetchWithTimeout: async (url) => {
+      urls.push(url);
+      await new Promise((resolve) => releases.push(resolve));
+      return new Response(JSON.stringify({ ok: true, rows: [] }), { status: 200 });
+    },
+    endpoints: { macro: "https://worker.example/api/macro" },
+  });
+
+  const normal = client.fetchMacro();
+  await Promise.resolve();
+  await Promise.resolve();
+  const forcedA = client.fetchMacro({ forceNetwork: true });
+  const forcedB = client.fetchMacro({ forceNetwork: true });
+  assert.equal(urls.length, 1);
+
+  releases.shift()();
+  await normal;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(urls.length, 2);
+  assert.match(urls[1], /refresh=1$/);
+
+  releases.shift()();
+  await Promise.all([forcedA, forcedB]);
+  assert.equal(urls.length, 2);
+  assert.equal(registry.stats().queued, 2);
 });

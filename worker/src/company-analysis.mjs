@@ -3,14 +3,23 @@ import {
   mergePointInTimeAnalysisSnapshots,
 } from "../../shared/ai-analysis-snapshots.mjs";
 import { normalizeAnalysisNewsEvidence } from "../../shared/ai-news-evidence.mjs";
+import {
+  completedDartEpsYearRange,
+  DART_EPS_HISTORY_VERSION,
+  fetchDartEpsYear,
+} from "../../shared/dart-financial-history.mjs";
 import { koreanDateText } from "../../shared/market-calendar.mjs";
+import { jsonResponse, writeCachesBestEffort } from "./http-runtime.mjs";
 
 const COMPANY_OVERVIEW_URL = "https://navercomp.wisereport.co.kr/v2/company/c1010001.aspx";
+const COMPANY_FINANCIAL_SUMMARY_URL = "https://navercomp.wisereport.co.kr/v2/company/ajax/cF1001.aspx";
 const COMPANY_NEWS_URL = "https://finance.naver.com/item/main.naver";
 const MAX_OVERVIEW_BYTES = 900_000;
+const MAX_FINANCIAL_SUMMARY_BYTES = 500_000;
 const MAX_NEWS_BYTES = 600_000;
 
 export const ANALYSIS_CACHE_SCHEMA = 5;
+export const FINANCIAL_SUMMARY_VERSION = 2;
 
 function decodeHtmlEntities(value) {
   const named = {
@@ -111,6 +120,7 @@ export function normalizeAnalysisCache(value, ticker) {
     || storedSnapshots.some((snapshot) => snapshot.savedAt === currentSnapshot.savedAt);
   return {
     schema: ANALYSIS_CACHE_SCHEMA,
+    financialSummaryVersion: Math.max(0, Number(value.financialSummaryVersion) || 0),
     ticker,
     savedAt: analysisTimestamp(value.savedAt) || 0,
     consensus: value.consensus || null,
@@ -321,24 +331,27 @@ function rowValuesByLabel(table) {
   return output;
 }
 
-export function parseFinancialSummaryHtml(html, ticker) {
+export function parseFinancialSummaryHtml(html, ticker, options = {}) {
+  const forcedFrequency = ["annual", "quarter"].includes(options.frequency)
+    ? options.frequency
+    : "";
   const tables = [...String(html || "").matchAll(/<table\b[^>]*>[\s\S]*?<\/table>/gi)].map((match) => match[0]);
   const table = tables.find((candidate) => (
-    /r02c0[0-7]/i.test(candidate) && /매출액/.test(htmlText(candidate))
+    /r0[23]c\d{2}/i.test(candidate) && /매출액/.test(htmlText(candidate))
   ));
   if (!table) return [];
 
   const periods = [...table.matchAll(/<th\b([^>]*)>([\s\S]*?)<\/th>/gi)]
     .map((match) => {
       const className = attributeValue(match[1], "class");
-      const column = Number(className.match(/\br02c(\d{2})\b/i)?.[1]);
+      const column = Number(className.match(/\br0[23]c(\d{2})\b/i)?.[1]);
       const text = htmlText(match[2]);
       const period = text.match(/(\d{4})\/(\d{2})(?:\(E\))?/);
       if (!Number.isInteger(column) || !period) return null;
       return {
         column,
         period: `${period[1]}-${period[2]}`,
-        frequency: column <= 3 ? "annual" : "quarter",
+        frequency: forcedFrequency || (column <= 3 ? "annual" : "quarter"),
         estimate: /\(E\)/i.test(text),
       };
     })
@@ -350,7 +363,7 @@ export function parseFinancialSummaryHtml(html, ticker) {
   const revenue = rows.get("매출액") || [];
   const operatingProfit = rows.get("영업이익(발표기준)") || rows.get("영업이익") || [];
   const netIncome = rows.get("당기순이익(지배)") || rows.get("당기순이익") || [];
-  const eps = rows.get("EPS") || [];
+  const eps = rows.get("EPS") || rows.get("EPS(원)") || [];
 
   return periods.map((period, index) => ({
     ticker,
@@ -366,7 +379,32 @@ export function parseFinancialSummaryHtml(html, ticker) {
   ));
 }
 
+export function financialSummaryRequestFromOverview(html, ticker, options = {}) {
+  const source = String(html || "");
+  const code = String(ticker || "").slice(0, 6);
+  const encparam = source.match(/\bencparam\s*:\s*['"]([^'"]+)['"]/i)?.[1] || "";
+  const id = source.match(/\bid\s*:\s*['"]([^'"]+)['"]/i)?.[1] || "";
+  if (!/^\d{6}$/.test(code) || !encparam || !id) return null;
+  const frequency = ["A", "Y", "Q"].includes(options.frequency)
+    ? options.frequency
+    : "A";
+  const query = new URLSearchParams({
+    cmp_cd: code,
+    fin_typ: "0",
+    freq_typ: frequency,
+    extY: "1",
+    extQ: "1",
+    encparam,
+    id,
+  });
+  return {
+    url: `${COMPANY_FINANCIAL_SUMMARY_URL}?${query}`,
+    referer: `${COMPANY_OVERVIEW_URL}?cmp_cd=${encodeURIComponent(code)}`,
+  };
+}
+
 export function mergeFinancialRecords(existing, incoming) {
+  // Preserve periods that have rolled out of the upstream Financial Summary table.
   const merged = new Map();
   [...(existing || []), ...(incoming || [])].forEach((record) => {
     const ticker = String(record?.ticker || "").trim().toUpperCase();
@@ -434,12 +472,247 @@ export async function fetchCompanyAnalysis(ticker, fetchImpl = fetch) {
   }
   const overviewHtml = overviewResult.status === "fulfilled" ? overviewResult.value : "";
   const newsHtml = newsResult.status === "fulfilled" ? newsResult.value : "";
-  const financialSummary = parseFinancialSummaryHtml(overviewHtml, ticker);
+  const financialRequests = [
+    { frequency: "annual", request: financialSummaryRequestFromOverview(overviewHtml, ticker, { frequency: "Y" }) },
+    { frequency: "quarter", request: financialSummaryRequestFromOverview(overviewHtml, ticker, { frequency: "Q" }) },
+  ].filter((entry) => entry.request);
+  const financialResults = await Promise.allSettled(financialRequests.map(async (entry) => {
+    const response = await fetchImpl(entry.request.url, {
+      headers: {
+        Accept: "text/html",
+        "Accept-Language": "ko-KR,ko;q=0.9",
+        Referer: entry.request.referer,
+      },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!response.ok) throw new Error(`Financial summary HTTP ${response.status}`);
+    return {
+      frequency: entry.frequency,
+      html: await boundedText(response, MAX_FINANCIAL_SUMMARY_BYTES),
+    };
+  }));
+  const financialSummary = mergeFinancialRecords([], financialResults.flatMap((result) => (
+    result.status === "fulfilled"
+      ? parseFinancialSummaryHtml(result.value.html, ticker, { frequency: result.value.frequency })
+      : []
+  )));
+  if (!financialSummary.length && overviewHtml) {
+    financialSummary.push(...parseFinancialSummaryHtml(overviewHtml, ticker));
+  }
+  const financialSummaryVersion = financialRequests.length === 2
+    && financialResults.every((result) => result.status === "fulfilled")
+    ? FINANCIAL_SUMMARY_VERSION
+    : 0;
   const earningsTrend = parseEarningsTrendHtml(overviewHtml, ticker);
   return {
     consensus: parseConsensusHtml(overviewHtml, ticker),
     financials: mergeFinancialRecords(financialSummary, earningsTrend),
+    financialSummaryVersion,
     news: parseNaverNewsHtml(newsHtml, ticker),
     newsFetched: newsResult.status === "fulfilled",
   };
+}
+
+async function readAnalysisCache(env, ticker) {
+  if (!env.DISCLOSURE_CACHE) return null;
+  try {
+    const value = await env.DISCLOSURE_CACHE.get(`analysis:${ticker}`, "json");
+    const normalized = normalizeAnalysisCache(value, ticker);
+    if (normalized) return normalized;
+    const legacy = await env.DISCLOSURE_CACHE.get(`consensus:${ticker}`, "json");
+    if (legacy?.schema !== 1 || legacy?.ticker !== ticker) return null;
+    return normalizeAnalysisCache({ ...legacy, schema: 2, financials: [] }, ticker);
+  } catch (_) {
+    return null;
+  }
+}
+
+async function writeAnalysisCache(env, ticker, analysis) {
+  if (!env.DISCLOSURE_CACHE) return;
+  await env.DISCLOSURE_CACHE.put(`analysis:${ticker}`, JSON.stringify({
+    schema: ANALYSIS_CACHE_SCHEMA,
+    financialSummaryVersion: Math.max(0, Number(analysis.financialSummaryVersion) || 0),
+    ticker,
+    savedAt: analysis.savedAt,
+    consensus: analysis.consensus || null,
+    financials: analysis.financials || [],
+    news: sanitizeAnalysisNews(analysis.news, ticker),
+    snapshots: mergeAnalysisSnapshots(analysis.snapshots, []),
+  }));
+}
+
+function analysisPayload(cached, extra = {}) {
+  return {
+    ok: true,
+    ticker: cached.ticker,
+    financialSummaryVersion: Math.max(0, Number(cached.financialSummaryVersion) || 0),
+    savedAt: cached.savedAt,
+    consensus: cached.consensus || null,
+    financials: cached.financials || [],
+    news: cached.news || [],
+    snapshots: cached.snapshots || [],
+    ...extra,
+  };
+}
+
+/**
+ * Serve one company-analysis request while keeping cache migration and stale fallback together.
+ * @param {Record<string, any>} env
+ * @param {{waitUntil?: (promise: Promise<unknown>) => void}|null} ctx
+ * @param {string} ticker
+ * @param {string} origin
+ * @param {{requireFinancials?: boolean, requireNews?: boolean, forceRefresh?: boolean}} [options]
+ */
+export async function companyAnalysisResponse(env, ctx, ticker, origin, options = {}) {
+  const cached = await readAnalysisCache(env, ticker);
+  const fresh = cached
+    && koreanDateText(new Date(Number(cached.savedAt || 0))) === koreanDateText();
+  if (!options.forceRefresh
+    && fresh
+    && (!options.requireNews || cached.hasNews)
+    && (!options.requireFinancials || (
+      cached.financials?.length
+      && cached.financialSummaryVersion >= FINANCIAL_SUMMARY_VERSION
+    ))) {
+    if (cached.needsMigration) {
+      const write = writeCachesBestEffort("company-analysis", [
+        () => writeAnalysisCache(env, ticker, cached),
+      ]);
+      if (ctx?.waitUntil) ctx.waitUntil(write);
+      else await write;
+    }
+    return jsonResponse(analysisPayload(cached, { cached: true }), 200, origin);
+  }
+  try {
+    const incoming = await fetchCompanyAnalysis(ticker);
+    if (options.requireFinancials
+      && !incoming.financials?.length
+      && !incoming.consensus
+      && !incoming.news?.length) {
+      throw new Error("Embedded earnings data is empty");
+    }
+    const analysis = {
+      schema: ANALYSIS_CACHE_SCHEMA,
+      financialSummaryVersion: Math.max(
+        Number(cached?.financialSummaryVersion) || 0,
+        Number(incoming.financialSummaryVersion) || 0,
+      ),
+      ticker,
+      savedAt: Date.now(),
+      consensus: incoming.consensus || cached?.consensus || null,
+      financials: mergeFinancialRecords(cached?.financials || [], incoming.financials || []),
+      news: incoming.newsFetched
+        ? sanitizeAnalysisNews(incoming.news, ticker)
+        : (cached?.news || []),
+    };
+    const currentSnapshot = snapshotFromAnalysis(analysis);
+    analysis.snapshots = mergeAnalysisSnapshots(
+      cached?.snapshots || [],
+      [
+        ...historicalFinancialSnapshotsFromRecord(analysis),
+        ...(currentSnapshot ? [currentSnapshot] : []),
+      ],
+    );
+    const write = writeCachesBestEffort("company-analysis", [
+      () => writeAnalysisCache(env, ticker, analysis),
+    ]);
+    if (ctx?.waitUntil) ctx.waitUntil(write);
+    else await write;
+    return jsonResponse(analysisPayload(analysis, { cached: false }), 200, origin);
+  } catch (error) {
+    if (cached?.consensus || cached?.financials?.length || cached?.news?.length) {
+      return jsonResponse(analysisPayload(cached, {
+        cached: true,
+        stale: true,
+        warning: "최신 기업 분석을 가져오지 못해 마지막 저장 자료를 사용했습니다.",
+      }), 200, origin);
+    }
+    return jsonResponse({ ok: false, error: `Company analysis failed: ${error?.message || error}` }, 503, origin);
+  }
+}
+
+function dartEpsYearCacheKey(ticker, businessYear) {
+  return `eps-history:v${DART_EPS_HISTORY_VERSION}:${ticker}:${businessYear}`;
+}
+
+async function readDartEpsYearCache(env, ticker, businessYear) {
+  if (!env.DISCLOSURE_CACHE) return null;
+  try {
+    const cached = await env.DISCLOSURE_CACHE.get(dartEpsYearCacheKey(ticker, businessYear), "json");
+    return cached?.version === DART_EPS_HISTORY_VERSION
+      && cached?.ticker === ticker
+      && Number(cached?.businessYear) === businessYear
+      && Array.isArray(cached?.records)
+      ? cached : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Serve one completed DART EPS year. Completed years are immutable unless explicitly refreshed.
+ * @param {Record<string, any>} env
+ * @param {string} ticker
+ * @param {string} corpCode
+ * @param {string} origin
+ * @param {{businessYear?: number|string, force?: boolean}} [options]
+ */
+export async function dartEpsHistoryResponse(env, ticker, corpCode, origin, options = {}) {
+  const businessYear = Math.trunc(Number(options.businessYear));
+  const range = completedDartEpsYearRange({ asOf: koreanDateText() });
+  if (businessYear < range.startYear || businessYear > range.endYear) {
+    return jsonResponse({ ok: false, error: "완료된 EPS 사업연도 범위를 벗어났습니다." }, 400, origin);
+  }
+  const cached = await readDartEpsYearCache(env, ticker, businessYear);
+  if (cached && !options.force) {
+    return jsonResponse({
+      ok: true,
+      ...cached,
+      cached: true,
+      startYear: range.startYear,
+      endYear: range.endYear,
+    }, 200, origin);
+  }
+  try {
+    const result = await fetchDartEpsYear({
+      apiKey: env.DART_API_KEY,
+      corpCode,
+      ticker,
+      businessYear,
+    });
+    const payload = {
+      version: DART_EPS_HISTORY_VERSION,
+      ticker,
+      businessYear,
+      savedAt: Date.now(),
+      records: result.records,
+      emptyReports: result.emptyReports,
+    };
+    if (env.DISCLOSURE_CACHE) {
+      await env.DISCLOSURE_CACHE.put(
+        dartEpsYearCacheKey(ticker, businessYear),
+        JSON.stringify(payload),
+      );
+    }
+    return jsonResponse({
+      ok: true,
+      ...payload,
+      cached: false,
+      startYear: range.startYear,
+      endYear: range.endYear,
+    }, 200, origin);
+  } catch (error) {
+    if (cached) {
+      return jsonResponse({
+        ok: true,
+        ...cached,
+        cached: true,
+        stale: true,
+        warning: "최신 DART EPS를 가져오지 못해 저장 자료를 사용했습니다.",
+        startYear: range.startYear,
+        endYear: range.endYear,
+      }, 200, origin);
+    }
+    return jsonResponse({ ok: false, error: `DART EPS failed: ${error?.message || error}` }, 503, origin);
+  }
 }

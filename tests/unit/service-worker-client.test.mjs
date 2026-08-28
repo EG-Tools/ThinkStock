@@ -1,14 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import test from "node:test";
-import vm from "node:vm";
-
-
-const source = await readFile(path.resolve("docs/modules/service-worker-client.js"), "utf8");
-const context = {};
-vm.runInNewContext(source, context);
-const { createServiceWorkerClient } = context.ThinkStockServiceWorkerClient;
+import { createServiceWorkerClient } from "../../docs/modules/service-worker-client.mjs";
 
 
 test("registers the service worker once after window load", async () => {
@@ -61,6 +53,7 @@ test("removes stale service worker caches instead of registering on localhost", 
   let reloads = 0;
   const deletedCaches = [];
   const session = new Map();
+  const local = new Map();
   const scope = {
     document: { readyState: "complete" },
     location: { hostname: "127.0.0.1", reload: () => { reloads += 1; } },
@@ -79,6 +72,10 @@ test("removes stale service worker caches instead of registering on localhost", 
       getItem: (key) => session.get(key) || null,
       setItem: (key, value) => session.set(key, value),
     },
+    localStorage: {
+      getItem: (key) => local.get(key) || null,
+      setItem: (key, value) => local.set(key, value),
+    },
   };
 
   const client = createServiceWorkerClient(scope);
@@ -88,6 +85,33 @@ test("removes stale service worker caches instead of registering on localhost", 
   assert.equal(unregistered, 1);
   assert.deepEqual(deletedCaches, ["thinkstock-dev-1.92"]);
   assert.equal(reloads, 1);
+  assert.equal(local.get("thinkstock-local-sw-clean-v2"), "1");
+});
+
+test("skips repeated localhost cache scans after a clean release", async () => {
+  let registrationReads = 0;
+  let cacheReads = 0;
+  const scope = {
+    location: { hostname: "127.0.0.1" },
+    navigator: {
+      serviceWorker: {
+        controller: null,
+        getRegistrations: async () => { registrationReads += 1; return []; },
+      },
+    },
+    caches: { keys: async () => { cacheReads += 1; return []; } },
+    localStorage: {
+      getItem: (key) => key === "thinkstock-local-sw-clean-v2" ? "1" : null,
+    },
+  };
+
+  assert.deepEqual(await createServiceWorkerClient(scope).releaseLocalServiceWorker(), {
+    skipped: true,
+    registrations: 0,
+    caches: 0,
+  });
+  assert.equal(registrationReads, 0);
+  assert.equal(cacheReads, 0);
 });
 
 test("allows the service worker on localhost only for the explicit e2e switch", async () => {

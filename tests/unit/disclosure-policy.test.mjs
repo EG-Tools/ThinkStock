@@ -1,14 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import test from "node:test";
-import vm from "node:vm";
-
-
-const source = await readFile(path.resolve("docs/modules/disclosure-policy.js"), "utf8");
-const context = {};
-vm.runInNewContext(source, context);
-const policy = context.ThinkStockDisclosurePolicy;
+import * as policy from "../../docs/modules/disclosure-policy.mjs";
 
 
 test("classifies market-moving disclosures", () => {

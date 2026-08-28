@@ -1,12 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../shared/runtime-foundation.mjs");
-await import("../../shared/series-integrity.mjs");
-await import("../../docs/modules/data-health.js");
-await import("../../docs/modules/runtime-data-transaction.js");
-const transaction = globalThis.ThinkStockRuntimeDataTransaction;
-const policies = globalThis.ThinkStockDataHealth.DEFAULT_SERIES_POLICIES;
+import { DEFAULT_SERIES_POLICIES as policies } from "../../docs/modules/data-health.mjs";
+import * as transaction from "../../docs/modules/runtime-data-transaction.mjs";
 
 test("rejects a new zero or abrupt credit value without condemning an older known anomaly", () => {
   const currentRows = [
@@ -91,20 +87,6 @@ test("permits an explicit publication-end trim but rejects accidental history lo
   }).ok, false);
 });
 
-test("last-good ledger preserves the latest successful source after a refresh failure", () => {
-  let now = 100;
-  const ledger = transaction.createLastGoodLedger({ now: () => now });
-  ledger.success("credit", { latestDate: "2026-08-10", detail: "3 rows" });
-  now = 200;
-  const failed = ledger.failure("credit", new Error("HTTP 503"));
-
-  assert.equal(failed.state, "stale");
-  assert.equal(failed.lastSuccessAt, 100);
-  assert.equal(failed.latestDate, "2026-08-10");
-  assert.equal(failed.lastError, "HTTP 503");
-  assert.equal(ledger.snapshot().credit.failureCount, 1);
-});
-
 test("rejects a crisis feed that silently loses its last-good coverage", () => {
   const currentRows = [
     { date: "2026-08-08", score: 40 },
@@ -182,13 +164,169 @@ test("quarantines a bad latest value while preserving the last-good series", () 
   ]);
 });
 
-test("source ledger throttles repeated failures but permits a forced refresh", () => {
-  let now = 1_000;
-  const ledger = transaction.createLastGoodLedger({ now: () => now, retryBaseMs: 2_000 });
-  ledger.failure("adr", new Error("HTTP 503"));
-  assert.equal(ledger.canAttempt("adr").allowed, false);
-  assert.equal(ledger.canAttempt("adr").waitMs, 2_000);
-  assert.equal(ledger.canAttempt("adr", { force: true }).allowed, true);
-  now = 3_000;
-  assert.equal(ledger.canAttempt("adr").allowed, true);
+test("compares dated seed rows semantically without hiding an older correction", () => {
+  const currentRows = [
+    { date: "2020-01-02", kospi: 2100, optional: null },
+    { date: "2026-08-25", kospi: 4200 },
+  ];
+  const equivalentRows = [
+    { date: "2020-01-02", kospi: "2100" },
+    { date: "2026-08-25", kospi: 4200, optional: "" },
+  ];
+  const correctedHistory = [
+    { date: "2020-01-02", kospi: 2099 },
+    equivalentRows[1],
+  ];
+
+  assert.equal(transaction.sameDatedRows(currentRows, equivalentRows), true);
+  assert.equal(transaction.sameDatedRows(currentRows, correctedHistory), false);
+});
+
+test("compares disclosure text without coercing identifiers into numbers", () => {
+  const currentRows = [{ date: "2026-08-25", ticker: "005930", title: "반기보고서" }];
+  const sameRows = [{ date: "2026-08-25", ticker: "005930", title: "반기보고서" }];
+  const differentTicker = [{ date: "2026-08-25", ticker: "5930", title: "반기보고서" }];
+
+  assert.equal(transaction.sameDatedRows(currentRows, sameRows, { numericStrings: false }), true);
+  assert.equal(transaction.sameDatedRows(currentRows, differentTicker, { numericStrings: false }), false);
+});
+
+test("price payload equality ignores generation metadata and series ordering", () => {
+  const current = {
+    generated_at: "2026-08-25T00:00:00Z",
+    records: [{ date: "2026-08-25", "005930.KS": 100 }],
+    series: ["005930.KS", "000660.KS"],
+    display_names: { "005930.KS": "삼성전자", "000660.KS": "SK하이닉스" },
+  };
+  const equivalent = {
+    generated_at: "2026-08-26T00:00:00Z",
+    records: [{ date: "2026-08-25", "005930.KS": "100" }],
+    series: ["000660.KS", "005930.KS"],
+    display_names: { "000660.KS": "SK하이닉스", "005930.KS": "삼성전자" },
+  };
+
+  assert.equal(transaction.samePricePayload(current, equivalent), true);
+  assert.equal(transaction.samePricePayload(current, {
+    ...equivalent,
+    display_names: { ...equivalent.display_names, "005930.KS": "삼성전자 변경" },
+  }), false);
+});
+
+test("unchanged selection preserves the existing object reference", () => {
+  const current = [{ date: "2026-08-25", value: 1 }];
+  const candidate = [{ date: "2026-08-25", value: 1 }];
+  const selected = transaction.selectChangedValue(
+    current,
+    candidate,
+    transaction.sameDatedRows,
+  );
+
+  assert.equal(selected.changed, false);
+  assert.equal(selected.value, current);
+});
+
+test("normalizes an incomplete restored seed state through one shared boundary", () => {
+  const validPayload = { records: [], series: [], display_names: {} };
+  assert.equal(
+    transaction.normalizeRuntimeSeedComponents({ pricePayload: validPayload }).pricePayload,
+    validPayload,
+  );
+
+  const normalized = transaction.normalizeRuntimeSeedComponents({
+    pricePayload: { generated_at: "2026-08-28", records: null, display_names: [] },
+    macroRows: null,
+    creditRows: "invalid",
+  });
+  assert.deepEqual(normalized.pricePayload, {
+    generated_at: "2026-08-28",
+    records: [],
+    series: [],
+    display_names: {},
+  });
+  assert.deepEqual(normalized.macroRows, []);
+  assert.deepEqual(normalized.creditRows, []);
+  assert.deepEqual(normalized.adrRows, []);
+  assert.deepEqual(normalized.disclosureRows, []);
+});
+
+function mergeRowsPreferIncoming(existingRows, incomingRows) {
+  const rows = new Map((existingRows || []).map((row) => [row.date, { ...row }]));
+  (incomingRows || []).forEach((row) => {
+    rows.set(row.date, { ...(rows.get(row.date) || {}), ...row });
+  });
+  return [...rows.values()].sort((left, right) => left.date.localeCompare(right.date));
+}
+
+const seedOperations = {
+  mergeDisclosureRows: mergeRowsPreferIncoming,
+  mergePricePayloadPreferIncoming: (existing, incoming) => ({
+    ...existing,
+    ...incoming,
+    records: mergeRowsPreferIncoming(existing.records, incoming.records),
+  }),
+  mergePricePayloadPreservingExisting: (existing, incoming) => ({
+    ...incoming,
+    ...existing,
+    records: mergeRowsPreferIncoming(incoming.records, existing.records),
+  }),
+  mergeRowsPreferIncoming,
+  mergeRowsPreservingExisting: (existing, incoming) => mergeRowsPreferIncoming(incoming, existing),
+  normalizeCreditRows: (rows) => rows,
+  sanitizeDisclosureRows: (rows) => rows,
+};
+
+test("seed component merge keeps restored references when bundled values are unchanged", () => {
+  const current = {
+    pricePayload: {
+      records: [{ date: "2026-08-25", "005930.KS": 100 }],
+      series: ["005930.KS"],
+      display_names: { "005930.KS": "삼성전자" },
+    },
+    macroRows: [{ date: "2026-08-25", leading_cycle: 101 }],
+    creditRows: [{ date: "2026-08-25", kospi_credit: 20 }],
+    adrRows: [{ date: "2026-08-25", adr_kospi: 90, vkospi: 18 }],
+    disclosureRows: [],
+  };
+  const result = transaction.mergeRuntimeSeedComponents({
+    current,
+    parsed: {
+      pricePayload: { ...current.pricePayload, generated_at: "new" },
+      macroRows: [{ date: "2026-08-25", leading_cycle: "101" }],
+      creditRows: [{ date: "2026-08-25", kospi_credit: 20 }],
+      adrRows: [{ date: "2026-08-25", adr_kospi: 90 }],
+      vkospiRows: [{ date: "2026-08-25", vkospi: 18 }],
+    },
+    mergeWithExisting: true,
+    operations: seedOperations,
+  });
+
+  assert.deepEqual(result.changed, []);
+  assert.equal(result.components.pricePayload, current.pricePayload);
+  assert.equal(result.components.macroRows, current.macroRows);
+  assert.equal(result.components.creditRows, current.creditRows);
+  assert.equal(result.components.adrRows, current.adrRows);
+});
+
+test("ADR and volatility seed changes commit as one component revision", () => {
+  const current = {
+    pricePayload: { records: [], series: [], display_names: {} },
+    macroRows: [],
+    creditRows: [],
+    adrRows: [{ date: "2026-08-25", adr_kospi: 90, vkospi: 18 }],
+    disclosureRows: [],
+  };
+  const result = transaction.mergeRuntimeSeedComponents({
+    current,
+    parsed: {
+      adrRows: [{ date: "2026-08-25", adr_kospi: 91 }],
+      vkospiRows: [{ date: "2026-08-25", vkospi: 19 }],
+    },
+    mergeWithExisting: true,
+    operations: seedOperations,
+  });
+
+  assert.deepEqual(result.changed, ["adr"]);
+  assert.deepEqual(result.components.adrRows, [
+    { date: "2026-08-25", adr_kospi: 91, vkospi: 19 },
+  ]);
 });

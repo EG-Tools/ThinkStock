@@ -157,5 +157,3 @@ const api = Object.freeze({
   seriesTimelinePolicy,
   shiftTimelineDate,
 });
-
-if (typeof globalThis !== "undefined") globalThis.ThinkStockSeriesTimelinePolicy = api;

@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import vm from "node:vm";
-import { readFile } from "node:fs/promises";
-
-
-const source = await readFile(new URL("../../docs/modules/api-periods.js", import.meta.url), "utf8");
+import * as apiPeriods from "../../docs/modules/api-periods.mjs";
 
 function createStorage() {
   const values = new Map();
@@ -16,26 +12,8 @@ function createStorage() {
   };
 }
 
-function loadModule(scope = {}) {
-  const context = vm.createContext({
-    ...scope,
-    self: scope,
-    globalThis: scope,
-    Object,
-    String,
-    Number,
-    Date,
-    JSON,
-    Array,
-    Math,
-    Intl,
-  });
-  vm.runInContext(source, context);
-  return scope.ThinkStockApiPeriods;
-}
-
 test("keeps the KRX key and registered service periods in one source", () => {
-  const module = loadModule();
+  const module = apiPeriods;
   assert.equal(module.DEFAULT_PERIODS.length, 12);
   assert.deepEqual(
     { ...module.DEFAULT_PERIODS[0] },
@@ -54,7 +32,7 @@ test("keeps the KRX key and registered service periods in one source", () => {
 });
 
 test("compacts matching API periods for display without changing reminder sources", () => {
-  const module = loadModule();
+  const module = apiPeriods;
   const compacted = module.compactPeriodsForDisplay(module.DEFAULT_PERIODS);
 
   assert.equal(module.DEFAULT_PERIODS.length, 12);
@@ -79,7 +57,7 @@ test("compacts matching API periods for display without changing reminder source
 test("starts reminders one calendar month before expiry and only once per day", () => {
   const storage = createStorage();
   let now = new Date("2027-03-13T03:00:00Z");
-  const module = loadModule({ localStorage: storage });
+  const module = apiPeriods;
   const store = module.createReminderStore(
     { localStorage: storage },
     { now: () => now },
@@ -98,7 +76,7 @@ test("starts reminders one calendar month before expiry and only once per day", 
 test("seven-day snooze resumes on the eighth calendar date", () => {
   const storage = createStorage();
   let now = new Date("2027-03-14T03:00:00Z");
-  const module = loadModule({ localStorage: storage });
+  const module = apiPeriods;
   const store = module.createReminderStore(
     { localStorage: storage },
     { now: () => now },
@@ -113,7 +91,7 @@ test("seven-day snooze resumes on the eighth calendar date", () => {
 
 test("renewed period dates ignore the previous reminder state", () => {
   const storage = createStorage();
-  const module = loadModule({ localStorage: storage });
+  const module = apiPeriods;
   const oldStore = module.createReminderStore(
     { localStorage: storage },
     { now: () => new Date("2027-03-20T03:00:00Z") },

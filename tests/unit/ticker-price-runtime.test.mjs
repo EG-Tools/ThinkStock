@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/ticker-price-runtime.js");
-const runtime = globalThis.ThinkStockTickerPriceRuntime;
+import runtime from "../../docs/modules/ticker-price-runtime.mjs";
 
 test("price cache repository owns validation, metadata and retention mutations", async () => {
   const records = new Map();
@@ -52,6 +51,16 @@ test("price cache repository owns validation, metadata and retention mutations",
   assert.equal(stored.at(-1), "005930.KS");
   assert.equal(records.get("005930.KS").displayName, "삼성전자");
   assert.equal((await repository.read("005930.KS")).points[0].close, 71000);
+
+  const legacyCoverage = {
+    ...records.get("005930.KS"),
+    historyCoverage: runtime.HISTORY_COVERAGE_FULL,
+  };
+  delete legacyCoverage.historyCoverageVersion;
+  records.set("005930.KS", legacyCoverage);
+  const migratedCoverage = await repository.read("005930.KS");
+  assert.equal(migratedCoverage.historyCoverage, runtime.HISTORY_COVERAGE_UNKNOWN);
+  assert.equal(migratedCoverage.historyCoverageVersion, runtime.HISTORY_COVERAGE_VERSION);
 
   records.set("005930.KS", { schema: 5, ticker: "005930.KS", points: [] });
   assert.equal(await repository.read("005930.KS"), null);
@@ -157,6 +166,27 @@ test("does not mistake a sparse multi-year history for a corporate action", () =
   assert.equal(result.clean, true);
 });
 
+test("accepts illiquid preferred-share repricing across zero-volume history gaps", () => {
+  const result = runtime.inspectPriceHistoryIntegrity([
+    { date: "1997-11-05", close: 706 },
+    { date: "1998-01-12", close: 125 },
+    { date: "1998-05-11", close: 120 },
+    { date: "1998-05-21", close: 77 },
+  ]);
+  assert.equal(result.clean, true);
+  assert.equal(result.anomalyCount, 0);
+});
+
+test("still rejects a common split ratio after an extended trading halt", () => {
+  const result = runtime.inspectPriceHistoryIntegrity([
+    { date: "2026-04-20", close: 138500 },
+    { date: "2026-08-21", close: 27700 },
+  ]);
+  assert.equal(result.clean, false);
+  assert.equal(result.anomalyCount, 1);
+  assert.equal(result.firstDate, "2026-08-21");
+});
+
 test("drops a stale latest-price row that predates complete adjusted history", () => {
   assert.deepEqual(runtime.filterLatestTailPoints([
     { date: "2026-07-28", close: 21800 },
@@ -207,6 +237,43 @@ test("backfills partial or legacy five-year caches before using incremental upda
     ...base,
     historyCoverage: runtime.HISTORY_COVERAGE_FULL,
   }), "2026-08-12");
+});
+
+test("coalesces full-history requests and requires every visible ticker to be complete", async () => {
+  let loadCount = 0;
+  let releaseLoad;
+  const loadedSeries = new Set();
+  const coordinator = runtime.createHistoryCoverageCoordinator({
+    loadSeries: async (ticker, options) => {
+      loadCount += 1;
+      await new Promise((resolve) => { releaseLoad = resolve; });
+      loadedSeries.add(ticker);
+      assert.equal(options.returnAfterCache, false);
+      return {
+        ready: true,
+        historyCoverage: runtime.HISTORY_COVERAGE_FULL,
+        latestDate: "2026-08-21",
+      };
+    },
+    hasSeries: (ticker) => loadedSeries.has(ticker),
+    latestDate: () => "2026-08-21",
+  });
+
+  const first = coordinator.load("005930.ks", { requireFullHistory: true });
+  const second = coordinator.load("005930.KS", { requireFullHistory: true });
+  assert.equal(loadCount, 1);
+  assert.equal(coordinator.visibleReady([{ ticker: "005930.KS" }]), false);
+  releaseLoad();
+  await Promise.all([first, second]);
+  assert.equal(coordinator.visibleReady([{ ticker: "005930.KS" }]), true);
+  assert.equal(coordinator.visibleReady([
+    { ticker: "005930.KS" },
+    { ticker: "000660.KS" },
+  ]), false);
+
+  const cached = await coordinator.load("005930.KS", { requireFullHistory: true });
+  assert.equal(cached.cached, true);
+  assert.equal(loadCount, 1);
 });
 
 test("touches ticker cache metadata at most once per interval", () => {
@@ -526,9 +593,62 @@ test("series loader reuses a complete fresh cache after one latest-point check",
     ready: true,
     cached: true,
     deferredRefresh: false,
+    historyCoverage: runtime.HISTORY_COVERAGE_FULL,
     latestDate: "2026-08-20",
   });
   assert.deepEqual(calls, ["latest", "merge", "write"]);
+});
+
+test("series loader repairs missing recent sessions instead of accepting only the newest point", async () => {
+  const calls = [];
+  let currentPoints = [
+    { date: "2026-08-21", close: 70000, volume: 100 },
+  ];
+  const repairedTail = [
+    { date: "2026-08-21", close: 70000, volume: 100 },
+    { date: "2026-08-24", close: 70500, volume: 110 },
+    { date: "2026-08-25", close: 71000, volume: 120 },
+    { date: "2026-08-26", close: 71500, volume: 130 },
+    { date: "2026-08-27", close: 72000, volume: 140 },
+  ];
+  const loader = runtime.createSeriesLoader({
+    applySharedCache: async () => ({
+      applied: true,
+      latestDate: "2026-08-21",
+      historyCoverage: runtime.HISTORY_COVERAGE_FULL,
+    }),
+    assessPriceUpdate: () => ({ invalidateDerived: false, fullHistoryRequired: false }),
+    clearSeries: () => {},
+    fetchHistory: async (_ticker, options) => {
+      calls.push("history:" + options.sinceDate);
+      return repairedTail;
+    },
+    fetchLatest: async () => {
+      calls.push("latest");
+      return [{ date: "2026-08-27", close: 72000, volume: 140 }];
+    },
+    getPoints: () => currentPoints,
+    hasSeries: () => true,
+    hasVolumeHistory: () => true,
+    invalidateCache: async () => {},
+    isCacheFresh: () => true,
+    isLatestCoverageComplete: () => false,
+    latestDate: () => currentPoints.at(-1)?.date || "",
+    mergePoints: (_ticker, points) => {
+      calls.push("merge");
+      currentPoints = [...points];
+    },
+    normalizePoints: (points) => points,
+    resolveHistorySinceDate: () => "2026-08-01",
+    setStatus: () => {},
+    writeCache: async () => calls.push("write"),
+  });
+
+  const result = await loader.load("005930.KS");
+  assert.equal(result.cached, false);
+  assert.equal(result.latestDate, "2026-08-27");
+  assert.deepEqual(calls, ["latest", "history:2026-08-01", "merge", "write"]);
+  assert.deepEqual(currentPoints, repairedTail);
 });
 
 test("series loader invalidates derived caches before merging revised history", async () => {

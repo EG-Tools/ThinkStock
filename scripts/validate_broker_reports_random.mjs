@@ -9,22 +9,18 @@ import {
   buildHankyungReportPdfUrl,
   parseHankyungReportListHtml,
 } from "../shared/broker-report-source.mjs";
-
-await import("../shared/runtime-foundation.mjs");
-await import("../shared/broker-report-policy.mjs");
-await import("../docs/modules/broker-report-parser.js");
-await import("../docs/modules/broker-research-cache.js");
+import parser from "../docs/modules/broker-report-parser.mjs";
+import brokerResearchCache from "../docs/modules/broker-research-cache.mjs";
+import { lineItemsFromTextContent } from "../docs/modules/pdf-text-lines.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const OUTPUT_PATH = path.join(ROOT, ".thinkstock-cache", "broker-report-validation-random-20.json");
 const RESEARCH_CACHE_DIR = path.join(ROOT, ".thinkstock-cache", "stock-research");
 const UNIVERSE_PATH = path.join(ROOT, "docs", "data", "krx_universe.json");
-const parser = globalThis.ThinkStockBrokerReportParser;
 const {
   latestReportsByBroker,
-  lineItemsFromTextContent,
   MAX_PDF_BYTES,
-} = globalThis.ThinkStockBrokerResearchCache;
+} = brokerResearchCache;
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function argument(name, fallback) {

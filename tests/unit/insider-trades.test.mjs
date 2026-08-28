@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/insider-trades.js");
-const insiderTrades = globalThis.ThinkStockInsiderTrades;
+await import("../../shared/runtime-foundation.mjs");
+const insiderTrades = await import("../../docs/modules/insider-trades.mjs");
 
 test("normalizes DART ownership increases and decreases into buy and sell rows", () => {
   const rows = insiderTrades.sanitizeRows([
@@ -63,10 +63,14 @@ test("builds red upward buy markers and blue downward sell markers", () => {
   ]);
 
   assert.equal(traces.length, 2);
-  assert.equal(traces[0].marker.symbol, "triangle-up");
-  assert.equal(traces[0].marker.color, "#b91c1c");
-  assert.equal(traces[1].marker.symbol, "triangle-down");
-  assert.equal(traces[1].marker.color, "#1d4ed8");
+  assert.equal(traces[0].mode, "text");
+  assert.equal(traces[0].text[0], "▲");
+  assert.equal(traces[0].textfont.color, "#b91c1c");
+  assert.equal(traces[0].textfont.size, 15);
+  assert.equal(traces[1].mode, "text");
+  assert.equal(traces[1].text[0], "▼");
+  assert.equal(traces[1].textfont.color, "#1d4ed8");
+  assert.equal(traces[1].textfont.size, 15);
   assert.equal(traces[0].yaxis, "y");
   assert.equal(traces[1].yaxis, "y");
   assert.equal(traces[0].x[0], traces[1].x[0]);
@@ -74,15 +78,25 @@ test("builds red upward buy markers and blue downward sell markers", () => {
   assert.equal(traces[0].customdata[0][2], true);
   assert.equal(traces[1].customdata[0][2], true);
   assert.equal(traces.every((trace) => trace.meta.isInsiderTradeTrace), true);
-  assert.match(traces[0].hovertemplate[0], /color:#b91c1c/);
-  assert.match(traces[0].hovertemplate[0], /내부자거래 : 매수/);
-  assert.match(traces[0].hovertemplate[0], /장내매수\(\+\)/);
-  assert.match(traces[1].hovertemplate[0], /color:#1d4ed8/);
-  assert.match(traces[1].hovertemplate[0], /내부자거래 : 매도/);
-  assert.doesNotMatch(traces[1].hovertemplate[0], /기타\(-\)/);
-  assert.doesNotMatch(traces[0].hovertemplate[0], /RFHIC|2026-07-31/);
-  assert.doesNotMatch(traces[1].hovertemplate[0], /RFHIC|2026-07-31/);
-  assert.equal(traces.every((trace) => trace.hovertemplate[0].endsWith("<extra></extra>")), true);
+  const buyDetail = traces[0].meta.hoverDetailTemplates[0];
+  const sellDetail = traces[1].meta.hoverDetailTemplates[0];
+  assert.match(buyDetail, /color:#b91c1c/);
+  assert.match(buyDetail, /내부자거래 : 매수/);
+  assert.match(buyDetail, /장내매수\(\+\)/);
+  assert.match(sellDetail, /color:#1d4ed8/);
+  assert.match(sellDetail, /내부자거래 : 매도/);
+  assert.doesNotMatch(sellDetail, /기타\(-\)/);
+  assert.doesNotMatch(buyDetail, /RFHIC|2026-07-31|▲|▼/);
+  assert.doesNotMatch(sellDetail, /RFHIC|2026-07-31|▲|▼/);
+  assert.equal(traces.every((trace) => trace.hoverinfo === "none"), true);
+  assert.equal(traces.every((trace) => trace.hovertemplate === undefined), true);
+  assert.equal(traces.every((trace) => trace.meta.hoverDetailTemplates[0].endsWith("<extra></extra>")), true);
+  assert.equal(traces[0].meta.eventGroups[0].name, "RFHIC");
+  assert.equal(traces[0].meta.eventGroups[0].plotDate, "2026-07-31");
+  assert.match(traces[0].meta.eventGroups[0].events[0].title, /내부자거래 : 매수/);
+  assert.equal(traces[0].meta.eventGroups[0].events[0].tone, "insider-buy");
+  assert.match(traces[1].meta.eventGroups[0].events[0].title, /내부자거래 : 매도/);
+  assert.equal(traces[1].meta.eventGroups[0].events[0].tone, "insider-sell");
 });
 
 test("keeps same-day buy and sell details from one major-holder receipt", () => {

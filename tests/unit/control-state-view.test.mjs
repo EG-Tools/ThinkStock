@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 
-await import("../../docs/modules/control-state-view.js");
-const view = globalThis.ThinkStockControlStateView;
+import * as view from "../../docs/modules/control-state-view.mjs";
 
 
 function fakeControl(value = "") {
@@ -60,4 +59,31 @@ test("renders escaped message lines through the shared feedback view", () => {
   });
   assert.equal(count, 2);
   assert.equal(element.innerHTML, '<div class="message error">A<br>&lt;B&gt;</div>');
+});
+
+test("auxiliary panel controls own visibility, activation order, and persistence", () => {
+  let persisted = 0;
+  let changed = 0;
+  const state = {
+    auxiliaryPanelOrder: ["adr", "fearGreed", "newsSentiment", "vkospi"],
+    hiddenAuxiliaryPanels: new Set(["vkospi"]),
+    hiddenAuxiliarySeries: new Set(),
+  };
+  const controls = view.createAuxiliaryPanelControlView({
+    document: { getElementById: () => null },
+  }, {
+    state,
+    panelKeys: ["adr", "vkospi", "fearGreed", "newsSentiment"],
+    persist: () => { persisted += 1; },
+    onChange: () => { changed += 1; },
+  });
+
+  assert.deepEqual(controls.normalizeOrder(), ["adr", "vkospi", "fearGreed", "newsSentiment"]);
+  controls.togglePanel("vkospi");
+  assert.equal(controls.isPanelVisible("vkospi"), true);
+  assert.equal(state.auxiliaryPanelOrder.at(-1), "vkospi");
+  controls.toggleSeries("vix");
+  assert.equal(state.hiddenAuxiliarySeries.has("vix"), true);
+  assert.equal(persisted, 2);
+  assert.equal(changed, 2);
 });

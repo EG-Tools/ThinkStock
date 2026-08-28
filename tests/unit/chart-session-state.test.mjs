@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/chart-session-controller.js");
-
-const { createChartSessionState } = globalThis.ThinkStockChartSessionState;
+import { createChartSessionState } from "../../docs/modules/chart-session-controller.mjs";
 
 test("chart session state keeps viewport and visibility in one mutable source", () => {
   const state = createChartSessionState({

@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/chart-session-controller.js");
-const { createChartSessionController } = globalThis.ThinkStockChartSessionController;
+import {
+  clearSeriesTransforms,
+  createChartSessionController,
+} from "../../docs/modules/chart-session-controller.mjs";
 
 function session(overrides = {}) {
   return {
@@ -72,4 +74,26 @@ test("viewport auto-fit requests coalesce into one timer", () => {
   assert.equal(timers.size, 1);
   [...timers.values()][0]();
   assert.equal(fitted, 1);
+});
+
+test("clearing a stock transform also clears its dependent EPS transform", () => {
+  const state = session({
+    seriesOffsets: { "005930.KS": 2, "eps:005930.KS": 4, "000660.KS": 6 },
+    seriesScales: { "005930.KS": 1.2, "eps:005930.KS": 0.8, "000660.KS": 1.1 },
+  });
+
+  assert.equal(clearSeriesTransforms(state, "005930.KS"), true);
+  assert.deepEqual(state.seriesOffsets, { "000660.KS": 6 });
+  assert.deepEqual(state.seriesScales, { "000660.KS": 1.1 });
+});
+
+test("clearing an EPS transform does not reset its stock transform", () => {
+  const state = session({
+    seriesOffsets: { "005930.KS": 2, "eps:005930.KS": 4 },
+    seriesScales: { "005930.KS": 1.2, "eps:005930.KS": 0.8 },
+  });
+
+  assert.equal(clearSeriesTransforms(state, "eps:005930.KS"), true);
+  assert.deepEqual(state.seriesOffsets, { "005930.KS": 2 });
+  assert.deepEqual(state.seriesScales, { "005930.KS": 1.2 });
 });

@@ -42,6 +42,33 @@ export function jsonResponse(payload, status = 200, origin = "") {
   });
 }
 
+/** @param {Request} request */
+export function bearerToken(request) {
+  const authorization = String(request.headers.get("Authorization") || "");
+  return authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+}
+
+/**
+ * Compare credentials without exposing a length or early-exit timing signal.
+ * @param {unknown} provided
+ * @param {unknown} expected
+ */
+export async function tokensMatch(provided, expected) {
+  const encoder = new TextEncoder();
+  const [providedHash, expectedHash] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(String(provided || ""))),
+    crypto.subtle.digest("SHA-256", encoder.encode(String(expected || ""))),
+  ]);
+  if (typeof crypto.subtle.timingSafeEqual === "function") {
+    return crypto.subtle.timingSafeEqual(providedHash, expectedHash);
+  }
+  const left = new Uint8Array(providedHash);
+  const right = new Uint8Array(expectedHash);
+  let mismatch = 0;
+  for (let index = 0; index < left.length; index += 1) mismatch |= left[index] ^ right[index];
+  return mismatch === 0;
+}
+
 export function isoDate(date = new Date()) {
   return date.toISOString().slice(0, 10);
 }

@@ -5,6 +5,10 @@ const REPORT_PERIODS = Object.freeze({
   "11011": Object.freeze({ month: "12", frequency: "annual" }),
 });
 
+export const DART_EPS_HISTORY_VERSION = 1;
+export const DART_EPS_HISTORY_YEARS = 10;
+export const DART_FINANCIAL_ALL_URL = "https://opendart.fss.or.kr/api/fnlttSinglAcntAll.json";
+
 function parseFinancialNumber(value) {
   if (value === null || value === undefined || value === "") return null;
   const text = String(value).trim();
@@ -25,6 +29,17 @@ function compactAccountName(value) {
     .replace(/[\s·ㆍ,._\-()\[\]{}]/g, "")
     .replace(/손익/g, "이익")
     .trim();
+}
+
+function epsAccountPriority(item) {
+  const id = String(item?.account_id || "").toLowerCase().replace(/[^a-z]/g, "");
+  const name = compactAccountName(item?.account_nm);
+  const basic = id.includes("basicearningslosspershare")
+    || /^(기본주당이익|기본주당이익손실|기본주당순이익|기본주당순손실|기본주당손익)$/.test(name);
+  if (basic) return 100;
+  const diluted = id.includes("dilutedearningslosspershare")
+    || /^(희석주당이익|희석주당이익손실|희석주당순이익|희석주당순손실|희석주당손익)$/.test(name);
+  return diluted ? 50 : 0;
 }
 
 function accountKind(value) {
@@ -218,6 +233,185 @@ export function buildDartFinancialQueryPlan(options = {}) {
     });
   }
   return plans;
+}
+
+export function completedDartEpsYearRange(options = {}) {
+  const asOf = String(options.asOf || new Date().toISOString().slice(0, 10)).slice(0, 10);
+  const currentYear = Number(asOf.slice(0, 4));
+  const endYear = currentYear - (asOf.slice(5) >= "04-01" ? 1 : 2);
+  const years = Math.max(1, Math.trunc(Number(options.years) || DART_EPS_HISTORY_YEARS));
+  const startYear = Math.max(2015, endYear - years + 1);
+  return Number.isInteger(endYear) && endYear >= 2015
+    ? { startYear, endYear, years: endYear - startYear + 1 }
+    : { startYear: 0, endYear: 0, years: 0 };
+}
+
+export function parseDartEpsReportPayload(payload, options = {}) {
+  const reportCode = String(options.reportCode || payload?.list?.[0]?.reprt_code || "");
+  const report = REPORT_PERIODS[reportCode];
+  const businessYear = Number(options.businessYear || payload?.list?.[0]?.bsns_year);
+  const ticker = String(options.ticker || payload?.list?.[0]?.stock_code || "").trim().toUpperCase();
+  if (!report || !Number.isInteger(businessYear) || businessYear < 2015 || !ticker) return null;
+
+  let selected = null;
+  (Array.isArray(payload?.list) ? payload.list : []).forEach((item) => {
+    if (!/^(IS|CIS)$/i.test(String(item?.sj_div || ""))) return;
+    const priority = epsAccountPriority(item);
+    if (!priority || (selected && selected.priority >= priority)) return;
+    const current = parseFinancialNumber(item?.thstrm_amount);
+    const cumulative = parseFinancialNumber(item?.thstrm_add_amount);
+    if (!Number.isFinite(current) && !Number.isFinite(cumulative)) return;
+    selected = {
+      priority,
+      current,
+      cumulative,
+      reportDate: reportDateFromReceipt(item?.rcept_no),
+      receiptNumber: String(item?.rcept_no || ""),
+      fsDivision: String(item?.fs_div || options.fsDivision || "").toUpperCase(),
+    };
+  });
+  if (!selected) return null;
+  return {
+    ticker,
+    businessYear,
+    reportCode,
+    period: `${businessYear}-${report.month}`,
+    frequency: report.frequency,
+    current: selected.current,
+    cumulative: selected.cumulative,
+    reportDate: selected.reportDate,
+    receiptNumber: selected.receiptNumber,
+    fsDivision: selected.fsDivision,
+  };
+}
+
+function quarterEps(report, previousCumulative = null) {
+  if (!report) return { value: null, derived: false };
+  if (Number.isFinite(report.current)) return { value: report.current, derived: false };
+  if (Number.isFinite(report.cumulative) && Number.isFinite(previousCumulative)) {
+    return { value: report.cumulative - previousCumulative, derived: true };
+  }
+  if (Number.isFinite(report.cumulative)) return { value: report.cumulative, derived: true };
+  return { value: null, derived: false };
+}
+
+export function buildDartEpsYearRecords(reportRows, options = {}) {
+  const reports = new Map((Array.isArray(reportRows) ? reportRows : [])
+    .filter(Boolean)
+    .map((row) => [String(row.reportCode || ""), row]));
+  const sample = [...reports.values()][0];
+  const ticker = String(options.ticker || sample?.ticker || "").trim().toUpperCase();
+  const businessYear = Number(options.businessYear || sample?.businessYear);
+  if (!ticker || !Number.isInteger(businessYear)) return [];
+
+  const q1Report = reports.get("11013");
+  const q2Report = reports.get("11012");
+  const q3Report = reports.get("11014");
+  const annualReport = reports.get("11011");
+  const q1 = quarterEps(q1Report);
+  const q2 = quarterEps(q2Report, q1Report?.cumulative ?? q1.value);
+  const q3 = quarterEps(q3Report, q2Report?.cumulative);
+  const annual = annualReport?.current ?? annualReport?.cumulative ?? null;
+  const q4 = Number.isFinite(annual) && Number.isFinite(q3Report?.cumulative)
+    ? { value: annual - q3Report.cumulative, derived: true }
+    : { value: null, derived: false };
+  const quarterValues = [
+    ["03", q1Report, q1],
+    ["06", q2Report, q2],
+    ["09", q3Report, q3],
+    ["12", annualReport, q4],
+  ];
+  const records = quarterValues.flatMap(([month, report, result]) => (
+    Number.isFinite(result.value) ? [{
+      ticker,
+      period: `${businessYear}-${month}`,
+      frequency: "quarter",
+      estimate: false,
+      eps: result.value,
+      reportDate: report?.reportDate || "",
+      reportCode: report?.reportCode || "",
+      receiptNumber: report?.receiptNumber || "",
+      source: "DART",
+      epsDerived: result.derived,
+    }] : []
+  ));
+  if (Number.isFinite(annual)) {
+    records.push({
+      ticker,
+      period: `${businessYear}-12`,
+      frequency: "annual",
+      estimate: false,
+      eps: annual,
+      reportDate: annualReport?.reportDate || "",
+      reportCode: "11011",
+      receiptNumber: annualReport?.receiptNumber || "",
+      source: "DART",
+      epsDerived: false,
+    });
+  }
+  return records;
+}
+
+async function fetchDartFinancialPayload(fetchImpl, endpoint, query, options = {}) {
+  const signal = options.signal || (
+    typeof AbortSignal?.timeout === "function" ? AbortSignal.timeout(options.timeoutMs || 30000) : undefined
+  );
+  const response = await fetchImpl(`${endpoint}?${new URLSearchParams(query)}`, {
+    headers: options.headers || undefined,
+    signal,
+  });
+  if (!response.ok) throw new Error(`DART HTTP ${response.status}`);
+  const payload = await response.json();
+  const status = String(payload?.status || "");
+  if (status !== "000" && status !== "013") {
+    const error = new Error(payload?.message || `DART 오류 ${status || "unknown"}`);
+    error.code = status;
+    throw error;
+  }
+  return payload;
+}
+
+export async function fetchDartEpsYear(options = {}) {
+  const fetchImpl = options.fetchImpl || globalThis.fetch;
+  const apiKey = String(options.apiKey || "").trim();
+  const corpCode = String(options.corpCode || "").trim();
+  const ticker = String(options.ticker || "").trim().toUpperCase();
+  const businessYear = Math.trunc(Number(options.businessYear));
+  if (typeof fetchImpl !== "function" || !apiKey || !/^\d{8}$/.test(corpCode)
+    || !ticker || businessYear < 2015) {
+    throw new Error("DART EPS 요청 정보가 올바르지 않습니다.");
+  }
+  const endpoint = String(options.endpoint || DART_FINANCIAL_ALL_URL);
+  const reportCodes = Object.keys(REPORT_PERIODS);
+  const results = await Promise.all(reportCodes.map(async (reportCode) => {
+    const request = async (fsDivision) => fetchDartFinancialPayload(fetchImpl, endpoint, {
+      crtfc_key: apiKey,
+      corp_code: corpCode,
+      bsns_year: String(businessYear),
+      reprt_code: reportCode,
+      fs_div: fsDivision,
+    }, options);
+    let payload = await request("CFS");
+    let fsDivision = "CFS";
+    if (String(payload?.status) === "013") {
+      payload = await request("OFS");
+      fsDivision = "OFS";
+    }
+    return {
+      reportCode,
+      payload,
+      row: String(payload?.status) === "000"
+        ? parseDartEpsReportPayload(payload, { businessYear, reportCode, ticker, fsDivision })
+        : null,
+    };
+  }));
+  return {
+    ticker,
+    businessYear,
+    records: buildDartEpsYearRecords(results.map((result) => result.row), { ticker, businessYear }),
+    emptyReports: results.filter((result) => String(result.payload?.status) === "013")
+      .map((result) => result.reportCode),
+  };
 }
 
 export const DART_FINANCIAL_REPORTS = REPORT_PERIODS;

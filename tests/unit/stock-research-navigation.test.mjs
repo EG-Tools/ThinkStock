@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/stock-research-contract.js");
-await import("../../docs/modules/stock-research-navigation.js");
-
-const navigation = globalThis.ThinkStockStockResearchNavigation;
+import navigation from "../../docs/modules/stock-research-navigation.js";
 
 test("retains the full configurable research universe for incremental reuse", () => {
   const state = Object.fromEntries(Array.from({ length: 1000 }, (_, index) => {

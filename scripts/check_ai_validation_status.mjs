@@ -11,7 +11,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const APPROVED_OPERATIONAL_INCUMBENT = "path-v20";
 const runtimeFiles = [
   "docs/modules/ai-context-profile.js",
-  "docs/modules/ai-forecast-calibration.js",
+  "docs/modules/ai-forecast-calibration.mjs",
   "docs/modules/ai-forecast-math.js",
   "docs/modules/ai-forecast-model.js",
   "docs/modules/ai-forecast-scenarios.js",

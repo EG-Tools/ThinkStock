@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 
-await import("../../docs/modules/shared-request-registry.js");
-const module = globalThis.ThinkStockSharedRequestRegistry;
+import * as module from "../../docs/modules/shared-request-registry.mjs";
 
 
 test("shares one producer across simultaneous consumers", async () => {

@@ -306,23 +306,3 @@ export function selectAnalysisEvidenceAsOf(record, cutoff) {
     featureManifest: selected.featureManifest || analysisFeatureManifest(selected),
   });
 }
-
-const browserApi = Object.freeze({
-  HISTORICAL_FINANCIAL_SNAPSHOT_LIMIT,
-  MONTHLY_ANALYSIS_SNAPSHOT_LIMIT,
-  RECENT_ANALYSIS_SNAPSHOT_LIMIT,
-  RECENT_ANALYSIS_WINDOW_DAYS,
-  analysisEvidenceFingerprint,
-  analysisFeatureManifest,
-  analysisDateText,
-  analysisSnapshotFromRecord,
-  historicalFinancialSnapshotsFromRecord,
-  koreanDateFromTimestamp,
-  mergePointInTimeAnalysisSnapshots,
-  selectAnalysisEvidenceAsOf,
-  selectAnalysisSnapshotAsOf,
-});
-
-if (typeof globalThis !== "undefined") {
-  globalThis.ThinkStockAiAnalysisSnapshots = browserApi;
-}

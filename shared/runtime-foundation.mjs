@@ -21,8 +21,19 @@ export function normalizedIsoDate(value) {
   return DATE_PATTERN.test(date) ? date : "";
 }
 
+export function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[character]));
+}
+
 export const RUNTIME_VALUE_CONTRACT = Object.freeze({
   boundedOrNull,
+  escapeHtml,
   finiteOrNull,
   normalizedIsoDate,
   positiveOrNull,
@@ -45,9 +56,4 @@ export const RUNTIME_STORAGE_CONTRACT = Object.freeze({
     tickerBrokerResearch: "tickerBrokerResearch",
     tickerTimingModels: "tickerTimingModels",
   }),
-});
-
-globalThis.ThinkStockRuntimeFoundation = Object.freeze({
-  storage: RUNTIME_STORAGE_CONTRACT,
-  values: RUNTIME_VALUE_CONTRACT,
 });

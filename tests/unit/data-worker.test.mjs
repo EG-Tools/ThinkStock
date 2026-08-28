@@ -1,33 +1,27 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import test from "node:test";
-import vm from "node:vm";
+import dataPayload from "../../docs/modules/data-payload.mjs";
+import {
+  attachDataWorker,
+  createSeedBundleParser,
+} from "../../docs/modules/data-worker-runtime.mjs";
 
 
-const payloadSource = await readFile(path.resolve("docs/modules/data-payload.js"), "utf8");
-const workerSource = await readFile(path.resolve("docs/modules/data-worker.js"), "utf8");
-
-
-test("data worker imports and uses the shared payload parser", () => {
+test("data worker module uses the shared payload parser", () => {
   let messageHandler = null;
   const messages = [];
-  const context = vm.createContext({
-    self: {
-      addEventListener(type, handler) {
-        if (type === "message") messageHandler = handler;
-      },
-      postMessage(message) {
-        messages.push(message);
-      },
+  const scope = {
+    addEventListener(type, handler) {
+      if (type === "message") messageHandler = handler;
     },
-  });
-  context.importScripts = (url) => {
-    assert.match(url, /^\.\/data-payload\.js\?v=/);
-    vm.runInContext(payloadSource, context);
+    removeEventListener(type, handler) {
+      if (type === "message" && handler === messageHandler) messageHandler = null;
+    },
+    postMessage(message) {
+      messages.push(message);
+    },
   };
-
-  vm.runInContext(workerSource, context);
+  const worker = attachDataWorker(scope, dataPayload);
   messageHandler({
     data: {
       id: "parse-1",
@@ -45,4 +39,12 @@ test("data worker imports and uses the shared payload parser", () => {
   assert.equal(messages[0].ok, true);
   assert.equal(messages[0].result.pricePayload.records[0].AAA, 100);
   assert.equal(messages[0].result.macroRows[0].news_sentiment, 110.34);
+
+  worker.dispose();
+  assert.equal(messageHandler, null);
+});
+
+
+test("seed parser rejects incomplete parser dependencies", () => {
+  assert.throws(() => createSeedBundleParser({}), /payload module is unavailable/);
 });

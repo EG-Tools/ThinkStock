@@ -1,12 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-
-await import("../../shared/runtime-foundation.mjs");
-
-await import("../../docs/modules/cache-lifecycle-policy.js");
-await import("../../docs/modules/ai-forecast-cache.js");
-
-const { createForecastCache } = globalThis.ThinkStockAiForecastCache;
+import { createForecastCache } from "../../docs/modules/ai-forecast-cache.mjs";
 
 test("reuses a persisted forecast only for the same input fingerprint", async () => {
   const records = new Map();

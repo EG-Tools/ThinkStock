@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 
-await import("../../docs/modules/performance-diagnostics.js");
-const diagnosticsModule = globalThis.ThinkStockPerformanceDiagnostics;
+import * as diagnosticsModule from "../../docs/modules/performance-diagnostics.mjs";
 
 
 test("captures bounded version diagnostics with storage state", async () => {
@@ -135,6 +134,35 @@ test("stores the shared performance budget result with each report", async () =>
   assert.equal(report.budget.violations[0].metric, "p95PointerMove");
 });
 
+test("combines main-chart series-band warnings with the session budget", async () => {
+  const diagnostics = diagnosticsModule.createPerformanceDiagnostics({ navigator: {} }, {
+    performanceApi: {
+      summary: () => ({ renderCharts: 3, p95RenderChart: 100 }),
+      getLatestOperations: () => ({}),
+      getSlowOperations: () => [],
+      getRecentErrors: () => [],
+    },
+    evaluateBudget: () => ({ ok: true, skipped: [], violations: [] }),
+    evaluateChartRenderBudget: (snapshot) => ({
+      ok: false,
+      skipped: ["chartRenderAverage:6-10"],
+      violations: [{
+        metric: "chartRenderAverage:2-5",
+        actual: snapshot.bySeriesBand["2-5"].averageMs,
+        limit: 900,
+      }],
+    }),
+  });
+  const report = await diagnostics.capture({
+    appVersion: "3.21",
+    appState: { chartRender: { bySeriesBand: { "2-5": { averageMs: 901 } } } },
+  });
+
+  assert.equal(report.budget.ok, false);
+  assert.deepEqual(report.budget.skipped, ["chartRenderAverage:6-10"]);
+  assert.equal(report.budget.violations[0].actual, 901);
+});
+
 
 test("keeps separate sessions and compares version percentiles", async () => {
   const stored = new Map();
@@ -164,8 +192,28 @@ test("keeps separate sessions and compares version percentiles", async () => {
   );
   await makeDiagnostics("old", 500).capture({ appVersion: "0.96", buildVersion: "old" });
   const currentA = makeDiagnostics("current-a", 300);
-  await currentA.capture({ appVersion: "0.97", buildVersion: "new" });
-  await makeDiagnostics("current-b", 400).capture({ appVersion: "0.97", buildVersion: "new" });
+  await currentA.capture({
+    appVersion: "0.97",
+    buildVersion: "new",
+    appState: {
+      chartRender: {
+        bySeriesBand: {
+          "2-5": { renders: 2, averageMs: 100, maximumMs: 140, maximumOverlays: 3, maximumPoints: 1000 },
+        },
+      },
+    },
+  });
+  await makeDiagnostics("current-b", 400).capture({
+    appVersion: "0.97",
+    buildVersion: "new",
+    appState: {
+      chartRender: {
+        bySeriesBand: {
+          "2-5": { renders: 4, averageMs: 200, maximumMs: 260, maximumOverlays: 5, maximumPoints: 2200 },
+        },
+      },
+    },
+  });
 
   const report = currentA.readHistory().find((item) => item.sessionId === "current-a");
   const comparison = currentA.comparisonFor(report);
@@ -174,6 +222,14 @@ test("keeps separate sessions and compares version percentiles", async () => {
   assert.equal(comparison.current.topOperations[0].label, "viewportRangeSync");
   assert.equal(comparison.current.topOperations[0].sessions, 2);
   assert.equal(comparison.current.topOperations[0].samples, 6);
+  assert.deepEqual(comparison.current.chartSeriesBands["2-5"], {
+    sessions: 2,
+    renders: 6,
+    averageMs: 166.7,
+    maximumMs: 260,
+    maximumOverlays: 5,
+    maximumPoints: 2200,
+  });
   assert.equal(comparison.previous.appVersion, "0.96");
   assert.match(currentA.reportLines(report, comparison).join("\n"), /이전 0.96/);
 });
@@ -218,6 +274,48 @@ test("captures automatically after the idle delay", async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.equal(diagnostics.readHistory()[0].reason, "idle");
+  stop();
+  assert.equal(listeners.size, 0);
+});
+
+test("can keep exit diagnostics without scheduling post-boot idle work", async () => {
+  const stored = new Map();
+  const listeners = new Map();
+  let timers = 0;
+  const scope = {
+    localStorage: {
+      getItem: (key) => stored.get(key) || null,
+      setItem: (key, value) => stored.set(key, String(value)),
+    },
+    navigator: {},
+    document: {
+      addEventListener: (name, listener) => listeners.set(`document:${name}`, listener),
+      removeEventListener: (name) => listeners.delete(`document:${name}`),
+      visibilityState: "visible",
+    },
+    addEventListener: (name, listener) => listeners.set(`window:${name}`, listener),
+    removeEventListener: (name) => listeners.delete(`window:${name}`),
+    setTimeout: () => { timers += 1; return timers; },
+    clearTimeout: () => {},
+  };
+  const diagnostics = diagnosticsModule.createPerformanceDiagnostics(scope, {
+    sessionId: "exit-only",
+    performanceApi: {
+      summary: () => ({}),
+      getLatestOperations: () => ({}),
+      getSlowOperations: () => [],
+      getRecentErrors: () => [],
+    },
+  });
+
+  const stop = diagnostics.startAutomaticCapture(
+    { appVersion: "3.13" },
+    { captureOnIdle: false, minimumIntervalMs: 1000 },
+  );
+  assert.equal(timers, 0);
+  listeners.get("window:pagehide")();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(diagnostics.readHistory()[0].reason, "pagehide");
   stop();
   assert.equal(listeners.size, 0);
 });

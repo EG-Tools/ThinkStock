@@ -1,7 +1,11 @@
 (function initThinkStockStockResearch(globalScope) {
   "use strict";
 
-  const contract = globalScope.ThinkStockStockResearchContract;
+  const isCommonJs = typeof module !== "undefined" && module.exports;
+
+  const contract = isCommonJs
+    ? require("./stock-research-contract.js")
+    : globalScope.ThinkStockStockResearchContract;
   if (!contract) throw new Error("stock research contract failed to load");
   const CALCULATION_VERSION = contract.CALCULATION_VERSION;
   const STRATEGY_VERSION = CALCULATION_VERSION;
@@ -78,8 +82,7 @@
 
   function assessTicker(options = {}) {
     const item = options.item || {};
-    const behaviorPolicy = options.behaviorPolicy
-      || globalScope.ThinkStockMarketTiming?.PROMOTED_RUNTIME_BEHAVIOR_POLICY;
+    const behaviorPolicy = options.behaviorPolicy;
     const includeBuy = options.includeBuy !== false;
     const includeSell = options.includeSell === true;
     const todayOnly = options.todayOnly === true;
@@ -379,7 +382,7 @@
       .slice(0, Math.max(1, Number(limit) || 10));
   }
 
-  globalScope.ThinkStockStockResearch = Object.freeze({
+  const stockResearch = Object.freeze({
     CALCULATION_VERSION,
     STRATEGY_VERSION,
     RECENT_SIGNAL_WINDOW,
@@ -392,4 +395,7 @@
     percentile,
     rankCandidates,
   });
-}(typeof self !== "undefined" ? self : globalThis));
+
+  if (isCommonJs) module.exports = stockResearch;
+  else globalScope.ThinkStockStockResearch = stockResearch;
+})(typeof self !== "undefined" ? self : globalThis);

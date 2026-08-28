@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import vm from "node:vm";
-import { readFile } from "node:fs/promises";
-
-const source = await readFile(new URL("../../docs/modules/app-cache-manager.js", import.meta.url), "utf8");
+import * as appCacheManagerModule from "../../docs/modules/app-cache-manager.mjs";
 
 function createStorage(initial = {}) {
   const values = new Map(Object.entries(initial));
@@ -17,21 +14,7 @@ function createStorage(initial = {}) {
 
 function loadModule(scope) {
   scope.TextEncoder = TextEncoder;
-  const context = vm.createContext({
-    self: scope,
-    globalThis: scope,
-    Array,
-    JSON,
-    Map,
-    Math,
-    Number,
-    Object,
-    Promise,
-    Set,
-    String,
-  });
-  vm.runInContext(source, context);
-  return scope.ThinkStockAppCacheManager;
+  return appCacheManagerModule;
 }
 
 function createCacheStorage(entriesByName) {

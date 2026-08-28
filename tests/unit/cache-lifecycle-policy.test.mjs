@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-
-await import("../../shared/runtime-foundation.mjs");
-await import("../../docs/modules/cache-lifecycle-policy.js");
-const cachePolicy = globalThis.ThinkStockCacheLifecyclePolicy;
+import * as cachePolicy from "../../docs/modules/cache-lifecycle-policy.mjs";
 
 test("keeps cache retention appropriate to each data type", () => {
   assert.deepEqual(cachePolicy.storePolicy("tickerPrices"), {

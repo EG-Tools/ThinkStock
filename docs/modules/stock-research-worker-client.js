@@ -1,7 +1,6 @@
-(function initThinkStockStockResearchWorkerClient(globalScope) {
-  "use strict";
+"use strict";
 
-  const contract = globalScope.ThinkStockStockResearchContract;
+  const contract = require("./stock-research-contract.js");
   if (!contract) throw new Error("stock research contract failed to load");
 
   function createWorkerLane(scope, workerUrl, shared) {
@@ -42,5 +41,6 @@
     }));
   }
 
-  globalScope.ThinkStockStockResearchWorkerClient = Object.freeze({ createWorkerLane });
-}(typeof self !== "undefined" ? self : globalThis));
+  const stockResearchWorkerClient = Object.freeze({ createWorkerLane });
+
+module.exports = stockResearchWorkerClient;

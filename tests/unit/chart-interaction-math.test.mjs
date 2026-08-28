@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 
-await import("../../docs/modules/chart-interaction-math.js");
-const chartMath = globalThis.ThinkStockChartInteractionMath;
+import * as chartMath from "../../docs/modules/chart-interaction-math.mjs";
 
 
 test("finds the nearest visible chart point by date", () => {
@@ -45,11 +44,22 @@ test("converts chart pixels and interpolates line values", () => {
 });
 
 
+test("uses the chart axis converter for exact rendered y pixels", () => {
+  assert.equal(chartMath.yValueToLocalPixelFromAxis({
+    _offset: 12,
+    d2p: (value) => value * 3,
+    range: [0, 100],
+    _length: 200,
+  }, 25), 87);
+});
+
+
 test("builds and reuses a numeric line hit index", () => {
   const traces = [
     {
       x: ["2026-01-01", "2026-01-03"],
       y: ["10", "30"],
+      meta: { renderFingerprint: "frame-1" },
     },
     {
       x: ["2026-01-01", "2026-01-03"],
@@ -71,4 +81,112 @@ test("builds and reuses a numeric line hit index", () => {
 
   traces[0].y = [20, 40];
   assert.equal(chartMath.lineHitIndexMatches(index, traces, seriesKeys), false);
+
+  traces[0].y = index[0].yValues;
+  traces[0].meta.renderFingerprint = "frame-2";
+  assert.equal(chartMath.lineHitIndexMatches(index, traces, seriesKeys), false);
+});
+
+test("prefers the visually topmost line when two series overlap", () => {
+  const traces = [
+    { x: ["2026-01-01"], y: [50] },
+    { x: ["2026-01-01"], y: [50] },
+  ];
+  const index = chartMath.buildLineHitIndex(traces, ["benchmark", "stock"]);
+
+  assert.deepEqual(chartMath.findNearestLineTarget(
+    index,
+    Date.parse("2026-01-01"),
+    110,
+    { _offset: 10, _length: 200, range: [0, 100] },
+    4,
+  ), { traceIndex: 1, seriesKey: "stock" });
+});
+
+
+test("prioritizes a marker inside its two-dimensional hit radius", () => {
+  const trace = {
+    x: ["2026-01-01", "2026-03-31"],
+    y: [20, 40],
+    marker: { size: [0, 15] },
+    meta: { isEpsTrace: true },
+  };
+  const index = chartMath.buildLineHitIndex([trace], ["eps:first"]);
+  const target = chartMath.findNearestMarkerTarget(
+    index,
+    123,
+    132,
+    { _offset: 10, d2p: (value) => value === "2026-03-31" ? 100 : 0 },
+    { _offset: 10, _length: 200, range: [0, 100] },
+    24,
+    (entry, pointIndex) => entry.trace.meta.isEpsTrace && entry.trace.marker.size[pointIndex] > 0,
+  );
+
+  assert.deepEqual(target, { traceIndex: 0, seriesKey: "eps:first", pointIndex: 1 });
+});
+
+
+test("skips dense price entries before scanning sparse EPS markers", () => {
+  const pricePointChecks = { count: 0 };
+  const densePrice = {
+    x: Array.from({ length: 6500 }, (_, index) => `price-${index}`),
+    y: Array.from({ length: 6500 }, () => 50),
+    marker: { size: Array.from({ length: 6500 }, () => 7) },
+    meta: { seriesKey: "price" },
+  };
+  const eps = {
+    x: ["eps-0", "eps-1"],
+    y: [20, 40],
+    marker: { size: [0, 15] },
+    meta: { isEpsTrace: true },
+  };
+  const index = chartMath.buildLineHitIndex([densePrice, eps], ["price", "eps:price"]);
+  const target = chartMath.findNearestMarkerTarget(
+    index,
+    113,
+    132,
+    { _offset: 10, d2p: (value) => value === "eps-1" ? 100 : 0 },
+    { _offset: 10, _length: 200, range: [0, 100] },
+    24,
+    (entry, pointIndex) => {
+      if (!entry.trace.meta.isEpsTrace) pricePointChecks.count += 1;
+      return entry.trace.marker.size[pointIndex] > 0;
+    },
+    (entry) => entry.trace.meta.isEpsTrace,
+  );
+
+  assert.equal(pricePointChecks.count, 0);
+  assert.deepEqual(target, { traceIndex: 1, seriesKey: "eps:price", pointIndex: 1 });
+});
+
+test("limits sorted EPS marker hit tests to points near the cursor date", () => {
+  const dates = Array.from({ length: 500 }, (_, index) => (
+    new Date(Date.UTC(2000, index * 3, 1)).toISOString().slice(0, 10)
+  ));
+  const pixelByDate = new Map(dates.map((date, index) => [date, index]));
+  const trace = {
+    x: dates,
+    y: dates.map(() => 50),
+    marker: { size: dates.map(() => 12) },
+    meta: { isEpsTrace: true },
+  };
+  const index = chartMath.buildLineHitIndex([trace], ["eps:first"]);
+  let pointChecks = 0;
+  const target = chartMath.findNearestMarkerTarget(
+    index,
+    260,
+    50,
+    { _offset: 10, d2p: (value) => pixelByDate.get(value) },
+    { _offset: 0, _length: 100, range: [0, 100] },
+    5,
+    () => {
+      pointChecks += 1;
+      return true;
+    },
+    (entry) => entry.trace.meta.isEpsTrace,
+    Date.parse(dates[250]),
+  );
+
+  assert.deepEqual(target, { traceIndex: 0, seriesKey: "eps:first", pointIndex: 250 });
+  assert.ok(pointChecks <= 11);
 });

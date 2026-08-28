@@ -1,13 +1,13 @@
-(function initThinkStockStockResearchStorage(globalScope) {
-  "use strict";
+"use strict";
 
-  const contract = globalScope.ThinkStockStockResearchContract;
+  const contract = require("./stock-research-contract.js");
   if (!contract) throw new Error("stock research contract failed to load");
   const {
     CACHE_KEY,
     CACHE_VARIANTS_KEY,
     CACHE_FORMAT_SCHEMA,
     CACHE_BYPASS_KEY,
+    HISTORY_QUALITY_VERSION,
     BLOCKED_KEY,
     BLOCKED_SCHEMA,
     MINIMUM_KEY,
@@ -19,6 +19,9 @@
     UNIVERSE_SIZE_LOW,
     UNIVERSE_SIZE_HIGH,
     UNIVERSE_SIZE_STEP,
+    loadUniverseSize,
+    normalizeUniverseSize,
+    saveUniverseSize,
   } = contract;
   const CACHE_SCHEMA = CACHE_FORMAT_SCHEMA;
   const CACHE_VARIANT_LIMIT = 4;
@@ -28,6 +31,7 @@
     const calculationVersion = payload?.calculationVersion ?? payload?.strategy;
     if (formatSchema !== CACHE_FORMAT_SCHEMA
       || calculationVersion !== strategy
+      || Number(payload?.historyQualityVersion) !== HISTORY_QUALITY_VERSION
       || !Array.isArray(payload?.candidates)) return null;
     return {
       ...payload,
@@ -35,6 +39,7 @@
       formatSchema: CACHE_FORMAT_SCHEMA,
       strategy: calculationVersion,
       calculationVersion,
+      historyQualityVersion: HISTORY_QUALITY_VERSION,
     };
   }
 
@@ -57,6 +62,7 @@
         formatSchema,
         strategy: calculationVersion,
         calculationVersion,
+        historyQualityVersion: HISTORY_QUALITY_VERSION,
       }));
     } catch (_) {}
   }
@@ -76,7 +82,11 @@
   function saveCacheVariant(storage, payload) {
     const normalizedSize = normalizeUniverseSize(payload?.universeSize);
     const calculationVersion = payload?.calculationVersion ?? payload?.strategy;
-    const normalized = normalizeCachePayload({ ...payload, universeSize: normalizedSize }, calculationVersion);
+    const normalized = normalizeCachePayload({
+      ...payload,
+      universeSize: normalizedSize,
+      historyQualityVersion: HISTORY_QUALITY_VERSION,
+    }, calculationVersion);
     if (!normalized) return false;
     try {
       const stored = JSON.parse(storage?.getItem(CACHE_VARIANTS_KEY) || "null");
@@ -155,26 +165,7 @@
     try { storage?.setItem(MINIMUM_KEY, String(normalizeMinimum(value))); } catch (_) {}
   }
 
-  function normalizeUniverseSize(value) {
-    if (value == null || String(value).trim() === "") return UNIVERSE_SIZE_DEFAULT;
-    const number = Number(value);
-    if (!Number.isFinite(number)) return UNIVERSE_SIZE_DEFAULT;
-    const stepped = Math.round(number / UNIVERSE_SIZE_STEP) * UNIVERSE_SIZE_STEP;
-    return Math.max(UNIVERSE_SIZE_LOW, Math.min(UNIVERSE_SIZE_HIGH, stepped));
-  }
-
-  function loadUniverseSize(storage) {
-    try { return normalizeUniverseSize(storage?.getItem(UNIVERSE_SIZE_KEY)); }
-    catch (_) { return UNIVERSE_SIZE_DEFAULT; }
-  }
-
-  function saveUniverseSize(storage, value) {
-    const normalized = normalizeUniverseSize(value);
-    try { storage?.setItem(UNIVERSE_SIZE_KEY, String(normalized)); } catch (_) {}
-    return normalized;
-  }
-
-  globalScope.ThinkStockStockResearchStorage = Object.freeze({
+  const stockResearchStorage = Object.freeze({
     CACHE_KEY,
     CACHE_VARIANTS_KEY,
     CACHE_SCHEMA,
@@ -207,4 +198,5 @@
     saveMinimum,
     saveUniverseSize,
   });
-}(typeof self !== "undefined" ? self : globalThis));
+
+module.exports = stockResearchStorage;

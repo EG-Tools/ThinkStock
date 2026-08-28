@@ -1,7 +1,6 @@
 import fs from "node:fs";
-
-await import("../docs/modules/macd-oscillator.js");
-await import("../docs/modules/market-timing.js");
+import macdOscillator from "../docs/modules/macd-oscillator.mjs";
+import marketTiming from "../docs/modules/market-timing.mjs";
 
 function columnarRows(filename) {
   const payload = JSON.parse(fs.readFileSync(new URL(`../docs/data/${filename}`, import.meta.url), "utf8"));
@@ -16,11 +15,11 @@ const pricePayload = JSON.parse(
 );
 
 for (const indexKey of ["^KS11", "^KQ11"]) {
-  const macd = globalThis.ThinkStockMacdOscillator.buildMacdOscillator({
+  const macd = macdOscillator.buildMacdOscillator({
     dates: pricePayload.dates,
     prices: pricePayload.columns[indexKey],
   });
-  const model = globalThis.ThinkStockMarketTiming.buildMarketTimingSignals({
+  const model = marketTiming.buildMarketTimingSignals({
     indexKey,
     dates: macd.dates,
     prices: macd.prices,

@@ -1,14 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import test from "node:test";
-import vm from "node:vm";
-
-const source = await readFile(path.resolve("docs/modules/ai-forecast-journal.js"), "utf8");
-const context = {};
-vm.createContext(context);
-vm.runInContext(source, context);
-const journal = context.ThinkStockAiForecastJournal;
+import * as journal from "../../docs/modules/ai-forecast-journal.mjs";
 
 function forecast(overrides = {}) {
   const dates = Array.from({ length: 127 }, (_, index) => {

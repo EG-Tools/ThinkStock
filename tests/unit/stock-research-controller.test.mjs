@@ -1,17 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as cacheLifecycle from "../../docs/modules/cache-lifecycle-policy.mjs";
 
-await import("../../shared/runtime-foundation.mjs");
-await import("../../docs/modules/stock-research-contract.js");
-await import("../../docs/modules/stock-research-storage.js");
-await import("../../docs/modules/stock-research-navigation.js");
-await import("../../docs/modules/stock-research-filter.js");
-await import("../../docs/modules/cache-lifecycle-policy.js");
-await import("../../docs/modules/stock-research-history-cache.js");
-await import("../../docs/modules/stock-research-worker-client.js");
-await import("../../docs/modules/stock-research-controller.js");
-
-const controller = globalThis.ThinkStockStockResearchController;
+const { default: controller } = await import("../../docs/modules/stock-research-controller.js");
+controller.configureCacheLifecycle(cacheLifecycle);
 
 test("stock research retries a transient first-page profile failure", async () => {
   let attempts = 0;
@@ -256,19 +248,56 @@ test("today research follows each market's live latest date instead of a stale a
   assert.equal(controller.candidateMatchesTodayFilter({
     ticker: "005930.KS",
     market: "KOSPI",
+    latestDate: "2026-08-11",
     lastSellDate: "2026-08-10",
   }, filter, marketDates), false);
   assert.equal(controller.candidateMatchesTodayFilter({
     ticker: "005930.KS",
     market: "KOSPI",
+    latestDate: "2026-08-11",
     lastSellDate: "2026-08-11",
   }, filter, marketDates), true);
   assert.equal(controller.candidateMatchesTodayFilter({
     ticker: "247540.KQ",
     market: "KOSDAQ",
+    latestDate: "2026-08-10",
     lastBuyDate: "2026-08-10",
   }, filter, marketDates), true);
   assert.equal(controller.researchMarketDateLabel(marketDates), "코스피 2026-08-11 · 코스닥 2026-08-10");
+});
+
+test("today research rejects stale market and ticker histories", () => {
+  const filter = { includeBuy: true, includeSell: true };
+  const marketDates = { KOSPI: "2026-08-27", KOSDAQ: "2026-08-27" };
+  const current = {
+    ticker: "127120.KQ",
+    market: "KOSDAQ",
+    latestDate: "2026-08-27",
+    lastBuyDate: "2026-08-27",
+  };
+
+  assert.equal(controller.candidateMatchesTodayFilter(
+    current,
+    filter,
+    marketDates,
+    "2026-08-27",
+  ), true);
+  assert.equal(controller.candidateMatchesTodayFilter(
+    { ...current, latestDate: "2026-07-30", lastBuyDate: "2026-07-30" },
+    filter,
+    marketDates,
+    "2026-08-27",
+  ), false);
+  assert.equal(controller.candidateMatchesTodayFilter(
+    current,
+    filter,
+    { ...marketDates, KOSDAQ: "2026-08-26" },
+    "2026-08-27",
+  ), false);
+  assert.equal(
+    controller.researchMarketDateLabel({ KOSPI: "2026-08-27", KOSDAQ: "2026-08-26" }, "2026-08-27"),
+    "코스닥 최신가격 지연",
+  );
 });
 
 test("stock research merges a recent history tail without duplicating dates", () => {
@@ -276,6 +305,8 @@ test("stock research merges a recent history tail without duplicating dates", ()
   const ticker = "005930.KS";
   const cached = {
     schema: controller.HISTORY_CACHE_SCHEMA,
+    historyQualityVersion: controller.HISTORY_QUALITY_VERSION,
+    historyValidationDate: rows.at(-1).date,
     ticker,
     rows,
   };
@@ -283,6 +314,8 @@ test("stock research merges a recent history tail without duplicating dates", ()
   const next = historyRows(1, "2025-10-28")[0];
   const merged = controller.mergeResearchHistoryPayload(cached, {
     partial: true,
+    historyQualityVersion: controller.HISTORY_QUALITY_VERSION,
+    historyValidationDate: next.date,
     rows: [replacement, next],
   }, ticker);
 
@@ -317,6 +350,8 @@ test("stock research updates a cached history from the refreshed universe withou
   const rows = historyRows(300);
   const cached = {
     schema: controller.HISTORY_CACHE_SCHEMA,
+    historyQualityVersion: controller.HISTORY_QUALITY_VERSION,
+    historyValidationDate: rows.at(-1).date,
     ticker,
     rows,
   };
@@ -350,6 +385,8 @@ test("stock research rejects a suspicious universe jump so split history can be 
   const nextDate = new Date(Date.parse(`${latestDate}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
   assert.equal(controller.mergeUniversePointIntoHistoryCache({
     schema: controller.HISTORY_CACHE_SCHEMA,
+    historyQualityVersion: controller.HISTORY_QUALITY_VERSION,
+    historyValidationDate: latestDate,
     ticker,
     rows,
   }, {
@@ -357,5 +394,22 @@ test("stock research rejects a suspicious universe jump so split history can be 
     baseDate: nextDate,
     close: rows.at(-1).close / 5,
     volume: 1000000,
+  }), null);
+});
+
+test("stock research refetches instead of skipping missing sessions in the browser cache", () => {
+  const ticker = "127120.KQ";
+  const rows = historyRows(300, "2025-10-26");
+  assert.equal(controller.mergeUniversePointIntoHistoryCache({
+    schema: controller.HISTORY_CACHE_SCHEMA,
+    historyQualityVersion: controller.HISTORY_QUALITY_VERSION,
+    historyValidationDate: "2026-08-21",
+    ticker,
+    rows,
+  }, {
+    ticker,
+    baseDate: "2026-08-27",
+    close: 5300,
+    volume: 120000,
   }), null);
 });

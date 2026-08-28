@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-
-
-await import("../../docs/modules/data-payload.js");
-const payloadUtils = globalThis.ThinkStockDataPayload;
+import payloadUtils from "../../docs/modules/data-payload.mjs";
 
 
 test("shared payload parser normalizes columnar and legacy records", () => {

@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/control-state-view.js");
-
-const { clampPercent, createProgressView } = globalThis.ThinkStockProgressView;
+import { clampPercent, createProgressView } from "../../docs/modules/control-state-view.mjs";
 
 test("shared progress view paints, clamps, anchors, and resets one DOM contract", () => {
   const root = { hidden: true, dataset: {} };

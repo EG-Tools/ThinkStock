@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/chart-marker-runtime.js");
-const layout = globalThis.ThinkStockChartMarkerLayout;
+const { chartMarkerLayout: layout } = await import("../../docs/modules/chart-marker-runtime.mjs");
 
 test("collects marker y updates by stable marker identity", () => {
   const element = {
@@ -87,4 +86,74 @@ test("requests a structural render when a new ticker changes marker dates or pay
 
   assert.equal(result.structureChanged, true);
   assert.deepEqual(result.traceIndexes, []);
+});
+
+test("moves only one series marker positions during a live line transform", () => {
+  const element = {
+    data: [
+      {
+        x: ["2026-08-01", "2026-08-02"],
+        y: [100, 110],
+        meta: { seriesKey: "005930.KS" },
+      },
+      {
+        x: ["2026-08-01", "2026-08-02", "2026-08-02"],
+        y: [105, 115, 210],
+        meta: { pointTickers: ["005930.KS", "005930.KS", "000660.KS"] },
+      },
+    ],
+  };
+
+  const result = layout.collectSeriesYDeltaUpdates(element, {
+    seriesKey: "005930.KS",
+    sourceTraceIndex: 0,
+    nextY: [120, 140],
+  });
+
+  assert.deepEqual(result.traceIndexes, [1]);
+  assert.deepEqual(result.yUpdates, [[125, 145, 210]]);
+});
+
+test("reuses dated marker bindings instead of rebuilding the full source date map each frame", () => {
+  const sourceDates = Array.from({ length: 6500 }, (_, index) => `2026-${String(index).padStart(4, "0")}`);
+  let sourceDateReads = 0;
+  const observedDates = new Array(sourceDates.length);
+  sourceDates.forEach((value, index) => {
+    Object.defineProperty(observedDates, index, {
+      configurable: true,
+      enumerable: true,
+      get() {
+        sourceDateReads += 1;
+        return value;
+      },
+    });
+  });
+  const sourceTrace = {
+    x: observedDates,
+    y: sourceDates.map((_, index) => index),
+    meta: { seriesKey: "005930.KS" },
+  };
+  const markerTrace = {
+    x: [sourceDates[100], sourceDates[6400]],
+    y: [105, 6405],
+    meta: { pointTickers: ["005930.KS", "005930.KS"] },
+  };
+  const element = { data: [sourceTrace, markerTrace] };
+  const first = layout.collectSeriesYDeltaUpdates(element, {
+    seriesKey: "005930.KS",
+    sourceTraceIndex: 0,
+    nextY: sourceTrace.y.map((value) => value + 10),
+  });
+  const firstPassReads = sourceDateReads;
+  sourceTrace.y = sourceTrace.y.map((value) => value + 10);
+  markerTrace.y = first.yUpdates[0];
+
+  const second = layout.collectSeriesYDeltaUpdates(element, {
+    seriesKey: "005930.KS",
+    sourceTraceIndex: 0,
+    nextY: sourceTrace.y.map((value) => value + 10),
+  });
+
+  assert.deepEqual(second.yUpdates, [[125, 6425]]);
+  assert.ok(sourceDateReads - firstPassReads <= 4);
 });

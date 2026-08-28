@@ -268,16 +268,3 @@ export async function executeRuntimeSourcePlan(kind, handlers = {}, options = {}
   }
   throw lastError || new Error(`runtime source ${kind || "unknown"} failed`);
 }
-
-const api = Object.freeze({
-  RUNTIME_SOURCE_POLICIES,
-  cacheRefreshDecision,
-  cacheTtlSeconds,
-  executeRuntimeSourcePlan,
-  failureBackoffMs,
-  retryDelaysMs,
-  shouldConfirmRuntimeSource,
-  sourcePolicy,
-});
-
-if (typeof globalThis !== "undefined") globalThis.ThinkStockRuntimeFreshnessPolicy = api;

@@ -13,6 +13,633 @@ import {
   installDataRoutes,
 } from "./helpers/thinkstock-fixture.mjs";
 
+test("illiquid preferred stock can be added across long historical trading gaps", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "e2e-token" }));
+  });
+  await installDataRoutes(page, {
+    krxUniverseRecords: [
+      { ticker: "019175.KS", code: "019175", name: "신풍제약우", market: "KOSPI" },
+    ],
+  });
+  await page.route("**/api/research/history?*", async (route) => {
+    await route.fulfill({ json: {
+      ok: true,
+      schema: 1,
+      ticker: "019175.KS",
+      latestDate: "2026-08-21",
+      fullRowCount: 8,
+      partial: false,
+      rows: [
+        { date: "1997-11-05", close: 706, volume: 8000 },
+        { date: "1997-12-15", close: 426, volume: 0 },
+        { date: "1998-01-12", close: 125, volume: 1500 },
+        { date: "1998-05-11", close: 120, volume: 900 },
+        { date: "1998-05-21", close: 77, volume: 1000 },
+        { date: "2026-08-20", close: 12700, volume: 1255 },
+        { date: "2026-08-21", close: 12210, volume: 434 },
+      ],
+    } });
+  });
+  await page.unroute("**/api/prices?*");
+  await page.route("**/api/prices?*", async (route) => {
+    await route.fulfill({ json: {
+      ok: true,
+      ticker: "019175.KS",
+      source: "NAVER_FALLBACK",
+      latestDate: "2026-08-24",
+      records: [{ date: "2026-08-24", close: 15870 }],
+    } });
+  });
+
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await page.locator("#stockSearchInput").fill("신풍제약우");
+  await page.locator(".stock-suggest-item").filter({ hasText: "신풍제약우" }).click();
+
+  await expect(page.locator('[data-custom-series="019175.KS"]')).toHaveCount(1);
+  await expect(page.locator('[data-series="019175.KS"]')).toHaveClass(/is-on/);
+});
+
+test("RFHIC EPS prioritizes quarterly values and rises through annual estimates", async ({ page, isMobile }) => {
+  test.setTimeout(90000);
+  const ticker = "218410.KQ";
+  const researchMilestones = new Map([
+    ["2025-12-31", 18500],
+    ["2026-03-31", 20100],
+    ["2026-06-30", 23600],
+    ["2026-08-24", 25200],
+  ]);
+  const researchRows = [];
+  for (
+    let cursor = new Date("2022-01-03T00:00:00Z"), index = 0;
+    cursor <= new Date("2026-08-24T00:00:00Z");
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  ) {
+    if (cursor.getUTCDay() === 0 || cursor.getUTCDay() === 6) continue;
+    const date = cursor.toISOString().slice(0, 10);
+    const close = researchMilestones.get(date)
+      ?? Math.round(14500 + (index * 14) + (Math.sin(index / 11) * 480));
+    researchRows.push({ date, close, volume: 10000 + ((index % 12) * 350) });
+    index += 1;
+  }
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "e2e-token" }));
+  });
+  await installDataRoutes(page, {
+    krxUniverseRecords: [{ ticker, code: "218410", name: "RFHIC", market: "KOSDAQ" }],
+  });
+  await page.route("**/api/research/history?*", async (route) => {
+    await route.fulfill({ json: {
+      ok: true,
+      ticker,
+      latestDate: "2026-08-24",
+      fullRowCount: researchRows.length,
+      partial: false,
+      rows: researchRows,
+    } });
+  });
+  await page.unroute("**/api/prices?*");
+  await page.route("**/api/prices?*", async (route) => {
+    await route.fulfill({ json: {
+      ok: true,
+      ticker,
+      source: "KRX",
+      latestDate: "2026-08-24",
+      records: [{ date: "2026-08-24", close: 25200, volume: 13000 }],
+    } });
+  });
+  await page.route("**/api/analysis**", async (route) => {
+    await route.fulfill({ json: {
+      ok: true,
+      ticker,
+      savedAt: Date.now(),
+      consensus: null,
+      news: [],
+      financials: [
+        { ticker, period: "2023-12", frequency: "annual", eps: 320, estimate: false },
+        { ticker, period: "2024-12", frequency: "annual", eps: 400, estimate: false },
+        { ticker, period: "2025-09", frequency: "quarter", eps: 100, estimate: false },
+        { ticker, period: "2025-12", frequency: "quarter", eps: 120, estimate: false },
+        { ticker, period: "2025-12", frequency: "annual", eps: 520, estimate: false },
+        { ticker, period: "2026-03", frequency: "quarter", eps: 180, estimate: false },
+        { ticker, period: "2026-06", frequency: "quarter", eps: 240, estimate: true },
+        { ticker, period: "2026-12", frequency: "annual", eps: 1200, estimate: true },
+        { ticker, period: "2027-12", frequency: "annual", eps: 1800, estimate: true },
+      ],
+    } });
+  });
+  await page.route("**/api/dart/eps-history?*", async (route) => {
+    const year = Number(new URL(route.request().url()).searchParams.get("year"));
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    await route.fulfill({ json: {
+      ok: true,
+      version: 1,
+      ticker,
+      businessYear: year,
+      records: [],
+      cached: true,
+      startYear: 2016,
+      endYear: 2025,
+    } });
+  });
+
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await page.locator("#stockSearchInput").fill("RFHIC");
+  await page.locator(".stock-suggest-item").filter({ hasText: "RFHIC" }).click();
+  await expect(page.locator('[data-series="218410.KQ"]')).toHaveClass(/is-on/);
+  await page.locator("#chartRange6Months").click();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const [start, end] = element._fullLayout.xaxis.range.map(Date.parse);
+    return (end - start) / 86400000;
+  })).toBeLessThan(190);
+  const beforeEpsRange = await page.locator("#chart").evaluate((element) => (
+    element._fullLayout.xaxis.range.map(Date.parse)
+  ));
+  await page.locator("#hoverToggle").click();
+  await expect(page.locator("#hoverToggle")).toHaveClass(/is-active/);
+  await page.locator("#epsToggle").click();
+  await expect(page.locator("#epsToggle")).toHaveClass(/is-active/);
+  await expect(page.locator("#epsProgress")).toBeVisible({ timeout: 5000 });
+
+  await expect.poll(() => page.locator("#chart").evaluate((element, entryRange) => {
+    const eps = (element.data || []).find((trace) => trace?.meta?.isEpsTrace);
+    const price = (element.data || []).find((trace) => trace?.meta?.seriesKey === "218410.KQ");
+    const grouped = (element.data || []).find((trace) => (
+      trace?.meta?.isGroupedHoverTrace && trace.meta.hoverGroupTicker === "218410.KQ"
+    ));
+    return eps ? {
+      colorMatches: eps.line?.color === price?.line?.color,
+      dash: eps.line?.dash,
+      quarterMarkers: eps.marker?.size,
+      quarterMarkersBlack: eps.marker?.color?.every((color) => color === "#000000"),
+      dates: eps.x,
+      historyStartPreserved: Math.abs(
+        Date.parse(element._fullLayout?.xaxis?.range?.[0]) - entryRange[0]
+      ) <= 86400000,
+      futureVisible: Date.parse(element._fullLayout?.xaxis?.range?.[1]) >= Date.parse(eps.x.at(-1)),
+      fitsYAxis: eps.y.every((value, index) => {
+        const time = Date.parse(eps.x[index]);
+        const [x0, x1] = element._fullLayout.xaxis.range.map(Date.parse);
+        if (time < Math.min(x0, x1) || time > Math.max(x0, x1)) return true;
+        return Number.isFinite(Number(value))
+          && Number(value) >= Math.min(...element._fullLayout.yaxis.range.map(Number))
+          && Number(value) <= Math.max(...element._fullLayout.yaxis.range.map(Number));
+      }),
+      futureRises: eps.y.at(-1) > eps.y[eps.x.indexOf("2026-12-31")],
+      groupedTicker: grouped?.meta?.hoverGroupTicker || "",
+      groupedEpsYAligned: (() => {
+        const date = "2025-09-30";
+        const groupedIndex = grouped?.x?.indexOf(date) ?? -1;
+        const epsIndex = eps.x?.indexOf(date) ?? -1;
+        return groupedIndex >= 0 && epsIndex >= 0 && grouped.y[groupedIndex] === eps.y[epsIndex];
+      })(),
+      groupedQuarterLabel: grouped?.text?.some((text) => String(text).includes("EPS · 4분기 120")),
+      groupedNameRepeated: grouped?.text?.some((text) => String(text).includes("RFHIC EPS")),
+      groupedIndent: grouped?.hovertemplate === "%{text}<extra></extra>"
+        && grouped?.text?.some((text) => String(text).includes("<br>EPS"))
+        && grouped?.customdata?.every((text, index) => text === grouped.text[index])
+        && grouped?.customdata?.every((text) => !String(text).includes("&nbsp;"))
+        && grouped?.meta?.pointHoverTemplate === "%{x|%Y.%-m.%-d}<br>%{customdata}<extra></extra>",
+      epsOwnsPopup: eps.hoverinfo !== "skip" || Boolean(eps.hovertemplate),
+      lastText: eps.text?.at(-1),
+    } : null;
+  }, beforeEpsRange), { timeout: 30000 }).toEqual({
+    colorMatches: true,
+    dash: "dot",
+    quarterMarkers: Array(20).fill(12),
+    quarterMarkersBlack: true,
+    dates: [
+      "2023-03-31", "2023-06-30", "2023-09-30", "2023-12-31",
+      "2024-03-31", "2024-06-30", "2024-09-30", "2024-12-31",
+      "2025-03-31", "2025-06-30", "2025-09-30", "2025-12-31",
+      "2026-03-31", "2026-06-30", "2026-09-30", "2026-12-31",
+      "2027-03-31", "2027-06-30", "2027-09-30", "2027-12-31",
+    ],
+    historyStartPreserved: true,
+    futureVisible: true,
+    fitsYAxis: true,
+    futureRises: true,
+    groupedTicker: ticker,
+    groupedEpsYAligned: true,
+    groupedQuarterLabel: true,
+    groupedNameRepeated: false,
+    groupedIndent: true,
+    epsOwnsPopup: false,
+    lastText: "2027년 4분기 전망 환산 EPS 450 · 연간 1,800",
+  });
+  await expect(page.locator('#y-handles [data-series-key="eps:218410.KQ"]')).toHaveCount(2);
+  await expect(page.locator("#epsProgress")).toBeHidden({ timeout: 5000 });
+  const epsHandle = page.locator('#y-handles .y-handle-right[data-series-key="eps:218410.KQ"]');
+  await expect(epsHandle).toBeVisible();
+  await expect(epsHandle).toHaveClass(/y-handle-eps/);
+  await expect(epsHandle).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+
+  if (!isMobile) {
+    const initialEpsHoverTarget = await page.locator("#chart").evaluate((element) => {
+      const grouped = (element.data || []).find((trace) => (
+        trace?.meta?.isGroupedHoverTrace && trace.meta.hoverGroupTicker === "218410.KQ"
+      ));
+      const pointIndex = grouped?.x?.indexOf("2026-03-31") ?? -1;
+      if (!grouped || pointIndex < 0) return null;
+      const rect = element.getBoundingClientRect();
+      const xa = element._fullLayout.xaxis;
+      const ya = element._fullLayout.yaxis;
+      return {
+        x: rect.left + xa._offset + xa.d2p(grouped.x[pointIndex]),
+        y: rect.top + ya._offset + ya.l2p(grouped.y[pointIndex]),
+      };
+    });
+    expect(initialEpsHoverTarget).not.toBeNull();
+    await page.mouse.move(initialEpsHoverTarget.x, initialEpsHoverTarget.y);
+    await expect(page.locator("#chart .hoverlayer")).toContainText("EPS", { timeout: 3000 });
+    const initialEpsHoverLines = await page.locator("#chart .hoverlayer text.nums > tspan.line")
+      .allTextContents();
+    expect(initialEpsHoverLines[0]).toBe("2026.3.31");
+    expect(initialEpsHoverLines[1]?.trim()).toContain("RFHIC");
+    expect(initialEpsHoverLines[2]?.trim()).toContain("EPS");
+    await expect.poll(async () => {
+      const offsets = await page.locator("#chart .hoverlayer text.nums > tspan.line")
+        .evaluateAll((lines) => lines.slice(0, 3).map((line) => (
+          line.getStartPositionOfChar(0).matrixTransform(line.getScreenCTM()).x
+        )));
+      return offsets.length === 3
+        ? offsets.slice(1).map((left) => Math.round(left - offsets[0]))
+        : [];
+    }).toEqual([38, 38]);
+    const initialEpsHoverOffsets = await page.locator("#chart .hoverlayer text.nums > tspan.line")
+      .evaluateAll((lines) => lines.slice(0, 3).map((line) => (
+        line.getStartPositionOfChar(0).matrixTransform(line.getScreenCTM()).x
+      )));
+    expect(Math.abs(initialEpsHoverOffsets[1] - initialEpsHoverOffsets[0] - 38)).toBeLessThanOrEqual(1);
+    expect(Math.abs(initialEpsHoverOffsets[2] - initialEpsHoverOffsets[0] - 38)).toBeLessThanOrEqual(1);
+    const initialEpsDetailHtml = await page.locator("#chart .hoverlayer text.nums > tspan.line")
+      .nth(2)
+      .evaluate((line) => line.innerHTML);
+    expect(initialEpsDetailHtml).not.toContain("font-weight:bold");
+    const pointHoverAppearance = await page.locator("#chart .hoverlayer > g.hovertext").evaluate((group) => {
+      const background = group.querySelector(":scope > path");
+      const text = group.querySelector("text.nums");
+      const backgroundStyle = getComputedStyle(background);
+      const textStyle = getComputedStyle(text);
+      return {
+        background: backgroundStyle.fill,
+        border: backgroundStyle.stroke,
+        borderWidth: backgroundStyle.strokeWidth,
+        fontFamily: textStyle.fontFamily,
+        fontSize: textStyle.fontSize,
+        fontWeight: textStyle.fontWeight,
+        textColor: textStyle.fill,
+      };
+    });
+    expect(pointHoverAppearance.fontSize).toBe("12px");
+    expect(pointHoverAppearance.background).toBe("rgba(34, 34, 34, 0.45)");
+
+    const priceHoverTarget = await page.locator("#chart").evaluate((element) => {
+      const grouped = (element.data || []).find((trace) => (
+        trace?.meta?.isGroupedHoverTrace && trace.meta.hoverGroupTicker === "218410.KQ"
+      ));
+      const eps = (element.data || []).find((trace) => trace?.meta?.seriesKey === "eps:218410.KQ");
+      const epsDates = new Set(eps?.x || []);
+      const [rangeStart, rangeEnd] = (element._fullLayout?.xaxis?.range || []).map(Date.parse);
+      const rangeMidpoint = (rangeStart + rangeEnd) / 2;
+      const pointIndex = (grouped?.x || []).reduce((bestIndex, date, index) => {
+        const time = Date.parse(date);
+        if (epsDates.has(date)
+          || time < Math.min(rangeStart, rangeEnd)
+          || time > Math.max(rangeStart, rangeEnd)) return bestIndex;
+        if (bestIndex < 0) return index;
+        return Math.abs(time - rangeMidpoint) < Math.abs(Date.parse(grouped.x[bestIndex]) - rangeMidpoint)
+          ? index
+          : bestIndex;
+      }, -1);
+      if (!grouped || pointIndex < 0) return null;
+      const rect = element.getBoundingClientRect();
+      const xa = element._fullLayout.xaxis;
+      const ya = element._fullLayout.yaxis;
+      return {
+        x: rect.left + xa._offset + xa.d2p(grouped.x[pointIndex]),
+        y: rect.top + ya._offset + ya.l2p(grouped.y[pointIndex]),
+        date: grouped.x[pointIndex],
+      };
+    });
+    expect(priceHoverTarget).not.toBeNull();
+    await page.mouse.move(priceHoverTarget.x, priceHoverTarget.y);
+    const [priceYear, priceMonth, priceDay] = priceHoverTarget.date.split("-").map(Number);
+    const priceDateLabel = `${priceYear}.${priceMonth}.${priceDay}`;
+    await expect(page.locator("#chart .hoverlayer")).toContainText(priceDateLabel, { timeout: 3000 });
+    const priceHoverText = await page.locator("#chart .hoverlayer").textContent();
+    expect(priceHoverText?.match(new RegExp(priceDateLabel.replaceAll(".", "\\."), "g"))?.length || 0)
+      .toBe(1);
+    await expect.poll(async () => page.locator("#chart .hoverlayer").evaluate((hoverLayer) => {
+      const date = hoverLayer.querySelector("text.legendtitletext");
+      const content = hoverLayer.querySelector("text.legendtext");
+      if (!date || !content) return null;
+      const startX = (node) => node.getStartPositionOfChar(0).matrixTransform(node.getScreenCTM()).x;
+      return Math.round(startX(content) - startX(date));
+    })).toBe(38);
+    const unifiedHoverAppearance = await page.locator("#chart .hoverlayer > g.legend").evaluate((group) => {
+      const background = group.querySelector(":scope > rect.bg");
+      const text = group.querySelector("text.legendtitletext");
+      const backgroundStyle = getComputedStyle(background);
+      const textStyle = getComputedStyle(text);
+      return {
+        background: backgroundStyle.fill,
+        border: backgroundStyle.stroke,
+        borderWidth: backgroundStyle.strokeWidth,
+        fontFamily: textStyle.fontFamily,
+        fontSize: textStyle.fontSize,
+        fontWeight: textStyle.fontWeight,
+        textColor: textStyle.fill,
+      };
+    });
+    expect(unifiedHoverAppearance).toEqual(pointHoverAppearance);
+    await waitForChartRenderIdle(page);
+    await expect.poll(async () => {
+      const hoverTarget = await page.locator("#chart").evaluate((element) => {
+        const grouped = (element.data || []).find((trace) => (
+          trace?.meta?.isGroupedHoverTrace && trace.meta.hoverGroupTicker === "218410.KQ"
+        ));
+        const pointIndex = grouped?.x?.indexOf("2026-06-30") ?? -1;
+        if (!grouped || pointIndex < 0) return null;
+        const rect = element.getBoundingClientRect();
+        const xa = element._fullLayout.xaxis;
+        const ya = element._fullLayout.yaxis;
+        return {
+          x: rect.left + xa._offset + xa.d2p(grouped.x[pointIndex]) + 14,
+          y: rect.top + ya._offset + ya.l2p(grouped.y[pointIndex]),
+        };
+      });
+      if (!hoverTarget) return false;
+      await page.mouse.move(hoverTarget.x - 2, hoverTarget.y);
+      await page.mouse.move(hoverTarget.x, hoverTarget.y);
+      return (await page.locator("#chart .hoverlayer").textContent())?.includes("EPS") || false;
+    }, { timeout: 8000 }).toBe(true);
+    const epsHoverText = await page.locator("#chart .hoverlayer").textContent();
+    expect(epsHoverText?.match(/2026\.6\.30/g)?.length || 0).toBe(1);
+    const epsHoverLines = await page.locator("#chart .hoverlayer text.nums > tspan.line")
+      .allTextContents();
+    expect(epsHoverLines[0]).toBe("2026.6.30");
+    expect(epsHoverLines[1]?.trim()).toContain("RFHIC");
+    expect(epsHoverLines[2]?.trim()).toContain("EPS");
+    await expect.poll(async () => {
+      const offsets = await page.locator("#chart .hoverlayer text.nums > tspan.line")
+        .evaluateAll((lines) => lines.slice(0, 3).map((line) => (
+          line.getStartPositionOfChar(0).matrixTransform(line.getScreenCTM()).x
+        )));
+      return offsets.length === 3
+        ? offsets.slice(1).map((left) => Math.round(left - offsets[0]))
+        : [];
+    }).toEqual([38, 38]);
+    const epsHoverOffsets = await page.locator("#chart .hoverlayer text.nums > tspan.line")
+      .evaluateAll((lines) => lines.slice(0, 3).map((line) => (
+        line.getStartPositionOfChar(0).matrixTransform(line.getScreenCTM()).x
+      )));
+    expect(Math.abs(epsHoverOffsets[1] - epsHoverOffsets[0] - 38)).toBeLessThanOrEqual(1);
+    expect(Math.abs(epsHoverOffsets[2] - epsHoverOffsets[0] - 38)).toBeLessThanOrEqual(1);
+    await expect(page.locator("#chart .trace.scatter.is-eps-point-highlighted")).toHaveCount(1);
+    const highlightedEpsPoint = page.locator(
+      "#chart .trace.scatter.is-eps-point-highlighted .points path.point",
+    ).nth(2);
+    await expect(highlightedEpsPoint).toHaveCSS("stroke-width", "3px");
+    await expect(highlightedEpsPoint).toHaveCSS("transform", "none");
+
+    const viewportBeforeHistoricalHover = await page.locator("#chart").evaluate((element) => (
+      element._fullLayout.xaxis.range.map(Date.parse)
+    ));
+    const historicalHoverRange = [Date.parse("2024-01-01"), Date.parse("2024-06-30")];
+    await page.evaluate((range) => window.ThinkStockE2E.setViewportRangeForTest(range), historicalHoverRange);
+    await waitForChartRenderIdle(page);
+    const historicalEpsHoverTarget = await page.locator("#chart").evaluate((element) => {
+      const grouped = (element.data || []).find((trace) => (
+        trace?.meta?.isGroupedHoverTrace && trace.meta.hoverGroupTicker === "218410.KQ"
+      ));
+      const pointIndex = grouped?.x?.indexOf("2024-03-31") ?? -1;
+      if (!grouped || pointIndex < 0) return null;
+      const rect = element.getBoundingClientRect();
+      const xa = element._fullLayout.xaxis;
+      const ya = element._fullLayout.yaxis;
+      return {
+        x: rect.left + xa._offset + xa.d2p(grouped.x[pointIndex]),
+        y: rect.top + ya._offset + ya.l2p(grouped.y[pointIndex]),
+      };
+    });
+    expect(historicalEpsHoverTarget).not.toBeNull();
+    await page.mouse.move(historicalEpsHoverTarget.x, historicalEpsHoverTarget.y);
+    await expect(page.locator("#chart .hoverlayer")).toContainText("2024.3.31", { timeout: 3000 });
+    await expect.poll(async () => {
+      const offsets = await page.locator("#chart .hoverlayer text.nums > tspan.line")
+        .evaluateAll((lines) => lines.slice(0, 3).map((line) => (
+          line.getStartPositionOfChar(0).matrixTransform(line.getScreenCTM()).x
+        )));
+      return offsets.length === 3
+        ? offsets.slice(1).map((left) => Math.round(left - offsets[0]))
+        : [];
+    }).toEqual([38, 38]);
+    const historicalHoverOffsets = await page.locator("#chart .hoverlayer text.nums > tspan.line")
+      .evaluateAll((lines) => lines.slice(0, 3).map((line) => (
+        line.getStartPositionOfChar(0).matrixTransform(line.getScreenCTM()).x
+      )));
+    expect(Math.abs(historicalHoverOffsets[1] - historicalHoverOffsets[0] - 38)).toBeLessThanOrEqual(1);
+    expect(Math.abs(historicalHoverOffsets[2] - historicalHoverOffsets[0] - 38)).toBeLessThanOrEqual(1);
+    await page.evaluate((range) => window.ThinkStockE2E.setViewportRangeForTest(range), viewportBeforeHistoricalHover);
+    await waitForChartRenderIdle(page);
+
+    await page.evaluate(() => window.ThinkStockE2E?.getPerformanceApi?.()?.clear?.());
+    const chartBox = await page.locator("#chart").boundingBox();
+    expect(chartBox).not.toBeNull();
+    for (let index = 0; index < 32; index += 1) {
+      await page.mouse.move(
+        chartBox.x + 40 + ((index % 16) / 15) * Math.max(1, chartBox.width - 80),
+        chartBox.y + chartBox.height * (0.3 + ((index % 3) * 0.13)),
+      );
+    }
+    await page.waitForTimeout(350);
+    const epsPointerPerf = await page.evaluate(() => window.ThinkStockE2E.getPerformanceApi().summary());
+    expect(epsPointerPerf.pointerMoves).toBeGreaterThanOrEqual(DESKTOP_PERF_BUDGET.minPointerMoves);
+    expect(epsPointerPerf.p95PointerMove).toBeLessThan(DESKTOP_PERF_BUDGET.maxP95PointerMove);
+
+    const dragTarget = await page.locator("#chart").evaluate((element) => {
+      const trace = (element.data || []).find((candidate) => candidate?.meta?.isEpsTrace);
+      const pointIndex = trace?.x?.findIndex((date) => date === "2026-06-30") ?? -1;
+      if (!trace || pointIndex < 0) return null;
+      const rect = element.getBoundingClientRect();
+      const xa = element._fullLayout.xaxis;
+      const ya = element._fullLayout.yaxis;
+      return {
+        x: rect.left + xa._offset + xa.d2p(trace.x[pointIndex]),
+        y: rect.top + ya._offset + ya.l2p(trace.y[pointIndex]),
+        before: trace.y[pointIndex],
+        pointIndex,
+      };
+    });
+    expect(dragTarget).not.toBeNull();
+    await expect.poll(() => page.evaluate((target) => (
+      window.ThinkStockE2E.getLineDragTargetAt(target.x, target.y)
+    ), dragTarget)).toMatchObject({ seriesKey: "eps:218410.KQ" });
+    const generationBeforeEpsDrag = await page.evaluate(() => (
+      window.ThinkStockE2E.getChartRenderGeneration()
+    ));
+    await page.mouse.move(dragTarget.x, dragTarget.y);
+    await page.mouse.down();
+    await page.mouse.move(dragTarget.x, dragTarget.y + 28, { steps: 4 });
+    await page.mouse.up();
+    await expect.poll(() => page.locator("#chart").evaluate((element, target) => {
+      const trace = (element.data || []).find((candidate) => candidate?.meta?.isEpsTrace);
+      return Math.abs(Number(trace?.y?.[target.pointIndex]) - Number(target.before));
+    }, dragTarget)).toBeGreaterThan(0.1);
+    expect(await page.evaluate(() => window.ThinkStockE2E.getChartRenderGeneration()))
+      .toBe(generationBeforeEpsDrag);
+
+    await page.locator('[data-series="218410.KQ"]').click();
+    await page.locator('[data-series="218410.KQ"]').click();
+    await expect.poll(() => page.evaluate(() => (
+      window.ThinkStockE2E.getSeriesTransforms()
+    ))).toEqual({ offsets: {}, scales: {} });
+    await expect.poll(() => page.locator("#chart").evaluate((element, target) => {
+      const trace = (element.data || []).find((candidate) => candidate?.meta?.isEpsTrace);
+      return Math.abs(Number(trace?.y?.[target.pointIndex]) - Number(target.before));
+    }, dragTarget)).toBeLessThan(0.1);
+  }
+
+  await page.locator("#epsToggle").click();
+  await expect(page.locator("#epsToggle")).not.toHaveClass(/is-active/);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.isEpsTrace).length
+  ))).toBe(0);
+  await expect.poll(() => page.locator("#chart").evaluate((element, expected) => {
+    const actual = element._fullLayout.xaxis.range.map(Date.parse);
+    return Math.max(Math.abs(actual[0] - expected[0]), Math.abs(actual[1] - expected[1]));
+  }, beforeEpsRange)).toBeLessThanOrEqual(1000);
+
+  const quickPresetExpectation = await page.locator("#chart").evaluate((element) => {
+    const observedEnd = Math.max(...(element.data || [])
+      .filter((trace) => trace?.meta?.seriesKey === "218410.KQ"
+        && !trace?.meta?.isEpsTrace
+        && !trace?.meta?.isAiForecastTrace)
+      .flatMap((trace) => trace.x || [])
+      .map(Date.parse)
+      .filter(Number.isFinite));
+    const start = new Date(observedEnd);
+    start.setUTCFullYear(start.getUTCFullYear() - 1);
+    return { start: start.getTime(), observedEnd };
+  });
+  await page.locator("#chartRange1Year").click();
+  await page.locator("#epsToggle").click();
+  await expect(page.locator("#epsToggle")).toHaveClass(/is-active/);
+  await expect.poll(() => page.locator("#chart").evaluate((element, expected) => {
+    const range = element._fullLayout.xaxis.range.map(Date.parse);
+    const epsEnd = Math.max(...(element.data || [])
+      .filter((trace) => trace?.meta?.isEpsTrace)
+      .flatMap((trace) => trace.x || [])
+      .map(Date.parse)
+      .filter(Number.isFinite));
+    return {
+      startPreserved: Math.abs(range[0] - expected.start) <= 86400000,
+      futureVisible: Number.isFinite(epsEnd) && range[1] >= epsEnd,
+    };
+  }, quickPresetExpectation), { timeout: 30000 }).toEqual({
+    startPreserved: true,
+    futureVisible: true,
+  });
+  await page.locator("#epsToggle").click();
+  await expect(page.locator("#epsToggle")).not.toHaveClass(/is-active/);
+  await expect.poll(() => page.locator("#chart").evaluate((element, expected) => {
+    const range = element._fullLayout.xaxis.range.map(Date.parse);
+    return {
+      startRestored: Math.abs(range[0] - expected.start) <= 86400000,
+      endRestored: Math.abs(range[1] - expected.observedEnd) <= 86400000,
+    };
+  }, quickPresetExpectation)).toEqual({ startRestored: true, endRestored: true });
+
+  const futureOverlayState = () => page.locator("#chart").evaluate((element) => {
+    const range = element._fullLayout.xaxis.range.map(Date.parse);
+    const traceEnd = (predicate) => Math.max(...(element.data || [])
+      .filter(predicate)
+      .flatMap((trace) => (trace.x || []).map(Date.parse).filter(Number.isFinite)));
+    return {
+      range,
+      aiCount: (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length,
+      epsCount: (element.data || []).filter((trace) => trace?.meta?.isEpsTrace).length,
+      aiEnd: traceEnd((trace) => trace?.meta?.isAiForecastScenarioTrace),
+      epsEnd: traceEnd((trace) => trace?.meta?.isEpsTrace),
+    };
+  });
+  const preservesHistoryAndFuture = (state, historyStart, futureEnd) => (
+    Math.abs(state.range[0] - historyStart) <= 86400000
+    && Number.isFinite(futureEnd)
+    && state.range[1] >= futureEnd
+  );
+
+  await page.locator("#aiForecastToggle").click();
+  await expect(page.locator("#aiForecastToggle")).toHaveClass(/is-active/);
+  await expect.poll(async () => (await futureOverlayState()).aiCount, { timeout: 30000 }).toBeGreaterThan(0);
+  const aiOnly = await futureOverlayState();
+  expect(preservesHistoryAndFuture(aiOnly, quickPresetExpectation.start, aiOnly.aiEnd)).toBe(true);
+
+  await page.locator("#epsToggle").click();
+  await expect(page.locator("#epsToggle")).toHaveClass(/is-active/);
+  await expect.poll(async () => (await futureOverlayState()).epsCount, { timeout: 30000 }).toBeGreaterThan(0);
+  const aiWithEps = await futureOverlayState();
+  expect(aiWithEps.aiCount).toBeGreaterThan(0);
+  expect(preservesHistoryAndFuture(aiWithEps, aiOnly.range[0], aiWithEps.epsEnd)).toBe(true);
+
+  await page.locator("#epsToggle").click();
+  await expect(page.locator("#epsToggle")).not.toHaveClass(/is-active/);
+  await expect.poll(async () => (await futureOverlayState()).epsCount).toBe(0);
+  const aiAfterEps = await futureOverlayState();
+  expect(aiAfterEps.aiCount).toBeGreaterThan(0);
+  expect(preservesHistoryAndFuture(aiAfterEps, aiOnly.range[0], aiAfterEps.aiEnd)).toBe(true);
+
+  await page.locator("#aiForecastToggle").click();
+  await expect(page.locator("#aiForecastToggle")).not.toHaveClass(/is-active/);
+  await expect.poll(() => page.locator("#chart").evaluate((element, expected) => {
+    const range = element._fullLayout.xaxis.range.map(Date.parse);
+    return Math.max(Math.abs(range[0] - expected.start), Math.abs(range[1] - expected.observedEnd));
+  }, quickPresetExpectation)).toBeLessThanOrEqual(86400000);
+
+  await page.locator("#epsToggle").click();
+  await expect.poll(async () => (await futureOverlayState()).epsCount, { timeout: 30000 }).toBeGreaterThan(0);
+  const epsOnly = await futureOverlayState();
+  await page.locator("#aiForecastToggle").click();
+  await expect.poll(async () => (await futureOverlayState()).aiCount, { timeout: 30000 }).toBeGreaterThan(0);
+  const epsWithAi = await futureOverlayState();
+  expect(epsWithAi.epsCount).toBeGreaterThan(0);
+  expect(preservesHistoryAndFuture(epsWithAi, epsOnly.range[0], epsWithAi.epsEnd)).toBe(true);
+
+  await page.locator("#aiForecastToggle").click();
+  await expect.poll(async () => (await futureOverlayState()).aiCount).toBe(0);
+  const epsAfterAi = await futureOverlayState();
+  expect(epsAfterAi.epsCount).toBeGreaterThan(0);
+  expect(preservesHistoryAndFuture(epsAfterAi, epsOnly.range[0], epsAfterAi.epsEnd)).toBe(true);
+  await page.locator("#epsToggle").click();
+  await expect.poll(async () => (await futureOverlayState()).epsCount).toBe(0);
+
+  const historicalRange = [Date.parse("2025-12-31"), Date.parse("2026-03-31")];
+  await page.evaluate((range) => window.ThinkStockE2E.setViewportRangeForTest(range), historicalRange);
+  await page.locator("#epsToggle").click();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.isEpsTrace).length
+  )), { timeout: 30000 }).toBeGreaterThan(0);
+  await expect.poll(() => page.locator("#chart").evaluate((element, expected) => {
+    const actual = element._fullLayout.xaxis.range.map(Date.parse);
+    return Math.max(Math.abs(actual[0] - expected[0]), Math.abs(actual[1] - expected[1]));
+  }, historicalRange)).toBeLessThanOrEqual(1000);
+  await page.locator("#epsToggle").click();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.isEpsTrace).length
+  ))).toBe(0);
+  await expect.poll(() => page.locator("#chart").evaluate((element, expected) => {
+    const actual = element._fullLayout.xaxis.range.map(Date.parse);
+    return Math.max(Math.abs(actual[0] - expected[0]), Math.abs(actual[1] - expected[1]));
+  }, historicalRange)).toBeLessThanOrEqual(1000);
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.locator("#epsToggle")).not.toHaveClass(/is-active/);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.isEpsTrace).length
+  ))).toBe(0);
+});
+
 test("main chart allows more than five visible stocks and indices", async ({ page }) => {
   await installDataRoutes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
@@ -474,7 +1101,7 @@ test("bundled recent data boots through the chart worker", async ({ page }, test
   )).toBeLessThanOrEqual(1);
   const chartControlLayout = await page.locator(".main-chart-wrap").evaluate((container) => {
     const chartRect = container.querySelector("#chart").getBoundingClientRect();
-    return ["resetHandles", "coMovementToggle", "insiderTradeToggle", "disclosureToggle", "recessionToggle", "aiForecastToggle"].map((id) => {
+    return ["resetHandles", "coMovementToggle", "insiderTradeToggle", "disclosureToggle", "recessionToggle", "epsToggle", "aiForecastToggle"].map((id) => {
       const button = document.getElementById(id);
       const rect = button.getBoundingClientRect();
       return {
@@ -736,7 +1363,7 @@ test("chart dates stay synchronized while desktop drag and iPhone pinch zoom", a
     const beforeFullLifetime = await page.locator("#chart").evaluate((element) => (
       element._fullLayout.xaxis.range.map(Date.parse)
     ));
-    const doubleTap = async (firstPointerId) => page.locator("#chart").evaluate((element, args) => {
+    const doubleTap = async (firstPointerId, point = initial) => page.locator("#chart").evaluate((element, args) => {
       const sendTap = (pointerId) => {
         const init = {
           bubbles: true,
@@ -752,7 +1379,7 @@ test("chart dates stay synchronized while desktop drag and iPhone pinch zoom", a
       };
       sendTap(args.firstPointerId);
       sendTap(args.firstPointerId + 1);
-    }, { point: initial, firstPointerId });
+    }, { point, firstPointerId });
     await doubleTap(101);
     await expect.poll(() => page.locator("#chart").evaluate((element) => {
       const range = element._fullLayout.xaxis.range.map(Date.parse);
@@ -764,7 +1391,16 @@ test("chart dates stay synchronized while desktop drag and iPhone pinch zoom", a
       return Math.max(Math.abs(range[0] - Math.min(...dates)), Math.abs(range[1] - Math.max(...dates)));
     })).toBeLessThanOrEqual(1000);
     await page.waitForTimeout(350);
-    await doubleTap(103);
+    const restoreTapPoint = await page.locator("#chart").evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const xAxis = element._fullLayout.xaxis;
+      const yAxis = element._fullLayout.yaxis;
+      return {
+        centerX: rect.left + xAxis._offset + xAxis._length / 2,
+        tapY: rect.top + yAxis._offset + 2,
+      };
+    });
+    await doubleTap(103, restoreTapPoint);
     await expect.poll(() => page.locator("#chart").evaluate((element, expected) => {
       const range = element._fullLayout.xaxis.range.map(Date.parse);
       return Math.max(Math.abs(range[0] - expected[0]), Math.abs(range[1] - expected[1]));
@@ -1035,21 +1671,25 @@ test("restored chart handles adjust position and scale and can be hidden", async
   const scaleBox = await waitForBoundingBox(scaleHandle);
   await scaleHandle.hover();
   await page.mouse.down();
+  await expect(page.locator("#chart")).not.toHaveClass(/is-series-transform-marker-hidden/);
   await page.mouse.move(scaleBox.x + scaleBox.width / 2, scaleBox.y + scaleBox.height / 2 + 28);
-  await page.mouse.up();
   await expect.poll(() => page.evaluate(() => (
     Object.keys(window.ThinkStockE2E.getSeriesTransforms().scales).length
   ))).toBeGreaterThan(0);
+  await page.mouse.up();
+  await expect(page.locator("#chart")).not.toHaveClass(/is-series-transform-marker-hidden/);
 
   const offsetHandle = page.locator("#y-handles .y-handle-left").last();
   const offsetBox = await waitForBoundingBox(offsetHandle);
   await offsetHandle.hover();
   await page.mouse.down();
+  await expect(page.locator("#chart")).not.toHaveClass(/is-series-transform-marker-hidden/);
   await page.mouse.move(offsetBox.x + offsetBox.width / 2, offsetBox.y + offsetBox.height / 2 + 28);
-  await page.mouse.up();
   await expect.poll(() => page.evaluate(() => (
     Object.keys(window.ThinkStockE2E.getSeriesTransforms().offsets).length
   ))).toBeGreaterThan(0);
+  await page.mouse.up();
+  await expect(page.locator("#chart")).not.toHaveClass(/is-series-transform-marker-hidden/);
 
   await page.locator("#chartHandlesToggle").click();
   await expect(page.locator("#y-handles")).toHaveCount(0);
@@ -1103,13 +1743,14 @@ test("desktop wheel anchors the latest edge and keeps pointer anchoring in histo
   })).toBeLessThanOrEqual(1000);
 
   const fullRange = await page.locator("#chart").evaluate((element) => {
-    const timestamps = (element.data || [])
-      .filter((trace) => trace?.meta?.seriesKey && !trace?.meta?.isAiForecastTrace)
-      .flatMap((trace) => trace.x || [])
-      .map((value) => Date.parse(value))
-      .filter(Number.isFinite);
-    const start = Math.min(...timestamps);
-    const end = Math.max(...timestamps);
+    const traces = (element.data || [])
+      .filter((trace) => trace?.meta?.seriesKey && !trace?.meta?.isAiForecastTrace);
+    const timestamps = traces.flatMap((trace) => trace.x || [])
+      .map((value) => Date.parse(value)).filter(Number.isFinite);
+    const starts = traces.map((trace) => Number(trace?.meta?.fullDataStartMs)).filter(Number.isFinite);
+    const ends = traces.map((trace) => Number(trace?.meta?.fullDataEndMs)).filter(Number.isFinite);
+    const start = Math.min(...timestamps, ...starts);
+    const end = Math.max(...timestamps, ...ends);
     return [start, end];
   });
   await page.evaluate((range) => window.ThinkStockE2E.setViewportRangeForTest(range), fullRange);
@@ -1357,9 +1998,6 @@ test("auto scale reset clears live transforms while preserving the historical vi
   await expect.poll(() => visibleTracePixelSpan(page, "^KS11")).toBeLessThan(scaleSpanBefore * 0.9);
   const scaleSpanDuringDrag = await visibleTracePixelSpan(page, "^KS11");
   await page.mouse.up();
-  await expect.poll(() => page.evaluate(() => (
-    Object.keys(window.ThinkStockE2E.getSeriesTransforms().scales).length
-  ))).toBeGreaterThan(0);
   await expect.poll(async () => Math.abs(
     (await visibleTracePixelSpan(page, "^KS11")) - scaleSpanDuringDrag,
   )).toBeLessThan(2);
@@ -1392,13 +2030,17 @@ test("auto scale reset clears live transforms while preserving the historical vi
     autoResetOffsetHandleBox.x + autoResetOffsetHandleBox.width / 2,
     autoResetOffsetHandleBox.y + autoResetOffsetHandleBox.height / 2 + 35,
   );
+  await expect.poll(() => page.evaluate(() => (
+    Object.keys(window.ThinkStockE2E.getSeriesTransforms().offsets).length
+  ))).toBeGreaterThan(0);
   await page.mouse.up();
   await expect.poll(() => page.evaluate(() => (
     Object.keys(window.ThinkStockE2E.getSeriesTransforms().offsets).length
   ))).toBeGreaterThan(0);
-  const transformedTraceValues = await page.locator("#chart").evaluate((element) => (
-    (element.data || []).find((trace) => trace?.meta?.seriesKey === "^KS11")?.y?.map(Number) || []
-  ));
+  const transformedTracePoints = await page.locator("#chart").evaluate((element) => {
+    const trace = (element.data || []).find((item) => item?.meta?.seriesKey === "^KS11");
+    return (trace?.x || []).map((date, index) => [date, Number(trace?.y?.[index])]);
+  });
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const [start, end] = element._fullLayout.xaxis.range.map(Date.parse);
     const yRange = element._fullLayout.yaxis.range.map(Number);
@@ -1427,16 +2069,17 @@ test("auto scale reset clears live transforms while preserving the historical vi
     return range.length === 2
       && range.every((value, index) => Math.abs(value - expectedRange[index]) <= 24 * 60 * 60 * 1000);
   }, autoResetXRange)).toBe(true);
-  await expect.poll(() => page.locator("#chart").evaluate((element, transformedValues) => {
-    const resetValues = (element.data || [])
-      .find((trace) => trace?.meta?.seriesKey === "^KS11")?.y?.map(Number) || [];
-    return resetValues.length === transformedValues.length
-      && resetValues.some((value, index) => (
-        Number.isFinite(value)
-        && Number.isFinite(transformedValues[index])
-        && Math.abs(value - transformedValues[index]) > 0.01
-      ));
-  }, transformedTraceValues)).toBe(true);
+  await expect.poll(() => page.locator("#chart").evaluate((element, transformedPoints) => {
+    const transformedByDate = new Map(transformedPoints);
+    const resetTrace = (element.data || []).find((trace) => trace?.meta?.seriesKey === "^KS11");
+    return (resetTrace?.x || []).some((date, index) => {
+      const value = Number(resetTrace?.y?.[index]);
+      const transformedValue = Number(transformedByDate.get(date));
+      return Number.isFinite(value)
+        && Number.isFinite(transformedValue)
+        && Math.abs(value - transformedValue) > 0.01;
+    });
+  }, transformedTracePoints)).toBe(true);
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const [start, end] = element._fullLayout.xaxis.range.map(Date.parse);
     const yRange = element._fullLayout.yaxis.range.map(Number);

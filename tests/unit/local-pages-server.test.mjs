@@ -25,6 +25,11 @@ import {
   parseEnvText,
   syncPagesDataMirror,
 } from "../../scripts/local_pages_server.mjs";
+import {
+  appendableResearchUniversePoint,
+  RESEARCH_HISTORY_CACHE_SCHEMA,
+  RESEARCH_HISTORY_QUALITY_VERSION,
+} from "../../worker/src/research-data.mjs";
 
 let nextSafeTestPort = 20000 + (process.pid % 20000);
 
@@ -316,6 +321,56 @@ test("full local chart history replaces a persisted AI backtest seed with Naver 
   }
 });
 
+test("full local chart history upgrades a legacy five-year cache to maximum history", async () => {
+  const cacheDir = await mkdtemp(path.join(os.tmpdir(), "thinkstock-full-history-upgrade-"));
+  const buildRows = (startDate, count, base = 10000) => {
+    const rows = [];
+    const cursor = new Date(`${startDate}T00:00:00Z`);
+    while (rows.length < count) {
+      const weekday = cursor.getUTCDay();
+      if (weekday !== 0 && weekday !== 6) {
+        rows.push({
+          date: cursor.toISOString().slice(0, 10),
+          close: base + rows.length,
+          volume: 100000 + rows.length,
+        });
+      }
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+    return rows;
+  };
+  const legacyRows = buildRows("2021-08-23", 300);
+  await writeFile(path.join(cacheDir, "005930.KS.full.json"), JSON.stringify({
+    schema: 1,
+    ticker: "005930.KS",
+    asOfDate: "2026-08-21",
+    latestDate: legacyRows.at(-1).date,
+    source: "NAVER_FULL_HISTORY",
+    rows: legacyRows,
+  }), "utf8");
+
+  const fullRows = buildRows("2016-01-04", 320, 50000);
+  let requestedStartTime = "";
+  try {
+    const result = await fetchLocalResearchHistory(async (url) => {
+      requestedStartTime = new URL(url).searchParams.get("startTime") || "";
+      const xml = fullRows.map((row) => (
+        `<item data="${row.date.replaceAll("-", "")}|${row.close}|${row.close}|${row.close}|${row.close}|${row.volume}" />`
+      )).join("\n");
+      return new Response(xml, { status: 200 });
+    }, "005930.KS", new Date("2026-08-21T09:00:00Z"), cacheDir, null, {
+      fullHistory: true,
+    });
+
+    assert.equal(requestedStartTime, "19960821");
+    assert.equal(result.historyCoverage, "full");
+    assert.equal(result.historyCoverageVersion, 2);
+    assert.equal(result.rows[0].date, "2016-01-04");
+  } finally {
+    await rm(cacheDir, { recursive: true, force: true });
+  }
+});
+
 test("detects a consistent split rebase but ignores ordinary price corrections", () => {
   const existing = [
     { date: "2026-08-03", close: 100000 },
@@ -350,6 +405,83 @@ test("uses a current KRX point for an ordinary next session but rejects a likely
     close: 20000,
     volume: 123456,
   }, "2026-08-10"), null);
+});
+
+test("does not append a current universe point across missing trading sessions", () => {
+  const rows = [
+    { date: "2026-08-20", close: 5000, volume: 100000 },
+    { date: "2026-08-21", close: 5100, volume: 100000 },
+  ];
+  const universeItem = {
+    ticker: "127120.KQ",
+    date: "2026-08-27",
+    close: 5300,
+    volume: 120000,
+  };
+  assert.equal(appendableResearchUniversePoint(rows, universeItem, "2026-08-27", {
+    verifiedThrough: "2026-08-21",
+  }), null);
+  assert.equal(appendableResearchUniversePoint(rows, universeItem, "2026-08-27", {
+    verifiedThrough: "2026-08-26",
+  })?.date, "2026-08-27");
+});
+
+test("repairs a legacy research tail before accepting today's universe point", async () => {
+  const cacheDir = await mkdtemp(path.join(os.tmpdir(), "thinkstock-research-tail-repair-"));
+  const ticker = "127120.KQ";
+  const rows = [];
+  const cursor = new Date("2025-06-02T00:00:00Z");
+  while (rows.length < 300) {
+    const date = cursor.toISOString().slice(0, 10);
+    const weekday = cursor.getUTCDay();
+    if (weekday !== 0 && weekday !== 6 && date !== "2026-08-17") {
+      rows.push({ date, close: 4000 + rows.length, volume: 100000 + rows.length });
+    }
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  const retained = rows.filter((row) => row.date <= "2026-08-21");
+  retained.push({ date: "2026-08-27", close: 5300, volume: 120000 });
+  await writeFile(path.join(cacheDir, `${ticker}.json`), JSON.stringify({
+    schema: 1,
+    ticker,
+    asOfDate: "2026-08-27",
+    latestDate: "2026-08-27",
+    rows: retained,
+  }), "utf8");
+  const repairRows = [
+    { date: "2026-08-20", close: 5000, volume: 100000 },
+    { date: "2026-08-21", close: 5100, volume: 100000 },
+    { date: "2026-08-24", close: 5150, volume: 100000 },
+    { date: "2026-08-25", close: 5200, volume: 100000 },
+    { date: "2026-08-26", close: 5250, volume: 100000 },
+    { date: "2026-08-27", close: 5300, volume: 120000 },
+  ];
+  let requests = 0;
+  try {
+    const result = await fetchLocalResearchHistory(async () => {
+      requests += 1;
+      const xml = repairRows.map((row) => (
+        `<item data="${row.date.replaceAll("-", "")}|${row.close}|${row.close}|${row.close}|${row.close}|${row.volume}" />`
+      )).join("\n");
+      return new Response(xml, { status: 200 });
+    }, ticker, new Date("2026-08-27T10:00:00Z"), cacheDir, {
+      ticker,
+      date: "2026-08-27",
+      close: 5300,
+      volume: 120000,
+    });
+
+    assert.equal(requests, 1);
+    assert.equal(result.schema, RESEARCH_HISTORY_CACHE_SCHEMA);
+    assert.equal(result.historyQualityVersion, RESEARCH_HISTORY_QUALITY_VERSION);
+    assert.equal(result.historyValidationDate, "2026-08-27");
+    assert.deepEqual(
+      result.rows.filter((row) => row.date >= "2026-08-24").map((row) => row.date),
+      ["2026-08-24", "2026-08-25", "2026-08-26", "2026-08-27"],
+    );
+  } finally {
+    await rm(cacheDir, { recursive: true, force: true });
+  }
 });
 
 test("local research history sends only an overlapping tail unless a full reset is required", () => {
@@ -546,25 +678,32 @@ test("keeps the previous pages-data generation when a downloaded hash is invalid
   }
 });
 
-test("proxies local insider requests with the server-side access token", async () => {
-  let requestedUrl = "";
-  let authorization = "";
+test("serves local insider requests through the shared DART handler", async () => {
+  let received = null;
   const server = await createThinkStockServer({
     syncPagesData: false,
-    workerAccessToken: "local-secret",
-    gateway: { apiKey: "", initialize: async () => {} },
-    fetchImpl: async (url, init = {}) => {
-      requestedUrl = String(url);
-      authorization = String(init.headers?.Authorization || "");
+    apiKey: "dart-key",
+    gateway: {
+      apiKey: "dart-key",
+      initialize: async () => {},
+      corpCode: async () => "00126380",
+    },
+    insiderCache: new Map(),
+    insiderTradeResponseImpl: async (env, context, ticker, corpCode, origin, force) => {
+      received = { env, context, ticker, corpCode, origin, force };
       return new Response(JSON.stringify({ ok: true, records: [] }), { status: 200 });
     },
   });
   try {
     const port = await listenTestServer(server);
-    const response = await fetch(`http://127.0.0.1:${port}/api/dart/insider-trades?ticker=005930.KS`);
+    const response = await fetch(
+      `http://127.0.0.1:${port}/api/dart/insider-trades?ticker=005930.KS&force=1`,
+    );
     assert.equal(response.status, 200);
-    assert.match(requestedUrl, /\/api\/dart\/insider-trades\?ticker=005930\.KS$/);
-    assert.equal(authorization, "Bearer local-secret");
+    assert.equal(received.ticker, "005930.KS");
+    assert.equal(received.corpCode, "00126380");
+    assert.equal(received.env.DART_API_KEY, "dart-key");
+    assert.equal(received.force, true);
   } finally {
     server.close();
     await once(server, "close");
@@ -752,6 +891,48 @@ test("uses the per-ticker disk cache after the first request", async () => {
     assert.equal(second.cached, true);
     assert.equal(second.records.length, 1);
     assert.equal(requests, 1);
+  } finally {
+    await rm(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("stores completed DART EPS years permanently and reuses the disk cache", async () => {
+  const cacheDir = await mkdtemp(path.join(os.tmpdir(), "thinkstock-eps-"));
+  let requests = 0;
+  try {
+    const gateway = new DartGateway("test-key", {
+      cacheDir,
+      fetchImpl: async (url) => {
+        requests += 1;
+        const query = new URL(url).searchParams;
+        const reportCode = query.get("reprt_code");
+        const amounts = { "11013": 100, "11012": 120, "11014": 140, "11011": 520 };
+        const cumulative = { "11013": 100, "11012": 220, "11014": 360, "11011": 520 };
+        return new Response(JSON.stringify({
+          status: "000",
+          list: [{
+            rcept_no: reportCode === "11011" ? "20260331000001" : "20251114000001",
+            reprt_code: reportCode,
+            bsns_year: "2025",
+            corp_code: "01078178",
+            stock_code: "218410",
+            fs_div: "CFS",
+            sj_div: "IS",
+            account_id: "ifrs-full_BasicEarningsLossPerShare",
+            account_nm: "기본주당이익",
+            thstrm_amount: String(amounts[reportCode]),
+            thstrm_add_amount: String(cumulative[reportCode]),
+          }],
+        }), { status: 200 });
+      },
+    });
+    await gateway.initialize();
+    const first = await gateway.epsHistoryYear("218410.KQ", 2025, { corpCode: "01078178" });
+    const second = await gateway.epsHistoryYear("218410.KQ", 2025, { corpCode: "01078178" });
+    assert.equal(first.cached, false);
+    assert.equal(second.cached, true);
+    assert.equal(first.records.filter((row) => row.frequency === "quarter").length, 4);
+    assert.equal(requests, 4);
   } finally {
     await rm(cacheDir, { recursive: true, force: true });
   }

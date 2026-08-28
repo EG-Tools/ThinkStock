@@ -1,57 +1,24 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import test from "node:test";
-import vm from "node:vm";
-
-
-const source = await readFile(path.resolve("docs/modules/chart-model-worker.js"), "utf8");
-const marketDataSource = await readFile(path.resolve("docs/modules/market-data.js"), "utf8");
-const auxiliaryChartModelSource = await readFile(
-  path.resolve("docs/modules/auxiliary-chart-model.js"),
-  "utf8",
-);
-const chartDisplaySamplerSource = await readFile(
-  path.resolve("docs/modules/chart-display-sampler.js"),
-  "utf8",
-);
+import auxiliaryChartModel from "../../docs/modules/auxiliary-chart-model.mjs";
+import mainChartModel from "../../docs/modules/main-chart-model.mjs";
+import {
+  attachChartModelWorker,
+  createChartModelWorkerRuntime,
+} from "../../docs/modules/chart-model-worker-runtime.mjs";
 
 
 function createWorkerHarness() {
-  let messageHandler = null;
-  const messages = [];
-  const context = {
-    self: {
-      addEventListener(type, handler) {
-        if (type === "message") messageHandler = handler;
-      },
-      postMessage(message) {
-        messages.push(message);
-      },
-    },
-  };
-  context.importScripts = (modulePath) => {
-    if (/market-data\.js/.test(modulePath)) {
-      vm.runInContext(marketDataSource, context);
-      return;
-    }
-    if (/auxiliary-chart-model\.js/.test(modulePath)) {
-      vm.runInContext(auxiliaryChartModelSource, context);
-      return;
-    }
-    if (/chart-display-sampler\.js/.test(modulePath)) {
-      vm.runInContext(chartDisplaySamplerSource, context);
-      return;
-    }
-    assert.fail(`unexpected worker dependency: ${modulePath}`);
-  };
-  vm.createContext(context);
-  vm.runInContext(source, context);
-  assert.equal(typeof messageHandler, "function");
+  const runtime = createChartModelWorkerRuntime({
+    auxiliaryChartModel,
+    mainChartModel,
+  });
   return {
-    send(payload, id = `test-${messages.length + 1}`, type = "buildMainChartModel") {
-      messageHandler({ data: { id, type, payload } });
-      return messages[messages.length - 1];
+    buildDirect(payload) {
+      return mainChartModel.buildMainChartModel(payload);
+    },
+    send(payload, id = "test-request", type = "buildMainChartModel") {
+      return runtime.handleMessage({ id, type, payload });
     },
   };
 }
@@ -102,6 +69,43 @@ test("chart worker merges raw price, macro, and credit sources", () => {
     ["AAA", "leading_cycle", "customer_deposit", "kospi_credit", "kosdaq_credit"],
   );
   assert.ok(response.result.seriesModels.every((model) => model.baseLineWidth === 1));
+});
+
+test("chart worker and direct fallback share one model calculation", () => {
+  const harness = createWorkerHarness();
+  const dates = ["2026-01-01", "2026-01-02", "2026-01-03"];
+  const payload = {
+    priceRows: dates.map((date, index) => ({ date, AAA: 100 + index * 3 })),
+    macroRows: dates.map((date, index) => ({
+      date,
+      leading_cycle: 101 + index / 10,
+      adr_kospi: 90 + index,
+      fear_greed: 40 + index,
+    })),
+    creditRows: [],
+    creditCols: [],
+    start: dates[0],
+    end: dates.at(-1),
+    frameStart: dates[1],
+    frameEnd: dates.at(-1),
+    allowedSeries: ["AAA", "leading_cycle", "adr_kospi", "fear_greed"],
+    excludedSeries: ["adr_kospi", "fear_greed"],
+    priorityOrder: ["AAA", "leading_cycle", "adr_kospi", "fear_greed"],
+    displayNames: {},
+    hiddenSeries: [],
+    seriesOffsets: { AAA: 4 },
+    seriesScales: { AAA: 1.25 },
+    displayBudget: 100,
+  };
+  const workerResult = harness.send(payload);
+  const directResult = harness.buildDirect(payload);
+
+  assert.equal(workerResult.ok, true);
+  assert.deepEqual(Array.from(workerResult.result.selected), ["AAA", "leading_cycle"]);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(workerResult.result)),
+    JSON.parse(JSON.stringify(directResult)),
+  );
 });
 
 test("chart worker applies credit offset only as a horizontal date shift", () => {
@@ -321,4 +325,55 @@ test("chart worker builds and reuses auxiliary chart sources", () => {
   assert.deepEqual(Array.from(first.result.dates), ["2026-01-01", "2026-01-02"]);
   assert.deepEqual(Array.from(second.result.dates), ["2026-01-02"]);
   assert.deepEqual(Array.from(second.result.newsDates), ["2026-01-02"]);
+});
+
+
+test("chart worker runtime ignores unknown messages and reports source cache misses", () => {
+  const runtime = createChartModelWorkerRuntime({
+    mainChartModel: { buildMainChartModel: (payload) => payload },
+    auxiliaryChartModel: { buildAuxiliaryChartModel: (payload) => payload },
+  });
+
+  assert.equal(runtime.handleMessage({ type: "unknown" }), null);
+  assert.match(
+    runtime.handleMessage({
+      id: "cache-miss",
+      type: "buildMainChartModel",
+      payload: { datasetKey: "missing" },
+    }).error,
+    /source cache miss/,
+  );
+});
+
+
+test("chart worker adapter posts runtime responses and detaches cleanly", () => {
+  let messageHandler = null;
+  const messages = [];
+  const scope = {
+    addEventListener(type, handler) {
+      if (type === "message") messageHandler = handler;
+    },
+    removeEventListener(type, handler) {
+      if (type === "message" && handler === messageHandler) messageHandler = null;
+    },
+    postMessage(message) {
+      messages.push(message);
+    },
+  };
+  const adapter = attachChartModelWorker(scope, {
+    mainChartModel: { buildMainChartModel: (payload) => ({ count: payload.priceRows.length }) },
+    auxiliaryChartModel: { buildAuxiliaryChartModel: (payload) => payload },
+  });
+
+  messageHandler({
+    data: {
+      id: "main-1",
+      type: "buildMainChartModel",
+      payload: { priceRows: [{ date: "2026-01-01", AAA: 1 }] },
+    },
+  });
+  assert.deepEqual(messages, [{ id: "main-1", ok: true, result: { count: 1 } }]);
+
+  adapter.dispose();
+  assert.equal(messageHandler, null);
 });

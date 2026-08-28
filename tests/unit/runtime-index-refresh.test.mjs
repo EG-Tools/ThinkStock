@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/runtime-index-refresh.js");
-const module = globalThis.ThinkStockRuntimeIndexRefresh;
+import * as module from "../../docs/modules/runtime-index-refresh.mjs";
 
 test("requests and merges only the missing validated index tail", async () => {
   const merged = [];

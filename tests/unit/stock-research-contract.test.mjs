@@ -1,15 +1,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-await import("../../docs/modules/stock-research-contract.js");
-await import("../../docs/modules/stock-research-storage.js");
-await import("../../docs/modules/stock-research.js");
-await import("../../docs/modules/stock-research-app.js");
-
-const contract = globalThis.ThinkStockStockResearchContract;
-const storageApi = globalThis.ThinkStockStockResearchStorage;
+import contract from "../../docs/modules/stock-research-contract.js";
+import storageApi from "../../docs/modules/stock-research-storage.js";
+import research from "../../docs/modules/stock-research.js";
+import {
+  RESEARCH_HISTORY_CACHE_SCHEMA,
+  RESEARCH_HISTORY_QUALITY_VERSION,
+} from "../../worker/src/research-data.mjs";
+import {
+  RESEARCH_SUMMARY_HISTORY_QUALITY_VERSION,
+  RESEARCH_SUMMARY_SCHEMA,
+} from "../../shared/stock-research-summary.mjs";
+const stockResearchApp = await import("../../docs/modules/stock-research-app.mjs");
 
 test("stock research universe defaults to 400 and stays within 100-1000", () => {
+  assert.equal(contract.normalizeUniverseSize(null), 400);
+  assert.equal(contract.normalizeUniverseSize(249), 200);
+  assert.equal(contract.normalizeUniverseSize(951), 1000);
+  assert.equal(contract.normalizeUniverseSize(5000), 1000);
   assert.equal(storageApi.normalizeUniverseSize(null), 400);
   assert.equal(storageApi.normalizeUniverseSize(249), 200);
   assert.equal(storageApi.normalizeUniverseSize(951), 1000);
@@ -18,12 +27,11 @@ test("stock research universe defaults to 400 and stays within 100-1000", () => 
 
 test("stock research description follows the configured per-market count", () => {
   assert.equal(
-    globalThis.ThinkStockStockResearchApp.researchUniverseDescription(600),
+    stockResearchApp.researchUniverseDescription(600),
     "시총 상위 300+300 중 상대적 안정성 필터를 통과한 공부 후보입니다. 매수 추천이 아닙니다.",
   );
 });
-const storageModule = globalThis.ThinkStockStockResearchStorage;
-const research = globalThis.ThinkStockStockResearch;
+const storageModule = storageApi;
 
 function memoryStorage() {
   const values = new Map();
@@ -46,7 +54,11 @@ test("stock research keeps cache format and calculation versions independent", (
   const saved = JSON.parse(storage.getItem(contract.CACHE_KEY));
   assert.equal(saved.formatSchema, contract.CACHE_FORMAT_SCHEMA);
   assert.equal(saved.calculationVersion, contract.CALCULATION_VERSION);
-  assert.equal(storageModule.loadCache(storage, contract.CALCULATION_VERSION)?.formatSchema, 1);
+  assert.equal(
+    storageModule.loadCache(storage, contract.CALCULATION_VERSION)?.formatSchema,
+    contract.CACHE_FORMAT_SCHEMA,
+  );
+  assert.equal(saved.historyQualityVersion, contract.HISTORY_QUALITY_VERSION);
   assert.equal(storageModule.loadCache(storage, "different-calculation"), null);
 
   saved.formatSchema += 1;
@@ -79,4 +91,11 @@ test("stock research model and tests share one calculation contract", () => {
   assert.equal(research.STRATEGY_VERSION, contract.CALCULATION_VERSION);
   assert.equal(research.RECENT_SIGNAL_WINDOW, contract.RECENT_SIGNAL_WINDOW);
   assert.equal(research.ONE_MONTH_SIGNAL_WINDOW, contract.ONE_MONTH_SIGNAL_WINDOW);
+});
+
+test("browser, local server, and Worker share research cache contracts", () => {
+  assert.equal(contract.HISTORY_CACHE_SCHEMA, RESEARCH_HISTORY_CACHE_SCHEMA);
+  assert.equal(contract.HISTORY_QUALITY_VERSION, RESEARCH_HISTORY_QUALITY_VERSION);
+  assert.equal(contract.CACHE_FORMAT_SCHEMA, RESEARCH_SUMMARY_SCHEMA);
+  assert.equal(contract.HISTORY_QUALITY_VERSION, RESEARCH_SUMMARY_HISTORY_QUALITY_VERSION);
 });

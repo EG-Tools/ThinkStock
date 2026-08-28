@@ -63,7 +63,3 @@ export const RUNTIME_PROVIDER_RESILIENCE = Object.freeze({
   providerRetryDelayMs,
   retryAfterMs,
 });
-
-if (typeof globalThis !== "undefined") {
-  globalThis.ThinkStockRuntimeProviderResilience = RUNTIME_PROVIDER_RESILIENCE;
-}

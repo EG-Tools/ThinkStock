@@ -1,6 +1,18 @@
-import "../../docs/modules/ai-forecast-math.js";
-import "../../docs/modules/ai-context-profile.js";
-import "../../docs/modules/co-movement.js";
-import "../../docs/modules/market-timing-evaluation.js";
-import "../../docs/modules/market-timing.js";
-import "../../docs/modules/market-timing-service.js";
+import { coMovement } from "../../docs/modules/co-movement.mjs";
+import evaluation from "../../docs/modules/market-timing-evaluation.mjs";
+import timing from "../../docs/modules/market-timing.mjs";
+import service from "../../docs/modules/market-timing-service.mjs";
+
+if (!evaluation || !timing || !service) {
+  throw new Error("market timing feature dependencies are incomplete");
+}
+
+const marketTimingFeature = Object.freeze({
+  coMovement,
+  evaluation,
+  service,
+  timing,
+});
+
+export { marketTimingFeature };
+export default marketTimingFeature;
