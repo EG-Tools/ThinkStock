@@ -251,6 +251,10 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
     await expect.poll(() => page.evaluate(() => (
       Object.keys(window.ThinkStockE2E.getSeriesTransforms().offsets).length
     ))).toBeGreaterThan(0);
+    await expect.poll(() => page.locator("#chart").evaluate((element, before) => {
+      const price = element.data?.[before.priceTraceIndex];
+      return Math.abs(Number(price?.y?.[before.pointIndex]) - before.priceBefore);
+    }, linkedDrag)).toBeGreaterThan(0.1);
     const linkedMovement = await page.locator("#chart").evaluate((element, before) => {
       const price = element.data?.[before.priceTraceIndex];
       const priceDelta = Number(price?.y?.[before.pointIndex]) - before.priceBefore;
