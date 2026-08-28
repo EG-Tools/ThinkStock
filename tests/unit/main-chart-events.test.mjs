@@ -7,12 +7,16 @@ function createHarness({ chartSyncing = false, currentRange = true } = {}) {
   const handlers = new Map();
   const calls = {
     coMovement: 0,
+    composition: [],
     handles: 0,
+    visibility: [],
     viewport: 0,
   };
   const chartSession = {
+    currentSelected: ["A"],
     currentEnd: "2026-08-27",
     currentStart: "2025-08-27",
+    hiddenSeries: new Set(["A"]),
     pinnedXRange: null,
     showCoMovement: true,
   };
@@ -31,6 +35,7 @@ function createHarness({ chartSyncing = false, currentRange = true } = {}) {
     HANDLE_UPDATE_DEBOUNCE_MS: 24,
     MAX_VISIBLE_MAIN_SERIES_MESSAGE: "limit",
     chartSession,
+    changeSeriesVisibility: (...args) => { calls.visibility.push(args); },
     clearAutoResetSeriesTransforms: () => {},
     clearHoverOnChart: () => {},
     configureExactDateEventHover: () => true,
@@ -44,7 +49,7 @@ function createHarness({ chartSyncing = false, currentRange = true } = {}) {
     normalizeHoverPopupIndent: () => {},
     refreshAiForecastTargets: () => {},
     renderCoMovementPanel: () => { calls.coMovement += 1; },
-    requestChartCompositionUpdate: () => {},
+    requestChartCompositionUpdate: (options) => { calls.composition.push(options); },
     scheduleHandleUpdate: () => { calls.handles += 1; },
     scheduleViewportRangeSync: () => {},
     scheduleViewportWindowRender: () => { calls.viewport += 1; },
@@ -72,7 +77,13 @@ test("programmatic relayout cannot persist or replay an app-owned viewport", () 
   assert.equal(harness.chartSession.pinnedXRange, null);
   assert.equal(harness.chartSession.currentStart, "2025-08-27");
   assert.equal(harness.chartSession.currentEnd, "2026-08-27");
-  assert.deepEqual(harness.calls, { coMovement: 0, handles: 0, viewport: 0 });
+  assert.deepEqual(harness.calls, {
+    coMovement: 0,
+    composition: [],
+    handles: 0,
+    visibility: [],
+    viewport: 0,
+  });
 });
 
 test("user relayout persists the viewport and schedules dependent work", () => {
@@ -86,7 +97,13 @@ test("user relayout persists the viewport and schedules dependent work", () => {
   assert.deepEqual(harness.chartSession.pinnedXRange, ["2026-05-27", "2026-08-27"]);
   assert.equal(harness.chartSession.currentStart, "2026-05-27");
   assert.equal(harness.chartSession.currentEnd, "2026-08-27");
-  assert.deepEqual(harness.calls, { coMovement: 1, handles: 1, viewport: 1 });
+  assert.deepEqual(harness.calls, {
+    coMovement: 1,
+    composition: [],
+    handles: 1,
+    visibility: [],
+    viewport: 1,
+  });
 });
 
 test("late relayout events cannot overwrite a newer visible viewport", () => {
@@ -98,5 +115,31 @@ test("late relayout events cannot overwrite a newer visible viewport", () => {
   });
 
   assert.equal(harness.chartSession.pinnedXRange, null);
-  assert.deepEqual(harness.calls, { coMovement: 0, handles: 0, viewport: 0 });
+  assert.deepEqual(harness.calls, {
+    coMovement: 0,
+    composition: [],
+    handles: 0,
+    visibility: [],
+    viewport: 0,
+  });
+});
+
+test("legend visibility uses the shared staged-series path", () => {
+  const harness = createHarness();
+
+  assert.equal(harness.handlers.get("plotly_legendclick")({ curveNumber: 0 }), false);
+
+  assert.deepEqual(harness.calls.visibility, [["A", true]]);
+  assert.deepEqual(harness.calls.composition, []);
+});
+
+test("legend reset requests one price-first composition", () => {
+  const harness = createHarness();
+
+  assert.equal(harness.handlers.get("plotly_legenddoubleclick")(), false);
+
+  assert.deepEqual(harness.calls.composition, [{
+    progressiveComposition: true,
+    reason: "series-visibility-reset",
+  }]);
 });

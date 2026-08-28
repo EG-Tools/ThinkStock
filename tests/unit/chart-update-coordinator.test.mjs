@@ -152,6 +152,38 @@ test("reuses EPS, AI, and event traces through one composition plan", () => {
   assert.deepEqual(plan.eventTraces, [event]);
 });
 
+test("price-first composition reuses only active passive overlays even with pending events", () => {
+  const descriptor = (trace) => ({ kind: trace.kind, seriesKey: trace.meta?.seriesKey || "" });
+  const groupedA = { kind: "grouped-hover", meta: { hoverGroupTicker: "A" } };
+  const groupedB = { kind: "grouped-hover", meta: { hoverGroupTicker: "B" } };
+  const epsA = { kind: "eps", meta: { seriesKey: "eps:A" } };
+  const epsB = { kind: "eps", meta: { seriesKey: "eps:B" } };
+  const aiA = { kind: "ai-scenario", meta: { seriesKey: "A" } };
+  const event = { kind: "timing", event: true };
+  const plan = createReusableMainChartTracePlan(
+    { data: [groupedA, groupedB, epsA, epsB, aiA, event] },
+    {
+      chartOverlayDescriptor: descriptor,
+      isEventMarkerTrace: (trace) => trace.event === true,
+    },
+    { updateClasses: ["composition"] },
+    {
+      activeSeries: ["A", "B"],
+      deferOverlays: true,
+      hasPendingEvents: true,
+      hiddenSeries: new Set(["B"]),
+      showEps: true,
+    },
+  );
+
+  assert.deepEqual(plan.groupedHoverTraces, [groupedA]);
+  assert.deepEqual(plan.epsTraces, [epsA]);
+  assert.deepEqual(plan.aiForecastTraces, [aiA]);
+  assert.deepEqual(plan.eventTraces, [event]);
+  assert.equal(plan.reuseFutureOverlays, true);
+  assert.equal(plan.reuseEventMarkers, true);
+});
+
 test("hydrates chart session state from one normalized model boundary", () => {
   const session = {};
   const model = {

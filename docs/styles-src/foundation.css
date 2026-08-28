@@ -533,6 +533,7 @@ body {
 
 .ai-forecast-progress { top: 219px; }
 .eps-progress { top: 185px; }
+.signal-progress { top: 151px; }
 
 .ui-progress-track {
   display: block;

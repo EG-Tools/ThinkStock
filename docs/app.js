@@ -173,6 +173,13 @@ const epsProgress = createTaskProgress(globalThis, {
   getBar: () => document.getElementById("epsProgressBar"),
   anchor: "eps",
 });
+const signalProgress = createTaskProgress(globalThis, {
+  defaultLabel: "신호 계산중",
+  getRoot: () => document.getElementById("signalProgress"),
+  getText: () => document.getElementById("signalProgressText"),
+  getBar: () => document.getElementById("signalProgressBar"),
+  anchor: "signal",
+});
 const serviceWorkerClient = createServiceWorkerClient(globalThis);
 const requestServiceWorkerDataRefresh = serviceWorkerClient.requestDataRefresh;
 const scheduleServiceWorkerRegistration = serviceWorkerClient.scheduleRegistration;
@@ -350,7 +357,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = tickerPriceRuntimeModule.CORPORATE_ACTION_RATIO_THRESHOLD;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = tickerPriceRuntimeModule.CORPORATE_ACTION_MAX_BOUNDARY_DAYS;
-const APP_VERSION = "3.22";
+const APP_VERSION = "3.23";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -429,6 +436,9 @@ const dataFreshnessController = dataFreshnessControllerModule.createDataFreshnes
   dataHealth: dataHealthModule,
   runtimeDataApp,
   labelName,
+  resolveElement: () => document.getElementById("dataFreshness"),
+  resolveModel: () => buildDataFreshnessModel(),
+  onError: (error) => recordRuntimeError("data-freshness-render", error),
 });
 const indexedCacheStore = appStorageModule.createIndexedCacheStore(globalThis, {
   dbName: DATA_CACHE_DB_NAME,
@@ -604,6 +614,7 @@ const DART_GATEWAY_REQUEST_TIMEOUT_MS = 90000;
 const RECENT_DATA_MONTHS = 132;
 const DEFAULT_DESKTOP_ACTIVE_MONTHS = 12;
 const DEFAULT_PHONE_ACTIVE_MONTHS = 6;
+const EMPTY_CHART_RECOVERY_MONTHS = 12;
 const fetchWithTimeout = createFetchWithTimeout({
   defaultTimeoutMs: NETWORK_REQUEST_TIMEOUT_MS,
 });
@@ -829,6 +840,14 @@ const mainChartSourceFingerprintCache = chartModelCacheModule.createSourceFinger
 });
 let lastMainChartModelCacheHit = false;
 let lastMainChartModelSource = "none";
+const mainChartModelResolver = chartModelWorkerClientModule.createChartModelResolver({
+  cache: mainChartCalcCache,
+  requestWorker: (payload, type) => getChartModelWorkerClient().request(payload, type),
+  buildSync: (payload) => mainChartModelModule.buildMainChartModel(payload),
+  normalize: (model) => chartRenderContractModule.normalizeMainChartModel(model),
+  onCacheStatus: (status) => { lastMainChartModelCacheHit = status !== "miss"; },
+  onSource: (source) => { lastMainChartModelSource = source; },
+});
 let mainChartMacroBoundsCache = { revision: "", rows: [] };
 let chartSyncing = false;   // relayout sync loop guard
 const plotlyUpdateRuntime = chartUpdateCoordinatorModule.createPlotlyUpdateRuntime(window, {
@@ -860,7 +879,6 @@ let aiForecastResultBySeries = new Map();
 let aiForecastDeferredSeries = new Set();
 let aiForecastCalculationCounts = new Map();
 let aiForecastUnavailableMessageKeys = new Set();
-let aiForecastDeferredRenderId = 0;
 const macdModelCache = chartModelCacheModule.createSeriesDerivedCache({ maxEntries: 40 });
 let isHandleDragging = false;
 let isHandlePointerActive = false;
@@ -971,7 +989,6 @@ let isWheelZooming = false;
 let useViewportEventMarkerGap = false;
 const epsRefreshOnNextAdd = new Set();
 let lineHighlightDomUpdateCount = 0;
-let dataFreshnessRenderFrame = 0;
 const initE2eDebugAccess = __THINKSTOCK_E2E_DIAGNOSTICS__
   ? function initE2eDebugAccessForTests() {
   try {
@@ -1051,6 +1068,12 @@ const initE2eDebugAccess = __THINKSTOCK_E2E_DIAGNOSTICS__
           ...disclosureProgress.snapshot(),
         };
       },
+      getSignalProgressState() {
+        return {
+          enabled: chartSession.showRecessionSignals,
+          ...signalProgress.snapshot(),
+        };
+      },
       getAiForecastState() {
         return {
           enabled: chartSession.showAiForecast,
@@ -1089,6 +1112,8 @@ const initE2eDebugAccess = __THINKSTOCK_E2E_DIAGNOSTICS__
           renderTelemetry,
           scheduler: appRuntimeRegistry.peek(APP_RUNTIME_KEYS.mainChartScheduler)?.stats?.() || null,
           coordinator: appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartUpdates)?.stats?.() || null,
+          progressiveComposition: appRuntimeRegistry
+            .peek(APP_RUNTIME_KEYS.progressiveChartComposition)?.stats?.() || null,
           visualFrames: appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartVisualFrame)?.stats?.() || null,
           viewportWindowCache: appRuntimeRegistry.peek(APP_RUNTIME_KEYS.mainViewportWindow)?.stats?.() || null,
           modelCache: mainChartCalcCache.stats(),
@@ -1870,27 +1895,16 @@ function syncEpsToggleButton() {
   });
 }
 function scheduleDataFreshnessRender() {
-  if (dataFreshnessRenderFrame) return;
-  dataFreshnessRenderFrame = requestAnimationFrame(() => {
-    dataFreshnessRenderFrame = 0;
-    renderDataFreshness();
-  });
+  return dataFreshnessController.schedule();
 }
-function renderDataFreshness() {
-  const el = document.getElementById("dataFreshness");
-  if (!el) return;
-  if (dataFreshnessRenderFrame) {
-    cancelAnimationFrame(dataFreshnessRenderFrame);
-    dataFreshnessRenderFrame = 0;
-  }
-
+function buildDataFreshnessModel() {
   const selectedPriceStatus = visibleTickerPriceStatus();
   const renderSignature = [
     new Date().toISOString().slice(0, 10),
     dataRevisionSignature("price", "macro", "credit", "adr", "crisis"),
     JSON.stringify(selectedPriceStatus || null),
   ].join("|");
-  dataFreshnessController.render(el, {
+  return {
     renderSignature,
     priceStatus: selectedPriceStatus,
     pricePayload: appData.pricePayload,
@@ -1902,7 +1916,10 @@ function renderDataFreshness() {
     adrKeys: ADR_SERIES,
     fearGreedKeys: FEAR_GREED_SERIES,
     volatilityKeys: VOLATILITY_SERIES,
-  });
+  };
+}
+function renderDataFreshness() {
+  return dataFreshnessController.renderNow();
 }
 
 async function fetchLatestKrxTickerSeriesBatch(tickers, options = {}) {
@@ -2638,6 +2655,92 @@ function setMainChartSeriesVisible(seriesKey, visible, options = {}) {
   return getMainSeriesController().setVisible(seriesKey, visible, options);
 }
 
+function requestSeriesCompositionUpdate(reason = "series-composition", options = {}) {
+  return requestChartCompositionUpdate({
+    ...options,
+    progressiveComposition: true,
+    reason,
+  });
+}
+
+function applyMainSeriesVisibilityFast(seriesKey, visible) {
+  const element = document.getElementById("chart");
+  const visibilityUpdate = mainChartRenderer.buildSeriesVisibilityUpdate(
+    element?.data,
+    seriesKey,
+    visible,
+    visible ? { includeKinds: ["price"] } : undefined,
+  );
+  const eventPointUpdate = visible
+    ? { traceIndexes: [], values: [] }
+    : mainChartRenderer.buildSeriesEventPointHideUpdate(element?.data, seriesKey);
+  if (!visibilityUpdate.traceIndexes.length && !eventPointUpdate.traceIndexes.length) return null;
+  invalidateChartInteractionCaches(element);
+  mainChartRenderer.invalidateRenderFingerprint(element);
+  return (async () => {
+    if (visibilityUpdate.traceIndexes.length) {
+      await plotlyUpdateRuntime.restyle(
+        element,
+        { visible: visibilityUpdate.values },
+        visibilityUpdate.traceIndexes,
+        { label: "main-series-visibility" },
+      );
+    }
+    if (eventPointUpdate.traceIndexes.length) {
+      await plotlyUpdateRuntime.restyle(
+        element,
+        { x: eventPointUpdate.values },
+        eventPointUpdate.traceIndexes,
+        { label: "main-series-event-visibility" },
+      );
+    }
+    scheduleHandleUpdate(0);
+    return true;
+  })();
+}
+
+function changeMainSeriesVisibility(seriesKey, visible) {
+  const key = String(seriesKey || "").trim();
+  const hadVisibleSeries = visibleMainChartSeriesKeys().length > 0;
+  if (!key || !setMainChartSeriesVisible(key, visible)) return false;
+  const revivesEmptyChart = visible && !hadVisibleSeries;
+  if (revivesEmptyChart) {
+    chartSession.activeMonths = EMPTY_CHART_RECOVERY_MONTHS;
+    chartSession.pinnedXRange = null;
+    chartSession.userViewportPinned = false;
+    chartSession.pendingCompositionViewport = null;
+  }
+  if (visible) clearAutoResetSeriesTransforms(key);
+  else if (STOCK_TICKER_PATTERN.test(key.toUpperCase())) cancelVisibleStockHistoryRefresh(key);
+  noteStockVisibilityChange(key);
+  setAiForecastTargetVisibility(key, visible);
+  syncSeriesToggleBoard(chartSession.currentMainChartModel?.allSeries || getSeriesPriorityOrder());
+
+  const requestComposition = () => requestSeriesCompositionUpdate(
+    revivesEmptyChart ? "series-visibility-empty-recovery" : "series-visibility",
+    revivesEmptyChart ? { forceFitFull: true, preserveZoom: false } : {},
+  );
+  const fastUpdate = applyMainSeriesVisibilityFast(key, visible);
+  if (visible) {
+    // ON must never wait for EPS, AI, hover, or a stale OFF transaction.
+    // The existing price trace is restored immediately while a price-first
+    // composition independently guarantees recovery if that trace was removed.
+    requestComposition();
+    fastUpdate?.catch((error) => (
+      recordRuntimeError("main-series-visibility", error, { key, visible })
+    ));
+    return true;
+  }
+  if (fastUpdate) {
+    fastUpdate
+      .catch((error) => recordRuntimeError("main-series-visibility", error, { key, visible }))
+      .finally(requestComposition);
+  } else {
+    requestComposition();
+  }
+  return true;
+}
+
 function enforceMainChartSeriesLimit() {
   return getMainSeriesController().enforceLimit();
 }
@@ -2810,9 +2913,8 @@ async function renderCoMovementPanel(options = {}) {
   }
   try {
     const controller = await getCoMovementPanelController();
-    return options.deferred === true
-      ? controller.requestDeferred()
-      : controller.request();
+    if (options.immediate === true) return controller.flush();
+    return options.deferred === true ? controller.requestDeferred() : controller.request();
   } catch (error) {
     recordRuntimeError("co-movement-panel", error);
     return null;
@@ -2985,34 +3087,30 @@ function bindSeriesToggleBoard() {
     const key = btn.dataset.series;
     if (!key) return;
     const becomingVisible = chartSession.hiddenSeries.has(key);
-    if (becomingVisible) {
-      if (!setMainChartSeriesVisible(key, true)) return;
-      clearAutoResetSeriesTransforms(key);
-    } else {
-      setMainChartSeriesVisible(key, false);
-    }
-    noteStockVisibilityChange(key);
-    setAiForecastTargetVisibility(key, becomingVisible);
+    if (!changeMainSeriesVisibility(key, becomingVisible)) return;
     if (becomingVisible && STOCK_TICKER_PATTERN.test(String(key).toUpperCase())) {
       const stock = customStocks.find((item) => item.ticker === key);
       const displayName = stock?.name || DISPLAY_NAMES[key] || key;
+      const beforeLoad = tickerPriceRenderSignature(key);
       ensureCustomTickerSeriesLoaded(key, { displayName, returnAfterCache: true })
         .then((initialLoad) => {
-          requestChartCompositionUpdate();
+          if (tickerPriceRenderSignature(key) !== beforeLoad) {
+            requestSeriesCompositionUpdate("series-price-ready");
+          }
+          scheduleVisibleSeriesSupplementalHydration(key, null, {
+            trackAiProgress: chartSession.showAiForecast,
+          });
           if (!initialLoad?.deferredRefresh) return;
           scheduleVisibleStockHistoryRefresh(key, displayName);
         })
         .catch(() => {});
-    } else if (!becomingVisible && STOCK_TICKER_PATTERN.test(String(key).toUpperCase())) {
-      cancelVisibleStockHistoryRefresh(key);
     }
-    if (becomingVisible && chartSession.showAiForecast && isForecastSeries(String(key).toUpperCase())) {
+    if (becomingVisible
+      && !STOCK_TICKER_PATTERN.test(String(key).toUpperCase())
+      && chartSession.showAiForecast
+      && isForecastSeries(String(key).toUpperCase())) {
       startAiForecastProgress();
-      if (STOCK_TICKER_PATTERN.test(String(key).toUpperCase())) {
-        refreshAiAnalysisForVisibleSeries().catch(() => {});
-      }
     }
-    requestChartCompositionUpdate();
   });
 }
 
@@ -3033,6 +3131,8 @@ function renderCustomStockButtons() {
 
 function removeCustomStock(ticker) {
   if (!getCustomStockLifecycle().remove(ticker)) return;
+  const fastHide = applyMainSeriesVisibilityFast(ticker, false);
+  backgroundTaskScheduler.cancel(`visible-series-supplemental:${ticker}`);
   cancelVisibleStockHistoryRefresh(ticker);
   cancelTickerDartRequests(ticker);
   epsRefreshOnNextAdd.add(String(ticker || "").trim().toUpperCase());
@@ -3041,9 +3141,17 @@ function removeCustomStock(ticker) {
   clearRemovedSeriesTransforms(ticker);
   delete DISPLAY_NAMES[ticker];
   setAiForecastTargetVisibility(ticker, false);
+  aiContextPendingTickers.delete(ticker);
   clearTickerSeriesFromPricePayload(ticker);
   renderCustomStockButtons();
-  requestChartCompositionUpdate();
+  const requestComposition = () => requestSeriesCompositionUpdate("series-remove");
+  if (fastHide) {
+    fastHide
+      .catch((error) => recordRuntimeError("main-series-remove", error, { ticker }))
+      .finally(requestComposition);
+  } else {
+    requestComposition();
+  }
 }
 
 function clearTickerSeriesFromPricePayload(ticker) {
@@ -3182,6 +3290,14 @@ const tickerIsHidden = (item) => chartSession.hiddenSeries.has(item.ticker);
 const visibleCustomTickerHistoriesReady = () => tickerPriceAppRuntime.visibleReady(customStocks, tickerIsHidden);
 const ensureVisibleCustomTickerHistoriesReady = () => tickerPriceAppRuntime.ensureVisible(customStocks, tickerIsHidden);
 const ensureCustomTickerSeriesLoaded = (ticker, options = {}) => tickerPriceAppRuntime.load(ticker, options);
+
+function tickerPriceRenderSignature(ticker) {
+  return [
+    appData.revision("pricePayload"),
+    appData.pricePayload?.series?.includes(String(ticker || "").toUpperCase()) ? 1 : 0,
+  ].join("|");
+}
+
 const runtimeIndexRefreshService = runtimeIndexRefreshModule.createRuntimeIndexRefreshService({
   canUseGateway: canUseDartGateway,
   fetchWithTimeout,
@@ -3231,6 +3347,70 @@ function getRuntimeBootstrapService() {
 
 function fetchCriticalRuntimeBootstrap(options = {}) {
   return getRuntimeBootstrapService().fetchCritical(options);
+}
+
+function scheduleVisibleSeriesSupplementalHydration(ticker, msgEl, options = {}) {
+  const key = String(ticker || "").trim().toUpperCase();
+  if (!STOCK_TICKER_PATTERN.test(key)) return Promise.resolve(false);
+  const trackAiProgress = options.trackAiProgress === true && chartSession.showAiForecast;
+  if (trackAiProgress) {
+    aiContextPendingTickers.add(key);
+    startAiForecastProgress();
+    syncAiForecastToggleButton();
+  }
+
+  const cleanupSkippedAiProgress = () => {
+    aiContextPendingTickers.delete(key);
+    syncAiForecastToggleButton();
+    if (trackAiProgress && !aiContextPendingTickers.size) stopAiForecastProgress();
+  };
+  return backgroundTaskScheduler.enqueue(
+    `visible-series-supplemental:${key}`,
+    () => {
+      const disclosureTask = preloadTickerDartData(key, msgEl);
+      if (chartSession.showEps) {
+        ensureEpsFeatureModules()
+          .then(() => prepareVisibleEpsData({ tickers: [key] }))
+          .catch((error) => recordRuntimeError(`eps-add:${key}`, error));
+      }
+      if (chartSession.showAiForecast) {
+        aiContextPendingTickers.add(key);
+        setAiForecastProgress(18, `${labelName(key)} 공시·실적·컨센서스 준비`);
+        Promise.allSettled([
+          requestAiAnalysisForTicker(key),
+          requestBrokerResearchForTicker(key),
+          Promise.resolve(disclosureTask),
+          loadAiRotationLeaderSeries(),
+        ]).finally(() => {
+          aiContextPendingTickers.delete(key);
+          syncAiForecastToggleButton();
+          if (chartSession.showAiForecast) {
+            setAiForecastProgress(38, `${labelName(key)} AI 재계산 준비`);
+            requestAiForecastRender();
+          }
+        });
+      } else {
+        cleanupSkippedAiProgress();
+      }
+      return true;
+    },
+    {
+      coalesceRunning: true,
+      delayMs: 32,
+      group: "visible-series-supplemental",
+      priority: 80,
+      shouldRun: () => (
+        getCustomStockLifecycle().has(key) && !chartSession.hiddenSeries.has(key)
+      ),
+    },
+  ).then((started) => {
+    if (started === false) cleanupSkippedAiProgress();
+    return started;
+  }).catch((error) => {
+    cleanupSkippedAiProgress();
+    recordRuntimeError(`visible-series-supplemental:${key}`, error);
+    return false;
+  });
 }
 
 async function addCustomStock(candidate, msgEl) {
@@ -3283,37 +3463,14 @@ async function addCustomStock(candidate, msgEl) {
     noteStockVisibilityChange(stockCandidate.ticker);
     renderCustomStockButtons();
     saveState();
-    const disclosureTask = preloadTickerDartData(stockCandidate.ticker, msgEl);
-    if (activateOnAdd && chartSession.showEps) {
-      ensureEpsFeatureModules()
-        .then(() => prepareVisibleEpsData({ tickers: [stockCandidate.ticker] }))
-        .catch((error) => recordRuntimeError(`eps-add:${stockCandidate.ticker}`, error));
-    }
-    if (activateOnAdd && chartSession.showAiForecast) {
-      if (!aiContextPendingTickers.has(stockCandidate.ticker)) {
-        aiContextPendingTickers.add(stockCandidate.ticker);
-        startAiForecastProgress();
-      }
-      setAiForecastProgress(18, `${stockCandidate.name} 공시·실적·컨센서스 준비`);
-      Promise.allSettled([
-        requestAiAnalysisForTicker(stockCandidate.ticker),
-        requestBrokerResearchForTicker(stockCandidate.ticker),
-        Promise.resolve(disclosureTask),
-        loadAiRotationLeaderSeries(),
-      ]).finally(() => {
-        aiContextPendingTickers.delete(stockCandidate.ticker);
-        syncAiForecastToggleButton();
-        if (chartSession.showAiForecast) {
-          setAiForecastProgress(38, `${stockCandidate.name} AI 재계산 준비`);
-          requestAiForecastRender();
-        }
-      });
+    requestSeriesCompositionUpdate("series-add");
+    if (activateOnAdd) {
+      scheduleVisibleSeriesSupplementalHydration(stockCandidate.ticker, msgEl, { trackAiProgress });
     } else {
       aiContextPendingTickers.delete(stockCandidate.ticker);
       syncAiForecastToggleButton();
       if (trackAiProgress && !aiContextPendingTickers.size) stopAiForecastProgress();
     }
-    requestChartCompositionUpdate();
     if (initialLoad?.deferredRefresh) {
       scheduleVisibleStockHistoryRefresh(stockCandidate.ticker, stockCandidate.name);
     }
@@ -3397,7 +3554,7 @@ function getVisibleStockHistoryRefresh() {
       preload: preloadCustomStocks,
       hasTicker: (ticker) => getCustomStockLifecycle().has(ticker),
       isVisible: (ticker) => !chartSession.hiddenSeries.has(ticker),
-      onUpdated: requestChartCompositionUpdate,
+      onUpdated: () => requestSeriesCompositionUpdate("series-price-refresh"),
       isAbortError,
       onError: (error, details) => {
         recordRuntimeError(`visible-stock-history:${details.ticker}`, error, {
@@ -3494,10 +3651,6 @@ function prepareMainChartRenderInputs(el, preserveZoom) {
     supplementalSeries: SUPPLEMENTAL_SERIES,
     toUtcMs,
   });
-}
-
-function requestChartModelFromWorker(payload, type = "buildMainChartModel") {
-  return getChartModelWorkerClient().request(payload, type);
 }
 
 function getMainChartSourceFingerprint(priceRows, allowedSeries) {
@@ -3697,61 +3850,6 @@ function buildMainChartModelConfig(
   };
 }
 
-function buildMainChartModel(
-  priceRows,
-  dataStart,
-  dataEnd,
-  frameStart,
-  frameEnd,
-  allowedSeries,
-  displayBudget,
-) {
-  return mainChartModelModule.buildMainChartModel({
-    ...buildMainChartModelConfig(
-      dataStart,
-      dataEnd,
-      frameStart,
-      frameEnd,
-      allowedSeries,
-      displayBudget,
-    ),
-    priceRows,
-    macroRows: appData.macroRows,
-    creditRows: appData.creditRows,
-  });
-}
-
-async function buildMainChartModelOffThread(
-  priceRows,
-  dataStart,
-  dataEnd,
-  frameStart,
-  frameEnd,
-  allowedSeries,
-  displayBudget,
-) {
-  const result = await requestChartModelFromWorker({
-    ...buildMainChartModelConfig(
-      dataStart,
-      dataEnd,
-      frameStart,
-      frameEnd,
-      allowedSeries,
-      displayBudget,
-    ),
-    datasetKey: getChartModelDataKey(priceRows, allowedSeries),
-    sources: {
-      priceRows,
-      macroRows: appData.macroRows,
-      creditRows: appData.creditRows,
-    },
-  });
-  if (!result) return null;
-  const model = chartRenderContractModule.normalizeMainChartModel(result);
-  if (!model) throw new Error("chart worker returned an invalid model");
-  return model;
-}
-
 async function getMainChartModel(
   priceRows,
   dataStart,
@@ -3770,39 +3868,28 @@ async function getMainChartModel(
     allowedSeries,
     displayBudget,
   );
-  const request = mainChartCalcCache.resolve(key, async () => {
-    let model = null;
-    try {
-      model = await buildMainChartModelOffThread(
-        priceRows,
-        dataStart,
-        dataEnd,
-        frameStart,
-        frameEnd,
-        allowedSeries,
-        displayBudget,
-      );
-      if (!model) return null;
-      lastMainChartModelSource = "worker";
-    } catch (_) {
-      model = buildMainChartModel(
-        priceRows,
-        dataStart,
-        dataEnd,
-        frameStart,
-        frameEnd,
-        allowedSeries,
-        displayBudget,
-      );
-      lastMainChartModelSource = "sync";
-    }
-    const normalized = chartRenderContractModule.normalizeMainChartModel(model);
-    if (!normalized) throw new Error("main chart model contract failed");
-    normalized.renderRevision = key;
-    return normalized;
+  const config = buildMainChartModelConfig(
+    dataStart,
+    dataEnd,
+    frameStart,
+    frameEnd,
+    allowedSeries,
+    displayBudget,
+  );
+  const sources = {
+    priceRows,
+    macroRows: appData.macroRows,
+    creditRows: appData.creditRows,
+  };
+  return mainChartModelResolver.resolve({
+    cacheKey: key,
+    workerPayload: {
+      ...config,
+      datasetKey: getChartModelDataKey(priceRows, allowedSeries),
+      sources,
+    },
+    syncPayload: { ...config, ...sources },
   });
-  lastMainChartModelCacheHit = request.status !== "miss";
-  return request.promise;
 }
 
 function getMainChartDisplayPointBudget(el, visibleSeriesCount = 1) {
@@ -4336,6 +4423,7 @@ function getChartMarkerRuntime() {
     netSameReporterInsiderTrades,
     recordPerfSample,
     recordRuntimeError,
+    signalProgress,
     seriesColor,
     startPerfSample,
     toNum,
@@ -5234,7 +5322,11 @@ const runtimeDiagnosticStateCollector = performanceMonitorModule.createRuntimeDi
   chartRender: () => chartRenderTelemetry.snapshot(),
   chartScheduler: () => appRuntimeRegistry.peek(APP_RUNTIME_KEYS.mainChartScheduler)?.stats?.() || null,
   chartUpdates: () => appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartUpdates)?.stats?.() || null,
+  progressiveChartComposition: () => appRuntimeRegistry
+    .peek(APP_RUNTIME_KEYS.progressiveChartComposition)?.stats?.() || null,
   chartVisualFrames: () => appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartVisualFrame)?.stats?.() || null,
+  aiForecastRenderFrame: () => appRuntimeRegistry.peek(APP_RUNTIME_KEYS.aiForecastRenderFrame)?.stats?.() || null,
+  dataFreshness: () => dataFreshnessController.stats?.() || null,
   viewportWindowCache: () => appRuntimeRegistry.peek(APP_RUNTIME_KEYS.mainViewportWindow)?.stats?.() || null,
   chartHoverCache: () => mainChartRenderer.groupedHoverCacheStats(),
   auxiliaryChart: () => appRuntimeRegistry.peek(APP_RUNTIME_KEYS.auxiliaryChart)?.stats?.() || null,
@@ -5248,6 +5340,7 @@ const runtimeDiagnosticStateCollector = performanceMonitorModule.createRuntimeDi
     };
   },
   chartModelCache: () => mainChartCalcCache.stats(),
+  chartModelResolver: () => mainChartModelResolver.stats(),
   chartSourceFingerprintCache: () => mainChartSourceFingerprintCache.stats(),
   runtimeSnapshot: () => ({
     ...getRuntimeSnapshotController().stats(),
@@ -5868,8 +5961,41 @@ function aiForecastContextPendingForSeries(series) {
   );
 }
 
+function getAiForecastRenderFrameQueue() {
+  return appRuntimeRegistry.get(APP_RUNTIME_KEYS.aiForecastRenderFrame, () => (
+    chartUpdateCoordinatorModule.createLatestKeyedFrameQueue(globalThis, {
+      apply: (readySeries) => {
+        readySeries.forEach((series) => aiForecastDeferredSeries.delete(String(series || "")));
+        if (chartSession.showAiForecast) requestAiForecastRender();
+      },
+      onError: (error) => recordRuntimeError("ai-forecast-render-frame", error),
+    })
+  ));
+}
+
+function getProgressiveChartCompositionQueue() {
+  return appRuntimeRegistry.get(APP_RUNTIME_KEYS.progressiveChartComposition, () => (
+    chartUpdateCoordinatorModule.createLatestKeyedFrameQueue(globalThis, {
+      apply: async () => {
+        await renderCoMovementPanel({ immediate: true });
+        requestChartRender(true, {
+          deferDuringInteraction: false,
+          progressiveComposition: false,
+          reason: "progressive-overlays",
+          updateClass: "composition",
+        });
+      },
+      onError: (error) => recordRuntimeError("progressive-chart-composition", error),
+    })
+  ));
+}
+
+function scheduleProgressiveChartCompletion() {
+  return getProgressiveChartCompositionQueue().schedule("main-chart", true);
+}
+
 function scheduleDeferredAiForecastRender(seriesModels) {
-  if (!chartSession.showAiForecast || aiForecastDeferredRenderId) return false;
+  if (!chartSession.showAiForecast) return false;
   const available = new Set((seriesModels || []).map((model) => String(model?.series || "").toUpperCase()));
   const ready = [...aiForecastDeferredSeries].filter((series) => (
     aiForecastTargetSeries.has(series)
@@ -5878,11 +6004,8 @@ function scheduleDeferredAiForecastRender(seriesModels) {
     && (!aiAnalysisPendingTickers.has(series) || aiAnalysisByTicker.has(series))
   ));
   if (!ready.length) return false;
-  aiForecastDeferredRenderId = requestAnimationFrame(() => {
-    aiForecastDeferredRenderId = 0;
-    ready.forEach((series) => aiForecastDeferredSeries.delete(series));
-    if (chartSession.showAiForecast) requestAiForecastRender();
-  });
+  const frameQueue = getAiForecastRenderFrameQueue();
+  ready.forEach((series) => frameQueue.schedule(series, series));
   return true;
 }
 
@@ -6141,6 +6264,7 @@ function getMainChartEvents() {
       HANDLE_UPDATE_DEBOUNCE_MS,
       MAX_VISIBLE_MAIN_SERIES_MESSAGE,
       chartSession,
+      changeSeriesVisibility: changeMainSeriesVisibility,
       clearAutoResetSeriesTransforms,
       clearHoverOnChart,
       configureExactDateEventHover,
@@ -6149,7 +6273,6 @@ function getMainChartEvents() {
       hideDisclosurePopover,
       interactionState,
       isTouchDevice,
-      noteStockVisibilityChange,
       normalizeHoverPopupIndent,
       refreshAiForecastTargets,
       renderCoMovementPanel,
@@ -6157,8 +6280,6 @@ function getMainChartEvents() {
       scheduleHandleUpdate,
       scheduleViewportWindowRender,
       scheduleViewportRangeSync,
-      setAiForecastTargetVisibility,
-      setMainChartSeriesVisible,
       showChartNavigationMessage,
       syncHoverToChart,
       toMsSafe,
@@ -6176,6 +6297,7 @@ function resetMainChartInteractionRenderState(element) {
 
 async function renderChart(preserveZoom = true, invalidation = {}) {
   const perfStartedAt = startPerfSample();
+  const progressiveComposition = invalidation.progressiveComposition === true;
   const renderGuard = chartUpdateCoordinatorModule.createMainChartRenderGuard({
     getAiRevision: () => aiForecastToggleRevision,
     getViewportRevision: () => chartViewportInteractionRevision,
@@ -6241,7 +6363,8 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
     frameStart,
     syncSeries: syncSeriesToggleBoard,
   });
-  const shouldHydrateChartData = chartUpdateCoordinatorModule.shouldHydrateChartData(invalidation);
+  const shouldHydrateChartData = !progressiveComposition
+    && chartUpdateCoordinatorModule.shouldHydrateChartData(invalidation);
   if (shouldHydrateChartData) queueInsiderTradeRefresh();
   if (!chartSession.showDisclosures) hideDisclosurePopover();
   resetMainChartInteractionRenderState(el);
@@ -6263,6 +6386,7 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
     shouldAbort: () => renderGuard.shouldAbort(invalidation),
     composition: {
       displayIndexes: viewportSlice.displayIndexes,
+      deferOverlays: progressiveComposition,
       hiddenSeries: chartSession.hiddenSeries,
       lineTraceType: MAIN_LINE_TRACE_TYPE,
       hoverShowPopup: chartSession.hoverShowPopup,
@@ -6339,6 +6463,23 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
       yRange: el?._fullLayout?.yaxis?.range,
     },
   );
+  if (progressiveComposition) {
+    getMainChartEvents().bind(el);
+    bindCursorMoveSync();
+    scheduleHandleUpdate(0);
+    scheduleProgressiveChartCompletion();
+    recordPerfSample("renderChart", perfStartedAt, {
+      rows: rows.length,
+      displayRows: displayPointCount,
+      series: selected.length,
+      cacheHit: lastMainChartModelCacheHit,
+      modelSource: lastMainChartModelSource,
+      phase: "price-first",
+      renderMode,
+      updateClasses: [...(invalidation.updateClasses || [])],
+    });
+    return;
+  }
   const coMovementPanelController = appRuntimeRegistry.peek(APP_RUNTIME_KEYS.coMovementPanel);
   if (chartSession.showCoMovement && !coMovementPanelController) {
     void renderCoMovementPanel();
@@ -6452,7 +6593,7 @@ async function getAuxiliaryChartRuntime() {
       clearHoverOnChart,
       dataRevisionSignature,
       dataState,
-      requestAuxiliaryChartModel: (payload) => requestChartModelFromWorker(
+      requestAuxiliaryChartModel: (payload) => getChartModelWorkerClient().request(
         payload,
         "buildAuxiliaryChartModel",
       ),
@@ -7048,6 +7189,7 @@ function bindApplicationControls(messageElement) {
     recordRuntimeError,
     ensureMarketTimingFeature,
     syncRecessionToggleButton,
+    cancelSignalProgress: () => signalProgress.cancel(),
     setMessage: (message, isError) => setMessage(messageElement, message, isError),
     requestChartCompositionUpdate,
     onAiToggleRevision: () => { aiForecastToggleRevision += 1; },
@@ -7155,7 +7297,10 @@ const applicationLifecycle = createApplicationLifecycleRuntime({
     (messageElement) => setupStockAddPanel(messageElement),
     (messageElement) => setupStockResearch(messageElement),
     (messageElement) => setupApiSettingsPanel(messageElement),
-    () => runAfterStartupVisualReady(scheduleApiPeriodReminderLoad, { userVisible: true }),
+    () => runAfterStartupVisualReady(scheduleApiPeriodReminderLoad, {
+      userVisible: true,
+      taskName: "api-period-reminder",
+    }),
     () => syncApiOptionsButton(),
     () => renderAppVersionLabel(),
     () => syncChartResetToggleButton(),
@@ -7172,7 +7317,7 @@ const applicationLifecycle = createApplicationLifecycleRuntime({
     () => bindRuntimeSnapshotExitSave(),
     () => runAfterStartupVisualReady(() => (
       granularCacheMaintenance.scheduleAll(45000).forEach((task) => task.catch(() => {}))
-    )),
+    ), { taskName: "cache-maintenance" }),
   ],
   initialData: {
     runtime: runtimeDataApp,
@@ -7229,6 +7374,8 @@ const applicationLifecycle = createApplicationLifecycleRuntime({
     () => granularCacheMaintenance.dispose?.(),
     () => disclosureProgress.dispose?.(),
     () => epsProgress.dispose?.(),
+    () => signalProgress.dispose?.(),
+    () => dataFreshnessController.dispose?.(),
     () => appDataRevisionBridge.dispose?.(),
     () => appRuntimeRegistry.disposeAll(),
     () => backgroundTaskScheduler.dispose?.(),
@@ -7238,7 +7385,10 @@ const applicationLifecycle = createApplicationLifecycleRuntime({
 
 const appBootstrap = createAppBootstrapOrchestrator({
   document,
-  scheduleServiceWorker: () => runAfterStartupVisualReady(scheduleDeferredServiceWorkerRegistration),
+  scheduleServiceWorker: () => runAfterStartupVisualReady(
+    scheduleDeferredServiceWorkerRegistration,
+    { taskName: "service-worker-registration" },
+  ),
   loader: {
     show: startupLoader.show,
     hide: startupLoader.hide,
@@ -7293,7 +7443,7 @@ const appBootstrap = createAppBootstrapOrchestrator({
         metadataProvider: () => ({ appState: buildRuntimeDiagnosticAppState() }),
       },
     });
-  }),
+  }, { taskName: "performance-diagnostics" }),
 });
 
 appBootstrap.boot();

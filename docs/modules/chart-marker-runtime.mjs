@@ -274,6 +274,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       netSameReporterInsiderTrades,
       recordPerfSample,
       recordRuntimeError,
+      signalProgress,
       seriesColor,
       startPerfSample,
       toNum,
@@ -297,6 +298,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     const eventMarkerTextSize = Number(constants.eventMarkerTextSize) || 13;
     const pointIndexCache = new WeakMap();
     let lastTimingPreparationKey = "";
+    let pendingTimingPreparation = null;
 
     function transformSignature(indexedTickers) {
       return [...indexedTickers]
@@ -744,16 +746,42 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     }
 
     async function prepareMarketTimingModels(selected, seriesModels) {
-      if (!chartSession.showRecessionSignals) return;
-      if (!getMarketTimingService?.()) await ensureMarketTimingFeature();
-      const service = getMarketTimingService?.();
       const targets = visibleTimingSeries(selected, seriesModels);
-      if (!service || !targets.length) return;
+      if (!chartSession.showRecessionSignals || !targets.length) return;
+      const taskKey = `signal:${targets.join(",")}`;
+      const taskLabel = "신호 계산중";
+      let progressStarted = false;
+      const beginProgress = () => {
+        if (progressStarted) return;
+        progressStarted = signalProgress?.begin?.(taskKey, taskLabel) === true;
+      };
+      const cancelProgress = () => {
+        if (progressStarted) signalProgress?.cancel?.(taskKey);
+      };
+
+      if (!getMarketTimingService?.()) {
+        beginProgress();
+        signalProgress?.update?.(taskKey, 0.08, taskLabel);
+        try {
+          await ensureMarketTimingFeature();
+        } catch (error) {
+          cancelProgress();
+          throw error;
+        }
+      }
+      const service = getMarketTimingService?.();
+      if (!service) {
+        cancelProgress();
+        return;
+      }
       const pricePayload = getPricePayload?.();
       const records = Array.isArray(pricePayload?.records)
         ? pricePayload.records
         : [];
-      if (!records.length) return;
+      if (!records.length) {
+        cancelProgress();
+        return;
+      }
 
       const sourceTickers = [...new Set([
         "^KS11",
@@ -772,7 +800,15 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       ].join("|");
       const preparationKey = `${signature}|${targets.join(",")}`;
       if (lastTimingPreparationKey === preparationKey
-        && targets.every((ticker) => service.has?.(ticker))) return;
+        && targets.every((ticker) => service.has?.(ticker))) {
+        cancelProgress();
+        return;
+      }
+      if (pendingTimingPreparation?.key === preparationKey) {
+        return pendingTimingPreparation.promise;
+      }
+      beginProgress();
+      signalProgress?.update?.(taskKey, 0.22, taskLabel);
       let sources;
       if (service.stats().signature !== signature) {
         const volumeMaps = getTickerVolumeSeriesByTicker?.() || new Map();
@@ -798,20 +834,30 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
           crisisRows: getCrisisRows?.() || [],
         };
       }
+      signalProgress?.update?.(taskKey, 0.42, taskLabel);
       const startedAt = startPerfSample();
-      try {
+      const preparation = (async () => {
         await service.prepare({
           signature,
           targets,
           ...(sources ? { sources } : {}),
         });
+        signalProgress?.update?.(taskKey, 0.92, taskLabel);
         lastTimingPreparationKey = preparationKey;
         recordPerfSample("prepareMarketTimingModels", startedAt, {
           targets: targets.length,
           models: service.stats().modelCount,
         });
+      })();
+      pendingTimingPreparation = { key: preparationKey, promise: preparation };
+      try {
+        await preparation;
+        signalProgress?.complete?.(taskKey, taskLabel);
       } catch (error) {
+        cancelProgress();
         recordRuntimeError("market-timing-worker", error, { targets: targets.length });
+      } finally {
+        if (pendingTimingPreparation?.promise === preparation) pendingTimingPreparation = null;
       }
     }
 

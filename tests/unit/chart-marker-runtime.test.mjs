@@ -382,6 +382,7 @@ test("point lookup never attaches a marker beyond its allowed trading-day gap", 
 
 test("timing preparation excludes inactive custom stocks and reuses relevant fingerprints", async () => {
   let prepared = null;
+  const progressEvents = [];
   const service = {
     stats: () => ({ signature: "", modelCount: 0 }),
     prepare: async (payload) => { prepared = payload; },
@@ -396,6 +397,15 @@ test("timing preparation excludes inactive custom stocks and reuses relevant fin
       ],
     }),
     isForecastSeries: (ticker) => ticker.startsWith("^") || ticker.endsWith(".KS"),
+    signalProgress: {
+      begin: (key, label) => {
+        progressEvents.push(["begin", key, label]);
+        return true;
+      },
+      update: (key, value, label) => progressEvents.push(["update", key, value, label]),
+      complete: (key, label) => progressEvents.push(["complete", key, label]),
+      cancel: (key) => progressEvents.push(["cancel", key]),
+    },
   });
 
   await runtime.prepareMarketTimingModels(
@@ -409,12 +419,21 @@ test("timing preparation excludes inactive custom stocks and reuses relevant fin
     "^KS11",
   ]);
   assert.equal(prepared.sources.pricesByTicker["000660.KS"], undefined);
+  assert.deepEqual(progressEvents.map(([type]) => type), [
+    "begin",
+    "update",
+    "update",
+    "update",
+    "complete",
+  ]);
+  assert.equal(progressEvents[0][2], "신호 계산중");
 });
 
 test("skips repeated timing preparation until a data revision changes", async () => {
   let revision = 1;
   let signature = "";
   let prepareCount = 0;
+  let progressBeginCount = 0;
   const preparedTickers = new Set();
   const service = {
     has: (ticker) => preparedTickers.has(ticker),
@@ -435,6 +454,15 @@ test("skips repeated timing preparation until a data revision changes", async ()
       ],
     }),
     isForecastSeries: (ticker) => ticker.startsWith("^") || ticker.endsWith(".KS"),
+    signalProgress: {
+      begin: () => {
+        progressBeginCount += 1;
+        return true;
+      },
+      update: () => {},
+      complete: () => {},
+      cancel: () => {},
+    },
   });
   const selected = ["005930.KS"];
   const seriesModels = [{ series: "005930.KS" }];
@@ -442,8 +470,52 @@ test("skips repeated timing preparation until a data revision changes", async ()
   await runtime.prepareMarketTimingModels(selected, seriesModels);
   await runtime.prepareMarketTimingModels(selected, seriesModels);
   assert.equal(prepareCount, 1);
+  assert.equal(progressBeginCount, 1);
 
   revision += 1;
   await runtime.prepareMarketTimingModels(selected, seriesModels);
   assert.equal(prepareCount, 2);
+  assert.equal(progressBeginCount, 2);
+});
+
+test("signal progress keeps one stable calculation label when a cached chart gains a peer", async () => {
+  const cachedTickers = new Set(["005930.KS"]);
+  const progressLabels = [];
+  let preparedTargets = [];
+  const service = {
+    has: (ticker) => cachedTickers.has(ticker),
+    stats: () => ({ signature: "previous", modelCount: cachedTickers.size }),
+    prepare: async (payload) => {
+      preparedTargets = payload.targets;
+      payload.targets.forEach((ticker) => cachedTickers.add(ticker));
+    },
+  };
+  const { runtime } = createRuntime({
+    getMarketTimingService: () => service,
+    getPricePayload: () => ({
+      records: [
+        { date: "2026-08-11", "^KS11": 3200, "^KQ11": 800, "005930.KS": 70000, "000660.KS": 200000 },
+        { date: "2026-08-12", "^KS11": 3210, "^KQ11": 805, "005930.KS": 71000, "000660.KS": 201000 },
+      ],
+    }),
+    isForecastSeries: (ticker) => ticker.startsWith("^") || ticker.endsWith(".KS"),
+    labelName: (ticker) => ticker === "000660.KS" ? "SK하이닉스" : "삼성전자",
+    signalProgress: {
+      begin: (_key, label) => {
+        progressLabels.push(label);
+        return true;
+      },
+      update: () => {},
+      complete: () => {},
+      cancel: () => {},
+    },
+  });
+
+  await runtime.prepareMarketTimingModels(
+    ["005930.KS", "000660.KS"],
+    [{ series: "005930.KS" }, { series: "000660.KS" }],
+  );
+
+  assert.deepEqual(preparedTargets, ["005930.KS", "000660.KS"]);
+  assert.equal(progressLabels[0], "신호 계산중");
 });

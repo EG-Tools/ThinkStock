@@ -224,4 +224,86 @@ import {
     });
   }
 
-export { createChartModelWorkerClient };
+  /**
+   * Combines the revision cache, worker request, synchronous fallback, and
+   * render-contract validation used by chart model callers.
+   */
+  function createChartModelResolver(options = {}) {
+    const cache = options.cache;
+    const requestWorker = options.requestWorker;
+    const buildSync = options.buildSync;
+    const normalize = options.normalize;
+    const onCacheStatus = typeof options.onCacheStatus === "function"
+      ? options.onCacheStatus
+      : () => {};
+    const onSource = typeof options.onSource === "function"
+      ? options.onSource
+      : () => {};
+    const onWorkerFallback = typeof options.onWorkerFallback === "function"
+      ? options.onWorkerFallback
+      : () => {};
+    const mainType = String(options.mainType || "buildMainChartModel");
+    if (typeof cache?.resolve !== "function"
+      || typeof requestWorker !== "function"
+      || typeof buildSync !== "function"
+      || typeof normalize !== "function") {
+      throw new Error("chart model resolver dependencies are incomplete");
+    }
+
+    const counters = {
+      workerBuilds: 0,
+      syncFallbacks: 0,
+      superseded: 0,
+      invalidModels: 0,
+    };
+
+    function resolve(request = {}) {
+      const cacheKey = String(request.cacheKey || "");
+      if (!cacheKey) throw new Error("chart model resolver cache key is required");
+      const cached = cache.resolve(cacheKey, async () => {
+        let normalized;
+        let source;
+        try {
+          const workerModel = await requestWorker(
+            request.workerPayload || {},
+            request.type || mainType,
+          );
+          if (!workerModel) {
+            counters.superseded += 1;
+            return null;
+          }
+          normalized = normalize(workerModel);
+          if (!normalized) {
+            counters.invalidModels += 1;
+            throw new Error("chart worker returned an invalid model");
+          }
+          counters.workerBuilds += 1;
+          source = "worker";
+        } catch (error) {
+          counters.syncFallbacks += 1;
+          onWorkerFallback(error);
+          normalized = normalize(buildSync(request.syncPayload || {}));
+          if (!normalized) {
+            counters.invalidModels += 1;
+            throw new Error("chart model contract failed");
+          }
+          source = "sync";
+        }
+        normalized.renderRevision = cacheKey;
+        onSource(source);
+        return normalized;
+      });
+      onCacheStatus(cached.status);
+      return cached.promise;
+    }
+
+    return Object.freeze({
+      resolve,
+      stats: () => Object.freeze({ ...counters }),
+    });
+  }
+
+export {
+  createChartModelResolver,
+  createChartModelWorkerClient,
+};

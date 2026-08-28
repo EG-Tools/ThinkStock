@@ -299,6 +299,23 @@ test("startup completion gate releases deferred work exactly once", () => {
   assert.deepEqual(calls, ["before-a", "before-b", "after"]);
 });
 
+test("startup completion gate keeps only the latest named task before release", () => {
+  const scheduled = [];
+  const calls = [];
+  const gate = createStartupCompletionGate((task, taskOptions) => scheduled.push({ task, taskOptions }));
+
+  gate.defer(() => calls.push("stale"), { taskName: "cache-maintenance", priority: -10 });
+  gate.defer(() => calls.push("latest"), { taskName: "cache-maintenance", priority: -5 });
+  gate.defer(() => calls.push("independent"), { taskName: "service-worker" });
+
+  assert.equal(gate.pendingCount(), 2);
+  gate.release();
+  assert.equal(scheduled.length, 2);
+  assert.equal(scheduled[0].taskOptions.priority, -5);
+  scheduled.forEach(({ task }) => task());
+  assert.deepEqual(calls, ["latest", "independent"]);
+});
+
 test("startup task runtime yields before and after supplemental work", async () => {
   const enqueued = [];
   const errors = [];
@@ -361,4 +378,27 @@ test("startup task runtime serializes visible work through the interaction-aware
     group: "startup-deferred",
     priority: 20,
   });
+});
+
+test("startup task runtime uses stable scheduler keys for named work", () => {
+  const enqueued = [];
+  const scheduler = {
+    enqueue(key, task, options) {
+      enqueued.push({ key, task, options });
+      return Promise.resolve(true);
+    },
+  };
+  const runtime = createStartupTaskRuntime({ scheduler });
+
+  runtime.defer(() => true, { taskName: "service worker" });
+  runtime.release();
+  runtime.defer(() => true, { taskName: "service worker" });
+  runtime.scheduleSupplemental(() => true, { taskName: "credit refresh" });
+
+  assert.deepEqual(enqueued.map(({ key }) => key), [
+    "startup-deferred:service-worker",
+    "startup-deferred:service-worker",
+    "startup-supplemental:credit-refresh",
+  ]);
+  assert.equal(enqueued.every(({ options }) => options.coalesceRunning === true), true);
 });

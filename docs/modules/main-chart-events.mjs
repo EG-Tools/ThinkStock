@@ -5,6 +5,7 @@
       HANDLE_UPDATE_DEBOUNCE_MS,
       MAX_VISIBLE_MAIN_SERIES_MESSAGE,
       chartSession,
+      changeSeriesVisibility,
       clearAutoResetSeriesTransforms,
       clearHoverOnChart,
       configureExactDateEventHover,
@@ -14,7 +15,6 @@
       interactionState,
       isCurrentRange,
       isTouchDevice,
-      noteStockVisibilityChange,
       normalizeHoverPopupIndent,
       refreshAiForecastTargets,
       renderCoMovementPanel,
@@ -22,8 +22,6 @@
       scheduleHandleUpdate,
       scheduleViewportWindowRender,
       scheduleViewportRangeSync,
-      setAiForecastTargetVisibility,
-      setMainChartSeriesVisible,
       showChartNavigationMessage,
       syncHoverToChart,
       toMsSafe,
@@ -49,18 +47,7 @@
       element.on("plotly_legendclick", (eventData) => {
         const index = eventData.curveNumber;
         const key = chartSession.currentSelected[index];
-        if (key) {
-          const becomingVisible = chartSession.hiddenSeries.has(key);
-          if (becomingVisible) {
-            if (!setMainChartSeriesVisible(key, true)) return false;
-            clearAutoResetSeriesTransforms(key);
-          } else {
-            setMainChartSeriesVisible(key, false);
-          }
-          noteStockVisibilityChange(key);
-          setAiForecastTargetVisibility(key, becomingVisible);
-        }
-        requestChartCompositionUpdate();
+        if (key) changeSeriesVisibility?.(key, chartSession.hiddenSeries.has(key));
         return false;
       });
       element.on("plotly_legenddoubleclick", () => {
@@ -71,7 +58,10 @@
         }
         clearAutoResetSeriesTransforms();
         refreshAiForecastTargets();
-        requestChartCompositionUpdate();
+        requestChartCompositionUpdate({
+          progressiveComposition: true,
+          reason: "series-visibility-reset",
+        });
         return false;
       });
       element.on("plotly_relayout", (eventData) => {

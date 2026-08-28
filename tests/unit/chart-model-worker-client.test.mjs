@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createChartModelWorkerClient } from "../../docs/modules/chart-model-worker-client.mjs";
+import { createChartModelCache } from "../../docs/modules/chart-model-cache.mjs";
+import {
+  createChartModelResolver,
+  createChartModelWorkerClient,
+} from "../../docs/modules/chart-model-worker-client.mjs";
 
 class FakeWorker {
   static instances = [];
@@ -107,4 +111,91 @@ test("main chart work is prioritized after the active request settles", async ()
   worker.respond(2, { value: 2 });
   assert.deepEqual(await auxiliary, { value: 2 });
   client.dispose();
+});
+
+test("chart model resolver shares cache, worker, normalization, and revision handling", async () => {
+  const statuses = [];
+  const sources = [];
+  let workerCalls = 0;
+  const resolver = createChartModelResolver({
+    cache: createChartModelCache(),
+    requestWorker: async (payload) => {
+      workerCalls += 1;
+      return { value: payload.value };
+    },
+    buildSync: () => assert.fail("sync fallback should not run"),
+    normalize: (model) => ({ ...model, normalized: true }),
+    onCacheStatus: (status) => statuses.push(status),
+    onSource: (source) => sources.push(source),
+  });
+
+  const first = await resolver.resolve({
+    cacheKey: "revision-1",
+    workerPayload: { value: 7 },
+  });
+  const second = await resolver.resolve({
+    cacheKey: "revision-1",
+    workerPayload: { value: 99 },
+  });
+
+  assert.deepEqual(first, {
+    value: 7,
+    normalized: true,
+    renderRevision: "revision-1",
+  });
+  assert.equal(second, first);
+  assert.equal(workerCalls, 1);
+  assert.deepEqual(statuses, ["miss", "hit"]);
+  assert.deepEqual(sources, ["worker"]);
+  assert.deepEqual(resolver.stats(), {
+    workerBuilds: 1,
+    syncFallbacks: 0,
+    superseded: 0,
+    invalidModels: 0,
+  });
+});
+
+test("chart model resolver falls back to the synchronous model once", async () => {
+  const fallbacks = [];
+  const sources = [];
+  const resolver = createChartModelResolver({
+    cache: createChartModelCache(),
+    requestWorker: async () => { throw new Error("worker unavailable"); },
+    buildSync: (payload) => ({ value: payload.value }),
+    normalize: (model) => ({ ...model }),
+    onWorkerFallback: (error) => fallbacks.push(error.message),
+    onSource: (source) => sources.push(source),
+  });
+
+  const model = await resolver.resolve({
+    cacheKey: "revision-2",
+    syncPayload: { value: 11 },
+  });
+
+  assert.deepEqual(model, { value: 11, renderRevision: "revision-2" });
+  assert.deepEqual(fallbacks, ["worker unavailable"]);
+  assert.deepEqual(sources, ["sync"]);
+  assert.equal(resolver.stats().syncFallbacks, 1);
+});
+
+test("chart model resolver replaces an invalid worker result with the synchronous model", async () => {
+  const fallbacks = [];
+  const resolver = createChartModelResolver({
+    cache: createChartModelCache(),
+    requestWorker: async () => ({ invalid: true }),
+    buildSync: () => ({ value: 17 }),
+    normalize: (model) => (Number.isFinite(model?.value) ? { ...model } : null),
+    onWorkerFallback: (error) => fallbacks.push(error.message),
+  });
+
+  const model = await resolver.resolve({ cacheKey: "revision-3" });
+
+  assert.deepEqual(model, { value: 17, renderRevision: "revision-3" });
+  assert.deepEqual(fallbacks, ["chart worker returned an invalid model"]);
+  assert.deepEqual(resolver.stats(), {
+    workerBuilds: 0,
+    syncFallbacks: 1,
+    superseded: 0,
+    invalidModels: 1,
+  });
 });

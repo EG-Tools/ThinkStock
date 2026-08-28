@@ -86,6 +86,16 @@ test("keeps disclosure access governed by the shared administrator predicate", (
   assert.equal(context.chartSession.showDisclosures, false);
 });
 
+test("cancels signal progress when timing signals are disabled", () => {
+  const context = createContext();
+  context.cancelSignalProgress = () => context.calls.push("cancel-signal-progress");
+  const config = createChartApplicationControlConfig(context);
+
+  config.signal.onDisabled();
+
+  assert.deepEqual(context.calls, ["cancel-signal-progress"]);
+});
+
 test("waits for AI inputs before requesting the final composition", async () => {
   const context = createContext();
   context.prepareHistoricalDataForAiForecast = async () => context.calls.push("ai-history");
@@ -109,6 +119,7 @@ test("waits for AI inputs before requesting the final composition", async () => 
 
 test("owns stable runtime keys and chart control limits outside app.js", () => {
   assert.equal(APP_RUNTIME_KEYS.chartSession, "chart-session");
+  assert.equal(APP_RUNTIME_KEYS.progressiveChartComposition, "progressive-chart-composition");
   assert.equal(APP_RUNTIME_KEYS.visibleStockHistoryRefresh, "visible-stock-history-refresh");
   assert.equal(Object.isFrozen(APP_RUNTIME_KEYS), true);
   assert.deepEqual(CURSOR_LINE_MODES, ["vertical", "horizontal", "cross"]);

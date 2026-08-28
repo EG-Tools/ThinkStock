@@ -103,6 +103,59 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
     return chartOverlayDescriptor(trace).identity;
   }
 
+  function traceOwnerSeries(trace) {
+    const descriptor = chartOverlayDescriptor(trace);
+    if (descriptor.event) return "";
+    if (descriptor.kind === "grouped-hover") {
+      return String(trace?.meta?.hoverGroupTicker || "");
+    }
+    if (descriptor.kind === "eps") return descriptor.seriesKey.replace(/^eps:/, "");
+    return descriptor.seriesKey;
+  }
+
+  function buildSeriesVisibilityUpdate(traces, seriesKey, visible, options = {}) {
+    const key = String(seriesKey || "").trim();
+    if (!key) return Object.freeze({ traceIndexes: [], values: [] });
+    const includedKinds = new Set(
+      (Array.isArray(options.includeKinds) ? options.includeKinds : [])
+        .map((kind) => String(kind || "").trim())
+        .filter(Boolean),
+    );
+    const traceIndexes = [];
+    const values = [];
+    (Array.isArray(traces) ? traces : []).forEach((trace, index) => {
+      if (traceOwnerSeries(trace) !== key) return;
+      if (includedKinds.size && !includedKinds.has(chartOverlayDescriptor(trace).kind)) return;
+      traceIndexes.push(index);
+      values.push(visible ? true : "legendonly");
+    });
+    return Object.freeze({ traceIndexes, values });
+  }
+
+  function buildSeriesEventPointHideUpdate(traces, seriesKey) {
+    const key = String(seriesKey || "").trim();
+    if (!key) return Object.freeze({ traceIndexes: [], values: [] });
+    const traceIndexes = [];
+    const values = [];
+    (Array.isArray(traces) ? traces : []).forEach((trace, traceIndex) => {
+      if (!isEventMarkerTrace(trace) || !Array.isArray(trace?.x)) return;
+      const pointTickers = Array.isArray(trace?.meta?.pointTickers)
+        ? trace.meta.pointTickers
+        : [];
+      if (!pointTickers.some((ticker) => String(ticker || "") === key)) return;
+      let changed = false;
+      const nextX = trace.x.map((value, pointIndex) => {
+        if (String(pointTickers[pointIndex] || "") !== key || value === null) return value;
+        changed = true;
+        return null;
+      });
+      if (!changed) return;
+      traceIndexes.push(traceIndex);
+      values.push(nextX);
+    });
+    return Object.freeze({ traceIndexes, values });
+  }
+
   function canApplyPartialUpdate(element, traces) {
     if (!element?._fullLayout?.xaxis || !element?._fullLayout?.yaxis || !Array.isArray(element.data)) {
       return false;
@@ -1213,36 +1266,45 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
       renderRevision: options.renderRevision,
       seriesColor: options.seriesColor,
     });
-    const epsTraceModel = options.prebuiltEpsTraceModel || options.buildEpsTraceModel?.(seriesModels) || {
-      traces: [],
-      baseValuesBySeries: {},
-    };
-    const [forecastResult] = await Promise.all([
-      options.prebuiltAiForecastTraces
-        || options.buildAiForecastTraces?.(rows, seriesModels)
-        || [],
-      options.prepareEventModels?.(selected, seriesModels),
-    ]);
+    const deferOverlays = options.deferOverlays === true;
+    const emptyEpsTraceModel = { traces: [], baseValuesBySeries: {} };
+    const epsTraceModel = options.prebuiltEpsTraceModel
+      || (!deferOverlays ? options.buildEpsTraceModel?.(seriesModels) : null)
+      || emptyEpsTraceModel;
+    let forecastResult = options.prebuiltAiForecastTraces || [];
+    if (!deferOverlays) {
+      [forecastResult] = await Promise.all([
+        options.prebuiltAiForecastTraces
+          || options.buildAiForecastTraces?.(rows, seriesModels)
+          || [],
+        options.prepareEventModels?.(selected, seriesModels),
+      ]);
+    }
     if (options.shouldAbort?.()) return null;
 
     const aiForecastTraces = Array.isArray(forecastResult) ? forecastResult : [];
     const epsTraces = Array.isArray(epsTraceModel.traces) ? epsTraceModel.traces : [];
     const eventTraces = Array.isArray(options.prebuiltEventTraces)
       ? options.prebuiltEventTraces
-      : (options.buildEventTraces?.(options.buildEventArguments?.(model)) || []);
+      : (!deferOverlays
+        ? (options.buildEventTraces?.(options.buildEventArguments?.(model)) || [])
+        : []);
     const traces = [
       ...lineTraceModel.traces,
       ...epsTraces,
       ...aiForecastTraces,
       ...(Array.isArray(eventTraces) ? eventTraces : []),
     ];
-    traces.unshift(...buildGroupedHoverTraces({
-      enabled: options.hoverShowPopup,
-      traces,
-      seriesOrder: selected,
-      labelName: options.labelName,
-      revision: String(options.eventRevisionKey || ""),
-    }));
+    const groupedHoverTraces = deferOverlays && Array.isArray(options.prebuiltGroupedHoverTraces)
+      ? options.prebuiltGroupedHoverTraces
+      : buildGroupedHoverTraces({
+          enabled: options.hoverShowPopup,
+          traces,
+          seriesOrder: selected,
+          labelName: options.labelName,
+          revision: String(options.eventRevisionKey || ""),
+        });
+    traces.unshift(...groupedHoverTraces);
     return {
       aiForecastTraces,
       baseValuesBySeries: {
@@ -1250,6 +1312,7 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
         ...(epsTraceModel.baseValuesBySeries || {}),
       },
       displayPointCount,
+      deferredOverlays: deferOverlays,
       epsTraces,
       traces,
     };
@@ -1454,6 +1517,8 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
     buildCursorHoverMode,
     buildGroupedHoverTraces,
     buildMainChartComposition,
+    buildSeriesEventPointHideUpdate,
+    buildSeriesVisibilityUpdate,
     groupedHoverCacheStats,
     buildHandleLayouts,
     groupedHoverYUpdate,

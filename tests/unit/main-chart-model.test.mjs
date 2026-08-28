@@ -79,3 +79,36 @@ test("creates an isolated live session model without mutating the cached calcula
   assert.deepEqual(cached.seriesModels[0].values, [95, 100, 105]);
   assert.equal(session.seriesModels[0].baseValues, cached.seriesModels[0].baseValues);
 });
+
+test("keeps hidden trace slots without calculating their full history", () => {
+  const result = model.buildMainChartModel({
+    priceRows: [
+      { date: "2026-08-20", "^KS11": 3000, "005930.KS": 70000 },
+      { date: "2026-08-21", "^KS11": 3030, "005930.KS": 71000 },
+    ],
+    macroRows: [],
+    creditRows: [],
+    allowedSeries: ["^KS11", "005930.KS"],
+    hiddenSeries: ["005930.KS"],
+    excludedSeries: [],
+    priorityOrder: ["^KS11", "005930.KS"],
+    start: "2026-08-20",
+    end: "2026-08-21",
+    frameStart: "2026-08-20",
+    frameEnd: "2026-08-21",
+    displayBudget: 100,
+    preserveDailyPoints: true,
+  });
+
+  assert.deepEqual(result.selected, ["^KS11", "005930.KS"]);
+  assert.equal(result.seriesModels[0].values.length, 2);
+  assert.deepEqual(result.seriesModels[1], {
+    series: "005930.KS",
+    hidden: true,
+    rawTexts: [],
+    baseLineWidth: 1,
+    xValues: [],
+    values: [],
+    baseValues: [],
+  });
+});

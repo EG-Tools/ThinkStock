@@ -196,20 +196,37 @@ export function createFeatureLifecycleDescriptors(features = []) {
 export function createStartupCompletionGate(schedule = queueMicrotask) {
   const scheduleTask = typeof schedule === "function" ? schedule : queueMicrotask;
   const pending = [];
+  const pendingByKey = new Map();
   let released = false;
+
+  function taskKey(taskOptions = {}) {
+    return String(taskOptions.taskKey || taskOptions.taskName || "").trim();
+  }
 
   function defer(task, taskOptions = {}) {
     if (typeof task !== "function") return false;
     const entry = { task, taskOptions: { ...taskOptions } };
     if (released) scheduleTask(entry.task, entry.taskOptions);
-    else pending.push(entry);
+    else {
+      const key = taskKey(entry.taskOptions);
+      const previous = key ? pendingByKey.get(key) : null;
+      if (previous) {
+        previous.task = entry.task;
+        previous.taskOptions = entry.taskOptions;
+      } else {
+        pending.push(entry);
+        if (key) pendingByKey.set(key, entry);
+      }
+    }
     return true;
   }
 
   function release() {
     if (released) return false;
     released = true;
-    pending.splice(0).forEach(({ task, taskOptions }) => scheduleTask(task, taskOptions));
+    const ready = pending.splice(0);
+    pendingByKey.clear();
+    ready.forEach(({ task, taskOptions }) => scheduleTask(task, taskOptions));
     return true;
   }
 
@@ -234,8 +251,18 @@ export function createStartupTaskRuntime(options = {}) {
   let deferredSequence = 0;
   let supplementalSequence = 0;
 
+  function createTaskKey(prefix, taskOptions, nextSequence) {
+    const explicitKey = String(taskOptions.taskKey || taskOptions.taskName || "").trim();
+    if (!explicitKey) return `${prefix}-${nextSequence()}`;
+    return `${prefix}:${explicitKey.replace(/\s+/g, "-").slice(0, 96)}`;
+  }
+
   function scheduleDeferred(task, taskOptions = {}) {
-    const taskKey = `startup-deferred-${++deferredSequence}`;
+    const taskKey = createTaskKey(
+      "startup-deferred",
+      taskOptions,
+      () => ++deferredSequence,
+    );
     const userVisible = taskOptions.userVisible === true;
     scheduler.enqueue(taskKey, async (taskContext) => {
       await taskContext.checkpoint?.();
@@ -247,6 +274,7 @@ export function createStartupTaskRuntime(options = {}) {
     }, {
       group: "startup-deferred",
       delayMs: taskOptions.delayMs,
+      ...(taskOptions.taskKey || taskOptions.taskName ? { coalesceRunning: true } : {}),
       priority: Number.isFinite(Number(taskOptions.priority))
         ? Number(taskOptions.priority)
         : (userVisible ? 20 : -10),
@@ -261,8 +289,13 @@ export function createStartupTaskRuntime(options = {}) {
 
   function scheduleSupplemental(task, taskOptions = {}) {
     const index = Number(taskOptions.index) || 0;
+    const taskKey = createTaskKey(
+      "startup-supplemental",
+      taskOptions,
+      () => ++supplementalSequence,
+    );
     return scheduler.enqueue(
-      `startup-supplemental-${++supplementalSequence}`,
+      taskKey,
       async (taskContext) => {
         await taskContext.checkpoint?.();
         const result = await task(taskContext);
@@ -274,6 +307,7 @@ export function createStartupTaskRuntime(options = {}) {
       {
         group: "startup-supplemental",
         delayMs: 80,
+        ...(taskOptions.taskKey || taskOptions.taskName ? { coalesceRunning: true } : {}),
         priority: -2 - index,
         signal: taskOptions.signal,
       },

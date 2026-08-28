@@ -41,6 +41,68 @@ test("classifies chart overlays through one compatibility contract", () => {
   assert.equal(renderer.traceIdentity(disclosure), "disclosure");
 });
 
+test("builds one immediate visibility update for every trace owned by a series", () => {
+  const traces = [
+    { meta: { overlayKind: "grouped-hover", hoverGroupTicker: "A" } },
+    trace("A"),
+    { meta: { overlayKind: "eps", seriesKey: "eps:A" } },
+    { meta: { overlayKind: "ai-scenario", seriesKey: "A" } },
+    { meta: { overlayKind: "disclosure", isDisclosureTrace: true } },
+    trace("B"),
+  ];
+
+  assert.deepEqual(renderer.buildSeriesVisibilityUpdate(traces, "A", false), {
+    traceIndexes: [0, 1, 2, 3],
+    values: ["legendonly", "legendonly", "legendonly", "legendonly"],
+  });
+  assert.deepEqual(renderer.buildSeriesVisibilityUpdate(traces, "A", true).values, [
+    true,
+    true,
+    true,
+    true,
+  ]);
+  assert.deepEqual(renderer.buildSeriesVisibilityUpdate(
+    traces,
+    "A",
+    true,
+    { includeKinds: ["price"] },
+  ), {
+    traceIndexes: [1],
+    values: [true],
+  });
+});
+
+test("hides only one series inside shared event-marker traces", () => {
+  const traces = [
+    trace("A"),
+    {
+      x: ["2026-08-20", "2026-08-21", "2026-08-22"],
+      meta: {
+        overlayKind: "timing-buy",
+        isMarketTimingBuyTrace: true,
+        pointTickers: ["A", "B", "A"],
+      },
+    },
+    {
+      x: ["2026-08-23"],
+      meta: {
+        overlayKind: "disclosure",
+        isDisclosureTrace: true,
+        pointTickers: ["B"],
+      },
+    },
+  ];
+
+  assert.deepEqual(renderer.buildSeriesEventPointHideUpdate(traces, "A"), {
+    traceIndexes: [1],
+    values: [[null, "2026-08-21", null]],
+  });
+  assert.deepEqual(renderer.buildSeriesEventPointHideUpdate(traces, "B"), {
+    traceIndexes: [1, 2],
+    values: [["2026-08-20", null, "2026-08-22"], [null]],
+  });
+});
+
 test("main chart composition builds line, EPS, AI, and event layers in one pipeline", async () => {
   let prepared = 0;
   const model = {
@@ -143,6 +205,42 @@ test("main chart composition reuses prepared event traces during viewport frames
 
   assert.equal(rebuiltEvents, 0);
   assert.equal(result.traces.at(-1), event);
+});
+
+test("price-first composition reuses passive overlays without running their builders", async () => {
+  const calls = [];
+  const eps = { meta: { overlayKind: "eps", seriesKey: "eps:TEST" } };
+  const ai = { meta: { overlayKind: "ai-scenario", seriesKey: "TEST" } };
+  const event = { meta: { overlayKind: "timing-buy", isMarketTimingBuyTrace: true } };
+  const grouped = { meta: { overlayKind: "grouped-hover", hoverGroupTicker: "TEST" } };
+  const result = await renderer.buildMainChartComposition({
+    model: {
+      rows: [{ date: "2026-08-24", TEST: 100 }],
+      selected: ["TEST"],
+      seriesModels: [{
+        series: "TEST",
+        xValues: ["2026-08-24"],
+        values: [100],
+        baseValues: [100],
+        rawTexts: ["100"],
+        baseLineWidth: 1,
+      }],
+    },
+    deferOverlays: true,
+    prebuiltEpsTraceModel: { traces: [eps], baseValuesBySeries: { "eps:TEST": [100] } },
+    prebuiltAiForecastTraces: [ai],
+    prebuiltEventTraces: [event],
+    prebuiltGroupedHoverTraces: [grouped],
+    buildEpsTraceModel: () => { calls.push("eps"); return { traces: [] }; },
+    buildAiForecastTraces: () => { calls.push("ai"); return []; },
+    prepareEventModels: () => { calls.push("events"); },
+    buildEventTraces: () => { calls.push("event-traces"); return []; },
+  });
+
+  assert.deepEqual(calls, []);
+  assert.equal(result.deferredOverlays, true);
+  assert.deepEqual(result.traces.slice(0, 5), [grouped, result.traces[1], eps, ai, event]);
+  assert.equal(result.traces[1].meta.overlayKind, "price");
 });
 
 test("joins valid trading points across internal calendar gaps", () => {

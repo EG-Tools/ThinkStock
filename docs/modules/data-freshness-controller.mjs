@@ -120,19 +120,50 @@ const LABELS = Object.freeze({
     const labelName = typeof options.labelName === "function"
       ? options.labelName
       : (value) => String(value || "");
+    const requestFrame = typeof options.requestFrame === "function"
+      ? options.requestFrame
+      : (callback) => globalThis.requestAnimationFrame?.(callback)
+        ?? globalThis.setTimeout?.(callback, 16)
+        ?? 0;
+    const cancelFrame = typeof options.cancelFrame === "function"
+      ? options.cancelFrame
+      : (frameId) => {
+        if (typeof globalThis.cancelAnimationFrame === "function") {
+          globalThis.cancelAnimationFrame(frameId);
+        } else {
+          globalThis.clearTimeout?.(frameId);
+        }
+      };
+    const resolveElement = typeof options.resolveElement === "function"
+      ? options.resolveElement
+      : () => null;
+    const resolveModel = typeof options.resolveModel === "function"
+      ? options.resolveModel
+      : () => ({});
+    const onError = typeof options.onError === "function" ? options.onError : () => {};
     if (!dataHealth?.buildFreshnessItems || !view?.render || !view?.summarizeQuality) {
       throw new Error("data freshness controller dependencies are incomplete");
     }
     const policies = dataHealth.DEFAULT_SERIES_POLICIES || {};
     let previousSignature = "";
+    let frameId = 0;
+    const counters = {
+      scheduled: 0,
+      coalesced: 0,
+      rendered: 0,
+      skipped: 0,
+    };
 
     function render(element, model = {}) {
-      if (!element) return Object.freeze({ rendered: false, items: [] });
-      const signature = String(model.renderSignature || "");
-      if (signature && signature === previousSignature) {
+      if (!element) {
+        counters.skipped += 1;
         return Object.freeze({ rendered: false, items: [] });
       }
-      previousSignature = signature;
+      const signature = String(model.renderSignature || "");
+      if (signature && signature === previousSignature) {
+        counters.skipped += 1;
+        return Object.freeze({ rendered: false, items: [] });
+      }
       const priceKeys = Array.isArray(model.pricePayload?.series) ? model.pricePayload.series : [];
       const creditKeys = Array.isArray(model.creditKeys) ? model.creditKeys : [];
       const adrKeys = Array.isArray(model.adrKeys) ? model.adrKeys : [];
@@ -202,14 +233,49 @@ const LABELS = Object.freeze({
       ]);
 
       view.render(element, items, { labelName, priceStatus: model.priceStatus });
+      previousSignature = signature;
       const qualityBySource = view.summarizeQuality(items, SOURCE_BY_LABEL);
       Object.entries(qualityBySource).forEach(([source, quality]) => {
         runtimeDataApp?.noteSourceQuality?.(source, { ...quality, revision: signature });
       });
+      counters.rendered += 1;
       return Object.freeze({ rendered: true, items, qualityBySource });
     }
 
-    return Object.freeze({ render });
+    function renderNow(element = resolveElement(), model = resolveModel()) {
+      if (frameId) {
+        cancelFrame(frameId);
+        frameId = 0;
+      }
+      return render(element, model);
+    }
+
+    function schedule() {
+      if (frameId) {
+        counters.coalesced += 1;
+        return false;
+      }
+      counters.scheduled += 1;
+      frameId = requestFrame(() => {
+        frameId = 0;
+        try { renderNow(); } catch (error) { onError(error); }
+      });
+      return true;
+    }
+
+    function dispose() {
+      if (!frameId) return;
+      cancelFrame(frameId);
+      frameId = 0;
+    }
+
+    return Object.freeze({
+      dispose,
+      render,
+      renderNow,
+      schedule,
+      stats: () => Object.freeze({ ...counters, pending: Boolean(frameId) }),
+    });
   }
 
 export {

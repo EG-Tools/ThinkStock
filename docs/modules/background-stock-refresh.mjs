@@ -7,6 +7,7 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
  * @property {string} [group]
  * @property {AbortSignal|null} [signal]
  * @property {() => boolean} [shouldRun]
+ * @property {boolean} [coalesceRunning]
  */
 
 /**
@@ -56,6 +57,8 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
       enqueued: 0,
       completed: 0,
       cancelled: 0,
+      coalesced: 0,
+      replaced: 0,
       inputDeferrals: 0,
       activityDeferrals: 0,
       taskYields: 0,
@@ -247,10 +250,15 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
         counters.cancelled += 1;
         return Promise.resolve(false);
       }
+      if (taskOptions.coalesceRunning === true && runningEntry?.key === normalizedKey) {
+        counters.coalesced += 1;
+        return runningEntry.promise || Promise.resolve(false);
+      }
       const previous = queue.get(normalizedKey);
       if (previous) {
         queue.delete(normalizedKey);
         counters.cancelled += 1;
+        counters.replaced += 1;
         abortEntry(previous);
         settle(previous, false);
       }
@@ -277,6 +285,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
         forwardAbort,
         cancelled: false,
         settled: false,
+        promise,
         shouldRun: typeof taskOptions.shouldRun === "function" ? taskOptions.shouldRun : null,
         resolve,
         reject,

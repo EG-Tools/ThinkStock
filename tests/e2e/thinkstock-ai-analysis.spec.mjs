@@ -12,6 +12,10 @@ import {
   stubExternalRefreshes,
   installDataRoutes,
 } from "./helpers/thinkstock-fixture.mjs";
+import {
+  COMPANY_ANALYSIS_CONTRACT_VERSION,
+  FINANCIAL_SUMMARY_VERSION,
+} from "../../shared/company-analysis-contract.mjs";
 
 test("AI toggle draws and removes a six-month virtual forecast", async ({ page, isMobile }) => {
   await stubExternalRefreshes(page);
@@ -935,6 +939,54 @@ test("market timing applies to a visible stock series", async ({ page }) => {
   await expect.poll(maximumTimingMarkerGap).toBeLessThan(24);
 });
 
+test("signal calculation shows progress while an uncached timing model is prepared", async ({ page }) => {
+  await stubExternalRefreshes(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 12,
+      hiddenSeries: [
+        "leading_cycle", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit",
+      ],
+      showRecessionSignals: false,
+    }));
+    const NativeWorker = window.Worker;
+    window.Worker = class DelayedTimingWorker extends NativeWorker {
+      constructor(url, options) {
+        super(url, options);
+        this.isTimingWorker = String(url || "").includes("market-timing-worker");
+      }
+
+      postMessage(message, transfer) {
+        if (!this.isTimingWorker) {
+          if (transfer === undefined) return super.postMessage(message);
+          return super.postMessage(message, transfer);
+        }
+        setTimeout(() => {
+          if (transfer === undefined) NativeWorker.prototype.postMessage.call(this, message);
+          else NativeWorker.prototype.postMessage.call(this, message, transfer);
+        }, 450);
+        return undefined;
+      }
+    };
+  });
+
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await expect(page.locator("#recessionToggle")).toBeEnabled();
+  await page.locator("#recessionToggle").click();
+
+  await expect(page.locator("#signalProgress")).toBeVisible();
+  await expect(page.locator("#signalProgressText")).toContainText("신호");
+  await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getSignalProgressState()))
+    .toMatchObject({ enabled: true, active: 1, visible: true });
+  await expect(page.locator("#signalProgress")).toBeHidden({ timeout: 10000 });
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).some((trace) => (
+      trace?.meta?.isMarketTimingBuyTrace || trace?.meta?.isMarketTimingSellTrace
+    ))
+  ))).toBe(true);
+});
+
 test("timing hover wraps reasons and its shared hit area opens the popover", async ({ page, isMobile }) => {
   await stubExternalRefreshes(page);
   await page.addInitScript(() => {
@@ -1814,12 +1866,14 @@ test("AI analysis loads only on demand and reuses today's browser cache", async 
         ok: true,
         ticker,
         savedAt: Date.now(),
+        analysisContractVersion: COMPANY_ANALYSIS_CONTRACT_VERSION,
+        financialSummaryVersion: FINANCIAL_SUMMARY_VERSION,
         consensus: { ticker, targetPrice: 150000, opinion: 4.2, institutions: 6 },
         financials: [
-          { ticker, period: "2024-12", frequency: "annual", revenue: 1000, operatingProfit: 80 },
-          { ticker, period: "2025-12", frequency: "annual", revenue: 1300, operatingProfit: 160 },
-          { ticker, period: "2025-12", frequency: "quarter", revenue: 300, operatingProfit: 32 },
-          { ticker, period: "2026-03", frequency: "quarter", revenue: 390, operatingProfit: 58 },
+          { ticker, period: "2024-12", frequency: "annual", revenue: 1000, operatingProfit: 80, eps: 3200 },
+          { ticker, period: "2025-12", frequency: "annual", revenue: 1300, operatingProfit: 160, eps: 5200 },
+          { ticker, period: "2025-12", frequency: "quarter", revenue: 300, operatingProfit: 32, eps: 1200 },
+          { ticker, period: "2026-03", frequency: "quarter", revenue: 390, operatingProfit: 58, eps: 1800 },
         ],
         news: [{
           ticker,

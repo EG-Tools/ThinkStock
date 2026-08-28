@@ -12,6 +12,10 @@ import {
   stubExternalRefreshes,
   installDataRoutes,
 } from "./helpers/thinkstock-fixture.mjs";
+import {
+  COMPANY_ANALYSIS_CONTRACT_VERSION,
+  FINANCIAL_SUMMARY_VERSION,
+} from "../../shared/company-analysis-contract.mjs";
 
 test("illiquid preferred stock can be added across long historical trading gaps", async ({ page }) => {
   await page.addInitScript(() => {
@@ -113,6 +117,8 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
       ok: true,
       ticker,
       savedAt: Date.now(),
+      analysisContractVersion: COMPANY_ANALYSIS_CONTRACT_VERSION,
+      financialSummaryVersion: FINANCIAL_SUMMARY_VERSION,
       consensus: null,
       news: [],
       financials: [
@@ -354,25 +360,28 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
     });
     expect(unifiedHoverAppearance).toEqual(pointHoverAppearance);
     await waitForChartRenderIdle(page);
+    const hoverTarget = await page.locator("#chart").evaluate((element) => {
+      const grouped = (element.data || []).find((trace) => (
+        trace?.meta?.isGroupedHoverTrace && trace.meta.hoverGroupTicker === "218410.KQ"
+      ));
+      const pointIndex = grouped?.x?.indexOf("2026-06-30") ?? -1;
+      if (!grouped || pointIndex < 0) return null;
+      const rect = element.getBoundingClientRect();
+      const xa = element._fullLayout.xaxis;
+      const ya = element._fullLayout.yaxis;
+      return {
+        x: rect.left + xa._offset + xa.d2p(grouped.x[pointIndex]) + 14,
+        y: rect.top + ya._offset + ya.l2p(grouped.y[pointIndex]),
+      };
+    });
+    expect(hoverTarget).not.toBeNull();
+    await page.mouse.move(hoverTarget.x - 2, hoverTarget.y);
+    await page.mouse.move(hoverTarget.x, hoverTarget.y);
     await expect.poll(async () => {
-      const hoverTarget = await page.locator("#chart").evaluate((element) => {
-        const grouped = (element.data || []).find((trace) => (
-          trace?.meta?.isGroupedHoverTrace && trace.meta.hoverGroupTicker === "218410.KQ"
-        ));
-        const pointIndex = grouped?.x?.indexOf("2026-06-30") ?? -1;
-        if (!grouped || pointIndex < 0) return null;
-        const rect = element.getBoundingClientRect();
-        const xa = element._fullLayout.xaxis;
-        const ya = element._fullLayout.yaxis;
-        return {
-          x: rect.left + xa._offset + xa.d2p(grouped.x[pointIndex]) + 14,
-          y: rect.top + ya._offset + ya.l2p(grouped.y[pointIndex]),
-        };
-      });
-      if (!hoverTarget) return false;
-      await page.mouse.move(hoverTarget.x - 2, hoverTarget.y);
-      await page.mouse.move(hoverTarget.x, hoverTarget.y);
-      return (await page.locator("#chart .hoverlayer").textContent())?.includes("EPS") || false;
+      const lines = await page.locator("#chart .hoverlayer text.nums > tspan.line")
+        .allTextContents();
+      return lines[0] === "2026.6.30"
+        && lines.slice(1).some((line) => line.includes("EPS"));
     }, { timeout: 8000 }).toBe(true);
     const epsHoverText = await page.locator("#chart .hoverlayer").textContent();
     expect(epsHoverText?.match(/2026\.6\.30/g)?.length || 0).toBe(1);
@@ -685,6 +694,15 @@ test("main chart allows more than five visible stocks and indices", async ({ pag
   await expect(samsungToggle).toHaveClass(/is-off/);
   await expect.poll(visibleMainSeriesCount).toBe(5);
 
+  await samsungToggle.click();
+  await expect(samsungToggle).toHaveClass(/is-on/);
+  await expect.poll(visibleMainSeriesCount).toBe(6);
+
+  await samsungToggle.click();
+  await samsungToggle.click();
+  await expect(samsungToggle).toHaveClass(/is-on/);
+  await expect.poll(visibleMainSeriesCount).toBe(6);
+
   await page.locator('.stock-remove-btn[data-remove-series="005930.KS"]').click();
   await expect(samsungToggle).toHaveCount(0);
   await page.route("https://query2.finance.yahoo.com/**", async (route) => {
@@ -830,6 +848,74 @@ test("re-enabling a recently hidden series reuses the chart model", async ({ pag
   expect(afterRestore.dispatchByType.buildMainChartModel || 0)
     .toBe(beforeRestore.dispatchByType.buildMainChartModel || 0);
   expect(afterRestore.modelCache.hits).toBeGreaterThan(beforeRestore.modelCache.hits);
+});
+
+test("the first series enabled after an all-off state restores its price and viewport", async ({ page }) => {
+  await installDataRoutes(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 6,
+      autoChartReset: true,
+      customStocks: [],
+      hiddenSeries: ["leading_cycle", "customer_deposit", "kospi_credit", "kosdaq_credit"],
+      showDisclosures: false,
+      showInsiderTrades: false,
+      showRecessionSignals: false,
+    }));
+  });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+
+  const visiblePriceKeys = () => page.locator("#chart").evaluate((element) => (
+    (element.data || []).flatMap((trace) => (
+      trace?.meta?.overlayKind === "price"
+        && trace.visible !== "legendonly"
+        && (trace.x || []).length
+        ? [trace.meta.seriesKey]
+        : []
+    ))
+  ));
+  await expect.poll(visiblePriceKeys).toEqual(["^KS11", "^KQ11"]);
+
+  await page.locator('.series-toggle-btn[data-series="^KS11"]').click();
+  await page.locator('.series-toggle-btn[data-series="^KQ11"]').click();
+  await expect.poll(visiblePriceKeys).toEqual([]);
+  await waitForChartRenderIdle(page);
+  await page.locator("#chart").evaluate(async (element) => {
+    await globalThis.Plotly.relayout(element, {
+      "xaxis.range": ["1990-01-01", "1990-07-01"],
+      "yaxis.range": [5000, 6000],
+    });
+  });
+
+  await page.locator('.series-toggle-btn[data-series="^KS11"]').click();
+  await expect.poll(async () => {
+    const state = await page.locator("#chart").evaluate((element) => {
+      const trace = (element.data || []).find((item) => (
+        item?.meta?.overlayKind === "price" && item.meta.seriesKey === "^KS11"
+      ));
+      const range = element?._fullLayout?.xaxis?.range?.map(Date.parse) || [];
+      const yRange = element?._fullLayout?.yaxis?.range?.map(Number) || [];
+      const points = (trace?.x || []).map(Date.parse).filter(Number.isFinite);
+      const visibleValues = (trace?.y || []).filter((value, index) => (
+        Number.isFinite(Number(value))
+        && Number.isFinite(points[index])
+        && points[index] >= range[0]
+        && points[index] <= range[1]
+      )).map(Number);
+      return {
+        visible: trace?.visible !== "legendonly" && points.length > 0,
+        overlapsViewport: range.length === 2
+          && points.some((value) => value >= range[0] && value <= range[1]),
+        spanDays: range.length === 2 ? Math.round((range[1] - range[0]) / 86400000) : 0,
+        fitsScale: yRange.length === 2 && visibleValues.length > 0
+          && Math.min(...visibleValues) >= Math.min(...yRange)
+          && Math.max(...visibleValues) <= Math.max(...yRange),
+      };
+    });
+    return state;
+  }).toEqual({ visible: true, overlapsViewport: true, spanDays: 365, fitsScale: true });
+  expect(await page.evaluate(() => window.ThinkStockE2E.getActiveMonths())).toBe(12);
 });
 
 test("adding a fresher stock advances a stale credit viewport that was at its latest edge", async ({ page }) => {

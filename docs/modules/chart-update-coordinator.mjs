@@ -10,7 +10,7 @@
 
   /**
    * @typedef {"markers"|"transform"|"forecast"|"viewport"|"viewport-range"|"composition"|"data"} ChartUpdateClass
-   * @typedef {{updateClasses?: ChartUpdateClass[]}} ChartInvalidation
+   * @typedef {{updateClasses?: ChartUpdateClass[], progressiveComposition?: boolean}} ChartInvalidation
    */
 
   /** @param {ChartInvalidation} invalidation */
@@ -76,13 +76,29 @@
 
   function createReusableMainChartTracePlan(element, renderer, invalidation = {}, options = {}) {
     const traces = Array.isArray(element?.data) ? element.data : [];
-    const reuseFutureOverlays = canReuseFutureOverlayTraces(invalidation);
-    const reuseEventMarkers = canReuseEventMarkerTraces(invalidation)
-      && options.hasPendingEvents !== true;
+    const deferOverlays = options.deferOverlays === true;
+    const activeSeries = new Set((options.activeSeries || []).map(String).filter(Boolean));
+    const hiddenSeries = options.hiddenSeries instanceof Set
+      ? options.hiddenSeries
+      : new Set(options.hiddenSeries || []);
+    const ownerIsActive = (trace) => {
+      const descriptor = renderer.chartOverlayDescriptor(trace);
+      const owner = descriptor.kind === "grouped-hover"
+        ? String(trace?.meta?.hoverGroupTicker || "")
+        : (descriptor.kind === "eps"
+          ? String(descriptor.seriesKey || "").replace(/^eps:/, "")
+          : String(descriptor.seriesKey || ""));
+      return !owner || (!hiddenSeries.has(owner) && (!activeSeries.size || activeSeries.has(owner)));
+    };
+    const reuseFutureOverlays = deferOverlays || canReuseFutureOverlayTraces(invalidation);
+    const reuseEventMarkers = deferOverlays || (
+      canReuseEventMarkerTraces(invalidation) && options.hasPendingEvents !== true
+    );
     const futureTraces = reuseFutureOverlays
       ? traces.filter((trace) => {
         const kind = renderer.chartOverlayDescriptor(trace).kind;
-        return kind === "eps" || kind.startsWith("ai-") || kind === "ai";
+        return (kind === "eps" || kind.startsWith("ai-") || kind === "ai")
+          && ownerIsActive(trace);
       })
       : [];
     const epsTraces = futureTraces.filter((trace) => (
@@ -94,6 +110,12 @@
     });
     const eventTraces = reuseEventMarkers
       ? traces.filter((trace) => renderer.isEventMarkerTrace(trace))
+      : null;
+    const groupedHoverTraces = deferOverlays
+      ? traces.filter((trace) => (
+          renderer.chartOverlayDescriptor(trace).kind === "grouped-hover"
+          && ownerIsActive(trace)
+        ))
       : null;
     const baseValuesBySeries = options.baseValuesBySeries || {};
     const epsTraceModel = reuseFutureOverlays && options.showEps
@@ -113,6 +135,7 @@
       epsTraceModel,
       epsTraces,
       eventTraces,
+      groupedHoverTraces,
       reuseEventMarkers,
       reuseFutureOverlays,
     });
@@ -149,7 +172,10 @@
       options.invalidation,
       {
         baseValuesBySeries: options.baseValuesBySeries,
+        activeSeries: model.selected,
+        deferOverlays: compositionOptions.deferOverlays,
         hasPendingEvents: compositionOptions.hasPendingEvents,
+        hiddenSeries: compositionOptions.hiddenSeries,
         showEps: viewport.showEps,
       },
     );
@@ -167,6 +193,8 @@
         ? reusable.aiForecastTraces
         : null,
       prebuiltEventTraces: reusable.eventTraces,
+      prebuiltGroupedHoverTraces: reusable.groupedHoverTraces,
+      deferOverlays: compositionOptions.deferOverlays,
       buildEpsTraceModel: compositionOptions.buildEpsTraceModel,
       buildAiForecastTraces: compositionOptions.buildAiForecastTraces,
       prepareEventModels: compositionOptions.prepareEventModels,
@@ -658,6 +686,7 @@
     let nextTransactionId = 1;
     let completedTransactionId = 0;
     let pendingRequestCount = 0;
+    let pendingProgressiveComposition = false;
     const pendingReasons = new Set();
     const pendingClasses = new Set();
     const invalidationCounts = {};
@@ -683,6 +712,8 @@
       pendingRequestCount += 1;
       pendingReasons.add(reason);
       pendingClasses.add(updateClass);
+      pendingProgressiveComposition = pendingProgressiveComposition
+        || requestOptions.progressiveComposition === true;
       invalidationCounts[updateClass] = (Number(invalidationCounts[updateClass]) || 0) + 1;
       if (activeTransaction && updateClass !== "markers" && !activeTransaction.superseded) {
         activeTransaction.superseded = true;
@@ -702,12 +733,14 @@
         updateClasses: [...pendingClasses],
         transactionId: transaction.id,
         requestCount: transaction.requestCount,
+        progressiveComposition: pendingProgressiveComposition,
         shouldAbort: () => transaction.superseded,
         transaction,
       });
       pendingReasons.clear();
       pendingClasses.clear();
       pendingRequestCount = 0;
+      pendingProgressiveComposition = false;
       return value;
     }
 
@@ -870,6 +903,7 @@
         invalidationCounts: { ...invalidationCounts },
         pendingReasons: [...pendingReasons],
         pendingClasses: [...pendingClasses],
+        pendingProgressiveComposition,
       }),
     });
   }

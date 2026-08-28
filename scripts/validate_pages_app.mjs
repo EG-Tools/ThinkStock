@@ -212,7 +212,7 @@ assert.ok(
     && app.includes("createLazyRuntimeRegistry")
     && app.includes("const startupTaskRuntime = createStartupTaskRuntime({")
     && app.includes("scheduleSupplementalTask: startupTaskRuntime.scheduleSupplemental")
-    && app.includes("scheduleApiPeriodReminderLoad, { userVisible: true }")
+    && /runAfterStartupVisualReady\(\s*scheduleApiPeriodReminderLoad,\s*\{[\s\S]*?userVisible:\s*true,[\s\S]*?taskName:\s*"api-period-reminder",?[\s\S]*?\}\s*\)/.test(app)
     && !app.includes("async function boot()"),
   "app startup and control wiring are not using the standard module boundary",
 );
@@ -302,6 +302,7 @@ assert.ok(
 );
 assert.ok(html.includes("chart-progress disclosure-progress")
   && html.includes("chart-progress ai-forecast-progress")
+  && html.includes("chart-progress signal-progress")
   && html.includes("ui-progress-track chart-progress-track")
   && html.includes('class="ui-progress-fill"')
   && styles.includes(".ui-progress-fill")
@@ -336,6 +337,9 @@ const requiredIds = [
   "resetHandles",
   "chartHandlesToggle",
   "recessionToggle",
+  "signalProgress",
+  "signalProgressText",
+  "signalProgressBar",
   "stockSearchInput",
   "disclosureToggle",
   "insiderTradeToggle",
@@ -520,7 +524,7 @@ assert.ok(runtimeRefreshOrchestrator.includes('reportCriticalProgress("chart", 9
 "startup progress does not follow critical refresh completion");
 assert.ok(runtimeRefreshOrchestrator.includes("runSupplementalTask")
   && runtimeRefreshOrchestrator.includes("scheduleSupplementalTask")
-  && appBootstrapOrchestrator.includes("startup-supplemental-")
+  && /createTaskKey\(\s*"startup-supplemental"/.test(appBootstrapOrchestrator)
   && appBootstrapOrchestrator.includes("await taskContext.checkpoint?.();"),
 "startup supplemental refreshes must yield to foreground interaction");
 assert.ok(runtimeDataApp.includes("awaitCriticalRender: true")
@@ -1162,9 +1166,13 @@ assert.ok(app.includes("createSeedBundleLoader")
   && dataSeedLoader.includes("fetchSegmentedSeedText"),
 "segmented data loading is not owned by the seed loader");
 assert.ok(app.includes("ensureHistoricalDataLoaded"), "historical lazy loading is missing");
-assert.ok(app.includes("requestChartModelFromWorker"), "chart model worker client is missing");
+assert.ok(app.includes("mainChartModelResolver.resolve")
+  && app.includes('"buildAuxiliaryChartModel"')
+  && !app.includes("requestChartModelFromWorker")
+  && chartModelWorkerClient.includes("createChartModelResolver"),
+"chart model worker resolver is missing");
 assert.ok(app.includes("initE2eDebugAccess"), "WebKit test diagnostics are missing");
-assert.ok(app.includes("scheduleServiceWorker: () => runAfterStartupVisualReady(scheduleDeferredServiceWorkerRegistration)")
+assert.ok(/scheduleServiceWorker:\s*\(\)\s*=>\s*runAfterStartupVisualReady\(\s*scheduleDeferredServiceWorkerRegistration,/.test(app)
   && app.includes('"service-worker-registration"')
   && appBootstrapOrchestrator.includes("options.scheduleServiceWorker?.();"),
 "service worker registration is not deferred until visual startup completes");

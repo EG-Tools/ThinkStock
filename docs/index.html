@@ -10,7 +10,7 @@
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" href="./icon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./styles.css">
-  <script defer src="./assets/app.bundle.min.js?v=dev&amp;build=3.22&amp;asset=a5453dcce4e3"></script>
+  <script defer src="./assets/app.bundle.min.js?v=dev&amp;build=3.23&amp;asset=bbce7bac800d"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -60,6 +60,10 @@
           <span class="ui-progress-track chart-progress-track disclosure-progress-track"><i id="disclosureProgressBar" class="ui-progress-fill"></i></span>
         </div>
         <button id="recessionToggle" class="chart-toggle reset-btn chart-recession-btn" type="button" title="복합 매수 타이밍과 경기침체 위기신호" aria-pressed="false" aria-disabled="true" disabled>신호</button>
+        <div id="signalProgress" class="chart-progress signal-progress" role="status" aria-live="polite" hidden>
+          <span id="signalProgressText">신호 계산중 0%</span>
+          <span class="ui-progress-track chart-progress-track"><i id="signalProgressBar" class="ui-progress-fill"></i></span>
+        </div>
         <button id="epsToggle" class="chart-toggle reset-btn chart-side-btn chart-eps-btn" type="button" title="분기 EPS 흐름" aria-pressed="false" aria-disabled="true" disabled>EPS</button>
         <div id="epsProgress" class="chart-progress eps-progress" role="status" aria-live="polite" hidden>
           <span id="epsProgressText">EPS 0%</span>
@@ -109,7 +113,7 @@
           This product uses the FRED&reg; API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.
         </p>
         <p id="mainAppMeta" class="app-company-line app-company-line-main">
-              <span>Version : <span data-app-version-copy>3.22</span></span>
+              <span>Version : <span data-app-version-copy>3.23</span></span>
           <span>회사 : Life User</span>
           <span>이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a></span>
         </p>
@@ -266,7 +270,7 @@
           <p id="appCacheEmpty" class="app-cache-empty" hidden>저장된 캐시가 없습니다.</p>
         </section>
         <p id="settingsAppMeta" class="app-company-line">
-        <span class="api-settings-version">Version : <span id="appVersionText">3.22</span></span>
+        <span class="api-settings-version">Version : <span id="appVersionText">3.23</span></span>
           <span>회사 : Life User</span>
           <span>이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a></span>
         </p>

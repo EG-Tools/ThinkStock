@@ -3,6 +3,17 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.23",
+      date: "2026.08.29",
+      items: Object.freeze([
+        "부팅 후 중복 작업 통합과 조작 우선순위 개선",
+        "숨긴 다중 차트의 불필요한 전체 이력 계산 제거",
+        "차트 모델 Worker·캐시·대체 계산 경로 공통화",
+        "갱신 상태 렌더링 조율 공통화",
+        "종목 추가·전환 시 가격 우선 단계 렌더링",
+      ]),
+    }),
+    Object.freeze({
       version: "3.22",
       date: "2026.08.29",
       items: Object.freeze([

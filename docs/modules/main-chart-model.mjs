@@ -166,14 +166,27 @@ import marketData from "./market-data.mjs";
     const frameEnd = String(payload.frameEnd || payload.end || "");
     const calculationRows = rows.filter((row) => row.date >= frameStart && row.date <= frameEnd);
     const frameRows = calculationRows.length ? calculationRows : rows;
-    const normBases = resolveNormalizationBases(frameRows, selected, payload.fixedNormBases);
     const visible = selected.filter((series) => !hidden.has(series));
+    // Hidden series keep their trace slot for stable toggle behavior, but do not
+    // pay the cost of normalizing and transforming decades of unused points.
+    const normBases = resolveNormalizationBases(frameRows, visible, payload.fixedNormBases);
     const autoScales = mergeFixedAutoScales(
-      autoFitScales(frameRows, visible.length ? visible : selected, normBases),
+      autoFitScales(frameRows, visible, normBases),
       payload.fixedAutoScales,
     );
     const baseXValues = rows.map((row) => row.date);
     const seriesModels = selected.map((series) => {
+      if (hidden.has(series)) {
+        return {
+          series,
+          hidden: true,
+          rawTexts: [],
+          baseLineWidth: 1,
+          xValues: [],
+          values: [],
+          baseValues: [],
+        };
+      }
       const rawValues = rows.map((row) => toNum(row[series]));
       const rawTexts = rawValues.map((value) => (
         Number.isFinite(value) ? numberFormat.format(value) : "N/A"

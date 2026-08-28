@@ -101,6 +101,34 @@ test("cancelling a running background task aborts its shared task signal", async
   assert.equal(scheduler.stats().cancelled, 1);
 });
 
+test("named background work can share an already running task", async () => {
+  const clock = fakeClock();
+  const scheduler = createBackgroundTaskScheduler(clock.scope, { now: clock.now });
+  let starts = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const first = scheduler.enqueue("cache-maintenance", async () => {
+    starts += 1;
+    await gate;
+    return "ready";
+  }, { coalesceRunning: true });
+
+  clock.runNext();
+  clock.runNext();
+  await Promise.resolve();
+  const second = scheduler.enqueue("cache-maintenance", () => {
+    starts += 1;
+    return "duplicate";
+  }, { coalesceRunning: true });
+
+  assert.equal(second, first);
+  assert.equal(starts, 1);
+  release();
+  assert.equal(await second, "ready");
+  assert.equal(scheduler.stats().coalesced, 1);
+  assert.equal(scheduler.stats().queued, 0);
+});
+
 test("hidden ticker refresh waits for idle time and preserves failed list entries", async () => {
   const calls = [];
   const clock = fakeClock();

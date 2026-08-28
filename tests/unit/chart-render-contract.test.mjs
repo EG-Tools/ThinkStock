@@ -34,6 +34,25 @@ test("normalizes one valid main chart model without copying point arrays", () =>
   assert.equal(normalizeMainChartModel({ rows: [{}], seriesModels: [{ series: "A", xValues: [1], values: [] }] }), null);
 });
 
+test("accepts an explicit hidden trace slot without retained point arrays", () => {
+  const model = normalizeMainChartModel({
+    rows: [{ date: "2026-08-24" }],
+    seriesModels: [{
+      series: "005930.KS",
+      hidden: true,
+      xValues: [],
+      values: [],
+      baseValues: [],
+    }],
+  });
+
+  assert.equal(model.seriesModels[0].hidden, true);
+  assert.equal(normalizeMainChartModel({
+    rows: [{ date: "2026-08-24" }],
+    seriesModels: [{ series: "005930.KS", xValues: [], values: [] }],
+  }), null);
+});
+
 test("accepts aligned auxiliary series and rejects one mismatched pair", () => {
   const model = Object.fromEntries([
     ["adrKospi", 2], ["adrKosdaq", 2], ["fearGreed", 1],

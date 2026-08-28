@@ -28,8 +28,13 @@ function normalizeMainChartModel(value) {
     const xValues = Array.isArray(model?.xValues) ? model.xValues : [];
     const values = Array.isArray(model?.values) ? model.values : [];
     const baseValues = Array.isArray(model?.baseValues) ? model.baseValues : null;
-    return Boolean(String(model?.series || ""))
-      && xValues.length > 0
+    if (!String(model?.series || "")) return false;
+    if (model?.hidden === true) {
+      return xValues.length === 0
+        && values.length === 0
+        && (!baseValues || baseValues.length === 0);
+    }
+    return xValues.length > 0
       && xValues.length === values.length
       && (!baseValues || baseValues.length === values.length);
   });

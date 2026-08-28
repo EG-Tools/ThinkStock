@@ -46,6 +46,33 @@ test("coalesces typed invalidations and passes one combined render description",
   assert.equal(scheduler.stats().completedTransactionId, 1);
 });
 
+test("carries price-first composition only through the transaction that requested it", async () => {
+  const frames = [];
+  const renders = [];
+  const scheduler = createChartRenderScheduler({}, {
+    requestFrame: (callback) => { frames.push(callback); return frames.length; },
+    cancelFrame: () => {},
+    render: async (_preserveZoom, invalidation) => { renders.push(invalidation); },
+  });
+
+  scheduler.request(true, {
+    progressiveComposition: true,
+    reason: "series-add",
+    updateClass: "composition",
+  });
+  scheduler.request(true, { reason: "save-state", updateClass: "data" });
+  frames.shift()();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  scheduler.request(true, { reason: "progressive-overlays", updateClass: "composition" });
+  frames.shift()();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(renders[0].progressiveComposition, true);
+  assert.equal(renders[1].progressiveComposition, false);
+  assert.equal(scheduler.stats().pendingProgressiveComposition, false);
+});
+
 test("an immediate render absorbs and cancels an older queued frame", async () => {
   const frames = new Map();
   const cancelled = [];
