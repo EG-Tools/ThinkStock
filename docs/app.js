@@ -350,7 +350,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = tickerPriceRuntimeModule.CORPORATE_ACTION_RATIO_THRESHOLD;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = tickerPriceRuntimeModule.CORPORATE_ACTION_MAX_BOUNDARY_DAYS;
-const APP_VERSION = "3.21";
+const APP_VERSION = "3.22";
 function getAppBuildVersion() {
   try {
     const script = document.currentScript
@@ -4844,7 +4844,7 @@ async function readAiAnalysisCacheForTicker(ticker) {
       key: ticker,
       requireContent: false,
       source: "ai-analysis",
-      revision: String(feature.analysis.SCHEMA_VERSION),
+      revision: feature.analysis.COMPANY_ANALYSIS_CACHE_REVISION,
       contentFingerprint: normalized?.contentFingerprint || "",
     });
     if (issue || !normalized) {
@@ -4978,6 +4978,9 @@ async function requestAiAnalysisForTicker(ticker, options = {}) {
     }, 25000);
     const payload = await response.json().catch(() => null);
     if (!response.ok || payload?.ok === false) return null;
+    if (Number(payload?.analysisContractVersion)
+      < Number(feature.analysis.COMPANY_ANALYSIS_CONTRACT_VERSION)) return cached;
+    if (!feature.analysis.hasCurrentFinancialSummary(payload)) return cached;
     const analysis = feature.analysis.normalizeAnalysisRecord(target, payload, cached, Date.now());
     if (!analysis) return cached;
     aiAnalysisByTicker.set(target, analysis);

@@ -7,6 +7,7 @@ import {
   inspectNewsSentimentCoverage,
   sha256,
   verifyPagesDeployment,
+  verifyWorkerRuntime,
 } from "../../scripts/verify_pages_deployment.mjs";
 
 test("parses the visible app version and stamped bundle source", () => {
@@ -97,4 +98,29 @@ test("public deployment verifier checks deployed macro files and long news histo
   assert.equal(result.dataRevision, "data-revision");
   assert.equal(result.newsSentimentCoverage.count, 5500);
   assert.equal(result.newsSentimentCoverage.firstDate, "2005-01-01");
+});
+
+test("public deployment verifier rejects a stale Worker contract", async () => {
+  await assert.rejects(() => verifyWorkerRuntime({
+    workerUrl: "https://worker.example.test",
+    fetchImpl: async () => Response.json({
+      ok: true,
+      analysisContractVersion: 0,
+      financialSummaryVersion: 2,
+    }, { headers: { "X-ThinkStock-API-Version": "3" } }),
+  }), /company-analysis contract is stale/);
+
+  const result = await verifyWorkerRuntime({
+    workerUrl: "https://worker.example.test",
+    fetchImpl: async () => Response.json({
+      ok: true,
+      analysisContractVersion: 1,
+      financialSummaryVersion: 3,
+    }, { headers: { "X-ThinkStock-API-Version": "3" } }),
+  });
+  assert.deepEqual(result, {
+    apiVersion: 3,
+    analysisContractVersion: 1,
+    financialSummaryVersion: 3,
+  });
 });

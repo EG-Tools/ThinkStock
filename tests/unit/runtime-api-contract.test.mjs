@@ -7,11 +7,11 @@ import {
 } from "../../shared/runtime-api-contract.mjs";
 
 test("accepts the current API and reports an older incompatible API", () => {
-  assert.deepEqual(runtimeApiCompatibility("2"), {
+  assert.deepEqual(runtimeApiCompatibility("3"), {
     compatible: true,
     legacy: false,
     minimum: 2,
-    version: 2,
+    version: 3,
   });
   assert.deepEqual(runtimeApiCompatibility("1"), {
     compatible: false,
@@ -31,7 +31,7 @@ test("shares one no-store JSON response contract across local and Worker runtime
     "Cache-Control": "no-store",
     "Content-Type": "application/json; charset=utf-8",
     "Referrer-Policy": "same-origin",
-    "X-ThinkStock-API-Version": "2",
+    "X-ThinkStock-API-Version": "3",
     "X-Content-Type-Options": "nosniff",
   });
 });

@@ -21,8 +21,13 @@ import {
   sourcePolicy,
 } from "../shared/runtime-freshness-policy.mjs";
 import {
+  RUNTIME_API_VERSION,
   runtimeJsonHeaders,
 } from "../shared/runtime-api-contract.mjs";
+import {
+  COMPANY_ANALYSIS_CONTRACT_VERSION,
+  FINANCIAL_SUMMARY_VERSION,
+} from "../shared/company-analysis-contract.mjs";
 import {
   evaluateNaverPriceFallback,
   parseNaverPriceSeries,
@@ -100,7 +105,7 @@ import {
   researchHistoryPointFromUniverse as localResearchHistoryPointFromUniverse,
 } from "../worker/src/research-data.mjs";
 import {
-  fetchCompanyAnalysis,
+  companyAnalysisResponse,
 } from "../worker/src/company-analysis.mjs";
 import { insiderTradeResponse } from "../worker/src/dart-handler.mjs";
 import { staticContentType } from "./static_content_type.mjs";
@@ -1149,6 +1154,9 @@ export async function createThinkStockServer(options = {}) {
       const currentServerSourceMtimeMs = Number(await getServerSourceMtime().catch(() => loadedServerSourceMtimeMs));
       sendJson(request, response, 200, {
         ok: true,
+        apiVersion: RUNTIME_API_VERSION,
+        analysisContractVersion: COMPANY_ANALYSIS_CONTRACT_VERSION,
+        financialSummaryVersion: FINANCIAL_SUMMARY_VERSION,
         appVersion,
         serverStartedAt,
         serverSourceLoadedAt: new Date(loadedServerSourceMtimeMs).toISOString(),
@@ -1560,17 +1568,19 @@ export async function createThinkStockServer(options = {}) {
       try {
         const ticker = String(requestUrl.searchParams.get("ticker") || "").trim().toUpperCase();
         if (!TICKER_PATTERN.test(ticker)) throw new Error("종목코드 형식이 올바르지 않습니다.");
-        const analysis = await fetchCompanyAnalysis(ticker, fetchImpl);
-        sendJson(request, response, 200, {
-          ok: true,
-          ticker,
-          savedAt: Date.now(),
-          financialSummaryVersion: Math.max(0, Number(analysis.financialSummaryVersion) || 0),
-          consensus: analysis.consensus || null,
-          financials: analysis.financials || [],
-          news: analysis.news || [],
-          cached: false,
+        const forceRefresh = ["1", "true", "yes"].includes(
+          String(requestUrl.searchParams.get("refresh") || "").toLowerCase(),
+        );
+        const result = await companyAnalysisResponse({
+          DISCLOSURE_CACHE: localWorkerCache,
+          fetch: fetchImpl,
+        }, null, ticker, String(request.headers.origin || ""), {
+          requireFinancials: true,
+          requireNews: true,
+          forceRefresh,
+          fetchImpl,
         });
+        sendJson(request, response, result.status, await result.json());
       } catch (error) {
         sendJson(request, response, 503, { ok: false, error: error?.message || String(error) });
       }

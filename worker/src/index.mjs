@@ -7,6 +7,10 @@ import {
   RUNTIME_API_VERSION,
 } from "../../shared/runtime-api-contract.mjs";
 import {
+  COMPANY_ANALYSIS_CONTRACT_VERSION,
+  FINANCIAL_SUMMARY_VERSION,
+} from "../../shared/company-analysis-contract.mjs";
+import {
   cacheTtlSeconds,
   sourcePolicy,
 } from "../../shared/runtime-freshness-policy.mjs";
@@ -1720,6 +1724,8 @@ export async function handleRequest(request, env, ctx = null) {
     return jsonResponse({
       ok: true,
       apiVersion: RUNTIME_API_VERSION,
+      analysisContractVersion: COMPANY_ANALYSIS_CONTRACT_VERSION,
+      financialSummaryVersion: FINANCIAL_SUMMARY_VERSION,
       dartConfigured: Boolean(env.DART_API_KEY),
       krxConfigured: Boolean(env.KRX_API_KEY),
       ecosConfigured: Boolean(env.ECOS_API_KEY),

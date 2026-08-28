@@ -1,12 +1,19 @@
 import * as snapshotEngine from "../../shared/ai-analysis-snapshots.mjs";
 import * as newsEvidenceEngine from "../../shared/ai-news-evidence.mjs";
+import {
+  COMPANY_ANALYSIS_CONTRACT_VERSION,
+  COMPANY_ANALYSIS_CACHE_REVISION,
+  FINANCIAL_SUMMARY_VERSION,
+  inspectCompanyAnalysisQuality,
+  mergeCompanyFinancialRecords,
+  sanitizeCompanyFinancialRecord,
+} from "../../shared/company-analysis-contract.mjs";
 import { finiteOrNull } from "../../shared/runtime-foundation.mjs";
 import * as cacheLifecycle from "./cache-lifecycle-policy.mjs";
 
   "use strict";
 
   const SCHEMA_VERSION = 5;
-  const FINANCIAL_SUMMARY_VERSION = 2;
   const TICKER_PATTERN = /^\d{6}\.(KS|KQ)$/;
   if (!cacheLifecycle?.withCacheMetadata) throw new Error("cache lifecycle policy is required");
   if (typeof finiteOrNull !== "function") throw new Error("runtime value contract is required");
@@ -29,47 +36,7 @@ import * as cacheLifecycle from "./cache-lifecycle-policy.mjs";
     };
   }
 
-  function sanitizeFinancialRecord(value) {
-    const ticker = String(value?.ticker || "").trim().toUpperCase();
-    const period = String(value?.period || "").slice(0, 7);
-    const frequency = ["annual", "quarter"].includes(value?.frequency) ? value.frequency : "";
-    if (!TICKER_PATTERN.test(ticker) || !/^\d{4}-\d{2}$/.test(period) || !frequency) return null;
-    const record = {
-      ticker,
-      period,
-      frequency,
-      estimate: value?.estimate === true,
-      revenue: finiteOrNull(value?.revenue),
-      operatingProfit: finiteOrNull(value?.operatingProfit),
-      netIncome: finiteOrNull(value?.netIncome),
-      eps: finiteOrNull(value?.eps),
-      source: String(value?.source || "").trim().slice(0, 40),
-      epsDerived: value?.epsDerived === true,
-      operatingProfitConsensus: finiteOrNull(value?.operatingProfitConsensus),
-      netIncomeConsensus: finiteOrNull(value?.netIncomeConsensus),
-      operatingProfitSurprise: finiteOrNull(value?.operatingProfitSurprise),
-      netIncomeSurprise: finiteOrNull(value?.netIncomeSurprise),
-      operatingProfitYoy: finiteOrNull(value?.operatingProfitYoy),
-      netIncomeYoy: finiteOrNull(value?.netIncomeYoy),
-      reportDate: /^\d{4}-\d{2}-\d{2}$/.test(String(value?.reportDate || ""))
-        ? String(value.reportDate)
-        : "",
-    };
-    return [
-      record.revenue,
-      record.operatingProfit,
-      record.netIncome,
-      record.eps,
-      record.operatingProfitConsensus,
-      record.netIncomeConsensus,
-      record.operatingProfitSurprise,
-      record.netIncomeSurprise,
-      record.operatingProfitYoy,
-      record.netIncomeYoy,
-    ].some(Number.isFinite)
-      ? record
-      : null;
-  }
+  const sanitizeFinancialRecord = sanitizeCompanyFinancialRecord;
 
   function sanitizeNewsRecords(values, ticker) {
     if (newsEvidenceEngine?.normalizeAnalysisNewsEvidence) {
@@ -94,54 +61,7 @@ import * as cacheLifecycle from "./cache-lifecycle-policy.mjs";
     }).sort((left, right) => right.date.localeCompare(left.date)).slice(0, 40);
   }
 
-  function mergeFinancialRecords(existing, incoming) {
-    // Naver exposes a rolling window, so older cached periods must remain an append-only archive.
-    const merged = new Map();
-    [...(existing || []), ...(incoming || [])].forEach((value) => {
-      const record = sanitizeFinancialRecord(value);
-      if (!record) return;
-      const key = `${record.frequency}:${record.period}`;
-      const previous = merged.get(key) || {};
-      const preferFinite = (nextValue, previousValue) => (
-        Number.isFinite(nextValue) ? nextValue : (Number.isFinite(previousValue) ? previousValue : null)
-      );
-      const incomingDartEps = record.source === "DART"
-        && record.estimate === false
-        && Number.isFinite(record.eps);
-      const previousDartEps = previous.source === "DART"
-        && previous.estimate === false
-        && Number.isFinite(previous.eps);
-      const useIncomingEps = Number.isFinite(record.eps) && (incomingDartEps || !previousDartEps);
-      merged.set(key, {
-        ...record,
-        estimate: value?.estimate === true
-          ? previous.estimate !== false
-          : (value?.estimate === false ? false : previous.estimate === true),
-        revenue: preferFinite(record.revenue, previous.revenue),
-        operatingProfit: preferFinite(record.operatingProfit, previous.operatingProfit),
-        netIncome: preferFinite(record.netIncome, previous.netIncome),
-        eps: useIncomingEps ? record.eps : preferFinite(previous.eps, record.eps),
-        source: useIncomingEps ? record.source : (previous.source || record.source || ""),
-        epsDerived: useIncomingEps ? record.epsDerived : previous.epsDerived === true,
-        operatingProfitConsensus: preferFinite(
-          record.operatingProfitConsensus,
-          previous.operatingProfitConsensus,
-        ),
-        netIncomeConsensus: preferFinite(record.netIncomeConsensus, previous.netIncomeConsensus),
-        operatingProfitSurprise: preferFinite(
-          record.operatingProfitSurprise,
-          previous.operatingProfitSurprise,
-        ),
-        netIncomeSurprise: preferFinite(record.netIncomeSurprise, previous.netIncomeSurprise),
-        operatingProfitYoy: preferFinite(record.operatingProfitYoy, previous.operatingProfitYoy),
-        netIncomeYoy: preferFinite(record.netIncomeYoy, previous.netIncomeYoy),
-        reportDate: record.reportDate || previous.reportDate || "",
-      });
-    });
-    return [...merged.values()].sort((left, right) => (
-      left.period.localeCompare(right.period) || left.frequency.localeCompare(right.frequency)
-    ));
-  }
+  const mergeFinancialRecords = mergeCompanyFinancialRecords;
 
   function sanitizeSnapshot(value, ticker) {
     if (!value || typeof value !== "object") return null;
@@ -232,6 +152,18 @@ import * as cacheLifecycle from "./cache-lifecycle-policy.mjs";
     const savedAt = Number.isFinite(suppliedSavedAt) && suppliedSavedAt > 0
       ? suppliedSavedAt
       : (Number.isFinite(priorSavedAt) && priorSavedAt > 0 ? priorSavedAt : now);
+    const suppliedFinancialSummarySavedAt = Number(source.financialSummarySavedAt);
+    const priorFinancialSummarySavedAt = Number(prior.financialSummarySavedAt);
+    const financialSummarySavedAt = Number.isFinite(suppliedFinancialSummarySavedAt)
+      && suppliedFinancialSummarySavedAt > 0
+      ? suppliedFinancialSummarySavedAt
+      : (Number.isFinite(priorFinancialSummarySavedAt) && priorFinancialSummarySavedAt > 0
+        ? priorFinancialSummarySavedAt : 0);
+    const suppliedNewsSavedAt = Number(source.newsSavedAt);
+    const priorNewsSavedAt = Number(prior.newsSavedAt);
+    const newsSavedAt = Number.isFinite(suppliedNewsSavedAt) && suppliedNewsSavedAt > 0
+      ? suppliedNewsSavedAt
+      : (Number.isFinite(priorNewsSavedAt) && priorNewsSavedAt > 0 ? priorNewsSavedAt : 0);
     const currentSnapshot = consensus || financials.length || news.length
       ? { savedAt, ticker: target, consensus, financials, news }
       : null;
@@ -257,9 +189,13 @@ import * as cacheLifecycle from "./cache-lifecycle-policy.mjs";
       : cacheLifecycle.contentFingerprint(evidence);
     return cacheLifecycle.withCacheMetadata({
       schema: SCHEMA_VERSION,
+      analysisContractVersion: COMPANY_ANALYSIS_CONTRACT_VERSION,
+      cacheRevision: COMPANY_ANALYSIS_CACHE_REVISION,
       ticker: target,
       savedAt,
       lastAccessed: now,
+      financialSummarySavedAt,
+      newsSavedAt,
       financialSummaryVersion,
       dartEpsHistoryVersion,
       dartEpsCompletedYears,
@@ -272,7 +208,7 @@ import * as cacheLifecycle from "./cache-lifecycle-policy.mjs";
     }, {
       source: "ai-analysis",
       asOf,
-      revision: String(SCHEMA_VERSION),
+      revision: COMPANY_ANALYSIS_CACHE_REVISION,
       contentFingerprint: fingerprint,
       now,
       savedAt,
@@ -290,9 +226,7 @@ import * as cacheLifecycle from "./cache-lifecycle-policy.mjs";
   }
 
   function hasCurrentFinancialSummary(record) {
-    return Number(record?.financialSummaryVersion) >= FINANCIAL_SUMMARY_VERSION
-      && Array.isArray(record?.financials)
-      && record.financials.some((value) => Number.isFinite(Number(value?.eps)));
+    return inspectCompanyAnalysisQuality(record).completeFinancialSummary === true;
   }
 
   function hasDartEpsHistoryCoverage(record, range, version = 1) {
@@ -310,6 +244,8 @@ import * as cacheLifecycle from "./cache-lifecycle-policy.mjs";
 
   const aiAnalysisCache = Object.freeze({
     SCHEMA_VERSION,
+    COMPANY_ANALYSIS_CONTRACT_VERSION,
+    COMPANY_ANALYSIS_CACHE_REVISION,
     FINANCIAL_SUMMARY_VERSION,
     hasDartEpsHistoryCoverage,
     hasCurrentFinancialSummary,
@@ -324,6 +260,8 @@ import * as cacheLifecycle from "./cache-lifecycle-policy.mjs";
   });
 
 export {
+  COMPANY_ANALYSIS_CONTRACT_VERSION,
+  COMPANY_ANALYSIS_CACHE_REVISION,
   FINANCIAL_SUMMARY_VERSION,
   SCHEMA_VERSION,
   hasCurrentFinancialSummary,

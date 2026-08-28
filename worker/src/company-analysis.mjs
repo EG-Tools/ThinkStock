@@ -8,6 +8,14 @@ import {
   DART_EPS_HISTORY_VERSION,
   fetchDartEpsYear,
 } from "../../shared/dart-financial-history.mjs";
+import {
+  COMPANY_ANALYSIS_CACHE_SCHEMA,
+  COMPANY_ANALYSIS_CACHE_REVISION,
+  COMPANY_ANALYSIS_CONTRACT_VERSION,
+  FINANCIAL_SUMMARY_VERSION,
+  inspectCompanyAnalysisQuality,
+  mergeCompanyFinancialRecords,
+} from "../../shared/company-analysis-contract.mjs";
 import { koreanDateText } from "../../shared/market-calendar.mjs";
 import { jsonResponse, writeCachesBestEffort } from "./http-runtime.mjs";
 
@@ -20,8 +28,8 @@ const MAX_NEWS_BYTES = 600_000;
 const COMPANY_BROWSER_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
   + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 
-export const ANALYSIS_CACHE_SCHEMA = 5;
-export const FINANCIAL_SUMMARY_VERSION = 3;
+export const ANALYSIS_CACHE_SCHEMA = COMPANY_ANALYSIS_CACHE_SCHEMA;
+export { FINANCIAL_SUMMARY_VERSION };
 
 function companyHtmlHeaders(extra = {}) {
   return {
@@ -60,12 +68,6 @@ function numberFromHtml(value) {
   const cleaned = htmlText(value).replaceAll(",", "").replace(/[^0-9.+-]/g, "");
   if (!cleaned) return null;
   const number = Number(cleaned);
-  return Number.isFinite(number) ? number : null;
-}
-
-function finiteNumberOrNull(value) {
-  if (value === null || value === undefined || value === "") return null;
-  const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
 
@@ -129,21 +131,40 @@ export function normalizeAnalysisCache(value, ticker) {
   );
   const includesCurrentSnapshot = !currentSnapshot
     || storedSnapshots.some((snapshot) => snapshot.savedAt === currentSnapshot.savedAt);
-  return {
+  const financials = mergeCompanyFinancialRecords([], value.financials, { ticker });
+  const savedAt = analysisTimestamp(value.savedAt) || 0;
+  const normalized = {
     schema: ANALYSIS_CACHE_SCHEMA,
+    analysisContractVersion: COMPANY_ANALYSIS_CONTRACT_VERSION,
+    cacheRevision: COMPANY_ANALYSIS_CACHE_REVISION,
     financialSummaryVersion: Math.max(0, Number(value.financialSummaryVersion) || 0),
     ticker,
-    savedAt: analysisTimestamp(value.savedAt) || 0,
+    savedAt,
+    financialSummarySavedAt: analysisTimestamp(value.financialSummarySavedAt) || 0,
+    newsSavedAt: analysisTimestamp(value.newsSavedAt) || (hasNews ? savedAt : 0),
     consensus: value.consensus || null,
-    financials: Array.isArray(value.financials) ? value.financials : [],
+    financials,
     news: sanitizeAnalysisNews(value.news, ticker),
     snapshots,
     hasNews,
     needsMigration: value.schema !== ANALYSIS_CACHE_SCHEMA
+      || Number(value.analysisContractVersion) !== COMPANY_ANALYSIS_CONTRACT_VERSION
+      || String(value.cacheRevision || "") !== COMPANY_ANALYSIS_CACHE_REVISION
       || !Array.isArray(value.snapshots)
       || storedSnapshots.length !== value.snapshots.length
       || snapshots.length !== storedSnapshots.length
       || !includesCurrentSnapshot,
+  };
+  const dataQuality = inspectCompanyAnalysisQuality(normalized);
+  if (!normalized.financialSummarySavedAt && dataQuality.completeFinancialSummary) {
+    normalized.financialSummarySavedAt = savedAt;
+  }
+  normalized.needsMigration = normalized.needsMigration
+    || (dataQuality.completeFinancialSummary && !analysisTimestamp(value.financialSummarySavedAt))
+    || (hasNews && !analysisTimestamp(value.newsSavedAt));
+  return {
+    ...normalized,
+    dataQuality,
   };
 }
 
@@ -414,51 +435,7 @@ export function financialSummaryRequestFromOverview(html, ticker, options = {}) 
   };
 }
 
-export function mergeFinancialRecords(existing, incoming) {
-  // Preserve periods that have rolled out of the upstream Financial Summary table.
-  const merged = new Map();
-  [...(existing || []), ...(incoming || [])].forEach((record) => {
-    const ticker = String(record?.ticker || "").trim().toUpperCase();
-    const frequency = ["annual", "quarter"].includes(record?.frequency) ? record.frequency : "";
-    const period = String(record?.period || "").slice(0, 7);
-    if (!ticker || !frequency || !/^\d{4}-\d{2}$/.test(period)) return;
-    const key = `${frequency}:${period}`;
-    const previous = merged.get(key) || {};
-    const preferValue = (value, fallback) => {
-      const normalized = finiteNumberOrNull(value);
-      return normalized === null ? (fallback ?? null) : normalized;
-    };
-    merged.set(key, {
-      ticker,
-      period,
-      frequency,
-      estimate: record?.estimate === true
-        ? previous.estimate !== false
-        : (record?.estimate === false ? false : previous.estimate === true),
-      revenue: preferValue(record?.revenue, previous.revenue),
-      operatingProfit: preferValue(record?.operatingProfit, previous.operatingProfit),
-      netIncome: preferValue(record?.netIncome, previous.netIncome),
-      eps: preferValue(record?.eps, previous.eps),
-      operatingProfitConsensus: preferValue(
-        record?.operatingProfitConsensus,
-        previous.operatingProfitConsensus,
-      ),
-      netIncomeConsensus: preferValue(record?.netIncomeConsensus, previous.netIncomeConsensus),
-      operatingProfitSurprise: preferValue(
-        record?.operatingProfitSurprise,
-        previous.operatingProfitSurprise,
-      ),
-      netIncomeSurprise: preferValue(record?.netIncomeSurprise, previous.netIncomeSurprise),
-      operatingProfitYoy: preferValue(record?.operatingProfitYoy, previous.operatingProfitYoy),
-      netIncomeYoy: preferValue(record?.netIncomeYoy, previous.netIncomeYoy),
-      reportDate: /^\d{4}-\d{2}-\d{2}$/.test(String(record?.reportDate || ""))
-        ? String(record.reportDate) : (previous.reportDate || ""),
-    });
-  });
-  return [...merged.values()].sort((left, right) => (
-    left.period.localeCompare(right.period) || left.frequency.localeCompare(right.frequency)
-  ));
-}
+export const mergeFinancialRecords = mergeCompanyFinancialRecords;
 
 export async function fetchCompanyAnalysis(ticker, fetchImpl = fetch) {
   const code = String(ticker || "").slice(0, 6);
@@ -507,6 +484,10 @@ export async function fetchCompanyAnalysis(ticker, fetchImpl = fetch) {
       ? parseFinancialSummaryHtml(result.value.html, ticker, { frequency: result.value.frequency })
       : []
   ));
+  const parsedFinancialsByFrequency = new Map(financialRequests.map((entry, index) => [
+    entry.frequency,
+    parsedFinancialResults[index] || [],
+  ]));
   const financialSummary = mergeFinancialRecords([], parsedFinancialResults.flat());
   if (!financialSummary.length && overviewHtml) {
     financialSummary.push(...parseFinancialSummaryHtml(overviewHtml, ticker));
@@ -517,12 +498,25 @@ export async function fetchCompanyAnalysis(ticker, fetchImpl = fetch) {
     ? FINANCIAL_SUMMARY_VERSION
     : 0;
   const earningsTrend = parseEarningsTrendHtml(overviewHtml, ticker);
-  return {
+  const analysis = {
+    ticker,
+    analysisContractVersion: COMPANY_ANALYSIS_CONTRACT_VERSION,
+    cacheRevision: COMPANY_ANALYSIS_CACHE_REVISION,
     consensus: parseConsensusHtml(overviewHtml, ticker),
     financials: mergeFinancialRecords(financialSummary, earningsTrend),
     financialSummaryVersion,
     news: parseNaverNewsHtml(newsHtml, ticker),
     newsFetched: newsResult.status === "fulfilled",
+  };
+  return {
+    ...analysis,
+    dataQuality: inspectCompanyAnalysisQuality(analysis),
+    sourceState: Object.freeze({
+      overview: overviewResult.status === "fulfilled" ? "ok" : "failed",
+      news: newsResult.status === "fulfilled" ? "ok" : "failed",
+      annualSummary: parsedFinancialsByFrequency.get("annual")?.length ? "ok" : "failed",
+      quarterSummary: parsedFinancialsByFrequency.get("quarter")?.length ? "ok" : "failed",
+    }),
   };
 }
 
@@ -544,9 +538,13 @@ async function writeAnalysisCache(env, ticker, analysis) {
   if (!env.DISCLOSURE_CACHE) return;
   await env.DISCLOSURE_CACHE.put(`analysis:${ticker}`, JSON.stringify({
     schema: ANALYSIS_CACHE_SCHEMA,
+    analysisContractVersion: COMPANY_ANALYSIS_CONTRACT_VERSION,
+    cacheRevision: COMPANY_ANALYSIS_CACHE_REVISION,
     financialSummaryVersion: Math.max(0, Number(analysis.financialSummaryVersion) || 0),
     ticker,
     savedAt: analysis.savedAt,
+    financialSummarySavedAt: analysis.financialSummarySavedAt || 0,
+    newsSavedAt: analysis.newsSavedAt || 0,
     consensus: analysis.consensus || null,
     financials: analysis.financials || [],
     news: sanitizeAnalysisNews(analysis.news, ticker),
@@ -555,15 +553,21 @@ async function writeAnalysisCache(env, ticker, analysis) {
 }
 
 function analysisPayload(cached, extra = {}) {
+  const dataQuality = inspectCompanyAnalysisQuality(cached);
   return {
     ok: true,
+    analysisContractVersion: COMPANY_ANALYSIS_CONTRACT_VERSION,
+    cacheRevision: COMPANY_ANALYSIS_CACHE_REVISION,
     ticker: cached.ticker,
     financialSummaryVersion: Math.max(0, Number(cached.financialSummaryVersion) || 0),
     savedAt: cached.savedAt,
+    financialSummarySavedAt: cached.financialSummarySavedAt || 0,
+    newsSavedAt: cached.newsSavedAt || 0,
     consensus: cached.consensus || null,
     financials: cached.financials || [],
     news: cached.news || [],
     snapshots: cached.snapshots || [],
+    dataQuality,
     ...extra,
   };
 }
@@ -574,18 +578,26 @@ function analysisPayload(cached, extra = {}) {
  * @param {{waitUntil?: (promise: Promise<unknown>) => void}|null} ctx
  * @param {string} ticker
  * @param {string} origin
- * @param {{requireFinancials?: boolean, requireNews?: boolean, forceRefresh?: boolean}} [options]
+ * @param {{
+ *   requireFinancials?: boolean,
+ *   requireNews?: boolean,
+ *   forceRefresh?: boolean,
+ *   fetchImpl?: typeof fetch,
+ * }} [options]
  */
 export async function companyAnalysisResponse(env, ctx, ticker, origin, options = {}) {
   const cached = await readAnalysisCache(env, ticker);
-  const fresh = cached
-    && koreanDateText(new Date(Number(cached.savedAt || 0))) === koreanDateText();
+  const today = koreanDateText();
+  const fresh = cached && koreanDateText(new Date(Number(cached.savedAt || 0))) === today;
+  const financialsFresh = cached
+    && koreanDateText(new Date(Number(cached.financialSummarySavedAt || 0))) === today;
+  const newsFresh = cached
+    && koreanDateText(new Date(Number(cached.newsSavedAt || 0))) === today;
   if (!options.forceRefresh
     && fresh
-    && (!options.requireNews || cached.hasNews)
+    && (!options.requireNews || (cached.hasNews && newsFresh))
     && (!options.requireFinancials || (
-      cached.financials?.length
-      && cached.financialSummaryVersion >= FINANCIAL_SUMMARY_VERSION
+      financialsFresh && cached.dataQuality?.completeFinancialSummary === true
     ))) {
     if (cached.needsMigration) {
       const write = writeCachesBestEffort("company-analysis", [
@@ -597,27 +609,40 @@ export async function companyAnalysisResponse(env, ctx, ticker, origin, options 
     return jsonResponse(analysisPayload(cached, { cached: true }), 200, origin);
   }
   try {
-    const incoming = await fetchCompanyAnalysis(ticker);
-    if (options.requireFinancials
-      && !incoming.financials?.length
-      && !incoming.consensus
-      && !incoming.news?.length) {
-      throw new Error("Embedded earnings data is empty");
+    const incoming = await fetchCompanyAnalysis(ticker, options.fetchImpl || env.fetch || fetch);
+    if (options.requireFinancials && incoming.dataQuality?.completeFinancialSummary !== true) {
+      console.warn(JSON.stringify({
+        event: "company-analysis-incomplete",
+        ticker,
+        issues: incoming.dataQuality?.issues || [],
+        sourceState: incoming.sourceState || {},
+      }));
+      throw new Error(`Financial summary is incomplete: ${incoming.dataQuality?.issues?.join(",") || "unknown"}`);
     }
+    const now = Date.now();
     const analysis = {
       schema: ANALYSIS_CACHE_SCHEMA,
+      analysisContractVersion: COMPANY_ANALYSIS_CONTRACT_VERSION,
+      cacheRevision: COMPANY_ANALYSIS_CACHE_REVISION,
       financialSummaryVersion: Math.max(
         Number(cached?.financialSummaryVersion) || 0,
         Number(incoming.financialSummaryVersion) || 0,
       ),
       ticker,
-      savedAt: Date.now(),
+      savedAt: now,
+      financialSummarySavedAt: incoming.dataQuality?.completeFinancialSummary
+        ? now : (cached?.financialSummarySavedAt || 0),
+      newsSavedAt: incoming.newsFetched ? now : (cached?.newsSavedAt || 0),
       consensus: incoming.consensus || cached?.consensus || null,
       financials: mergeFinancialRecords(cached?.financials || [], incoming.financials || []),
       news: incoming.newsFetched
         ? sanitizeAnalysisNews(incoming.news, ticker)
         : (cached?.news || []),
     };
+    analysis.dataQuality = inspectCompanyAnalysisQuality(analysis);
+    if (options.requireFinancials && analysis.dataQuality.completeFinancialSummary !== true) {
+      throw new Error(`Merged financial summary is incomplete: ${analysis.dataQuality.issues.join(",")}`);
+    }
     const currentSnapshot = snapshotFromAnalysis(analysis);
     analysis.snapshots = mergeAnalysisSnapshots(
       cached?.snapshots || [],
@@ -634,6 +659,13 @@ export async function companyAnalysisResponse(env, ctx, ticker, origin, options 
     return jsonResponse(analysisPayload(analysis, { cached: false }), 200, origin);
   } catch (error) {
     if (cached?.consensus || cached?.financials?.length || cached?.news?.length) {
+      console.warn(JSON.stringify({
+        event: "company-analysis-last-good",
+        ticker,
+        financialSummarySavedAt: cached.financialSummarySavedAt || 0,
+        newsSavedAt: cached.newsSavedAt || 0,
+        error: String(error?.message || error || "unknown").slice(0, 240),
+      }));
       return jsonResponse(analysisPayload(cached, {
         cached: true,
         stale: true,

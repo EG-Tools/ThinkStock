@@ -3,6 +3,17 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.22",
+      date: "2026.08.29",
+      items: Object.freeze([
+        "로컬·배포 기업분석 값 일치 계약 추가",
+        "EPS 부분 응답과 불완전 캐시 자동 차단",
+        "Worker 규격 확인과 배포 전 값 대조 검사",
+        "재무·뉴스 갱신시각 분리와 진단 보강",
+        "재무 병합 중복 구현 공통화",
+      ]),
+    }),
+    Object.freeze({
       version: "3.21",
       date: "2026.08.27",
       items: Object.freeze([

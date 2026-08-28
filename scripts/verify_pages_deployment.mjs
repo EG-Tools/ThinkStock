@@ -4,6 +4,16 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
+import {
+  COMPANY_ANALYSIS_CONTRACT_VERSION,
+  FINANCIAL_SUMMARY_VERSION,
+} from "../shared/company-analysis-contract.mjs";
+import {
+  MINIMUM_RUNTIME_API_VERSION,
+  RUNTIME_API_VERSION_HEADER,
+  runtimeApiCompatibility,
+} from "../shared/runtime-api-contract.mjs";
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 export function parsePagesAppVersion(html) {
@@ -48,6 +58,38 @@ function cacheBustedUrl(url, attempt) {
 
 async function wait(delayMs) {
   await new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+export async function verifyWorkerRuntime(options = {}) {
+  const workerUrl = new URL(String(options.workerUrl || "https://thinkstock-api.keg0320.workers.dev"));
+  const healthUrl = new URL("/api/health", workerUrl);
+  healthUrl.searchParams.set("verify", String(Date.now()));
+  const response = await (options.fetchImpl || fetch)(healthUrl, {
+    cache: "no-store",
+    headers: { "Cache-Control": "no-cache" },
+  });
+  assert.equal(response.ok, true, `public Worker health HTTP ${response.status}`);
+  const headerVersion = response.headers.get(RUNTIME_API_VERSION_HEADER);
+  const compatibility = runtimeApiCompatibility(headerVersion, {
+    allowMissing: false,
+    minimum: MINIMUM_RUNTIME_API_VERSION,
+  });
+  assert.equal(compatibility.compatible, true, `public Worker API ${headerVersion || "missing"} is incompatible`);
+  const payload = await response.json();
+  assert.equal(payload?.ok, true, "public Worker health payload is invalid");
+  assert.ok(
+    Number(payload.analysisContractVersion) >= COMPANY_ANALYSIS_CONTRACT_VERSION,
+    "public Worker company-analysis contract is stale",
+  );
+  assert.ok(
+    Number(payload.financialSummaryVersion) >= FINANCIAL_SUMMARY_VERSION,
+    "public Worker financial-summary contract is stale",
+  );
+  return Object.freeze({
+    apiVersion: compatibility.version,
+    analysisContractVersion: Number(payload.analysisContractVersion),
+    financialSummaryVersion: Number(payload.financialSummaryVersion),
+  });
 }
 
 export async function verifyPagesDeployment(options = {}) {
@@ -135,6 +177,9 @@ export async function verifyPagesDeployment(options = {}) {
           "public news sentiment does not reach 2005",
         );
       }
+      const workerRuntime = options.workerUrl
+        ? await verifyWorkerRuntime({ workerUrl: options.workerUrl, fetchImpl })
+        : null;
       return {
         attempts: attempt,
         bundleUrl: bundleUrl.href,
@@ -142,6 +187,7 @@ export async function verifyPagesDeployment(options = {}) {
         deployedHash,
         deployedVersion,
         newsSentimentCoverage,
+        workerRuntime,
       };
     } catch (error) {
       lastError = error;
@@ -167,8 +213,9 @@ async function main() {
     expectedBuild,
     expectedBundleHash: sha256(bundle),
     expectedDataManifest: JSON.parse(dataManifestText),
+    workerUrl: process.env.THINKSTOCK_WORKER_URL || "https://thinkstock-api.keg0320.workers.dev",
   });
-  console.log(`Public Pages verified: v${result.deployedVersion}, ${result.deployedHash.slice(0, 12)}, data ${result.dataRevision}, news ${result.newsSentimentCoverage?.firstDate}-${result.newsSentimentCoverage?.latestDate}, attempt ${result.attempts}`);
+  console.log(`Public Pages verified: v${result.deployedVersion}, ${result.deployedHash.slice(0, 12)}, data ${result.dataRevision}, news ${result.newsSentimentCoverage?.firstDate}-${result.newsSentimentCoverage?.latestDate}, Worker API ${result.workerRuntime?.apiVersion}, analysis ${result.workerRuntime?.analysisContractVersion}, attempt ${result.attempts}`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

@@ -1,4 +1,4 @@
-export const RUNTIME_API_VERSION = 2;
+export const RUNTIME_API_VERSION = 3;
 export const MINIMUM_RUNTIME_API_VERSION = 2;
 export const RUNTIME_API_VERSION_HEADER = "X-ThinkStock-API-Version";
 

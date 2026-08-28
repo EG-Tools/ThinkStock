@@ -72,6 +72,16 @@ test("release script refreshes deployment data only when explicitly requested", 
   assert.match(launcher, /-RefreshData/);
 });
 
+test("release deploys and value-checks the Worker before dispatching Pages", async () => {
+  const source = await readFile(new URL("../../scripts/release_pages.ps1", import.meta.url), "utf8");
+  const deployAt = source.indexOf('Invoke-Checked npm @("run", "worker:deploy")');
+  const parityAt = source.indexOf('Invoke-Checked npm @("run", "verify:runtime-parity")');
+  const pagesAt = source.indexOf('Invoke-Checked gh @(');
+  assert.ok(deployAt > 0);
+  assert.ok(parityAt > deployAt);
+  assert.ok(pagesAt > parityAt);
+});
+
 test("deployment shares the diagnostic bundle with every WebKit validation job", async () => {
   const workflow = await readFile(new URL("../../.github/workflows/deploy-pages.yml", import.meta.url), "utf8");
   assert.match(workflow, /name: Upload E2E Diagnostic Bundle[\s\S]*name: thinkstock-e2e-bundle[\s\S]*path: \.thinkstock-cache\/e2e\/app\.bundle\.min\.js/);

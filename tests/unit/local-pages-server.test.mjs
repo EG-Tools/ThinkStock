@@ -77,6 +77,54 @@ test("reports when the running local server source has changed", async () => {
   }
 });
 
+test("local company analysis uses the shared Worker contract and cache rules", async () => {
+  const values = new Map();
+  const analysisCache = {
+    async get(key, type) {
+      const value = values.get(key) || null;
+      return type === "json" ? value : JSON.stringify(value);
+    },
+    async put(key, value) {
+      values.set(key, JSON.parse(value));
+    },
+  };
+  let upstreamCalls = 0;
+  const fetchImpl = async (url) => {
+    upstreamCalls += 1;
+    const target = String(url);
+    if (target.includes("cF1001.aspx")) {
+      return new Response(`<table><thead><tr><th class="r03c01">2025/12</th><th class="r03c02">2026/12(E)</th></tr></thead><tbody><tr><th>매출액</th><td title="1,300"></td><td title="1,600"></td></tr><tr><th>EPS(원)</th><td title="1,131"></td><td title="1,983"></td></tr></tbody></table>`);
+    }
+    if (target.includes("navercomp.wisereport.co.kr")) {
+      return new Response(`<script>$.ajax({ data: { cmp_cd: '218410', encparam: 'encoded-value', id: 'financial-target' } });</script>`);
+    }
+    return new Response(`<li><a href="/item/news_read.naver?article_id=4&amp;office_id=5&amp;code=218410">공급계약 체결</a><em>08/28</em></li>`);
+  };
+  const server = await createThinkStockServer({
+    syncPagesData: false,
+    fetchImpl,
+    insiderCache: analysisCache,
+    gateway: { apiKey: "", initialize: async () => {} },
+  });
+  try {
+    const port = await listenTestServer(server);
+    const endpoint = `http://127.0.0.1:${port}/api/analysis?ticker=218410.KQ`;
+    const firstResponse = await fetch(endpoint);
+    const first = await firstResponse.json();
+    const callsAfterFirst = upstreamCalls;
+    const second = await fetch(endpoint).then((response) => response.json());
+    assert.equal(firstResponse.headers.get("X-ThinkStock-API-Version"), "3");
+    assert.equal(first.analysisContractVersion, 1);
+    assert.equal(first.dataQuality.completeFinancialSummary, true);
+    assert.equal(first.cached, false);
+    assert.equal(second.cached, true);
+    assert.equal(upstreamCalls, callsAfterFirst);
+  } finally {
+    server.close();
+    await once(server, "close");
+  }
+});
+
 test("local admin sessions use the Worker without exposing its access token to the browser", async () => {
   let forwarded = null;
   const fetchImpl = async (url, options = {}) => {

@@ -33,6 +33,12 @@ test("refreshes legacy partial EPS caches once and accepts current coverage", ()
       frequency: "annual",
       estimate: false,
       eps: 100,
+    }, {
+      ticker: "218410.KQ",
+      period: "2026-03",
+      frequency: "quarter",
+      estimate: false,
+      eps: 25,
     }],
   }, legacy);
   assert.equal(current.financialSummaryVersion, FINANCIAL_SUMMARY_VERSION);

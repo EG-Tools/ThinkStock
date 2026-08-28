@@ -77,6 +77,8 @@ if ($PreparedCommit) {
   Invoke-Checked git @("commit", "-m", $Message)
   Invoke-Checked git @("push", "origin", "main")
 }
+Invoke-Checked npm @("run", "worker:deploy")
+Invoke-Checked npm @("run", "verify:runtime-parity")
 Invoke-Checked gh @(
   "workflow", "run", "deploy-pages.yml", "--ref", "main",
   "-f", "release_title=$Message",

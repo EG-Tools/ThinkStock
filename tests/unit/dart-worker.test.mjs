@@ -1923,6 +1923,14 @@ test("returns today's accumulated analysis cache without an upstream request", a
     frequency: "annual",
     estimate: false,
     revenue: 1300,
+    eps: 1131,
+  }, {
+    ticker: "218410.KQ",
+    period: "2026-03",
+    frequency: "quarter",
+    estimate: false,
+    revenue: 350,
+    eps: 154,
   }];
   const cache = memoryKv({
     "analysis:218410.KQ": JSON.stringify({
@@ -1942,7 +1950,17 @@ test("returns today's accumulated analysis cache without an upstream request", a
   const payload = await response.json();
   assert.equal(response.status, 200);
   assert.equal(payload.cached, true);
-  assert.deepEqual(payload.financials, financials);
+  assert.deepEqual(payload.financials.map((record) => ({
+    period: record.period,
+    frequency: record.frequency,
+    revenue: record.revenue,
+    eps: record.eps,
+  })), financials.map((record) => ({
+    period: record.period,
+    frequency: record.frequency,
+    revenue: record.revenue,
+    eps: record.eps,
+  })));
   assert.equal(payload.snapshots.length, 1);
   const migrated = JSON.parse(cache.values.get("analysis:218410.KQ"));
   assert.equal(migrated.schema, 5);
@@ -1968,9 +1986,11 @@ test("refreshes today's company analysis only when explicitly requested", async 
   globalThis.fetch = async (url) => {
     calls += 1;
     const target = String(url);
-    const body = target.includes("navercomp.wisereport.co.kr")
-      ? `<table id="cTB15"><tr><th>opinion</th></tr><tr><td><b>4.00</b></td><td>132,600</td><td>1,665</td><td>26.16</td><td>5</td></tr></table>`
-      : `<li><a href="/item/news_read.naver?article_id=4&amp;office_id=5&amp;code=218410">대규모 공급계약 체결</a><em>08/08</em></li>`;
+    const body = target.includes("cF1001.aspx")
+      ? `<table><thead><tr><th class="r03c01">2025/12</th><th class="r03c02">2026/12(E)</th></tr></thead><tbody><tr><th>매출액</th><td title="1,300"></td><td title="1,600"></td></tr><tr><th>EPS(원)</th><td title="1,131"></td><td title="1,983"></td></tr></tbody></table>`
+      : (target.includes("navercomp.wisereport.co.kr")
+        ? `<script>$.ajax({ data: { cmp_cd: '218410', encparam: 'encoded-value', id: 'financial-target' } });</script><table id="cTB15"><tr><th>opinion</th></tr><tr><td><b>4.00</b></td><td>132,600</td><td>1,665</td><td>26.16</td><td>5</td></tr></table>`
+        : `<li><a href="/item/news_read.naver?article_id=4&amp;office_id=5&amp;code=218410">대규모 공급계약 체결</a><em>08/08</em></li>`);
     return new Response(body, {
       status: 200,
       headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -1985,7 +2005,7 @@ test("refreshes today's company analysis only when explicitly requested", async 
     assert.equal(response.status, 200);
     assert.equal(payload.cached, false);
     assert.equal(payload.news[0].title, "대규모 공급계약 체결");
-    assert.equal(calls, 2);
+    assert.equal(calls, 4);
     assert.equal(JSON.parse(cache.values.get("analysis:218410.KQ")).news.length, 1);
   } finally {
     globalThis.fetch = originalFetch;

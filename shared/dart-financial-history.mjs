@@ -364,7 +364,7 @@ async function fetchDartFinancialPayload(fetchImpl, endpoint, query, options = {
   const headers = new Headers(options.headers || {});
   if (!headers.has("Accept")) headers.set("Accept", "application/json");
   if (!headers.has("User-Agent")) {
-    headers.set("User-Agent", "Mozilla/5.0 (compatible; ThinkStock/3.21; +https://eg-tools.github.io/ThinkStock/)");
+    headers.set("User-Agent", "Mozilla/5.0 (compatible; ThinkStock Runtime; +https://eg-tools.github.io/ThinkStock/)");
   }
 
   let requestUrl = initialUrl;
