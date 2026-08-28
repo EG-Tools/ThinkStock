@@ -62,7 +62,7 @@ async function wait(delayMs) {
 
 export async function verifyWorkerRuntime(options = {}) {
   const workerUrl = new URL(String(options.workerUrl || "https://thinkstock-api.keg0320.workers.dev"));
-  const healthUrl = new URL("/api/health", workerUrl);
+  const healthUrl = new URL("/health", workerUrl);
   healthUrl.searchParams.set("verify", String(Date.now()));
   const response = await (options.fetchImpl || fetch)(healthUrl, {
     cache: "no-store",

@@ -101,23 +101,31 @@ test("public deployment verifier checks deployed macro files and long news histo
 });
 
 test("public deployment verifier rejects a stale Worker contract", async () => {
+  const requestedPaths = [];
   await assert.rejects(() => verifyWorkerRuntime({
     workerUrl: "https://worker.example.test",
-    fetchImpl: async () => Response.json({
-      ok: true,
-      analysisContractVersion: 0,
-      financialSummaryVersion: 2,
-    }, { headers: { "X-ThinkStock-API-Version": "3" } }),
+    fetchImpl: async (url) => {
+      requestedPaths.push(new URL(url).pathname);
+      return Response.json({
+        ok: true,
+        analysisContractVersion: 0,
+        financialSummaryVersion: 2,
+      }, { headers: { "X-ThinkStock-API-Version": "3" } });
+    },
   }), /company-analysis contract is stale/);
 
   const result = await verifyWorkerRuntime({
     workerUrl: "https://worker.example.test",
-    fetchImpl: async () => Response.json({
-      ok: true,
-      analysisContractVersion: 1,
-      financialSummaryVersion: 3,
-    }, { headers: { "X-ThinkStock-API-Version": "3" } }),
+    fetchImpl: async (url) => {
+      requestedPaths.push(new URL(url).pathname);
+      return Response.json({
+        ok: true,
+        analysisContractVersion: 1,
+        financialSummaryVersion: 3,
+      }, { headers: { "X-ThinkStock-API-Version": "3" } });
+    },
   });
+  assert.deepEqual(requestedPaths, ["/health", "/health"]);
   assert.deepEqual(result, {
     apiVersion: 3,
     analysisContractVersion: 1,
