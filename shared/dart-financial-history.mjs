@@ -8,6 +8,8 @@ const REPORT_PERIODS = Object.freeze({
 export const DART_EPS_HISTORY_VERSION = 1;
 export const DART_EPS_HISTORY_YEARS = 10;
 export const DART_FINANCIAL_ALL_URL = "https://opendart.fss.or.kr/api/fnlttSinglAcntAll.json";
+const DART_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const MAX_DART_REDIRECTS = 2;
 
 function parseFinancialNumber(value) {
   if (value === null || value === undefined || value === "") return null;
@@ -356,10 +358,34 @@ async function fetchDartFinancialPayload(fetchImpl, endpoint, query, options = {
   const signal = options.signal || (
     typeof AbortSignal?.timeout === "function" ? AbortSignal.timeout(options.timeoutMs || 30000) : undefined
   );
-  const response = await fetchImpl(`${endpoint}?${new URLSearchParams(query)}`, {
-    headers: options.headers || undefined,
-    signal,
-  });
+  const initialUrl = new URL(`${endpoint}?${new URLSearchParams(query)}`);
+  const allowedOrigin = initialUrl.origin;
+  const visited = new Set();
+  const headers = new Headers(options.headers || {});
+  if (!headers.has("Accept")) headers.set("Accept", "application/json");
+  if (!headers.has("User-Agent")) {
+    headers.set("User-Agent", "Mozilla/5.0 (compatible; ThinkStock/3.21; +https://eg-tools.github.io/ThinkStock/)");
+  }
+
+  let requestUrl = initialUrl;
+  let response = null;
+  for (let redirectCount = 0; redirectCount <= MAX_DART_REDIRECTS; redirectCount += 1) {
+    if (visited.has(requestUrl.href)) throw new Error("DART redirect loop");
+    visited.add(requestUrl.href);
+    response = await fetchImpl(requestUrl.href, {
+      headers,
+      redirect: "manual",
+      signal,
+    });
+    if (!DART_REDIRECT_STATUSES.has(response.status)) break;
+    const location = response.headers.get("Location");
+    if (!location) throw new Error(`DART redirect ${response.status} without location`);
+    const redirectedUrl = new URL(location, requestUrl);
+    if (redirectedUrl.origin !== allowedOrigin) throw new Error("DART redirected outside official origin");
+    requestUrl = redirectedUrl;
+    response = null;
+  }
+  if (!response) throw new Error("DART redirect limit exceeded");
   if (!response.ok) throw new Error(`DART HTTP ${response.status}`);
   const payload = await response.json();
   const status = String(payload?.status || "");

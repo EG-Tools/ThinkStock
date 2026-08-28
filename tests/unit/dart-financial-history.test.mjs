@@ -114,9 +114,11 @@ test("targets ten completed financial years after annual filings become availabl
 
 test("falls back to separate statements only when consolidated EPS is unavailable", async () => {
   const requests = [];
-  const fetchImpl = async (url) => {
+  const requestOptions = [];
+  const fetchImpl = async (url, options) => {
     const query = new URL(url).searchParams;
     requests.push(`${query.get("reprt_code")}:${query.get("fs_div")}`);
+    requestOptions.push(options);
     const reportCode = query.get("reprt_code");
     const fsDivision = query.get("fs_div");
     if (fsDivision === "CFS") return new Response(JSON.stringify({ status: "013", message: "no data" }));
@@ -141,4 +143,24 @@ test("falls back to separate statements only when consolidated EPS is unavailabl
   });
   assert.equal(requests.length, 8);
   assert.equal(result.records.filter((row) => row.frequency === "quarter").length, 4);
+  assert.equal(requestOptions.every((options) => options.redirect === "manual"), true);
+  assert.equal(requestOptions.every((options) => options.headers.get("Accept") === "application/json"), true);
+  assert.equal(requestOptions.every((options) => /ThinkStock/.test(options.headers.get("User-Agent"))), true);
+});
+
+test("stops repeated DART redirects before exhausting Worker subrequests", async () => {
+  let requests = 0;
+  const fetchImpl = async (url) => {
+    requests += 1;
+    return new Response(null, { status: 302, headers: { Location: url } });
+  };
+
+  await assert.rejects(fetchDartEpsYear({
+    apiKey: "test-key",
+    corpCode: "00126380",
+    ticker: "005930.KS",
+    businessYear: 2025,
+    fetchImpl,
+  }), /DART redirect loop/);
+  assert.equal(requests, 4);
 });
