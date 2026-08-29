@@ -296,6 +296,43 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
     const rect = element.getBoundingClientRect();
     const xAxis = element?._fullLayout?.xaxis;
     const yAxis = element?._fullLayout?.yaxis;
+    const panRatios = [0.2, 0.9];
+    const targetTimes = panRatios.map((ratio) => Date.parse(
+      xAxis.p2d(xAxis._length * ratio),
+    ));
+    const occupiedY = [];
+    const interpolateAt = (trace, targetTime) => {
+      const points = (trace.x || []).flatMap((date, index) => {
+        const time = Date.parse(date);
+        const value = Number(trace.y?.[index]);
+        return Number.isFinite(time) && Number.isFinite(value) ? [{ time, value }] : [];
+      }).sort((left, right) => left.time - right.time);
+      if (!points.length || targetTime < points[0].time || targetTime > points.at(-1).time) return null;
+      let right = points.findIndex((point) => point.time >= targetTime);
+      if (right < 0) return null;
+      if (points[right].time === targetTime || right === 0) return points[right].value;
+      const left = points[right - 1];
+      const span = points[right].time - left.time;
+      return span > 0
+        ? left.value + ((points[right].value - left.value) * (targetTime - left.time) / span)
+        : left.value;
+    };
+    (element.data || []).forEach((trace) => {
+      if (trace?.visible === "legendonly" || !Array.isArray(trace?.x) || !Array.isArray(trace?.y)) return;
+      targetTimes.forEach((targetTime) => {
+        const value = interpolateAt(trace, targetTime);
+        const pixel = Number.isFinite(value) ? Number(yAxis.l2p(value)) : NaN;
+        if (Number.isFinite(pixel)) occupiedY.push(pixel);
+      });
+    });
+    const safeLocalY = [0.08, 0.2, 0.35, 0.5, 0.65, 0.8, 0.92]
+      .map((ratio) => yAxis._length * ratio)
+      .sort((left, right) => {
+        const clearance = (value) => occupiedY.length
+          ? Math.min(...occupiedY.map((occupied) => Math.abs(occupied - value)))
+          : yAxis._length;
+        return clearance(right) - clearance(left);
+      })[0];
     const forecastDates = (element.data || [])
       .filter((trace) => trace?.meta?.isAiForecastScenarioTrace)
       .flatMap((trace) => trace.x || [])
@@ -309,7 +346,7 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
     return {
       earlierX: rect.left + xAxis._offset + xAxis._length * 0.2,
       laterX: rect.left + xAxis._offset + xAxis._length * 0.9,
-      y: rect.top + yAxis._offset + yAxis._length * 0.94,
+      y: rect.top + yAxis._offset + safeLocalY,
       forecastEnd: Math.max(...forecastDates),
       observedEnd: Math.max(...observedDates),
       traceCount: (element.data || []).filter((trace) => trace?.meta?.isAiForecastScenarioTrace).length,
