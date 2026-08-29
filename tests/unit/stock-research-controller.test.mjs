@@ -266,6 +266,24 @@ test("one-day research follows each market's latest date and previous session", 
   assert.equal(controller.researchMarketDateLabel(marketDates), "코스피 2026-08-11 · 코스닥 2026-08-10");
 });
 
+test("one-day research prefers analyzed candidate dates over a stale chart snapshot", () => {
+  const marketDates = controller.resolveCandidateResearchMarketDates([
+    { ticker: "460930.KQ", market: "KOSDAQ", latestDate: "2026-08-28" },
+    { ticker: "329180.KS", market: "KOSPI", latestDate: "2026-08-28" },
+  ], {
+    KOSPI: "2026-08-27",
+    KOSDAQ: "2026-08-27",
+  });
+
+  assert.deepEqual(marketDates, { KOSPI: "2026-08-28", KOSDAQ: "2026-08-28" });
+  assert.equal(controller.candidateMatchesTodayFilter({
+    ticker: "460930.KQ",
+    market: "KOSDAQ",
+    latestDate: "2026-08-28",
+    lastBuyDate: "2026-08-27",
+  }, { includeBuy: true, includeSell: false }, marketDates, "2026-08-28"), true);
+});
+
 test("signal period cycles through off, one, fifteen and thirty trading days", () => {
   assert.equal(controller.signalWindowLabel(0), "OFF");
   assert.equal(controller.signalWindowLabel(1), "1일");

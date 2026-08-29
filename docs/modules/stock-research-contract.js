@@ -68,7 +68,7 @@
     return `시총 상위 ${perMarket}+${perMarket} 중 상대적 안정성 필터를 통과한 공부 후보입니다. 매수 추천이 아닙니다.`;
   }
 
-  const SIGNAL_LOGIC_VERSION = "adaptive1000-recovery-v12";
+  const SIGNAL_LOGIC_VERSION = "adaptive1000-recovery-v13";
   const contract = Object.freeze({
     SIGNAL_LOGIC_VERSION,
     CALCULATION_VERSION: SIGNAL_LOGIC_VERSION,

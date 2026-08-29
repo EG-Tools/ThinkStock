@@ -64,6 +64,7 @@
     normalizeSignalWindowDays,
     researchMarketDateLabel,
     researchMarketDateIsCurrent,
+    resolveCandidateResearchMarketDates,
     resolveResearchMarketDates,
     signalWindowLabel,
     visibleCandidateReasons,
@@ -523,7 +524,10 @@
     function getMinimumCandidatePool(marketDates = null, expectedDate = "") {
       const source = Array.isArray(cached?.candidatePool) ? cached.candidatePool : (cached?.candidates || []);
       const references = marketDates || (signalWindowIsActive()
-        ? resolveResearchMarketDates(getSharedSources())
+        ? resolveCandidateResearchMarketDates(
+            source,
+            resolveResearchMarketDates(getSharedSources()),
+          )
         : null);
       const expected = signalWindowIsActive() ? (expectedDate || expectedResearchDate()) : "";
       return source.filter((candidate) => candidateMatchesFilter(
@@ -535,8 +539,12 @@
     }
 
     function getCandidateNavigation(fresh = false) {
+      const source = Array.isArray(cached?.candidatePool) ? cached.candidatePool : (cached?.candidates || []);
       const marketDates = signalWindowIsActive()
-        ? resolveResearchMarketDates(getSharedSources())
+        ? resolveCandidateResearchMarketDates(
+            source,
+            resolveResearchMarketDates(getSharedSources()),
+          )
         : null;
       const expectedDate = signalWindowIsActive() ? expectedResearchDate() : "";
       const fullPool = getMinimumCandidatePool(marketDates, expectedDate);
@@ -1069,12 +1077,17 @@
           ...universeChanges.added,
           ...universeChanges.changed,
         ].map((item) => String(item?.ticker || "").trim().toUpperCase()));
+        // Period searches answer a point-in-time question, so every ticker must
+        // be re-evaluated. Price history remains cached; only signal models run.
+        const refreshSignalWindow = signalWindowIsActive();
         const scanRecords = canIncrement
           ? records.filter((item) => {
             const ticker = String(item?.ticker || "").trim().toUpperCase();
             const market = String(item?.market || "").trim().toUpperCase()
               || (ticker.endsWith(".KQ") ? "KOSDAQ" : "KOSPI");
-            return directlyChangedTickers.has(ticker) || sharedMarketsChanged.has(market);
+            return refreshSignalWindow
+              || directlyChangedTickers.has(ticker)
+              || sharedMarketsChanged.has(market);
           })
           : records;
         const nextUniverseState = universeChanges.state;
@@ -1130,7 +1143,7 @@
             preloadedHistory = new Map();
           }
         }
-        if (scanRecords.length && typeof timingCache?.readMany === "function") {
+        if (!refreshSignalWindow && scanRecords.length && typeof timingCache?.readMany === "function") {
           try {
             preloadedTiming = await timingCache.readMany(scanRecords.map((item) => (
               String(item?.ticker || "").trim().toUpperCase()
@@ -1169,7 +1182,7 @@
                 historyRows,
                 tickerAnalysisDate,
                 ANALYSIS_FILTER,
-                preloadedTiming.get(ticker) || null,
+                refreshSignalWindow ? null : (preloadedTiming.get(ticker) || null),
               );
               const candidate = analysis && ("candidate" in analysis || "timingCacheRecord" in analysis)
                 ? (analysis.candidate || null)
@@ -1398,6 +1411,7 @@
     normalizeSignalWindowDays,
     researchMarketDateLabel,
     researchMarketDateIsCurrent,
+    resolveCandidateResearchMarketDates,
     researchWorkerLaneCount,
     mergeResearchHistoryPayload,
     mergeUniversePointIntoHistoryCache,

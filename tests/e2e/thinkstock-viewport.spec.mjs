@@ -64,6 +64,88 @@ test("illiquid preferred stock can be added across long historical trading gaps"
   await expect(page.locator('[data-series="019175.KS"]')).toHaveClass(/is-on/);
 });
 
+test("a hidden research stock revives an empty chart at the latest one-year range", async ({ page }) => {
+  const ticker = "460930.KQ";
+  let historyRequestCount = 0;
+  const rows = [];
+  for (
+    let cursor = new Date("2023-01-02T00:00:00Z"), index = 0;
+    cursor <= new Date("2026-08-28T00:00:00Z");
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  ) {
+    if (cursor.getUTCDay() === 0 || cursor.getUTCDay() === 6) continue;
+    rows.push({
+      date: cursor.toISOString().slice(0, 10),
+      close: 12000 + index,
+      volume: 100000 + index,
+    });
+    index += 1;
+  }
+  await page.addInitScript(({ ticker: stockTicker }) => {
+    localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "e2e-token" }));
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 36,
+      autoChartReset: true,
+      customStocks: [{ ticker: stockTicker, code: "460930", name: "현대힘스", market: "KOSDAQ" }],
+      hiddenSeries: [
+        "leading_cycle",
+        "^KS11",
+        "^KQ11",
+        "customer_deposit",
+        "kospi_credit",
+        "kosdaq_credit",
+        stockTicker,
+      ],
+    }));
+  }, { ticker });
+  await installDataRoutes(page);
+  await page.route("**/api/research/history?*", async (route) => {
+    historyRequestCount += 1;
+    await route.fulfill({ json: {
+      ok: true,
+      ticker,
+      latestDate: "2026-08-28",
+      fullRowCount: rows.length,
+      partial: false,
+      rows,
+    } });
+  });
+  await page.unroute("**/api/prices?*");
+  await page.route("**/api/prices?*", async (route) => {
+    await route.fulfill({ json: {
+      ok: true,
+      ticker,
+      source: "KRX",
+      latestDate: "2026-08-28",
+      records: [{ date: "2026-08-28", close: rows.at(-1).close, volume: rows.at(-1).volume }],
+    } });
+  });
+
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  const button = page.locator(`[data-series="${ticker}"]`);
+  await expect(button).toBeEnabled();
+  await expect(button).toHaveClass(/is-off/);
+  await button.click();
+  await expect.poll(() => historyRequestCount).toBeGreaterThan(0);
+  await expect(button).toHaveClass(/is-on/);
+  await expect.poll(() => page.locator("#chart").evaluate((element, seriesKey) => {
+    const trace = (element.data || []).find((item) => item?.meta?.seriesKey === seriesKey);
+    const range = (element._fullLayout?.xaxis?.range || []).map(Date.parse);
+    return {
+      visible: Boolean(trace && trace.visible !== "legendonly" && trace.x?.length),
+      start: range[0],
+      end: range[1],
+    };
+  }, ticker)).toMatchObject({ visible: true });
+  const viewport = await page.locator("#chart").evaluate((element) => (
+    element._fullLayout.xaxis.range.map(Date.parse)
+  ));
+  const latest = Date.parse("2026-08-28T00:00:00Z");
+  expect(Math.abs(viewport[1] - latest)).toBeLessThanOrEqual(4 * 86400000);
+  expect(viewport[1] - viewport[0]).toBeGreaterThan(330 * 86400000);
+  expect(viewport[1] - viewport[0]).toBeLessThan(400 * 86400000);
+});
+
 test("RFHIC EPS prioritizes quarterly values and rises through annual estimates", async ({ page, isMobile }) => {
   test.setTimeout(90000);
   const ticker = "218410.KQ";

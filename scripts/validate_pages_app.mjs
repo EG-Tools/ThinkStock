@@ -520,7 +520,8 @@ assert.ok(runtimeRefreshOrchestrator.includes('criticalTask("indices", coreIndex
 "critical startup refresh tasks are not grouped");
 assert.ok(runtimeRefreshOrchestrator.includes("supplementalTasks: [")
   && !runtimeRefreshOrchestrator.includes("hiddenPriceTask,")
-  && app.includes("ensureCustomTickerSeriesLoaded(key, { displayName, returnAfterCache: true })"),
+  && app.includes("initialLoad = await ensureCustomTickerSeriesLoaded(key, {")
+  && app.includes("returnAfterCache: true,"),
 "hidden stock prices are not deferred until the stock becomes visible");
 assert.ok(runtimeRefreshOrchestrator.includes('reportCriticalProgress("chart", 96)')
   && runtimeDataApp.includes("onCriticalProgress: flow.onCriticalProgress"),

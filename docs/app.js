@@ -2821,7 +2821,7 @@ function changeMainSeriesVisibility(seriesKey, visible) {
 
   const requestComposition = () => requestSeriesCompositionUpdate(
     revivesEmptyChart ? "series-visibility-empty-recovery" : "series-visibility",
-    revivesEmptyChart ? { forceFitFull: true, preserveZoom: false } : {},
+    revivesEmptyChart ? { preserveZoom: false } : {},
   );
   const fastUpdate = applyMainSeriesVisibilityFast(key, visible);
   if (visible) {
@@ -3173,7 +3173,12 @@ function getSeriesPriorityOrder() {
 /* Dense macro interpolation (for daily data) */
 
 function syncSeriesToggleBoard(allSeries) {
-  const available = new Set(allSeries || []);
+  // A saved stock remains a valid lazy-load target before its first price trace
+  // has joined the current chart model.
+  const available = new Set([
+    ...(allSeries || []),
+    ...customStocks.map((item) => String(item?.ticker || "").trim().toUpperCase()),
+  ]);
   document.querySelectorAll(".series-toggle-btn").forEach((btn) => {
     const key = btn.dataset.series;
     btn.style.setProperty("--series-color", seriesColor(key));
@@ -3189,30 +3194,42 @@ function syncSeriesToggleBoard(allSeries) {
 function bindSeriesToggleBoard() {
   if (document.documentElement.dataset.seriesToggleBound === "1") return;
   document.documentElement.dataset.seriesToggleBound = "1";
-  document.addEventListener("click", (event) => {
+  document.addEventListener("click", async (event) => {
     const btn = event.target?.closest?.(".series-toggle-btn");
-    if (!btn || btn.disabled) return;
+    if (!btn || btn.disabled || btn.dataset.loading === "1") return;
     const key = btn.dataset.series;
     if (!key) return;
     const becomingVisible = chartSession.hiddenSeries.has(key);
-    if (!changeMainSeriesVisibility(key, becomingVisible)) return;
     if (becomingVisible && STOCK_TICKER_PATTERN.test(String(key).toUpperCase())) {
       const stock = customStocks.find((item) => item.ticker === key);
       const displayName = stock?.name || DISPLAY_NAMES[key] || key;
-      const beforeLoad = tickerPriceRenderSignature(key);
-      ensureCustomTickerSeriesLoaded(key, { displayName, returnAfterCache: true })
-        .then((initialLoad) => {
-          if (tickerPriceRenderSignature(key) !== beforeLoad) {
-            requestSeriesCompositionUpdate("series-price-ready");
-          }
-          scheduleVisibleSeriesSupplementalHydration(key, null, {
-            trackAiProgress: chartSession.showAiForecast,
+      const hasPriceData = getTickerPricePointsFromPayload(key).length > 0;
+      let initialLoad = null;
+      if (!hasPriceData) {
+        btn.dataset.loading = "1";
+        btn.setAttribute("aria-busy", "true");
+        try {
+          initialLoad = await ensureCustomTickerSeriesLoaded(key, {
+            displayName,
+            returnAfterCache: true,
           });
-          if (!initialLoad?.deferredRefresh) return;
-          scheduleVisibleStockHistoryRefresh(key, displayName);
-        })
-        .catch(() => {});
+        } catch (error) {
+          recordRuntimeError("series-price-activation", error, { key });
+          showChartNavigationMessage(`${displayName} 가격을 불러오지 못했습니다.`, 5000);
+          return;
+        } finally {
+          delete btn.dataset.loading;
+          btn.removeAttribute("aria-busy");
+        }
+      }
+      if (!changeMainSeriesVisibility(key, true)) return;
+      scheduleVisibleSeriesSupplementalHydration(key, null, {
+        trackAiProgress: chartSession.showAiForecast,
+      });
+      if (initialLoad?.deferredRefresh) scheduleVisibleStockHistoryRefresh(key, displayName);
+      return;
     }
+    if (!changeMainSeriesVisibility(key, becomingVisible)) return;
     if (becomingVisible
       && !STOCK_TICKER_PATTERN.test(String(key).toUpperCase())
       && chartSession.showAiForecast
@@ -3362,13 +3379,6 @@ const tickerIsHidden = (item) => chartSession.hiddenSeries.has(item.ticker);
 const visibleCustomTickerHistoriesReady = () => tickerPriceAppRuntime.visibleReady(customStocks, tickerIsHidden);
 const ensureVisibleCustomTickerHistoriesReady = () => tickerPriceAppRuntime.ensureVisible(customStocks, tickerIsHidden);
 const ensureCustomTickerSeriesLoaded = (ticker, options = {}) => tickerPriceAppRuntime.load(ticker, options);
-
-function tickerPriceRenderSignature(ticker) {
-  return [
-    appData.revision("pricePayload"),
-    appData.pricePayload?.series?.includes(String(ticker || "").toUpperCase()) ? 1 : 0,
-  ].join("|");
-}
 
 const runtimeIndexRefreshService = runtimeMarketRefreshModule.createRuntimeIndexRefreshService({
   canUseGateway: canUseDartGateway,

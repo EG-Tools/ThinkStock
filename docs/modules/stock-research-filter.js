@@ -44,6 +44,21 @@
     });
   }
 
+  function resolveCandidateResearchMarketDates(candidates = [], fallback = {}) {
+    const resolved = {
+      KOSPI: String(fallback?.KOSPI || "").slice(0, 10),
+      KOSDAQ: String(fallback?.KOSDAQ || "").slice(0, 10),
+    };
+    (Array.isArray(candidates) ? candidates : []).forEach((candidate) => {
+      const market = candidateResearchMarket(candidate);
+      const date = String(candidate?.latestDate || candidate?.asOfDate || "").slice(0, 10);
+      if (market && /^\d{4}-\d{2}-\d{2}$/.test(date) && date > resolved[market]) {
+        resolved[market] = date;
+      }
+    });
+    return Object.freeze(resolved);
+  }
+
   function candidateResearchMarket(candidate) {
     const market = String(candidate?.market || "").trim().toUpperCase();
     const ticker = String(candidate?.ticker || "").trim().toUpperCase();
@@ -171,6 +186,7 @@
     normalizeSignalWindowDays: contract.normalizeSignalWindowDays,
     researchMarketDateLabel,
     researchMarketDateIsCurrent,
+    resolveCandidateResearchMarketDates,
     resolveResearchMarketDates,
     signalWindowLabel: contract.signalWindowLabel,
     signalWindowSessionSpan: contract.signalWindowSessionSpan,
