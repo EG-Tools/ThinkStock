@@ -3,7 +3,9 @@ import test from "node:test";
 
 import {
   CHART_RENDER_SERIES_BUDGET,
+  CHART_RUNTIME_EFFICIENCY_BUDGET,
   DESKTOP_PERFORMANCE_BUDGET,
+  evaluateChartRuntimeEfficiency,
   evaluateChartRenderSeriesBudget,
   evaluatePerformanceBudget,
 } from "../../shared/performance-budget.mjs";
@@ -58,4 +60,27 @@ test("evaluates chart render cost by visible main-series band", () => {
     limit: CHART_RENDER_SERIES_BUDGET.maxAverageMs["2-5"],
   }]);
   assert.equal(result.skipped.includes("chartRenderAverage:6-10"), true);
+});
+
+test("guards partial chart reuse without judging an undersampled session", () => {
+  assert.deepEqual(
+    evaluateChartRuntimeEfficiency({ total: 2 }).skipped,
+    ["chartRuntimeEfficiency"],
+  );
+  assert.equal(evaluateChartRuntimeEfficiency({
+    total: 10,
+    fullRenderRate: 0.2,
+    fallbackRate: 0.1,
+    partialReuseRate: 0.8,
+  }).ok, true);
+  const failed = evaluateChartRuntimeEfficiency({
+    total: 10,
+    fullRenderRate: CHART_RUNTIME_EFFICIENCY_BUDGET.maxFullRenderRate + 0.1,
+    fallbackRate: 0,
+    partialReuseRate: CHART_RUNTIME_EFFICIENCY_BUDGET.minPartialReuseRate - 0.1,
+  });
+  assert.deepEqual(failed.violations.map((item) => item.metric), [
+    "fullRenderRate",
+    "partialReuseRate",
+  ]);
 });

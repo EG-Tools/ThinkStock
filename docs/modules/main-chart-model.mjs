@@ -113,6 +113,21 @@ import marketData from "./market-data.mjs";
     ].join("::");
   }
 
+  function mainChartDatasetKey(options = {}) {
+    return [
+      String(options.priceFingerprint || ""),
+      String(options.supplementalRevision || ""),
+    ].join("|");
+  }
+
+  function sortedObjectSignature(value) {
+    if (!value || typeof value !== "object") return "";
+    return Object.keys(value)
+      .sort()
+      .map((key) => `${key}:${value[key]}`)
+      .join("|");
+  }
+
   function createMainChartSessionModel(model) {
     if (!model || typeof model !== "object") return model;
     return {
@@ -124,10 +139,74 @@ import marketData from "./market-data.mjs";
     };
   }
 
+  function buildMainChartModelRequest(options = {}) {
+    const fixedFrame = options.fixedFrame && typeof options.fixedFrame === "object"
+      ? options.fixedFrame
+      : null;
+    const fixedNormBases = fixedFrame ? { ...(fixedFrame.normBases || {}) } : null;
+    const fixedAutoScales = fixedFrame ? { ...(fixedFrame.autoScales || {}) } : null;
+    const fixedFrameSignature = fixedFrame ? [
+      sortedObjectSignature(fixedNormBases),
+      sortedObjectSignature(fixedAutoScales),
+    ].join("|") : "";
+    const hiddenSeries = [...(options.hiddenSeries || [])];
+    const supplementalSeries = [...(options.supplementalSeries || [])];
+    const allowedSeries = [...(options.allowedSeries || [])];
+    const config = {
+      creditCols: [...(options.creditCols || [])],
+      creditOffsetDays: Number(options.creditOffsetDays) || 0,
+      start: String(options.dataStart || ""),
+      end: String(options.dataEnd || ""),
+      frameStart: String(options.frameStart || ""),
+      frameEnd: String(options.frameEnd || ""),
+      allowedSeries,
+      excludedSeries: supplementalSeries,
+      priorityOrder: [...(options.priorityOrder || [])],
+      displayNames: { ...(options.displayNames || {}) },
+      hiddenSeries,
+      seriesOffsets: { ...(options.seriesOffsets || {}) },
+      seriesScales: { ...(options.seriesScales || {}) },
+      fixedNormBases,
+      fixedAutoScales,
+      displayBudget: Math.max(1, Number(options.displayBudget) || 1),
+      preserveDailyPoints: options.preserveDailyPoints !== false,
+    };
+    const cacheKey = mainChartCalcCacheKey({
+      activeMonths: options.activeMonths,
+      chartFrameSignature: fixedFrameSignature || "auto-frame",
+      creditOffsetDays: config.creditOffsetDays,
+      customStocksSignature: String(options.customStocksSignature || ""),
+      dataStart: config.start,
+      dataEnd: config.end,
+      displayBudget: config.displayBudget,
+      frameStart: fixedFrameSignature ? "fixed-frame" : config.frameStart,
+      frameEnd: fixedFrameSignature ? "fixed-frame" : config.frameEnd,
+      hiddenSeriesSignature: hiddenSeries.sort().join(","),
+      offsetsSignature: sortedObjectSignature(config.seriesOffsets),
+      preserveDailyPoints: config.preserveDailyPoints,
+      priceFingerprint: options.priceFingerprint,
+      scalesSignature: sortedObjectSignature(config.seriesScales),
+      supplementalRevision: options.supplementalRevision,
+    });
+    const sources = {
+      priceRows: Array.isArray(options.sources?.priceRows) ? options.sources.priceRows : [],
+      macroRows: Array.isArray(options.sources?.macroRows) ? options.sources.macroRows : [],
+      creditRows: Array.isArray(options.sources?.creditRows) ? options.sources.creditRows : [],
+    };
+    return {
+      cacheKey,
+      workerPayload: {
+        ...config,
+        datasetKey: mainChartDatasetKey(options),
+        sources,
+      },
+      syncPayload: { ...config, ...sources },
+    };
+  }
+
   function buildMainChartModel(payload = {}) {
     const { marketData, adjustments, displaySampler } = dependencies();
     const {
-      mergeSources,
       normalizeSeries,
       centeredScale,
       autoFitScales,
@@ -136,7 +215,14 @@ import marketData from "./market-data.mjs";
       shiftIsoDateByDays,
     } = marketData;
     const { resolveScale, transformValues } = adjustments;
-    const { rows, macroCols, liveCols } = mergeSources(payload);
+    const preparedDataset = payload.preparedDataset?.hasFiniteSeries
+      ? payload.preparedDataset
+      : null;
+    const merged = preparedDataset || marketData.mergeSources(payload);
+    const { rows, macroCols, liveCols } = merged;
+    const baseXValues = preparedDataset?.baseXValues || rows.map((row) => row.date);
+    const hasFiniteSeries = preparedDataset?.hasFiniteSeries
+      || ((series) => rows.some((row) => toNum(row?.[series]) !== null));
     const allowed = new Set(payload.allowedSeries || []);
     const hidden = new Set(payload.hiddenSeries || []);
     const excluded = new Set(payload.excludedSeries || []);
@@ -151,7 +237,7 @@ import marketData from "./market-data.mjs";
     const allSeries = sortSeries(
       [...new Set([...liveCols, ...macroCols])]
         .filter((series) => allowed.has(series))
-        .filter((series) => rows.some((row) => toNum(row[series]) !== null)),
+        .filter(hasFiniteSeries),
       priorityOrder,
       displayNames,
     );
@@ -164,7 +250,9 @@ import marketData from "./market-data.mjs";
 
     const frameStart = String(payload.frameStart || payload.start || "");
     const frameEnd = String(payload.frameEnd || payload.end || "");
-    const calculationRows = rows.filter((row) => row.date >= frameStart && row.date <= frameEnd);
+    const calculationRows = preparedDataset?.rowsInRange
+      ? preparedDataset.rowsInRange(frameStart, frameEnd)
+      : rows.filter((row) => row.date >= frameStart && row.date <= frameEnd);
     const frameRows = calculationRows.length ? calculationRows : rows;
     const visible = selected.filter((series) => !hidden.has(series));
     // Hidden series keep their trace slot for stable toggle behavior, but do not
@@ -174,7 +262,6 @@ import marketData from "./market-data.mjs";
       autoFitScales(frameRows, visible, normBases),
       payload.fixedAutoScales,
     );
-    const baseXValues = rows.map((row) => row.date);
     const seriesModels = selected.map((series) => {
       if (hidden.has(series)) {
         return {
@@ -187,10 +274,10 @@ import marketData from "./market-data.mjs";
           baseValues: [],
         };
       }
-      const rawValues = rows.map((row) => toNum(row[series]));
-      const rawTexts = rawValues.map((value) => (
-        Number.isFinite(value) ? numberFormat.format(value) : "N/A"
-      ));
+      const rawValues = preparedDataset?.rawValuesFor(series)
+        || rows.map((row) => toNum(row?.[series]));
+      const rawTexts = preparedDataset?.rawTextsFor(series)
+        || rawValues.map((value) => (Number.isFinite(value) ? numberFormat.format(value) : "N/A"));
       const base = normBases[series];
       let baseValues = (base && base !== 0)
         ? rawValues.map((value) => (Number.isFinite(value) ? (value / base) * 100 : null))
@@ -237,17 +324,23 @@ import marketData from "./market-data.mjs";
   }
 
   const mainChartModel = Object.freeze({
+    buildMainChartModelRequest,
     buildMainChartRenderInputs,
     buildMainChartModel,
     createMainChartSessionModel,
     mainChartCalcCacheKey,
+    mainChartDatasetKey,
+    sortedObjectSignature,
     sortSeries,
   });
 export {
-  buildMainChartModel,
-  buildMainChartRenderInputs,
-  createMainChartSessionModel,
-  mainChartCalcCacheKey,
-  sortSeries,
+    buildMainChartModel,
+    buildMainChartModelRequest,
+    buildMainChartRenderInputs,
+    createMainChartSessionModel,
+    mainChartCalcCacheKey,
+    mainChartDatasetKey,
+    sortedObjectSignature,
+    sortSeries,
 };
 export default mainChartModel;

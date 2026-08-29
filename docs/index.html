@@ -10,7 +10,7 @@
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" href="./icon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./styles.css">
-  <script defer src="./assets/app.bundle.min.js?v=dev&amp;build=3.23&amp;asset=bbce7bac800d"></script>
+  <script defer src="./assets/app.bundle.min.js?v=dev&amp;build=3.27&amp;asset=5c8e07e8f1de"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -113,7 +113,7 @@
           This product uses the FRED&reg; API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.
         </p>
         <p id="mainAppMeta" class="app-company-line app-company-line-main">
-              <span>Version : <span data-app-version-copy>3.23</span></span>
+              <span>Version : <span data-app-version-copy>3.27</span></span>
           <span>회사 : Life User</span>
           <span>이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a></span>
         </p>
@@ -128,7 +128,7 @@
           <div class="stock-research-filters" role="group" aria-label="종목탐구 신호 필터">
             <button id="stockResearchBuyFilter" class="ui-compact-control" type="button" aria-pressed="true">매수</button>
             <button id="stockResearchSellFilter" class="ui-compact-control" type="button" aria-pressed="false">매도</button>
-            <button id="stockResearchTodayFilter" class="ui-compact-control" type="button" aria-pressed="false">당일</button>
+            <button id="stockResearchTodayFilter" class="ui-compact-control" type="button" aria-label="1일 신호 기간 비활성" aria-pressed="false" data-signal-window="0">1일</button>
           </div>
           <button id="stockResearchModalBlockedClearBtn" class="stock-research-header-blocked-btn" type="button" disabled>차단 0 종목</button>
           <button id="stockResearchCloseBtn" class="ui-circle-button stock-research-close-btn" type="button" aria-label="종목탐구 닫기">×</button>
@@ -155,6 +155,7 @@
           </div>
           <div class="stock-research-page-controls" aria-label="종목탐구 목록 이동">
             <button id="stockResearchPreviousBtn" class="ui-circle-button" type="button" aria-label="이전 5개 종목">&lt;</button>
+            <output id="stockResearchPagePosition" class="stock-research-page-position" aria-live="polite">1</output>
             <button id="stockResearchNextBtn" class="ui-circle-button" type="button" aria-label="다음 5개 종목">&gt;</button>
           </div>
           <button id="stockResearchRefreshBtn" class="stock-research-refresh-btn" type="button">검색</button>
@@ -270,27 +271,12 @@
           <p id="appCacheEmpty" class="app-cache-empty" hidden>저장된 캐시가 없습니다.</p>
         </section>
         <p id="settingsAppMeta" class="app-company-line">
-        <span class="api-settings-version">Version : <span id="appVersionText">3.23</span></span>
+        <span class="api-settings-version">Version : <span id="appVersionText">3.27</span></span>
           <span>회사 : Life User</span>
           <span>이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a></span>
         </p>
       </section>
     </div>
 
-    <div id="apiExpiryReminderModal" class="ui-modal api-settings-modal api-expiry-reminder-modal" hidden>
-      <div class="ui-modal-backdrop api-settings-backdrop"></div>
-      <section class="ui-dialog-panel api-settings-panel api-expiry-reminder-panel" role="dialog" aria-modal="true" aria-labelledby="apiExpiryReminderTitle">
-        <header class="api-settings-header">
-          <h2 id="apiExpiryReminderTitle">KRX API 기간 알림</h2>
-          <button id="apiExpiryReminderCloseBtn" class="ui-circle-button api-close-btn" type="button" aria-label="닫기">×</button>
-        </header>
-        <p id="apiExpiryReminderMessage" class="api-expiry-reminder-message"></p>
-        <div id="apiExpiryReminderRows" class="api-period-rows api-expiry-reminder-rows" role="table" aria-label="만료 예정 KRX API"></div>
-        <label class="api-check-field api-expiry-snooze-field" for="apiExpiryReminderSnooze">
-          <input id="apiExpiryReminderSnooze" type="checkbox">
-          <span>7일간 보지 않기</span>
-        </label>
-      </section>
-    </div>
   </body>
 </html>

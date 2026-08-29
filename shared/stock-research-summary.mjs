@@ -21,6 +21,14 @@ function date(value) {
   return DATE_PATTERN.test(normalized) ? normalized : "";
 }
 
+function signalSessionAges(value) {
+  return (Array.isArray(value) ? value : [])
+    .map((age) => Math.round(Number(age)))
+    .filter((age) => Number.isInteger(age) && age >= 0 && age < 30)
+    .sort((left, right) => left - right)
+    .slice(0, 30);
+}
+
 export function normalizeResearchMinimum(value) {
   const number = Math.round(Number(value));
   return Number.isFinite(number) ? Math.max(1, Math.min(10, number)) : 5;
@@ -68,10 +76,14 @@ export function sanitizeResearchCandidate(value) {
     recentMonthSellCount: Math.round(finite(value?.recentMonthSellCount, 0, 100) ?? 0),
     firstBuyDate: date(value?.firstBuyDate),
     lastBuyDate: date(value?.lastBuyDate),
+    lastBuySessionAge: finite(value?.lastBuySessionAge, 0, 10000),
+    buySignalSessionAges: signalSessionAges(value?.buySignalSessionAges),
     firstBuyConfirmationDate: date(value?.firstBuyConfirmationDate) || null,
     lastBuyConfirmationDate: date(value?.lastBuyConfirmationDate) || null,
     firstSellDate: date(value?.firstSellDate) || null,
     lastSellDate: date(value?.lastSellDate) || null,
+    lastSellSessionAge: finite(value?.lastSellSessionAge, 0, 10000),
+    sellSignalSessionAges: signalSessionAges(value?.sellSignalSessionAges),
     firstSellConfirmationDate: date(value?.firstSellConfirmationDate) || null,
     lastSellConfirmationDate: date(value?.lastSellConfirmationDate) || null,
     sellDate: date(value?.sellDate) || date(value?.lastSellDate) || null,
@@ -80,6 +92,8 @@ export function sanitizeResearchCandidate(value) {
     reboundPercent: finite(value?.reboundPercent, -1000, 100000),
     return20Percent: finite(value?.return20Percent, -1000, 100000),
     annualVolatilityPercent: finite(value?.annualVolatilityPercent, 0, 100000),
+    priceMode: text(value?.priceMode, 12) === "realtime" ? "realtime" : "settled",
+    signalState: text(value?.signalState, 12) === "realtime" ? "realtime" : "confirmed",
     reasons: (Array.isArray(value?.reasons) ? value.reasons : []).map((reason) => text(reason, 100)).filter(Boolean).slice(0, 6),
     category: text(value?.category, 40),
     industry: text(value?.industry, 80),
@@ -152,6 +166,7 @@ export function normalizeResearchSummary(value, expected = {}) {
     incrementalDate,
     refreshCursor: Math.round(finite(value.refreshCursor, 0, 1000000) ?? 0),
     generatedAt: text(value.generatedAt, 40) || new Date().toISOString(),
+    priceMode: text(value.priceMode, 12) === "realtime" ? "realtime" : "settled",
     universeTickers,
     universeState: sanitizeUniverseState(value.universeState, universeSize),
     sharedFingerprint: text(value.sharedFingerprint, 80),

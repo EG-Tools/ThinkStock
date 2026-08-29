@@ -103,6 +103,14 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
     return chartOverlayDescriptor(trace).identity;
   }
 
+  function rangeBearingTraces(traces, roles = ["historical", "future"]) {
+    const allowedRoles = roles instanceof Set ? roles : new Set(roles);
+    return (Array.isArray(traces) ? traces : []).filter((trace) => (
+      trace?.visible !== "legendonly"
+      && allowedRoles.has(chartOverlayDescriptor(trace).rangeRole)
+    ));
+  }
+
   function traceOwnerSeries(trace) {
     const descriptor = chartOverlayDescriptor(trace);
     if (descriptor.event) return "";
@@ -1538,6 +1546,7 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
     isSeriesHandleTrace,
     invalidateRenderFingerprint,
     normalizeCursorLineMode,
+    rangeBearingTraces,
     renderFingerprint,
     relayoutPayload,
     reconcileTraceStructure,

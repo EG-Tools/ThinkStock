@@ -4,13 +4,13 @@ const LOCAL_ONLY_PATTERNS = [
 ];
 
 const GENERATED_ARTIFACT_PATTERNS = [
-  /^docs\/assets\/(?:app|analytics-core-feature|ai-feature|auxiliary-chart-feature|broker-research-feature|dart-feature|diagnostics-runtime-feature|eps-feature|market-timing-feature|stock-research-feature|settings-feature)\.bundle\.min\.js$/,
+  /^docs\/assets\/(?:app|analytics-core-feature|ai-feature|auxiliary-chart-feature|broker-research-feature|dart-feature|data-freshness-feature|diagnostics-runtime-feature|eps-feature|market-timing-feature|stock-research-feature|settings-feature)\.bundle\.min\.js$/,
 ];
 
 const WEBKIT_PATTERNS = [
   /^docs\/(app\.js|index\.html|styles\.css)$/,
   /^docs\/assets\/app\.bundle\.min\.js$/,
-  /^docs\/modules\/(ai-|app-ui|broker-|cache-maintenance|chart-|data-freshness|data-seed|disclosure|eps-|insider|main-chart|market-timing|optional-feature|performance-monitor|runtime-(?:bootstrap|data|series|source)|stock-research)/,
+  /^docs\/modules\/(ai-|app-ui|broker-|cache-maintenance|chart-|data-freshness|data-seed|disclosure|eps-|insider|main-chart|market-timing|optional-feature|performance-monitor|runtime-(?:bootstrap|data|index|market|refresh|series|source)|stock-research)/,
   /^scripts\/pages-entry\.mjs$/,
   /^scripts\/feature-entries\//,
 ];
@@ -34,6 +34,14 @@ const SERVER_ONLY_PATTERNS = [
 ];
 
 const EXPLICIT_UNIT_TESTS = Object.freeze([
+  Object.freeze({
+    pattern: /^docs\/modules\/runtime-market-refresh\.mjs$/,
+    tests: [
+      "tests/unit/runtime-bootstrap.test.mjs",
+      "tests/unit/runtime-index-refresh.test.mjs",
+      "tests/unit/runtime-market-refresh.test.mjs",
+    ],
+  }),
   Object.freeze({ pattern: /^worker\/src\/index\.mjs$/, tests: ["tests/unit/dart-worker.test.mjs"] }),
   Object.freeze({ pattern: /^scripts\/local_pages_server\.mjs$/, tests: ["tests/unit/local-pages-server.test.mjs"] }),
   Object.freeze({

@@ -345,6 +345,41 @@ test("chart worker runtime ignores unknown messages and reports source cache mis
   );
 });
 
+test("chart worker prepares one dataset for repeated viewport requests", () => {
+  let prepares = 0;
+  const prepared = { id: "prepared" };
+  const received = [];
+  const runtime = createChartModelWorkerRuntime({
+    prepareMainChartDataset: () => { prepares += 1; return prepared; },
+    mainChartModel: {
+      buildMainChartModel: (payload) => {
+        received.push(payload.preparedDataset);
+        return { frameStart: payload.frameStart };
+      },
+    },
+    auxiliaryChartModel: { buildAuxiliaryChartModel: (payload) => payload },
+  });
+  const sources = {
+    priceRows: [{ date: "2026-08-20", AAA: 100 }],
+    macroRows: [],
+    creditRows: [],
+  };
+
+  assert.equal(runtime.handleMessage({
+    id: "first",
+    type: "buildMainChartModel",
+    payload: { datasetKey: "prices-1", sources, frameStart: "2026-08-20" },
+  }).ok, true);
+  assert.equal(runtime.handleMessage({
+    id: "second",
+    type: "buildMainChartModel",
+    payload: { datasetKey: "prices-1", frameStart: "2026-08-21" },
+  }).ok, true);
+
+  assert.equal(prepares, 1);
+  assert.deepEqual(received, [prepared, prepared]);
+});
+
 
 test("chart worker adapter posts runtime responses and detaches cleanly", () => {
   let messageHandler = null;

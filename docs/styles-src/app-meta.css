@@ -34,30 +34,6 @@
   white-space: nowrap;
 }
 
-.api-expiry-reminder-modal { z-index: 2200; }
-
-.api-expiry-reminder-panel {
-  width: min(520px, calc(100vw - 16px));
-}
-
-.api-expiry-reminder-message {
-  margin: 12px 2px 0;
-  color: #d9e0dd;
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.api-expiry-reminder-rows .api-period-row {
-  grid-template-columns: minmax(0, 1fr) minmax(120px, auto);
-}
-
-.api-expiry-snooze-field {
-  justify-content: flex-end;
-  align-items: center;
-}
-
-.api-expiry-snooze-field input { margin-top: 0; }
-
 .performance-diagnostics-header {
   display: flex;
   align-items: center;

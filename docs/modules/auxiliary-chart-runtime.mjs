@@ -1703,11 +1703,22 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       lastMacdRenderKey = "";
     }
 
+    async function renderAll(xRange) {
+      const range = Array.isArray(xRange) && xRange.length === 2
+        ? xRange.slice(0, 2)
+        : null;
+      return Promise.allSettled([
+        renderMacdChart(range ? [...range] : null),
+        renderAdrChart(range ? [...range] : null),
+      ]);
+    }
+
     return Object.freeze({
       invalidateAdr,
       invalidateMacd,
       addViewportYRangeToRelayout,
       cachedModel: () => auxiliaryModelResolver?.cachedModel?.() || null,
+      renderAll,
       renderAdrChart,
       renderMacdChart,
       stats: () => ({

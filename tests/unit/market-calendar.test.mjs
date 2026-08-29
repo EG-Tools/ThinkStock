@@ -10,6 +10,9 @@ import {
   koreanDateText,
   latestKoreanTradingDateOnOrBefore,
   latestWeekdayOnOrBefore,
+  millisecondsUntilKoreanMarketClose,
+  resolveKoreanSignalLifecycle,
+  resolveKoreanResearchUniversePhase,
 } from "../../shared/market-calendar.mjs";
 
 test("uses the Korean calendar date instead of UTC", () => {
@@ -85,4 +88,68 @@ test("uses observed KRX dates as the authority inside their covered range", () =
 test("does not open the live-price window on an exchange holiday", () => {
   assert.equal(isKoreanCurrentPriceWindow(new Date("2026-05-01T01:00:00Z")), false);
   assert.equal(isKoreanCurrentPriceWindow(new Date("2026-06-03T01:00:00Z")), false);
+});
+
+test("labels only a latest intraday signal as realtime", () => {
+  const now = new Date("2026-08-10T03:00:00Z");
+  assert.equal(resolveKoreanSignalLifecycle({
+    signalDate: "2026-08-10",
+    latestPriceDate: "2026-08-10",
+    priceMode: "realtime",
+    now,
+  }).state, "realtime");
+  assert.equal(resolveKoreanSignalLifecycle({
+    signalDate: "2026-08-07",
+    latestPriceDate: "2026-08-10",
+    priceMode: "realtime",
+    now,
+  }).state, "confirmed");
+  assert.equal(resolveKoreanSignalLifecycle({
+    signalDate: "2026-08-10",
+    latestPriceDate: "2026-08-10",
+    priceMode: "settled",
+    now,
+  }).state, "confirmed");
+});
+
+test("schedules one Korean market-close settlement without polling", () => {
+  assert.equal(millisecondsUntilKoreanMarketClose(
+    new Date("2026-08-10T06:59:30Z"),
+    { closeHour: 16 },
+  ), 30_000);
+  assert.equal(millisecondsUntilKoreanMarketClose(
+    new Date("2026-08-10T07:00:30Z"),
+    { closeHour: 16 },
+  ), 0);
+  assert.equal(millisecondsUntilKoreanMarketClose(
+    new Date("2026-08-09T03:00:00Z"),
+    { closeHour: 16 },
+  ), null);
+});
+
+test("shares one deterministic research-universe phase across live and deployed runtimes", () => {
+  assert.deepEqual(resolveKoreanResearchUniversePhase(new Date("2026-08-10T03:00:00Z")), {
+    today: "2026-08-10",
+    expectedDate: "2026-08-07",
+    targetDate: "2026-08-10",
+    priceMode: "realtime",
+    realtime: true,
+    captureClose: false,
+  });
+  assert.deepEqual(resolveKoreanResearchUniversePhase(new Date("2026-08-10T07:01:00Z")), {
+    today: "2026-08-10",
+    expectedDate: "2026-08-07",
+    targetDate: "2026-08-10",
+    priceMode: "settled",
+    realtime: false,
+    captureClose: true,
+  });
+  assert.deepEqual(resolveKoreanResearchUniversePhase(new Date("2026-08-10T09:01:00Z")), {
+    today: "2026-08-10",
+    expectedDate: "2026-08-10",
+    targetDate: "2026-08-10",
+    priceMode: "settled",
+    realtime: false,
+    captureClose: false,
+  });
 });

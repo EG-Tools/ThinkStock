@@ -59,7 +59,69 @@
       ));
   }
 
+  function createSeedBundleParser(dataPayloadUtils = dataPayload) {
+    const {
+      normalizeDisclosureRows: normalizeDisclosures,
+      parseMacroPayload: parseMacro,
+      parsePayloadText: parseText,
+      rowsFromColumnarPayload: rowsFromColumns,
+    } = dataPayloadUtils || {};
+    if ([normalizeDisclosures, parseMacro, parseText, rowsFromColumns]
+      .some((value) => typeof value !== "function")) {
+      throw new Error("ThinkStock data payload module is unavailable");
+    }
+
+    return function parseSeedBundle(texts = {}) {
+      const pricePayload = parseText(texts.priceText);
+      const priceRows = rowsFromColumns(pricePayload);
+      const disclosurePayload = parseText(texts.disclosureText);
+      return {
+        pricePayload: pricePayload ? {
+          ...pricePayload,
+          records: priceRows,
+          series: Array.isArray(pricePayload.series)
+            ? pricePayload.series
+            : Object.keys(pricePayload.columns || {}),
+          display_names: pricePayload.display_names && typeof pricePayload.display_names === "object"
+            ? pricePayload.display_names
+            : {},
+        } : null,
+        macroRows: parseMacro(texts.macroText),
+        creditRows: parseMacro(texts.creditText),
+        adrRows: parseMacro(texts.adrText),
+        vkospiRows: parseMacro(texts.vkospiText),
+        disclosurePayload: disclosurePayload || null,
+        disclosureRows: normalizeDisclosures(disclosurePayload?.records),
+      };
+    };
+  }
+
+  function attachDataWorker(scope, dataPayloadUtils = dataPayload) {
+    if (!scope || typeof scope.addEventListener !== "function" || typeof scope.postMessage !== "function") {
+      throw new Error("Data worker scope is unavailable");
+    }
+    const parseSeedBundle = createSeedBundleParser(dataPayloadUtils);
+    const handleMessage = (event) => {
+      const { id, type, texts } = event?.data || {};
+      if (type !== "parseSeedBundle") return;
+      try {
+        scope.postMessage({ id, ok: true, result: parseSeedBundle(texts) });
+      } catch (error) {
+        scope.postMessage({ id, ok: false, error: error?.message || String(error) });
+      }
+    };
+    scope.addEventListener("message", handleMessage);
+    return Object.freeze({
+      dispose() {
+        scope.removeEventListener?.("message", handleMessage);
+      },
+      parseSeedBundle,
+    });
+  }
+
   const dataPayload = Object.freeze({
+    attachDataWorker,
+    createSeedBundleParser,
     normalizePayloadRecords,
     rowsFromColumnarPayload,
     parsePayloadText,
@@ -67,6 +129,8 @@
     normalizeDisclosureRows,
   });
 export {
+  attachDataWorker,
+  createSeedBundleParser,
   normalizeDisclosureRows,
   normalizePayloadRecords,
   parseMacroPayload,

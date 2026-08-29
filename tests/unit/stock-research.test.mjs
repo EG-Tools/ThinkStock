@@ -200,7 +200,7 @@ test("one-signal research requires a signal inside the latest 21 trading session
   assert.equal(assess(499)?.recentMonthBuyCount, 1);
 });
 
-test("today sell research accepts only a signal occurring on the latest trading date", () => {
+test("one-day sell research accepts the latest and previous trading sessions", () => {
   const start = Date.parse("2024-01-01T00:00:00Z");
   const rows = Array.from({ length: 520 }, (_, index) => ({
     date: new Date(start + index * 86400000).toISOString().slice(0, 10),
@@ -224,7 +224,7 @@ test("today sell research accepts only a signal occurring on the latest trading 
     includeBuy: false,
     includeSell: true,
     todayOnly: true,
-    minimumSignals: 5,
+    minimumSignals: 1,
     benchmarkRows: rows.map((row) => ({ date: row.date, close: 1000 })),
     buildMacdOscillator: ({ dates, prices }) => ({ dates, prices, normalized: prices.map(() => 0) }),
     buildMarketTimingSignals: () => ({
@@ -238,7 +238,8 @@ test("today sell research accepts only a signal occurring on the latest trading 
   assert.equal(candidate?.sellCount, 1);
   assert.equal(candidate?.lastSellDate, latestTradingDate);
   assert.equal(candidate?.lastSellConfirmationDate, latestTradingDate);
-  assert.equal(assess(rows.at(-2).date, latestTradingDate), null);
+  assert.equal(assess(rows.at(-2).date, latestTradingDate)?.lastSellSessionAge, 1);
+  assert.equal(assess(rows.at(-3).date, latestTradingDate), null);
 });
 
 test("today research returns both buy and sell signals occurring on the latest trading date", () => {
@@ -264,6 +265,7 @@ test("today research returns both buy and sell signals occurring on the latest t
     includeBuy: true,
     includeSell: true,
     todayOnly: true,
+    minimumSignals: 1,
     benchmarkRows: rows.map((row) => ({ date: row.date, close: 1000 })),
     buildMacdOscillator: ({ dates, prices }) => ({ dates, prices, normalized: prices.map(() => 0) }),
     buildMarketTimingSignals: () => ({
@@ -277,6 +279,77 @@ test("today research returns both buy and sell signals occurring on the latest t
   assert.equal(candidate?.sellCount, 1);
   assert.equal(candidate?.lastBuyConfirmationDate, currentDate);
   assert.equal(candidate?.lastSellConfirmationDate, currentDate);
+});
+
+test("signal period combines its trading-session window with the selected minimum count", () => {
+  const start = Date.parse("2024-01-01T00:00:00Z");
+  const rows = Array.from({ length: 520 }, (_, index) => ({
+    date: new Date(start + index * 86400000).toISOString().slice(0, 10),
+    close: 100 + index * 0.05,
+    volume: 10_000_000,
+  }));
+  const latestDate = rows.at(-1).date;
+  const assess = (minimumSignals) => research.assessTicker({
+    item: {
+      ticker: "000001.KS",
+      name: "테스트",
+      market: "KOSPI",
+      rank: 30,
+    },
+    rows,
+    asOfDate: latestDate,
+    includeBuy: true,
+    includeSell: false,
+    signalWindowDays: 15,
+    minimumSignals,
+    benchmarkRows: rows.map((row) => ({ date: row.date, close: 1000 })),
+    buildMacdOscillator: ({ dates, prices }) => ({ dates, prices, normalized: prices.map(() => 0) }),
+    buildMarketTimingSignals: () => ({
+      signals: [
+        { date: rows.at(-3).date },
+        { date: rows.at(-11).date },
+        { date: rows.at(-21).date },
+      ],
+      sellSignals: [],
+    }),
+  });
+
+  assert.equal(assess(2)?.buyCount, 2);
+  assert.deepEqual(assess(2)?.buySignalSessionAges, [2, 10, 20]);
+  assert.equal(assess(3), null);
+});
+
+test("today research keeps an intraday result provisional until the close", () => {
+  const start = Date.parse("2024-01-01T00:00:00Z");
+  const rows = Array.from({ length: 520 }, (_, index) => ({
+    date: new Date(start + index * 86400000).toISOString().slice(0, 10),
+    close: 100 + index * 0.05,
+    volume: 10_000_000,
+  }));
+  const latestDate = rows.at(-1).date;
+  const assess = (priceMode) => research.assessTicker({
+    item: {
+      ticker: "000001.KS",
+      name: "테스트",
+      market: "KOSPI",
+      rank: 30,
+      priceMode,
+    },
+    rows,
+    asOfDate: latestDate,
+    includeBuy: true,
+    includeSell: false,
+    todayOnly: true,
+    minimumSignals: 1,
+    benchmarkRows: rows.map((row) => ({ date: row.date, close: 1000 })),
+    buildMacdOscillator: ({ dates, prices }) => ({ dates, prices, normalized: prices.map(() => 0) }),
+    buildMarketTimingSignals: () => ({ signals: [{ date: latestDate }], sellSignals: [] }),
+  });
+
+  assert.equal(assess("realtime")?.signalState, "realtime");
+  assert.equal(assess("realtime")?.status, "매수 실시간 신호");
+  assert.equal(assess("settled")?.signalState, "confirmed");
+  assert.equal(assess("settled")?.status, "1일 매수");
 });
 
 test("groups consecutive buys between sell signals", () => {

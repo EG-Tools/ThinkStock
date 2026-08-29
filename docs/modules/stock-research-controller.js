@@ -1,6 +1,5 @@
 "use strict";
 
-const globalScope = typeof self !== "undefined" ? self : globalThis;
   const storageModule = require("./stock-research-storage.js");
   if (!storageModule) throw new Error("stock research storage module failed to load");
   const navigationModule = require("./stock-research-navigation.js");
@@ -56,12 +55,17 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
   } = navigationModule;
   const {
     candidateMatchesTodayFilter,
+    candidateMatchesSignalWindow,
     candidateMeetsSignalMinimum,
     candidateResearchMarketDate,
+    candidateSignalWindowState,
     latestResearchDate,
+    nextSignalWindowDays,
+    normalizeSignalWindowDays,
     researchMarketDateLabel,
     researchMarketDateIsCurrent,
     resolveResearchMarketDates,
+    signalWindowLabel,
     visibleCandidateReasons,
   } = filterModule;
   const {
@@ -80,6 +84,59 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
   const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[character]));
+
+  function requireFunction(value, label) {
+    if (typeof value !== "function") throw new Error(`stock research ${label} dependency is required`);
+    return value;
+  }
+
+  function createControllerOptions(options = {}) {
+    const store = options.indexedCacheStore;
+    if (!store?.readRecord || !store?.writeRecord || !store?.clearStore) {
+      throw new Error("stock research indexed cache store is required");
+    }
+    const names = options.storeNames || {};
+    const history = String(names.history || "");
+    const results = String(names.results || "");
+    const timing = String(names.timing || "");
+    if (!history || !results || !timing) throw new Error("stock research cache store names are incomplete");
+    return Object.freeze({
+      cacheLifecycle: options.cacheLifecycle,
+      tickerPriceRuntime: options.tickerPriceRuntime,
+      isLocalRuntime: Boolean(options.isLocalRuntime),
+      gatewayBaseUrl: String(options.gatewayBaseUrl || ""),
+      getAccessToken: requireFunction(options.getAccessToken, "access token"),
+      fetchWithTimeout: requireFunction(options.fetchWithTimeout, "request"),
+      requestTimeoutMs: Math.max(1000, Number(options.requestTimeoutMs) || 90000),
+      getExpectedLatestTradingDate: requireFunction(options.getExpectedLatestTradingDate, "latest trading date"),
+      getSignalPriceMode: requireFunction(options.getSignalPriceMode, "signal price mode"),
+      getSignalSettlementDelayMs: requireFunction(options.getSignalSettlementDelayMs, "signal settlement delay"),
+      workerUrl: String(options.workerUrl || ""),
+      canRun: requireFunction(options.canRun, "access check"),
+      createProgressView: requireFunction(options.createProgressView, "progress view"),
+      getData: requireFunction(options.getData, "data snapshot"),
+      isAdded: requireFunction(options.isAdded, "ticker selection check"),
+      addStock: requireFunction(options.addStock, "ticker add"),
+      removeStock: requireFunction(options.removeStock, "ticker remove"),
+      historyCache: Object.freeze({
+        read: requireFunction(options.readHistory, "history read"),
+        readMany: requireFunction(options.readHistoryMany, "history batch read"),
+        write: (ticker, record) => store.writeRecord(history, ticker, record),
+        writeMany: (entries) => store.writeRecords(history, entries),
+        clear: () => store.clearStore(history),
+        prune: () => options.schedulePrune?.(history, options.historyLimit || 420),
+      }),
+      resultCache: Object.freeze({
+        read: (key) => store.readRecord(results, key),
+        write: (key, value) => store.writeRecord(results, key, value),
+        clear: () => store.clearStore(results),
+      }),
+      timingCache: Object.freeze({
+        readMany: (tickers) => store.readRecords(timing, tickers),
+        writeMany: (entries) => store.writeRecords(timing, entries),
+      }),
+    });
+  }
 
   async function fetchCandidateProfileWithRetry(load, wait = () => Promise.resolve(), attempts = 2) {
     let lastError = null;
@@ -105,7 +162,7 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
     return Math.max(1, Math.min(total, maximum));
   }
 
-  function createController(scope = globalScope, options = {}) {
+  function createController(scope = globalThis, options = {}) {
     configureCacheLifecycle(options.cacheLifecycle);
     configureTickerPriceRuntime(options.tickerPriceRuntime);
     const research = options.research;
@@ -120,6 +177,12 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
     const getAccessToken = options.getAccessToken || (() => "");
     const getData = options.getData || (() => ({}));
     const getExpectedLatestTradingDate = options.getExpectedLatestTradingDate || (() => "");
+    const getSignalPriceMode = options.getSignalPriceMode || (() => "settled");
+    const getSignalSettlementDelayMs = options.getSignalSettlementDelayMs || (() => null);
+    const createSettlementRuntime = options.createSettlementRuntime;
+    if (typeof createSettlementRuntime !== "function") {
+      throw new Error("stock research settlement runtime is required");
+    }
     const fetchJson = options.fetchJson || (async (url, init = {}) => {
       const accessToken = String(getAccessToken() || "").trim();
       if (!isLocalRuntime && !accessToken) {
@@ -172,17 +235,19 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
     const profileUrl = String(options.profileUrl || `${endpointRoot}/profile`);
     const summaryUrl = String(options.summaryUrl || `${endpointRoot}/summary`);
     const workerUrl = String(options.workerUrl || "./assets/stock-research-worker.bundle.min.js?v=dev");
-    const DEFAULT_FILTER = Object.freeze({ includeBuy: true, includeSell: false, todayOnly: false });
+    const DEFAULT_FILTER = Object.freeze({ includeBuy: true, includeSell: false, signalWindowDays: 0 });
     const ANALYSIS_FILTER = Object.freeze({
       includeBuy: true,
       includeSell: true,
-      todayOnly: false,
+      signalWindowDays: 0,
       collectAllSignals: true,
     });
     const filterKey = (filter) => [
       filter?.includeBuy === true ? "buy" : "",
       filter?.includeSell === true ? "sell" : "",
-      filter?.todayOnly === true ? "today" : "history",
+      normalizeSignalWindowDays(filter?.signalWindowDays, filter?.todayOnly === true) > 0
+        ? `window-${normalizeSignalWindowDays(filter?.signalWindowDays, filter?.todayOnly === true)}`
+        : "history",
     ].filter(Boolean).join("-");
     const analysisFilterKey = `${filterKey(ANALYSIS_FILTER)}-all`;
     let activeFilter = { ...DEFAULT_FILTER };
@@ -211,6 +276,38 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
 
     const elements = {};
     const element = (id) => scope.document.getElementById(id);
+
+    function currentSignalPriceMode() {
+      return String(getSignalPriceMode() || "settled").trim().toLowerCase() === "realtime"
+        ? "realtime"
+        : "settled";
+    }
+
+    function needsSignalSettlement(payload = cached) {
+      return String(payload?.priceMode || "settled") === "realtime"
+        && currentSignalPriceMode() === "settled";
+    }
+
+    const signalSettlement = createSettlementRuntime(scope, {
+      getDelayMs: getSignalSettlementDelayMs,
+      shouldSchedule: () => (
+        String(cached?.priceMode || "settled") === "realtime"
+        && currentSignalPriceMode() === "realtime"
+        && elements.modal?.hidden !== false
+      ),
+      shouldRun: () => elements.modal?.hidden !== false && needsSignalSettlement(),
+      isBusy: () => running,
+      settle: async () => {
+        await runSearch({ settlement: true });
+        return true;
+      },
+      offsetMs: 1000,
+      retryMs: 1500,
+    });
+
+    function scheduleSignalSettlement() {
+      return signalSettlement.schedule();
+    }
 
     function notifyCacheState() {
       try { onCacheStateChanged(Boolean(cached)); } catch (_) {}
@@ -354,8 +451,16 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
       try { onBlockedStateChanged(blocked.size); } catch (_) {}
     }
 
+    function activeSignalWindowDays() {
+      return normalizeSignalWindowDays(activeFilter.signalWindowDays, activeFilter.todayOnly === true);
+    }
+
+    function signalWindowIsActive() {
+      return activeSignalWindowDays() > 0;
+    }
+
     function effectiveMinimum() {
-      return activeFilter.todayOnly ? 1 : minimumBuySignals;
+      return minimumBuySignals;
     }
 
     function signalLabel() {
@@ -374,8 +479,11 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
       marketDates = null,
       expectedDate = "",
     ) {
-      if (activeFilter.todayOnly) {
-        return candidateMatchesTodayFilter(candidate, activeFilter, marketDates || {}, expectedDate);
+      if (signalWindowIsActive()) {
+        return candidateMatchesSignalWindow(candidate, {
+          ...activeFilter,
+          minimumSignals: minimum,
+        }, marketDates || {}, expectedDate);
       }
       return candidateMeetsSignalMinimum(candidate, activeFilter, minimum);
     }
@@ -384,7 +492,15 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
       if (!elements.buyFilter || !elements.sellFilter || !elements.todayFilter) return;
       elements.buyFilter.setAttribute("aria-pressed", String(activeFilter.includeBuy));
       elements.sellFilter.setAttribute("aria-pressed", String(activeFilter.includeSell));
-      elements.todayFilter.setAttribute("aria-pressed", String(activeFilter.todayOnly));
+      const windowDays = activeSignalWindowDays();
+      const windowLabel = signalWindowLabel(windowDays);
+      elements.todayFilter.textContent = windowDays > 0 ? windowLabel : signalWindowLabel(1);
+      elements.todayFilter.dataset.signalWindow = String(windowDays);
+      elements.todayFilter.setAttribute(
+        "aria-label",
+        windowDays > 0 ? `신호 기간 ${windowLabel}` : "1일 신호 기간 비활성",
+      );
+      elements.todayFilter.setAttribute("aria-pressed", String(windowDays > 0));
       [elements.buyFilter, elements.sellFilter, elements.todayFilter].forEach((button) => {
         button.disabled = running;
       });
@@ -398,18 +514,18 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
       elements.minimumValue.textContent = String(minimum);
       elements.signalLabel.textContent = signalLabel();
       elements.signalStepper.setAttribute("aria-label", `최소 ${signalLabel()} 횟수`);
-      elements.signalStepper.setAttribute("aria-disabled", String(activeFilter.todayOnly));
-      elements.signalStepper.classList.toggle("is-locked", activeFilter.todayOnly);
-      elements.minimumDecrease.disabled = running || activeFilter.todayOnly || minimumBuySignals <= MINIMUM_LOW;
-      elements.minimumIncrease.disabled = running || activeFilter.todayOnly || minimumBuySignals >= MINIMUM_HIGH;
+      elements.signalStepper.setAttribute("aria-disabled", "false");
+      elements.signalStepper.classList.remove("is-locked");
+      elements.minimumDecrease.disabled = running || minimumBuySignals <= MINIMUM_LOW;
+      elements.minimumIncrease.disabled = running || minimumBuySignals >= MINIMUM_HIGH;
     }
 
     function getMinimumCandidatePool(marketDates = null, expectedDate = "") {
       const source = Array.isArray(cached?.candidatePool) ? cached.candidatePool : (cached?.candidates || []);
-      const references = marketDates || (activeFilter.todayOnly
+      const references = marketDates || (signalWindowIsActive()
         ? resolveResearchMarketDates(getSharedSources())
         : null);
-      const expected = activeFilter.todayOnly ? (expectedDate || expectedResearchDate()) : "";
+      const expected = signalWindowIsActive() ? (expectedDate || expectedResearchDate()) : "";
       return source.filter((candidate) => candidateMatchesFilter(
         candidate,
         effectiveMinimum(),
@@ -418,17 +534,11 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
       ));
     }
 
-    function getEligibleCandidatePool() {
-      return getMinimumCandidatePool().filter((candidate) => (
-        !blocked.has(String(candidate?.ticker || "").toUpperCase())
-      ));
-    }
-
     function getCandidateNavigation(fresh = false) {
-      const marketDates = activeFilter.todayOnly
+      const marketDates = signalWindowIsActive()
         ? resolveResearchMarketDates(getSharedSources())
         : null;
-      const expectedDate = activeFilter.todayOnly ? expectedResearchDate() : "";
+      const expectedDate = signalWindowIsActive() ? expectedResearchDate() : "";
       const fullPool = getMinimumCandidatePool(marketDates, expectedDate);
       const preferred = fresh
         ? []
@@ -448,13 +558,21 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
 
     function syncNavigationControls() {
       if (!elements.previous || !elements.next) return;
-      const disabled = running || getEligibleCandidatePool().length <= DISPLAY_LIMIT;
+      const navigation = getCandidateNavigation();
+      const disabled = running || navigation.pageCount <= 1;
       elements.previous.disabled = disabled;
       elements.next.disabled = disabled;
+      if (elements.pagePosition) {
+        const currentPage = navigation.pageCount > 0 ? navigation.currentPage + 1 : 1;
+        elements.pagePosition.textContent = String(currentPage);
+        elements.pagePosition.setAttribute(
+          "aria-label",
+          `현재 ${currentPage} / ${Math.max(1, navigation.pageCount)} 페이지`,
+        );
+      }
     }
 
     function setMinimum(value) {
-      if (activeFilter.todayOnly) return;
       minimumBuySignals = normalizeMinimum(value);
       saveMinimum(storage, minimumBuySignals);
       syncMinimumControls();
@@ -494,7 +612,10 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
       const next = {
         includeBuy: nextFilter?.includeBuy === true,
         includeSell: nextFilter?.includeSell === true,
-        todayOnly: nextFilter?.todayOnly === true,
+        signalWindowDays: normalizeSignalWindowDays(
+          nextFilter?.signalWindowDays,
+          nextFilter?.todayOnly === true,
+        ),
       };
       if (!next.includeBuy && !next.includeSell) return;
       const nextKey = filterKey(next);
@@ -558,10 +679,12 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
         navigation.currentPage,
       );
       const storedAnalysisDate = String(cached?.analysisDate || cached?.baseDate || "");
-      const analysisDate = activeFilter.todayOnly
+      const periodActive = signalWindowIsActive();
+      const windowLabel = signalWindowLabel(activeSignalWindowDays());
+      const analysisDate = periodActive
         ? researchMarketDateLabel(navigation.marketDates, navigation.expectedDate)
         : storedAnalysisDate;
-      const compositionText = !activeFilter.todayOnly
+      const compositionText = !periodActive
         && cached?.baseDate && storedAnalysisDate && cached.baseDate !== storedAnalysisDate
         ? ` · 구성 ${cached.baseDate}`
         : "";
@@ -570,8 +693,8 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
         ...(activeFilter.includeBuy ? ["매수"] : []),
         ...(activeFilter.includeSell ? ["매도"] : []),
       ].join("·");
-      const filterText = activeFilter.todayOnly
-        ? `${selectedSignals} 당일`
+      const filterText = periodActive
+        ? `${selectedSignals} ${minimum}회+ · ${windowLabel}`
         : `${signalLabel()} ${minimum}회+`;
       const filteringExistingPool = Boolean(cached?.baseDate)
         && (cached?.filterKey || analysisFilterKey) !== analysisFilterKey;
@@ -592,15 +715,26 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
         const reason = visibleCandidateReasons(candidate.reasons).join(" · ");
         const buyCount = Math.max(0, Number(candidate.buyCount) || 0);
         const sellCount = Math.max(0, Number(candidate.sellCount) || 0);
-        const buySignalDate = candidate.lastBuyDate;
-        const sellSignalDate = candidate.lastSellDate || candidate.sellDate;
-        const todayReferenceDate = candidateResearchMarketDate(candidate, navigation.marketDates);
-        const todaySignals = [
-          ...(activeFilter.includeBuy && buySignalDate === todayReferenceDate ? ["매수"] : []),
-          ...(activeFilter.includeSell && sellSignalDate === todayReferenceDate ? ["매도"] : []),
+        const periodState = periodActive
+          ? candidateSignalWindowState(
+            candidate,
+            { ...activeFilter, minimumSignals: minimum },
+            navigation.marketDates,
+            navigation.expectedDate,
+          )
+          : null;
+        const periodSignals = [
+          ...(periodState?.buy ? ["매수"] : []),
+          ...(periodState?.sell ? ["매도"] : []),
         ];
-        const signalText = activeFilter.todayOnly
-          ? `${todaySignals.join("·")} 당일`
+        const signalText = periodActive
+          ? (activeSignalWindowDays() === 1 && candidate.signalState === "realtime"
+            ? `${periodSignals.join("·")} 실시간 신호`
+            : [
+              periodState?.buy ? `매수 ${periodState.buyCount}회` : "",
+              periodState?.sell ? `매도 ${periodState.sellCount}회` : "",
+              windowLabel,
+            ].filter(Boolean).join(" · "))
           : (activeFilter.includeBuy && activeFilter.includeSell
             ? [buyCount ? `매수 ${buyCount}회 연속` : "", sellCount ? `매도 ${sellCount}회 연속` : ""].filter(Boolean).join(" · ")
             : (activeFilter.includeSell ? `매도신호 ${sellCount}회 연속` : `${buyCount}회 연속 신호`));
@@ -787,6 +921,7 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
         || normalizeMinimum(payload?.minimumBuySignals) !== MINIMUM_LOW
         || normalizeUniverseSize(payload?.universeSize) !== universeSize
         || !/^\d{4}-\d{2}-\d{2}$/.test(String(payload?.baseDate || ""))) return null;
+      if (needsSignalSettlement(payload)) return null;
       const candidateOrder = normalizeCandidateOrder(candidatePool, payload?.candidateOrder, random);
       return {
         schema: CACHE_SCHEMA,
@@ -800,6 +935,9 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
         incrementalDate: String(payload.incrementalDate || ""),
         refreshCursor: Math.max(0, Number(payload.refreshCursor) || 0),
         generatedAt: String(payload.generatedAt || new Date().toISOString()),
+        priceMode: String(payload.priceMode || "settled") === "realtime"
+          ? "realtime"
+          : "settled",
         universeTickers: Array.isArray(payload.universeTickers) ? payload.universeTickers : [],
         universeState: payload.universeState || {},
         sharedFingerprint: String(payload.sharedFingerprint || ""),
@@ -839,6 +977,7 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
           incrementalDate: payload.incrementalDate || "",
           refreshCursor: payload.refreshCursor || 0,
           generatedAt: payload.generatedAt,
+          priceMode: payload.priceMode || "settled",
           universeTickers: payload.universeTickers,
           universeState: payload.universeState,
           sharedFingerprint: payload.sharedFingerprint,
@@ -884,6 +1023,7 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
           ? universe.records.map((item) => ({
             ...item,
             baseDate: item?.baseDate || universe.baseDate,
+            priceMode: item?.priceMode || universe.priceMode || "settled",
           }))
           : [];
         if (universe?.ok !== true || records.length !== targetUniverseSize) {
@@ -1055,7 +1195,9 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
               const percent = 8 + Math.round((completed / Math.max(1, scanRecords.length)) * 90);
               setProgress(percent, canIncrement
                 ? "편입·기존 종목 갱신"
-                : (activeFilter.todayOnly ? "당일 신호 탐구" : `${signalLabel()} 탐구`), `${completed} / ${scanRecords.length}`);
+                : (signalWindowIsActive()
+                  ? `${signalWindowLabel(activeSignalWindowDays())} 신호 탐구`
+                  : `${signalLabel()} 탐구`), `${completed} / ${scanRecords.length}`);
             }
           }
         }));
@@ -1083,6 +1225,9 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
           incrementalDate: canIncrement ? (latestAnalyzedDate || universe.baseDate) : "",
           refreshCursor: 0,
           generatedAt: new Date().toISOString(),
+          priceMode: String(universe.priceMode || "settled") === "realtime"
+            ? "realtime"
+            : "settled",
           universeTickers: records.map((item) => item.ticker),
           universeState: nextUniverseState,
           sharedFingerprint: nextSharedFingerprint,
@@ -1105,6 +1250,7 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
           canIncrement
             ? `편입 ${universeChanges.added.length} · 변경 ${universeChanges.changed.length} · 신호 ${signalChanges} · 탈락 ${removedCount}`
             : `${records.length}종목`);
+        scheduleSignalSettlement();
         scope.setTimeout(() => { if (!running) hideProgress(); }, 900);
       } catch (error) {
         cached = previous;
@@ -1125,7 +1271,9 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
       await hydrateResultCache();
       render();
       elements.modal.hidden = false;
-      if (cached) enrichExistingCandidateProfiles();
+      if (needsSignalSettlement()) await runSearch({ settlement: true });
+      else if (cached) enrichExistingCandidateProfiles();
+      scheduleSignalSettlement();
       return true;
     }
 
@@ -1136,6 +1284,7 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
         close: element("stockResearchCloseBtn"),
         refresh: element("stockResearchRefreshBtn"),
         previous: element("stockResearchPreviousBtn"),
+        pagePosition: element("stockResearchPagePosition"),
         next: element("stockResearchNextBtn"),
         asOf: element("stockResearchAsOf"),
         progress: element("stockResearchProgress"),
@@ -1166,7 +1315,10 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
         });
       }
       if (bindOpenButton) elements.button.addEventListener("click", open);
-      elements.close.addEventListener("click", () => { elements.modal.hidden = true; });
+      elements.close.addEventListener("click", () => {
+        elements.modal.hidden = true;
+        signalSettlement.clear();
+      });
       elements.refresh.addEventListener("click", () => runSearch());
       elements.previous.addEventListener("click", () => navigateCandidates(-1));
       elements.next.addEventListener("click", () => navigateCandidates(1));
@@ -1180,7 +1332,7 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
       }));
       elements.todayFilter.addEventListener("click", () => setFilter({
         ...activeFilter,
-        todayOnly: !activeFilter.todayOnly,
+        signalWindowDays: nextSignalWindowDays(activeSignalWindowDays()),
       }));
       elements.minimumDecrease.addEventListener("click", () => setMinimum(minimumBuySignals - 1));
       elements.minimumIncrease.addEventListener("click", () => setMinimum(minimumBuySignals + 1));
@@ -1224,6 +1376,7 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
     HISTORY_QUALITY_VERSION,
     candidateSignalFingerprint,
     configureCacheLifecycle,
+    createControllerOptions,
     createController,
     diffUniverse,
     diffUniverseState,
@@ -1237,8 +1390,12 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
     latestResearchDate,
     resolveResearchMarketDates,
     candidateResearchMarketDate,
+    candidateMatchesSignalWindow,
+    candidateSignalWindowState,
     candidateMatchesTodayFilter,
     candidateMeetsSignalMinimum,
+    nextSignalWindowDays,
+    normalizeSignalWindowDays,
     researchMarketDateLabel,
     researchMarketDateIsCurrent,
     researchWorkerLaneCount,
@@ -1249,6 +1406,7 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
     researchHistoryRequestUrl,
     saveMinimum,
     saveUniverseSize,
+    signalWindowLabel,
     sharedResearchFingerprint,
     sharedResearchFingerprints,
     normalizeCandidateOrder,

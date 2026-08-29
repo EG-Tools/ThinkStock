@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import dataPayload from "../../docs/modules/data-payload.mjs";
-import {
+import dataPayload, {
   attachDataWorker,
   createSeedBundleParser,
-} from "../../docs/modules/data-worker-runtime.mjs";
+} from "../../docs/modules/data-payload.mjs";
 
 
 test("data worker module uses the shared payload parser", () => {

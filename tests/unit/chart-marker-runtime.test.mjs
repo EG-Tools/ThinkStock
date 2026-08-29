@@ -250,6 +250,22 @@ test("one marker frame shares its date index and spacing across every marker lay
   );
 });
 
+test("latest intraday timing markers are labeled as realtime signals", () => {
+  const { runtime } = createRuntime({
+    getSignalLifecycle: ({ signalDate, latestPriceDate }) => ({
+      realtime: signalDate === latestPriceDate,
+    }),
+  });
+  const frame = runtime.createFrame({
+    selected: ["005930.KS"],
+    seriesModels: [{ series: "005930.KS" }],
+    start: "2026-08-01",
+    end: "2026-08-08",
+  });
+  const sell = runtime.buildTimingSell(frame);
+  assert.equal(sell.trace.customdata[0][9], "실시간 매도 신호");
+});
+
 test("reuses marker point indexes while the chart model identity is unchanged", () => {
   const { chartSession, counters, runtime } = createRuntime();
   const seriesModels = [{ series: "005930.KS" }];
@@ -270,6 +286,42 @@ test("reuses marker point indexes while the chart model identity is unchanged", 
 
   runtime.createFrame({ ...frameOptions, seriesModels: [...seriesModels] });
   assert.equal(counters.index, 3);
+});
+
+test("marker render revisions follow viewport spacing and series colors", () => {
+  let markerGap = 10;
+  let color = "#4ade80";
+  const { runtime } = createRuntime({
+    chartEventLayer: {
+      buildPointIndex() {
+        return {
+          "005930.KS": [{ date: "2026-08-03", y: 90 }],
+        };
+      },
+      markerGap() {
+        return markerGap;
+      },
+      findPointOnDate(date, ticker, index) {
+        return index[ticker]?.find((point) => point.date === date) || null;
+      },
+    },
+    seriesColor: () => color,
+  });
+  const frameOptions = {
+    selected: ["005930.KS"],
+    seriesModels: [{ series: "005930.KS" }],
+    start: "2026-08-01",
+    end: "2026-08-08",
+  };
+
+  const initial = runtime.createFrame(frameOptions).renderRevision;
+  markerGap = 14;
+  const rescaled = runtime.createFrame(frameOptions).renderRevision;
+  color = "#f97316";
+  const recolored = runtime.createFrame(frameOptions).renderRevision;
+
+  assert.notEqual(rescaled, initial);
+  assert.notEqual(recolored, rescaled);
 });
 
 test("crisis entries are emitted only when the stage rises into warning or crisis", () => {
@@ -426,7 +478,7 @@ test("timing preparation excludes inactive custom stocks and reuses relevant fin
     "update",
     "complete",
   ]);
-  assert.equal(progressEvents[0][2], "신호 계산중");
+  assert.equal(progressEvents[0][2], "삼성전자 신호 로딩중");
 });
 
 test("skips repeated timing preparation until a data revision changes", async () => {
@@ -478,7 +530,7 @@ test("skips repeated timing preparation until a data revision changes", async ()
   assert.equal(progressBeginCount, 2);
 });
 
-test("signal progress keeps one stable calculation label when a cached chart gains a peer", async () => {
+test("signal progress names the active stocks when a cached chart gains a peer", async () => {
   const cachedTickers = new Set(["005930.KS"]);
   const progressLabels = [];
   let preparedTargets = [];
@@ -517,5 +569,38 @@ test("signal progress keeps one stable calculation label when a cached chart gai
   );
 
   assert.deepEqual(preparedTargets, ["005930.KS", "000660.KS"]);
-  assert.equal(progressLabels[0], "신호 계산중");
+  assert.equal(progressLabels[0], "삼성전자 외 1종 신호 로딩중");
+});
+
+test("defers restored timing preparation until the startup visual boundary", async () => {
+  let prepareCount = 0;
+  let progressBeginCount = 0;
+  const { runtime } = createRuntime({
+    shouldPrepareMarketTimingModels: () => false,
+    getMarketTimingService: () => ({
+      has: () => false,
+      stats: () => ({ signature: "", modelCount: 0 }),
+      prepare: async () => { prepareCount += 1; },
+    }),
+    getPricePayload: () => ({
+      records: [
+        { date: "2026-08-11", "^KS11": 3200, "^KQ11": 800, "005930.KS": 70000 },
+        { date: "2026-08-12", "^KS11": 3210, "^KQ11": 805, "005930.KS": 71000 },
+      ],
+    }),
+    signalProgress: {
+      begin: () => { progressBeginCount += 1; return true; },
+      update: () => {},
+      complete: () => {},
+      cancel: () => {},
+    },
+  });
+
+  await runtime.prepareMarketTimingModels(
+    ["005930.KS"],
+    [{ series: "005930.KS" }],
+  );
+
+  assert.equal(prepareCount, 0);
+  assert.equal(progressBeginCount, 0);
 });

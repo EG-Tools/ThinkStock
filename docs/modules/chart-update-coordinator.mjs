@@ -15,49 +15,64 @@
 
   /** @param {ChartInvalidation} invalidation */
   function normalizedUpdateClasses(invalidation = {}) {
+    if (invalidation?.plan?.normalized === true) return invalidation.updateClasses;
     return [...new Set((invalidation.updateClasses || []).map(String).filter(Boolean))];
+  }
+
+  /** Builds every layer decision once for one render transaction. */
+  function normalizeChartInvalidation(invalidation = {}) {
+    if (invalidation?.plan?.normalized === true) return invalidation;
+    const updateClasses = Object.freeze(normalizedUpdateClasses(invalidation));
+    const fullUpdate = updateClasses.length === 0;
+    const plan = Object.freeze({
+      normalized: true,
+      updateAuxiliary: fullUpdate
+        || updateClasses.some((updateClass) => !MAIN_ONLY_UPDATE_CLASSES.has(updateClass)),
+      hydrateData: fullUpdate
+        || updateClasses.some((updateClass) => DATA_HYDRATION_UPDATE_CLASSES.has(updateClass)),
+      reuseFutureOverlays: !fullUpdate && updateClasses.every((updateClass) => (
+        updateClass === "viewport"
+        || updateClass === "viewport-range"
+        || updateClass === "transform"
+      )),
+      reuseEventMarkers: !fullUpdate && updateClasses.every((updateClass) => (
+        updateClass === "viewport" || updateClass === "viewport-range"
+      )),
+    });
+    return Object.freeze({ ...invalidation, updateClasses, plan });
   }
 
   /** @param {ChartInvalidation} invalidation */
   function shouldUpdateAuxiliary(invalidation = {}) {
-    const updateClasses = normalizedUpdateClasses(invalidation);
-    if (!updateClasses.length) return true;
-    return updateClasses.some((updateClass) => !MAIN_ONLY_UPDATE_CLASSES.has(updateClass));
+    return normalizeChartInvalidation(invalidation).plan.updateAuxiliary;
   }
 
   /** @param {ChartInvalidation} invalidation */
   function shouldHydrateChartData(invalidation = {}) {
-    const updateClasses = normalizedUpdateClasses(invalidation);
-    if (!updateClasses.length) return true;
-    return updateClasses.some((updateClass) => DATA_HYDRATION_UPDATE_CLASSES.has(updateClass));
+    return normalizeChartInvalidation(invalidation).plan.hydrateData;
   }
 
   function canReuseFutureOverlayTraces(invalidation = {}) {
-    const updateClasses = normalizedUpdateClasses(invalidation);
-    return updateClasses.length > 0
-      && updateClasses.every((updateClass) => (
-        updateClass === "viewport"
-        || updateClass === "viewport-range"
-        || updateClass === "transform"
-      ));
+    return normalizeChartInvalidation(invalidation).plan.reuseFutureOverlays;
   }
 
   function canReuseEventMarkerTraces(invalidation = {}) {
-    const updateClasses = normalizedUpdateClasses(invalidation);
-    return updateClasses.length > 0
-      && updateClasses.every((updateClass) => (
-        updateClass === "viewport" || updateClass === "viewport-range"
-      ));
+    return normalizeChartInvalidation(invalidation).plan.reuseEventMarkers;
   }
 
   function createMainChartRenderGuard(options = {}) {
     const aiRevision = options.getAiRevision?.();
     const viewportRevision = options.getViewportRevision?.();
+    const viewportSignature = options.getViewportSignature?.();
     const aiChanged = () => aiRevision !== options.getAiRevision?.();
-    const viewportChanged = () => viewportRevision !== options.getViewportRevision?.();
+    const viewportChanged = () => (
+      viewportRevision !== options.getViewportRevision?.()
+      || viewportSignature !== options.getViewportSignature?.()
+    );
 
     function queueCurrentViewportRender() {
       if (!viewportChanged()) return false;
+      options.onViewportChanged?.();
       options.requestViewportRender?.();
       return true;
     }
@@ -279,6 +294,60 @@
     return viewportPlan;
   }
 
+  async function fitMainChartToViewport(options = {}) {
+    const element = options.element;
+    const renderer = options.renderer;
+    const updateRuntime = options.updateRuntime;
+    if (!element?._fullLayout?.yaxis
+      || !renderer?.rangeBearingTraces
+      || typeof options.fitRangeForTraces !== "function"
+      || !updateRuntime) return null;
+
+    const primaryTraces = renderer.rangeBearingTraces(element.data);
+    const fittedRange = options.fitRangeForTraces(primaryTraces, options.xRange, {
+      paddingRatio: options.paddingRatio ?? 0.08,
+      minimumPadding: options.minimumPadding ?? 0.6,
+    });
+    const yRange = options.expandOnly && typeof options.expandRangeToContain === "function"
+      ? options.expandRangeToContain(element._fullLayout.yaxis.range, fittedRange)
+      : fittedRange;
+    if (!yRange) return null;
+
+    options.beforeApply?.(yRange);
+    const layoutUpdate = {
+      "yaxis.range[0]": yRange[0],
+      "yaxis.range[1]": yRange[1],
+      "yaxis.autorange": false,
+    };
+    const markerTraceIndexes = [];
+    const markerYUpdates = [];
+    const markerUpdate = options.syncMarkers !== false
+      && options.hasEventMarkers
+      && typeof options.appendEventMarkerYUpdates === "function"
+      ? options.appendEventMarkerYUpdates(element, markerTraceIndexes, markerYUpdates, {
+        viewportRange: yRange,
+      })
+      : { structureChanged: false, disclosureUpdated: false };
+
+    if (markerTraceIndexes.length && !markerUpdate.structureChanged) {
+      await updateRuntime.update(
+        element,
+        { y: markerYUpdates },
+        layoutUpdate,
+        markerTraceIndexes,
+        { label: options.markerUpdateLabel || "fit-main-range-markers" },
+      );
+      options.onMarkerPartialUpdate?.(markerUpdate);
+      return Object.freeze({ mode: "update", markerUpdate, yRange });
+    }
+
+    await updateRuntime.relayout(element, layoutUpdate, {
+      label: options.relayoutLabel || "fit-main-range",
+    });
+    if (markerUpdate.structureChanged) options.onMarkerStructureChange?.(markerUpdate);
+    return Object.freeze({ mode: "relayout", markerUpdate, yRange });
+  }
+
   function finalizeMainChartFrameState(session, frame, options = {}) {
     if (!session || !frame?.viewportPlan) {
       throw new Error("main chart frame finalization requires state and frame");
@@ -320,8 +389,10 @@
 
   function createPlotlyUpdateRuntime(scope = globalThis, options = {}) {
     let activeOperations = 0;
+    const pendingRelayouts = new WeakMap();
     const stats = {
       relayoutCalls: 0,
+      coalescedRelayoutCalls: 0,
       restyleCalls: 0,
       updateCalls: 0,
       failedCalls: 0,
@@ -339,6 +410,29 @@
     function finish() {
       activeOperations = Math.max(0, activeOperations - 1);
       if (!activeOperations) options.onBusyChange?.(false);
+    }
+
+    function payloadSignature(payload) {
+      return Object.keys(payload || {}).sort().map((key) => {
+        const value = payload[key];
+        return `${key}:${Array.isArray(value) ? JSON.stringify(value) : String(value)}`;
+      }).join("|");
+    }
+
+    function relayoutElement(engine, element, payload) {
+      const signature = payloadSignature(payload);
+      const pending = pendingRelayouts.get(element);
+      if (pending?.signature === signature) {
+        stats.coalescedRelayoutCalls += 1;
+        return pending.promise;
+      }
+      const promise = Promise.resolve(engine.relayout(element, payload));
+      const state = { promise, signature };
+      pendingRelayouts.set(element, state);
+      promise.finally(() => {
+        if (pendingRelayouts.get(element) === state) pendingRelayouts.delete(element);
+      }).catch(() => {});
+      return promise;
     }
 
     async function run(label, operation) {
@@ -365,8 +459,10 @@
       if (!requests.length) return [];
       stats.relayoutCalls += requests.length;
       return run(runtimeOptions.label || "relayout", async () => {
-        const tasks = requests.map(({ element, payload }) => Promise.resolve(
-          engine.relayout(element, payload),
+        const tasks = requests.map(({ element, payload }) => relayoutElement(
+          engine,
+          element,
+          payload,
         ));
         if (runtimeOptions.settle === true) {
           const results = await Promise.allSettled(tasks);
@@ -552,6 +648,54 @@
     });
   }
 
+  function createChartRenderFacade(options = {}) {
+    const getCoordinator = options.getCoordinator;
+    const getScheduler = options.getScheduler;
+    if (typeof getCoordinator !== "function" || typeof getScheduler !== "function") {
+      throw new Error("chart render facade dependencies are incomplete");
+    }
+
+    function request(preserveZoom = true, requestOptions = {}) {
+      return getCoordinator().requestRender(preserveZoom, requestOptions);
+    }
+
+    function requestComposition(requestOptions = {}) {
+      const state = options.getState?.() || {};
+      const preserveFutureOverlayViewport = requestOptions.preserveFutureOverlayViewport
+        ?? Boolean(state.showAiForecast || state.showEps);
+      return getCoordinator().requestComposition({
+        ...requestOptions,
+        preserveFutureOverlayViewport,
+      });
+    }
+
+    function requestFutureOverlayComposition() {
+      return requestComposition({
+        preserveFutureOverlayViewport: true,
+        reason: "future-overlay-composition",
+      });
+    }
+
+    function requestAiForecast() {
+      const render = () => request(true, {
+        deferDuringInteraction: false,
+        reason: "ai-forecast",
+        updateClass: "forecast",
+      });
+      const aiApp = options.getAiApp?.();
+      return aiApp?.requestRender ? aiApp.requestRender(render) : render();
+    }
+
+    return Object.freeze({
+      request,
+      requestAiForecast,
+      requestComposition,
+      requestFutureOverlayComposition,
+      run: (preserveZoom = true) => getScheduler().run(preserveZoom),
+      runWhenIdleOrNow: (preserveZoom = true) => getScheduler().runWhenIdleOrNow(preserveZoom),
+    });
+  }
+
   /**
    * Coalesce the latest value for each key and apply one batch per animation frame.
    * @template T
@@ -672,6 +816,7 @@
     const setTimer = options.setTimer || ((callback, delay) => scope.setTimeout(callback, delay));
     const clearTimer = options.clearTimer || ((id) => scope.clearTimeout(id));
     const isInteractionBusy = options.isInteractionBusy || (() => false);
+    const yieldBetweenTransactions = options.yieldBetweenTransactions === true;
     const render = options.render;
     if (typeof render !== "function") throw new Error("chart render callback is required");
 
@@ -692,6 +837,7 @@
     const invalidationCounts = {};
     let coalescedRequests = 0;
     let supersededTransactions = 0;
+    let yieldedTransactions = 0;
     const settleWaiters = new Set();
 
     function isBusy() {
@@ -716,21 +862,33 @@
         || requestOptions.progressiveComposition === true;
       invalidationCounts[updateClass] = (Number(invalidationCounts[updateClass]) || 0) + 1;
       if (activeTransaction && updateClass !== "markers" && !activeTransaction.superseded) {
+        // A newer viewport request can abort a data/composition frame before it
+        // reaches auxiliary charts. Carry the unfinished frame's scope forward
+        // so the replacement cannot silently downgrade required work.
+        activeTransaction.reasons.forEach((item) => pendingReasons.add(item));
+        activeTransaction.updateClasses.forEach((item) => pendingClasses.add(item));
+        pendingProgressiveComposition = pendingProgressiveComposition
+          || activeTransaction.progressiveComposition;
         activeTransaction.superseded = true;
         supersededTransactions += 1;
       }
     }
 
     function takeInvalidation() {
+      const reasons = [...pendingReasons];
+      const updateClasses = [...pendingClasses];
       const transaction = {
         id: nextTransactionId,
         requestCount: pendingRequestCount,
+        reasons,
+        updateClasses,
+        progressiveComposition: pendingProgressiveComposition,
         superseded: false,
       };
       nextTransactionId += 1;
-      const value = Object.freeze({
-        reasons: [...pendingReasons],
-        updateClasses: [...pendingClasses],
+      const value = normalizeChartInvalidation({
+        reasons,
+        updateClasses,
         transactionId: transaction.id,
         requestCount: transaction.requestCount,
         progressiveComposition: pendingProgressiveComposition,
@@ -799,6 +957,10 @@
               await options.afterBatch?.();
               break;
             }
+            if (yieldBetweenTransactions) {
+              yieldedTransactions += 1;
+              break;
+            }
             nextPreserveZoom = pendingPreserveZoom;
             pendingPreserveZoom = true;
             nextInvalidation = takeInvalidation();
@@ -811,7 +973,8 @@
             const retryPreserveZoom = pendingPreserveZoom;
             renderAfterFlight = false;
             pendingPreserveZoom = true;
-            scheduleQueuedRender(retryPreserveZoom);
+            if (isInteractionBusy()) scheduleDeferred(retryPreserveZoom);
+            else scheduleQueuedRender(retryPreserveZoom);
           }
           settleWaitersIfIdle();
         }
@@ -897,6 +1060,7 @@
         renderAfterFlight,
         coalescedRequests,
         supersededTransactions,
+        yieldedTransactions,
         activeTransactionId: activeTransaction?.id || 0,
         completedTransactionId,
         lastTransactionId: nextTransactionId - 1,
@@ -908,29 +1072,6 @@
     });
   }
 
-  function summarizeMainChartWorkload(traces = []) {
-    const source = Array.isArray(traces) ? traces : [];
-    const series = new Set();
-    let overlays = 0;
-    let points = 0;
-    source.forEach((trace) => {
-      points += Array.isArray(trace?.x) ? trace.x.length : 0;
-      const kind = String(trace?.meta?.overlayKind || "");
-      const seriesKey = String(trace?.meta?.seriesKey || "");
-      if (kind === "price" && seriesKey && trace?.visible !== "legendonly") {
-        series.add(seriesKey);
-      } else if (kind !== "grouped-hover") {
-        overlays += 1;
-      }
-    });
-    return Object.freeze({
-      traceCount: source.length,
-      seriesCount: series.size,
-      overlayCount: overlays,
-      pointCount: points,
-    });
-  }
-
   function createMainChartRenderRuntime(scope = globalThis, options = {}) {
     const renderer = options.renderer;
     const updateRuntime = options.updateRuntime;
@@ -939,13 +1080,13 @@
     }
 
     async function apply(element, traces, layout, invalidation = {}) {
-      const workload = summarizeMainChartWorkload(traces);
-      const telemetryToken = options.telemetry?.begin?.({ ...invalidation, ...workload });
-      const partialCandidate = renderer.canApplyPartialUpdate?.(element, traces)
-        || renderer.canApplyEventMarkerUpdate?.(element, traces, invalidation)
-        || renderer.canReconcileTraceStructure?.(element, traces);
+      const telemetryEnabled = typeof options.telemetry?.isLoaded !== "function"
+        || options.telemetry.isLoaded();
+      const telemetryToken = telemetryEnabled
+        ? options.telemetry?.begin?.(invalidation, traces)
+        : null;
       const result = await updateRuntime.run(
-        partialCandidate ? "main-chart-partial-render" : "main-chart-full-render",
+        "main-chart-render",
         () => renderer.render(
           options.getPlotly?.() || scope.Plotly,
           element,
@@ -955,7 +1096,7 @@
           { invalidation },
         ),
       );
-      options.telemetry?.complete?.(telemetryToken, result);
+      if (telemetryToken) options.telemetry?.complete?.(telemetryToken, result);
       return result.mode;
     }
 
@@ -1261,14 +1402,16 @@ export {
   createMainChartRenderRuntime,
   createReusableMainChartTracePlan,
   createChartRenderScheduler,
+  createChartRenderFacade,
   createChartUpdateCoordinator,
   createCoordinator,
   createLatestKeyedFrameQueue,
   createPlotlyUpdateRuntime,
   createSeriesFrameApplier,
   finalizeMainChartFrameState,
+  fitMainChartToViewport,
   hydrateMainChartSession,
-  summarizeMainChartWorkload,
+  normalizeChartInvalidation,
   shouldHydrateChartData,
   shouldUpdateAuxiliary,
 };

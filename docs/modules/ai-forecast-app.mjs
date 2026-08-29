@@ -3,7 +3,7 @@
 import {
   createIdleResourceLifecycle,
   createWorkerInstance,
-} from "./worker-lifecycle.mjs";
+} from "./browser-request-runtime.mjs";
 
   function createAiForecastApp(scope = globalThis, options = {}) {
     const workerUrl = String(options.workerUrl || "");

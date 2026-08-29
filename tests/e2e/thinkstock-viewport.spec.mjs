@@ -961,15 +961,18 @@ test("adding a fresher stock advances a stale credit viewport that was at its la
   await page.locator("#stockSearchInput").fill("삼성전자");
   await page.locator(".stock-suggest-item").filter({ hasText: "삼성전자" }).click();
   await expect(page.locator('[data-series="005930.KS"]')).toHaveClass(/is-on/);
-  await expect.poll(() => page.locator("#chart").evaluate((element, expectedSpan) => {
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const stock = (element.data || []).find((trace) => trace?.meta?.seriesKey === "005930.KS");
     const range = (element._fullLayout?.xaxis?.range || []).map(Date.parse);
     const latest = Math.max(...(stock?.x || []).map(Date.parse).filter(Number.isFinite));
     return {
       endsAtStockLatest: Math.abs(range[1] - latest) <= 1000,
-      preservesSpan: Math.abs((range[1] - range[0]) - expectedSpan) <= 1000,
+      spanMs: Math.round(range[1] - range[0]),
     };
-  }, staleViewport.span)).toEqual({ endsAtStockLatest: true, preservesSpan: true });
+  })).toEqual({
+    endsAtStockLatest: true,
+    spanMs: staleViewport.span,
+  });
 });
 
 test("bundled recent data boots through the chart worker", async ({ page }, testInfo) => {
@@ -1124,6 +1127,7 @@ test("bundled recent data boots through the chart worker", async ({ page }, test
   await expect(page.locator("#stockResearchUniverseValue")).toHaveText("600");
   await expect(page.locator("#stockResearchDisclaimer")).toContainText("300+300");
   await page.locator("#apiSettingsCloseBtn").click();
+  await waitForChartRenderIdle(page);
   await page.evaluate(() => window.ThinkStockE2E.applyNewsSentimentForTest([
     { date: "2026-07-14", news_sentiment: 101 },
   ]));
@@ -1164,6 +1168,7 @@ test("bundled recent data boots through the chart worker", async ({ page }, test
   await toolsToggle.click();
   await expect(toolsToggle).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#resetHandles")).toBeVisible();
+  await waitForChartRenderIdle(page);
 
   const [chartBox, resetBox, refreshBox] = await Promise.all([
     page.locator("#chart").boundingBox(),
@@ -1206,6 +1211,7 @@ test("bundled recent data boots through the chart worker", async ({ page }, test
   await page.locator("#stockSearchInput").press("Escape");
   expect(await page.evaluate(() => window.ThinkStockE2E?.getChartModelSource?.())).toBe("worker");
   expect(await page.evaluate(() => window.ThinkStockE2E?.getAuxiliaryChartModelSource?.())).toBe("worker");
+  await waitForChartRenderIdle(page);
   const chartTimeline = await page.locator("#chart").evaluate((element) => {
     const trace = (element.data || []).find((item) => item?.meta?.seriesKey === "^KS11");
     return {

@@ -64,6 +64,23 @@ test("records render modes, causes, duration, and fallback paths", () => {
   });
 });
 
+test("derives chart workload only after deferred telemetry is loaded", () => {
+  const telemetry = createChartRenderTelemetry({
+    performance: { now: () => 1 },
+  });
+  const token = telemetry.begin({ updateClasses: ["viewport"] }, [
+    { x: [1, 2], meta: { overlayKind: "price", seriesKey: "A" } },
+    { x: [1, 2], meta: { overlayKind: "price", seriesKey: "B" }, visible: "legendonly" },
+    { x: [1], meta: { overlayKind: "eps", seriesKey: "eps:A" } },
+    { x: [1, 2], meta: { overlayKind: "grouped-hover" } },
+  ]);
+
+  assert.equal(token.traceCount, 4);
+  assert.equal(token.seriesCount, 1);
+  assert.equal(token.overlayCount, 2);
+  assert.equal(token.pointCount, 7);
+});
+
 test("keeps only a bounded recent render trail and classifies unknown updates", () => {
   let timestamp = 0;
   const telemetry = createChartRenderTelemetry({

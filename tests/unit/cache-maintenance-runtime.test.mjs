@@ -185,3 +185,42 @@ test("runs a full repair only once for each cache schema version", async () => {
   assert.equal(repairCalls, 1);
   assert.equal(persisted.repairVersions.prices, "price-6");
 });
+
+test("rotates a bounded maintenance batch across application starts", async () => {
+  let persisted = {};
+  const scheduledKeys = [];
+  const stateStore = {
+    read: () => persisted,
+    write: (value) => { persisted = structuredClone(value); },
+  };
+  const createRuntime = () => module.createCacheMaintenanceRuntime(globalThis, {
+    lifecyclePolicy: policy(),
+    now: () => 5000,
+    pruneIntervalMs: 1000,
+    stateStore,
+    storeNames: ["prices", "signals", "reports", "forecasts"],
+    scheduler: {
+      enqueue(key) {
+        scheduledKeys.push(key);
+        return Promise.resolve(0);
+      },
+      cancel() {},
+    },
+    store: {
+      readRecord: async () => null,
+      deleteRecord: async () => {},
+      pruneStore: async () => 0,
+    },
+  });
+
+  assert.equal(createRuntime().scheduleDueBatch(100, 2).length, 2);
+  assert.equal(persisted.nextStoreIndex, 2);
+  assert.equal(createRuntime().scheduleDueBatch(100, 2).length, 2);
+  assert.equal(persisted.nextStoreIndex, 0);
+  assert.deepEqual(scheduledKeys, [
+    "cache-prune:prices",
+    "cache-prune:signals",
+    "cache-prune:reports",
+    "cache-prune:forecasts",
+  ]);
+});

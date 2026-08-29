@@ -49,9 +49,18 @@ test("loads each optional feature only once and creates one timing service", asy
     requestRuntime: { createDartRequestRuntime() {} },
   };
   const epsChart = { createEpsDataController() {} };
+  const macd = { buildMacdOscillator() {} };
   const auxiliaryChartRuntime = { createAuxiliaryChartRuntime() {} };
-  const auxiliaryChartFeature = { runtime: auxiliaryChartRuntime, model: { buildAuxiliaryChartModel() {} } };
+  const auxiliaryChartFeature = {
+    macd,
+    runtime: auxiliaryChartRuntime,
+    model: { buildAuxiliaryChartModel() {} },
+  };
   const deferredDiagnostics = { createDeferredDiagnostics() {} };
+  const dataFreshnessFeature = {
+    createController() {},
+    dataHealth: { buildFreshnessItems() {} },
+  };
   const analyticsCoreFeature = {
     math: { mean() {} },
     contextProfile: {
@@ -62,6 +71,7 @@ test("loads each optional feature only once and creates one timing service", asy
   const marketTimingFeature = {
     coMovement: scope.ThinkStockCoMovement,
     evaluation: scope.ThinkStockMarketTimingEvaluation,
+    macd,
     service: scope.ThinkStockMarketTimingService,
     timing: scope.ThinkStockMarketTiming,
   };
@@ -93,7 +103,6 @@ test("loads each optional feature only once and creates one timing service", asy
   const stockResearchFeature = scope.ThinkStockStockResearchFeature;
   const runtime = createOptionalFeatureRuntime(scope, {
     version: "2.34",
-    buildMacdOscillator() {},
     loader: {
       loadModuleFeature: async (name, path, select) => {
         loaded.push(name);
@@ -116,6 +125,8 @@ test("loads each optional feature only once and creates one timing service", asy
             ? { stockResearchFeature }
           : name === "diagnostics-runtime"
             ? { deferredDiagnostics }
+          : name === "data-freshness"
+            ? { dataFreshnessFeature }
             : { settingsFeature };
         return select(module);
       },
@@ -135,6 +146,7 @@ test("loads each optional feature only once and creates one timing service", asy
   );
   assert.equal(await runtime.ensureDart(), await runtime.ensureDart());
   assert.equal(await runtime.ensureDiagnostics(), await runtime.ensureDiagnostics());
+  assert.equal(await runtime.ensureDataFreshness(), await runtime.ensureDataFreshness());
   assert.equal(await runtime.ensureEps(), await runtime.ensureEps());
   assert.equal(await runtime.ensureCoMovement(), await runtime.ensureCoMovement());
   const timingService = await runtime.ensureMarketTiming();
@@ -143,17 +155,19 @@ test("loads each optional feature only once and creates one timing service", asy
     timingService.options.buildStructuralStockProfile,
     analyticsCoreFeature.contextProfile.buildStructuralStockProfile,
   );
+  assert.equal(timingService.options.buildMacdOscillator, macd.buildMacdOscillator);
   assert.equal(await runtime.ensureStockResearch(), await runtime.ensureStockResearch());
   assert.equal(await runtime.ensureSettings(), await runtime.ensureSettings());
   assert.deepEqual(loaded, [
-    "analytics-core",
     "ai-forecast",
     "broker-research",
     "auxiliary-chart",
     "dart-events",
     "diagnostics-runtime",
+    "data-freshness",
     "eps-chart",
     "market-timing",
+    "analytics-core",
     "stock-research",
     "settings",
   ]);
@@ -163,6 +177,7 @@ test("loads each optional feature only once and creates one timing service", asy
   assert.deepEqual(featurePaths.get("auxiliary-chart"), ["./assets/auxiliary-chart-feature.bundle.min.js"]);
   assert.deepEqual(featurePaths.get("dart-events"), ["./assets/dart-feature.bundle.min.js"]);
   assert.deepEqual(featurePaths.get("diagnostics-runtime"), ["./assets/diagnostics-runtime-feature.bundle.min.js"]);
+  assert.deepEqual(featurePaths.get("data-freshness"), ["./assets/data-freshness-feature.bundle.min.js"]);
   assert.deepEqual(featurePaths.get("eps-chart"), ["./assets/eps-feature.bundle.min.js"]);
   assert.deepEqual(featurePaths.get("market-timing"), ["./assets/market-timing-feature.bundle.min.js"]);
   assert.deepEqual(featurePaths.get("stock-research"), ["./assets/stock-research-feature.bundle.min.js"]);

@@ -23,23 +23,46 @@ function createChartTargetRuntime(options = {}) {
     );
   }
 
-  function chartPoint(element, clientX, clientY, geometry) {
+  function chartPoint(element, clientX, clientY, geometry, interactionContext = null) {
+    if (
+      interactionContext &&
+      Object.prototype.hasOwnProperty.call(interactionContext, "chartPoint")
+    ) {
+      return interactionContext.chartPoint;
+    }
     const xAxis = geometry?.xa || element?._fullLayout?.xaxis;
     const yAxis = geometry?.ya || element?._fullLayout?.yaxis;
-    if (!xAxis || !yAxis) return null;
+    if (!xAxis || !yAxis) {
+      if (interactionContext) interactionContext.chartPoint = null;
+      return null;
+    }
     const rect = geometry?.rect || element.getBoundingClientRect();
     const localX = clientX - rect.left;
     const localY = clientY - rect.top;
     if (localX < xAxis._offset || localX > xAxis._offset + xAxis._length
-      || localY < yAxis._offset || localY > yAxis._offset + yAxis._length) return null;
+      || localY < yAxis._offset || localY > yAxis._offset + yAxis._length) {
+      if (interactionContext) interactionContext.chartPoint = null;
+      return null;
+    }
     const xValue = options.axisPixelToXValue?.(element, clientX, false, geometry);
     const targetMs = options.toMilliseconds?.(xValue);
-    return Number.isFinite(targetMs) ? { localX, localY, targetMs, xAxis, yAxis } : null;
+    const point = Number.isFinite(targetMs)
+      ? { localX, localY, targetMs, xValue, xAxis, yAxis }
+      : null;
+    if (interactionContext) interactionContext.chartPoint = point;
+    return point;
   }
 
-  function findNearestLineDragTarget(element, clientX, clientY, isTouch = false, geometry = null) {
+  function findNearestLineDragTarget(
+    element,
+    clientX,
+    clientY,
+    isTouch = false,
+    geometry = null,
+    interactionContext = null,
+  ) {
     if (!isMainChart(element)) return null;
-    const point = chartPoint(element, clientX, clientY, geometry);
+    const point = chartPoint(element, clientX, clientY, geometry, interactionContext);
     if (!point) return null;
     const seriesKeys = options.adjustableSeriesKeys?.(
       element.data,
@@ -80,9 +103,10 @@ function createChartTargetRuntime(options = {}) {
     clientY,
     isTouch = false,
     geometry = null,
+    interactionContext = null,
   ) {
     if (!isMainChart(element) || typeof options.isAiReportTrace !== "function") return null;
-    const point = chartPoint(element, clientX, clientY, geometry);
+    const point = chartPoint(element, clientX, clientY, geometry, interactionContext);
     if (!point) return null;
     const markerTarget = options.findMarkerAtClientPoint?.(element, clientX, clientY, {
       geometry,
@@ -187,6 +211,7 @@ function findPriorityChartTarget(element, clientX, clientY, isTouch, geometry, o
     clientY,
     isTouch,
     geometry,
+    options.interactionContext,
   );
   if (markerHit) return { kind: EVENT_MARKER_TARGET, ...markerHit };
   const reportHit = options.findAiForecastReportAtClientPoint?.(
@@ -195,6 +220,7 @@ function findPriorityChartTarget(element, clientX, clientY, isTouch, geometry, o
     clientY,
     isTouch,
     geometry,
+    options.interactionContext,
   );
   return reportHit ? { kind: AI_REPORT_TARGET, ...reportHit } : null;
 }
@@ -215,6 +241,7 @@ function findChartInteractionTarget(element, clientX, clientY, isTouch, geometry
     clientY,
     isTouch,
     geometry,
+    options.interactionContext,
   );
   return lineHit ? { kind: LINE_TARGET, ...lineHit } : null;
 }

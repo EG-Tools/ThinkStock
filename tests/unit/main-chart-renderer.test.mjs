@@ -41,6 +41,27 @@ test("classifies chart overlays through one compatibility contract", () => {
   assert.equal(renderer.traceIdentity(disclosure), "disclosure");
 });
 
+test("selects visible range-bearing traces through the overlay contract", () => {
+  const price = trace("005930.KS");
+  const eps = {
+    ...trace("eps:005930.KS"),
+    meta: { overlayKind: "eps", seriesKey: "eps:005930.KS", isEpsTrace: true },
+  };
+  const disclosure = {
+    visible: true,
+    meta: { overlayKind: "disclosure", isDisclosureTrace: true },
+  };
+  const hiddenPrice = { ...trace("000660.KS"), visible: "legendonly" };
+
+  assert.deepEqual(renderer.rangeBearingTraces([
+    price,
+    eps,
+    disclosure,
+    hiddenPrice,
+  ]), [price, eps]);
+  assert.deepEqual(renderer.rangeBearingTraces([price, eps], ["historical"]), [price]);
+});
+
 test("builds one immediate visibility update for every trace owned by a series", () => {
   const traces = [
     { meta: { overlayKind: "grouped-hover", hoverGroupTicker: "A" } },
@@ -574,6 +595,58 @@ test("reuses normalized line data across recent viewport slices", () => {
   assert.equal(after.normalizedHits, before.normalizedHits + 2);
   assert.equal(after.viewportMisses, before.viewportMisses + 2);
   assert.equal(after.viewportHits, before.viewportHits + 1);
+});
+
+test("reuses every prepared line while panning multi-series viewports", () => {
+  const dates = Array.from({ length: 240 }, (_, index) => {
+    const date = new Date(Date.UTC(2025, 0, index + 1));
+    return date.toISOString().slice(0, 10);
+  });
+
+  for (const seriesCount of [1, 5, 10]) {
+    const seriesModels = Array.from({ length: seriesCount }, (_, seriesIndex) => {
+      const values = dates.map((_, pointIndex) => 100 + seriesIndex + pointIndex);
+      return {
+        series: `${String(seriesIndex + 1).padStart(6, "0")}.KS`,
+        xValues: dates,
+        values,
+        rawTexts: values.map(String),
+        baseValues: values,
+        baseLineWidth: 1,
+      };
+    });
+    const leftIndexes = Array.from({ length: 120 }, (_, index) => index);
+    const rightIndexes = Array.from({ length: 120 }, (_, index) => index + 120);
+    const before = renderer.lineDataCacheStats();
+    const first = renderer.buildLineTraces({
+      seriesModels,
+      displayIndexes: leftIndexes,
+      renderRevision: `${seriesCount}|left`,
+    });
+    const repeated = renderer.buildLineTraces({
+      seriesModels,
+      displayIndexes: leftIndexes,
+      renderRevision: `${seriesCount}|left`,
+    });
+    const shifted = renderer.buildLineTraces({
+      seriesModels,
+      displayIndexes: rightIndexes,
+      renderRevision: `${seriesCount}|right`,
+    });
+    const after = renderer.lineDataCacheStats();
+
+    assert.equal(first.traces.length, seriesCount);
+    assert.equal(shifted.traces.length, seriesCount);
+    first.traces.forEach((trace, index) => {
+      assert.equal(repeated.traces[index].x, trace.x);
+      assert.equal(repeated.traces[index].y, trace.y);
+      assert.deepEqual(shifted.traces[index].y, seriesModels[index].values.slice(120));
+    });
+    assert.equal(after.normalizedMisses, before.normalizedMisses + 1);
+    assert.equal(after.normalizedHits, before.normalizedHits + 2);
+    assert.equal(after.viewportMisses, before.viewportMisses + 2);
+    assert.equal(after.viewportHits, before.viewportHits + 1);
+  }
 });
 
 test("invalidates normalized line data when a source array changes", () => {

@@ -22,6 +22,13 @@ export const CHART_RENDER_SERIES_BUDGET = Object.freeze({
   }),
 });
 
+export const CHART_RUNTIME_EFFICIENCY_BUDGET = Object.freeze({
+  minRenders: 4,
+  maxFullRenderRate: 0.45,
+  maxFallbackRate: 0.25,
+  minPartialReuseRate: 0.55,
+});
+
 export function evaluatePerformanceBudget(summary = {}, budget = DESKTOP_PERFORMANCE_BUDGET) {
   const violations = [];
   const skipped = [];
@@ -82,9 +89,46 @@ export function evaluateChartRenderSeriesBudget(
   });
 }
 
+export function evaluateChartRuntimeEfficiency(
+  snapshot = {},
+  budget = CHART_RUNTIME_EFFICIENCY_BUDGET,
+) {
+  const total = Math.max(0, Number(snapshot.total) || 0);
+  if (total < Number(budget.minRenders)) {
+    return Object.freeze({
+      ok: true,
+      skipped: Object.freeze(["chartRuntimeEfficiency"]),
+      violations: Object.freeze([]),
+    });
+  }
+  const violations = [];
+  const checkMaximum = (metric, actual, limit) => {
+    if (Number(actual) > Number(limit)) {
+      violations.push({ metric, actual: Number(actual), limit: Number(limit) });
+    }
+  };
+  checkMaximum("fullRenderRate", snapshot.fullRenderRate, budget.maxFullRenderRate);
+  checkMaximum("fallbackRate", snapshot.fallbackRate, budget.maxFallbackRate);
+  if (Number(snapshot.partialReuseRate) < Number(budget.minPartialReuseRate)) {
+    violations.push({
+      metric: "partialReuseRate",
+      actual: Number(snapshot.partialReuseRate),
+      limit: Number(budget.minPartialReuseRate),
+      comparison: "minimum",
+    });
+  }
+  return Object.freeze({
+    ok: violations.length === 0,
+    skipped: Object.freeze([]),
+    violations: Object.freeze(violations),
+  });
+}
+
 const api = Object.freeze({
   CHART_RENDER_SERIES_BUDGET,
+  CHART_RUNTIME_EFFICIENCY_BUDGET,
   DESKTOP_PERFORMANCE_BUDGET,
+  evaluateChartRuntimeEfficiency,
   evaluateChartRenderSeriesBudget,
   evaluatePerformanceBudget,
 });

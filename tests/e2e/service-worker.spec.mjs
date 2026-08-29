@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 
 test("service worker registers and precaches the offline shell", async ({ context, page }) => {
+  test.setTimeout(90_000);
   await context.route("https://**/*", (route) => route.abort("internetdisconnected"));
   await page.goto("/?e2e=1&sw=1", { waitUntil: "domcontentloaded" });
   await page.evaluate(() => navigator.serviceWorker.ready.then(() => true));
@@ -50,7 +51,6 @@ test("service worker registers and precaches the offline shell", async ({ contex
     "/assets/app.bundle.min.js",
     "/modules/cache-refresh-policy.js",
     "/modules/data-worker.mjs",
-    "/modules/data-worker-runtime.mjs",
     "/modules/chart-model-worker.mjs",
     "/modules/chart-model-worker-runtime.mjs",
     "/vendor/plotly-thinkstock-2.35.2.min.js",

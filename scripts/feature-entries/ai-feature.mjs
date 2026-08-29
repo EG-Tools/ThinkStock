@@ -1,4 +1,6 @@
 import "../../shared/ai-news-evidence.mjs";
+import "../../docs/modules/ai-forecast-math.js";
+import "../../docs/modules/ai-context-profile.js";
 import {
   aiForecastApp,
   aiForecastInputCache,
@@ -8,6 +10,7 @@ import aiForecastQualityRuntime from "../../docs/modules/ai-forecast-quality-run
 import aiForecastTraces from "../../docs/modules/ai-forecast-traces.mjs";
 import aiForecastCache from "../../docs/modules/ai-forecast-cache.mjs";
 import aiAnalysisCache from "../../docs/modules/ai-analysis-cache.mjs";
+import macd from "../../docs/modules/macd-oscillator.mjs";
 import "../../docs/modules/ai-forecast-model.js";
 import "../../docs/modules/ai-scenario-paths.js";
 import "../../docs/modules/ai-forecast-scenarios.js";
@@ -22,6 +25,7 @@ const aiFeature = Object.freeze({
   forecast: globalThis.ThinkStockAiForecast,
   inputCache: aiForecastInputCache,
   journal: aiForecastJournal,
+  macd,
   qualityRuntime: aiForecastQualityRuntime,
   scenarios: globalThis.ThinkStockAiForecastScenarios,
   traces: aiForecastTraces,

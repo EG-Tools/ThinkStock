@@ -276,7 +276,7 @@ test("normalizes local KRX research universe by market cap", () => {
   assert.deepEqual(records.map((row) => [row.ticker, row.rank]), [["005930.KS", 1], ["000660.KS", 2]]);
 });
 
-test("stock research stops requesting live prices after 4 PM Korea time", async () => {
+test("stock research captures one settled Naver snapshot after 4 PM Korea time", async () => {
   let naverRequests = 0;
   const payloadRows = Array.from({ length: 60 }, (_, index) => ({
     ISU_SRT_CD: String(100000 + index).slice(-6),
@@ -287,11 +287,26 @@ test("stock research stops requesting live prices after 4 PM Korea time", async 
   }));
   const result = await fetchLocalResearchUniverse(async (url) => {
     const target = new URL(url);
-    if (target.hostname === "stock.naver.com") naverRequests += 1;
+    if (target.hostname === "stock.naver.com") {
+      naverRequests += 1;
+      const market = target.searchParams.get("marketType");
+      const offset = market === "KOSDAQ" ? 500000 : 100000;
+      return new Response(JSON.stringify(Array.from({ length: 100 }, (_, index) => ({
+        itemcode: String(offset + index).slice(-6),
+        itemname: `${market}-${index}`,
+        nowPrice: String(10000 + index),
+        tradeVolume: String(100000 + index),
+        tradeAmount: String(1000000000 + index),
+        marketSum: String(1000000000000 - index),
+        marketStatus: "CLOSE",
+      }))), { status: 200 });
+    }
     return new Response(JSON.stringify({ OutBlock_1: payloadRows }), { status: 200 });
   }, "krx-secret", new Date("2026-08-13T07:01:00Z"), { totalLimit: 100 });
 
-  assert.equal(naverRequests, 0);
+  assert.equal(naverRequests, 2);
+  assert.equal(result.source, "NAVER_CLOSE");
+  assert.equal(result.priceMode, "settled");
   assert.equal(result.records.length, 100);
   assert.deepEqual(result.selection, { KOSPI: 50, KOSDAQ: 50 });
 });

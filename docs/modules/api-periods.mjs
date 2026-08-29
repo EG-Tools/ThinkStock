@@ -1,5 +1,4 @@
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-  const REMINDER_STORAGE_KEY = "thinkstock-api-period-reminder-v1";
   const DISPLAY_GROUPS = Object.freeze([
     Object.freeze({
       id: "krx-market-index",
@@ -147,28 +146,12 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
     return compacted;
   }
 
-  function formatPeriodRange(period) {
+  function formatPeriodRange(period, today = koreaDateText()) {
     if (period?.noExpiry === true) return "기간 제한 없음";
+    if (DATE_PATTERN.test(String(today || ""))
+      && DATE_PATTERN.test(String(period?.endDate || ""))
+      && today > period.endDate) return "기간만료";
     return `${formatPeriodDate(period?.startDate)} ~ ${formatPeriodDate(period?.endDate)}`;
-  }
-
-  function shiftDateMonths(value, amount) {
-    if (!DATE_PATTERN.test(String(value || ""))) return "";
-    const [year, month, day] = value.split("-").map(Number);
-    const first = new Date(Date.UTC(year, month - 1 + amount, 1));
-    const targetYear = first.getUTCFullYear();
-    const targetMonth = first.getUTCMonth();
-    const lastDay = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
-    return new Date(Date.UTC(targetYear, targetMonth, Math.min(day, lastDay)))
-      .toISOString()
-      .slice(0, 10);
-  }
-
-  function shiftDateDays(value, amount) {
-    if (!DATE_PATTERN.test(String(value || ""))) return "";
-    const date = new Date(`${value}T00:00:00Z`);
-    date.setUTCDate(date.getUTCDate() + amount);
-    return date.toISOString().slice(0, 10);
   }
 
   function koreaDateText(value = new Date()) {
@@ -188,103 +171,12 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
     }
   }
 
-  function periodSignature(periods = DEFAULT_PERIODS) {
-    return normalizePeriods(periods)
-      .map((period) => `${period.id}:${period.noExpiry ? "none" : `${period.startDate}:${period.endDate}`}`)
-      .join("|");
-  }
-
-  function reminderPeriods(periods, today) {
-    if (!DATE_PATTERN.test(String(today || ""))) return [];
-    return normalizePeriods(periods)
-      .filter((period) => !period.noExpiry && today >= shiftDateMonths(period.endDate, -1))
-      .sort((left, right) => left.endDate.localeCompare(right.endDate));
-  }
-
-function createReminderStore(scope = globalThis, options = {}) {
-    const periods = normalizePeriods(options.periods || DEFAULT_PERIODS);
-    const signature = periodSignature(periods);
-    const storage = options.storage || scope.localStorage;
-    const storageKey = String(options.storageKey || REMINDER_STORAGE_KEY);
-    const now = typeof options.now === "function" ? options.now : () => new Date();
-
-    function today() {
-      return koreaDateText(now());
-    }
-
-    function read() {
-      try {
-        const parsed = JSON.parse(storage?.getItem(storageKey) || "null");
-        if (!parsed || parsed.signature !== signature) return { signature };
-        return {
-          signature,
-          lastShownDate: DATE_PATTERN.test(String(parsed.lastShownDate || ""))
-            ? parsed.lastShownDate
-            : "",
-          snoozeUntil: DATE_PATTERN.test(String(parsed.snoozeUntil || ""))
-            ? parsed.snoozeUntil
-            : "",
-        };
-      } catch (_) {
-        return { signature };
-      }
-    }
-
-    function write(state) {
-      const next = {
-        signature,
-        lastShownDate: DATE_PATTERN.test(String(state?.lastShownDate || ""))
-          ? state.lastShownDate
-          : "",
-        snoozeUntil: DATE_PATTERN.test(String(state?.snoozeUntil || ""))
-          ? state.snoozeUntil
-          : "",
-      };
-      try { storage?.setItem(storageKey, JSON.stringify(next)); } catch (_) {}
-      return next;
-    }
-
-    function decision(dateText = today()) {
-      const due = reminderPeriods(periods, dateText);
-      const state = read();
-      const snoozed = Boolean(state.snoozeUntil && dateText < state.snoozeUntil);
-      return Object.freeze({
-        show: due.length > 0 && !snoozed && state.lastShownDate !== dateText,
-        today: dateText,
-        periods: due,
-        expired: due.some((period) => dateText > period.endDate),
-      });
-    }
-
-    function markShown(dateText = today()) {
-      const state = read();
-      return write({ ...state, lastShownDate: dateText });
-    }
-
-    function dismiss({ dateText = today(), snoozeDays = 0 } = {}) {
-      const state = read();
-      return write({
-        ...state,
-        lastShownDate: dateText,
-        snoozeUntil: snoozeDays > 0 ? shiftDateDays(dateText, snoozeDays) : "",
-      });
-    }
-
-    return Object.freeze({ decision, dismiss, markShown, periods, read, storageKey, today });
-  }
-
 export {
   DEFAULT_PERIODS,
   DISPLAY_GROUPS,
-  REMINDER_STORAGE_KEY,
   compactPeriodsForDisplay,
-  createReminderStore,
   formatPeriodDate,
   formatPeriodRange,
   koreaDateText,
   normalizePeriods,
-  periodSignature,
-  reminderPeriods,
-  shiftDateDays,
-  shiftDateMonths,
 };

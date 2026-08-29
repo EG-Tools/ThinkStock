@@ -12,17 +12,20 @@ import {
   stubExternalRefreshes,
   installDataRoutes,
 } from "./helpers/thinkstock-fixture.mjs";
-import { evaluatePerformanceBudget } from "../../shared/performance-budget.mjs";
+import {
+  evaluateChartRuntimeEfficiency,
+  evaluatePerformanceBudget,
+} from "../../shared/performance-budget.mjs";
 
 import RESEARCH_CONTRACT from "../../docs/modules/stock-research-contract.js";
 import { RELEASES as RELEASE_NOTES } from "../../docs/modules/release-notes.mjs";
 
-test("KRX API expiry reminder supports daily display and seven-day snooze", async ({ page }) => {
+test("API settings marks expired periods without a startup reminder", async ({ page }) => {
   await stubExternalRefreshes(page);
   await installDataRoutes(page);
   await page.addInitScript(() => {
     const NativeDate = Date;
-    const fixedTime = NativeDate.parse("2027-03-14T03:00:00Z");
+    const fixedTime = NativeDate.parse("2027-04-15T03:00:00Z");
     class FixedDate extends NativeDate {
       constructor(...args) {
         super(...(args.length ? args : [fixedTime]));
@@ -36,22 +39,13 @@ test("KRX API expiry reminder supports daily display and seven-day snooze", asyn
   });
 
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
-  await expect(page.locator("#apiExpiryReminderModal")).toBeVisible({ timeout: 20_000 });
-  await expect(page.locator("#apiExpiryReminderMessage")).toContainText("한 달 이내");
-  await expect(page.locator("#apiExpiryReminderRows")).toContainText("KRX API");
-  await page.locator("#apiExpiryReminderSnooze").check();
-  await page.locator("#apiExpiryReminderCloseBtn").click();
-  await expect(page.locator("#apiExpiryReminderModal")).toBeHidden();
-  await expect.poll(() => page.evaluate(() => (
-    JSON.parse(localStorage.getItem("thinkstock-api-period-reminder-v1") || "null")
-  ))).toMatchObject({
-    lastShownDate: "2027-03-14",
-    snoozeUntil: "2027-03-21",
-  });
-
-  await page.reload({ waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(800);
-  await expect(page.locator("#apiExpiryReminderModal")).toBeHidden();
+  await expect(page.locator("#apiExpiryReminderModal")).toHaveCount(0);
+  await page.locator("#apiOptionsBtn").click();
+  await expect(page.locator("#apiSettingsModal")).toBeVisible();
+  await page.locator("#apiPeriodBtn").click();
+  await expect(page.locator("#apiPeriodPanel")).toBeVisible();
+  const krxApiRow = page.locator("#apiPeriodRows .api-period-row").filter({ hasText: "KRX API" });
+  await expect(krxApiRow).toContainText("기간만료");
 });
 
 test("stock research Worker loads its bundled dependencies without global collisions", async ({ page }) => {
@@ -241,10 +235,12 @@ test("stock research popup preserves results while adding multiple candidates", 
   await expect(page.locator("#stockResearchBuyFilter")).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#stockResearchSellFilter")).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator("#stockResearchTodayFilter")).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#stockResearchTodayFilter")).toHaveText("1일");
   await expect(page.locator("#stockResearchModalCacheClearBtn")).toHaveCount(0);
   await expect(page.locator("#stockResearchModalBlockedClearBtn")).toBeDisabled();
   await expect(page.locator("#stockResearchModalBlockedClearBtn")).toHaveText("차단 0 종목");
   await expect(page.locator("#stockResearchRefreshBtn")).toHaveText("재검색");
+  await expect(page.locator("#stockResearchPagePosition")).toHaveText("1");
   const popupLayout = await page.locator(".stock-research-panel").evaluate((panelElement) => {
     const header = panelElement.querySelector(".stock-research-header");
     const actions = panelElement.querySelector(".stock-research-actions");
@@ -289,50 +285,45 @@ test("stock research popup preserves results while adding multiple candidates", 
   expect(popupLayout.blockedClearRight).toBeLessThanOrEqual(popupLayout.closeLeft);
   expect(popupLayout.closeLeft - popupLayout.blockedClearRight).toBeLessThanOrEqual(8);
   await expect(page.locator("#stockResearchList .stock-research-item")).toHaveCount(5);
-  const cachedAddStarted = Date.now();
-  await page.locator('[data-research-toggle="000001.KS"]').click();
-  await expect(page.locator('[data-research-toggle="000001.KS"]')).toHaveText("제거");
-  expect(Date.now() - cachedAddStarted).toBeLessThan(2000);
-  const promotedPointCount = await page.evaluate(() => new Promise((resolve, reject) => {
-    const contract = window.ThinkStockE2E.getRuntimeStorageContract();
-    const request = indexedDB.open(contract.dbName, contract.dbVersion);
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => {
-      const db = request.result;
-      const tx = db.transaction("tickerPrices", "readonly");
-      const read = tx.objectStore("tickerPrices").get("000001.KS");
-      read.onsuccess = () => { resolve(read.result?.points?.length || 0); db.close(); };
-      read.onerror = () => reject(read.error);
-    };
-  }));
-  expect(promotedPointCount).toBeGreaterThanOrEqual(300);
-  await expect.poll(() => page.evaluate(() => new Promise((resolve, reject) => {
-    const contract = window.ThinkStockE2E.getRuntimeStorageContract();
-    const request = indexedDB.open(contract.dbName, contract.dbVersion);
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => {
-      const db = request.result;
-      const tx = db.transaction("tickerPrices", "readonly");
-      const read = tx.objectStore("tickerPrices").get("000001.KS");
-      read.onsuccess = () => {
-        resolve({
-          coverage: read.result?.historyCoverage || "",
-          firstDate: read.result?.points?.[0]?.date || "",
-        });
-        db.close();
+  const cachedAddDuration = await page.locator('[data-research-toggle="000001.KS"]').evaluate((button) => (
+    new Promise((resolve, reject) => {
+      const started = performance.now();
+      let timeoutId = 0;
+      const observer = new MutationObserver(() => check());
+      const cleanup = () => {
+        observer.disconnect();
+        clearTimeout(timeoutId);
       };
-      read.onerror = () => reject(read.error);
-    };
-  }))).toEqual({ coverage: "full", firstDate: "2003-01-02" });
-  expect(fullHistoryRequests).toBe(1);
+      const check = () => {
+        const currentButton = document.querySelector('[data-research-toggle="000001.KS"]');
+        const seriesButton = document.querySelector('[data-series="000001.KS"]');
+        if (currentButton?.textContent?.trim() !== "제거" || !seriesButton?.classList.contains("is-off")) return;
+        cleanup();
+        resolve(performance.now() - started);
+      };
+      observer.observe(document.body, { attributes: true, childList: true, characterData: true, subtree: true });
+      timeoutId = setTimeout(() => {
+        cleanup();
+        reject(new Error("cached stock add did not commit within 3 seconds"));
+      }, 3000);
+      button.click();
+      queueMicrotask(check);
+    })
+  ));
+  await expect(page.locator('[data-research-toggle="000001.KS"]')).toHaveText("제거");
+  await expect(page.locator('[data-series="000001.KS"]')).toHaveClass(/is-off/);
+  expect(cachedAddDuration).toBeLessThan(1000);
+  expect(fullHistoryRequests).toBe(0);
   await page.locator('[data-research-toggle="000001.KS"]').click();
   await expect(page.locator('[data-research-toggle="000001.KS"]')).toHaveText("추가");
   const fullPageHeight = await page.locator(".stock-research-panel").evaluate((panel) => panel.getBoundingClientRect().height);
   await page.locator("#stockResearchNextBtn").click();
+  await expect(page.locator("#stockResearchPagePosition")).toHaveText("2");
   await expect(page.locator('[data-research-ticker="000004.KS"]')).toBeVisible();
   const shortPageHeight = await page.locator(".stock-research-panel").evaluate((panel) => panel.getBoundingClientRect().height);
   expect(Math.abs(shortPageHeight - fullPageHeight)).toBeLessThan(2);
   await page.locator("#stockResearchPreviousBtn").click();
+  await expect(page.locator("#stockResearchPagePosition")).toHaveText("1");
   await expect(page.locator('[data-research-ticker="005930.KS"]')).toBeVisible();
   await page.locator("#stockResearchMinimumDecrease").click();
   await page.locator("#stockResearchMinimumDecrease").click();
@@ -379,15 +370,16 @@ test("stock research popup preserves results while adding multiple candidates", 
   await expect(page.locator("#stockResearchBuyFilter")).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#stockResearchSellFilter")).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#stockResearchTodayFilter")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#stockResearchTodayFilter")).toHaveText("1일");
   await expect(page.locator("#stockResearchSignalLabel")).toHaveText("전체신호");
   await expect(page.locator("#stockResearchMinimumValue")).toHaveText("1");
   await expect(page.locator("#stockResearchMinimumDecrease")).toBeDisabled();
-  await expect(page.locator("#stockResearchMinimumIncrease")).toBeDisabled();
+  await expect(page.locator("#stockResearchMinimumIncrease")).toBeEnabled();
   await expect(page.locator("#stockResearchAsOf")).not.toContainText("기존 결과 내 필터");
   await expect(page.locator("#stockResearchAsOf")).toContainText("탐구기준 2026-07-14");
   await expect(page.locator("#stockResearchList .stock-research-item")).toHaveCount(1);
   await expect(page.locator('[data-research-ticker="005930.KS"]')).toHaveCount(0);
-  await expect(page.locator('[data-research-ticker="218410.KQ"]')).toContainText("매수 당일");
+  await expect(page.locator('[data-research-ticker="218410.KQ"]')).toContainText("매수 1회 · 1일");
   expect(researchUniverseRequests).toBe(0);
   await page.locator("#stockResearchRefreshBtn").click();
   await expect.poll(() => researchUniverseRequests).toBe(1);
@@ -412,6 +404,13 @@ test("stock research popup preserves results while adding multiple candidates", 
   await expect(page.locator("#stockResearchRefreshBtn")).toHaveText("검색");
   await expect(page.locator("#stockResearchEmpty")).toContainText("검색을 누르면");
   await page.locator("#stockResearchTodayFilter").click();
+  await expect(page.locator("#stockResearchTodayFilter")).toHaveText("15일");
+  await expect(page.locator("#stockResearchTodayFilter")).toHaveAttribute("aria-pressed", "true");
+  await page.locator("#stockResearchTodayFilter").click();
+  await expect(page.locator("#stockResearchTodayFilter")).toHaveText("30일");
+  await page.locator("#stockResearchTodayFilter").click();
+  await expect(page.locator("#stockResearchTodayFilter")).toHaveText("1일");
+  await expect(page.locator("#stockResearchTodayFilter")).toHaveAttribute("aria-pressed", "false");
   await expect.poll(() => researchUniverseRequests).toBe(1);
 });
 
@@ -1819,6 +1818,8 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   expect(renderPerf.renderCharts).toBeGreaterThan(0);
   expect(renderPerf.p95RenderChart).toBeLessThan(DESKTOP_PERF_BUDGET.maxP95RenderChart);
   expect(renderPerf.p95AuxiliaryRender).toBeLessThan(DESKTOP_PERF_BUDGET.maxP95AuxiliaryRender);
+  const efficiencyResult = evaluateChartRuntimeEfficiency(workerStatsAfterHistory.renderTelemetry);
+  expect(efficiencyResult.violations).toEqual([]);
   await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getCacheCleanupStats().runs))
     .toBeGreaterThan(0);
   });

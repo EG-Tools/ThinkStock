@@ -17,7 +17,6 @@ CHART_WORKER_MODULE_IMPORTS = (
 )
 DATA_WORKER_MODULE_IMPORTS = (
     "./data-payload.mjs",
-    "./data-worker-runtime.mjs",
 )
 
 
@@ -70,7 +69,6 @@ def main() -> int:
     auxiliary_model_src = versioned("./modules/auxiliary-chart-model.mjs", version)
     chart_display_sampler_src = versioned("./modules/chart-display-sampler.mjs", version)
     data_worker_src = versioned("./modules/data-worker.mjs", version)
-    data_worker_runtime_src = versioned("./modules/data-worker-runtime.mjs", version)
     chart_worker_src = versioned("./modules/chart-model-worker.mjs", version)
     chart_worker_runtime_src = versioned("./modules/chart-model-worker-runtime.mjs", version)
     plotly_src = versioned("./vendor/plotly-thinkstock-2.35.2.min.js", version)
@@ -107,7 +105,6 @@ def main() -> int:
         (auxiliary_model_src, "auxiliary model"),
         (chart_display_sampler_src, "chart display sampler"),
         (data_worker_src, "data worker"),
-        (data_worker_runtime_src, "data worker runtime"),
         (chart_worker_src, "chart worker"),
         (chart_worker_runtime_src, "chart worker runtime"),
         (plotly_src, "Plotly"),

@@ -69,7 +69,25 @@ test("loads KOSPI and KOSDAQ top 200 with four requests", async () => {
   assert.equal(result.records.filter((row) => row.market === "KOSPI").length, 200);
   assert.equal(result.records.filter((row) => row.market === "KOSDAQ").length, 200);
   assert.equal(result.records[0].baseDate, "2026-08-13");
+  assert.equal(result.priceMode, "realtime");
+  assert.equal(result.records[0].priceMode, "realtime");
   assert.match(naverResearchUniverseUrl("KOSDAQ", 1), /marketType=KOSDAQ.*startIdx=1.*pageSize=100/);
+});
+
+test("marks a post-close Naver universe as settled", async () => {
+  const fetchImpl = async (url) => {
+    const parsed = new URL(url);
+    return new Response(JSON.stringify(page(
+      parsed.searchParams.get("marketType"),
+      Number(parsed.searchParams.get("startIdx")),
+    )), { status: 200 });
+  };
+  const result = await fetchNaverLiveResearchUniverse(fetchImpl, "2026-08-13", {
+    priceMode: "settled",
+  });
+  assert.equal(result.source, "NAVER_CLOSE");
+  assert.equal(result.priceMode, "settled");
+  assert.equal(result.records.every((row) => row.priceMode === "settled"), true);
 });
 
 test("expands a 400-stock universe by fetching only the extra rank pages", async () => {

@@ -5,7 +5,7 @@ import {
   createIdleResourceLifecycle,
   createWorkerInstance,
   workerConstructorOptions,
-} from "../../docs/modules/worker-lifecycle.mjs";
+} from "../../docs/modules/browser-request-runtime.mjs";
 
 test("constructs classic and module workers through one normalized boundary", () => {
   const calls = [];

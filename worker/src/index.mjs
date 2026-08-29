@@ -1,7 +1,9 @@
 import {
   expectedLatestKoreanTradingDate,
   isKoreanCurrentPriceWindow,
+  isKoreanTradingDate,
   koreanDateText,
+  resolveKoreanResearchUniversePhase,
 } from "../../shared/market-calendar.mjs";
 import {
   RUNTIME_API_VERSION,
@@ -1337,12 +1339,19 @@ async function researchUniverseResponse(env, origin, forceRefresh = false, reque
   const now = new Date();
   const totalLimit = normalizeResearchUniverseSize(requestedLimit);
   const perMarketLimit = researchUniversePerMarketLimit(totalLimit);
-  const expectedDate = expectedLatestKoreanTradingDate(now);
+  const phase = resolveKoreanResearchUniversePhase(now);
+  const { expectedDate, today } = phase;
   const latestKey = `research-universe:${RESEARCH_CACHE_SCHEMA}:${totalLimit}:latest`;
+  const latest = env.DISCLOSURE_CACHE
+    ? await readCacheBestEffort("research-universe-latest", () => env.DISCLOSURE_CACHE.get(latestKey, "json"))
+    : null;
   let liveWarning = "";
-  if (isKoreanCurrentPriceWindow(now, { closeHour: 16 })) {
+  if (phase.realtime) {
     try {
-      const live = await fetchNaverLiveResearchUniverse(fetch, koreanDateText(now), { totalLimit });
+      const live = await fetchNaverLiveResearchUniverse(fetch, today, {
+        totalLimit,
+        priceMode: "realtime",
+      });
       const payload = {
         ...live,
         schema: RESEARCH_CACHE_SCHEMA,
@@ -1360,9 +1369,35 @@ async function researchUniverseResponse(env, origin, forceRefresh = false, reque
       liveWarning = `장중 현재가 목록 확인 실패: ${error?.message || error}`;
     }
   }
-  const latest = env.DISCLOSURE_CACHE
-    ? await readCacheBestEffort("research-universe-latest", () => env.DISCLOSURE_CACHE.get(latestKey, "json"))
-    : null;
+  // KRX daily rows can lag after the close. Capture one final Naver snapshot so
+  // provisional signals are either confirmed or removed before KRX settles.
+  if (phase.captureClose) {
+    if (latest?.schema === RESEARCH_CACHE_SCHEMA
+      && latest?.priceMode === "settled"
+      && latest?.baseDate === today
+      && latest?.records?.length === totalLimit) {
+      return jsonResponse({ ...latest, ok: true, cached: true }, 200, origin);
+    }
+    try {
+      const settled = await fetchNaverLiveResearchUniverse(fetch, today, {
+        totalLimit,
+        priceMode: "settled",
+      });
+      const payload = {
+        ...settled,
+        schema: RESEARCH_CACHE_SCHEMA,
+        savedAt: Date.now(),
+      };
+      if (env.DISCLOSURE_CACHE) {
+        await writeCachesBestEffort("research-universe-close", [
+          () => env.DISCLOSURE_CACHE.put(latestKey, JSON.stringify(payload)),
+        ]);
+      }
+      return jsonResponse({ ...payload, ok: true, cached: false }, 200, origin);
+    } catch (error) {
+      liveWarning = `장 마감 가격 확인 실패: ${error?.message || error}`;
+    }
+  }
   if (latest?.records?.length === totalLimit && latest.baseDate > expectedDate) {
     return jsonResponse({ ...latest, ok: true, cached: true }, 200, origin);
   }
@@ -1391,10 +1426,11 @@ async function researchUniverseResponse(env, origin, forceRefresh = false, reque
       const payload = {
         schema: RESEARCH_CACHE_SCHEMA,
         source: "KRX",
+        priceMode: "settled",
         baseDate,
         savedAt: Date.now(),
         selection: { KOSPI: perMarketLimit, KOSDAQ: perMarketLimit },
-        records,
+        records: records.map((record) => ({ ...record, priceMode: "settled" })),
         ...(liveWarning ? { warning: liveWarning } : {}),
       };
       if (env.DISCLOSURE_CACHE) {

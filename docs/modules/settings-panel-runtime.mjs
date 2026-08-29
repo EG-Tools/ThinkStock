@@ -44,7 +44,6 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
 
     const document = scope.document;
     const apiPeriods = apiPeriodsModule.DEFAULT_PERIODS;
-    const apiPeriodReminderStore = apiPeriodsModule.createReminderStore(scope, { periods: apiPeriods });
     let openPanel = null;
 
     function renderApiPeriodRows(container, periods) {
@@ -66,47 +65,6 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
         fragment.append(row);
       });
       container.replaceChildren(fragment);
-    }
-
-    function closeApiExpiryReminder() {
-      const modal = document.getElementById("apiExpiryReminderModal");
-      if (!modal || modal.hidden) return;
-      const snooze = document.getElementById("apiExpiryReminderSnooze");
-      apiPeriodReminderStore.dismiss({ snoozeDays: snooze?.checked ? 7 : 0 });
-      modal.hidden = true;
-    }
-
-    function bindApiExpiryReminder() {
-      const closeBtn = document.getElementById("apiExpiryReminderCloseBtn");
-      if (!closeBtn || closeBtn.dataset.bound === "1") return;
-      closeBtn.dataset.bound = "1";
-      closeBtn.addEventListener("click", closeApiExpiryReminder);
-    }
-
-    function showApiPeriodReminderIfDue() {
-      bindApiExpiryReminder();
-      const decision = apiPeriodReminderStore.decision();
-      if (!decision.show) return false;
-      const modal = document.getElementById("apiExpiryReminderModal");
-      const message = document.getElementById("apiExpiryReminderMessage");
-      const rows = document.getElementById("apiExpiryReminderRows");
-      const snooze = document.getElementById("apiExpiryReminderSnooze");
-      if (!modal || !message || !rows) return false;
-      message.textContent = decision.expired
-        ? "KRX API 기간이 만료되었습니다. 갱신 후 기간정보를 업데이트해 주세요."
-        : "KRX API 만료일이 한 달 이내로 다가왔습니다. 갱신 후 기간정보를 업데이트해 주세요.";
-      renderApiPeriodRows(rows, decision.periods);
-      if (snooze) snooze.checked = false;
-      modal.hidden = false;
-      apiPeriodReminderStore.markShown(decision.today);
-      return true;
-    }
-
-    function scheduleApiPeriodReminder(delayMs = 500) {
-      const schedule = typeof scope.setTimeout === "function"
-        ? scope.setTimeout.bind(scope)
-        : setTimeout;
-      return schedule(showApiPeriodReminderIfDue, Math.max(0, Number(delayMs) || 0));
     }
 
     function setup(msgEl) {
@@ -178,7 +136,6 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
         apiPeriodRows,
         apiPeriodsModule.compactPeriodsForDisplay(apiPeriods),
       );
-      bindApiExpiryReminder();
     
       const setAccessStatus = (element, message = "", isError = false) => {
         if (!element) return;
@@ -458,12 +415,7 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
       });
       document.addEventListener("keydown", (event) => {
         if (event.key !== "Escape") return;
-        const reminderModal = document.getElementById("apiExpiryReminderModal");
-        if (reminderModal && !reminderModal.hidden) {
-          closeApiExpiryReminder();
-        } else if (!modal.hidden) {
-          close();
-        }
+        if (!modal.hidden) close();
       });
     
       appCacheBtn?.addEventListener("click", async () => {
@@ -649,9 +601,7 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
 
     return Object.freeze({
       open: () => openPanel?.(),
-      scheduleApiPeriodReminder,
       setup,
-      showApiPeriodReminderIfDue,
     });
   }
 

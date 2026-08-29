@@ -2,7 +2,7 @@
 
   const normalizeTicker = (value) => String(value || "").trim().toUpperCase();
   const TIMING_CACHE_SCHEMA = 1;
-  const TIMING_CACHE_REVISION = "market-timing-cache-v2";
+  const TIMING_CACHE_REVISION = "market-timing-cache-v3";
 
   function normalizeTargets(targets) {
     return [...new Set((targets || []).map(normalizeTicker).filter(Boolean))].sort();
@@ -212,6 +212,9 @@
     const pendingRequests = new Map();
     const timeoutMs = Math.max(1000, Number(options.timeoutMs) || 20000);
     const cache = options.cache || null;
+    const schedulePersistence = typeof options.schedulePersistence === "function"
+      ? options.schedulePersistence
+      : null;
     const workerUrl = String(options.workerUrl || "./assets/market-timing-worker.bundle.min.js?v=dev");
     const createWorker = options.createWorker || ((url) => new scope.Worker(url));
     const dependencies = {
@@ -244,6 +247,7 @@
       workerFallbacks: 0,
       persistentCacheHits: 0,
       persistentCacheWrites: 0,
+      deferredCacheWrites: 0,
     };
 
     function rejectPending(error) {
@@ -388,6 +392,17 @@
       } catch (_) {}
     }
 
+    function persistCalculatedModels(signature, targets) {
+      const persist = () => persistModels(targets);
+      if (!schedulePersistence) return persist();
+      counters.deferredCacheWrites += targets.length;
+      try {
+        const scheduled = schedulePersistence(persist, { signature, targets: [...targets] });
+        scheduled?.catch?.(() => {});
+      } catch (_) {}
+      return null;
+    }
+
     async function calculateMissing(signature, targets) {
       counters.modelCalculations += targets.length;
       let calculated;
@@ -414,7 +429,10 @@
           );
         }
       });
-      await persistModels(targets);
+      // Signal rendering must not wait for IndexedDB. The application scheduler
+      // serializes this write later, while direct consumers keep synchronous
+      // persistence for deterministic tests and non-UI usage.
+      await persistCalculatedModels(signature, targets);
     }
 
     async function prepare(input = {}) {

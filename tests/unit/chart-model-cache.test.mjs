@@ -180,3 +180,30 @@ test("bounds revisioned series calculations with least-recently-used eviction", 
   assert.equal(cache.resolve("b", "1", () => "b1-new"), "b1-new");
   assert.equal(cache.stats().evictions, 2);
 });
+
+test("routes source changes only to dependent derived series caches", () => {
+  const registry = module.createSeriesDerivedCacheRegistry();
+  const calls = [];
+  registry.register("macd", {
+    invalidate: (ticker) => calls.push(["macd", ticker]),
+    stats: () => ({ entries: 2 }),
+  }, { sources: ["price"] });
+  registry.register("timing", {
+    invalidate: (ticker) => calls.push(["timing", ticker]),
+  }, { stores: ["tickerTimingModels"] });
+
+  assert.equal(registry.invalidate("005930", {
+    changedSources: ["price"],
+    stores: ["tickerTimingModels"],
+  }), 2);
+  assert.deepEqual(calls, [["macd", "005930"], ["timing", "005930"]]);
+  assert.deepEqual(registry.stats(), {
+    invalidations: 1,
+    adapterInvalidations: 2,
+    clears: 0,
+    adapters: {
+      macd: { entries: 2 },
+      timing: null,
+    },
+  });
+});

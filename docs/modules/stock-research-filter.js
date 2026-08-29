@@ -66,14 +66,82 @@
   }
 
   function candidateMatchesTodayFilter(candidate, filter = {}, marketDates = {}, expectedDate = "") {
+    return candidateMatchesSignalWindow(candidate, {
+      ...filter,
+      signalWindowDays: 1,
+    }, marketDates, expectedDate);
+  }
+
+  function signalCalendarAge(signalDate, referenceDate) {
+    const signalTime = Date.parse(`${String(signalDate || "").slice(0, 10)}T00:00:00Z`);
+    const referenceTime = Date.parse(`${String(referenceDate || "").slice(0, 10)}T00:00:00Z`);
+    if (!Number.isFinite(signalTime) || !Number.isFinite(referenceTime) || signalTime > referenceTime) {
+      return null;
+    }
+    return Math.floor((referenceTime - signalTime) / 86400000);
+  }
+
+  function candidateSignalWindowState(candidate, filter = {}, marketDates = {}, expectedDate = "") {
+    const windowDays = contract.normalizeSignalWindowDays(
+      filter?.signalWindowDays,
+      filter?.todayOnly === true,
+    );
+    const sessionSpan = contract.signalWindowSessionSpan(windowDays);
     const referenceDate = candidateResearchMarketDate(candidate, marketDates);
-    if (!researchMarketDateIsCurrent(referenceDate, expectedDate)) return false;
+    if (!windowDays || !researchMarketDateIsCurrent(referenceDate, expectedDate)) {
+      return Object.freeze({ matches: false, buy: false, sell: false, referenceDate, windowDays });
+    }
     const candidateDate = String(candidate?.latestDate || candidate?.asOfDate || "").slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(candidateDate) || candidateDate !== referenceDate) return false;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(candidateDate) || candidateDate !== referenceDate) {
+      return Object.freeze({ matches: false, buy: false, sell: false, referenceDate, windowDays });
+    }
     const buyDate = String(candidate?.lastBuyDate || "").slice(0, 10);
     const sellDate = String(candidate?.lastSellDate || candidate?.sellDate || "").slice(0, 10);
-    return (filter?.includeBuy === true && buyDate === referenceDate)
-      || (filter?.includeSell === true && sellDate === referenceDate);
+    const normalizedMinimum = Math.max(
+      contract.MINIMUM_LOW,
+      Math.min(contract.MINIMUM_HIGH, Math.round(Number(filter?.minimumSignals) || 1)),
+    );
+    const signalIsInside = (date, storedAge) => {
+      const sessionAge = Number(storedAge);
+      if (Number.isInteger(sessionAge) && sessionAge >= 0) return sessionAge < sessionSpan;
+      const calendarAge = signalCalendarAge(date, referenceDate);
+      return Number.isInteger(calendarAge) && calendarAge >= 0 && calendarAge < sessionSpan;
+    };
+    const countInside = (values, fallbackDate, fallbackAge) => {
+      if (Array.isArray(values)) {
+        return values.filter((value) => {
+          const age = Number(value);
+          return Number.isInteger(age) && age >= 0 && age < sessionSpan;
+        }).length;
+      }
+      return signalIsInside(fallbackDate, fallbackAge) ? 1 : 0;
+    };
+    const buyCount = countInside(
+      candidate?.buySignalSessionAges,
+      buyDate,
+      candidate?.lastBuySessionAge,
+    );
+    const sellCount = countInside(
+      candidate?.sellSignalSessionAges,
+      sellDate,
+      candidate?.lastSellSessionAge,
+    );
+    const buy = filter?.includeBuy === true && buyCount >= normalizedMinimum;
+    const sell = filter?.includeSell === true && sellCount >= normalizedMinimum;
+    return Object.freeze({
+      matches: buy || sell,
+      buy,
+      sell,
+      buyCount,
+      sellCount,
+      minimumSignals: normalizedMinimum,
+      referenceDate,
+      windowDays,
+    });
+  }
+
+  function candidateMatchesSignalWindow(candidate, filter = {}, marketDates = {}, expectedDate = "") {
+    return candidateSignalWindowState(candidate, filter, marketDates, expectedDate).matches;
   }
 
   function researchMarketDateLabel(marketDates = {}, expectedDate = "") {
@@ -93,13 +161,19 @@
 
   const stockResearchFilter = Object.freeze({
     candidateMatchesTodayFilter,
+    candidateMatchesSignalWindow,
     candidateMeetsSignalMinimum,
     candidateResearchMarket,
     candidateResearchMarketDate,
+    candidateSignalWindowState,
     latestResearchDate,
+    nextSignalWindowDays: contract.nextSignalWindowDays,
+    normalizeSignalWindowDays: contract.normalizeSignalWindowDays,
     researchMarketDateLabel,
     researchMarketDateIsCurrent,
     resolveResearchMarketDates,
+    signalWindowLabel: contract.signalWindowLabel,
+    signalWindowSessionSpan: contract.signalWindowSessionSpan,
     visibleCandidateReasons,
   });
 

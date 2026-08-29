@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import model from "../../docs/modules/main-chart-model.mjs";
+import { prepareMainChartDataset } from "../../docs/modules/chart-model-worker-runtime.mjs";
+
+test("main chart cache helpers share one normalized frame signature", () => {
+  assert.equal(model.sortedObjectSignature({ b: 2, a: 1 }), "a:1|b:2");
+  assert.equal(model.mainChartDatasetKey({
+    priceFingerprint: "price-7",
+    supplementalRevision: "macro:2|credit:4",
+  }), "price-7|macro:2|credit:4");
+});
 
 test("plans main chart dates and visible-series budget in the chart model", () => {
   let budgetCount = 0;
@@ -58,6 +67,44 @@ test("keeps main chart model cache-key construction deterministic", () => {
   assert.match(first, /daily-points$/);
 });
 
+test("builds identical worker and synchronous main-chart requests", () => {
+  const sources = {
+    priceRows: [{ date: "2026-08-22", AAA: 100 }],
+    macroRows: [{ date: "2026-08-22", leading_cycle: 101 }],
+    creditRows: [],
+  };
+  const request = model.buildMainChartModelRequest({
+    activeMonths: -12,
+    allowedSeries: ["AAA", "leading_cycle"],
+    creditCols: ["customer_deposit"],
+    creditOffsetDays: 2,
+    customStocksSignature: "AAA:#fff",
+    dataStart: "2025-08-22",
+    dataEnd: "2026-08-22",
+    displayBudget: 1200,
+    displayNames: { AAA: "AAA" },
+    fixedFrame: { normBases: { AAA: 100 }, autoScales: { AAA: 90 } },
+    frameStart: "2026-01-01",
+    frameEnd: "2026-08-22",
+    hiddenSeries: new Set(["leading_cycle"]),
+    priceFingerprint: "price-8",
+    priorityOrder: ["AAA"],
+    seriesOffsets: { AAA: 2 },
+    seriesScales: { AAA: 1.2 },
+    sources,
+    supplementalRevision: "macro:3|credit:1",
+    supplementalSeries: ["leading_cycle"],
+  });
+
+  assert.equal(request.workerPayload.datasetKey, "price-8|macro:3|credit:1");
+  assert.deepEqual(request.workerPayload.sources, sources);
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(request.workerPayload).filter(([key]) => !["datasetKey", "sources"].includes(key))),
+    Object.fromEntries(Object.entries(request.syncPayload).filter(([key]) => !["priceRows", "macroRows", "creditRows"].includes(key))),
+  );
+  assert.match(request.cacheKey, /fixed-frame::fixed-frame/);
+});
+
 test("creates an isolated live session model without mutating the cached calculation", () => {
   const cached = {
     rows: [{ date: "2026-08-22" }],
@@ -110,5 +157,48 @@ test("keeps hidden trace slots without calculating their full history", () => {
     xValues: [],
     values: [],
     baseValues: [],
+  });
+});
+
+test("reuses prepared raw values and labels across viewport model rebuilds", () => {
+  const payload = {
+    priceRows: [
+      { date: "2026-08-20", AAA: 100 },
+      { date: "2026-08-21", AAA: 105 },
+      { date: "2026-08-22", AAA: 103 },
+    ],
+    macroRows: [],
+    creditRows: [],
+    allowedSeries: ["AAA"],
+    hiddenSeries: [],
+    excludedSeries: [],
+    priorityOrder: ["AAA"],
+    start: "2026-08-20",
+    end: "2026-08-22",
+    displayBudget: 100,
+    preserveDailyPoints: true,
+  };
+  const preparedDataset = prepareMainChartDataset(payload);
+
+  model.buildMainChartModel({
+    ...payload,
+    preparedDataset,
+    frameStart: "2026-08-20",
+    frameEnd: "2026-08-21",
+  });
+  model.buildMainChartModel({
+    ...payload,
+    preparedDataset,
+    frameStart: "2026-08-21",
+    frameEnd: "2026-08-22",
+  });
+
+  assert.deepEqual(preparedDataset.stats(), {
+    availabilityScans: 1,
+    rangeSlices: 2,
+    valueBuilds: 1,
+    textBuilds: 1,
+    cachedSeries: 1,
+    cachedTexts: 1,
   });
 });

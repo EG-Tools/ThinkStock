@@ -203,8 +203,8 @@ import {
         return applySyncedXRangeMs(range[0], range[1], meta);
       };
     
-      const moveAt = (sourceEl, clientX, clientY, geometry = null) => {
-        const xValue = axisPixelToXValue(sourceEl, clientX, false, geometry);
+      const moveAt = (sourceEl, clientX, clientY, geometry = null, resolvedXValue = null) => {
+        const xValue = resolvedXValue ?? axisPixelToXValue(sourceEl, clientX, false, geometry);
         if (xValue == null) {
           scheduleSyncedCursor(null);
           return;
@@ -229,6 +229,7 @@ import {
         runHitTest,
       }) => {
         const perfStartedAt = startPerfSample();
+        const interactionContext = {};
         if (runHitTest && !interactionState.viewportDragging) {
           const interactionTarget = findChartInteractionTarget(
             sourceEl,
@@ -240,6 +241,7 @@ import {
               findAiForecastReportAtClientPoint,
               findEventMarkerAtClientPoint,
               findNearestLineDragTarget,
+              interactionContext,
             },
           );
           const eventMarkerTarget = interactionTarget?.kind === EVENT_MARKER_TARGET
@@ -273,7 +275,13 @@ import {
           const lineTarget = interactionTarget?.kind === LINE_TARGET ? interactionTarget : null;
           setHoveredLineTarget(lineTarget);
         }
-        moveAt(sourceEl, clientX, clientY, geometry);
+        moveAt(
+          sourceEl,
+          clientX,
+          clientY,
+          geometry,
+          interactionContext.chartPoint?.xValue,
+        );
         if (perfStartedAt) recordPerfSample("pointerMove", perfStartedAt, { chart: sourceEl.id || "unknown" });
       };
     

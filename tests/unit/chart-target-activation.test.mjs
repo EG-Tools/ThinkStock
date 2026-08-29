@@ -102,6 +102,38 @@ test("chart target runtime owns and invalidates line hit indexes", () => {
   assert.equal(builds, 2);
 });
 
+test("shares one axis conversion across report and line hit tests in a pointer frame", () => {
+  const element = {
+    data: [{ meta: { seriesKey: "A" }, x: ["2026-08-25"], y: [10] }],
+    _fullLayout: {
+      xaxis: { _offset: 0, _length: 200 },
+      yaxis: { _offset: 0, _length: 100 },
+    },
+    getBoundingClientRect: () => ({ left: 0, top: 0 }),
+  };
+  let axisConversions = 0;
+  const runtime = createChartTargetRuntime({
+    getMainElement: () => element,
+    getBaseTraceValues: () => ({}),
+    axisPixelToXValue: () => { axisConversions += 1; return "2026-08-25"; },
+    toMilliseconds: Date.parse,
+    adjustableSeriesKeys: () => ["A"],
+    isAiReportTrace: () => false,
+    findMarkerAtClientPoint: () => null,
+    lineHitIndexMatches: () => false,
+    buildLineHitIndex: () => [],
+    findNearestMarkerTarget: () => null,
+    interactiveMarkerHitRadius: () => 16,
+    findNearestLineTarget: () => null,
+  });
+  const interactionContext = {};
+
+  runtime.findAiForecastReportAtClientPoint(element, 50, 50, false, null, interactionContext);
+  runtime.findNearestLineDragTarget(element, 50, 50, false, null, interactionContext);
+  assert.equal(axisConversions, 1);
+  assert.equal(interactionContext.chartPoint.xValue, "2026-08-25");
+});
+
 test("marker-only invalidation preserves reusable line indexes", () => {
   const element = {
     data: [{ meta: { seriesKey: "A" } }],

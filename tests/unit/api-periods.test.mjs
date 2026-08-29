@@ -2,16 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as apiPeriods from "../../docs/modules/api-periods.mjs";
 
-function createStorage() {
-  const values = new Map();
-  return {
-    getItem: (key) => values.get(key) ?? null,
-    setItem: (key, value) => values.set(key, String(value)),
-    removeItem: (key) => values.delete(key),
-    values,
-  };
-}
-
 test("keeps the KRX key and registered service periods in one source", () => {
   const module = apiPeriods;
   assert.equal(module.DEFAULT_PERIODS.length, 12);
@@ -31,7 +21,7 @@ test("keeps the KRX key and registered service periods in one source", () => {
   assert.equal(module.formatPeriodRange(module.DEFAULT_PERIODS[10]), "기간 제한 없음");
 });
 
-test("compacts matching API periods for display without changing reminder sources", () => {
+test("compacts matching API periods for the settings display", () => {
   const module = apiPeriods;
   const compacted = module.compactPeriodsForDisplay(module.DEFAULT_PERIODS);
 
@@ -54,62 +44,18 @@ test("compacts matching API periods for display without changing reminder source
   assert.equal(module.formatPeriodRange(compacted[7]), "기간 제한 없음");
 });
 
-test("starts reminders one calendar month before expiry and only once per day", () => {
-  const storage = createStorage();
-  let now = new Date("2027-03-13T03:00:00Z");
+test("shows expired API periods in settings without a reminder state", () => {
   const module = apiPeriods;
-  const store = module.createReminderStore(
-    { localStorage: storage },
-    { now: () => now },
+  assert.equal(
+    module.formatPeriodRange(module.DEFAULT_PERIODS[0], "2027-04-14"),
+    "2026/04/15 ~ 2027/04/14",
   );
-
-  assert.equal(store.decision().show, false);
-  now = new Date("2027-03-14T03:00:00Z");
-  assert.equal(store.decision().show, true);
-  assert.equal(store.decision().periods[0].name, "KRX API");
-  store.markShown();
-  assert.equal(store.decision().show, false);
-  now = new Date("2027-03-15T03:00:00Z");
-  assert.equal(store.decision().show, true);
-});
-
-test("seven-day snooze resumes on the eighth calendar date", () => {
-  const storage = createStorage();
-  let now = new Date("2027-03-14T03:00:00Z");
-  const module = apiPeriods;
-  const store = module.createReminderStore(
-    { localStorage: storage },
-    { now: () => now },
+  assert.equal(
+    module.formatPeriodRange(module.DEFAULT_PERIODS[0], "2027-04-15"),
+    "기간만료",
   );
-
-  store.dismiss({ snoozeDays: 7 });
-  now = new Date("2027-03-20T03:00:00Z");
-  assert.equal(store.decision().show, false);
-  now = new Date("2027-03-21T03:00:00Z");
-  assert.equal(store.decision().show, true);
-});
-
-test("renewed period dates ignore the previous reminder state", () => {
-  const storage = createStorage();
-  const module = apiPeriods;
-  const oldStore = module.createReminderStore(
-    { localStorage: storage },
-    { now: () => new Date("2027-03-20T03:00:00Z") },
+  assert.equal(
+    module.formatPeriodRange(module.DEFAULT_PERIODS[10], "2030-01-01"),
+    "기간 제한 없음",
   );
-  oldStore.dismiss({ snoozeDays: 7 });
-
-  const renewedStore = module.createReminderStore(
-    { localStorage: storage },
-    {
-      now: () => new Date("2027-03-20T03:00:00Z"),
-      periods: [{
-        id: "krx-auth-key",
-        name: "KRX API",
-        startDate: "2027-04-15",
-        endDate: "2028-04-14",
-      }],
-    },
-  );
-  assert.equal(renewedStore.decision().show, false);
-  assert.notEqual(renewedStore.read().signature, oldStore.read().signature);
 });

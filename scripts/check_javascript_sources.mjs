@@ -22,7 +22,7 @@ const WEB_SCRIPT_FILES = new Set([
 ]);
 // Tighten this only after a classic module moves behind an ESM bundle boundary.
 // A future feature must not silently expand the global registry again.
-const LEGACY_DOCS_MODULE_GLOBAL_MAX = 9;
+const LEGACY_DOCS_MODULE_GLOBAL_MAX = 7;
 const LEGACY_DOCS_MODULE_GLOBAL_ALLOWLIST = new Set([
   "ThinkStockAiContextProfile",
   "ThinkStockAiForecast",
@@ -31,15 +31,14 @@ const LEGACY_DOCS_MODULE_GLOBAL_ALLOWLIST = new Set([
   "ThinkStockAiForecastScenarios",
   "ThinkStockAiScenarioPaths",
   "ThinkStockCacheRefreshPolicy",
-  "ThinkStockStockResearch",
-  "ThinkStockStockResearchContract",
 ]);
 const SHARED_ESM_GLOBAL_ALLOWLIST = new Set([
   "ThinkStockAiNewsEvidence",
 ]);
 // New modules require an explicit architecture decision instead of quietly
 // growing the already broad browser module surface.
-export const DOCS_ESM_MODULE_MAX = 100;
+export const DOCS_ESM_MODULE_MAX = 96;
+const APP_SOURCE_MAX_BYTES = 290000;
 
 function isWebScript(relative) {
   return WEB_SCRIPT_FILES.has(relative) || relative.startsWith("scripts/feature-entries/");
@@ -270,6 +269,11 @@ async function main() {
   }
   if (files.includes("docs/app.js")) {
     const appSource = await readFile(path.join(ROOT, "docs", "app.js"), "utf8");
+    if (Buffer.byteLength(appSource, "utf8") > APP_SOURCE_MAX_BYTES) {
+      throw new Error(
+        `docs/app.js responsibility boundary grew beyond ${APP_SOURCE_MAX_BYTES} bytes`,
+      );
+    }
     const unreferenced = findUnreferencedTopLevelFunctions(appSource);
     if (unreferenced.length) {
       throw new Error(`Unreferenced docs/app.js functions: ${unreferenced.join(", ")}`);

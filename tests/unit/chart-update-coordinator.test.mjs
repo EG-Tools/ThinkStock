@@ -7,30 +7,108 @@ import {
   canReuseEventMarkerTraces,
   canReuseFutureOverlayTraces,
   createChartUpdateCoordinator,
+  createChartRenderFacade,
   createMainChartRenderGuard,
   createMainChartRenderRuntime,
   createPlotlyUpdateRuntime,
   createReusableMainChartTracePlan,
   createSeriesFrameApplier,
   finalizeMainChartFrameState,
+  fitMainChartToViewport,
   hydrateMainChartSession,
-  summarizeMainChartWorkload,
+  normalizeChartInvalidation,
   shouldHydrateChartData,
   shouldUpdateAuxiliary,
 } from "../../docs/modules/chart-update-coordinator.mjs";
 
-test("summarizes real series separately from overlays and grouped hover helpers", () => {
-  assert.deepEqual(summarizeMainChartWorkload([
-    { x: [1, 2], meta: { overlayKind: "price", seriesKey: "A" } },
-    { x: [1, 2], meta: { overlayKind: "price", seriesKey: "B" }, visible: "legendonly" },
-    { x: [1], meta: { overlayKind: "eps", seriesKey: "eps:A" } },
-    { x: [1, 2], meta: { overlayKind: "grouped-hover" } },
-  ]), {
-    traceCount: 4,
-    seriesCount: 1,
-    overlayCount: 2,
-    pointCount: 7,
+test("fits the main chart and marker layer in one coordinated update", async () => {
+  const calls = [];
+  const price = { x: ["2026-01-01"], y: [100], meta: { seriesKey: "005930.KS" } };
+  const marker = { x: ["2026-01-01"], y: [105], meta: { overlayKind: "signal" } };
+  const element = {
+    data: [price, marker],
+    _fullLayout: { yaxis: { range: [90, 110] } },
+  };
+  const result = await fitMainChartToViewport({
+    element,
+    renderer: {
+      rangeBearingTraces: (traces) => traces.filter((trace) => trace === price),
+    },
+    updateRuntime: {
+      update: async (...args) => calls.push(["update", ...args]),
+      relayout: async (...args) => calls.push(["relayout", ...args]),
+    },
+    xRange: ["2026-01-01", "2026-01-02"],
+    fitRangeForTraces: (traces) => {
+      assert.deepEqual(traces, [price]);
+      return [95, 105];
+    },
+    hasEventMarkers: true,
+    appendEventMarkerYUpdates: (_element, indexes, updates) => {
+      indexes.push(1);
+      updates.push([104]);
+      return { structureChanged: false, disclosureUpdated: true };
+    },
   });
+
+  assert.equal(result.mode, "update");
+  assert.deepEqual(result.yRange, [95, 105]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], "update");
+  assert.deepEqual(calls[0][2], { y: [[104]] });
+  assert.deepEqual(calls[0][3], {
+    "yaxis.range[0]": 95,
+    "yaxis.range[1]": 105,
+    "yaxis.autorange": false,
+  });
+  assert.deepEqual(calls[0][4], [1]);
+});
+
+test("normalizes every chart layer decision once per render transaction", () => {
+  const invalidation = normalizeChartInvalidation({
+    reasons: ["drag", "markers"],
+    updateClasses: ["viewport", "viewport", "markers"],
+  });
+
+  assert.deepEqual(invalidation.updateClasses, ["viewport", "markers"]);
+  assert.deepEqual(invalidation.plan, {
+    normalized: true,
+    updateAuxiliary: false,
+    hydrateData: false,
+    reuseFutureOverlays: false,
+    reuseEventMarkers: false,
+  });
+  assert.equal(normalizeChartInvalidation(invalidation), invalidation);
+  assert.equal(Object.isFrozen(invalidation.updateClasses), true);
+  assert.equal(Object.isFrozen(invalidation.plan), true);
+});
+
+test("routes every app chart request through one render facade", () => {
+  const calls = [];
+  const facade = createChartRenderFacade({
+    getCoordinator: () => ({
+      requestRender: (...args) => calls.push(["render", ...args]),
+      requestComposition: (options) => calls.push(["composition", options]),
+    }),
+    getScheduler: () => ({
+      run: (preserveZoom) => calls.push(["run", preserveZoom]),
+      runWhenIdleOrNow: (preserveZoom) => calls.push(["idle", preserveZoom]),
+    }),
+    getState: () => ({ showAiForecast: true, showEps: false }),
+    getAiApp: () => ({ requestRender: (render) => { calls.push(["ai-hold"]); render(); } }),
+  });
+
+  facade.requestComposition({ reason: "toggle" });
+  facade.requestFutureOverlayComposition();
+  facade.requestAiForecast();
+  facade.run(false);
+  facade.runWhenIdleOrNow(true);
+
+  assert.equal(calls[0][1].preserveFutureOverlayViewport, true);
+  assert.equal(calls[1][1].reason, "future-overlay-composition");
+  assert.deepEqual(calls[2], ["ai-hold"]);
+  assert.equal(calls[3][2].updateClass, "forecast");
+  assert.deepEqual(calls.slice(-2), [["run", false], ["idle", true]]);
 });
 
 test("main chart render runtime owns render mode selection and telemetry", async () => {
@@ -38,9 +116,6 @@ test("main chart render runtime owns render mode selection and telemetry", async
   const telemetry = [];
   const runtime = createMainChartRenderRuntime({}, {
     renderer: {
-      canApplyPartialUpdate: () => true,
-      canApplyEventMarkerUpdate: () => false,
-      canReconcileTraceStructure: () => false,
       render: async (...args) => {
         calls.push(args);
         return { mode: "partial", updateScope: "lines" };
@@ -48,12 +123,15 @@ test("main chart render runtime owns render mode selection and telemetry", async
     },
     updateRuntime: {
       run: async (label, task) => {
-        assert.equal(label, "main-chart-partial-render");
+        assert.equal(label, "main-chart-render");
         return task();
       },
     },
     telemetry: {
-      begin: (detail) => { telemetry.push(["begin", detail]); return detail; },
+      begin: (detail, workloadTraces) => {
+        telemetry.push(["begin", detail, workloadTraces]);
+        return detail;
+      },
       complete: (token, result) => telemetry.push(["complete", token, result]),
     },
     getPlotly: () => ({ id: "plotly" }),
@@ -68,9 +146,35 @@ test("main chart render runtime owns render mode selection and telemetry", async
 
   assert.equal(mode, "partial");
   assert.equal(calls.length, 1);
-  assert.equal(telemetry[0][1].seriesCount, 1);
-  assert.equal(telemetry[0][1].overlayCount, 0);
+  assert.equal(telemetry[0][2], traces);
   assert.equal(telemetry[1][2].mode, "partial");
+});
+
+test("main chart render runtime leaves deferred telemetry inert until loaded", async () => {
+  const telemetry = [];
+  const runtime = createMainChartRenderRuntime({}, {
+    renderer: {
+      render: async () => ({ mode: "partial", updateScope: "lines" }),
+    },
+    updateRuntime: {
+      run: async (_label, task) => task(),
+    },
+    telemetry: {
+      isLoaded: () => false,
+      begin: (detail) => { telemetry.push(["begin", detail]); return detail; },
+      complete: (token, result) => telemetry.push(["complete", token, result]),
+    },
+    render: async () => {},
+  });
+
+  const mode = await runtime.apply({}, [{
+    x: [1, 2],
+    y: [2, 3],
+    meta: { overlayKind: "price", seriesKey: "A" },
+  }], {}, { updateClasses: ["viewport"] });
+
+  assert.equal(mode, "partial");
+  assert.deepEqual(telemetry, []);
 });
 
 
@@ -113,10 +217,14 @@ test("reuses event markers only while the visible date window moves", () => {
 test("shares one render revision guard for viewport and AI invalidation", () => {
   let aiRevision = 2;
   let viewportRevision = 7;
+  let viewportSignature = "100:200";
+  let captured = 0;
   let queued = 0;
   const guard = createMainChartRenderGuard({
     getAiRevision: () => aiRevision,
     getViewportRevision: () => viewportRevision,
+    getViewportSignature: () => viewportSignature,
+    onViewportChanged: () => { captured += 1; },
     requestViewportRender: () => { queued += 1; },
   });
 
@@ -128,6 +236,11 @@ test("shares one render revision guard for viewport and AI invalidation", () => 
   assert.equal(queued, 1);
   aiRevision += 1;
   assert.equal(guard.aiChanged(), true);
+  viewportRevision = 7;
+  viewportSignature = "120:220";
+  assert.equal(guard.queueCurrentViewportRender(), true);
+  assert.equal(captured, 2);
+  assert.equal(queued, 2);
 });
 
 test("reuses EPS, AI, and event traces through one composition plan", () => {
@@ -460,6 +573,7 @@ test("plotly update runtime shares one busy lifecycle across batched chart updat
   ]);
   assert.deepEqual(runtime.stats(), {
     relayoutCalls: 2,
+    coalescedRelayoutCalls: 0,
     restyleCalls: 1,
     updateCalls: 1,
     failedCalls: 0,
@@ -490,5 +604,29 @@ test("plotly update runtime settles optional relayout failures without leaking b
   assert.deepEqual(results.map((result) => result.status), ["fulfilled", "rejected"]);
   assert.deepEqual(errors, [["detached", "viewport"]]);
   assert.deepEqual(busy, [true, false]);
+  assert.equal(runtime.isBusy(), false);
+});
+
+test("plotly update runtime reuses an identical relayout already in flight", async () => {
+  let release;
+  let calls = 0;
+  const runtime = createPlotlyUpdateRuntime({
+    Plotly: {
+      relayout: () => {
+        calls += 1;
+        return new Promise((resolve) => { release = resolve; });
+      },
+    },
+  });
+  const element = { id: "chart", data: [{}] };
+  const payload = { "xaxis.range[0]": "2026-01-01", "xaxis.range[1]": "2026-02-01" };
+
+  const first = runtime.relayout(element, payload);
+  const second = runtime.relayout(element, { ...payload });
+  await Promise.resolve();
+  assert.equal(calls, 1);
+  assert.equal(runtime.stats().coalescedRelayoutCalls, 1);
+  release(true);
+  await Promise.all([first, second]);
   assert.equal(runtime.isBusy(), false);
 });

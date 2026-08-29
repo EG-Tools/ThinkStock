@@ -11,6 +11,7 @@ function createHarness({ chartSyncing = false, currentRange = true } = {}) {
     handles: 0,
     visibility: [],
     viewport: 0,
+    viewportInteractions: [],
   };
   const chartSession = {
     currentSelected: ["A"],
@@ -47,6 +48,7 @@ function createHarness({ chartSyncing = false, currentRange = true } = {}) {
     isTouchDevice: () => false,
     noteStockVisibilityChange: () => {},
     normalizeHoverPopupIndent: () => {},
+    noteViewportInteraction: (value) => { calls.viewportInteractions.push(value); },
     refreshAiForecastTargets: () => {},
     renderCoMovementPanel: () => { calls.coMovement += 1; },
     requestChartCompositionUpdate: (options) => { calls.composition.push(options); },
@@ -83,6 +85,7 @@ test("programmatic relayout cannot persist or replay an app-owned viewport", () 
     handles: 0,
     visibility: [],
     viewport: 0,
+    viewportInteractions: [],
   });
 });
 
@@ -103,6 +106,7 @@ test("user relayout persists the viewport and schedules dependent work", () => {
     handles: 1,
     visibility: [],
     viewport: 1,
+    viewportInteractions: [{ hasRange: true, hasAuto: false }],
   });
 });
 
@@ -121,6 +125,7 @@ test("late relayout events cannot overwrite a newer visible viewport", () => {
     handles: 0,
     visibility: [],
     viewport: 0,
+    viewportInteractions: [],
   });
 });
 

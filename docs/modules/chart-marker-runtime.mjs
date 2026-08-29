@@ -262,10 +262,12 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       getCreditRows,
       getCrisisRows,
       getDisclosureRows,
+      getEventRevisions,
       getInsiderTradeRows,
       getMacroRows,
       getMarketTimingService,
       getPricePayload,
+      getSignalLifecycle,
       getTickerVolumeSeriesByTicker,
       getUseViewportMarkerGap,
       getViewportYRange,
@@ -274,6 +276,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       netSameReporterInsiderTrades,
       recordPerfSample,
       recordRuntimeError,
+      shouldPrepareMarketTimingModels = () => true,
       signalProgress,
       seriesColor,
       startPerfSample,
@@ -299,6 +302,24 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     const pointIndexCache = new WeakMap();
     let lastTimingPreparationKey = "";
     let pendingTimingPreparation = null;
+
+    function markerRenderFingerprint(frame, kind, suffix = "") {
+      return [
+        frame?.renderRevision || "",
+        String(kind || "marker"),
+        String(suffix || ""),
+        chartSession.hoverShowPopup ? "hover" : "plain",
+      ].join("|");
+    }
+
+    function stampMarkerTrace(trace, frame, kind, suffix = "") {
+      if (!trace) return trace;
+      trace.meta = {
+        ...(trace.meta || {}),
+        renderFingerprint: markerRenderFingerprint(frame, kind, suffix),
+      };
+      return trace;
+    }
 
     function transformSignature(indexedTickers) {
       return [...indexedTickers]
@@ -369,6 +390,37 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       if (chartSession.showDisclosures) addEventTickers(getDisclosureRows?.() || []);
       if (chartSession.showInsiderTrades) addEventTickers(getInsiderTradeRows?.() || []);
       const hasIndexedMarkers = indexedTickers.size > 0;
+      const eventRevisions = getEventRevisions?.() || {};
+      const revisionSignature = Object.entries(eventRevisions)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, value]) => `${key}:${Number(value) || 0}`)
+        .join("|");
+      const resolvedViewportRange = Array.isArray(viewportRange)
+        ? viewportRange
+        : getViewportYRange?.();
+      const markerGap = hasIndexedMarkers
+        ? chartEventLayer.markerGap(seriesModels || [], markerStart, markerEnd, {
+          ratio: eventMarkerGapRatio,
+          hiddenSeries: chartSession.hiddenSeries,
+          useViewport: Boolean(getUseViewportMarkerGap?.()),
+          viewportRange: resolvedViewportRange,
+        })
+        : 0;
+      const visibleColorSignature = [...visibleTickers]
+        .sort()
+        .map((ticker) => `${ticker}:${seriesColor(ticker)}`)
+        .join("|");
+      const renderRevision = [
+        dataRevisionSignature?.("price", "macro", "credit", "adr", "crisis", "disclosure") || "",
+        revisionSignature,
+        start,
+        end,
+        markerStart,
+        markerEnd,
+        transformSignature(indexedTickers),
+        markerGap,
+        visibleColorSignature,
+      ].join("|");
       return {
         selected: [...(selected || [])],
         selectedSet,
@@ -384,14 +436,8 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         pointIndex: hasIndexedMarkers
           ? cachedPointIndex(seriesModels || [], indexedTickers)
           : {},
-        markerGap: hasIndexedMarkers
-          ? chartEventLayer.markerGap(seriesModels || [], markerStart, markerEnd, {
-            ratio: eventMarkerGapRatio,
-            hiddenSeries: chartSession.hiddenSeries,
-            useViewport: Boolean(getUseViewportMarkerGap?.()),
-            viewportRange: Array.isArray(viewportRange) ? viewportRange : getViewportYRange?.(),
-          })
-          : 0,
+        markerGap,
+        renderRevision,
       };
     }
 
@@ -426,7 +472,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       const stageName = (stage) => stage === "crisis" ? "위기" : "경고";
       return {
         count: points.length,
-        trace: {
+        trace: stampMarkerTrace({
           x: points.map((point) => point.date),
           y: points.map((point) => point.y),
           customdata: points.map(({ event, ticker }) => [
@@ -456,7 +502,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
           },
           textposition: "middle center",
           textfont: buildEventMarkerTextFont(colors.crisis, eventMarkerTextSize),
-        },
+        }, frame, "crisis", points.length),
       };
     }
 
@@ -469,12 +515,18 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       frame.timingSeries.forEach((ticker) => {
         const model = getMarketTimingModel(ticker);
         const signals = sell ? model?.sellSignals : model?.signals;
+        const latestPriceDate = frame.pointIndex?.[ticker]?.at?.(-1)?.date || "";
         (signals || []).forEach((signal) => {
           if (signal.date > frame.end) return;
           const point = findPointOnOrAfterDate(signal.date, ticker, frame.pointIndex, 4);
           if (!point || point.date < frame.start || point.date > frame.end) return;
           points.push({
             signal,
+            signalLifecycle: getSignalLifecycle?.({
+              ticker,
+              signalDate: signal.date,
+              latestPriceDate,
+            }) || null,
             ticker,
             date: point.date,
             y: point.y + frame.markerGap * timingGapMultiplier * (sell ? 1 : -1),
@@ -489,7 +541,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         Number.isFinite(toNum(value)) ? `${toNum(value).toFixed(digits)}${suffix}` : "-"
       );
       const customdata = sell
-        ? points.map(({ signal, ticker }) => [
+        ? points.map(({ signal, signalLifecycle, ticker }) => [
           labelName(ticker),
           compactTimingReasons([
             signal.sellSetupReasons,
@@ -503,9 +555,11 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
           Number.isFinite(signal.evidenceCount) ? signal.evidenceCount : "-",
           signal.signalFamily || "overheat-rollover",
           signal.behaviorProfile?.label || "혼합형",
-          signal.signalRole === "warning" ? "과매수 경고" : "매도 신호",
+          signalLifecycle?.realtime
+            ? "실시간 매도 신호"
+            : (signal.signalRole === "warning" ? "과매수 경고" : "매도 신호"),
         ])
-        : points.map(({ signal, ticker }) => [
+        : points.map(({ signal, signalLifecycle, ticker }) => [
           labelName(ticker),
           compactTimingReasons([
             signal.setupReasons,
@@ -521,7 +575,9 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
           Number.isFinite(signal.evidenceCount) ? signal.evidenceCount : "-",
           signal.signalFamily || "correction-reversal",
           signal.behaviorProfile?.label || "혼합형",
-          signal.signalRole === "warning" ? "과매도 경고" : "매수 신호",
+          signalLifecycle?.realtime
+            ? "실시간 매수 신호"
+            : (signal.signalRole === "warning" ? "과매도 경고" : "매수 신호"),
         ]);
       const hovertemplate = customdata.map((values) => {
         const reasons = String(escapeHtml?.(values[1]) ?? values[1]).replace(" · ", "<br>· ");
@@ -531,7 +587,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
           : `<b>%{customdata[0]} %{customdata[10]}</b><br>근거: ${reasons}`
             + "<br>ADR %{customdata[2]} · 공포 %{customdata[3]} · MACD %{customdata[4]}<extra></extra>";
       });
-      const trace = {
+      const trace = stampMarkerTrace({
         x: points.map((point) => point.date),
         y: points.map((point) => point.y),
         customdata,
@@ -554,7 +610,9 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
           sell ? colors.timingSell : colors.timingBuy,
           eventMarkerTextSize,
         ),
-      };
+      }, frame, sell ? "timing-sell" : "timing-buy", (
+        `${points.length}:${points.filter((point) => point.signalLifecycle?.realtime).length}`
+      ));
       return { trace, count: points.length };
     }
 
@@ -601,7 +659,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       return {
         stats,
         groups: groupsById,
-        trace: {
+        trace: stampMarkerTrace({
           x: groups.map((group) => group.plotDate),
           y: groups.map((group) => group.y),
           text: groups.map(() => String(constants.disclosureIconText || "◆")),
@@ -633,7 +691,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
             groups.map((group) => group.color || colors.disclosure),
             constants.disclosureTextSize,
           ),
-        },
+        }, frame, "disclosure", groups.length),
       };
     }
 
@@ -740,16 +798,101 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       ));
       stats.markers = groups.length;
       return {
-        traces: buildInsiderMarkerTraces(groups, { textSize: eventMarkerTextSize }),
+        traces: buildInsiderMarkerTraces(groups, { textSize: eventMarkerTextSize })
+          .map((trace) => stampMarkerTrace(
+            trace,
+            frame,
+            `insider-${trace?.meta?.insiderSide || trace?.name || "marker"}`,
+            groups.length,
+          )),
         stats,
       };
     }
 
+    function createSpecs(args = [], enabledState = {}, frameOptions = {}) {
+      const enabled = {
+        disclosure: Boolean(enabledState.disclosure),
+        insider: Boolean(enabledState.insider),
+        timing: Boolean(enabledState.timing),
+      };
+      const [
+        selected,
+        seriesModels,
+        start,
+        end,
+        markerStart = start,
+        markerEnd = end,
+      ] = Array.isArray(args) ? args : [];
+      const frame = Object.values(enabled).some(Boolean)
+        ? createFrame({
+          selected,
+          seriesModels,
+          start,
+          end,
+          markerStart,
+          markerEnd,
+          viewportRange: frameOptions.viewportRange,
+        })
+        : null;
+      const withResult = (builder, onResult, select) => () => {
+        const result = builder(frame);
+        onResult?.(result);
+        return select(result);
+      };
+      return createEventMarkerSpecs({
+        crisis: {
+          enabled: enabled.timing,
+          build: withResult(
+            buildCrisis,
+            (result) => options.onCrisisCount?.(result.count),
+            (result) => result.trace,
+          ),
+        },
+        "timing-buy": {
+          enabled: enabled.timing,
+          build: withResult(
+            (value) => buildTiming(value, "buy"),
+            (result) => options.onTimingBuyCount?.(result.count),
+            (result) => result.trace,
+          ),
+        },
+        "timing-sell": {
+          enabled: enabled.timing,
+          build: withResult(
+            (value) => buildTiming(value, "sell"),
+            (result) => options.onTimingSellCount?.(result.count),
+            (result) => result.trace,
+          ),
+        },
+        insider: {
+          enabled: enabled.insider,
+          build: withResult(
+            buildInsider,
+            (result) => options.onInsiderStats?.(result.stats),
+            (result) => result.traces,
+          ),
+        },
+        disclosure: {
+          enabled: enabled.disclosure,
+          build: withResult(
+            buildDisclosure,
+            (result) => options.onDisclosureStats?.(result.stats),
+            (result) => result.trace,
+          ),
+        },
+      });
+    }
+
     async function prepareMarketTimingModels(selected, seriesModels) {
       const targets = visibleTimingSeries(selected, seriesModels);
-      if (!chartSession.showRecessionSignals || !targets.length) return;
+      if (!chartSession.showRecessionSignals
+        || !targets.length
+        || shouldPrepareMarketTimingModels() === false) return;
       const taskKey = `signal:${targets.join(",")}`;
-      const taskLabel = "신호 계산중";
+      const firstTargetLabel = String(labelName?.(targets[0]) || targets[0] || "종목");
+      const taskLabel = targets.length > 1
+        ? `${firstTargetLabel} 외 ${targets.length - 1}종 신호 로딩중`
+        : `${firstTargetLabel} 신호 로딩중`;
       let progressStarted = false;
       const beginProgress = () => {
         if (progressStarted) return;
@@ -792,7 +935,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       const first = records[0] || {};
       const latest = records.at(-1) || {};
       const signature = [
-        "market-timing-v6",
+        "market-timing-v7",
         sourceRevision,
         sourceTickers.join(","),
         first.date || "",
@@ -869,6 +1012,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       buildTimingSell: (frame) => buildTiming(frame, "sell"),
       collectCrisisSignalEntries,
       createFrame,
+      createSpecs,
       findPointOnOrAfterDate,
       prepareMarketTimingModels,
       visibleTimingSeries,

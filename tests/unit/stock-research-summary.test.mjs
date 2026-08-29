@@ -24,6 +24,7 @@ test("normalizes a compact cross-device stock-research summary", () => {
     historyQualityVersion: RESEARCH_SUMMARY_HISTORY_QUALITY_VERSION,
     strategy: "top400-recovery-v1",
     baseDate: "2026-08-07",
+    priceMode: "realtime",
     analysisDate: "2026-08-06",
     minimumBuySignals: 5,
     universeTickers: ["005930.KS", "005930.KS", "invalid"],
@@ -45,6 +46,9 @@ test("normalizes a compact cross-device stock-research summary", () => {
       marketRank: 1,
       buyCount: 5,
       lastBuyDate: "2026-08-01",
+      buySignalSessionAges: [1, 8, 31, "bad"],
+      priceMode: "realtime",
+      signalState: "realtime",
       reasons: ["매수 5회 연속"],
     }],
   }, { strategy: "top400-recovery-v1", minimum: 5 });
@@ -57,6 +61,9 @@ test("normalizes a compact cross-device stock-research summary", () => {
     signalFingerprint: "5|2026-08-01",
   });
   assert.equal(summary.candidatePool[0].ticker, "005930.KS");
+  assert.equal(summary.priceMode, "realtime");
+  assert.equal(summary.candidatePool[0].signalState, "realtime");
+  assert.deepEqual(summary.candidatePool[0].buySignalSessionAges, [1, 8]);
   assert.deepEqual(summary.sharedFingerprints, {
     KOSPI: "kospi-sources",
     KOSDAQ: "kosdaq-sources",

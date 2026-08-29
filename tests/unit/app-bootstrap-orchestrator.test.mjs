@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createAppBootstrapOrchestrator,
+  createApplicationFeatureLifecycleDescriptors,
   createApplicationLifecycleRuntime,
   createFeatureLifecycleDescriptors,
   createLazyRuntimeRegistry,
@@ -26,6 +27,32 @@ test("one feature registry owns refresh and restored activation predicates", () 
   assert.equal(lifecycle.optionalRefreshes[0].run, aiRefresh);
   assert.equal(lifecycle.restoredActivations[1].run, aiRestore);
   assert.equal(Object.isFrozen(lifecycle.optionalRefreshes), true);
+});
+
+test("application feature lifecycle centralizes restored toggle predicates", () => {
+  const calls = [];
+  const state = {
+    showRecessionSignals: true,
+    showDisclosures: false,
+    showInsiderTrades: true,
+    showAiForecast: true,
+    showEps: false,
+  };
+  const lifecycle = createApplicationFeatureLifecycleDescriptors({
+    state,
+    canUseInsider: () => true,
+    restoreTiming: () => calls.push("timing"),
+    restoreDart: () => calls.push("dart"),
+    refreshAi: () => calls.push("refresh-ai"),
+    restoreAi: () => calls.push("ai"),
+    refreshEps: () => calls.push("eps"),
+    refreshInsider: () => calls.push("insider"),
+  });
+
+  lifecycle.restoredActivations.filter((entry) => entry.enabled()).forEach((entry) => entry.run());
+  lifecycle.optionalRefreshes.filter((entry) => entry.enabled()).forEach((entry) => entry.run());
+
+  assert.deepEqual(calls, ["timing", "dart", "ai", "refresh-ai", "insider"]);
 });
 
 test("runs application startup phases in one deterministic order", async () => {
@@ -223,6 +250,24 @@ test("restored features can be deferred without delaying control readiness", () 
   ]);
   scheduled.forEach(({ task }) => task());
   assert.deepEqual(calls, ["ready", "dart", "insider"]);
+});
+
+test("deferred restored feature skips work when disabled before execution", () => {
+  const scheduled = [];
+  const calls = [];
+  let enabled = true;
+  const runtime = createApplicationLifecycleRuntime({
+    restoredActivations: [
+      { name: "ai", enabled: () => enabled, run: () => calls.push("ai") },
+    ],
+    scheduleRestoredActivation: (task) => scheduled.push(task),
+  });
+
+  runtime.activateRestoredFeatures();
+  assert.equal(scheduled.length, 1);
+  enabled = false;
+  assert.equal(scheduled[0](), false);
+  assert.deepEqual(calls, []);
 });
 
 test("lazy runtime registry creates services once and disposes them in reverse order", () => {

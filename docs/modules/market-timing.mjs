@@ -70,9 +70,19 @@
       .filter(Boolean))];
   }
 
+  const EXCEPTIONAL_TIMING_ENTRY_MODES = new Set([
+    "extreme-daily",
+    "overheat-continuation",
+    "same-day-climax",
+  ]);
+
+  function isExceptionalTimingSignal(signal) {
+    return EXCEPTIONAL_TIMING_ENTRY_MODES.has(String(signal?.entryMode || ""));
+  }
+
   function decorateTimingSignal(signal) {
     const reasons = uniqueSignalReasons(signal);
-    const exceptional = ["extreme-daily", "overheat-continuation"].includes(signal?.entryMode);
+    const exceptional = isExceptionalTimingSignal(signal);
     return {
       ...signal,
       evidenceCount: reasons.length,
@@ -417,7 +427,7 @@
       const meanAdverseReturn = finiteAdverse.length
         ? finiteAdverse.reduce((sum, value) => sum + value, 0) / finiteAdverse.length
         : null;
-      const exceptional = ["extreme-daily", "overheat-continuation"].includes(row.signal?.entryMode);
+      const exceptional = isExceptionalTimingSignal(row.signal);
       const calibrationRejected = !exceptional && samples >= minimumSamples
         && smoothedHitRate < rejectHitRate
         && (meanObjectiveReturn ?? 0) <= 0;
@@ -1618,9 +1628,9 @@
         && macdDivergence) {
         const candidateIndex = buyEpisode.lowIndex;
         saveEpisodeSignal(signals, buyEpisode, {
-          date: (buyEpisode.broad || buyEpisode.relativeWashout)
-            ? dates[index]
-            : dates[candidateIndex],
+          // The setup low remains available as metadata, but the marker cannot
+          // appear before the MACD confirmation is observable.
+          date: dates[index],
           setupDate: dates[candidateIndex],
           confirmationDate: dates[index],
           entryMode: (buyEpisode.broad || buyEpisode.relativeWashout)
@@ -1753,6 +1763,20 @@
         && (result.price5dVolScore ?? -Infinity) >= 2.2
         && (result.oscillator ?? -Infinity) >= 0.5
         && volumeClimax;
+      // These warnings use only data available at the current close. They must
+      // never be backfilled after observing a later decline.
+      const stockCreditVolumeClimax = isIndividualStock && nearHigh
+        && creditDrivenSellArm
+        && volumeClimax
+        && (result.oscillator ?? -Infinity) >= 0.5;
+      const stockShortBurstClimax = isIndividualStock && nearHigh
+        && result.price1d !== null && result.price1d >= 8
+        && result.price5d !== null
+        && result.price5d >= Math.max(15, 20 * stockVolatilityScale)
+        && (result.price5dVolScore ?? -Infinity) >= 2.2
+        && (result.oscillator ?? -Infinity) >= 0.4
+        && volumeClimax;
+      const sameDayClimaxSell = stockCreditVolumeClimax || stockShortBurstClimax;
       const fearRotationReason = result.fearGreed !== null && result.fearGreed <= 35
         ? "공포 피난자금 단기 과열"
         : "시장폭·심리 괴리 단기 과열";
@@ -1800,7 +1824,33 @@
       const historicalSellArm = legacyFallbackPeriod && longNearHigh && moderateAdvance
         && historicalSignalCooledDown
         && (historicalCreditCrowded || historicalAdrCrowded);
-      const sellArm = (recentSellArm || historicalSellArm)
+      const sameDayClimaxReady = sameDayClimaxSell
+        && index - lastSellSignalIndex >= SELL_SIGNAL_COOLDOWN_DAYS;
+      if (sameDayClimaxReady) {
+        saveEpisodeSignal(sellSignals, { signalSlot: null }, {
+          date: dates[index],
+          confirmationDate: dates[index],
+          peakDate: dates[index],
+          entryMode: "same-day-climax",
+          signalFamily: stockCreditVolumeClimax ? "crowding-climax" : "volume-climax",
+          indexKey,
+          ...result,
+          setupVolumeRatio: result.volumeRatio,
+          setupVolumeTrend: result.volumeTrend,
+          sellSetupReasons: [
+            stockCreditVolumeClimax
+              ? "신용 증가·거래량 동반 급등"
+              : "단기 급등·거래량 폭증",
+            "중기 신고점",
+            dailyMoveReason(result.price1d),
+          ].filter(Boolean),
+          sellDeteriorationReasons: ["당일 과열 경고"],
+          sellTriggerReasons: ["당일 가격·거래량 위험 동시 충족"],
+        });
+        sellEpisode = null;
+        lastSellSignalIndex = index;
+      }
+      const sellArm = !sameDayClimaxReady && (recentSellArm || historicalSellArm)
         && index - lastSellSignalIndex >= SELL_SIGNAL_COOLDOWN_DAYS;
       const priorOscillator = result.oscillator !== null && result.macdSlope !== null
         ? result.oscillator - result.macdSlope
@@ -2013,7 +2063,9 @@
         && index - sellEpisode.peakIndex <= sellConfirmationWindow
         && (episodeMomentumRollover || distributionRollover)) {
         saveEpisodeSignal(sellSignals, sellEpisode, {
-          date: dates[sellEpisode.peakIndex],
+          // A confirmed signal becomes visible only when confirmation exists.
+          // Keep the earlier peak as metadata instead of backdating the marker.
+          date: dates[index],
           confirmationDate: dates[index],
           peakDate: dates[sellEpisode.peakIndex],
           signalFamily: sellEpisode.signalFamily || "overheat-rollover",

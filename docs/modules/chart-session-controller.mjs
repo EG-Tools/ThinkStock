@@ -29,6 +29,49 @@
     return changed;
   }
 
+  function finiteSeriesMap(source) {
+    return Object.fromEntries(Object.entries(source || {}).filter(([, value]) => (
+      Number.isFinite(Number(value)) && Math.abs(Number(value)) > 1e-9
+    )));
+  }
+
+  function captureLockedChartFrame(state, model) {
+    if (!state || state.autoChartReset || !model) return state?.lockedChartFrame || null;
+    state.lockedChartFrame = {
+      // Existing entries win so moving the history window cannot silently rebase a visible series.
+      normBases: {
+        ...finiteSeriesMap(model.normBases),
+        ...finiteSeriesMap(state.lockedChartFrame?.normBases),
+      },
+      autoScales: {
+        ...finiteSeriesMap(model.autoScales),
+        ...finiteSeriesMap(state.lockedChartFrame?.autoScales),
+      },
+    };
+    return state.lockedChartFrame;
+  }
+
+  function captureLockedHistoryYRange(state, range, model) {
+    if (!state || state.autoChartReset) return state?.lockedHistoryYRange || null;
+    captureLockedChartFrame(state, model);
+    if (Array.isArray(range) && range.length >= 2
+      && range.every((value) => Number.isFinite(Number(value)))) {
+      state.lockedHistoryYRange = [Number(range[0]), Number(range[1])];
+    }
+    return state.lockedHistoryYRange || null;
+  }
+
+  function captureViewportNormalizationFrame(state, model) {
+    if (!state || state.viewportNormalizationFrame || !model) {
+      return state?.viewportNormalizationFrame || null;
+    }
+    state.viewportNormalizationFrame = {
+      normBases: finiteSeriesMap(model.normBases),
+      autoScales: finiteSeriesMap(model.autoScales),
+    };
+    return state.viewportNormalizationFrame;
+  }
+
   function createChartSessionController(scope = globalThis, options = {}) {
     const state = options.state;
     if (!state || typeof state !== "object") {
@@ -196,6 +239,9 @@
   }
 
 export {
+  captureLockedChartFrame,
+  captureLockedHistoryYRange,
+  captureViewportNormalizationFrame,
   clearSeriesTransforms,
   createChartSessionController,
   createChartSessionState,

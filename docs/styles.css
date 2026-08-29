@@ -1284,30 +1284,6 @@ body {
   white-space: nowrap;
 }
 
-.api-expiry-reminder-modal { z-index: 2200; }
-
-.api-expiry-reminder-panel {
-  width: min(520px, calc(100vw - 16px));
-}
-
-.api-expiry-reminder-message {
-  margin: 12px 2px 0;
-  color: #d9e0dd;
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.api-expiry-reminder-rows .api-period-row {
-  grid-template-columns: minmax(0, 1fr) minmax(120px, auto);
-}
-
-.api-expiry-snooze-field {
-  justify-content: flex-end;
-  align-items: center;
-}
-
-.api-expiry-snooze-field input { margin-top: 0; }
-
 .performance-diagnostics-header {
   display: flex;
   align-items: center;
@@ -1661,16 +1637,30 @@ body {
 }
 .stock-research-refresh-btn:disabled { opacity: 0.45; cursor: wait; }
 .stock-research-page-controls {
-  --ui-circle-button-size: 36px;
+  --ui-circle-button-size: 34px;
   --ui-circle-button-border: 1px solid rgba(255, 255, 255, 0.2);
   --ui-circle-button-background: rgba(255, 255, 255, 0.04);
   display: flex;
   flex: 0 0 auto;
+  align-items: center;
   justify-self: center;
-  gap: 5px;
+  gap: 9px;
 }
 .stock-research-page-controls button {
   font-size: 18px;
+}
+.stock-research-page-position {
+  display: inline-flex;
+  width: 22px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-align: center;
 }
 .stock-research-page-controls button:disabled { opacity: 0.25; }
 .stock-research-disclaimer { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }

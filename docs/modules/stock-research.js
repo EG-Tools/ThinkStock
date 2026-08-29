@@ -1,11 +1,6 @@
-(function initThinkStockStockResearch(globalScope) {
-  "use strict";
+"use strict";
 
-  const isCommonJs = typeof module !== "undefined" && module.exports;
-
-  const contract = isCommonJs
-    ? require("./stock-research-contract.js")
-    : globalScope.ThinkStockStockResearchContract;
+  const contract = require("./stock-research-contract.js");
   if (!contract) throw new Error("stock research contract failed to load");
   const CALCULATION_VERSION = contract.CALCULATION_VERSION;
   const STRATEGY_VERSION = CALCULATION_VERSION;
@@ -85,11 +80,16 @@
     const behaviorPolicy = options.behaviorPolicy;
     const includeBuy = options.includeBuy !== false;
     const includeSell = options.includeSell === true;
-    const todayOnly = options.todayOnly === true;
+    const signalWindowDays = contract.normalizeSignalWindowDays(
+      options.signalWindowDays,
+      options.todayOnly === true,
+    );
+    const signalWindowSpan = contract.signalWindowSessionSpan(signalWindowDays);
+    const signalWindowActive = signalWindowDays > 0;
     const collectAllSignals = options.collectAllSignals === true;
     if (!includeBuy && !includeSell) return null;
     const configuredMinimum = number(options.minimumSignals ?? options.minimumBuySignals);
-    const minimumSignals = todayOnly || collectAllSignals
+    const minimumSignals = collectAllSignals
       ? 1
       : Math.max(1, Math.min(10, Math.round(configuredMinimum || 5)));
     const rowsByDate = new Map();
@@ -120,7 +120,7 @@
     const rows = [...rowsByDate.values()].sort((left, right) => left.date.localeCompare(right.date));
     if (rows.length < RECENT_SIGNAL_WINDOW * 2
       || !isRecentEnough(rows.at(-1).date, options.asOfDate || rows.at(-1).date)) return null;
-    if (todayOnly && rows.at(-1).date !== String(options.asOfDate || "").slice(0, 10)) return null;
+    if (signalWindowActive && rows.at(-1).date !== String(options.asOfDate || "").slice(0, 10)) return null;
     const macd = options.buildMacdOscillator({
       dates: rows.map((row) => row.date),
       prices: rows.map((row) => row.close),
@@ -147,6 +147,15 @@
     options.onTimingModel?.(timing);
     const dateIndexes = new Map(rows.map((row, index) => [row.date, index]));
     const latestIndex = rows.length - 1;
+    const signalSessionAges = (signals) => (signals || [])
+      .map((signal) => {
+        const index = dateIndexes.get(String(signal?.date || "").slice(0, 10));
+        return Number.isInteger(index) ? latestIndex - index : null;
+      })
+      .filter((age) => Number.isInteger(age) && age >= 0 && age < 30)
+      .sort((left, right) => left - right);
+    const buySignalSessionAges = signalSessionAges(timing.signals);
+    const sellSignalSessionAges = signalSessionAges(timing.sellSignals);
     const recentSignalStartIndex = Math.max(0, latestIndex - RECENT_SIGNAL_WINDOW + 1);
     const oneMonthSignalStartIndex = Math.max(0, latestIndex - ONE_MONTH_SIGNAL_WINDOW + 1);
     const recentRows = rows.slice(-60);
@@ -177,24 +186,48 @@
       latestDate: rows.at(-1).date,
       return20Percent: Number(return20.toFixed(1)),
       annualVolatilityPercent: Number(volatility.toFixed(1)),
+      priceMode: String(item.priceMode || "settled").trim().toLowerCase() === "realtime"
+        ? "realtime"
+        : "settled",
+      buySignalSessionAges,
+      sellSignalSessionAges,
     };
 
-    if (todayOnly) {
+    const signalStateFor = (signalDate) => (
+      baseCandidate.priceMode === "realtime"
+      && String(signalDate || "").slice(0, 10) === baseCandidate.latestDate
+        ? "realtime"
+        : "confirmed"
+    );
+
+    if (signalWindowActive) {
       const latestDate = rows.at(-1).date;
-      const occursOnLatestDate = (signal) => (
-        String(signal?.date || "").slice(0, 10) === latestDate
-      );
-      const buyMatches = includeBuy
-        ? (timing.signals || []).filter(occursOnLatestDate)
+      const signalAge = (signal) => {
+        const index = dateIndexes.get(String(signal?.date || "").slice(0, 10));
+        return Number.isInteger(index) ? latestIndex - index : null;
+      };
+      const occursInsideWindow = (signal) => {
+        const age = signalAge(signal);
+        return Number.isInteger(age) && age >= 0 && age < signalWindowSpan;
+      };
+      const buyWindowMatches = (timing.signals || []).filter(occursInsideWindow);
+      const sellWindowMatches = (timing.sellSignals || []).filter(occursInsideWindow);
+      const buyMatches = includeBuy && buyWindowMatches.length >= minimumSignals
+        ? buyWindowMatches
         : [];
-      const sellMatches = includeSell
-        ? (timing.sellSignals || []).filter(occursOnLatestDate)
+      const sellMatches = includeSell && sellWindowMatches.length >= minimumSignals
+        ? sellWindowMatches
         : [];
       if (!buyMatches.length && !sellMatches.length) return null;
       const signalLabels = [
         ...(buyMatches.length ? ["매수"] : []),
         ...(sellMatches.length ? ["매도"] : []),
       ];
+      const latestSignalDate = [buyMatches.at(-1)?.date, sellMatches.at(-1)?.date]
+        .filter(Boolean)
+        .sort()
+        .at(-1) || latestDate;
+      const signalState = signalStateFor(latestSignalDate);
       const score = 100 * (
         rankQuality * 0.34
         + volatilityQuality * 0.16
@@ -202,8 +235,11 @@
       );
       return {
         ...baseCandidate,
+        signalState,
         signalMode: signalLabels.length > 1 ? "both" : (buyMatches.length ? "buy" : "sell"),
-        status: `당일 ${signalLabels.join("·")}`,
+        status: signalState === "realtime"
+          ? `${signalLabels.join("·")} 실시간 신호`
+          : `${contract.signalWindowLabel(signalWindowDays)} ${signalLabels.join("·")}`,
         score: Number(score.toFixed(1)),
         signalCount: buyMatches.length + sellMatches.length,
         buyCount: buyMatches.length,
@@ -212,17 +248,19 @@
         recentMonthSellCount: sellMatches.length,
         firstBuyDate: buyMatches[0]?.date || null,
         lastBuyDate: buyMatches.at(-1)?.date || null,
+        lastBuySessionAge: buyMatches.length ? signalAge(buyMatches.at(-1)) : null,
         firstBuyConfirmationDate: buyMatches[0]?.confirmationDate || buyMatches[0]?.date || null,
         lastBuyConfirmationDate: buyMatches.at(-1)?.confirmationDate || buyMatches.at(-1)?.date || null,
         firstSellDate: sellMatches[0]?.date || null,
         lastSellDate: sellMatches.at(-1)?.date || null,
+        lastSellSessionAge: sellMatches.length ? signalAge(sellMatches.at(-1)) : null,
         firstSellConfirmationDate: sellMatches[0]?.confirmationDate || sellMatches[0]?.date || null,
         lastSellConfirmationDate: sellMatches.at(-1)?.confirmationDate || sellMatches.at(-1)?.date || null,
         sellDate: sellMatches.at(-1)?.date || null,
         bottomDate: null,
         reboundPercent: null,
         reasons: [
-          `${latestDate} ${signalLabels.join("·")}신호`,
+          `${latestSignalDate} ${signalLabels.join("·")}신호`,
           `20일 등락 ${return20.toFixed(1)}%`,
           volatility > 80 ? "고변동 주의" : "변동성 보통",
         ],
@@ -271,6 +309,7 @@
           );
           buyCandidate = {
             ...baseCandidate,
+            signalState: signalStateFor(lastBuy.date),
             signalMode: "buy",
             status: run.sell ? "반전 확인" : (stabilization ? "바닥 점검" : "매수 누적"),
             score: Number(score.toFixed(1)),
@@ -281,10 +320,14 @@
             recentMonthSellCount: run.sell?.index >= oneMonthSignalStartIndex ? 1 : 0,
             firstBuyDate: firstBuy.date,
             lastBuyDate: lastBuy.date,
+            lastBuySessionAge: latestIndex - lastBuy.index,
             firstBuyConfirmationDate: firstBuy.confirmationDate || firstBuy.date,
             lastBuyConfirmationDate: lastBuy.confirmationDate || lastBuy.date,
             firstSellDate: run.sell?.date || null,
             lastSellDate: run.sell?.date || null,
+            lastSellSessionAge: Number.isInteger(run.sell?.index)
+              ? latestIndex - run.sell.index
+              : null,
             firstSellConfirmationDate: run.sell?.confirmationDate || run.sell?.date || null,
             lastSellConfirmationDate: run.sell?.confirmationDate || run.sell?.date || null,
             sellDate: run.sell?.date || null,
@@ -326,6 +369,7 @@
         );
         sellCandidate = {
           ...baseCandidate,
+          signalState: signalStateFor(lastSell.date),
           signalMode: "sell",
           status: "매도 누적",
           score: Number(score.toFixed(1)),
@@ -336,10 +380,12 @@
           recentMonthSellCount,
           firstBuyDate: null,
           lastBuyDate: null,
+          lastBuySessionAge: null,
           firstBuyConfirmationDate: null,
           lastBuyConfirmationDate: null,
           firstSellDate: recentSells[0].date,
           lastSellDate: lastSell.date,
+          lastSellSessionAge: latestIndex - lastSell.index,
           firstSellConfirmationDate: recentSells[0].confirmationDate || recentSells[0].date,
           lastSellConfirmationDate: lastSell.confirmationDate || lastSell.date,
           sellDate: lastSell.date,
@@ -359,11 +405,15 @@
     if (!sellCandidate) return buyCandidate;
     return {
       ...buyCandidate,
+      signalState: buyCandidate.signalState === "realtime" || sellCandidate.signalState === "realtime"
+        ? "realtime"
+        : "confirmed",
       signalMode: "both",
       status: "매수·매도 누적",
       score: Math.max(buyCandidate.score, sellCandidate.score),
       signalCount: buyCandidate.buyCount + sellCandidate.sellCount,
       sellCount: sellCandidate.sellCount,
+      lastSellSessionAge: sellCandidate.lastSellSessionAge,
       recentMonthSellCount: sellCandidate.recentMonthSellCount,
       firstSellDate: sellCandidate.firstSellDate,
       lastSellDate: sellCandidate.lastSellDate,
@@ -396,6 +446,4 @@
     rankCandidates,
   });
 
-  if (isCommonJs) module.exports = stockResearch;
-  else globalScope.ThinkStockStockResearch = stockResearch;
-})(typeof self !== "undefined" ? self : globalThis);
+module.exports = stockResearch;

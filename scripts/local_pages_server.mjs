@@ -14,7 +14,9 @@ import {
   expectedLatestKoreanTradingDate,
   inspectDailyPriceHistoryDensity,
   isKoreanCurrentPriceWindow,
+  isKoreanTradingDate,
   koreanDateText,
+  resolveKoreanResearchUniversePhase,
 } from "../shared/market-calendar.mjs";
 import {
   executeRuntimeSourcePlan,
@@ -398,12 +400,26 @@ export async function fetchLocalResearchUniverse(fetchImpl, apiKey, now = new Da
   if (!key) throw new Error("KRX API key is missing");
   const totalLimit = normalizeResearchUniverseSize(options.totalLimit ?? options.limit);
   const perMarketLimit = researchUniversePerMarketLimit(totalLimit);
-  const expectedDate = expectedLatestKoreanTradingDate(now);
-  if (isKoreanCurrentPriceWindow(now, { closeHour: 16 })) {
+  const phase = resolveKoreanResearchUniversePhase(now);
+  const { expectedDate, today } = phase;
+  if (phase.realtime) {
     try {
-      return await fetchNaverLiveResearchUniverse(fetchImpl, koreanDateText(now), { totalLimit });
+      return await fetchNaverLiveResearchUniverse(fetchImpl, today, {
+        totalLimit,
+        priceMode: "realtime",
+      });
     } catch (_) {
       // KRX remains the safe fallback when the live rank pages are incomplete.
+    }
+  }
+  if (phase.captureClose) {
+    try {
+      return await fetchNaverLiveResearchUniverse(fetchImpl, today, {
+        totalLimit,
+        priceMode: "settled",
+      });
+    } catch (_) {
+      // The previous safe KRX snapshot remains available until the close is published.
     }
   }
   const targets = [
@@ -430,9 +446,11 @@ export async function fetchLocalResearchUniverse(fetchImpl, apiKey, now = new Da
       }));
       return {
         ok: true,
+        source: "KRX",
+        priceMode: "settled",
         baseDate,
         selection: { KOSPI: perMarketLimit, KOSDAQ: perMarketLimit },
-        records: markets.flat(),
+        records: markets.flat().map((record) => ({ ...record, priceMode: "settled" })),
       };
     } catch (_) {
       // Empty holiday snapshots are expected; continue to the previous date.
@@ -1439,16 +1457,17 @@ export async function createThinkStockServer(options = {}) {
       const previousUniverse = researchUniverseCache;
       try {
         const now = new Date();
-        const expectedDate = expectedLatestKoreanTradingDate(now);
-        const today = koreanDateText(now);
-        const liveWindow = isKoreanCurrentPriceWindow(now, { closeHour: 16 });
-        const targetDate = liveWindow ? today : expectedDate;
+        const phase = resolveKoreanResearchUniversePhase(now);
+        const { targetDate, today } = phase;
         const cacheMatchesSize = researchUniverseCache?.records?.length === totalLimit;
-        const cacheIsFresh = cacheMatchesSize && researchUniverseCache.baseDate >= targetDate;
-        const preserveClosedMarketLiveCache = !liveWindow
-          && cacheMatchesSize
+        const targetPriceMode = phase.priceMode;
+        const cacheIsFresh = cacheMatchesSize
+          && researchUniverseCache.baseDate >= targetDate
+          && String(researchUniverseCache.priceMode || "settled") === targetPriceMode;
+        const settledCloseCache = cacheIsFresh
+          && targetPriceMode === "settled"
           && researchUniverseCache.baseDate === today;
-        if (!cacheIsFresh || (refresh && !preserveClosedMarketLiveCache)) {
+        if (!cacheIsFresh || (refresh && !settledCloseCache)) {
           const fetched = await fetchLocalResearchUniverse(
             fetchImpl,
             krxApiKey,
@@ -1457,6 +1476,7 @@ export async function createThinkStockServer(options = {}) {
           );
           researchUniverseCache = cacheMatchesSize
             && researchUniverseCache.baseDate > fetched.baseDate
+            && String(researchUniverseCache.priceMode || "settled") === String(fetched.priceMode || "settled")
             ? researchUniverseCache
             : fetched;
         }

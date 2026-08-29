@@ -292,15 +292,39 @@ function createPerformanceMonitor(scope = globalThis, options = {}) {
       return typeof scope.performance?.now === "function" ? scope.performance.now() : Date.now();
     }
 
-    function begin(invalidation = {}) {
+    function summarizeWorkload(traces = []) {
+      const source = Array.isArray(traces) ? traces : [];
+      const series = new Set();
+      let overlayCount = 0;
+      let pointCount = 0;
+      source.forEach((trace) => {
+        pointCount += Array.isArray(trace?.x) ? trace.x.length : 0;
+        const kind = String(trace?.meta?.overlayKind || "");
+        const seriesKey = String(trace?.meta?.seriesKey || "");
+        if (kind === "price" && seriesKey && trace?.visible !== "legendonly") {
+          series.add(seriesKey);
+        } else if (kind !== "grouped-hover") {
+          overlayCount += 1;
+        }
+      });
+      return {
+        traceCount: source.length,
+        seriesCount: series.size,
+        overlayCount,
+        pointCount,
+      };
+    }
+
+    function begin(invalidation = {}, traces = []) {
+      const workload = summarizeWorkload(traces);
       return Object.freeze({
         startedAt: now(),
         transactionId: Number(invalidation.transactionId) || 0,
         requestCount: Math.max(1, Number(invalidation.requestCount) || 1),
-        traceCount: Math.max(0, Number(invalidation.traceCount) || 0),
-        seriesCount: Math.max(0, Number(invalidation.seriesCount) || 0),
-        overlayCount: Math.max(0, Number(invalidation.overlayCount) || 0),
-        pointCount: Math.max(0, Number(invalidation.pointCount) || 0),
+        traceCount: Math.max(0, Number(invalidation.traceCount) || workload.traceCount),
+        seriesCount: Math.max(0, Number(invalidation.seriesCount) || workload.seriesCount),
+        overlayCount: Math.max(0, Number(invalidation.overlayCount) || workload.overlayCount),
+        pointCount: Math.max(0, Number(invalidation.pointCount) || workload.pointCount),
         updateClasses: [...(invalidation.updateClasses || [])],
       });
     }

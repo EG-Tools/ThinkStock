@@ -206,3 +206,83 @@ export function isKoreanCurrentPriceWindow(date = new Date(), options = {}) {
   const close = (closeHour * 60) + closeMinute;
   return minutes >= open && minutes < close;
 }
+
+export function millisecondsUntilKoreanMarketClose(date = new Date(), options = {}) {
+  const closeHour = Math.max(0, Math.min(23, Number(options.closeHour) || 18));
+  const closeMinute = Math.max(0, Math.min(59, Number(options.closeMinute) || 0));
+  const parts = datePartsInTimeZone(date);
+  const today = `${parts.year}-${parts.month}-${parts.day}`;
+  if (!isKoreanTradingDate(today, options)) return null;
+  const closeTimestamp = Date.parse(
+    `${today}T${String(closeHour).padStart(2, "0")}:${String(closeMinute).padStart(2, "0")}:00+09:00`,
+  );
+  if (!Number.isFinite(closeTimestamp)) return null;
+  return Math.max(0, closeTimestamp - date.getTime());
+}
+
+export function resolveKoreanResearchUniversePhase(date = new Date(), options = {}) {
+  const now = date instanceof Date ? date : new Date(date || Date.now());
+  const settlementHour = Math.max(0, Math.min(23, Number(options.settlementHour) || 18));
+  const today = koreanDateText(now);
+  const expectedDate = expectedLatestKoreanTradingDate(now, {
+    closeHour: settlementHour,
+    closeMinute: 0,
+    ...(options.calendar || {}),
+  });
+  const realtime = isKoreanCurrentPriceWindow(now, {
+    openHour: 9,
+    openMinute: 0,
+    closeHour: 16,
+    closeMinute: 0,
+    ...(options.marketWindow || {}),
+  });
+  const captureClose = !realtime
+    && isKoreanTradingDate(today, options.calendar || {})
+    && today > expectedDate;
+  return Object.freeze({
+    today,
+    expectedDate,
+    targetDate: realtime || captureClose ? today : expectedDate,
+    priceMode: realtime ? KOREAN_SIGNAL_PRICE_MODES.REALTIME : KOREAN_SIGNAL_PRICE_MODES.SETTLED,
+    realtime,
+    captureClose,
+  });
+}
+
+export const KOREAN_SIGNAL_PRICE_MODES = Object.freeze({
+  REALTIME: "realtime",
+  SETTLED: "settled",
+});
+
+export function normalizeKoreanSignalPriceMode(value) {
+  return String(value || "").trim().toLowerCase() === KOREAN_SIGNAL_PRICE_MODES.REALTIME
+    ? KOREAN_SIGNAL_PRICE_MODES.REALTIME
+    : KOREAN_SIGNAL_PRICE_MODES.SETTLED;
+}
+
+export function resolveKoreanSignalLifecycle(options = {}) {
+  const signalDate = normalizeIsoDate(options.signalDate);
+  const latestPriceDate = normalizeIsoDate(options.latestPriceDate);
+  const now = options.now instanceof Date ? options.now : new Date(options.now || Date.now());
+  const explicitMode = String(options.priceMode || "").trim().toLowerCase();
+  const latestSignal = Boolean(signalDate && latestPriceDate && signalDate === latestPriceDate);
+  const today = koreanDateText(now);
+  const inferredRealtime = latestSignal
+    && latestPriceDate === today
+    && isKoreanCurrentPriceWindow(now, {
+      openHour: 9,
+      openMinute: 0,
+      closeHour: 16,
+      closeMinute: 0,
+      ...(options.marketWindow || {}),
+    });
+  const realtime = latestSignal && (
+    explicitMode === KOREAN_SIGNAL_PRICE_MODES.REALTIME
+    || (!explicitMode && inferredRealtime)
+  );
+  return Object.freeze({
+    latestSignal,
+    realtime,
+    state: realtime ? KOREAN_SIGNAL_PRICE_MODES.REALTIME : "confirmed",
+  });
+}

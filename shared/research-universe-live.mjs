@@ -98,6 +98,9 @@ export async function fetchNaverLiveResearchUniverse(fetchImpl, priceDate, optio
   const date = String(priceDate || "").slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("research universe price date is invalid");
   const totalLimit = normalizeResearchUniverseSize(options.totalLimit ?? options.limit);
+  const priceMode = String(options.priceMode || "realtime").trim().toLowerCase() === "settled"
+    ? "settled"
+    : "realtime";
   const perMarketLimit = researchUniversePerMarketLimit(totalLimit);
   const pageIndexes = researchUniversePageIndexes(perMarketLimit);
   const marketRows = await Promise.all(["KOSPI", "KOSDAQ"].map(async (market) => {
@@ -113,11 +116,12 @@ export async function fetchNaverLiveResearchUniverse(fetchImpl, priceDate, optio
       records = normalizeNaverResearchUniverseRows(pages.flat(), market, date, perMarketLimit);
     }
     if (records.length !== perMarketLimit) throw new Error(`Naver ${market} universe is incomplete`);
-    return records;
+    return records.map((record) => ({ ...record, priceMode }));
   }));
   return Object.freeze({
     ok: true,
-    source: "NAVER_LIVE",
+    source: priceMode === "settled" ? "NAVER_CLOSE" : "NAVER_LIVE",
+    priceMode,
     baseDate: date,
     selection: Object.freeze({ KOSPI: perMarketLimit, KOSDAQ: perMarketLimit }),
     records: Object.freeze(marketRows.flat()),

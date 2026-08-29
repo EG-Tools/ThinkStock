@@ -4,21 +4,11 @@ import stockResearchContract from "./stock-research-contract.js";
 
 const { CACHE_KEY, CACHE_VARIANTS_KEY, CACHE_BYPASS_KEY, BLOCKED_KEY } = stockResearchContract;
 
-function researchUniverseDescription(value) {
-  const perMarket = stockResearchContract.normalizeUniverseSize(value) / 2;
-  return `시총 상위 ${perMarket}+${perMarket} 중 상대적 안정성 필터를 통과한 공부 후보입니다. 매수 추천이 아닙니다.`;
-}
-
 function createStockResearchApp(scope = globalThis, options = {}) {
   let controller = null;
 
   function getBlockedCount() {
-    try {
-      const payload = JSON.parse(scope.localStorage.getItem(BLOCKED_KEY) || "null");
-      return Array.isArray(payload?.entries) ? payload.entries.length : 0;
-    } catch (_) {
-      return 0;
-    }
+    return stockResearchContract.loadBlockedCount(scope.localStorage);
   }
 
   function syncBlockedButton(count = null) {
@@ -36,8 +26,9 @@ function createStockResearchApp(scope = globalThis, options = {}) {
     if (controller) return controller;
     const feature = await options.ensureFeature();
     controller = feature.controller.createController(scope, {
-      ...options.controllerOptions(),
+      ...options.controllerOptions(feature),
       research: feature.research,
+      createSettlementRuntime: feature.createScheduledSettlementRuntime,
       bindOpenButton: false,
       bindSettingsButtons: false,
       onBlockedStateChanged: syncBlockedButton,
@@ -67,7 +58,7 @@ function createStockResearchApp(scope = globalThis, options = {}) {
 
   function syncUniverseDescription(value = getUniverseSize()) {
     const description = scope.document.getElementById("stockResearchDisclaimer");
-    if (description) description.textContent = researchUniverseDescription(value);
+    if (description) description.textContent = stockResearchContract.researchUniverseDescription(value);
   }
 
   function setUniverseSize(value) {
@@ -77,12 +68,12 @@ function createStockResearchApp(scope = globalThis, options = {}) {
     return saved;
   }
 
-  function setup() {
+  function setup(setupOptions = {}) {
     const button = scope.document.getElementById("stockResearchBtn");
     const modalBlockedButton = scope.document.getElementById("stockResearchModalBlockedClearBtn");
     syncBlockedButton();
     syncUniverseDescription();
-    button?.addEventListener("click", async () => {
+    const open = async () => {
       if (!options.canRun() || button.getAttribute("aria-busy") === "true") return;
       button.setAttribute("aria-busy", "true");
       try {
@@ -92,7 +83,8 @@ function createStockResearchApp(scope = globalThis, options = {}) {
       } finally {
         button.setAttribute("aria-busy", "false");
       }
-    });
+    };
+    if (setupOptions.bindOpenButton !== false) button?.addEventListener("click", open);
     modalBlockedButton?.addEventListener("click", async () => {
       if (modalBlockedButton.disabled) return;
       try { (await ensureController()).clearBlocked(); }
@@ -105,6 +97,7 @@ function createStockResearchApp(scope = globalThis, options = {}) {
     ensureController,
     getBlockedCount,
     getUniverseSize,
+    open,
     setUniverseSize,
     setup,
     syncBlockedButton,
@@ -113,6 +106,5 @@ function createStockResearchApp(scope = globalThis, options = {}) {
 
 export {
   createStockResearchApp,
-  researchUniverseDescription,
   stockResearchContract,
 };

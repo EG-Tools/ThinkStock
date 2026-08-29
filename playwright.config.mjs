@@ -4,6 +4,8 @@ export default defineConfig({
   testDir: "./tests/e2e",
   timeout: 45_000,
   expect: { timeout: 10_000 },
+  // WebKit on Windows reuses one browser process per worker reliably. Launching
+  // every test in parallel can exhaust process permissions on local and CI hosts.
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,

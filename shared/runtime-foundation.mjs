@@ -39,21 +39,24 @@ export const RUNTIME_VALUE_CONTRACT = Object.freeze({
   positiveOrNull,
 });
 
+const RUNTIME_STORAGE_STORES = Object.freeze({
+  snapshots: "snapshots",
+  tickerPrices: "tickerPrices",
+  tickerDisclosures: "tickerDisclosures",
+  tickerAiAnalysis: "tickerAiAnalysis",
+  tickerAiForecast: "tickerAiForecast",
+  tickerAiForecastJournal: "tickerAiForecastJournal",
+  tickerResearchHistory: "tickerResearchHistory",
+  stockResearchResults: "stockResearchResults",
+  tickerBrokerResearch: "tickerBrokerResearch",
+  tickerTimingModels: "tickerTimingModels",
+});
+
 export const RUNTIME_STORAGE_CONTRACT = Object.freeze({
   dbName: "thinkstock-runtime-cache-v1",
   dbVersion: 9,
   localSnapshotKey: "thinkstock-runtime-cache-v1",
   snapshotRecordKey: "latest",
-  stores: Object.freeze({
-    snapshots: "snapshots",
-    tickerPrices: "tickerPrices",
-    tickerDisclosures: "tickerDisclosures",
-    tickerAiAnalysis: "tickerAiAnalysis",
-    tickerAiForecast: "tickerAiForecast",
-    tickerAiForecastJournal: "tickerAiForecastJournal",
-    tickerResearchHistory: "tickerResearchHistory",
-    stockResearchResults: "stockResearchResults",
-    tickerBrokerResearch: "tickerBrokerResearch",
-    tickerTimingModels: "tickerTimingModels",
-  }),
+  stores: RUNTIME_STORAGE_STORES,
+  storeNames: Object.freeze(Object.values(RUNTIME_STORAGE_STORES)),
 });

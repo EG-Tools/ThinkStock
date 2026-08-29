@@ -78,11 +78,15 @@ test("EPS source changes rebuild the app and retain WebKit coverage", () => {
   assert.deepEqual(scope.unitTests, ["tests/unit/eps-chart.test.mjs"]);
 });
 
-test("affected test scope keeps runtime bootstrap changes under WebKit smoke coverage", () => {
-  const scope = classifyChangedFiles(["docs/modules/runtime-bootstrap.mjs"]);
+test("affected test scope keeps consolidated market runtime changes under WebKit smoke coverage", () => {
+  const scope = classifyChangedFiles(["docs/modules/runtime-market-refresh.mjs"]);
   assert.equal(scope.runFullUnit, false);
   assert.equal(scope.runWebkitSmoke, true);
-  assert.deepEqual(scope.unitTests, ["tests/unit/runtime-bootstrap.test.mjs"]);
+  assert.deepEqual(scope.unitTests, [
+    "tests/unit/runtime-bootstrap.test.mjs",
+    "tests/unit/runtime-index-refresh.test.mjs",
+    "tests/unit/runtime-market-refresh.test.mjs",
+  ]);
 });
 
 test("broker report runtime changes retain WebKit smoke coverage", () => {

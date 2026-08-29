@@ -16,6 +16,7 @@
       isCurrentRange,
       isTouchDevice,
       normalizeHoverPopupIndent,
+      noteViewportInteraction,
       refreshAiForecastTargets,
       renderCoMovementPanel,
       requestChartCompositionUpdate,
@@ -89,6 +90,9 @@
           && !isCurrentRange(element, rangeStart, rangeEnd)) return;
         if (eventData["yaxis.autorange"] === true) {
           interactionState.useViewportEventMarkerGap = false;
+        }
+        if (!interactionState.isHandleDragging && (hasRange || hasAuto)) {
+          noteViewportInteraction?.({ hasRange, hasAuto });
         }
         if (!interactionState.isHandleDragging && hasRange && rangeStart != null && rangeEnd != null) {
           chartSession.pinnedXRange = [rangeStart, rangeEnd];

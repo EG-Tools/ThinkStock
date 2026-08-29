@@ -604,6 +604,26 @@
       ? (copyRange(pinnedXRange) || copyRange(options.currentXRange))
       : null;
 
+    const rangeTimestamp = (value) => {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) ? numeric : toMilliseconds(value);
+    };
+    const currentRangeMs = copyRange(options.currentXRange)?.map(rangeTimestamp);
+    const pendingRangeMs = copyRange(pendingCompositionViewport?.viewRange)?.map(rangeTimestamp);
+    const compositionSnapshotTolerance = Math.max(
+      1,
+      Number(options.compositionSnapshotTolerance) || 1000,
+    );
+    if (currentRangeMs?.every(Number.isFinite)
+      && pendingRangeMs?.every(Number.isFinite)
+      && currentRangeMs.some((value, index) => (
+        Math.abs(value - pendingRangeMs[index]) > compositionSnapshotTolerance
+      ))) {
+      // A relayout that happened after composition capture is newer than the
+      // pending snapshot. Never let the stale snapshot restore an older span.
+      pendingCompositionViewport = null;
+    }
+
     if (preserveZoom && autoChartReset && pendingCompositionViewport && nextVisibleDataRange) {
       const reconciledRange = reconcileCompositionRange(
         pendingCompositionViewport.viewRange,

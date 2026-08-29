@@ -5,6 +5,7 @@ import {
   createBackgroundStockRefresh,
   createBackgroundTaskScheduler,
   createCustomStockPreloader,
+  createVisibleSeriesSupplementalHydrator,
   createVisibleStockHistoryRefresh,
 } from "../../docs/modules/background-stock-refresh.mjs";
 
@@ -280,6 +281,39 @@ test("background work waits until pointer activity has been quiet", async () => 
   assert.equal(scheduler.stats().activityDeferrals, 2);
 });
 
+test("background work pauses while its document is hidden", async () => {
+  const calls = [];
+  const listeners = new Map();
+  const visibilityTarget = {
+    visibilityState: "hidden",
+    addEventListener: (name, callback) => listeners.set(name, callback),
+    removeEventListener: (name, callback) => {
+      if (listeners.get(name) === callback) listeners.delete(name);
+    },
+  };
+  const clock = fakeClock();
+  const scheduler = createBackgroundTaskScheduler(clock.scope, {
+    now: clock.now,
+    interactionQuietMs: 1,
+    retryDelayMs: 100,
+    visibilityTarget,
+  });
+  scheduler.enqueue("hidden-work", async () => calls.push("done"));
+
+  clock.runNext();
+  clock.runNext();
+  assert.deepEqual(calls, []);
+  assert.equal(scheduler.stats().visibilityDeferrals, 1);
+
+  visibilityTarget.visibilityState = "visible";
+  listeners.get("visibilitychange")?.();
+  clock.runNext();
+  clock.runNext();
+  await Promise.resolve();
+  assert.deepEqual(calls, ["done"]);
+  scheduler.dispose();
+});
+
 test("hidden tickers are prepared one at a time", async () => {
   const calls = [];
   const clock = fakeClock();
@@ -452,4 +486,43 @@ test("visible stock history refresh shares scheduling, visibility, and cancellat
   assert.equal(loaded.length, 1);
   assert.equal(refresh.cancel("005930.ks"), true);
   assert.deepEqual(cancelled, ["visible-stock-history:005930.KS"]);
+});
+
+test("visible supplemental hydration owns disclosure, EPS, and AI task cleanup", async () => {
+  const calls = [];
+  const scheduler = {
+    cancel: (key) => calls.push(`cancel:${key}`),
+    enqueue: (key, task, options) => {
+      calls.push(`enqueue:${key}:${options.group}`);
+      return Promise.resolve(task({ checkpoint: async () => false }));
+    },
+  };
+  const hydration = createVisibleSeriesSupplementalHydrator({
+    scheduler,
+    isSupported: (ticker) => ticker.endsWith(".KS"),
+    isActive: () => true,
+    isEpsEnabled: () => true,
+    isAiEnabled: () => true,
+    prepareDisclosure: (ticker) => calls.push(`disclosure:${ticker}`),
+    prepareEps: (ticker) => calls.push(`eps:${ticker}`),
+    prepareAi: (ticker) => calls.push(`ai:${ticker}`),
+    onAiQueued: (ticker) => calls.push(`queued:${ticker}`),
+    onAiPreparing: (ticker) => calls.push(`preparing:${ticker}`),
+    onAiReady: (ticker) => calls.push(`ready:${ticker}`),
+    onAiCompleted: (ticker) => calls.push(`completed:${ticker}`),
+  });
+
+  assert.equal(await hydration.schedule("005930.ks", { trackAiProgress: true }), true);
+  assert.deepEqual(calls, [
+    "queued:005930.KS",
+    "enqueue:visible-series-supplemental:005930.KS:visible-series-supplemental",
+    "disclosure:005930.KS",
+    "eps:005930.KS",
+    "preparing:005930.KS",
+    "ai:005930.KS",
+    "ready:005930.KS",
+    "completed:005930.KS",
+  ]);
+  hydration.cancel("005930.ks");
+  assert.equal(calls.at(-1), "cancel:visible-series-supplemental:005930.KS");
 });

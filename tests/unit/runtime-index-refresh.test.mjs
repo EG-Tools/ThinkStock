@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import * as module from "../../docs/modules/runtime-index-refresh.mjs";
+import * as module from "../../docs/modules/runtime-market-refresh.mjs";
 
 test("requests and merges only the missing validated index tail", async () => {
   const merged = [];

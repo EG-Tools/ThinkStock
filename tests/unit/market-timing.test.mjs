@@ -105,6 +105,7 @@ test("timing regimes and evidence grades remain descriptive rather than probabil
   assert.equal(signal.signalGrade, "보통");
   assert.equal(signal.signalRole, "predictive");
   assert.equal(decorateTimingSignal({ entryMode: "extreme-daily" }).signalRole, "warning");
+  assert.equal(decorateTimingSignal({ entryMode: "same-day-climax" }).signalRole, "warning");
   assert.deepEqual(DEFAULT_KOREAN_VOLATILITY_POLICY, {
     buyPercentile: 0.85,
     sellPercentile: 0.2,
@@ -309,6 +310,29 @@ test("warning outcomes never calibrate predictive timing signals", () => {
 
   assert.equal(calibrated.signals.at(-1).calibration.samples, 0);
   assert.equal(calibrated.signals.at(-1).calibration.role, "predictive");
+});
+
+test("same-day climax warnings remain visible after historical calibration", () => {
+  const dates = Array.from({ length: 100 }, (_, index) => dateAt(index));
+  const prices = Array.from({ length: 100 }, (_, index) => 100 + (index * 0.3));
+  const signals = [10, 25, 40, 55, 80].map((index) => ({
+    date: dates[index],
+    confirmationDate: dates[index],
+    entryMode: "same-day-climax",
+    signalFamily: "volume-climax",
+    signalRole: "warning",
+    behaviorProfile: { dominant: "highVolMomentum" },
+  }));
+  const calibrated = calibrateTimingSignals(signals, "sell", dates, prices, {
+    horizon: 5,
+    minimumSamples: 4,
+    rejectHitRate: 0.42,
+  });
+
+  assert.equal(calibrated.abstained, 0);
+  assert.equal(calibrated.signals.length, signals.length);
+  assert.equal(calibrated.signals.at(-1).date, dates[80]);
+  assert.equal(calibrated.signals.at(-1).calibration.role, "warning");
 });
 
 test("high-volatility downtrend reversals calibrate against tradable rebounds", () => {
@@ -560,7 +584,8 @@ test("detects a slow stock base only after its MACD turns upward", () => {
   assert.equal(model.signals.length, 1);
   assert.ok(model.signals[0].setupReasons.includes("\uAC1C\uBCC4\uC885\uBAA9 \uC911\uAE30 \uC870\uC815"));
   assert.ok(model.signals[0].price60d > -20);
-  assert.ok(model.signals[0].confirmationDate > model.signals[0].date);
+  assert.equal(model.signals[0].confirmationDate, model.signals[0].date);
+  assert.ok(model.signals[0].setupDate < model.signals[0].date);
 });
 
 test("detects a low-beta stock washout relative to a rising market", () => {
@@ -649,8 +674,9 @@ test("turns exceptional credit growth near a market high into one sell signal", 
 
   assert.equal(model.signals.length, 0);
   assert.equal(model.sellSignals.length, 1);
-  assert.equal(model.sellSignals[0].date, dates[329]);
+  assert.equal(model.sellSignals[0].date, dates[330]);
   assert.equal(model.sellSignals[0].confirmationDate, dates[330]);
+  assert.equal(model.sellSignals[0].peakDate, dates[329]);
   assert.ok(model.sellSignals[0].creditChange >= 8);
   assert.ok(model.sellSignals[0].sellSetupReasons.includes("신용 과열"));
   assert.ok(model.sellSignals[0].sellDeteriorationReasons.includes("고점 갱신 후 탄력 둔화"));
@@ -714,7 +740,8 @@ test("detects a gradual stock distribution top after a volatility-adjusted advan
   });
 
   assert.equal(model.sellSignals.length, 1);
-  assert.equal(model.sellSignals[0].date, dates[270]);
+  assert.equal(model.sellSignals[0].date, model.sellSignals[0].confirmationDate);
+  assert.equal(model.sellSignals[0].peakDate, dates[270]);
   assert.ok(model.sellSignals[0].confirmationDate <= dates[278]);
   assert.ok(model.sellSignals[0].sellSetupReasons.includes("개별종목 분배형 과열"));
   assert.ok(model.sellSignals[0].sellTriggerReasons.includes("분배형 고점 이탈"));
@@ -740,7 +767,8 @@ test("confirms a mature stock top after a slower medium-term rollover", () => {
   });
 
   assert.equal(model.sellSignals.length, 1);
-  assert.equal(model.sellSignals[0].date, dates[290]);
+  assert.equal(model.sellSignals[0].date, model.sellSignals[0].confirmationDate);
+  assert.equal(model.sellSignals[0].peakDate, dates[290]);
   assert.ok(model.sellSignals[0].confirmationDate <= dates[310]);
   assert.ok(model.sellSignals[0].sellSetupReasons.includes("개별종목 중기 고점 둔화"));
 });
@@ -783,9 +811,10 @@ test("starts a new stock sell episode after exceptional reacceleration", () => {
   });
 
   assert.equal(model.sellSignals.length, 2);
-  assert.equal(model.sellSignals[0].date, dates[270]);
-  assert.equal(model.sellSignals[1].date, dates[292]);
-  assert.ok(model.sellSignals[1].confirmationDate > model.sellSignals[1].date);
+  assert.equal(model.sellSignals[0].date, model.sellSignals[0].confirmationDate);
+  assert.equal(model.sellSignals[0].peakDate, dates[270]);
+  assert.equal(model.sellSignals[1].date, model.sellSignals[1].confirmationDate);
+  assert.equal(model.sellSignals[1].peakDate, dates[292]);
 });
 
 test("detects a short refuge-flow top while the broad market is fearful", () => {
@@ -819,7 +848,8 @@ test("detects a short refuge-flow top while the broad market is fearful", () => 
   });
 
   assert.equal(model.sellSignals.length, 1);
-  assert.equal(model.sellSignals[0].date, dates[270]);
+  assert.equal(model.sellSignals[0].date, model.sellSignals[0].confirmationDate);
+  assert.equal(model.sellSignals[0].peakDate, dates[270]);
   assert.ok(model.sellSignals[0].confirmationDate <= dates[278]);
   assert.ok(model.sellSignals[0].sellSetupReasons.includes("공포 피난자금 단기 과열"));
   assert.ok(model.sellSignals[0].relative20d >= 9);
@@ -851,10 +881,70 @@ test("uses a hidden volume climax as supporting evidence for a stock top", () =>
   });
 
   assert.equal(model.sellSignals.length, 1);
-  assert.equal(model.sellSignals[0].date, dates[270]);
+  assert.equal(model.sellSignals[0].date, model.sellSignals[0].confirmationDate);
+  assert.equal(model.sellSignals[0].peakDate, dates[270]);
   assert.ok(model.sellSignals[0].sellSetupReasons.includes("고점 거래량 폭증"));
   assert.ok(model.sellSignals[0].sellSetupReasons.includes("시장폭·심리 괴리 단기 과열"));
   assert.ok(model.sellSignals[0].setupVolumeRatio >= 1.8);
+});
+
+test("emits a same-day credit and volume climax warning without waiting for a decline", () => {
+  const dates = Array.from({ length: 320 }, (_, index) => dateAt(index));
+  const prices = dates.map((_, index) => 100 + (Math.sin(index / 9) * 0.3));
+  for (let offset = 20; offset >= 0; offset -= 1) {
+    prices[prices.length - 1 - offset] = 100 + ((20 - offset) * 0.8);
+  }
+  prices[prices.length - 1] = 121;
+  const oscillator = dates.map(() => 0.8);
+  const volumes = dates.map((_, index) => (index === dates.length - 1 ? 4000 : 1000));
+  const creditRows = dates.map((date, index) => ({
+    date,
+    kospi_credit: index < dates.length - 20
+      ? 100
+      : 100 * Math.exp((index - (dates.length - 20)) * 0.008),
+  }));
+  const model = buildMarketTimingSignals({
+    indexKey: "003490.KS",
+    dates,
+    prices,
+    oscillator,
+    volumes,
+    creditRows,
+    behaviorPolicy: PROMOTED_RUNTIME_BEHAVIOR_POLICY,
+  });
+
+  const latest = model.sellSignals.at(-1);
+  assert.equal(latest.date, dates.at(-1));
+  assert.equal(latest.confirmationDate, dates.at(-1));
+  assert.equal(latest.peakDate, dates.at(-1));
+  assert.equal(latest.entryMode, "same-day-climax");
+  assert.equal(latest.signalFamily, "crowding-climax");
+  assert.equal(latest.signalRole, "warning");
+});
+
+test("emits a same-day short-burst volume climax warning without future prices", () => {
+  const dates = Array.from({ length: 300 }, (_, index) => dateAt(index));
+  const prices = dates.map((_, index) => 100 + (Math.sin(index / 8) * 0.25));
+  [100, 102, 105, 108, 112, 126].forEach((price, offset) => {
+    prices[prices.length - 6 + offset] = price;
+  });
+  const oscillator = dates.map(() => 0.75);
+  const volumes = dates.map((_, index) => (index === dates.length - 1 ? 6000 : 1000));
+  const model = buildMarketTimingSignals({
+    indexKey: "003490.KS",
+    dates,
+    prices,
+    oscillator,
+    volumes,
+    behaviorPolicy: PROMOTED_RUNTIME_BEHAVIOR_POLICY,
+  });
+
+  const latest = model.sellSignals.at(-1);
+  assert.equal(latest.date, dates.at(-1));
+  assert.equal(latest.confirmationDate, dates.at(-1));
+  assert.equal(latest.entryMode, "same-day-climax");
+  assert.equal(latest.signalFamily, "volume-climax");
+  assert.equal(latest.signalRole, "warning");
 });
 
 test("flags a multi-day parabolic stock move immediately", () => {
@@ -991,8 +1081,10 @@ test("detects a five-day market shock only after MACD starts recovering", () => 
   const model = buildMarketTimingSignals({ indexKey: "^KS11", dates, prices, oscillator, adrRows });
 
   assert.equal(model.signals.length, 1);
-  assert.equal(model.signals[0].date, dates[145]);
-  assert.ok(model.signals[0].confirmationDate > model.signals[0].date);
+  assert.equal(model.signals[0].setupDate, dates[145]);
+  assert.equal(model.signals[0].date, model.signals[0].confirmationDate);
+  assert.equal(model.signals[0].confirmationDate, model.signals[0].date);
+  assert.ok(model.signals[0].setupDate < model.signals[0].date);
   assert.ok(model.signals[0].setupReasons.includes("5일 충격 급락"));
 });
 
@@ -1067,7 +1159,9 @@ test("recovers major historical KOSPI turning points without future-dated marker
   const model = buildHistoricalModel("^KS11");
   const kosdaqModel = buildHistoricalModel("^KQ11");
   const rfhicModel = buildHistoricalModel("218410.KQ");
-  const sells = new Set(model.sellSignals.map((signal) => signal.date));
+  const signalSetupDate = (signal) => signal.setupDate || signal.date;
+  const signalPeakDate = (signal) => signal.peakDate || signal.date;
+  const sells = new Set(model.sellSignals.map(signalPeakDate));
   const tradingIndex = new Map(pricePayload.dates.map((date, index) => [date, index]));
   const nearestTradingDays = (targetDate, signalDates) => {
     const targetIndex = tradingIndex.get(targetDate);
@@ -1078,15 +1172,15 @@ test("recovers major historical KOSPI turning points without future-dated marker
 
   ["2007-08-17", "2008-10-24", "2008-11-20", "2011-09-26", "2022-07-06"]
     .forEach((date) => assert.ok(
-      nearestTradingDays(date, model.signals.map((signal) => signal.date)) <= 2,
+      nearestTradingDays(date, model.signals.map(signalSetupDate)) <= 2,
       `missing buy near ${date}`,
     ));
   assert.ok(model.signals.length >= 18 && model.signals.length <= 55);
   const combinedBuyDates = [...model.signals, ...kosdaqModel.signals]
-    .map((signal) => signal.date)
+    .map(signalSetupDate)
     .filter((date) => tradingIndex.has(date));
   [model, kosdaqModel].forEach((marketModel) => assert.ok(
-    nearestTradingDays("2026-03-04", marketModel.signals.map((signal) => signal.date)) <= 1,
+    nearestTradingDays("2026-03-04", marketModel.signals.map(signalSetupDate)) <= 1,
     "missing market-shock buy near 2026-03-04",
   ));
   ["2013-06-25", "2018-10-30", "2019-08-07", "2023-10-23", "2025-04-15"]
@@ -1102,30 +1196,32 @@ test("recovers major historical KOSPI turning points without future-dated marker
   ["2011-04-18", "2018-01-29", "2021-05-10"]
     .forEach((date) => assert.ok(sells.has(date), `missing sell ${date}`));
   assert.ok(
-    nearestTradingDays("2021-01-22", model.sellSignals.map((signal) => signal.date)) <= 1,
+    nearestTradingDays("2021-01-22", model.sellSignals.map(signalPeakDate)) <= 1,
     "missing sell near 2021-01-22",
   );
   ["2026-06-01", "2026-06-18"]
     .forEach((date) => assert.ok(
-      nearestTradingDays(date, model.sellSignals.map((signal) => signal.date)) <= 1,
+      nearestTradingDays(date, model.sellSignals.map(signalPeakDate)) <= 1,
       `missing recent sell near ${date}`,
     ));
-  const kosdaqSells = new Set(kosdaqModel.sellSignals.map((signal) => signal.date));
+  const kosdaqSells = new Set(kosdaqModel.sellSignals.map(signalPeakDate));
   ["2023-04-11", "2026-01-29"]
     .forEach((date) => assert.ok(kosdaqSells.has(date), `missing KOSDAQ sell ${date}`));
   assert.ok(
-    nearestTradingDays("2026-04-27", kosdaqModel.sellSignals.map((signal) => signal.date)) <= 2,
+    nearestTradingDays("2026-04-27", kosdaqModel.sellSignals.map(signalPeakDate)) <= 2,
     "missing KOSDAQ clustered-overheat sell near 2026-04-27",
   );
   ["2026-03-11", "2026-04-22", "2026-05-12"].forEach((date) => assert.ok(
-    nearestTradingDays(date, rfhicModel.sellSignals.map((signal) => signal.date)) <= 1,
+    nearestTradingDays(date, rfhicModel.sellSignals.map(signalPeakDate)) <= 1,
     `missing RFHIC sell near ${date}`,
   ));
   assert.ok(
-    nearestTradingDays("2026-02-20", rfhicModel.sellSignals.map((signal) => signal.date)) > 3,
+    nearestTradingDays("2026-02-20", rfhicModel.sellSignals.map(signalPeakDate)) > 3,
     "RFHIC intermediate high should remain inside the March peak episode",
   );
-  [...model.signals, ...model.sellSignals, ...rfhicModel.sellSignals].forEach((signal) => {
-    assert.ok(signal.confirmationDate >= signal.date);
+  [...model.signals, ...model.sellSignals, ...kosdaqModel.signals,
+    ...kosdaqModel.sellSignals, ...rfhicModel.signals, ...rfhicModel.sellSignals]
+    .forEach((signal) => {
+      assert.equal(signal.confirmationDate, signal.date);
   });
 });

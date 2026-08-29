@@ -2,6 +2,29 @@ import { syncControl } from "./control-state-view.mjs";
 
 "use strict";
 
+  function filterStockUniverse(items, keyword, limit = 12) {
+    const query = String(keyword || "").trim().toLowerCase().replace(/\s+/g, "");
+    if (!query) return [];
+    return (Array.isArray(items) ? items : [])
+      .flatMap((item) => {
+        const name = String(item?.name || "").toLowerCase().replace(/\s+/g, "");
+        const code = String(item?.code || "").toLowerCase();
+        const ticker = String(item?.ticker || "").toLowerCase();
+        let score = -1;
+        if (name.startsWith(query)) score = 0;
+        else if (name.includes(query)) score = 1;
+        else if (code.startsWith(query)) score = 2;
+        else if (code.includes(query) || ticker.includes(query)) score = 3;
+        return score < 0 ? [] : [{ item, score }];
+      })
+      .sort((left, right) => (
+        left.score - right.score
+        || String(left.item?.name || "").localeCompare(String(right.item?.name || ""), "ko")
+      ))
+      .slice(0, Math.max(1, Number(limit) || 12))
+      .map((entry) => entry.item);
+  }
+
   function bindChartRangeControls(options = {}) {
     const rangeButtons = Array.isArray(options.rangeButtons) ? options.rangeButtons : [];
     const selectMonths = (months) => options.selectMonths?.(months, "range-preset") === true;
@@ -566,4 +589,5 @@ export {
   bindStockSearchPanel,
   createMainChartControlView,
   createStockSelectionView,
+  filterStockUniverse,
 };

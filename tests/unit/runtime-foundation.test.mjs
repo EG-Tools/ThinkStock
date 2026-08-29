@@ -42,4 +42,9 @@ test("runtime storage contract owns every IndexedDB store name", () => {
     "tickerBrokerResearch",
     "tickerTimingModels",
   ]);
+  assert.deepEqual(
+    RUNTIME_STORAGE_CONTRACT.storeNames,
+    Object.values(RUNTIME_STORAGE_CONTRACT.stores),
+  );
+  assert.equal(Object.isFrozen(RUNTIME_STORAGE_CONTRACT.storeNames), true);
 });

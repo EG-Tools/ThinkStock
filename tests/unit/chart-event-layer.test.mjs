@@ -195,3 +195,42 @@ test("text event markers share the same one-pixel hover enlargement", () => {
   assert.equal(eventLayer.setMarkerHighlighted(element, 0, 0, false), true);
   assert.equal(point.style.fontSize, "15px");
 });
+
+test("refreshes marker nodes after Plotly replaces the visible SVG trace", () => {
+  const trace = { uid: "event", mode: "text", textfont: { color: "#b91c1c", size: 15 } };
+  const stalePoint = {
+    isConnected: true,
+    style: {},
+    classList: { toggle() {} },
+    setAttribute() {},
+  };
+  const currentPoint = {
+    isConnected: true,
+    style: {},
+    classList: { toggle() {} },
+    setAttribute() {},
+  };
+  let visiblePoint = stalePoint;
+  const group = {
+    classList: { contains: (name) => name === "traceevent" },
+    querySelectorAll: () => [visiblePoint],
+  };
+  const element = {
+    data: [trace],
+    _fullData: [{ uid: "event" }],
+    contains: (node) => node === visiblePoint,
+    querySelectorAll: () => [group],
+  };
+
+  assert.equal(eventLayer.setMarkerHighlighted(element, 0, 0, true, {
+    highlightSizeDelta: 3,
+  }), true);
+  assert.equal(stalePoint.style.fontSize, "18px");
+
+  stalePoint.isConnected = false;
+  visiblePoint = currentPoint;
+  assert.equal(eventLayer.setMarkerHighlighted(element, 0, 0, true, {
+    highlightSizeDelta: 3,
+  }), true);
+  assert.equal(currentPoint.style.fontSize, "18px");
+});

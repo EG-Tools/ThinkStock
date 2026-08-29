@@ -19,7 +19,12 @@
     let cache = markerNodeCache.get(element);
     const trace = element.data?.[traceIndex];
     const cached = cache?.get(traceIndex);
-    if (cached?.trace === trace) return cached.nodes;
+    const cachedNodesAreCurrent = cached?.nodes?.length > 0
+      && cached.nodes.every((node) => (
+        node?.isConnected !== false
+        && (typeof element.contains !== "function" || element.contains(node))
+      ));
+    if (cached?.trace === trace && cachedNodesAreCurrent) return cached.nodes;
 
     const groups = [...(element.querySelectorAll?.(".scatterlayer .trace.scatter") || [])];
     const uid = String(element._fullData?.[traceIndex]?.uid || trace?.uid || "");

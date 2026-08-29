@@ -2,6 +2,7 @@ export const APP_RUNTIME_KEYS = Object.freeze({
   adminFeatureAccess: "admin-feature-access",
   appCacheManager: "app-cache-manager",
   auxiliaryChart: "auxiliary-chart",
+  auxiliaryChartRender: "auxiliary-chart-render",
   backgroundStockRefresh: "background-stock-refresh",
   appState: "app-state",
   brokerResearch: "broker-research",
@@ -19,6 +20,7 @@ export const APP_RUNTIME_KEYS = Object.freeze({
   chartVisualFrame: "chart-visual-frame",
   coMovementPanel: "co-movement-panel",
   customStockLifecycle: "custom-stock-lifecycle",
+  dataFreshness: "data-freshness",
   dartEvents: "dart-events",
   dartFeature: "dart-feature",
   dartRequests: "dart-requests",
@@ -100,9 +102,9 @@ export const MAX_CUSTOM_STOCKS = 20;
 export const MAX_VISIBLE_MAIN_SERIES = 10;
 export const CUSTOM_STOCK_PRELOAD_CONCURRENCY = 3;
 export const STARTUP_INTERACTION_SETTLE_MS = 1600;
-export const MAIN_CHART_MODEL_CACHE_MAX_ENTRIES = 6;
-export const MAIN_CHART_MODEL_CACHE_MAX_WEIGHT = 400000;
-export const MAIN_CHART_FINGERPRINT_CACHE_MAX_ENTRIES = 4;
+export const MAIN_CHART_MODEL_CACHE_MAX_ENTRIES = 10;
+export const MAIN_CHART_MODEL_CACHE_MAX_WEIGHT = 800000;
+export const MAIN_CHART_FINGERPRINT_CACHE_MAX_ENTRIES = 12;
 
 export function isForecastSeries(value) {
   const ticker = String(value || "").trim().toUpperCase();
@@ -112,6 +114,18 @@ export function isForecastSeries(value) {
 export function normalizeChartRightPaddingDays(value) {
   const days = Math.round(Number(value) || 0);
   return Math.max(CHART_RIGHT_PADDING_MIN_DAYS, Math.min(CHART_RIGHT_PADDING_MAX_DAYS, days));
+}
+
+export function resolveAppBuildVersion(scope = globalThis, assetName = "app.bundle.min.js") {
+  try {
+    const documentRef = scope?.document;
+    const script = documentRef?.currentScript
+      || [...(documentRef?.scripts || [])].find((node) => String(node?.src || "").includes(`/${assetName}`));
+    const src = String(script?.src || "");
+    return src ? (new URL(src, scope?.location?.href || "http://localhost/").searchParams.get("v") || "dev") : "dev";
+  } catch (_) {
+    return "dev";
+  }
 }
 
 /**
@@ -169,6 +183,7 @@ export function createChartApplicationControlConfig(context) {
       onEnabled: async () => {
         c.enableFutureOverlay("ai");
         c.startAiForecastProgress();
+        c.showVisibleAiForecastAvailability?.();
         // The final composition must observe the inputs loaded for this toggle.
         // Fire-and-forget work could otherwise finish after an older render and
         // leave a cached forecast without its analysis evidence until retoggled.

@@ -303,3 +303,44 @@ test("reuses a persisted timing model only when its input fingerprint matches", 
   assert.equal(second.stats().persistentCacheHits, 1);
   assert.equal(second.stats().modelCalculations, 0);
 });
+
+test("exposes calculated signals before deferred cache persistence finishes", async () => {
+  let scheduledTask = null;
+  let cacheWrites = 0;
+  const service = createMarketTimingService({}, {
+    cache: {
+      readMany: async () => new Map(),
+      writeMany: async () => { cacheWrites += 1; },
+    },
+    schedulePersistence: (task, context) => {
+      scheduledTask = { task, context };
+      return Promise.resolve(true);
+    },
+    buildMacdOscillator: ({ dates, prices }) => ({
+      dates,
+      prices,
+      normalized: prices.map(() => 0),
+    }),
+    buildMarketTimingSignals: ({ indexKey }) => ({ indexKey, signals: [], sellSignals: [] }),
+  });
+
+  await service.prepare({
+    signature: "revision-deferred-cache",
+    targets: ["^KS11"],
+    sources: {
+      dates: ["2026-08-28"],
+      pricesByTicker: { "^KS11": [100] },
+      volumesByTicker: {},
+    },
+  });
+
+  assert.equal(service.has("^KS11"), true);
+  assert.equal(cacheWrites, 0);
+  assert.deepEqual(scheduledTask.context, {
+    signature: "revision-deferred-cache",
+    targets: ["^KS11"],
+  });
+  assert.equal(service.stats().deferredCacheWrites, 1);
+  await scheduledTask.task();
+  assert.equal(cacheWrites, 1);
+});

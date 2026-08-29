@@ -34,8 +34,10 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
     const isInteractionBusy = typeof options.isInteractionBusy === "function"
       ? options.isInteractionBusy
       : () => false;
+    const pauseWhenHidden = options.pauseWhenHidden !== false;
     const now = typeof options.now === "function" ? options.now : Date.now;
     const activityTarget = options.activityTarget || scope;
+    const visibilityTarget = options.visibilityTarget || scope.document || null;
     const activityEvents = options.activityEvents || [
       "pointerdown",
       "pointermove",
@@ -61,6 +63,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
       replaced: 0,
       inputDeferrals: 0,
       activityDeferrals: 0,
+      visibilityDeferrals: 0,
       taskYields: 0,
       cooperativeYields: 0,
       totalQueueWaitMs: 0,
@@ -80,6 +83,19 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
     activityEvents.forEach((eventName) => {
       activityTarget?.addEventListener?.(eventName, noteActivity, { capture: true, passive: true });
     });
+
+    const pageHidden = () => pauseWhenHidden && visibilityTarget?.visibilityState === "hidden";
+    const onVisibilityChange = () => {
+      if (pageHidden()) {
+        clearWakeup();
+        schedulePump(Math.max(1000, retryDelayMs));
+        return;
+      }
+      noteActivity();
+      clearWakeup();
+      schedulePump(retryDelayMs);
+    };
+    visibilityTarget?.addEventListener?.("visibilitychange", onVisibilityChange);
 
     function clearWakeup() {
       if (timerHandle) scope.clearTimeout?.(timerHandle);
@@ -119,7 +135,8 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
     }
 
     function interactionPending() {
-      return inputPending()
+      return pageHidden()
+        || inputPending()
         || isInteractionBusy()
         || now() - lastActivityAt < interactionQuietMs;
     }
@@ -190,6 +207,11 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
       if (inputPending()) {
         counters.inputDeferrals += 1;
         schedulePump(retryDelayMs);
+        return;
+      }
+      if (pageHidden()) {
+        counters.visibilityDeferrals += 1;
+        schedulePump(Math.max(1000, retryDelayMs));
         return;
       }
       if (isInteractionBusy() || now() - lastActivityAt < interactionQuietMs) {
@@ -332,6 +354,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
       activityEvents.forEach((eventName) => {
         activityTarget?.removeEventListener?.(eventName, noteActivity, { capture: true });
       });
+      visibilityTarget?.removeEventListener?.("visibilitychange", onVisibilityChange);
       if (runningEntry) {
         abortEntry(runningEntry);
         settle(runningEntry, false);
@@ -627,9 +650,93 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
     return Object.freeze({ cancel, dispose, schedule });
   }
 
+  function createVisibleSeriesSupplementalHydrator(options = {}) {
+    const scheduler = options.scheduler;
+    if (typeof scheduler?.enqueue !== "function") {
+      throw new Error("visible series supplemental scheduler is required");
+    }
+    const normalizeTicker = typeof options.normalizeTicker === "function"
+      ? options.normalizeTicker
+      : (value) => String(value || "").trim().toUpperCase();
+    const isSupported = typeof options.isSupported === "function"
+      ? options.isSupported
+      : (ticker) => Boolean(ticker);
+    const isActive = typeof options.isActive === "function"
+      ? options.isActive
+      : () => true;
+    const isEpsEnabled = typeof options.isEpsEnabled === "function"
+      ? options.isEpsEnabled
+      : () => false;
+    const isAiEnabled = typeof options.isAiEnabled === "function"
+      ? options.isAiEnabled
+      : () => false;
+    const delayMs = Math.max(0, Number(options.delayMs) || 32);
+    const priority = Number(options.priority) || 80;
+    const group = String(options.group || "visible-series-supplemental");
+    const taskKey = (ticker) => `${group}:${ticker}`;
+
+    function schedule(tickerValue, context = {}) {
+      const ticker = normalizeTicker(tickerValue);
+      if (!isSupported(ticker)) return Promise.resolve(false);
+      const trackAiProgress = context.trackAiProgress === true && isAiEnabled();
+      if (trackAiProgress) options.onAiQueued?.(ticker, context);
+
+      const cleanupSkipped = () => options.onSkipped?.(ticker, {
+        ...context,
+        trackAiProgress,
+      });
+      return scheduler.enqueue(taskKey(ticker), async (taskContext) => {
+        await taskContext.checkpoint?.();
+        const tasks = [Promise.resolve(options.prepareDisclosure?.(ticker, context))];
+        const hydrateAi = isAiEnabled();
+        if (isEpsEnabled()) {
+          tasks.push(Promise.resolve(options.prepareEps?.(ticker, context)));
+        }
+        if (hydrateAi) {
+          options.onAiPreparing?.(ticker, context);
+          tasks.push(Promise.resolve(options.prepareAi?.(ticker, context)));
+        } else {
+          cleanupSkipped();
+        }
+        const results = await Promise.allSettled(tasks);
+        results.forEach((result) => {
+          if (result.status === "rejected") options.onTaskError?.(ticker, result.reason, context);
+        });
+        await taskContext.checkpoint?.();
+        if (hydrateAi) {
+          try {
+            if (isAiEnabled()) options.onAiReady?.(ticker, context);
+          } finally {
+            options.onAiCompleted?.(ticker, context);
+          }
+        }
+        return true;
+      }, {
+        coalesceRunning: true,
+        delayMs,
+        group,
+        priority,
+        shouldRun: () => isActive(ticker),
+      }).then((started) => {
+        if (started === false) cleanupSkipped();
+        return started;
+      }).catch((error) => {
+        cleanupSkipped();
+        options.onError?.(ticker, error, context);
+        return false;
+      });
+    }
+
+    return Object.freeze({
+      cancel: (tickerValue) => scheduler.cancel(taskKey(normalizeTicker(tickerValue))),
+      schedule,
+    });
+  }
+
 export {
   createBackgroundStockRefresh,
   createBackgroundTaskScheduler,
   createCustomStockPreloader,
+  createVisibleSeriesSupplementalHydrator,
   createVisibleStockHistoryRefresh,
 };

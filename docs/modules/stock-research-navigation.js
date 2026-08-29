@@ -36,6 +36,7 @@ const stockResearchContract = require("./stock-research-contract.js");
       String(item?.market || "").trim().toUpperCase(),
       String(item?.name || "").trim(),
       String(item?.baseDate || "").slice(0, 10),
+      String(item?.priceMode || "settled").trim().toLowerCase(),
       finiteToken(item?.close),
       finiteToken(item?.volume),
     ].join("|");
@@ -127,6 +128,8 @@ const stockResearchContract = require("./stock-research-contract.js");
       String(candidate.lastSellConfirmationDate || "").slice(0, 10),
       String(candidate.sellDate || "").slice(0, 10),
       String(candidate.bottomDate || "").slice(0, 10),
+      String(candidate.priceMode || "settled").slice(0, 12),
+      String(candidate.signalState || "confirmed").slice(0, 12),
       String(candidate.status || "").slice(0, 40),
     ].join("|");
   }

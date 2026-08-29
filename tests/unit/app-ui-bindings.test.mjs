@@ -37,6 +37,21 @@ function fakeElement(dataset = {}) {
   };
 }
 
+test("stock universe filtering keeps the shared name and ticker ranking", () => {
+  const items = [
+    { name: "삼성SDI", code: "006400", ticker: "006400.KS" },
+    { name: "삼성전자", code: "005930", ticker: "005930.KS" },
+    { name: "RFHIC", code: "218410", ticker: "218410.KQ" },
+  ];
+
+  assert.deepEqual(
+    bindings.filterStockUniverse(items, "삼성").map((item) => item.name),
+    ["삼성전자", "삼성SDI"],
+  );
+  assert.deepEqual(bindings.filterStockUniverse(items, "218410"), [items[2]]);
+  assert.deepEqual(bindings.filterStockUniverse(items, ""), []);
+});
+
 
 test("chart range controls select presets and slide to the latest window", () => {
   const sixMonthsButton = fakeElement({ months: "6" });

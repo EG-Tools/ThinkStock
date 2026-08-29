@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createRuntimeBootstrapService } from "../../docs/modules/runtime-bootstrap.mjs";
+import { createRuntimeBootstrapService } from "../../docs/modules/runtime-market-refresh.mjs";
 
 test("runtime bootstrap sends only visible stock tickers with the oldest index date", async () => {
   let request = null;

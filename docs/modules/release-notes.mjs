@@ -3,6 +3,48 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.27",
+      date: "2026.08.30",
+      items: Object.freeze([
+        "종목탐구 신호 기간 OFF·1일·15일·30일 순환 필터",
+        "1일 필터의 최근 거래일·직전 거래일 신호 포함",
+        "기간과 최소 신호 횟수 조합 검색",
+        "최근 30거래일 신호 후보 캐시 재활용",
+      ]),
+    }),
+    Object.freeze({
+      version: "3.26",
+      date: "2026.08.29",
+      items: Object.freeze([
+        "진단 기능 지연 로딩과 메인 번들 경량화",
+        "부팅 후 캐시 정리 작업의 분산 실행",
+        "로컬·배포 장중 신호 상태 판정 통합",
+        "차트 포인터 좌표 계산과 장마감 타이머 공통화",
+        "종목탐구 Worker 종료 수명주기 개선",
+      ]),
+    }),
+    Object.freeze({
+      version: "3.25",
+      date: "2026.08.29",
+      items: Object.freeze([
+        "장중 신호의 실시간 상태 표시와 종가 확정 처리",
+        "장 마감 후 탈락 신호 자동 제거",
+        "메인차트·종목탐구 신호 기준 통합",
+        "종가 확인의 단일 실행과 반복 조회 축소",
+      ]),
+    }),
+    Object.freeze({
+      version: "3.24",
+      date: "2026.08.29",
+      items: Object.freeze([
+        "차트 갱신 판단과 AI·EPS 렌더링 경로 통합",
+        "종목별 파생 계산 캐시의 단일 수명주기 적용",
+        "부팅 후 보조 데이터 작업의 중첩 실행 제거",
+        "Worker·데이터 모듈 통합과 전역 연결 축소",
+        "다중 차트 렌더링 성능 회귀 기준 강화",
+      ]),
+    }),
+    Object.freeze({
       version: "3.23",
       date: "2026.08.29",
       items: Object.freeze([

@@ -273,9 +273,82 @@
     });
   }
 
+  /**
+   * Routes one source revision to every dependent in-memory calculation.
+   * Adapters may resolve lazily so optional AI and timing features stay unloaded.
+   */
+  function createSeriesDerivedCacheRegistry() {
+    const adapters = new Map();
+    const counters = { invalidations: 0, adapterInvalidations: 0, clears: 0 };
+
+    function normalizedSet(values) {
+      return new Set((Array.isArray(values) ? values : []).map(String).filter(Boolean));
+    }
+
+    function register(name, adapter, dependencies = {}) {
+      const key = String(name || "").trim();
+      if (!key || !adapter || typeof adapter !== "object") {
+        throw new Error("derived cache adapter name and contract are required");
+      }
+      adapters.set(key, Object.freeze({
+        adapter,
+        sources: normalizedSet(dependencies.sources),
+        stores: normalizedSet(dependencies.stores),
+      }));
+      return () => adapters.delete(key);
+    }
+
+    function matches(entry, context = {}) {
+      if (!entry.sources.size && !entry.stores.size) return true;
+      const sources = normalizedSet(context.changedSources);
+      const stores = normalizedSet(context.stores);
+      return [...entry.sources].some((value) => sources.has(value))
+        || [...entry.stores].some((value) => stores.has(value));
+    }
+
+    function invalidate(series, context = {}) {
+      let affected = 0;
+      adapters.forEach((entry) => {
+        if (!matches(entry, context) || typeof entry.adapter.invalidate !== "function") return;
+        const result = entry.adapter.invalidate(series, context);
+        if (result !== false) affected += 1;
+      });
+      if (affected) {
+        counters.invalidations += 1;
+        counters.adapterInvalidations += affected;
+      }
+      return affected;
+    }
+
+    function clear(context = {}) {
+      let affected = 0;
+      adapters.forEach((entry) => {
+        if (!matches(entry, context) || typeof entry.adapter.clear !== "function") return;
+        entry.adapter.clear(context);
+        affected += 1;
+      });
+      if (affected) counters.clears += 1;
+      return affected;
+    }
+
+    return Object.freeze({
+      clear,
+      invalidate,
+      register,
+      stats: () => Object.freeze({
+        ...counters,
+        adapters: Object.freeze(Object.fromEntries([...adapters].map(([name, entry]) => [
+          name,
+          typeof entry.adapter.stats === "function" ? entry.adapter.stats() : null,
+        ]))),
+      }),
+    });
+  }
+
 export {
   createChartModelCache,
   createSeriesDerivedCache,
+  createSeriesDerivedCacheRegistry,
   createSourceFingerprintCache,
   estimateMainChartModelWeight,
 };

@@ -197,16 +197,30 @@
 }
 .stock-research-refresh-btn:disabled { opacity: 0.45; cursor: wait; }
 .stock-research-page-controls {
-  --ui-circle-button-size: 36px;
+  --ui-circle-button-size: 34px;
   --ui-circle-button-border: 1px solid rgba(255, 255, 255, 0.2);
   --ui-circle-button-background: rgba(255, 255, 255, 0.04);
   display: flex;
   flex: 0 0 auto;
+  align-items: center;
   justify-self: center;
-  gap: 5px;
+  gap: 9px;
 }
 .stock-research-page-controls button {
   font-size: 18px;
+}
+.stock-research-page-position {
+  display: inline-flex;
+  width: 22px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-align: center;
 }
 .stock-research-page-controls button:disabled { opacity: 0.25; }
 .stock-research-disclaimer { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }

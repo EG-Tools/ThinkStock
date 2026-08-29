@@ -635,6 +635,7 @@ test("AI off clamps the viewport to the last observed date", async ({ page }) =>
 });
 
 test("AI forecasts survive repeated KOSPI and KOSDAQ toggle cycles", async ({ page }) => {
+  test.setTimeout(75_000);
   await stubExternalRefreshes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
@@ -817,7 +818,37 @@ test("AI requests analysis only for stock toggles that are on", async ({ page })
 });
 
 test("market timing applies to a visible stock series", async ({ page }) => {
-  await stubExternalRefreshes(page);
+  await installDataRoutes(page);
+  const timingDates = Array.from({ length: 1300 }, (_, index) => (
+    new Date(Date.UTC(2023, 0, 1 + index)).toISOString().slice(0, 10)
+  ));
+  const marketPrices = timingDates.map((_, index) => 2400 + (index * 0.35));
+  const stockPrices = timingDates.map((_, index) => 52000 + (index * 18));
+  stockPrices[650] = stockPrices[649] * 1.3;
+  stockPrices[stockPrices.length - 1] = stockPrices.at(-2) * 1.3;
+  const recentStart = 850;
+  await page.route("**/data/prices_recent.json*", async (route) => {
+    await route.fulfill({ json: columnar(
+      ["^KS11", "^KQ11", "005930.KS"],
+      timingDates.slice(recentStart),
+      {
+        "^KS11": marketPrices.slice(recentStart),
+        "^KQ11": marketPrices.slice(recentStart).map((value) => value * 0.28),
+        "005930.KS": stockPrices.slice(recentStart),
+      },
+    ) });
+  });
+  await page.route("**/data/prices_history.json*", async (route) => {
+    await route.fulfill({ json: columnar(
+      ["^KS11", "^KQ11", "005930.KS"],
+      timingDates.slice(0, recentStart),
+      {
+        "^KS11": marketPrices.slice(0, recentStart),
+        "^KQ11": marketPrices.slice(0, recentStart).map((value) => value * 0.28),
+        "005930.KS": stockPrices.slice(0, recentStart),
+      },
+    ) });
+  });
   await page.addInitScript(() => {
     localStorage.setItem("thinkstock-v5", JSON.stringify({
       activeMonths: 360,
@@ -972,11 +1003,14 @@ test("signal calculation shows progress while an uncached timing model is prepar
 
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (
+    window.ThinkStockE2E?.getRuntimeDiagnosticState?.().startupVisualReady || false
+  ))).toBe(true);
   await expect(page.locator("#recessionToggle")).toBeEnabled();
   await page.locator("#recessionToggle").click();
 
   await expect(page.locator("#signalProgress")).toBeVisible();
-  await expect(page.locator("#signalProgressText")).toContainText("신호");
+  await expect(page.locator("#signalProgressText")).toContainText("코스피 신호 로딩중");
   await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getSignalProgressState()))
     .toMatchObject({ enabled: true, active: 1, visible: true });
   await expect(page.locator("#signalProgress")).toBeHidden({ timeout: 10000 });

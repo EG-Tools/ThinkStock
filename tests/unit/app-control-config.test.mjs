@@ -17,6 +17,7 @@ import {
   createChartApplicationControlConfig,
   isForecastSeries,
   normalizeChartRightPaddingDays,
+  resolveAppBuildVersion,
 } from "../../docs/modules/app-control-config.mjs";
 
 function createContext() {
@@ -101,6 +102,7 @@ test("waits for AI inputs before requesting the final composition", async () => 
   context.prepareHistoricalDataForAiForecast = async () => context.calls.push("ai-history");
   context.refreshAiAnalysisForVisibleSeries = async () => context.calls.push("ai-analysis");
   context.loadAiMarketModel = async () => context.calls.push("ai-market");
+  context.showVisibleAiForecastAvailability = () => context.calls.push("ai-availability");
   const config = createChartApplicationControlConfig(context);
 
   config.ai.setEnabled(true);
@@ -109,6 +111,7 @@ test("waits for AI inputs before requesting the final composition", async () => 
   assert.equal(context.chartSession.showAiForecast, true);
   assert.deepEqual(context.calls, [
     "enable-ai",
+    "ai-availability",
     "ai-hold-start",
     "ai-history",
     "ai-analysis",
@@ -130,9 +133,9 @@ test("owns stable runtime keys and chart control limits outside app.js", () => {
   assert.equal(normalizeChartRightPaddingDays(99), 30);
   assert.equal(MAX_CUSTOM_STOCKS, 20);
   assert.equal(MAX_VISIBLE_MAIN_SERIES, 10);
-  assert.equal(MAIN_CHART_MODEL_CACHE_MAX_ENTRIES, 6);
-  assert.equal(MAIN_CHART_MODEL_CACHE_MAX_WEIGHT, 400000);
-  assert.equal(MAIN_CHART_FINGERPRINT_CACHE_MAX_ENTRIES, 4);
+  assert.equal(MAIN_CHART_MODEL_CACHE_MAX_ENTRIES, 10);
+  assert.equal(MAIN_CHART_MODEL_CACHE_MAX_WEIGHT, 800000);
+  assert.equal(MAIN_CHART_FINGERPRINT_CACHE_MAX_ENTRIES, 12);
   assert.deepEqual(ADR_SERIES, ["adr_kospi", "adr_kosdaq"]);
   assert.equal(BASE_DISPLAY_NAMES["^KS11"], "코스피");
   assert.equal(Object.isFrozen(BASE_DISPLAY_NAMES), true);
@@ -140,4 +143,19 @@ test("owns stable runtime keys and chart control limits outside app.js", () => {
   assert.equal(isForecastSeries("^KQ11"), true);
   assert.equal(isForecastSeries("leading_cycle"), false);
   assert.equal(STOCK_TICKER_PATTERN.test("218410.KQ"), true);
+});
+
+test("resolves the stamped build version outside the application composition root", () => {
+  const scope = {
+    location: { href: "https://example.test/ThinkStock/" },
+    document: {
+      currentScript: null,
+      scripts: [
+        { src: "https://example.test/ThinkStock/vendor.js" },
+        { src: "https://example.test/ThinkStock/assets/app.bundle.min.js?v=build-327" },
+      ],
+    },
+  };
+  assert.equal(resolveAppBuildVersion(scope), "build-327");
+  assert.equal(resolveAppBuildVersion({ document: { scripts: [] } }), "dev");
 });

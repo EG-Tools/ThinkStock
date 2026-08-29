@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  captureLockedChartFrame,
+  captureLockedHistoryYRange,
+  captureViewportNormalizationFrame,
   clearSeriesTransforms,
   createChartSessionController,
 } from "../../docs/modules/chart-session-controller.mjs";
@@ -74,6 +77,28 @@ test("viewport auto-fit requests coalesce into one timer", () => {
   assert.equal(timers.size, 1);
   [...timers.values()][0]();
   assert.equal(fitted, 1);
+});
+
+test("one session contract captures manual scale and viewport normalization frames", () => {
+  const state = session({
+    lockedChartFrame: { normBases: { A: 10 }, autoScales: { A: 2 } },
+    lockedHistoryYRange: null,
+    viewportNormalizationFrame: null,
+  });
+  const model = {
+    normBases: { A: 99, B: 20, empty: 0 },
+    autoScales: { A: 9, B: 3, invalid: Number.NaN },
+  };
+
+  assert.deepEqual(captureLockedChartFrame(state, model), {
+    normBases: { A: 10, B: 20 },
+    autoScales: { A: 2, B: 3 },
+  });
+  assert.deepEqual(captureLockedHistoryYRange(state, [4, 8], model), [4, 8]);
+  assert.deepEqual(captureViewportNormalizationFrame(state, model), {
+    normBases: { A: 99, B: 20 },
+    autoScales: { A: 9, B: 3 },
+  });
 });
 
 test("clearing a stock transform also clears its dependent EPS transform", () => {

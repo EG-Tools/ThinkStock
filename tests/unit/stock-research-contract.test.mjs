@@ -12,7 +12,6 @@ import {
   RESEARCH_SUMMARY_HISTORY_QUALITY_VERSION,
   RESEARCH_SUMMARY_SCHEMA,
 } from "../../shared/stock-research-summary.mjs";
-const stockResearchApp = await import("../../docs/modules/stock-research-app.mjs");
 
 test("stock research universe defaults to 400 and stays within 100-1000", () => {
   assert.equal(contract.normalizeUniverseSize(null), 400);
@@ -27,9 +26,20 @@ test("stock research universe defaults to 400 and stays within 100-1000", () => 
 
 test("stock research description follows the configured per-market count", () => {
   assert.equal(
-    stockResearchApp.researchUniverseDescription(600),
+    contract.researchUniverseDescription(600),
     "시총 상위 300+300 중 상대적 안정성 필터를 통과한 공부 후보입니다. 매수 추천이 아닙니다.",
   );
+});
+
+test("stock research contract owns blocked-list count parsing", () => {
+  const storage = memoryStorage();
+  storage.setItem(contract.BLOCKED_KEY, JSON.stringify({
+    schema: contract.BLOCKED_SCHEMA,
+    entries: [{ ticker: "005930.KS" }, { ticker: "218410.KQ" }],
+  }));
+  assert.equal(contract.loadBlockedCount(storage), 2);
+  storage.setItem(contract.BLOCKED_KEY, "not-json");
+  assert.equal(contract.loadBlockedCount(storage), 0);
 });
 const storageModule = storageApi;
 

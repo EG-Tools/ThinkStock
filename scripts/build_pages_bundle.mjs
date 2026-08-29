@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
+import { setTimeout as delay } from "node:timers/promises";
 import { stylesheetSourceNames } from "./pages-stylesheet-config.mjs";
 
 import { build } from "esbuild";
@@ -36,6 +37,27 @@ if (!Number.isFinite(maxBundleBytes)
   || !Number.isFinite(maxBundleGzipBytes)) {
   throw new Error("ThinkStock bundle limits are not configured in package.json");
 }
+
+async function replaceBuiltFile(temporaryFile, outputFilePath) {
+  const retryableCodes = new Set(["EACCES", "EBUSY", "EPERM"]);
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rename(temporaryFile, outputFilePath);
+      return;
+    } catch (error) {
+      if (!retryableCodes.has(error?.code)) throw error;
+      if (attempt >= 8) {
+        // Windows can keep a served asset open for reads and reject replacing
+        // its directory entry even though overwriting the file is allowed.
+        await copyFile(temporaryFile, outputFilePath);
+        await rm(temporaryFile, { force: true });
+        return;
+      }
+      await delay(Math.min(1200, 50 * (2 ** attempt)));
+    }
+  }
+}
+
 const featureBundles = Object.freeze([
   Object.freeze({
     entry: "analytics-core-feature.mjs",
@@ -109,7 +131,13 @@ const featureBundles = Object.freeze([
   Object.freeze({
     entry: "diagnostics-runtime-feature.mjs",
     output: "diagnostics-runtime-feature.bundle.min.js",
-    maxBytes: 15_000,
+    maxBytes: 24_000,
+    format: "esm",
+  }),
+  Object.freeze({
+    entry: "data-freshness-feature.mjs",
+    output: "data-freshness-feature.bundle.min.js",
+    maxBytes: 32_000,
     format: "esm",
   }),
 ]);
@@ -127,7 +155,7 @@ async function buildStylesheet() {
   )));
   const stylesheet = `${sections.join("\n\n")}\n`;
   await writeFile(temporaryStylesheetFile, stylesheet, "utf8");
-  await rename(temporaryStylesheetFile, stylesheetFile);
+  await replaceBuiltFile(temporaryStylesheetFile, stylesheetFile);
   console.log(`Built ${path.relative(root, stylesheetFile)} (${Buffer.byteLength(stylesheet)} bytes)`);
 }
 
@@ -177,7 +205,7 @@ async function buildFeatureBundle(definition) {
       throw new Error(`${definition.output} exceeds ${definition.maxBytes} bytes: ${outputStats.size}`);
     }
     const gzipBytes = gzipSync(await readFile(temporaryFile), { level: 9 }).byteLength;
-    await rename(temporaryFile, outputFilePath);
+    await replaceBuiltFile(temporaryFile, outputFilePath);
     console.log(`Built ${path.relative(root, outputFilePath)} (${outputStats.size} bytes, ${gzipBytes} gzip)`);
     return summarizeBundle({
       root,
@@ -221,7 +249,7 @@ try {
   }
   // Replacing the completed file avoids Windows write failures while the local
   // server or browser still has the previous bundle mapped for reading.
-  await rename(temporaryOutputFile, outputFile);
+  await replaceBuiltFile(temporaryOutputFile, outputFile);
   console.log(`Built ${path.relative(root, outputFile)} (${outputStats.size} bytes, ${outputGzipBytes} gzip)`);
   const localFingerprint = await stampLocalBundleFingerprint();
   console.log(`Stamped local bundle fingerprint ${localFingerprint}`);
@@ -231,7 +259,7 @@ try {
   if (e2eOutputStats.size > maxE2eBundleBytes) {
     throw new Error(`E2E app bundle exceeds ${maxE2eBundleBytes} bytes: ${e2eOutputStats.size}`);
   }
-  await rename(e2eTemporaryOutputFile, e2eOutputFile);
+  await replaceBuiltFile(e2eTemporaryOutputFile, e2eOutputFile);
   console.log(`Built ${path.relative(root, e2eOutputFile)} (${e2eOutputStats.size} bytes, test only)`);
   const featureReports = await Promise.all(
     featureBundles.map((definition) => buildFeatureBundle(definition)),

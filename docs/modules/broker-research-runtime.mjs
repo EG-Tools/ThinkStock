@@ -3,7 +3,7 @@
 import {
   createIdleResourceLifecycle,
   createWorkerInstance,
-} from "./worker-lifecycle.mjs";
+} from "./browser-request-runtime.mjs";
 
   const MAX_REFERENCE_REPORTS = 3;
 

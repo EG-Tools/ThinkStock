@@ -135,7 +135,7 @@ test("an explicit render cannot be downgraded to queued marker-only work", async
   }]);
 });
 
-test("marks an in-flight data transaction stale and runs one replacement", async () => {
+test("carries an interrupted data scope into its viewport replacement", async () => {
   const frames = [];
   const invalidations = [];
   let releaseFirst;
@@ -158,10 +158,41 @@ test("marks an in-flight data transaction stale and runs one replacement", async
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.equal(invalidations.length, 2);
-  assert.deepEqual(invalidations[1].reasons, ["viewport"]);
+  assert.deepEqual(invalidations[1].reasons, ["viewport", "price"]);
+  assert.deepEqual(invalidations[1].updateClasses, ["viewport", "data"]);
   assert.equal(scheduler.stats().supersededTransactions, 1);
   assert.equal(scheduler.stats().lastTransactionId, 2);
   assert.equal(scheduler.stats().completedTransactionId, 2);
+});
+
+test("application mode yields an in-flight replacement to the next animation frame", async () => {
+  const frames = [];
+  const invalidations = [];
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  const scheduler = createChartRenderScheduler({}, {
+    yieldBetweenTransactions: true,
+    requestFrame: (callback) => { frames.push(callback); return frames.length; },
+    cancelFrame: () => {},
+    render: async (_preserveZoom, invalidation) => {
+      invalidations.push(invalidation);
+      if (invalidations.length === 1) await firstGate;
+    },
+  });
+
+  scheduler.request(true, { reason: "price", updateClass: "data" });
+  frames.shift()();
+  await Promise.resolve();
+  scheduler.request(true, { reason: "viewport", updateClass: "viewport" });
+  releaseFirst();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(invalidations.length, 1);
+  assert.equal(frames.length, 1);
+  assert.equal(scheduler.stats().yieldedTransactions, 1);
+  frames.shift()();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(invalidations[1].reasons, ["viewport", "price"]);
 });
 
 test("defers rendering while chart interaction is active", () => {

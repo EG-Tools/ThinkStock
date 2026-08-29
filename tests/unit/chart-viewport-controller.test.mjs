@@ -163,6 +163,26 @@ test("render viewport plan moves a stale latest edge to a fresher added series",
   ]);
 });
 
+test("a newer visible range discards an older composition snapshot", () => {
+  const currentRange = [Date.parse("2026-02-11"), Date.parse("2026-04-12")];
+  const plan = viewport.buildRenderViewportPlan({
+    preserveZoom: true,
+    autoChartReset: true,
+    currentXRange: currentRange.map((value) => new Date(value).toISOString()),
+    pinnedXRange: currentRange.map((value) => new Date(value).toISOString()),
+    pendingCompositionViewport: {
+      viewRange: [Date.parse("2025-10-13"), Date.parse("2026-04-12")],
+      dataRange: [Date.parse("2020-01-01"), Date.parse("2026-04-12")],
+    },
+    nextVisibleDataRange: [Date.parse("2020-01-01"), Date.parse("2026-07-14")],
+    observedStart: "2020-01-01",
+    observedEnd: "2026-07-14",
+  });
+
+  assert.deepEqual(plan.savedXRange, currentRange.map((value) => new Date(value).toISOString()));
+  assert.equal(plan.pendingCompositionViewport, null);
+});
+
 test("render viewport plan preserves a manually pinned viewport and current y range", () => {
   const plan = viewport.buildRenderViewportPlan({
     preserveZoom: true,

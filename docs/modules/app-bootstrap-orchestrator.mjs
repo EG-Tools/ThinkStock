@@ -122,6 +122,8 @@ export function createApplicationLifecycleRuntime(options = {}) {
     restoredActivations.forEach((feature, index) => {
       if (!feature?.enabled?.()) return;
       const run = () => {
+        // The user may disable a restored feature while its deferred task is waiting.
+        if (!feature?.enabled?.()) return false;
         try {
           const result = feature.run?.(messageElement);
           if (result?.catch) result.catch((error) => options.onBackgroundError?.(error, feature.name));
@@ -186,6 +188,39 @@ export function createFeatureLifecycleDescriptors(features = []) {
       .filter((feature) => typeof feature.restore === "function")
       .map((feature) => descriptor(feature, feature.restore))),
   });
+}
+
+/** Keeps restored-feature predicates in one application lifecycle policy. */
+export function createApplicationFeatureLifecycleDescriptors(context = {}) {
+  const state = context.state || {};
+  return createFeatureLifecycleDescriptors([
+    {
+      name: "timing",
+      enabled: () => Boolean(state.showRecessionSignals),
+      restore: context.restoreTiming,
+    },
+    {
+      name: "dart",
+      enabled: () => Boolean(state.showDisclosures || state.showInsiderTrades),
+      restore: context.restoreDart,
+    },
+    {
+      name: "ai",
+      enabled: () => Boolean(state.showAiForecast),
+      refresh: context.refreshAi,
+      restore: context.restoreAi,
+    },
+    {
+      name: "eps",
+      enabled: () => Boolean(state.showEps),
+      refresh: context.refreshEps,
+    },
+    {
+      name: "insider",
+      enabled: () => Boolean(state.showInsiderTrades && context.canUseInsider?.()),
+      refresh: context.refreshInsider,
+    },
+  ]);
 }
 
 /**

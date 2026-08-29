@@ -110,6 +110,7 @@
     const completedRepairVersions = new Map(Object.entries(storedState.repairVersions || {}).map(
       ([key, value]) => [key, String(value || "")],
     ));
+    let nextStoreIndex = Math.max(0, Number(storedState.nextStoreIndex) || 0);
     const counters = { runs: 0, transactions: 0, deleted: 0, repaired: 0 };
 
     function persistState() {
@@ -118,6 +119,7 @@
         stateStore.write({
           prunedAt: Object.fromEntries(lastPrunedAt),
           repairVersions: Object.fromEntries(completedRepairVersions),
+          nextStoreIndex,
         });
       } catch (_) {
         // Cache maintenance metadata must never block normal cache reads.
@@ -210,7 +212,16 @@
       if (activeTask) return activeTask;
       const scheduled = pruneSchedules.get(key);
       if (scheduled) return scheduled.promise;
-      if (now() - (Number(lastPrunedAt.get(key)) || 0) < pruneIntervalMs) return Promise.resolve(0);
+      const repairVersion = String(repairVersions.get(key) || "");
+      const repairPending = Boolean(
+        repairVersion
+        && validators.has(key)
+        && completedRepairVersions.get(key) !== repairVersion
+      );
+      if (!repairPending
+        && now() - (Number(lastPrunedAt.get(key)) || 0) < pruneIntervalMs) {
+        return Promise.resolve(0);
+      }
 
       let resolveSchedule;
       const promise = new Promise((resolve) => { resolveSchedule = resolve; });
@@ -240,6 +251,37 @@
       return defaultStoreNames.map((storeName) => schedulePrune(storeName, null, delayMs));
     }
 
+    function scheduleDueBatch(delayMs = 2500, maxStores = 3, staggerMs = 1200) {
+      if (!defaultStoreNames.length) return [];
+      const currentTime = now();
+      const limit = Math.min(
+        defaultStoreNames.length,
+        Math.max(1, Math.round(Number(maxStores) || 3)),
+      );
+      const ordered = Array.from({ length: defaultStoreNames.length }, (_, offset) => (
+        (nextStoreIndex + offset) % defaultStoreNames.length
+      ));
+      const selectedIndexes = ordered.filter((index) => {
+        const key = defaultStoreNames[index];
+        const repairVersion = String(repairVersions.get(key) || "");
+        const repairPending = Boolean(
+          repairVersion
+          && validators.has(key)
+          && completedRepairVersions.get(key) !== repairVersion
+        );
+        return repairPending
+          || currentTime - (Number(lastPrunedAt.get(key)) || 0) >= pruneIntervalMs;
+      }).slice(0, limit);
+      if (!selectedIndexes.length) return [];
+      nextStoreIndex = (selectedIndexes.at(-1) + 1) % defaultStoreNames.length;
+      persistState();
+      return selectedIndexes.map((index, order) => schedulePrune(
+        defaultStoreNames[index],
+        null,
+        Math.max(0, Number(delayMs) || 0) + order * Math.max(0, Number(staggerMs) || 0),
+      ));
+    }
+
     function dispose() {
       pruneSchedules.forEach(({ timer }, key) => {
         if (timer) clearTimer?.(timer);
@@ -254,6 +296,7 @@
       readActiveRecord,
       removeInvalidRecord,
       scheduleAll,
+      scheduleDueBatch,
       schedulePrune,
       stats: () => Object.freeze({
         ...counters,

@@ -1,6 +1,6 @@
 importScripts("./modules/cache-refresh-policy.js?v=dev");
 
-const CACHE_NAME = "thinkstock-dev-3.23";
+const CACHE_NAME = "thinkstock-dev-3.27";
 const NETWORK_FIRST_TIMEOUT_MS = 3500;
 const DATA_REFRESH_CONCURRENCY = 3;
 const DATA_MANIFEST_PATH = "./data/data_manifest.json";
@@ -21,7 +21,6 @@ const PRECACHE_ASSETS = [
   "./modules/cache-refresh-policy.js?v=dev",
   "./modules/auxiliary-chart-model.mjs?v=dev",
   "./modules/data-worker.mjs?v=dev",
-  "./modules/data-worker-runtime.mjs?v=dev",
   "./modules/chart-model-worker.mjs?v=dev",
   "./modules/chart-model-worker-runtime.mjs?v=dev",
   "./vendor/plotly-thinkstock-2.35.2.min.js?v=dev",
@@ -71,7 +70,6 @@ const CORE_ASSET_PATHS = [
   "/modules/cache-refresh-policy.js",
   "/modules/auxiliary-chart-model.mjs",
   "/modules/data-worker.mjs",
-  "/modules/data-worker-runtime.mjs",
   "/modules/chart-model-worker.mjs",
   "/modules/chart-model-worker-runtime.mjs",
   "/assets/stock-research-worker.bundle.min.js",
@@ -87,6 +85,7 @@ const CORE_ASSET_PATHS = [
   "/assets/settings-feature.bundle.min.js",
   "/assets/eps-feature.bundle.min.js",
   "/assets/diagnostics-runtime-feature.bundle.min.js",
+  "/assets/data-freshness-feature.bundle.min.js",
   "/vendor/plotly-thinkstock-2.35.2.min.js",
   "/vendor/pdf.min.mjs",
   "/vendor/pdf.worker.min.mjs",

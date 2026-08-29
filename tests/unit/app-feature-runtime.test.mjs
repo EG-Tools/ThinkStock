@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createAppFeatureRuntime,
+  createDeferredChartRenderTelemetryFacade,
   createDeferredDiagnosticsFacade,
   resolveTickerDartPreloadPlan,
 } from "../../docs/modules/optional-feature-runtime.mjs";
@@ -165,4 +166,36 @@ test("owns deferred diagnostics loading and scheduling behind one facade", async
   facade.scheduleAutomaticCapture({}, { delayMs: 1200, priority: -5 });
   assert.deepEqual(scheduled[0].options, { delayMs: 1200, priority: -5 });
   assert.equal(await scheduled[0].task(), "captured");
+});
+
+test("keeps chart render telemetry inert until diagnostics attach", () => {
+  const facade = createDeferredChartRenderTelemetryFacade();
+  assert.equal(facade.begin({ traceCount: 2 }), null);
+  assert.equal(facade.complete(null, { mode: "full" }), 0);
+  assert.equal(facade.snapshot().total, 0);
+  assert.equal(facade.isLoaded(), false);
+
+  const calls = [];
+  facade.attach({
+    createChartRenderTelemetry(scope) {
+      assert.equal(scope.marker, "scope");
+      return {
+        begin(invalidation) {
+          calls.push(["begin", invalidation.traceCount]);
+          return { started: true };
+        },
+        complete(token, result) {
+          calls.push(["complete", token.started, result.mode]);
+          return 4;
+        },
+        snapshot: () => ({ total: calls.length, counts: { full: 1 }, recent: [] }),
+      };
+    },
+  }, { marker: "scope" });
+
+  const token = facade.begin({ traceCount: 3 });
+  assert.equal(facade.complete(token, { mode: "full" }), 4);
+  assert.equal(facade.snapshot().total, 2);
+  assert.equal(facade.isLoaded(), true);
+  assert.deepEqual(calls, [["begin", 3], ["complete", true, "full"]]);
 });

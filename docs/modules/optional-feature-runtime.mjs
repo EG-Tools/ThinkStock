@@ -1,4 +1,33 @@
-import { createIdleResourceLifecycle } from "./worker-lifecycle.mjs";
+import { createIdleResourceLifecycle } from "./browser-request-runtime.mjs";
+
+const EMPTY_CHART_RENDER_TELEMETRY = Object.freeze({
+  total: 0,
+  counts: Object.freeze({ skipped: 0, partial: 0, structural: 0, full: 0 }),
+  recent: Object.freeze([]),
+});
+
+function createDeferredChartRenderTelemetryFacade() {
+  let telemetry = null;
+
+  return Object.freeze({
+    attach(feature, scope = globalThis) {
+      if (!telemetry && typeof feature?.createChartRenderTelemetry === "function") {
+        telemetry = feature.createChartRenderTelemetry(scope);
+      }
+      return telemetry;
+    },
+    begin(invalidation, traces) {
+      return telemetry?.begin?.(invalidation, traces) || null;
+    },
+    complete(token, result) {
+      return token ? telemetry?.complete?.(token, result) : 0;
+    },
+    snapshot() {
+      return telemetry?.snapshot?.() || EMPTY_CHART_RENDER_TELEMETRY;
+    },
+    isLoaded: () => Boolean(telemetry),
+  });
+}
 
 function createDeferredDiagnosticsFacade(scope = globalThis, options = {}) {
   const registry = options.registry;
@@ -15,6 +44,7 @@ function createDeferredDiagnosticsFacade(scope = globalThis, options = {}) {
       if (!feature?.createDeferredDiagnostics) {
         throw new Error("Performance diagnostics runtime is not loaded");
       }
+      options.onFeatureLoaded?.(feature);
       return feature.createDeferredDiagnostics(scope, {
         createOptions: { performanceApi: options.performanceApi },
         getScheduler: () => scheduler,
@@ -172,6 +202,7 @@ function createOptionalFeatureRuntime(scope = globalThis, options = {}) {
     let auxiliaryChart = null;
     let brokerResearch = null;
     let coMovement = null;
+    let dataFreshness = null;
     let diagnostics = null;
     let dart = null;
     let eps = null;
@@ -202,29 +233,13 @@ function createOptionalFeatureRuntime(scope = globalThis, options = {}) {
       return analyticsCoreTask;
     }
 
-    async function withAnalyticsCoreCompatibility(task) {
-      const feature = await ensureAnalyticsCore();
-      const previousMath = scope.ThinkStockAiForecastMath;
-      const previousContext = scope.ThinkStockAiContextProfile;
-      scope.ThinkStockAiForecastMath = feature.math;
-      scope.ThinkStockAiContextProfile = feature.contextProfile;
-      try {
-        return await task();
-      } finally {
-        if (previousMath === undefined) delete scope.ThinkStockAiForecastMath;
-        else scope.ThinkStockAiForecastMath = previousMath;
-        if (previousContext === undefined) delete scope.ThinkStockAiContextProfile;
-        else scope.ThinkStockAiContextProfile = previousContext;
-      }
-    }
-
     async function ensureAi() {
       if (ai) return ai;
-      ai = await withAnalyticsCoreCompatibility(() => loader.loadModuleFeature(
-          "ai-forecast",
-          "./assets/ai-feature.bundle.min.js",
-          (module) => module.aiFeature || module.default,
-        ));
+      ai = await loader.loadModuleFeature(
+        "ai-forecast",
+        "./assets/ai-feature.bundle.min.js",
+        (module) => module.aiFeature || module.default,
+      );
       return ai;
     }
 
@@ -268,6 +283,16 @@ function createOptionalFeatureRuntime(scope = globalThis, options = {}) {
       return diagnostics;
     }
 
+    async function ensureDataFreshness() {
+      if (dataFreshness) return dataFreshness;
+      dataFreshness = await loader.loadModuleFeature(
+        "data-freshness",
+        "./assets/data-freshness-feature.bundle.min.js",
+        (module) => module.dataFreshnessFeature || module.default,
+      );
+      return dataFreshness;
+    }
+
     async function ensureDart() {
       if (dart) return dart;
       dart = await loader.loadModuleFeature(
@@ -285,6 +310,15 @@ function createOptionalFeatureRuntime(scope = globalThis, options = {}) {
         "./assets/market-timing-feature.bundle.min.js",
         (module) => module.marketTimingFeature || module.default,
       )
+        .then((bundle) => {
+          if (!bundle?.macd?.buildMacdOscillator
+            || !bundle?.service?.createMarketTimingService
+            || !bundle?.timing?.buildMarketTimingSignals
+            || !bundle?.evaluation?.evaluateMarketTimingModel) {
+            throw new Error("market-timing 기능 초기화에 실패했습니다.");
+          }
+          return bundle;
+        })
         .catch((error) => {
           marketTimingBundle = null;
           throw error;
@@ -306,8 +340,8 @@ function createOptionalFeatureRuntime(scope = globalThis, options = {}) {
         ensureAnalyticsCore(),
       ]);
       marketTimingService = bundle.service.createMarketTimingService(scope, {
-      workerUrl: `./assets/market-timing-worker.bundle.min.js?v=${encodeURIComponent(version)}`,
-        buildMacdOscillator: options.buildMacdOscillator,
+        workerUrl: `./assets/market-timing-worker.bundle.min.js?v=${encodeURIComponent(version)}`,
+        buildMacdOscillator: bundle.macd.buildMacdOscillator,
         buildMarketTimingSignals: bundle.timing.buildMarketTimingSignals,
         buildKoreanVolatilityTimingRows: bundle.timing.buildKoreanVolatilityTimingRows,
         buildExternalVolatilityTimingRows: bundle.timing.buildExternalVolatilityTimingRows,
@@ -317,6 +351,7 @@ function createOptionalFeatureRuntime(scope = globalThis, options = {}) {
         buildStructuralStockProfile: analytics.contextProfile.buildStructuralStockProfile,
         createIdleResourceLifecycle,
         cache: options.marketTimingCache || null,
+        schedulePersistence: options.scheduleMarketTimingPersistence,
       });
       return marketTimingService;
     }
@@ -346,10 +381,12 @@ function createOptionalFeatureRuntime(scope = globalThis, options = {}) {
       ensureAuxiliaryChart,
       ensureBrokerResearch,
       ensureCoMovement,
+      ensureDataFreshness,
       ensureDart,
       ensureDiagnostics,
       ensureEps,
       ensureMarketTiming,
+      peekMarketTiming: () => marketTimingService,
       ensureSettings,
       ensureStockResearch,
     });
@@ -393,6 +430,7 @@ function createOptionalFeatureLoader(scope = globalThis, options = {}) {
 
 export {
   createAppFeatureRuntime,
+  createDeferredChartRenderTelemetryFacade,
   createDeferredDiagnosticsFacade,
   createOptionalFeatureLoader,
   createOptionalFeatureRuntime,

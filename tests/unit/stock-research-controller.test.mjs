@@ -234,7 +234,7 @@ test("shared market fingerprints isolate KOSPI-only and KOSDAQ-only changes", ()
   assert.equal(before.KOSDAQ, after.KOSDAQ);
 });
 
-test("today research follows each market's live latest date instead of a stale analysis date", () => {
+test("one-day research follows each market's latest date and previous session", () => {
   const marketDates = controller.resolveResearchMarketDates({
     kospiRows: [
       { date: "2026-08-10", close: 3200 },
@@ -249,7 +249,7 @@ test("today research follows each market's live latest date instead of a stale a
     ticker: "005930.KS",
     market: "KOSPI",
     latestDate: "2026-08-11",
-    lastSellDate: "2026-08-10",
+    lastSellDate: "2026-08-09",
   }, filter, marketDates), false);
   assert.equal(controller.candidateMatchesTodayFilter({
     ticker: "005930.KS",
@@ -264,6 +264,86 @@ test("today research follows each market's live latest date instead of a stale a
     lastBuyDate: "2026-08-10",
   }, filter, marketDates), true);
   assert.equal(controller.researchMarketDateLabel(marketDates), "코스피 2026-08-11 · 코스닥 2026-08-10");
+});
+
+test("signal period cycles through off, one, fifteen and thirty trading days", () => {
+  assert.equal(controller.signalWindowLabel(0), "OFF");
+  assert.equal(controller.signalWindowLabel(1), "1일");
+  assert.equal(controller.signalWindowLabel(15), "15일");
+  assert.equal(controller.signalWindowLabel(30), "30일");
+  assert.deepEqual([
+    controller.nextSignalWindowDays(0),
+    controller.nextSignalWindowDays(1),
+    controller.nextSignalWindowDays(15),
+    controller.nextSignalWindowDays(30),
+  ], [1, 15, 30, 0]);
+});
+
+test("one-day research includes the latest and immediately previous trading sessions", () => {
+  const filter = { includeBuy: true, includeSell: true, signalWindowDays: 1 };
+  const marketDates = { KOSPI: "2026-08-28", KOSDAQ: "2026-08-28" };
+  const candidate = {
+    ticker: "005930.KS",
+    market: "KOSPI",
+    latestDate: "2026-08-28",
+    lastBuyDate: "2026-08-27",
+    lastBuySessionAge: 1,
+    lastSellDate: "2026-08-26",
+    lastSellSessionAge: 2,
+  };
+
+  assert.deepEqual(
+    controller.candidateSignalWindowState(candidate, filter, marketDates, "2026-08-28"),
+    {
+      matches: true,
+      buy: true,
+      sell: false,
+      buyCount: 1,
+      sellCount: 0,
+      minimumSignals: 1,
+      referenceDate: "2026-08-28",
+      windowDays: 1,
+    },
+  );
+  assert.equal(controller.candidateMatchesSignalWindow(
+    { ...candidate, lastBuySessionAge: 2 },
+    filter,
+    marketDates,
+    "2026-08-28",
+  ), false);
+});
+
+test("fifteen and thirty-day filters use trading-session ages", () => {
+  const marketDates = { KOSPI: "2026-08-28", KOSDAQ: "2026-08-28" };
+  const candidate = {
+    ticker: "005930.KS",
+    market: "KOSPI",
+    latestDate: "2026-08-28",
+    lastBuyDate: "2026-08-01",
+    lastBuySessionAge: 14,
+    buySignalSessionAges: [2, 10, 20],
+    lastSellDate: "2026-07-15",
+    lastSellSessionAge: 29,
+    sellSignalSessionAges: [12, 29],
+  };
+  assert.equal(controller.candidateMatchesSignalWindow(candidate, {
+    includeBuy: true,
+    includeSell: false,
+    signalWindowDays: 15,
+    minimumSignals: 2,
+  }, marketDates), true);
+  assert.equal(controller.candidateMatchesSignalWindow(candidate, {
+    includeBuy: true,
+    includeSell: false,
+    signalWindowDays: 15,
+    minimumSignals: 3,
+  }, marketDates), false);
+  assert.equal(controller.candidateMatchesSignalWindow(candidate, {
+    includeBuy: false,
+    includeSell: true,
+    signalWindowDays: 30,
+    minimumSignals: 2,
+  }, marketDates), true);
 });
 
 test("today research rejects stale market and ticker histories", () => {
