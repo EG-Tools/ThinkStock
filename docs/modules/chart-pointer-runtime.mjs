@@ -403,6 +403,17 @@ import {
         return state;
       };
       clearActiveViewportDrag = clearViewportDrag;
+
+      const viewportDragRange = (state, clientX) => {
+        if (!state || !Number.isFinite(Number(clientX)) || !(state.axisLength > 0)) return null;
+        const span = state.startRange[1] - state.startRange[0];
+        const shift = -((Number(clientX) - state.startClientX) / state.axisLength) * span;
+        return chartViewportControllerModule.panRange(
+          state.startRange,
+          state.dataRange,
+          shift,
+        );
+      };
     
       const stopViewportDrag = (upEvent, cancelled = false) => {
         if (!dragState || upEvent.pointerId !== dragState.pointerId) return;
@@ -422,6 +433,12 @@ import {
           getChartRangeSyncController().cancel?.();
           return;
         }
+        const finalRange = viewportDragRange(st, sample.clientX);
+        if (finalRange) scheduleViewportRange(finalRange, {
+          source: "blank-pan-final",
+          fit: false,
+          liveFit: chartSession.autoChartReset,
+        });
         interactionState.suppressPlotlyClickUntil = Date.now() + 700;
         Promise.resolve(getChartRangeSyncController().flush())
           .finally(() => applyChartResetPolicy("viewport", 80));
@@ -611,13 +628,7 @@ import {
           interactionState.suppressPlotlyClickUntil = Date.now() + 700;
           resetEventMarkerHoverHighlight(dragState.sourceEl);
         }
-        const span = dragState.startRange[1] - dragState.startRange[0];
-        const shift = -((sample.clientX - dragState.startClientX) / dragState.axisLength) * span;
-        const nextRange = chartViewportControllerModule.panRange(
-          dragState.startRange,
-          dragState.dataRange,
-          shift,
-        );
+        const nextRange = viewportDragRange(dragState, sample.clientX);
         if (nextRange) scheduleViewportRange(nextRange, {
           source: "blank-pan",
           fit: false,

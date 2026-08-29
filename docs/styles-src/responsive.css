@@ -7,12 +7,14 @@
   .stock-research-actions { gap: 4px; }
   .stock-research-signal-stepper { gap: 2px; }
   .stock-research-page-controls { gap: 6px; }
-  .stock-research-run-controls { gap: 4px; }
+  .stock-research-run-controls { gap: 2px; }
   .stock-research-disclaimer { margin-top: 8px; }
   .stock-research-refresh-btn,
   .stock-research-stop-btn {
+    width: 42px;
     min-height: 42px;
-    padding-inline: 8px;
+    padding-inline: 0;
+    font-size: 12px;
   }
   .stock-research-list { height: 374px; grid-auto-rows: minmax(66px, auto); }
   .stock-research-item { min-height: 66px; }
