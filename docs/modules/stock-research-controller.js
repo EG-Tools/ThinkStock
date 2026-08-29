@@ -10,6 +10,8 @@
   if (!historyCacheModule) throw new Error("stock research history cache module failed to load");
   const workerClientModule = require("./stock-research-worker-client.js");
   if (!workerClientModule) throw new Error("stock research worker client failed to load");
+  const summaryQualityModule = require("../../shared/stock-research-summary-quality.js");
+  if (!summaryQualityModule) throw new Error("stock research summary quality module failed to load");
   const {
     CACHE_KEY,
     CACHE_VARIANTS_KEY,
@@ -81,6 +83,10 @@
     researchHistoryRequestUrl,
   } = historyCacheModule;
   const { createWorkerLane } = workerClientModule;
+  const {
+    researchSummaryIsPublishable,
+    shouldPreferResearchSummary,
+  } = summaryQualityModule;
 
   const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -152,15 +158,52 @@
     throw lastError || new Error("candidate profile request failed");
   }
 
-  function researchWorkerLaneCount(navigatorLike, taskCount) {
+  function retryableResearchHistoryError(error) {
+    const status = Math.round(Number(error?.status) || 0);
+    if ([408, 425, 429].includes(status) || status >= 500) return true;
+    return /\b(?:408|425|429|500|502|503|504)\b|failed to fetch|fetch failed|network|timed?\s*out|timeout/i
+      .test(String(error?.message || error || ""));
+  }
+
+  async function fetchResearchHistoryWithRetry(load, wait = () => Promise.resolve(), attempts = 3) {
+    let lastError = null;
+    for (let attempt = 0; attempt < Math.max(1, attempts); attempt += 1) {
+      try {
+        return await load();
+      } catch (error) {
+        lastError = error;
+        if (!retryableResearchHistoryError(error) || attempt + 1 >= attempts) break;
+        await wait(attempt + 1);
+      }
+    }
+    throw lastError || new Error("research history request failed");
+  }
+
+  function researchWorkerLaneCount(_navigatorLike, taskCount) {
     const total = Math.max(0, Math.round(Number(taskCount) || 0));
     if (!total) return 0;
-    const hardware = Math.max(1, Math.round(Number(navigatorLike?.hardwareConcurrency) || 2));
-    const memory = Number(navigatorLike?.deviceMemory);
-    let maximum = hardware >= 8 ? 6 : (hardware >= 4 ? 4 : 2);
-    if (Number.isFinite(memory) && memory <= 2) maximum = Math.min(maximum, 2);
-    else if (Number.isFinite(memory) && memory <= 4) maximum = Math.min(maximum, 4);
-    return Math.max(1, Math.min(total, maximum));
+    return Math.max(1, Math.min(total, 4));
+  }
+
+  function partitionResearchScanQueues(records, laneCount, options = {}) {
+    const items = Array.isArray(records) ? records : [];
+    const count = Math.max(1, Math.min(items.length || 1, Math.round(Number(laneCount) || 1)));
+    const queues = Array.from({ length: count }, () => []);
+    if (count === 4 && options.marketParity !== false) {
+      const fallbackRanks = { KOSPI: 0, KOSDAQ: 0 };
+      items.forEach((item) => {
+        const ticker = String(item?.ticker || "").trim().toUpperCase();
+        const market = (String(item?.market || "").trim().toUpperCase() === "KOSDAQ"
+          || ticker.endsWith(".KQ")) ? "KOSDAQ" : "KOSPI";
+        const explicitRank = Math.round(Number(item?.rank) || 0);
+        const ordinal = explicitRank > 0 ? explicitRank - 1 : fallbackRanks[market]++;
+        const marketOffset = market === "KOSDAQ" ? 2 : 0;
+        queues[marketOffset + (Math.abs(ordinal) % 2)].push(item);
+      });
+      return queues;
+    }
+    items.forEach((item, index) => queues[index % count].push(item));
+    return queues;
   }
 
   function createController(scope = globalThis, options = {}) {
@@ -198,7 +241,11 @@
         },
       }, requestTimeoutMs);
       const payload = await response.json().catch(() => null);
-      if (!response.ok || !payload) throw new Error(payload?.error || `종목탐구 HTTP ${response.status}`);
+      if (!response.ok || !payload) {
+        const error = new Error(payload?.error || `종목탐구 HTTP ${response.status}`);
+        error.status = response.status;
+        throw error;
+      }
       return payload;
     });
     const addStock = options.addStock;
@@ -267,6 +314,7 @@
     try { bypassSummary = storage?.getItem(CACHE_BYPASS_KEY) === "1"; } catch (_) {}
     const blocked = new Map(loadBlocked(storage).map((entry) => [entry.ticker, entry]));
     let running = false;
+    let stopRequested = false;
     let enrichingCachedProfiles = false;
     let navigationSequence = 0;
     let resultCacheHydrated = !resultCache;
@@ -412,14 +460,19 @@
         }
         return localUpdate.record.rows;
       }
-      let payload = await fetchJson(researchHistoryRequestUrl(historyUrl, ticker, stored), {
-        headers: getHeaders(),
-      });
+      const fetchHistory = (record, forceFull = false) => fetchResearchHistoryWithRetry(
+        () => fetchJson(researchHistoryRequestUrl(historyUrl, ticker, record, forceFull), {
+          headers: getHeaders(),
+        }),
+        (attempt) => new Promise((resolve) => (scope.setTimeout || setTimeout)(
+          resolve,
+          attempt * 700 + Math.floor((Number(random()) || 0) * 250),
+        )),
+      );
+      let payload = await fetchHistory(stored);
       let record = mergeResearchHistoryPayload(stored, payload, ticker);
       if (!record && stored) {
-        payload = await fetchJson(researchHistoryRequestUrl(historyUrl, ticker, null, true), {
-          headers: getHeaders(),
-        });
+        payload = await fetchHistory(null, true);
         record = mergeResearchHistoryPayload(null, payload, ticker);
       }
       if (!record) throw new Error(`${ticker} 가격 이력이 불완전합니다.`);
@@ -929,6 +982,7 @@
         || normalizeMinimum(payload?.minimumBuySignals) !== MINIMUM_LOW
         || normalizeUniverseSize(payload?.universeSize) !== universeSize
         || !/^\d{4}-\d{2}-\d{2}$/.test(String(payload?.baseDate || ""))) return null;
+      if (!researchSummaryIsPublishable(payload)) return null;
       if (needsSignalSettlement(payload)) return null;
       const candidateOrder = normalizeCandidateOrder(candidatePool, payload?.candidateOrder, random);
       return {
@@ -1006,8 +1060,10 @@
       const targetUniverseSize = normalizeUniverseSize(universeSize);
       const perMarketLimit = targetUniverseSize / 2;
       running = true;
+      stopRequested = false;
       navigationSequence += 1;
       elements.refresh.disabled = true;
+      elements.stop.disabled = false;
       syncFilterControls();
       syncMinimumControls();
       syncNavigationControls();
@@ -1015,10 +1071,10 @@
       const previous = cached;
       const lanes = [];
       try {
-        if (!forceIndividual && !cached && !bypassSummary) {
+        if (!forceIndividual && !bypassSummary) {
           setProgress(4, "저장된 탐구 요약 확인", "");
           const summary = await loadSummary().catch(() => null);
-          if (summary) {
+          if (summary && shouldPreferResearchSummary(summary, cached)) {
             cached = summary;
             persistCache();
             render();
@@ -1042,6 +1098,7 @@
         const nextSharedFingerprint = sharedResearchFingerprint(shared);
         const nextSharedFingerprints = sharedResearchFingerprints(shared);
         const canIncrement = !forceIndividual
+          && cached?.partial !== true
           && (cached?.calculationVersion || cached?.strategy) === calculationVersion
           && (cached?.filterKey || analysisFilterKey) === analysisFilterKey
           && normalizeMinimum(cached?.minimumBuySignals) === MINIMUM_LOW
@@ -1160,60 +1217,92 @@
             lanes.push(await createWorkerLane(scope, workerUrl, shared));
           }
         }
-        let completed = 0;
         let failed = 0;
         let signalChanges = 0;
         let latestAnalyzedDate = latestResearchDate(retainedCandidates);
         const candidates = [...retainedCandidates];
-        await Promise.all(lanes.map(async (lane, laneIndex) => {
-          for (let index = laneIndex; index < scanRecords.length; index += lanes.length) {
-            const item = scanRecords[index];
-            try {
-              const ticker = String(item?.ticker || "").trim().toUpperCase();
-              const historyRows = await loadTickerHistory(
-                item,
-                preloadedHistory.has(ticker) ? preloadedHistory.get(ticker) : undefined,
-                typeof historyCache?.writeMany === "function" ? pendingHistoryWrites : null,
-              );
-              const tickerAnalysisDate = latestResearchDate(historyRows, universe.baseDate);
-              if (tickerAnalysisDate > latestAnalyzedDate) latestAnalyzedDate = tickerAnalysisDate;
-              const analysis = await lane.analyze(
-                item,
-                historyRows,
-                tickerAnalysisDate,
-                ANALYSIS_FILTER,
-                refreshSignalWindow ? null : (preloadedTiming.get(ticker) || null),
-              );
-              const candidate = analysis && ("candidate" in analysis || "timingCacheRecord" in analysis)
-                ? (analysis.candidate || null)
-                : (analysis || null);
-              if (analysis?.timingCacheRecord?.model) {
-                pendingTimingWrites.set(ticker, analysis.timingCacheRecord);
-              }
-              const previousSignal = cached?.universeState?.[ticker]?.signalFingerprint || "";
-              const nextSignal = candidateSignalFingerprint(candidate);
-              if (canIncrement && previousSignal && previousSignal !== nextSignal) signalChanges += 1;
-              if (nextUniverseState[ticker]) nextUniverseState[ticker].signalFingerprint = nextSignal;
-              if (candidate) candidates.push(candidate);
-            } catch (_) {
-              failed += 1;
-              const failedTicker = String(item?.ticker || "").toUpperCase();
-              const previousCandidate = previousCandidateByTicker.get(failedTicker);
-              if (previousCandidate) candidates.push(previousCandidate);
-              // Leave the failed input dirty so the next incremental search retries it.
-              if (nextUniverseState[failedTicker]) nextUniverseState[failedTicker].fingerprint = "";
-            } finally {
-              completed += 1;
-              if (pendingHistoryWrites.size >= 24) await flushPendingHistoryWrites();
-              const percent = 8 + Math.round((completed / Math.max(1, scanRecords.length)) * 90);
-              setProgress(percent, canIncrement
-                ? "편입·기존 종목 갱신"
-                : (signalWindowIsActive()
-                  ? `${signalWindowLabel(activeSignalWindowDays())} 신호 탐구`
-                  : `${signalLabel()} 탐구`), `${completed} / ${scanRecords.length}`);
-            }
+        let processed = 0;
+        let primaryCompleted = 0;
+        let pendingRecords = scanRecords;
+        const retryPlan = Object.freeze([
+          { lanes: 4, delay: 0, marketParity: true },
+          { lanes: 2, delay: 3000, marketParity: false },
+          { lanes: 1, delay: 5000, marketParity: false },
+        ]);
+        for (let passIndex = 0; passIndex < retryPlan.length && pendingRecords.length; passIndex += 1) {
+          if (stopRequested) break;
+          const pass = retryPlan[passIndex];
+          const activeLaneCount = Math.min(pass.lanes, lanes.length, pendingRecords.length);
+          if (pass.delay > 0) {
+            setProgress(95 + passIndex, "실패 종목 재확인", `${pendingRecords.length}종목`);
+            await new Promise((resolve) => (scope.setTimeout || setTimeout)(resolve, pass.delay));
+            if (stopRequested) break;
           }
-        }));
+          const failedRecords = [];
+          const queues = partitionResearchScanQueues(pendingRecords, activeLaneCount, {
+            marketParity: pass.marketParity,
+          });
+          await Promise.all(queues.map(async (queue, laneIndex) => {
+            const lane = lanes[laneIndex];
+            for (const item of queue) {
+              if (stopRequested) break;
+              const ticker = String(item?.ticker || "").trim().toUpperCase();
+              try {
+                const historyRows = await loadTickerHistory(
+                  item,
+                  preloadedHistory.has(ticker) ? preloadedHistory.get(ticker) : undefined,
+                  typeof historyCache?.writeMany === "function" ? pendingHistoryWrites : null,
+                );
+                const tickerAnalysisDate = latestResearchDate(historyRows, universe.baseDate);
+                if (tickerAnalysisDate > latestAnalyzedDate) latestAnalyzedDate = tickerAnalysisDate;
+                const analysis = await lane.analyze(
+                  item,
+                  historyRows,
+                  tickerAnalysisDate,
+                  ANALYSIS_FILTER,
+                  refreshSignalWindow ? null : (preloadedTiming.get(ticker) || null),
+                );
+                const candidate = analysis && ("candidate" in analysis || "timingCacheRecord" in analysis)
+                  ? (analysis.candidate || null)
+                  : (analysis || null);
+                if (analysis?.timingCacheRecord?.model) {
+                  pendingTimingWrites.set(ticker, analysis.timingCacheRecord);
+                }
+                const previousSignal = cached?.universeState?.[ticker]?.signalFingerprint || "";
+                const nextSignal = candidateSignalFingerprint(candidate);
+                if (canIncrement && previousSignal && previousSignal !== nextSignal) signalChanges += 1;
+                if (nextUniverseState[ticker]) nextUniverseState[ticker].signalFingerprint = nextSignal;
+                if (candidate) candidates.push(candidate);
+              } catch (_) {
+                failedRecords.push(item);
+              } finally {
+                if (passIndex === 0) {
+                  primaryCompleted += 1;
+                  processed += 1;
+                  const percent = 8 + Math.round((primaryCompleted / Math.max(1, scanRecords.length)) * 86);
+                  setProgress(percent, canIncrement
+                    ? "편입·기존 종목 갱신"
+                    : (signalWindowIsActive()
+                      ? `${signalWindowLabel(activeSignalWindowDays())} 신호 탐구`
+                      : `${signalLabel()} 탐구`), `${primaryCompleted} / ${scanRecords.length}`);
+                }
+                if (pendingHistoryWrites.size >= 24) await flushPendingHistoryWrites();
+              }
+            }
+          }));
+          pendingRecords = failedRecords;
+        }
+        const interrupted = stopRequested;
+        if (!interrupted) {
+          failed = pendingRecords.length;
+          pendingRecords.forEach((item) => {
+            const failedTicker = String(item?.ticker || "").trim().toUpperCase();
+            const previousCandidate = previousCandidateByTicker.get(failedTicker);
+            if (previousCandidate) candidates.push(previousCandidate);
+            // Leave the failed input dirty so the next incremental search retries it.
+            if (nextUniverseState[failedTicker]) nextUniverseState[failedTicker].fingerprint = "";
+          });
+        }
         await flushPendingHistoryWrites(true);
         await historyWriteChain;
         if (pendingTimingWrites.size && typeof timingCache?.writeMany === "function") {
@@ -1238,6 +1327,7 @@
           incrementalDate: canIncrement ? (latestAnalyzedDate || universe.baseDate) : "",
           refreshCursor: 0,
           generatedAt: new Date().toISOString(),
+          partial: interrupted,
           priceMode: String(universe.priceMode || "settled") === "realtime"
             ? "realtime"
             : "settled",
@@ -1245,7 +1335,7 @@
           universeState: nextUniverseState,
           sharedFingerprint: nextSharedFingerprint,
           sharedFingerprints: nextSharedFingerprints,
-          scanned: records.length,
+          scanned: interrupted ? processed : records.length,
           failed,
           minimumBuySignals: MINIMUM_LOW,
           universeSize: targetUniverseSize,
@@ -1254,16 +1344,18 @@
           candidatePageIndex: 0,
           candidates: enrichedCandidates,
         };
-        markSummaryAvailable();
+        if (!interrupted) markSummaryAvailable();
         persistCache();
-        saveSummary(cached);
+        if (!interrupted && researchSummaryIsPublishable(cached)) saveSummary(cached);
         try { Promise.resolve(historyCache?.prune?.()).catch(() => {}); } catch (_) {}
         render();
-        setProgress(100, canIncrement ? "탐구 구성 갱신 완료" : "최초 탐구 완료",
-          canIncrement
+        setProgress(100, interrupted ? "검색 정지 · 현재 결과 표시" : (canIncrement ? "탐구 구성 갱신 완료" : "최초 탐구 완료"),
+          interrupted
+            ? `${processed} / ${records.length}`
+            : (canIncrement
             ? `편입 ${universeChanges.added.length} · 변경 ${universeChanges.changed.length} · 신호 ${signalChanges} · 탈락 ${removedCount}`
-            : `${records.length}종목`);
-        scheduleSignalSettlement();
+            : `${records.length}종목`));
+        if (!interrupted) scheduleSignalSettlement();
         scope.setTimeout(() => { if (!running) hideProgress(); }, 900);
       } catch (error) {
         cached = previous;
@@ -1272,7 +1364,9 @@
       } finally {
         lanes.forEach((lane) => lane.terminate());
         running = false;
+        stopRequested = false;
         elements.refresh.disabled = false;
+        elements.stop.disabled = true;
         syncFilterControls();
         syncMinimumControls();
         syncNavigationControls();
@@ -1295,6 +1389,7 @@
         button: element("stockResearchBtn"),
         modal: element("stockResearchModal"),
         close: element("stockResearchCloseBtn"),
+        stop: element("stockResearchStopBtn"),
         refresh: element("stockResearchRefreshBtn"),
         previous: element("stockResearchPreviousBtn"),
         pagePosition: element("stockResearchPagePosition"),
@@ -1333,6 +1428,12 @@
         signalSettlement.clear();
       });
       elements.refresh.addEventListener("click", () => runSearch());
+      elements.stop.addEventListener("click", () => {
+        if (!running || stopRequested) return;
+        stopRequested = true;
+        elements.stop.disabled = true;
+        setProgress(99, "검색 정지 중", "진행 중인 종목 마무리");
+      });
       elements.previous.addEventListener("click", () => navigateCandidates(-1));
       elements.next.addEventListener("click", () => navigateCandidates(1));
       elements.buyFilter.addEventListener("click", () => setFilter({
@@ -1394,9 +1495,11 @@
     diffUniverse,
     diffUniverseState,
     fetchCandidateProfileWithRetry,
+    fetchResearchHistoryWithRetry,
     loadCache,
     removeCache,
     loadBlocked,
+    partitionResearchScanQueues,
     saveBlocked,
     loadMinimum,
     loadUniverseSize,
@@ -1412,6 +1515,7 @@
     researchMarketDateLabel,
     researchMarketDateIsCurrent,
     resolveCandidateResearchMarketDates,
+    retryableResearchHistoryError,
     researchWorkerLaneCount,
     mergeResearchHistoryPayload,
     mergeUniversePointIntoHistoryCache,

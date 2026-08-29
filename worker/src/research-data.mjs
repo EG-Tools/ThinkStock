@@ -14,6 +14,7 @@ import {
   normalizeResearchSummary,
   researchSummaryCacheKey,
 } from "../../shared/stock-research-summary.mjs";
+import summaryQuality from "../../shared/stock-research-summary-quality.js";
 import {
   apiDate,
   jsonResponse,
@@ -25,6 +26,10 @@ import {
 import { krxNumber, krxStockCode } from "./market-data.mjs";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const {
+  researchSummaryIsPublishable,
+  shouldPreferResearchSummary,
+} = summaryQuality;
 const RESEARCH_TICKER_PATTERN = /^(\d{6})\.(KS|KQ)$/;
 const NAVER_RESEARCH_HISTORY_URL = "https://fchart.stock.naver.com/sise.nhn";
 const NAVER_RESEARCH_PROFILE_URL = "https://finance.naver.com/item/main.naver";
@@ -454,10 +459,26 @@ export async function researchSummaryResponse(request, env, url, origin) {
     if (!summary) {
       return jsonResponse({ ok: false, error: "종목탐구 요약 형식이 올바르지 않습니다." }, 400, origin);
     }
+    const existingValue = await env.DISCLOSURE_CACHE.get(key, "json");
+    const existing = normalizeResearchSummary(existingValue, { strategy, minimum, universeSize });
+    if (!researchSummaryIsPublishable(summary)) {
+      return existing
+        ? jsonResponse({
+            ok: true,
+            cached: true,
+            accepted: false,
+            warning: "불완전한 종목탐구 결과를 저장하지 않았습니다.",
+            ...existing,
+          }, 200, origin)
+        : jsonResponse({ ok: false, error: "종목탐구 성공 종목이 부족합니다." }, 409, origin);
+    }
+    if (existing && !shouldPreferResearchSummary(summary, existing)) {
+      return jsonResponse({ ok: true, cached: true, accepted: false, ...existing }, 200, origin);
+    }
     await env.DISCLOSURE_CACHE.put(key, JSON.stringify(summary), {
       expirationTtl: RESEARCH_SUMMARY_TTL_SECONDS,
     });
-    return jsonResponse({ ok: true, cached: false, ...summary }, 200, origin);
+    return jsonResponse({ ok: true, cached: false, accepted: true, ...summary }, 200, origin);
   } catch (error) {
     return jsonResponse({
       ok: false,

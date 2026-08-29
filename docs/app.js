@@ -357,7 +357,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = tickerPriceRuntimeModule.CORPORATE_ACTION_RATIO_THRESHOLD;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = tickerPriceRuntimeModule.CORPORATE_ACTION_MAX_BOUNDARY_DAYS;
-const APP_VERSION = "3.27";
+const APP_VERSION = "3.28";
 const APP_BUILD_VERSION = resolveAppBuildVersion(globalThis);
 const cacheMigrator = cacheMaintenanceRuntimeModule.createCacheMigrator(globalThis, {
   markerKey: "thinkstock-cache-migrations-v1",

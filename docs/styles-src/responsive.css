@@ -6,7 +6,8 @@
   .stock-research-panel { max-height: 92svh; padding: 15px; border-radius: 17px; }
   .stock-research-actions { gap: 7px; }
   .stock-research-disclaimer { margin-top: 8px; }
-  .stock-research-refresh-btn { min-height: 42px; }
+  .stock-research-refresh-btn,
+  .stock-research-stop-btn { min-height: 42px; }
   .stock-research-list { height: 374px; grid-auto-rows: minmax(66px, auto); }
   .stock-research-item { min-height: 66px; }
   .stock-research-item-main { min-height: 66px; }

@@ -183,19 +183,43 @@
   font-size: 24px;
 }
 
-.stock-research-refresh-btn {
+.stock-research-run-controls {
   justify-self: end;
+  display: flex;
+  width: max-content;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.stock-research-refresh-btn,
+.stock-research-stop-btn {
   min-height: 36px;
   flex: 0 0 auto;
   padding: 0 11px;
-  border: 1px solid rgba(244, 211, 94, 0.4);
   border-radius: 999px;
-  background: rgba(244, 211, 94, 0.1);
-  color: #f4d35e;
   font-weight: 700;
   cursor: pointer;
 }
+
+.stock-research-refresh-btn {
+  border: 1px solid rgba(244, 211, 94, 0.4);
+  background: rgba(244, 211, 94, 0.1);
+  color: #f4d35e;
+}
 .stock-research-refresh-btn:disabled { opacity: 0.45; cursor: wait; }
+
+.stock-research-stop-btn {
+  border: 1px solid rgba(255, 112, 112, 0.38);
+  background: rgba(255, 112, 112, 0.08);
+  color: #ef9a9a;
+}
+
+.stock-research-stop-btn:disabled {
+  opacity: 0.24;
+  cursor: default;
+}
 .stock-research-page-controls {
   --ui-circle-button-size: 34px;
   --ui-circle-button-border: 1px solid rgba(255, 255, 255, 0.2);

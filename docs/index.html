@@ -10,7 +10,7 @@
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" href="./icon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./styles.css">
-  <script defer src="./assets/app.bundle.min.js?v=dev&amp;build=3.27&amp;asset=a4e60de6f837"></script>
+  <script defer src="./assets/app.bundle.min.js?v=dev&amp;build=3.28&amp;asset=41f7c8ce4b81"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -113,7 +113,7 @@
           This product uses the FRED&reg; API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.
         </p>
         <p id="mainAppMeta" class="app-company-line app-company-line-main">
-              <span>Version : <span data-app-version-copy>3.27</span></span>
+              <span>Version : <span data-app-version-copy>3.28</span></span>
           <span>회사 : Life User</span>
           <span>이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a></span>
         </p>
@@ -158,7 +158,10 @@
             <output id="stockResearchPagePosition" class="stock-research-page-position" aria-live="polite">1</output>
             <button id="stockResearchNextBtn" class="ui-circle-button" type="button" aria-label="다음 5개 종목">&gt;</button>
           </div>
-          <button id="stockResearchRefreshBtn" class="stock-research-refresh-btn" type="button">검색</button>
+          <div class="stock-research-run-controls">
+            <button id="stockResearchStopBtn" class="stock-research-stop-btn" type="button" disabled>정지</button>
+            <button id="stockResearchRefreshBtn" class="stock-research-refresh-btn" type="button">검색</button>
+          </div>
         </div>
       </section>
     </div>
@@ -271,7 +274,7 @@
           <p id="appCacheEmpty" class="app-cache-empty" hidden>저장된 캐시가 없습니다.</p>
         </section>
         <p id="settingsAppMeta" class="app-company-line">
-        <span class="api-settings-version">Version : <span id="appVersionText">3.27</span></span>
+        <span class="api-settings-version">Version : <span id="appVersionText">3.28</span></span>
           <span>회사 : Life User</span>
           <span>이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a></span>
         </p>

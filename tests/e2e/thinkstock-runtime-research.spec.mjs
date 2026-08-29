@@ -240,6 +240,7 @@ test("stock research popup preserves results while adding multiple candidates", 
   await expect(page.locator("#stockResearchModalBlockedClearBtn")).toBeDisabled();
   await expect(page.locator("#stockResearchModalBlockedClearBtn")).toHaveText("차단 0 종목");
   await expect(page.locator("#stockResearchRefreshBtn")).toHaveText("재검색");
+  await expect(page.locator("#stockResearchStopBtn")).toBeDisabled();
   await expect(page.locator("#stockResearchPagePosition")).toHaveText("1");
   const popupLayout = await page.locator(".stock-research-panel").evaluate((panelElement) => {
     const header = panelElement.querySelector(".stock-research-header");
@@ -250,18 +251,23 @@ test("stock research popup preserves results while adding multiple candidates", 
       actions.querySelector(".stock-research-signal-stepper"),
       document.getElementById("stockResearchPreviousBtn"),
       document.getElementById("stockResearchNextBtn"),
+      document.getElementById("stockResearchStopBtn"),
       document.getElementById("stockResearchRefreshBtn"),
     ].map((element) => element.getBoundingClientRect());
     const pageControls = actions.querySelector(".stock-research-page-controls").getBoundingClientRect();
     const close = document.getElementById("stockResearchCloseBtn").getBoundingClientRect();
     const blockedClear = document.getElementById("stockResearchModalBlockedClearBtn").getBoundingClientRect();
+    const runControls = actions.querySelector(".stock-research-run-controls").getBoundingClientRect();
+    const stop = document.getElementById("stockResearchStopBtn").getBoundingClientRect();
     const refresh = document.getElementById("stockResearchRefreshBtn").getBoundingClientRect();
     return {
       actionLefts: actionBoxes.map((box) => box.left),
       actionTops: actionBoxes.map((box) => box.top),
       pageButtonSizes: actionBoxes.slice(1, 3).map((box) => Math.min(box.width, box.height)),
       pageCenterOffset: Math.abs((pageControls.left + pageControls.right) / 2 - (panel.left + panel.right) / 2),
-      refreshRightOffset: Math.abs(actions.getBoundingClientRect().right - refresh.right),
+      runControlsRightOffset: Math.abs(actions.getBoundingClientRect().right - runControls.right),
+      refreshGroupRightOffset: Math.abs(runControls.right - refresh.right),
+      stopBeforeRefresh: stop.right <= refresh.left,
       signalFontSize: Number.parseFloat(getComputedStyle(actions.querySelector(".stock-research-signal-stepper")).fontSize),
       signalHasColumn: getComputedStyle(actions.querySelector(".stock-research-signal-stepper")).borderTopWidth !== "0px",
       actionsBelowList: actions.getBoundingClientRect().top >= list.getBoundingClientRect().bottom,
@@ -276,7 +282,9 @@ test("stock research popup preserves results while adding multiple candidates", 
   expect(Math.max(...popupLayout.actionTops) - Math.min(...popupLayout.actionTops)).toBeLessThan(12);
   expect(popupLayout.pageButtonSizes.every((size) => size >= 34)).toBe(true);
   expect(popupLayout.pageCenterOffset).toBeLessThan(2);
-  expect(popupLayout.refreshRightOffset).toBeLessThan(2);
+  expect(popupLayout.runControlsRightOffset).toBeLessThanOrEqual(16);
+  expect(popupLayout.refreshGroupRightOffset).toBeLessThan(2);
+  expect(popupLayout.stopBeforeRefresh).toBe(true);
   expect(popupLayout.signalFontSize).toBeGreaterThanOrEqual(13);
   expect(popupLayout.signalHasColumn).toBe(false);
   expect(popupLayout.actionsBelowList).toBe(true);

@@ -3,6 +3,16 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.28",
+      date: "2026.08.30",
+      items: Object.freeze([
+        "종목탐구 로컬·배포 4개 검색 경로 통일",
+        "코스피·코스닥 홀짝 분할과 실패 종목 단계별 재확인",
+        "검색 정지와 현재까지의 결과 즉시 확인",
+        "불완전 검색 결과의 공유 캐시 오염 방지",
+      ]),
+    }),
+    Object.freeze({
       version: "3.27",
       date: "2026.08.30",
       items: Object.freeze([

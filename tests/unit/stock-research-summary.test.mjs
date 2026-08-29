@@ -9,8 +9,37 @@ import {
   researchSummaryCacheKey,
 } from "../../shared/stock-research-summary.mjs";
 import contract from "../../docs/modules/stock-research-contract.js";
+import summaryQuality from "../../shared/stock-research-summary-quality.js";
 
 const { CALCULATION_VERSION } = contract;
+const {
+  researchSummaryCoverage,
+  researchSummaryIsPublishable,
+  shouldPreferResearchSummary,
+} = summaryQuality;
+
+test("prefers complete cross-device research summaries over partial scans", () => {
+  const partial = {
+    baseDate: "2026-08-28",
+    analysisDate: "2026-08-28",
+    generatedAt: "2026-08-29T20:44:30+09:00",
+    scanned: 500,
+    failed: 444,
+  };
+  const complete = {
+    ...partial,
+    generatedAt: "2026-08-29T20:36:27+09:00",
+    failed: 10,
+  };
+
+  assert.equal(researchSummaryCoverage(partial), 56 / 500);
+  assert.equal(researchSummaryIsPublishable(partial), false);
+  assert.equal(researchSummaryIsPublishable(complete), true);
+  assert.equal(researchSummaryIsPublishable({ ...complete, failed: 11 }), false);
+  assert.equal(researchSummaryIsPublishable({ ...complete, partial: true }), false);
+  assert.equal(shouldPreferResearchSummary(complete, partial), true);
+  assert.equal(shouldPreferResearchSummary(partial, complete), false);
+});
 
 test("allows one signal as the research minimum", () => {
   assert.equal(normalizeResearchMinimum(1), 1);

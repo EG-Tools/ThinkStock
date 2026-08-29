@@ -68,6 +68,7 @@ import {
   normalizeResearchStrategy,
   normalizeResearchSummary,
 } from "../shared/stock-research-summary.mjs";
+import summaryQuality from "../shared/stock-research-summary-quality.js";
 import {
   DART_DISCLOSURE_MAX_PAGES,
   DART_DISCLOSURE_TYPES,
@@ -120,6 +121,10 @@ const ENV_FILE = path.join(ROOT, ".env.local");
 const CACHE_DIR = path.join(ROOT, ".thinkstock-cache", "dart");
 const PAGES_DATA_CACHE_DIR = path.join(ROOT, ".thinkstock-cache", "pages-data");
 const STOCK_RESEARCH_CACHE_DIR = path.join(ROOT, ".thinkstock-cache", "stock-research");
+const {
+  researchSummaryIsPublishable,
+  shouldPreferResearchSummary,
+} = summaryQuality;
 const CORP_CODE_DIR = path.join(DOCS_DIR, "data", "dart_corp_codes");
 const PAGES_DATA_BASE_URL = "https://eg-tools.github.io/ThinkStock/data/";
 const THINKSTOCK_WORKER_URL = "https://thinkstock-api.keg0320.workers.dev";
@@ -1518,9 +1523,28 @@ export async function createThinkStockServer(options = {}) {
         }
         const summary = normalizeResearchSummary(await readRequestJson(request), { strategy, minimum, universeSize });
         if (!summary) throw new Error("종목탐구 요약 형식이 올바르지 않습니다.");
+        const existing = normalizeResearchSummary(await readJson(summaryPath), { strategy, minimum, universeSize });
+        if (!researchSummaryIsPublishable(summary)) {
+          if (existing) {
+            sendJson(request, response, 200, {
+              ok: true,
+              cached: true,
+              accepted: false,
+              warning: "불완전한 종목탐구 결과를 저장하지 않았습니다.",
+              ...existing,
+            });
+          } else {
+            sendJson(request, response, 409, { ok: false, error: "종목탐구 성공 종목이 부족합니다." });
+          }
+          return;
+        }
+        if (existing && !shouldPreferResearchSummary(summary, existing)) {
+          sendJson(request, response, 200, { ok: true, cached: true, accepted: false, ...existing });
+          return;
+        }
         await mkdir(STOCK_RESEARCH_CACHE_DIR, { recursive: true });
         await writeJsonAtomic(summaryPath, summary);
-        sendJson(request, response, 200, { ok: true, cached: false, ...summary });
+        sendJson(request, response, 200, { ok: true, cached: false, accepted: true, ...summary });
       } catch (error) {
         sendJson(request, response, 400, { ok: false, error: error?.message || String(error) });
       }

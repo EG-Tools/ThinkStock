@@ -22,12 +22,60 @@ test("stock research retries a transient first-page profile failure", async () =
   assert.deepEqual(profile, { ok: true, category: "반도체" });
 });
 
-test("stock research scales worker lanes without overloading low-memory devices", () => {
-  assert.equal(controller.researchWorkerLaneCount({ hardwareConcurrency: 2 }, 1000), 2);
-  assert.equal(controller.researchWorkerLaneCount({ hardwareConcurrency: 8, deviceMemory: 16 }, 1000), 6);
-  assert.equal(controller.researchWorkerLaneCount({ hardwareConcurrency: 12, deviceMemory: 2 }, 1000), 2);
+test("stock research retries only transient history failures", async () => {
+  let attempts = 0;
+  let waits = 0;
+  const history = await controller.fetchResearchHistoryWithRetry(
+    async () => {
+      attempts += 1;
+      if (attempts < 3) {
+        const error = new Error("Naver history HTTP 503");
+        error.status = 503;
+        throw error;
+      }
+      return { ok: true, rows: [1] };
+    },
+    async () => { waits += 1; },
+  );
+  assert.equal(attempts, 3);
+  assert.equal(waits, 2);
+  assert.deepEqual(history, { ok: true, rows: [1] });
+
+  await assert.rejects(
+    controller.fetchResearchHistoryWithRetry(async () => {
+      const error = new Error("invalid history payload");
+      error.status = 400;
+      throw error;
+    }),
+    /invalid history payload/,
+  );
+});
+
+test("stock research uses the same four initial lanes locally and remotely", () => {
+  assert.equal(controller.researchWorkerLaneCount({ hardwareConcurrency: 2 }, 1000), 4);
+  assert.equal(controller.researchWorkerLaneCount({ hardwareConcurrency: 8, deviceMemory: 16 }, 1000), 4);
+  assert.equal(controller.researchWorkerLaneCount({ hardwareConcurrency: 12, deviceMemory: 2 }, 1000), 4);
   assert.equal(controller.researchWorkerLaneCount({ hardwareConcurrency: 8, deviceMemory: 8 }, 3), 3);
   assert.equal(controller.researchWorkerLaneCount({ hardwareConcurrency: 8 }, 0), 0);
+});
+
+test("stock research partitions KOSPI and KOSDAQ odd-even ranks into four queues", () => {
+  const rows = [
+    { ticker: "000001.KS", market: "KOSPI", rank: 1 },
+    { ticker: "000002.KS", market: "KOSPI", rank: 2 },
+    { ticker: "000003.KS", market: "KOSPI", rank: 3 },
+    { ticker: "100001.KQ", market: "KOSDAQ", rank: 1 },
+    { ticker: "100002.KQ", market: "KOSDAQ", rank: 2 },
+    { ticker: "100003.KQ", market: "KOSDAQ", rank: 3 },
+  ];
+  const queues = controller.partitionResearchScanQueues(rows, 4, { marketParity: true });
+  assert.deepEqual(queues.map((queue) => queue.map((item) => item.ticker)), [
+    ["000001.KS", "000003.KS"],
+    ["000002.KS"],
+    ["100001.KQ", "100003.KQ"],
+    ["100002.KQ"],
+  ]);
+  assert.deepEqual(new Set(queues.flat().map((item) => item.ticker)), new Set(rows.map((item) => item.ticker)));
 });
 
 test("stock research cards hide redundant last-sell and twenty-day-return details", () => {

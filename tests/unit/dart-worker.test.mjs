@@ -1042,6 +1042,49 @@ test("stores and returns an authenticated stock-research summary", async () => {
   assert.equal(payload.candidatePool[0].ticker, "005930.KS");
 });
 
+test("does not replace a complete research summary with a partial scan", async () => {
+  const cache = memoryKv();
+  const env = { THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: cache };
+  const query = "/api/research/summary?strategy=top400-recovery-v1&minimum=1&size=500";
+  const summary = (failed, generatedAt) => ({
+    schema: RESEARCH_SUMMARY_SCHEMA,
+    historyQualityVersion: RESEARCH_SUMMARY_HISTORY_QUALITY_VERSION,
+    strategy: "top400-recovery-v1",
+    baseDate: "2026-08-28",
+    analysisDate: "2026-08-28",
+    generatedAt,
+    minimumBuySignals: 1,
+    universeSize: 500,
+    scanned: 500,
+    failed,
+    universeTickers: ["005930.KS"],
+    candidatePool: [{
+      ticker: "005930.KS",
+      name: "삼성전자",
+      market: "KOSPI",
+      buyCount: 1,
+      lastBuyDate: "2026-08-28",
+    }],
+  });
+
+  const complete = await handleRequest(request(query, {
+    method: "POST",
+    token: "private",
+    body: summary(10, "2026-08-29T20:36:27+09:00"),
+  }), env);
+  assert.equal(complete.status, 200);
+
+  const partial = await handleRequest(request(query, {
+    method: "POST",
+    token: "private",
+    body: summary(444, "2026-08-29T20:44:30+09:00"),
+  }), env);
+  const payload = await partial.json();
+  assert.equal(partial.status, 200);
+  assert.equal(payload.accepted, false);
+  assert.equal(payload.failed, 10);
+});
+
 test("loads a fresh research profile when the Worker cache is unavailable", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(
