@@ -260,6 +260,7 @@ test("stock research popup preserves results while adding multiple candidates", 
     const runControls = actions.querySelector(".stock-research-run-controls").getBoundingClientRect();
     const stop = document.getElementById("stockResearchStopBtn").getBoundingClientRect();
     const refresh = document.getElementById("stockResearchRefreshBtn").getBoundingClientRect();
+    const next = document.getElementById("stockResearchNextBtn").getBoundingClientRect();
     return {
       actionLefts: actionBoxes.map((box) => box.left),
       actionTops: actionBoxes.map((box) => box.top),
@@ -267,6 +268,7 @@ test("stock research popup preserves results while adding multiple candidates", 
       pageCenterOffset: Math.abs((pageControls.left + pageControls.right) / 2 - (panel.left + panel.right) / 2),
       runControlsRightOffset: Math.abs(actions.getBoundingClientRect().right - runControls.right),
       refreshGroupRightOffset: Math.abs(runControls.right - refresh.right),
+      nextBeforeStop: next.right <= stop.left,
       stopBeforeRefresh: stop.right <= refresh.left,
       signalFontSize: Number.parseFloat(getComputedStyle(actions.querySelector(".stock-research-signal-stepper")).fontSize),
       signalHasColumn: getComputedStyle(actions.querySelector(".stock-research-signal-stepper")).borderTopWidth !== "0px",
@@ -284,6 +286,7 @@ test("stock research popup preserves results while adding multiple candidates", 
   expect(popupLayout.pageCenterOffset).toBeLessThan(2);
   expect(popupLayout.runControlsRightOffset).toBeLessThanOrEqual(16);
   expect(popupLayout.refreshGroupRightOffset).toBeLessThan(2);
+  expect(popupLayout.nextBeforeStop).toBe(true);
   expect(popupLayout.stopBeforeRefresh).toBe(true);
   expect(popupLayout.signalFontSize).toBeGreaterThanOrEqual(13);
   expect(popupLayout.signalHasColumn).toBe(false);

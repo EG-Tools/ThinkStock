@@ -219,6 +219,7 @@
 .stock-research-stop-btn:disabled {
   opacity: 0.24;
   cursor: default;
+  pointer-events: none;
 }
 .stock-research-page-controls {
   --ui-circle-button-size: 34px;
