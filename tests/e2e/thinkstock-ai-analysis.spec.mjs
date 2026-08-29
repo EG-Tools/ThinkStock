@@ -319,10 +319,31 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
     const previousStart = await page.locator("#chart").evaluate((element) => (
       Date.parse(element?._fullLayout?.xaxis?.range?.[0])
     ));
-    await page.mouse.move(fromX, panState.y);
-    await page.mouse.down();
-    await page.mouse.move(toX, panState.y, { steps: 6 });
-    await page.mouse.up();
+    if (isMobile) {
+      await page.locator("#chart").evaluate((element, gesture) => {
+        const pointerId = 181;
+        const dispatch = (target, type, x, buttons) => target.dispatchEvent(new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          pointerId,
+          pointerType: "touch",
+          isPrimary: true,
+          buttons,
+          clientX: x,
+          clientY: gesture.y,
+        }));
+        dispatch(element, "pointerdown", gesture.fromX, 1);
+        for (let step = 1; step <= 6; step += 1) {
+          dispatch(window, "pointermove", gesture.fromX + ((gesture.toX - gesture.fromX) * step / 6), 1);
+        }
+        dispatch(window, "pointerup", gesture.toX, 0);
+      }, { fromX, toX, y: panState.y });
+    } else {
+      await page.mouse.move(fromX, panState.y);
+      await page.mouse.down();
+      await page.mouse.move(toX, panState.y, { steps: 6 });
+      await page.mouse.up();
+    }
     await expect.poll(() => page.locator("#chart").evaluate((element) => (
       Date.parse(element?._fullLayout?.xaxis?.range?.[0])
     ))).not.toBe(previousStart);
