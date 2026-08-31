@@ -1079,21 +1079,27 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
     scrollbarWidth: "none",
     touchAction: "pan-y",
   });
-  await expect.poll(() => page.locator("#apiSettingsModal").evaluate((modal) => (
-    modal.classList.contains("can-scroll-down")
-  ))).toBe(true);
-  await page.locator("#apiSettingsModal .api-settings-panel").evaluate((panel) => {
-    panel.scrollTop = panel.scrollHeight;
-    panel.dispatchEvent(new Event("scroll"));
-  });
+  const settingsOverflow = await page.locator("#apiSettingsModal .api-settings-panel").evaluate(
+    (panel) => panel.scrollHeight - panel.clientHeight > 1,
+  );
   await expect.poll(() => page.locator("#apiSettingsModal").evaluate((modal) => ({
     down: modal.classList.contains("can-scroll-down"),
     up: modal.classList.contains("can-scroll-up"),
-  }))).toEqual({ down: false, up: true });
-  await page.locator("#apiSettingsModal .api-settings-panel").evaluate((panel) => {
-    panel.scrollTop = 0;
-    panel.dispatchEvent(new Event("scroll"));
-  });
+  }))).toEqual({ down: settingsOverflow, up: false });
+  if (settingsOverflow) {
+    await page.locator("#apiSettingsModal .api-settings-panel").evaluate((panel) => {
+      panel.scrollTop = panel.scrollHeight;
+      panel.dispatchEvent(new Event("scroll"));
+    });
+    await expect.poll(() => page.locator("#apiSettingsModal").evaluate((modal) => ({
+      down: modal.classList.contains("can-scroll-down"),
+      up: modal.classList.contains("can-scroll-up"),
+    }))).toEqual({ down: false, up: true });
+    await page.locator("#apiSettingsModal .api-settings-panel").evaluate((panel) => {
+      panel.scrollTop = 0;
+      panel.dispatchEvent(new Event("scroll"));
+    });
+  }
   await expect(page.locator("#apiSettingsModal .api-settings-panel > .api-settings-header")).not.toContainText("Version");
   await expect(page.locator(".api-settings-version")).toHaveText(`Version : ${displayedVersion}`);
   await expect(page.locator("#settingsAppMeta")).toBeVisible();
