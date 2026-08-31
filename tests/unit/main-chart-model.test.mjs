@@ -202,3 +202,111 @@ test("reuses prepared raw values and labels across viewport model rebuilds", () 
     cachedTexts: 1,
   });
 });
+
+test("centers and auto-fits percentage-point macro series in the shared model", () => {
+  const result = model.buildMainChartModel({
+    priceRows: [
+      { date: "2026-08-20", "^KS11": 3000 },
+      { date: "2026-08-21", "^KS11": 3010 },
+      { date: "2026-08-22", "^KS11": 2990 },
+    ],
+    macroRows: [
+      { date: "2026-08-20", leading_cycle: 101.2, t10y1y: 0.62 },
+      { date: "2026-08-21", leading_cycle: 101.3, t10y1y: 0.69 },
+      { date: "2026-08-22", leading_cycle: 101.1, t10y1y: 0.54 },
+    ],
+    creditRows: [],
+    allowedSeries: ["leading_cycle", "t10y1y", "^KS11"],
+    hiddenSeries: ["^KS11"],
+    excludedSeries: [],
+    priorityOrder: ["leading_cycle", "t10y1y", "^KS11"],
+    start: "2026-08-20",
+    end: "2026-08-22",
+    frameStart: "2026-08-20",
+    frameEnd: "2026-08-22",
+    displayBudget: 100,
+    preserveDailyPoints: true,
+  });
+  const spread = result.seriesModels.find((item) => item.series === "t10y1y");
+
+  assert.equal(result.normBases.t10y1y, 0.615);
+  assert.equal(spread.rawTexts[0], "0.62%p");
+  assert.ok(Math.abs(Math.min(...spread.baseValues) - 90) < 0.01);
+  assert.ok(Math.abs(Math.max(...spread.baseValues) - 110) < 0.01);
+});
+
+test("fills one shared viewport for leading, spread, and deposit series", () => {
+  const result = model.buildMainChartModel({
+    priceRows: [
+      { date: "2026-08-20" },
+      { date: "2026-08-21" },
+      { date: "2026-08-22" },
+    ],
+    macroRows: [
+      { date: "2026-08-20", leading_cycle: 101, t10y1y: 0.5, us_credit_spread: 1.2 },
+      { date: "2026-08-21", leading_cycle: 101.1, t10y1y: 0.7, us_credit_spread: 1.6 },
+      { date: "2026-08-22", leading_cycle: 100.9, t10y1y: 0.4, us_credit_spread: 1.1 },
+    ],
+    creditRows: [
+      { date: "2026-08-20", customer_deposit: 100 },
+      { date: "2026-08-21", customer_deposit: 110 },
+      { date: "2026-08-22", customer_deposit: 105 },
+    ],
+    creditCols: ["customer_deposit"],
+    allowedSeries: ["leading_cycle", "t10y1y", "us_credit_spread", "customer_deposit"],
+    hiddenSeries: [],
+    excludedSeries: [],
+    priorityOrder: ["leading_cycle", "t10y1y", "us_credit_spread", "customer_deposit"],
+    start: "2026-08-20",
+    end: "2026-08-22",
+    frameStart: "2026-08-20",
+    frameEnd: "2026-08-22",
+    displayBudget: 100,
+    preserveDailyPoints: true,
+  });
+  const span = (series) => {
+    const values = result.seriesModels
+      .find((item) => item.series === series)
+      .values
+      .filter(Number.isFinite);
+    return Math.max(...values) - Math.min(...values);
+  };
+
+  ["leading_cycle", "t10y1y", "us_credit_spread", "customer_deposit"].forEach((series) => {
+    assert.ok(span(series) >= 19 && span(series) <= 21, `${series} should fill the shared frame`);
+  });
+});
+
+test("gives quiet and multibagger stocks equal current-window chart height", () => {
+  const result = model.buildMainChartModel({
+    priceRows: [
+      { date: "2024-08-01", quiet: 100, multibagger: 100 },
+      { date: "2025-08-01", quiet: 80, multibagger: 650 },
+      { date: "2026-08-01", quiet: 120, multibagger: 1100 },
+    ],
+    macroRows: [],
+    creditRows: [],
+    allowedSeries: ["quiet", "multibagger"],
+    hiddenSeries: [],
+    excludedSeries: [],
+    priorityOrder: ["quiet", "multibagger"],
+    start: "2024-08-01",
+    end: "2026-08-01",
+    frameStart: "2024-08-01",
+    frameEnd: "2026-08-01",
+    displayBudget: 100,
+    preserveDailyPoints: true,
+  });
+  const range = (series) => {
+    const values = result.seriesModels
+      .find((item) => item.series === series)
+      .values
+      .filter(Number.isFinite);
+    return [Math.min(...values), Math.max(...values)];
+  };
+
+  const quietRange = range("quiet");
+  const multibaggerRange = range("multibagger");
+  assert.ok(Math.abs(quietRange[0] - multibaggerRange[0]) < 0.02);
+  assert.ok(Math.abs(quietRange[1] - multibaggerRange[1]) < 0.02);
+});

@@ -11,7 +11,13 @@ function createAlternatingBufferPool() {
   }
 
   function transform(key, baseValues, scale, offset, activeValues, transformValuesInto) {
-    if (!Array.isArray(baseValues) || typeof transformValuesInto !== "function") return null;
+    return map(key, baseValues, activeValues, (values, output) => (
+      transformValuesInto(values, scale, offset, output)
+    ));
+  }
+
+  function map(key, baseValues, activeValues, transformValues) {
+    if (!Array.isArray(baseValues) || typeof transformValues !== "function") return null;
     const entries = entriesFor(key);
     let cached = entries.get(key);
     if (!cached || cached.baseValues !== baseValues || cached.length !== baseValues.length) {
@@ -26,19 +32,14 @@ function createAlternatingBufferPool() {
     let bufferIndex = cached.cursor;
     if (cached.buffers[bufferIndex] === activeValues) bufferIndex = bufferIndex === 0 ? 1 : 0;
     cached.cursor = bufferIndex === 0 ? 1 : 0;
-    return transformValuesInto(
-      baseValues,
-      scale,
-      offset,
-      cached.buffers[bufferIndex],
-    );
+    return transformValues(baseValues, cached.buffers[bufferIndex]);
   }
 
   function clear(key) {
     entriesFor(key).delete(key);
   }
 
-  return Object.freeze({ clear, transform });
+  return Object.freeze({ clear, map, transform });
 }
 
 function createChartSeriesTransformRuntime(options = {}) {
@@ -50,6 +51,14 @@ function createChartSeriesTransformRuntime(options = {}) {
   }
   const seriesBuffers = createAlternatingBufferPool();
   const linkedBuffers = createAlternatingBufferPool();
+  const viewportSeriesBuffers = createAlternatingBufferPool();
+  const viewportLinkedBuffers = createAlternatingBufferPool();
+  const runtimeStats = {
+    viewportFrames: 0,
+    viewportTraceDescriptions: 0,
+    viewportSeriesTransforms: 0,
+    viewportLinkedTransforms: 0,
+  };
 
   function scaleFor(seriesKey) {
     const value = Number(options.resolveScale?.(seriesKey));
@@ -111,15 +120,155 @@ function createChartSeriesTransformRuntime(options = {}) {
     return { traceIndexes, yUpdates };
   }
 
+  function collectViewportSeriesUpdates(traces, xRange, config = {}) {
+    if (!Array.isArray(traces)
+      || typeof options.finiteDatedRange !== "function"
+      || typeof options.transformViewportValuesInto !== "function") {
+      return Object.freeze({ seriesUpdates: Object.freeze([]) });
+    }
+    const targetSpan = Math.max(0.01, Number(config.targetSpan) || 20);
+    const resolvePostScale = typeof config.resolvePostScale === "function"
+      ? config.resolvePostScale
+      : () => 1;
+    const requestedSeries = Array.isArray(config.seriesKeys)
+      ? new Set(config.seriesKeys.map(String).filter(Boolean))
+      : null;
+    const seriesUpdates = [];
+    const priceEntries = [];
+    const linkedBySeries = new Map();
+    runtimeStats.viewportFrames += 1;
+    traces.forEach((trace, traceIndex) => {
+      if (trace?.visible === "legendonly") return;
+      const descriptor = options.describeTrace(trace);
+      runtimeStats.viewportTraceDescriptions += 1;
+      const seriesKey = String(descriptor?.seriesKey || "");
+      const linkedBaseValues = trace?.meta?.seriesTransformBaseValues;
+      if (seriesKey && Array.isArray(linkedBaseValues)) {
+        const linked = linkedBySeries.get(seriesKey) || [];
+        linked.push({ trace, traceIndex, baseValues: linkedBaseValues });
+        linkedBySeries.set(seriesKey, linked);
+      }
+      if (descriptor?.kind === "price"
+        && descriptor.adjustable === true
+        && seriesKey
+        && (!requestedSeries || requestedSeries.has(seriesKey))) {
+        priceEntries.push({ trace, traceIndex, seriesKey });
+      }
+    });
+
+    priceEntries.forEach(({ trace, traceIndex, seriesKey }) => {
+      const baseValues = options.baseValuesFor?.(seriesKey);
+      if (!Array.isArray(baseValues) || baseValues.length !== trace?.x?.length) return;
+      const range = options.finiteDatedRange(trace.x, baseValues, xRange);
+      if (!range) return;
+      const center = (range.minimum + range.maximum) / 2;
+      const span = range.maximum - range.minimum;
+      const postScale = Math.max(0.01, Math.abs(Number(resolvePostScale(seriesKey)) || 1));
+      const viewportScale = span > 1e-9 ? (targetSpan / postScale) / span : 1;
+      const seriesScale = scaleFor(seriesKey);
+      const offset = offsetFor(seriesKey);
+      const nextY = viewportSeriesBuffers.map(
+        seriesKey,
+        baseValues,
+        trace.y,
+        (values, output) => options.transformViewportValuesInto(
+          values,
+          center,
+          viewportScale,
+          seriesScale,
+          offset,
+          output,
+        ),
+      );
+      if (!nextY) return;
+      runtimeStats.viewportSeriesTransforms += 1;
+
+      const linkedTraceIndexes = [];
+      const linkedYUpdates = [];
+      (linkedBySeries.get(seriesKey) || []).forEach(({
+        trace: linkedTrace,
+        traceIndex: linkedTraceIndex,
+        baseValues: linkedBaseValues,
+      }) => {
+        const linkedY = viewportLinkedBuffers.map(
+          linkedTrace,
+          linkedBaseValues,
+          linkedTrace.y,
+          (values, output) => options.transformViewportValuesInto(
+            values,
+            center,
+            viewportScale,
+            seriesScale,
+            offset,
+            output,
+          ),
+        );
+        if (!linkedY) return;
+        linkedTraceIndexes.push(linkedTraceIndex);
+        linkedYUpdates.push(linkedY);
+        runtimeStats.viewportLinkedTransforms += 1;
+      });
+      seriesUpdates.push(Object.freeze({
+        seriesKey,
+        traceIndex,
+        nextY,
+        linkedUpdate: Object.freeze({
+          traceIndexes: Object.freeze(linkedTraceIndexes),
+          yUpdates: Object.freeze(linkedYUpdates),
+        }),
+      }));
+    });
+    return Object.freeze({ seriesUpdates: Object.freeze(seriesUpdates) });
+  }
+
+  function collectViewportFrameUpdates(traces, xRange, config = {}) {
+    const frame = collectViewportSeriesUpdates(traces, xRange, config);
+    const traceIndexes = [];
+    const yUpdates = [];
+    frame.seriesUpdates.forEach((seriesUpdate) => {
+      traceIndexes.push(...seriesUpdate.linkedUpdate.traceIndexes, seriesUpdate.traceIndex);
+      yUpdates.push(...seriesUpdate.linkedUpdate.yUpdates, seriesUpdate.nextY);
+      const groupedHover = options.groupedHoverYUpdate?.(
+        traces,
+        seriesUpdate.traceIndex,
+        seriesUpdate.nextY,
+      );
+      if (!groupedHover) return;
+      traceIndexes.push(groupedHover.traceIndex);
+      yUpdates.push(groupedHover.y);
+    });
+    return Object.freeze({
+      seriesUpdates: frame.seriesUpdates,
+      traceIndexes: Object.freeze(traceIndexes),
+      yUpdates: Object.freeze(yUpdates),
+    });
+  }
+
+  function viewportSeriesUpdate(traces, xRange, seriesKey, preferredIndex = -1, config = {}) {
+    const key = String(seriesKey || "");
+    if (!key) return null;
+    return collectViewportSeriesUpdates(traces, xRange, {
+      ...config,
+      seriesKeys: [key],
+    }).seriesUpdates.find((update) => (
+      update.traceIndex === preferredIndex || update.seriesKey === key
+    )) || null;
+  }
+
   function clearSeries(seriesKey) {
     seriesBuffers.clear(seriesKey);
+    viewportSeriesBuffers.clear(seriesKey);
   }
 
   return Object.freeze({
     clearSeries,
+    collectViewportFrameUpdates,
     collectLinkedSeriesYUpdates,
+    collectViewportSeriesUpdates,
     computeSeriesValues,
     findAdjustableSeriesTraceIndex,
+    stats: () => Object.freeze({ ...runtimeStats }),
+    viewportSeriesUpdate,
   });
 }
 

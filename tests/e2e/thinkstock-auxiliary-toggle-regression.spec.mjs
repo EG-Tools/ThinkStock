@@ -280,6 +280,24 @@ test("auxiliary panels remain painted across toggle combinations", async ({ page
       `.auxiliary-series-toggle[data-auxiliary-series="${seriesKey}"]`,
     ).click();
   }
+  await page.locator('.auxiliary-series-toggle[data-auxiliary-series="vkospi"]').click();
+  await page.locator('.auxiliary-series-toggle[data-auxiliary-series="vkospi"]').click();
+  await expect.poll(() => chart.evaluate((element) => (
+    (element.data || []).filter((trace) => (
+      ["vkospi", "vix"].includes(trace.meta?.auxiliarySeriesKey)
+        && !trace.meta?.auxiliaryZoneFill
+        && trace.meta?.auxiliaryHoverProxy !== true
+    )).map((trace) => trace.meta.auxiliarySeriesKey)
+  ))).toEqual(["vix", "vkospi"]);
+  await page.locator('.auxiliary-series-toggle[data-auxiliary-series="adr_kospi"]').click();
+  await page.locator('.auxiliary-series-toggle[data-auxiliary-series="adr_kospi"]').click();
+  await expect.poll(() => chart.evaluate((element) => (
+    (element.data || []).filter((trace) => (
+      ["adr_kospi", "adr_kosdaq"].includes(trace.meta?.auxiliarySeriesKey)
+        && !trace.meta?.auxiliaryZoneFill
+        && trace.meta?.auxiliaryHoverProxy !== true
+    )).map((trace) => trace.meta.auxiliarySeriesKey)
+  ))).toEqual(["adr_kosdaq", "adr_kospi"]);
   await assertActivePanels(volatilityReactivatedOrder);
   expect(await chart.evaluate((element) => {
     const adrHover = (element.data || []).find((trace) => trace.name === "ADR HOVER");

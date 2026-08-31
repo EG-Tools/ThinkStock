@@ -1,5 +1,7 @@
 "use strict";
 
+import { resolveRelayoutViewport } from "./chart-viewport-controller.mjs";
+
   function createMainChartEvents(scope = globalThis, options = {}) {
     const {
       HANDLE_UPDATE_DEBOUNCE_MS,
@@ -8,6 +10,7 @@
       changeSeriesVisibility,
       clearAutoResetSeriesTransforms,
       clearHoverOnChart,
+      commitViewportRange,
       configureExactDateEventHover,
       enforceMainChartSeriesLimit,
       handlePriorityChartClick,
@@ -16,18 +19,15 @@
       isCurrentRange,
       isTouchDevice,
       normalizeHoverPopupIndent,
-      noteViewportInteraction,
       refreshAiForecastTargets,
       renderCoMovementPanel,
       requestChartCompositionUpdate,
       scheduleHandleUpdate,
-      scheduleViewportWindowRender,
-      scheduleViewportRangeSync,
       showChartNavigationMessage,
       syncHoverToChart,
-      toMsSafe,
     } = options;
-    if (!scope.document || !chartSession || !interactionState) {
+    if (!scope.document || !chartSession || !interactionState
+      || typeof commitViewportRange !== "function") {
       throw new Error("main chart event dependencies are incomplete");
     }
 
@@ -69,21 +69,13 @@
         // Plotly emits relayout events while react/update applies an app-owned
         // viewport. Treating those as user input can replay an older range.
         if (interactionState.chartSyncing) return;
-        const rangePair = Array.isArray(eventData["xaxis.range"])
-          ? eventData["xaxis.range"]
-          : null;
-        const hasRange = (
-          eventData["xaxis.range[0]"] != null
-          && eventData["xaxis.range[1]"] != null
-        ) || (Array.isArray(rangePair) && rangePair.length === 2);
-        const hasAuto = eventData["xaxis.autorange"] === true;
-        const rangeStart = eventData["xaxis.range[0]"]
-          ?? (Array.isArray(rangePair) ? rangePair[0] : null);
-        const rangeEnd = eventData["xaxis.range[1]"]
-          ?? (Array.isArray(rangePair) ? rangePair[1] : null);
+        const viewport = resolveRelayoutViewport(eventData, element);
+        const hasRange = Array.isArray(viewport.range) && viewport.range.length === 2;
+        const hasAuto = viewport.autorange;
+        const [rangeStart, rangeEnd] = viewport.range || [];
         // Plotly can deliver a completed relayout after a newer app-owned range
         // has already won. Never let that stale event restore the old viewport.
-        if (hasRange
+        if (viewport.explicitRange
           && rangeStart != null
           && rangeEnd != null
           && typeof isCurrentRange === "function"
@@ -91,51 +83,18 @@
         if (eventData["yaxis.autorange"] === true) {
           interactionState.useViewportEventMarkerGap = false;
         }
-        if (!interactionState.isHandleDragging && (hasRange || hasAuto)) {
-          noteViewportInteraction?.({ hasRange, hasAuto });
-        }
-        if (!interactionState.isHandleDragging && hasRange && rangeStart != null && rangeEnd != null) {
-          chartSession.pinnedXRange = [rangeStart, rangeEnd];
-          const startMs = toMsSafe(rangeStart);
-          const endMs = toMsSafe(rangeEnd);
-          if (Number.isFinite(startMs) && Number.isFinite(endMs)) {
-            chartSession.currentStart = new Date(Math.min(startMs, endMs)).toISOString().slice(0, 10);
-            chartSession.currentEnd = new Date(Math.max(startMs, endMs)).toISOString().slice(0, 10);
-            scheduleViewportWindowRender?.(startMs, endMs);
-          }
-        }
-        scheduleHandleUpdate(hasRange || hasAuto ? 0 : HANDLE_UPDATE_DEBOUNCE_MS);
-        if (chartSession.showCoMovement && (hasRange || hasAuto)) {
-          renderCoMovementPanel({ deferred: true });
-        }
         if (interactionState.isHandleDragging) return;
         if (interactionState.cursorSyncing && !hasRange && !hasAuto) return;
-
-        const syncedCharts = [
-          document.getElementById("chart-macd"),
-          document.getElementById("chart-adr"),
-        ].filter((target) => target?.data && !target.hidden);
-        if (!syncedCharts.length) return;
-        if (rangeStart != null && rangeEnd != null) {
-          syncedCharts.forEach((target) => scheduleViewportRangeSync(target, {
-            "xaxis.range[0]": rangeStart,
-            "xaxis.range[1]": rangeEnd,
-          }));
+        if (hasRange) {
+          commitViewportRange(viewport.range, {
+            source: "main-plotly-relayout",
+            liveFit: chartSession.autoChartReset,
+            userInitiated: false,
+          });
           return;
         }
-        if (!hasAuto) return;
-        chartSession.pinnedXRange = null;
-        const mainRange = element._fullLayout?.xaxis?.range?.slice();
-        if (Array.isArray(mainRange) && mainRange.length === 2) {
-          syncedCharts.forEach((target) => scheduleViewportRangeSync(target, {
-            "xaxis.range[0]": mainRange[0],
-            "xaxis.range[1]": mainRange[1],
-          }));
-        } else {
-          syncedCharts.forEach((target) => scheduleViewportRangeSync(target, {
-            "xaxis.autorange": true,
-          }));
-        }
+        scheduleHandleUpdate(HANDLE_UPDATE_DEBOUNCE_MS);
+        if (chartSession.showCoMovement) renderCoMovementPanel({ deferred: true });
       });
       element.on("plotly_beforehover", (eventData) => {
         if (element.classList.contains("is-hover-waiting")) return false;

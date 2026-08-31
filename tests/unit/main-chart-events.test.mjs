@@ -10,8 +10,7 @@ function createHarness({ chartSyncing = false, currentRange = true } = {}) {
     composition: [],
     handles: 0,
     visibility: [],
-    viewport: 0,
-    viewportInteractions: [],
+    viewport: [],
   };
   const chartSession = {
     currentSelected: ["A"],
@@ -39,6 +38,10 @@ function createHarness({ chartSyncing = false, currentRange = true } = {}) {
     changeSeriesVisibility: (...args) => { calls.visibility.push(args); },
     clearAutoResetSeriesTransforms: () => {},
     clearHoverOnChart: () => {},
+    commitViewportRange: (range, meta) => {
+      chartSession.pinnedXRange = [...range];
+      calls.viewport.push({ range: [...range], source: meta?.source });
+    },
     configureExactDateEventHover: () => true,
     enforceMainChartSeriesLimit: () => [],
     handlePriorityChartClick: () => false,
@@ -48,18 +51,14 @@ function createHarness({ chartSyncing = false, currentRange = true } = {}) {
     isTouchDevice: () => false,
     noteStockVisibilityChange: () => {},
     normalizeHoverPopupIndent: () => {},
-    noteViewportInteraction: (value) => { calls.viewportInteractions.push(value); },
     refreshAiForecastTargets: () => {},
     renderCoMovementPanel: () => { calls.coMovement += 1; },
     requestChartCompositionUpdate: (options) => { calls.composition.push(options); },
     scheduleHandleUpdate: () => { calls.handles += 1; },
-    scheduleViewportRangeSync: () => {},
-    scheduleViewportWindowRender: () => { calls.viewport += 1; },
     setAiForecastTargetVisibility: () => {},
     setMainChartSeriesVisible: () => true,
     showChartNavigationMessage: () => {},
     syncHoverToChart: () => {},
-    toMsSafe: (value) => Date.parse(value),
   });
   events.bind({
     classList: { contains: () => false },
@@ -84,8 +83,7 @@ test("programmatic relayout cannot persist or replay an app-owned viewport", () 
     composition: [],
     handles: 0,
     visibility: [],
-    viewport: 0,
-    viewportInteractions: [],
+    viewport: [],
   });
 });
 
@@ -98,15 +96,17 @@ test("user relayout persists the viewport and schedules dependent work", () => {
   });
 
   assert.deepEqual(harness.chartSession.pinnedXRange, ["2026-05-27", "2026-08-27"]);
-  assert.equal(harness.chartSession.currentStart, "2026-05-27");
+  assert.equal(harness.chartSession.currentStart, "2025-08-27");
   assert.equal(harness.chartSession.currentEnd, "2026-08-27");
   assert.deepEqual(harness.calls, {
-    coMovement: 1,
+    coMovement: 0,
     composition: [],
-    handles: 1,
+    handles: 0,
     visibility: [],
-    viewport: 1,
-    viewportInteractions: [{ hasRange: true, hasAuto: false }],
+    viewport: [{
+      range: ["2026-05-27", "2026-08-27"],
+      source: "main-plotly-relayout",
+    }],
   });
 });
 
@@ -124,8 +124,7 @@ test("late relayout events cannot overwrite a newer visible viewport", () => {
     composition: [],
     handles: 0,
     visibility: [],
-    viewport: 0,
-    viewportInteractions: [],
+    viewport: [],
   });
 });
 

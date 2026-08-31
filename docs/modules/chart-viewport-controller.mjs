@@ -155,57 +155,32 @@
       flush,
       schedule,
       isBusy: () => Boolean(frameId || running || pending),
-      stats: () => ({ ...stats, pending: Boolean(pending), running: Boolean(running) }),
+      stats: () => ({
+        ...stats,
+        pending: Boolean(pending),
+        running: Boolean(running),
+        ...(typeof options.extraStats === "function"
+          ? { frame: options.extraStats() }
+          : {}),
+      }),
     });
   }
 
-  /**
-   * Owns the primary viewport update and its asynchronously settled companion charts.
-   * @param {typeof globalThis} [scope]
-   * @param {{
-   *   applyRange: (range: {startMs: number, endMs: number, meta: unknown}) => unknown,
-   *   onError?: (error: unknown, range: unknown) => void,
-   *   requestFrame?: (callback: FrameRequestCallback) => number,
-   *   cancelFrame?: (id: number) => void,
-   *   companionQueue?: object,
-   *   getCompanionQueue?: () => object|null
-   * }} [options]
-   */
-  function createLinkedRangeSyncController(scope = globalThis, options = {}) {
-    const getCompanionQueue = typeof options.getCompanionQueue === "function"
-      ? options.getCompanionQueue
-      : () => options.companionQueue || null;
-    const primary = createRangeSyncController(scope, {
-      applyRange: options.applyRange,
-      onError: options.onError,
-      requestFrame: options.requestFrame,
-      cancelFrame: options.cancelFrame,
-    });
-
-    function companion() {
-      return getCompanionQueue() || null;
-    }
-
-    function cancel() {
-      primary.cancel();
-      companion()?.cancelPending?.();
-    }
-
-    async function flush() {
-      await primary.flush();
-      await companion()?.flush?.();
-    }
-
+  function resolveRelayoutViewport(eventData = {}, element = null) {
+    const pair = Array.isArray(eventData["xaxis.range"])
+      ? eventData["xaxis.range"].slice(0, 2)
+      : null;
+    const start = eventData["xaxis.range[0]"] ?? pair?.[0] ?? null;
+    const end = eventData["xaxis.range[1]"] ?? pair?.[1] ?? null;
+    const explicitRange = start != null && end != null;
+    const autorange = eventData["xaxis.autorange"] === true;
+    const renderedRange = autorange && Array.isArray(element?._fullLayout?.xaxis?.range)
+      ? element._fullLayout.xaxis.range.slice(0, 2)
+      : null;
     return Object.freeze({
-      cancel,
-      dispose: primary.dispose,
-      flush,
-      isBusy: () => primary.isBusy() || Boolean(companion()?.isBusy?.()),
-      schedule: primary.schedule,
-      stats: () => ({
-        ...primary.stats(),
-        companions: companion()?.stats?.() || null,
-      }),
+      autorange,
+      explicitRange,
+      range: explicitRange ? Object.freeze([start, end]) : renderedRange,
     });
   }
 
@@ -833,17 +808,25 @@
         || !String(trace?.mode || "").includes("lines")
         || !Array.isArray(trace?.x)) return;
       series.push(seriesKey);
-      for (let index = 0; index < trace.x.length; index += 1) {
-        const timestamp = toMilliseconds(trace.x[index]);
-        if (!Number.isFinite(timestamp)) continue;
-        start = Math.min(start, timestamp);
-        break;
+      const fullDataStartMs = Number(trace?.meta?.fullDataStartMs);
+      const fullDataEndMs = Number(trace?.meta?.fullDataEndMs);
+      if (Number.isFinite(fullDataStartMs)) start = Math.min(start, fullDataStartMs);
+      else {
+        for (let index = 0; index < trace.x.length; index += 1) {
+          const timestamp = toMilliseconds(trace.x[index]);
+          if (!Number.isFinite(timestamp)) continue;
+          start = Math.min(start, timestamp);
+          break;
+        }
       }
-      for (let index = trace.x.length - 1; index >= 0; index -= 1) {
-        const timestamp = toMilliseconds(trace.x[index]);
-        if (!Number.isFinite(timestamp)) continue;
-        end = Math.max(end, timestamp);
-        break;
+      if (Number.isFinite(fullDataEndMs)) end = Math.max(end, fullDataEndMs);
+      else {
+        for (let index = trace.x.length - 1; index >= 0; index -= 1) {
+          const timestamp = toMilliseconds(trace.x[index]);
+          if (!Number.isFinite(timestamp)) continue;
+          end = Math.max(end, timestamp);
+          break;
+        }
       }
     });
     return Number.isFinite(start) && Number.isFinite(end) && end > start
@@ -879,7 +862,6 @@ export {
   clampRangeToData,
   createDataRangeCache,
   createFutureOverlayController,
-  createLinkedRangeSyncController,
   createRangeSyncController,
   createZoomSession,
   latestRange,
@@ -887,6 +869,7 @@ export {
   pinchZoomRange,
   reconcileCompositionRange,
   resolve,
+  resolveRelayoutViewport,
   resolveZoomAnchorRatio,
   shouldStepRangeForWheel,
   visibleLineDataRangeMs,

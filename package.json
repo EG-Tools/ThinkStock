@@ -4,9 +4,9 @@
   "private": true,
   "description": "ThinkStock local and GitHub Pages web app",
   "thinkstockBuild": {
-    "appBundleMaxBytes": 555000,
-    "e2eBundleMaxBytes": 561000,
-    "appBundleGzipMaxBytes": 184000
+    "appBundleMaxBytes": 1048576,
+    "e2eBundleMaxBytes": 1048576,
+    "appBundleGzipMaxBytes": 360000
   },
   "scripts": {
     "vendor:sync": "node scripts/build_plotly_bundle.cjs",

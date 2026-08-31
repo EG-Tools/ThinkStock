@@ -73,6 +73,22 @@ test("background tasks prefer higher priority work and pause while input is pend
   assert.equal(Number.isFinite(scheduler.stats().maxRunMs), true);
 });
 
+test("foreground background work bypasses the idle callback boundary", async () => {
+  const calls = [];
+  const clock = fakeClock();
+  const scheduler = createBackgroundTaskScheduler(clock.scope, {
+    now: clock.now,
+    foregroundPriority: 15,
+  });
+
+  scheduler.enqueue("visible-work", async () => calls.push("done"), { priority: 20 });
+  clock.runNext();
+  await Promise.resolve();
+
+  assert.deepEqual(calls, ["done"]);
+  assert.equal(scheduler.stats().foregroundWakeups, 1);
+});
+
 test("cancelling a running background task aborts its shared task signal", async () => {
   const clock = fakeClock();
   const scheduler = createBackgroundTaskScheduler(clock.scope, { now: clock.now });
@@ -501,6 +517,7 @@ test("visible supplemental hydration owns disclosure, EPS, and AI task cleanup",
     scheduler,
     isSupported: (ticker) => ticker.endsWith(".KS"),
     isActive: () => true,
+    isDartEnabled: () => true,
     isEpsEnabled: () => true,
     isAiEnabled: () => true,
     prepareDisclosure: (ticker) => calls.push(`disclosure:${ticker}`),
@@ -525,4 +542,24 @@ test("visible supplemental hydration owns disclosure, EPS, and AI task cleanup",
   ]);
   hydration.cancel("005930.ks");
   assert.equal(calls.at(-1), "cancel:visible-series-supplemental:005930.KS");
+});
+
+test("visible supplemental hydration skips the scheduler when every optional layer is off", async () => {
+  let enqueueCount = 0;
+  const hydration = createVisibleSeriesSupplementalHydrator({
+    scheduler: {
+      enqueue() {
+        enqueueCount += 1;
+        return Promise.resolve(true);
+      },
+      cancel() {},
+    },
+    isSupported: () => true,
+    isDartEnabled: () => false,
+    isEpsEnabled: () => false,
+    isAiEnabled: () => false,
+  });
+
+  assert.equal(await hydration.schedule("005930.KS"), false);
+  assert.equal(enqueueCount, 0);
 });

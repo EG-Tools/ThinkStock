@@ -1,6 +1,7 @@
 import { chartLoader } from "./chart-loader.mjs";
 import { chartMarkerRuntime as markerRuntime } from "./chart-marker-runtime.mjs";
 import { assertChartRenderPayload } from "./chart-render-contract.mjs";
+import { orderItemsByActivation } from "./chart-session-controller.mjs";
 
   const DAY_MS = 24 * 60 * 60 * 1000;
   if (!chartLoader?.layoutStyle || !chartLoader?.axisStyle) {
@@ -25,6 +26,7 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
   const traceTimeCache = new WeakMap();
   const priceHoverLookupCache = new WeakMap();
   const overlayDescriptorCache = new WeakMap();
+  const groupedHoverSourceIndexCache = new WeakMap();
   const GROUPED_HOVER_CACHE_LIMIT = 4;
   const groupedHoverTraceCache = new Map();
   const groupedHoverCacheCounters = { hits: 0, misses: 0, evictions: 0 };
@@ -381,6 +383,7 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
     traces,
     labels,
     revision,
+    stackedPriceSeries,
   }) {
     const sourceFingerprints = traces.filter((trace) => (
       chartOverlayDescriptor(trace).kind === "eps" || isEventMarkerTrace(trace)
@@ -394,6 +397,7 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
         traceContentFingerprint(priceTraces.get(series)),
       ].join(":" )).join("|"),
       sourceFingerprints.join("|"),
+      [...stackedPriceSeries].sort().join("|"),
     ].join("||");
   }
 
@@ -449,6 +453,12 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
     const labelName = typeof options.labelName === "function"
       ? options.labelName
       : (series) => series;
+    const hoverLabelName = typeof options.hoverLabelName === "function"
+      ? options.hoverLabelName
+      : labelName;
+    const stackedPriceSeries = new Set((Array.isArray(options.stackedPriceSeries)
+      ? options.stackedPriceSeries
+      : []).map((series) => String(series || "").trim()).filter(Boolean));
     const requestedSeries = new Set(seriesOrder);
     const priceTraces = new Map();
     traces.forEach((trace) => {
@@ -466,7 +476,7 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
     if (!activeSeries.length) return [];
     const activeSet = new Set(activeSeries);
     const labels = new Map(activeSeries.map((series) => [series, {
-      label: labelName(series),
+      label: hoverLabelName(series),
       color: priceTraces.get(series)?.line?.color || "#eeeeee",
     }]));
     activeSeries.forEach((series) => {
@@ -487,6 +497,7 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
       traces,
       labels,
       revision: options.revision,
+      stackedPriceSeries,
     });
     const cachedTraces = readGroupedHoverCache(cacheKey, traces);
     if (cachedTraces) return cachedTraces;
@@ -510,9 +521,15 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
 
     activeSeries.forEach((series) => {
       const trace = priceTraces.get(series);
+      const listingDate = String(trace?.meta?.listingDate || "").slice(0, 10);
       (trace.x || []).forEach((date, index) => {
-        const row = ensureRow(series, String(date || ""), trace.y?.[index]);
-        if (row) row.price = String(trace.text?.[index] ?? "-");
+        const pointDate = String(date || "").slice(0, 10);
+        const row = ensureRow(series, pointDate, trace.y?.[index]);
+        if (!row) return;
+        row.price = String(trace.text?.[index] ?? "-").replace(/<br>상장일$/, "");
+        if (listingDate && pointDate === listingDate) {
+          row.details.push({ priority: 5, html: "상장일" });
+        }
       });
     });
 
@@ -543,7 +560,7 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
         const series = eventPointTicker(trace, index);
         if (!activeSet.has(series)) return;
         const row = ensureRow(series, String(date || ""), trace.y?.[index]);
-        const html = expandedHoverTemplate(trace, index, labelName(series));
+        const html = expandedHoverTemplate(trace, index, hoverLabelName(series));
         if (row && html) {
           row.details.push({ priority: hoverDetailPriority(trace), html });
           coveredPoints += 1;
@@ -577,9 +594,12 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
           .sort((left, right) => left.priority - right.priority)
           .map((detail) => `<br>${detail.html}`)
           .join("");
+        const labelHtml = `<b style="color:${color}">${escapeHoverHtml(label)}</b>`;
         const price = row.price
-          ? `<b style="color:${color}">${escapeHoverHtml(label)}</b> · 가격 ${escapeHoverHtml(row.price)}`
-          : `<b style="color:${color}">${escapeHoverHtml(label)}</b>`;
+          ? (stackedPriceSeries.has(series)
+              ? `${labelHtml}<br>가격 ${escapeHoverHtml(row.price)}`
+              : `${labelHtml} · 가격 ${escapeHoverHtml(row.price)}`)
+          : labelHtml;
         return `${price}${detailLines}${separator}`;
       });
       return [{
@@ -638,14 +658,30 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
     ));
     if (groupedIndex < 0) return null;
     const grouped = traces[groupedIndex];
-    const byDate = new Map((sourceTrace.x || []).map((date, index) => [String(date || ""), values[index]]));
+    const sourceDates = Array.isArray(sourceTrace.x) ? sourceTrace.x : [];
+    let cachedIndex = groupedHoverSourceIndexCache.get(sourceTrace);
+    if (!cachedIndex
+      || cachedIndex.dates !== sourceDates
+      || cachedIndex.count !== sourceDates.length
+      || cachedIndex.first !== sourceDates[0]
+      || cachedIndex.last !== sourceDates[sourceDates.length - 1]) {
+      cachedIndex = {
+        count: sourceDates.length,
+        dates: sourceDates,
+        first: sourceDates[0],
+        last: sourceDates[sourceDates.length - 1],
+        indexes: new Map(sourceDates.map((date, index) => [String(date || ""), index])),
+      };
+      groupedHoverSourceIndexCache.set(sourceTrace, cachedIndex);
+    }
     const pointKinds = grouped?.meta?.hoverGroupPointKinds;
-    const y = (grouped.x || []).map((date, index) => (
-      (!Array.isArray(pointKinds) || pointKinds[index] === sourceKind)
-        && byDate.has(String(date || ""))
-        ? byDate.get(String(date || ""))
-        : grouped.y?.[index]
-    ));
+    const y = (grouped.x || []).map((date, index) => {
+      const sourceIndex = cachedIndex.indexes.get(String(date || ""));
+      return (!Array.isArray(pointKinds) || pointKinds[index] === sourceKind)
+        && Number.isInteger(sourceIndex)
+        ? values[sourceIndex]
+        : grouped.y?.[index];
+    });
     return { traceIndex: groupedIndex, y };
   }
 
@@ -841,6 +877,73 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
     const signature = [xAxis.range, yAxis.range, xAxis._offset, xAxis._length, yAxis._offset, yAxis._length,
       ...items.flatMap((item) => [item.seriesKey, item.leftY, item.rightY, item.color])].join("|");
     return { signature, items };
+  }
+
+  function applyHandleAppearance(handle, item, side) {
+    const isLeft = side === "left";
+    handle.className = `y-handle y-handle-${side}${item.isEps ? " y-handle-eps" : ""}`;
+    handle.style.top = `${(isLeft ? item.leftY : item.rightY) - 7}px`;
+    if (!isLeft) handle.style.left = `${item.rightX}px`;
+    handle.style.borderColor = item.isEps ? item.color : "";
+    handle.style.backgroundColor = item.isEps ? "transparent" : item.color;
+    const title = item.handleLabel || item.label || item.seriesKey;
+    handle.title = `${title} (${isLeft ? "위치" : "스케일"})`;
+    handle.dataset.seriesKey = item.seriesKey;
+    handle.hidden = false;
+  }
+
+  function syncHandleLayout(container, layout, options = {}) {
+    if (!container || !layout) return new Map();
+    if (container.dataset.layoutSignature === layout.signature) {
+      return container._thinkstockHandlePairs || new Map();
+    }
+    const items = Array.isArray(layout.items) ? layout.items : [];
+    const structureSignature = items
+      .map(({ seriesKey, isEps }) => `${seriesKey}:${isEps ? "eps" : "series"}`)
+      .join("|");
+    const canReuse = container.dataset.structureSignature === structureSignature
+      && container._thinkstockHandlePairs instanceof Map
+      && items.every(({ seriesKey }) => {
+        const pair = container._thinkstockHandlePairs.get(seriesKey);
+        return pair?.length === 2 && pair.every((handle) => handle?.isConnected);
+      });
+    const pairs = canReuse ? container._thinkstockHandlePairs : new Map();
+    if (!canReuse) container.replaceChildren();
+
+    items.forEach((item) => {
+      let pair = pairs.get(item.seriesKey);
+      const leftHandle = pair?.[0] || container.ownerDocument.createElement("div");
+      const rightHandle = pair?.[1] || container.ownerDocument.createElement("div");
+      const label = options.labelName?.(item.seriesKey) || item.seriesKey;
+      applyHandleAppearance(leftHandle, { ...item, label }, "left");
+      applyHandleAppearance(rightHandle, { ...item, label }, "right");
+      leftHandle._thinkstockHandleState = {
+        traceIndex: item.traceIndex,
+        seriesKey: item.seriesKey,
+        basePixelY: item.leftY,
+        axis: options.axis,
+        pairedHandle: rightHandle,
+        pairedPixelY: item.rightY,
+        clickTogglesVisibility: !item.isEps,
+      };
+      rightHandle._thinkstockHandleState = {
+        traceIndex: item.traceIndex,
+        seriesKey: item.seriesKey,
+        basePixelY: item.rightY,
+        axis: options.axis,
+      };
+      if (!pair) {
+        options.bindHandle?.(leftHandle, "left");
+        options.bindHandle?.(rightHandle, "right");
+        container.append(leftHandle, rightHandle);
+        pair = [leftHandle, rightHandle];
+        pairs.set(item.seriesKey, pair);
+      }
+    });
+    container._thinkstockHandlePairs = pairs;
+    container.dataset.structureSignature = structureSignature;
+    container.dataset.layoutSignature = layout.signature;
+    return pairs;
   }
 
   function restylePayload(traces) {
@@ -1203,7 +1306,12 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
       renderRevision = "",
     } = options;
     const baseValuesBySeries = {};
-    const traces = preparedLineData(seriesModels, displayIndexes, renderRevision).map((lineData) => {
+    const orderedLineData = orderItemsByActivation(
+      preparedLineData(seriesModels, displayIndexes, renderRevision),
+      options.seriesOrder,
+      (lineData) => lineData?.series,
+    );
+    const traces = orderedLineData.map((lineData) => {
       const {
         series,
         baseLineWidth,
@@ -1218,12 +1326,23 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
       } = lineData;
       baseValuesBySeries[series] = base;
       const color = seriesColor(series);
+      const traceMode = x.length <= 1 ? "markers" : "lines";
+      const listingDate = KOREAN_EQUITY_PATTERN.test(String(series || ""))
+        && Number.isFinite(fullDataStartMs)
+        ? new Date(fullDataStartMs).toISOString().slice(0, 10)
+        : "";
+      const listingPointIndex = listingDate
+        ? x.findIndex((date) => String(date || "").slice(0, 10) === listingDate)
+        : -1;
+      const hoverText = listingPointIndex >= 0
+        ? text.map((value, index) => (index === listingPointIndex ? `${value}<br>상장일` : value))
+        : text;
       return {
         x,
         y,
-        text,
+        text: hoverText,
         type: lineTraceType,
-        mode: "lines",
+        mode: traceMode,
         name: labelName(series),
         visible: hiddenSeries.has(series) ? "legendonly" : true,
         connectgaps: false,
@@ -1234,6 +1353,7 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
           sourcePointCount,
           fullDataEndMs,
           fullDataStartMs,
+          listingDate,
           longGapFillPointCount,
           displayPointCount: Number.isFinite(displayPointCount)
             ? displayPointCount
@@ -1245,9 +1365,12 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
             hiddenSeries.has(series) ? "hidden" : "visible",
             hoverShowPopup ? "hover" : "plain",
             lineTraceType,
+            traceMode,
+            listingDate,
           ].join("|"),
         },
         line: { color, width: baseLineWidth, shape: "linear" },
+        opacity: 1,
         marker: { symbol: "circle", size: 7, color },
         hoverinfo: hoverShowPopup ? undefined : "skip",
         hovertemplate: hoverShowPopup ? "%{text}<extra>%{fullData.name}</extra>" : undefined,
@@ -1273,6 +1396,7 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
       labelName: options.labelName,
       renderRevision: options.renderRevision,
       seriesColor: options.seriesColor,
+      seriesOrder: options.seriesOrder,
     });
     const deferOverlays = options.deferOverlays === true;
     const emptyEpsTraceModel = { traces: [], baseValuesBySeries: {} };
@@ -1308,8 +1432,12 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
       : buildGroupedHoverTraces({
           enabled: options.hoverShowPopup,
           traces,
-          seriesOrder: selected,
+          seriesOrder: Array.isArray(options.hoverSeriesOrder)
+            ? options.hoverSeriesOrder
+            : selected,
+          hoverLabelName: options.hoverLabelName,
           labelName: options.labelName,
+          stackedPriceSeries: options.stackedPriceSeries,
           revision: String(options.eventRevisionKey || ""),
         });
     traces.unshift(...groupedHoverTraces);
@@ -1529,6 +1657,7 @@ import { assertChartRenderPayload } from "./chart-render-contract.mjs";
     buildSeriesVisibilityUpdate,
     groupedHoverCacheStats,
     buildHandleLayouts,
+    syncHandleLayout,
     groupedHoverYUpdate,
     buildLineTraces,
     lineDataCacheStats,

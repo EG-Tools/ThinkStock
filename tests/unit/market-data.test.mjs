@@ -285,3 +285,127 @@ test("keeps normalization and scale references fixed while navigating history", 
   assert.equal(bases.volatile, 250);
   assert.equal(scales.volatile, 80);
 });
+
+test("auto-fits small percentage-point series without flattening them", () => {
+  const rows = [
+    { date: "2026-08-01", leading_cycle: 101.2, t10y1y: 0.62 },
+    { date: "2026-08-02", leading_cycle: 101.3, t10y1y: 0.69 },
+    { date: "2026-08-03", leading_cycle: 101.1, t10y1y: 0.54 },
+  ];
+  const options = { additiveSeries: ["t10y1y"] };
+  const bases = marketData.resolveNormalizationBases(
+    rows,
+    ["leading_cycle", "t10y1y"],
+    {},
+    options,
+  );
+  const scales = marketData.autoFitScales(
+    rows,
+    ["leading_cycle", "t10y1y"],
+    bases,
+    options,
+  );
+
+  assert.equal(bases.t10y1y, 0.62);
+  assert.ok(scales.t10y1y > 5000);
+  assert.ok(scales.t10y1y <= 20000);
+});
+
+
+test("uses one current-window auto-fit rule for macro, deposit, and stock series", () => {
+  const rows = [
+    {
+      date: "2026-08-01",
+      leading_cycle: 101,
+      t10y1y: 0.5,
+      us_credit_spread: 1.2,
+      customer_deposit: 100,
+      "^KS11": 100,
+    },
+    {
+      date: "2026-08-02",
+      leading_cycle: 101.1,
+      t10y1y: 0.7,
+      us_credit_spread: 1.6,
+      customer_deposit: 110,
+      "^KS11": 130,
+    },
+    {
+      date: "2026-08-03",
+      leading_cycle: 100.9,
+      t10y1y: 0.4,
+      us_credit_spread: 1.1,
+      customer_deposit: 105,
+      "^KS11": 115,
+    },
+  ];
+  const macroSeries = ["leading_cycle", "t10y1y", "us_credit_spread"];
+  const fourSeries = [...macroSeries, "customer_deposit"];
+  const options = {
+    additiveSeries: ["t10y1y", "us_credit_spread"],
+    minimumTargetRange: 20,
+    postScaleBySeries: { leading_cycle: 20 },
+  };
+  const fourBases = marketData.resolveNormalizationBases(rows, fourSeries, {}, options);
+  const fourScales = marketData.autoFitScales(rows, fourSeries, fourBases, options);
+  const fiveSeries = [...fourSeries, "^KS11"];
+  const fiveBases = marketData.resolveNormalizationBases(rows, fiveSeries, {}, options);
+  const fiveScales = marketData.autoFitScales(rows, fiveSeries, fiveBases, options);
+
+  assert.equal(fourScales.customer_deposit, 200);
+  assert.equal(fiveScales.customer_deposit, fourScales.customer_deposit);
+  assert.ok(fourScales.leading_cycle > 100);
+  assert.ok(fourScales.t10y1y > 100);
+  assert.ok(fourScales.us_credit_spread > 100);
+  const fittedSpans = Object.fromEntries(fiveSeries.map((series) => {
+    const base = fiveBases[series];
+    const additive = ["t10y1y", "us_credit_spread"].includes(series);
+    const values = rows.map((row) => additive
+      ? 100 + row[series] - base
+      : (row[series] / base) * 100);
+    const postScale = series === "leading_cycle" ? 20 : 1;
+    const fitted = values.map((value) => (
+      100 + (value - 100) * (fiveScales[series] / 100) * postScale
+    ));
+    return [series, Math.max(...fitted) - Math.min(...fitted)];
+  }));
+  fiveSeries.forEach((series) => {
+    assert.ok(
+      fittedSpans[series] >= 19.8 && fittedSpans[series] <= 20.2,
+      `${series} should use the same auto-fit target`,
+    );
+  });
+});
+
+test("auto-fits a multibagger and a quiet stock to the same visible span", () => {
+  const rows = [
+    { date: "2024-08-01", quiet: 100, multibagger: 100 },
+    { date: "2025-08-01", quiet: 80, multibagger: 650 },
+    { date: "2026-08-01", quiet: 120, multibagger: 1100 },
+  ];
+  const series = ["quiet", "multibagger"];
+  const options = {
+    centerCurrentRange: true,
+    minimumTargetRange: 20,
+  };
+  const bases = marketData.resolveNormalizationBases(rows, series, {}, options);
+  const scales = marketData.autoFitScales(rows, series, bases, options);
+  const fittedSpans = Object.fromEntries(series.map((key) => {
+    const normalized = rows.map((row) => (row[key] / bases[key]) * 100);
+    const fitted = marketData.centeredScale(normalized, scales[key]);
+    return [key, {
+      low: Math.min(...fitted),
+      high: Math.max(...fitted),
+      span: Math.max(...fitted) - Math.min(...fitted),
+    }];
+  }));
+
+  series.forEach((key) => {
+    assert.ok(
+      fittedSpans[key].span >= 19.99 && fittedSpans[key].span <= 20.01,
+      `${key} should fill the same current-window height`,
+    );
+    assert.ok(Math.abs(fittedSpans[key].low - 90) < 0.01);
+    assert.ok(Math.abs(fittedSpans[key].high - 110) < 0.01);
+  });
+});

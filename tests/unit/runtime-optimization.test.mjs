@@ -207,6 +207,39 @@ test("DART event lifecycle scopes work to visible stocks and coalesces insider r
   assert.deepEqual(lifecycle.snapshot().visibleTickers, ["005930.KS"]);
 });
 
+test("DART event lifecycle restores visible layers sequentially behind one contract", async () => {
+  const calls = [];
+  const lifecycle = dartRequestRuntimeModule.createDartEventLifecycle({}, {
+    tickerPattern: /^[0-9]{6}\.(KS|KQ)$/,
+    getStocks: () => [{ ticker: "005930.KS" }],
+    isInsiderEnabled: () => true,
+    canUseGateway: () => true,
+    mapWithConcurrency: async (items, _limit, mapper) => Promise.all(items.map(mapper)),
+    requestDisclosure: async (ticker, messageElement) => {
+      calls.push(`disclosure:${ticker}:${messageElement.id}`);
+      return [];
+    },
+    requestInsider: async (ticker, options) => {
+      calls.push(`insider:${ticker}:${options.trackProgress}`);
+      return [{ ticker }];
+    },
+    setTimer: setTimeout,
+    clearTimer: clearTimeout,
+  });
+
+  const result = await lifecycle.restoreVisibleLayers({
+    disclosures: true,
+    insiders: true,
+    messageElement: { id: "message" },
+  });
+  assert.deepEqual(calls, [
+    "disclosure:005930.KS:message",
+    "insider:005930.KS:true",
+  ]);
+  assert.equal(result.disclosures.length, 1);
+  assert.equal(result.insiderCount, 1);
+});
+
 test("progressive DART records merge pages and expose stable progress", async () => {
   const pages = [];
   const progress = [];

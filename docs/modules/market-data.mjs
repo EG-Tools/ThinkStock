@@ -481,32 +481,53 @@ import sharedDataPayload from "./data-payload.mjs";
     ));
   }
 
-  function autoFitScales(rows, selected, normBases) {
+  function autoFitScales(rows, selected, normBases, options = {}) {
+    const additiveSeries = new Set(options.additiveSeries || options.zeroCenteredSeries || []);
+    const postScaleBySeries = options.postScaleBySeries || {};
+    const minimumTargetRange = Math.max(0.01, Number(options.minimumTargetRange) || 20);
+    const minimumScalePercent = Math.max(0.001, Number(options.minimumScalePercent) || 0.1);
+    const maximumScalePercent = Math.max(
+      minimumScalePercent,
+      Number(options.maximumScalePercent) || 20000,
+    );
     const info = [];
     selected.forEach((series) => {
-      if (series === "leading_cycle") return;
       let values = rows.map((row) => toNum(row[series])).filter((value) => value !== null);
       if (!values.length) return;
       const base = normBases[series];
-      values = base && base !== 0
-        ? values.map((value) => (value / base) * 100)
-        : normalizeSeries(values).filter((value) => Number.isFinite(value));
-      const range = Math.max(Math.max(...values) - Math.min(...values), 1);
-      info.push([series, range]);
+      const isAdditive = additiveSeries.has(series);
+      values = isAdditive
+        ? values.map((value) => 100 + value - (Number.isFinite(base) ? base : values[0]))
+        : (base && base !== 0
+          ? values.map((value) => (value / base) * 100)
+          : normalizeSeries(values).filter((value) => Number.isFinite(value)));
+      // Auto scale has one rule for every visible line: fit its current-window
+      // movement to the same target span. A larger price-only floor made quiet
+      // stocks and deposits look flat whenever they were mixed with macro data.
+      const range = Math.max(Math.max(...values) - Math.min(...values), 0.01);
+      info.push({ series, range });
     });
     if (!info.length) return {};
-    const sorted = info.map(([, range]) => range).sort((left, right) => left - right);
-    const target = sorted[Math.floor(sorted.length / 2)];
-    return Object.fromEntries(info.map(([series, range]) => [
-      series,
-      Math.max(5, Math.min(5000, Math.round((target / range) * 100))),
-    ]));
+    return Object.fromEntries(info.map(({ series, range }) => {
+      const postScale = Math.max(0.01, Number(postScaleBySeries[series]) || 1);
+      const requestedScale = (minimumTargetRange / range / postScale) * 100;
+      const fittedScale = Math.max(
+        minimumScalePercent,
+        Math.min(maximumScalePercent, requestedScale),
+      );
+      return [
+        series,
+        Math.round(fittedScale * 1000) / 1000,
+      ];
+    }));
   }
 
-  function resolveNormalizationBases(rows, selected, fixedBases = {}) {
+  function resolveNormalizationBases(rows, selected, fixedBases = {}, options = {}) {
+    const additiveSeries = new Set(options.additiveSeries || options.zeroCenteredSeries || []);
+    const centerCurrentRange = options.centerCurrentRange === true;
     const bases = {};
     const seriesList = Array.isArray(selected) ? selected : [];
-    const firstDates = seriesList.map((series) => {
+    const firstDates = centerCurrentRange ? [] : seriesList.map((series) => {
       const row = rows.find((item) => toNum(item?.[series]) !== null);
       return row?.date || null;
     }).filter(Boolean);
@@ -516,14 +537,26 @@ import sharedDataPayload from "./data-payload.mjs";
 
     seriesList.forEach((series) => {
       const fixed = toNum(fixedBases?.[series]);
-      if (fixed !== null && Math.abs(fixed) > 1e-9) {
+      const isAdditive = additiveSeries.has(series);
+      if (fixed !== null && (isAdditive || Math.abs(fixed) > 1e-9)) {
         bases[series] = fixed;
         return;
       }
+      if (centerCurrentRange) {
+        const values = rows.map((row) => toNum(row?.[series])).filter((value) => value !== null);
+        if (!values.length) return;
+        const midpoint = (Math.min(...values) + Math.max(...values)) / 2;
+        if (Number.isFinite(midpoint) && (isAdditive || Math.abs(midpoint) > 1e-9)) {
+          bases[series] = midpoint;
+        }
+        return;
+      }
       if (!commonBaseDate) return;
-      const row = rows.find((item) => item.date >= commonBaseDate && toNum(item?.[series]) !== null);
+      const row = rows.find((item) => (
+        item.date >= commonBaseDate && toNum(item?.[series]) !== null
+      ));
       const value = toNum(row?.[series]);
-      if (value !== null && Math.abs(value) > 1e-9) bases[series] = value;
+      if (value !== null && (isAdditive || Math.abs(value) > 1e-9)) bases[series] = value;
     });
     return bases;
   }

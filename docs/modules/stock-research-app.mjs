@@ -18,7 +18,7 @@ function createStockResearchApp(scope = globalThis, options = {}) {
     if (!Number.isFinite(blockedCount)) blockedCount = getBlockedCount();
     modalButton.disabled = blockedCount <= 0;
     modalButton.textContent = blockedCount > 0
-      ? `차단 ${blockedCount} 리셋`
+      ? `차단 ${blockedCount} 종목`
       : "차단 0 종목";
   }
 
@@ -85,10 +85,10 @@ function createStockResearchApp(scope = globalThis, options = {}) {
       }
     };
     if (setupOptions.bindOpenButton !== false) button?.addEventListener("click", open);
-    modalBlockedButton?.addEventListener("click", async () => {
+    modalBlockedButton?.addEventListener("click", async (event) => {
       if (modalBlockedButton.disabled) return;
-      try { (await ensureController()).clearBlocked(); }
-      catch (error) { report("차단종목 초기화 오류", error); }
+      try { (await ensureController()).toggleBlockedList(event); }
+      catch (error) { report("차단종목 목록 오류", error); }
     });
   }
 

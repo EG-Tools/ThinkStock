@@ -2,12 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  acceptPlannedViewportRender,
   applyMainChartViewportPlan,
+  buildLinkedViewportRangePlan,
+  buildLiveViewportRangePayload,
   buildMainChartRenderFrame,
   canReuseEventMarkerTraces,
   canReuseFutureOverlayTraces,
   createChartUpdateCoordinator,
   createChartRenderFacade,
+  createLinkedViewportFrameRuntime,
   createMainChartRenderGuard,
   createMainChartRenderRuntime,
   createPlotlyUpdateRuntime,
@@ -19,7 +23,133 @@ import {
   normalizeChartInvalidation,
   shouldHydrateChartData,
   shouldUpdateAuxiliary,
+  settleViewportRenderTransaction,
 } from "../../docs/modules/chart-update-coordinator.mjs";
+
+test("one linked viewport runtime commits main, companions, and final visuals once", async () => {
+  const events = [];
+  const mainElement = {
+    data: [{ x: ["2026-01-01", "2026-01-02"], y: [90, 110], meta: { seriesKey: "A" } }],
+    _fullLayout: { xaxis: { range: ["2025-01-01", "2025-12-31"] }, yaxis: { range: [80, 120] } },
+  };
+  const companions = [
+    { data: [{ x: ["2026-01-01"], y: [1] }], _fullLayout: { xaxis: { range: ["old", "old"] } } },
+    { data: [{ x: ["2026-01-01"], y: [2] }], _fullLayout: { xaxis: { range: ["old", "old"] } } },
+  ];
+  const runtime = createLinkedViewportFrameRuntime({
+    updateRuntime: {
+      relayoutMany: async (entries) => { events.push(["companions", entries.length]); },
+      relayout: async () => { events.push(["main-relayout"]); },
+      update: async (_element, data, layout, indexes) => {
+        events.push(["main-update", data.y.length, indexes.length, layout["xaxis.range[0]"]]);
+      },
+    },
+    getMainElement: () => mainElement,
+    getCompanionElements: () => companions,
+    collectTraceYUpdates: () => ({
+      seriesUpdates: [{ seriesKey: "A" }],
+      traceIndexes: [0],
+      yUpdates: [[95, 105]],
+    }),
+    xRangeMatches: () => false,
+    isAutoScale: () => true,
+    rangeBearingTraces: (traces) => traces,
+    fitRangeForTraces: () => [90, 110],
+    buildCompanionPayload: (_element, payload) => ({ ...payload, "yaxis.range": [0, 10] }),
+    afterCommit: () => { events.push(["after-commit"]); },
+  });
+
+  const result = await runtime.apply({
+    startMs: Date.parse("2026-01-01"),
+    endMs: Date.parse("2026-02-01"),
+    meta: { liveFit: true },
+  });
+
+  assert.equal(result.applied, true);
+  assert.deepEqual(events, [
+    ["companions", 2],
+    ["main-update", 1, 1, "2026-01-01T00:00:00.000Z"],
+    ["after-commit"],
+  ]);
+  assert.deepEqual(runtime.stats(), {
+    requested: 1,
+    applied: 1,
+    skipped: 0,
+    mainUpdates: 1,
+    companionUpdates: 2,
+    dataRefreshes: 0,
+  });
+});
+
+test("drops an older linked viewport frame before it can overwrite a newer interaction", async () => {
+  let interactionRevision = 1;
+  let updates = 0;
+  const mainElement = {
+    data: [{ x: ["2026-01-01", "2026-01-02"], y: [90, 110], meta: { seriesKey: "A" } }],
+    _fullLayout: { xaxis: { range: ["2026-01-01", "2026-01-02"] }, yaxis: { range: [80, 120] } },
+  };
+  const runtime = createLinkedViewportFrameRuntime({
+    updateRuntime: {
+      relayoutMany: async () => { updates += 1; },
+      relayout: async () => { updates += 1; },
+      update: async () => { updates += 1; },
+    },
+    beforeApply: async () => { interactionRevision = 2; },
+    isRequestCurrent: ({ meta }) => meta?.interactionRevision === interactionRevision,
+    getMainElement: () => mainElement,
+    getCompanionElements: () => [],
+    xRangeMatches: () => false,
+    isAutoScale: () => true,
+    rangeBearingTraces: (traces) => traces,
+    fitRangeForTraces: () => [90, 110],
+  });
+
+  const result = await runtime.apply({
+    startMs: Date.parse("2026-01-01"),
+    endMs: Date.parse("2026-02-01"),
+    meta: { liveFit: true, interactionRevision: 1 },
+  });
+
+  assert.equal(result.applied, false);
+  assert.equal(result.reason, "stale-request");
+  assert.equal(updates, 0);
+  assert.equal(runtime.stats().skipped, 1);
+});
+
+test("linked viewport runtime delegates an uncovered range to the main data owner", async () => {
+  let refreshes = 0;
+  let finalVisuals = 0;
+  const mainElement = {
+    data: [{ x: ["2026-01-01"], y: [100], meta: { seriesKey: "A" } }],
+    _fullLayout: { xaxis: { range: ["2026-01-01", "2026-01-02"] }, yaxis: { range: [90, 110] } },
+  };
+  const runtime = createLinkedViewportFrameRuntime({
+    updateRuntime: {
+      relayoutMany: async () => [],
+      relayout: async () => undefined,
+      update: async () => undefined,
+    },
+    getMainElement: () => mainElement,
+    getCompanionElements: () => [],
+    xRangeMatches: () => false,
+    isAutoScale: () => true,
+    rangeBearingTraces: (traces) => traces,
+    fitRangeForTraces: () => null,
+    requestMainDataRefresh: () => { refreshes += 1; },
+    afterCommit: () => { finalVisuals += 1; },
+  });
+
+  const result = await runtime.apply({
+    startMs: Date.parse("2025-01-01"),
+    endMs: Date.parse("2025-02-01"),
+    meta: { liveFit: true },
+  });
+
+  assert.equal(result.mainDataRefresh, true);
+  assert.equal(refreshes, 1);
+  assert.equal(finalVisuals, 0);
+  assert.equal(runtime.stats().dataRefreshes, 1);
+});
 
 test("fits the main chart and marker layer in one coordinated update", async () => {
   const calls = [];
@@ -64,6 +194,230 @@ test("fits the main chart and marker layer in one coordinated update", async () 
   assert.deepEqual(calls[0][4], [1]);
 });
 
+test("builds horizontal and fitted vertical viewport ranges in one live frame", () => {
+  const result = buildLiveViewportRangePayload({
+    enabled: true,
+    payload: { "xaxis.range[0]": "2026-01-01", "xaxis.range[1]": "2026-06-30" },
+    traces: [{ x: ["2026-01-01"], y: [100] }],
+    xRange: ["2026-01-01", "2026-06-30"],
+    currentYRange: [90, 110],
+    fitRangeForTraces: (_traces, range, options) => {
+      assert.deepEqual(range, ["2026-01-01", "2026-06-30"]);
+      assert.equal(options.paddingRatio, 0.08);
+      return [70, 130];
+    },
+    fitOptions: { paddingRatio: 0.08 },
+  });
+
+  assert.equal(result.yChanged, true);
+  assert.equal(result.enabled, true);
+  assert.deepEqual(result.fittedYRange, [70, 130]);
+  assert.deepEqual(result.payload, {
+    "xaxis.range[0]": "2026-01-01",
+    "xaxis.range[1]": "2026-06-30",
+    "yaxis.range[0]": 70,
+    "yaxis.range[1]": 130,
+    "yaxis.autorange": false,
+  });
+});
+
+test("requests a trace-window refresh instead of moving into an uncovered range", () => {
+  const mainElement = {
+    data: [{ x: ["2026-01-01"], y: [100] }],
+    _fullLayout: { xaxis: { range: ["old", "old"] }, yaxis: { range: [90, 110] } },
+  };
+  const plan = buildLinkedViewportRangePlan({
+    mainElement,
+    xRange: ["2025-01-01", "2025-06-30"],
+    xRangeMatches: () => false,
+    liveFit: true,
+    autoScale: true,
+    rangeBearingTraces: (traces) => traces,
+    fitRangeForTraces: () => null,
+  });
+
+  assert.equal(plan.needsMainDataRefresh, true);
+  assert.equal(plan.updateMain, true);
+  assert.equal(plan.liveFit.enabled, true);
+  assert.equal(plan.liveFit.fittedYRange, null);
+});
+
+test("builds one linked viewport plan with live vertical fitting", () => {
+  const mainElement = {
+    data: [{ x: ["2026-01-01"], y: [100] }],
+    _fullLayout: { xaxis: { range: ["old", "old"] }, yaxis: { range: [90, 110] } },
+  };
+  const visibleCompanion = { data: [{}] };
+  const hiddenCompanion = { data: [{}] };
+  let fitCalls = 0;
+  const plan = buildLinkedViewportRangePlan({
+    mainElement,
+    companionElements: [visibleCompanion, hiddenCompanion],
+    xRange: ["2026-01-01", "2026-06-30"],
+    xRangeMatches: () => false,
+    isCompanionVisible: (element) => element !== hiddenCompanion,
+    liveFit: true,
+    autoScale: true,
+    rangeBearingTraces: (traces) => traces,
+    fitRangeForTraces: () => { fitCalls += 1; return [70, 130]; },
+  });
+
+  assert.equal(fitCalls, 1);
+  assert.equal(plan.updateMain, true);
+  assert.deepEqual(plan.companionUpdates, [true, false]);
+  assert.deepEqual(plan.mainPayload, {
+    "xaxis.range[0]": "2026-01-01",
+    "xaxis.range[1]": "2026-06-30",
+    "yaxis.range[0]": 70,
+    "yaxis.range[1]": 130,
+    "yaxis.autorange": false,
+  });
+});
+
+test("fits transformed prices and anchored markers in one viewport update", () => {
+  const mainElement = {
+    data: [
+      { x: ["2026-01-01", "2026-02-01"], y: [95, 105], meta: { overlayKind: "price" } },
+      { x: ["2026-02-01"], y: [108], meta: { overlayKind: "signal" } },
+    ],
+    _fullLayout: { xaxis: { range: ["old", "old"] }, yaxis: { range: [90, 110] } },
+  };
+  const transformed = [80, 120];
+  const plan = buildLinkedViewportRangePlan({
+    mainElement,
+    xRange: ["2026-01-01", "2026-02-01"],
+    xRangeMatches: () => false,
+    liveFit: true,
+    autoScale: true,
+    traceYUpdates: { traceIndexes: [0], yUpdates: [transformed] },
+    rangeBearingTraces: (traces) => {
+      assert.deepEqual(traces[0].y, transformed);
+      return [traces[0]];
+    },
+    fitRangeForTraces: () => [75, 125],
+    collectAnchoredYUpdates: (element, options) => {
+      assert.deepEqual(element.data[0].y, transformed);
+      assert.deepEqual(options.viewportRange, [75, 125]);
+      return { traceIndexes: [1], yUpdates: [[123]] };
+    },
+  });
+
+  assert.deepEqual(plan.mainTraceIndexes, [0, 1]);
+  assert.deepEqual(plan.mainYUpdates, [transformed, [123]]);
+  assert.deepEqual(plan.liveFit.fittedYRange, [75, 125]);
+});
+
+test("settles an in-buffer viewport without a duplicate render", async () => {
+  const calls = [];
+  const result = await settleViewportRenderTransaction({
+    requestedRange: [100, 500],
+    interactionRevision: 4,
+    getInteractionRevision: () => 4,
+    rangeController: { flush: async () => calls.push("flush") },
+    viewportWindowController: { needsRefresh: () => false },
+    mainElement: { data: [{ x: ["1970-01-01T00:00:00.100Z"], y: [1] }] },
+    rangeBearingTraces: (traces) => traces,
+    setPinnedRange: (range) => calls.push(["pin", range]),
+    requestRender: () => calls.push("render"),
+    whenRenderSettled: async () => calls.push("settled"),
+    getCurrentRange: () => [100, 500],
+    flushCoMovement: () => calls.push("co-movement"),
+    releaseNormalization: () => calls.push("release"),
+  });
+
+  assert.deepEqual(result, { rendered: false, corrected: false, stale: false });
+  assert.deepEqual(calls, ["flush", ["pin", [100, 500]], "settled", "co-movement", "release"]);
+});
+
+test("checks companion trace coverage even when the main window already refreshed", async () => {
+  const calls = [];
+  const result = await settleViewportRenderTransaction({
+    requestedRange: [100, 500],
+    interactionRevision: 4,
+    getInteractionRevision: () => 4,
+    rangeController: { flush: async () => calls.push("flush") },
+    viewportWindowController: { needsRefresh: () => false },
+    mainElement: { data: [{ x: ["1970-01-01T00:00:00.100Z"], y: [1] }] },
+    rangeBearingTraces: (traces) => traces,
+    setPinnedRange: (range) => calls.push(["pin", range]),
+    whenRenderSettled: async () => calls.push("settled"),
+    getCurrentRange: () => [100, 500],
+    refreshCompanions: true,
+    refreshCompanionsNow: async () => calls.push("companions"),
+    releaseNormalization: () => calls.push("release"),
+  });
+
+  assert.deepEqual(result, { rendered: false, corrected: false, stale: false });
+  assert.deepEqual(calls, ["flush", ["pin", [100, 500]], "settled", "companions", "release"]);
+});
+
+test("reframes a completed navigation once after its final range is flushed", async () => {
+  const calls = [];
+  const result = await settleViewportRenderTransaction({
+    requestedRange: [100, 500],
+    interactionRevision: 4,
+    getInteractionRevision: () => 4,
+    rangeController: { flush: async () => calls.push("flush") },
+    viewportWindowController: { needsRefresh: () => false },
+    mainElement: { data: [{ x: ["1970-01-01T00:00:00.100Z"], y: [1] }] },
+    rangeBearingTraces: (traces) => traces,
+    setPinnedRange: (range) => calls.push(["pin", range]),
+    requestRender: () => calls.push("render"),
+    whenRenderSettled: async () => calls.push("settled"),
+    getCurrentRange: () => [100, 500],
+    reframeNormalization: true,
+    fitAfterRender: async () => calls.push("fit"),
+    releaseNormalization: () => calls.push("release"),
+  });
+
+  assert.deepEqual(result, { rendered: true, corrected: false, stale: false });
+  assert.deepEqual(calls, ["flush", ["pin", [100, 500]], "release", "render", "settled", "fit"]);
+});
+
+test("settlement repairs a target range missing from the rendered traces", async () => {
+  const calls = [];
+  const result = await settleViewportRenderTransaction({
+    requestedRange: [100, 500],
+    interactionRevision: 2,
+    getInteractionRevision: () => 2,
+    rangeController: { flush: async () => calls.push("flush") },
+    viewportWindowController: {
+      needsRefresh: () => false,
+      cancelScheduled: () => calls.push("cancel-window"),
+    },
+    mainElement: { data: [{ x: ["1970-01-01T00:00:01.000Z"], y: [1] }] },
+    rangeBearingTraces: (traces) => traces,
+    requestRender: () => calls.push("render"),
+    whenRenderSettled: async () => calls.push("settled"),
+    getCurrentRange: () => [100, 500],
+    releaseNormalization: () => calls.push("release"),
+  });
+
+  assert.deepEqual(result, { rendered: true, corrected: false, stale: false });
+  assert.deepEqual(calls, ["flush", "cancel-window", "render", "settled", "release"]);
+});
+
+test("a newer interaction prevents an older viewport transaction from releasing its lock", async () => {
+  let revision = 7;
+  const calls = [];
+  const result = await settleViewportRenderTransaction({
+    requestedRange: [100, 500],
+    interactionRevision: 7,
+    getInteractionRevision: () => revision,
+    rangeController: { flush: async () => calls.push("flush") },
+    viewportWindowController: {
+      needsRefresh: () => true,
+      cancelScheduled: () => calls.push("cancel-window"),
+    },
+    requestRender: () => calls.push("render"),
+    whenRenderSettled: async () => { revision = 8; calls.push("settled"); },
+    releaseNormalization: () => calls.push("release"),
+  });
+
+  assert.deepEqual(result, { rendered: true, corrected: false, stale: true });
+  assert.deepEqual(calls, ["flush", "cancel-window", "render", "settled"]);
+});
+
 test("normalizes every chart layer decision once per render transaction", () => {
   const invalidation = normalizeChartInvalidation({
     reasons: ["drag", "markers"],
@@ -81,6 +435,18 @@ test("normalizes every chart layer decision once per render transaction", () => 
   assert.equal(normalizeChartInvalidation(invalidation), invalidation);
   assert.equal(Object.isFrozen(invalidation.updateClasses), true);
   assert.equal(Object.isFrozen(invalidation.plan), true);
+});
+
+test("a buffered viewport replacement refreshes main and auxiliary charts together", () => {
+  const invalidation = normalizeChartInvalidation({
+    reasons: ["viewport-window"],
+    updateClasses: ["viewport-range"],
+  });
+
+  assert.equal(invalidation.plan.updateAuxiliary, true);
+  assert.equal(invalidation.plan.hydrateData, false);
+  assert.equal(invalidation.plan.reuseFutureOverlays, true);
+  assert.equal(invalidation.plan.reuseEventMarkers, true);
 });
 
 test("routes every app chart request through one render facade", () => {
@@ -243,6 +609,58 @@ test("shares one render revision guard for viewport and AI invalidation", () => 
   assert.equal(queued, 2);
 });
 
+test("render guard accepts a planned viewport change but not newer user input", () => {
+  let revision = 3;
+  let signature = "100:200";
+  const guard = createMainChartRenderGuard({
+    getAiRevision: () => 1,
+    getViewportRevision: () => revision,
+    getViewportSignature: () => signature,
+  });
+
+  signature = "120:220";
+  assert.equal(guard.acceptRenderedViewport(), true);
+  assert.equal(guard.viewportChanged(), false);
+  revision += 1;
+  signature = "130:230";
+  assert.equal(guard.acceptRenderedViewport(), false);
+  assert.equal(guard.viewportChanged(), true);
+});
+
+test("planned viewport acceptance requires the rendered axis to match", () => {
+  let accepted = 0;
+  const guard = { acceptRenderedViewport: () => { accepted += 1; return true; } };
+  const plan = { savedXRange: ["2026-01-01", "2026-02-01"] };
+  assert.equal(acceptPlannedViewportRender(guard, {}, plan, () => false), false);
+  assert.equal(accepted, 0);
+  assert.equal(acceptPlannedViewportRender(guard, {}, plan, () => true), true);
+  assert.equal(accepted, 1);
+});
+
+test("render guard discards a prepared viewport window when a newer range wins", () => {
+  let revision = 1;
+  let invalidated = 0;
+  let requested = 0;
+  const guard = createMainChartRenderGuard({
+    getAiRevision: () => 1,
+    getViewportRevision: () => revision,
+    getViewportSignature: () => String(revision),
+    invalidateViewportWindow: () => { invalidated += 1; },
+    requestViewportRender: () => { requested += 1; },
+  });
+
+  guard.prepareViewportWindow();
+  revision = 2;
+  assert.equal(guard.abortPreparedFrame(), true);
+  assert.equal(invalidated, 1);
+  assert.equal(requested, 1);
+
+  guard.prepareViewportWindow();
+  guard.commitViewportWindow();
+  guard.discardViewportWindow();
+  assert.equal(invalidated, 1, "a committed window must remain valid");
+});
+
 test("reuses EPS, AI, and event traces through one composition plan", () => {
   const descriptor = (trace) => ({ kind: trace.kind });
   const eps = { kind: "eps", meta: { seriesKey: "eps:A" } };
@@ -297,6 +715,28 @@ test("price-first composition reuses only active passive overlays even with pend
   assert.equal(plan.reuseEventMarkers, true);
 });
 
+test("price-first composition rebuilds grouped hover when activation order changed", () => {
+  const descriptor = (trace) => ({ kind: trace.kind, seriesKey: trace.meta?.seriesKey || "" });
+  const groupedA = { kind: "grouped-hover", meta: { hoverGroupTicker: "A" } };
+  const groupedB = { kind: "grouped-hover", meta: { hoverGroupTicker: "B" } };
+  const plan = createReusableMainChartTracePlan(
+    { data: [groupedA, groupedB] },
+    {
+      chartOverlayDescriptor: descriptor,
+      isEventMarkerTrace: () => false,
+    },
+    { updateClasses: ["composition"] },
+    {
+      activeSeries: ["A", "B"],
+      hoverSeriesOrder: ["B", "A"],
+      deferOverlays: true,
+      hiddenSeries: new Set(),
+    },
+  );
+
+  assert.equal(plan.groupedHoverTraces, null);
+});
+
 test("hydrates chart session state from one normalized model boundary", () => {
   const session = {};
   const model = {
@@ -323,6 +763,7 @@ test("hydrates chart session state from one normalized model boundary", () => {
 test("builds composition, viewport, and layout through one render frame boundary", async () => {
   const traces = [{ x: ["2026-01-02"], meta: { sourcePointCount: 1 } }];
   const viewportCalls = [];
+  const fittedRanges = [];
   const frame = await buildMainChartRenderFrame({
     element: { data: [] },
     renderer: {
@@ -354,7 +795,7 @@ test("builds composition, viewport, and layout through one render frame boundary
         buildRenderViewportPlan: (options) => {
           viewportCalls.push(options);
           return {
-            defaultXRange: ["2026-01-01", "2026-01-31"],
+            defaultXRange: ["2026-07-01", "2026-07-31"],
             forecastEnd: "2026-01-31",
             savedXRange: ["2026-01-01", "2026-01-31"],
             savedYRange: null,
@@ -366,7 +807,10 @@ test("builds composition, viewport, and layout through one render frame boundary
       showAiForecast: false,
       showEps: false,
       futurePlanState: {},
-      fitRangeForTraces: () => [0, 20],
+      fitRangeForTraces: (_traces, range) => {
+        fittedRanges.push(range);
+        return [0, 20];
+      },
       toMilliseconds: Date.parse,
       dayMs: 86400000,
       horizontalMargin: 40,
@@ -377,6 +821,7 @@ test("builds composition, viewport, and layout through one render frame boundary
 
   assert.deepEqual(frame.viewportPlan.savedYRange, null);
   assert.deepEqual(frame.layout.options.fittedYRange, [0, 20]);
+  assert.deepEqual(fittedRanges, [["2026-01-01", "2026-01-31"]]);
   assert.deepEqual(viewportCalls[0].nextVisibleDataRange, [1, 2]);
   assert.equal(frame.received.eventRevisionKey, "disclosure,1|timing,2");
 });
@@ -406,7 +851,6 @@ test("commits viewport and delayed overlay state through one render boundary", (
   assert.equal(session.currentStart, "2026-01-01");
   assert.equal(session.currentEnd, "2026-06-30");
   assert.equal(session.pendingAutoChartFit, true);
-  assert.equal(session.pendingAutoChartFitExpandOnly, false);
   assert.deepEqual(result.mainRange, ["2026-01-01", "2026-06-30"]);
   assert.equal(result.delayedScaleTraceCount, 2);
   assert.equal(result.needsDelayedFit, true);
@@ -629,4 +1073,32 @@ test("plotly update runtime reuses an identical relayout already in flight", asy
   release(true);
   await Promise.all([first, second]);
   assert.equal(runtime.isBusy(), false);
+});
+
+test("plotly update runtime serializes render and viewport work for the same chart", async () => {
+  const calls = [];
+  let releaseRender;
+  const runtime = createPlotlyUpdateRuntime({
+    Plotly: {
+      relayout: async () => { calls.push("relayout"); },
+    },
+  });
+  const element = { id: "chart", data: [{}] };
+  const render = runtime.runElement("render", element, () => {
+    calls.push("render:start");
+    return new Promise((resolve) => {
+      releaseRender = () => {
+        calls.push("render:end");
+        resolve();
+      };
+    });
+  });
+  await Promise.resolve();
+  const relayout = runtime.relayout(element, { "xaxis.range[0]": "2026-01-01" });
+  await Promise.resolve();
+  assert.deepEqual(calls, ["render:start"]);
+
+  releaseRender();
+  await Promise.all([render, relayout]);
+  assert.deepEqual(calls, ["render:start", "render:end", "relayout"]);
 });

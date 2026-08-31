@@ -10,11 +10,11 @@
 }
 
 .series-row.base-row {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .series-row.base-row:nth-child(2) {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .custom-series-row {
@@ -64,6 +64,8 @@
 }
 
 .series-toggle-btn[data-series="leading_cycle"] { --series-color: #999999; }
+.series-toggle-btn[data-series="t10y1y"] { --series-color: #2dd4bf; }
+.series-toggle-btn[data-series="us_credit_spread"] { --series-color: #facc15; }
 .series-toggle-btn[data-series="customer_deposit"] { --series-color: #f59e0b; }
 .series-toggle-btn[data-series="^KS11"] { --series-color: #4ade80; }
 .series-toggle-btn[data-series="^KQ11"] { --series-color: #f87171; }
@@ -160,7 +162,17 @@
   cursor: pointer;
 }
 
-.stock-research-header-blocked-btn { margin-left: auto; }
+.stock-research-blocked-menu {
+  position: relative;
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.stock-research-header-blocked-btn[aria-expanded="true"] {
+  border-color: rgba(74, 222, 128, 0.5);
+  background: rgba(74, 222, 128, 0.1);
+  color: var(--accent);
+}
 
 .stock-research-header-blocked-btn:disabled {
   opacity: 0.32;
@@ -283,6 +295,38 @@
 
 .stock-research-progress { margin-top: 14px; }
 .stock-research-progress-copy { justify-content: space-between; gap: 10px; color: #e8d98b; font-size: 11px; }
+.stock-research-progress-details {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.stock-research-failed-btn {
+  height: 29px;
+  padding: 0 9px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 720;
+  line-height: 1;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: rgba(255, 255, 255, 0.12);
+}
+.stock-research-failed-btn:hover,
+.stock-research-failed-btn:focus-visible {
+  border-color: rgba(244, 211, 94, 0.5);
+  background: rgba(244, 211, 94, 0.1);
+  color: #fff;
+}
+.stock-research-failed-btn[aria-pressed="true"] {
+  border-color: var(--chart-ui-control-active-border);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
 .stock-research-progress-track {
   height: 5px;
   margin-top: 7px;

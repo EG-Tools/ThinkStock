@@ -33,6 +33,35 @@
   color: var(--ui-dialog-color, var(--ink));
 }
 
+.ui-scroll-affordance::before,
+.ui-scroll-affordance::after {
+  content: "";
+  position: absolute;
+  left: var(--ui-scroll-cue-left, 50%);
+  z-index: 3;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid rgba(255, 255, 255, 0.62);
+  border-bottom: 2px solid rgba(255, 255, 255, 0.62);
+  background: transparent;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.ui-scroll-affordance::before {
+  top: var(--ui-scroll-cue-top, 8px);
+  transform: translateX(-50%) rotate(225deg);
+}
+
+.ui-scroll-affordance::after {
+  bottom: var(--ui-scroll-cue-bottom, 8px);
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.ui-scroll-affordance.can-scroll-up::before,
+.ui-scroll-affordance.can-scroll-down::after { opacity: 0.72; }
+
 .ui-circle-button {
   display: inline-flex;
   align-items: center;

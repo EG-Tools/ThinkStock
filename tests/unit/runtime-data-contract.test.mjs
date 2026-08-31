@@ -142,6 +142,7 @@ test("normalizes crisis signal scores and preserves diagnostic components", () =
         labor: 17,
         credit: 15,
         t10y2y: 0.24,
+        t10y1y: -0.18,
         fedFunds: 4.25,
         fedFundsChange6m: -0.75,
         vkospi: 18.7,
@@ -152,6 +153,14 @@ test("normalizes crisis signal scores and preserves diagnostic components", () =
         krwUsdChange20: 0.018,
         uninversion: true,
       },
+    ],
+    termSpreadRows: [
+      { date: "bad", t10y1y: 0.4 },
+      { date: "2026-08-07", t10y1y: -0.13 },
+    ],
+    creditSpreadRows: [
+      { date: "bad", us_credit_spread: 0.81 },
+      { date: "2026-08-05", us_credit_spread: 0.66 },
     ],
     vkospiRows: [
       { date: "bad", vkospi: 20 },
@@ -169,6 +178,7 @@ test("normalizes crisis signal scores and preserves diagnostic components", () =
     labor: 17,
     credit: 15,
     t10y2y: 0.24,
+    t10y1y: -0.18,
     fedFunds: 4.25,
     fedFundsChange6m: -0.75,
     vkospi: 18.7,
@@ -179,6 +189,14 @@ test("normalizes crisis signal scores and preserves diagnostic components", () =
     krwUsdChange20: 0.018,
     stage: "warning",
     uninversion: true,
+  }]);
+  assert.deepEqual(payload.termSpreadRows, [{
+    date: "2026-08-07",
+    t10y1y: -0.13,
+  }]);
+  assert.deepEqual(payload.creditSpreadRows, [{
+    date: "2026-08-05",
+    us_credit_spread: 0.66,
   }]);
   assert.deepEqual(payload.vkospiRows, [{
     date: "2026-08-06",
@@ -192,6 +210,8 @@ test("normalizes crisis signal scores and preserves diagnostic components", () =
   }]);
   assert.deepEqual(payload.componentLatestDates, {
     score: "2026-08-06",
+    t10y1y: "2026-08-07",
+    us_credit_spread: "2026-08-05",
     vkospi: "2026-08-06",
     vix: "2026-08-07",
   });

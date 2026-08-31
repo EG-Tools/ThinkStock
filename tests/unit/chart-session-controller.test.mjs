@@ -7,13 +7,15 @@ import {
   captureViewportNormalizationFrame,
   clearSeriesTransforms,
   createChartSessionController,
+  orderItemsByActivation,
+  reconcileSeriesActivationOrder,
+  updateSeriesActivationOrder,
 } from "../../docs/modules/chart-session-controller.mjs";
 
 function session(overrides = {}) {
   return {
     autoChartReset: false,
     pendingAutoChartFit: false,
-    pendingAutoChartFitExpandOnly: false,
     viewportNormalizationFrame: "old",
     pendingCompositionViewport: {},
     pinnedXRange: null,
@@ -59,24 +61,24 @@ test("disabling auto scale captures a stable manual vertical range", () => {
   assert.equal(state.pendingCompositionViewport, null);
 });
 
-test("viewport auto-fit requests coalesce into one timer", () => {
-  const state = session({ autoChartReset: true });
-  const timers = new Map();
-  let nextTimer = 0;
+test("viewport completion keeps the live fit and clears only its temporary normalization frame", () => {
+  const state = session({
+    autoChartReset: true,
+    viewportNormalizationFrame: { normBases: { A: 10 }, autoScales: { A: 2 } },
+  });
   let fitted = 0;
+  let normalized = 0;
   const controller = createChartSessionController({}, {
     state,
-    setTimer: (callback) => { const id = ++nextTimer; timers.set(id, callback); return id; },
-    clearTimer: (id) => timers.delete(id),
     fitCurrentViewport: () => { fitted += 1; },
-    isInteractionBusy: () => false,
+    normalizeCurrentViewport: () => { normalized += 1; },
   });
 
-  controller.applyResetPolicy("viewport", 100);
-  controller.applyResetPolicy("viewport", 100);
-  assert.equal(timers.size, 1);
-  [...timers.values()][0]();
-  assert.equal(fitted, 1);
+  assert.equal(controller.applyResetPolicy("viewport"), true);
+  assert.equal(state.viewportNormalizationFrame, null);
+  assert.equal(normalized, 0);
+  assert.equal(fitted, 0);
+  assert.deepEqual(controller.stats(), { autoFitPending: false, disposed: false });
 });
 
 test("one session contract captures manual scale and viewport normalization frames", () => {
@@ -121,4 +123,28 @@ test("clearing an EPS transform does not reset its stock transform", () => {
   assert.equal(clearSeriesTransforms(state, "eps:005930.KS"), true);
   assert.deepEqual(state.seriesOffsets, { "005930.KS": 2 });
   assert.deepEqual(state.seriesScales, { "005930.KS": 1.2 });
+});
+
+test("information rows preserve activation order and move a reactivated series to the end", () => {
+  let order = reconcileSeriesActivationOrder(
+    ["^KS11", "leading_cycle"],
+    ["leading_cycle", "^KS11", "218410.KQ"],
+  );
+  assert.deepEqual(order, ["^KS11", "leading_cycle", "218410.KQ"]);
+
+  order = updateSeriesActivationOrder(order, "^KS11", false);
+  order = updateSeriesActivationOrder(order, "^KS11", true);
+  assert.deepEqual(order, ["leading_cycle", "218410.KQ", "^KS11"]);
+  assert.deepEqual(
+    reconcileSeriesActivationOrder(order, ["^KS11", "leading_cycle"]),
+    ["leading_cycle", "^KS11"],
+  );
+});
+
+test("orders any chart trace collection so the latest activation renders last", () => {
+  const items = [{ key: "A" }, { key: "B" }, { key: "background" }];
+  assert.deepEqual(
+    orderItemsByActivation(items, ["B", "A"], (item) => item.key),
+    [{ key: "background" }, { key: "B" }, { key: "A" }],
+  );
 });

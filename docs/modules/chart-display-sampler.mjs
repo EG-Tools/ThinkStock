@@ -158,22 +158,23 @@
     const dayMs = Math.max(1, Number(options.dayMs) || DAY_MS);
     const setTimer = options.setTimer || scope.setTimeout?.bind(scope);
     const clearTimer = options.clearTimer || scope.clearTimeout?.bind(scope);
-    let current = Object.freeze({ indexes: null, markerSeriesModels: [], window: null });
+    let current = Object.freeze({ indexes: null, window: null });
     let currentSource = null;
-    let eventSource = null;
-    let eventIndexes = null;
-    let eventMarkerSeriesModels = [];
     let timer = 0;
     let signature = "";
     const cacheStats = {
       hits: 0,
       misses: 0,
-      eventSliceHits: 0,
-      eventSliceMisses: 0,
       hitReasons: {},
       missReasons: {},
       seriesBands: {},
     };
+
+    function resetWindowState() {
+      current = Object.freeze({ indexes: null, window: null });
+      currentSource = null;
+      signature = "";
+    }
 
     function seriesBand(model) {
       const count = Math.max(
@@ -218,6 +219,10 @@
     }
 
     function build(model, viewRange) {
+      // Any committed build supersedes a previously queued edge refresh.  If
+      // the old timer survives, it can redraw the same viewport after pointer
+      // release and visibly apply the Y fit a second time.
+      cancelScheduled();
       const stableSources = currentSource
         && currentSource.rows === model?.rows
         && currentSource.displayIndexes === model?.displayIndexes
@@ -267,7 +272,6 @@
       recordBuildOutcome(model, false, missReason);
       current = Object.freeze({
         indexes: viewport.indexes,
-        markerSeriesModels: sliceSeriesModels(model?.seriesModels || [], viewport.indexes),
         window: viewport.window,
       });
       currentSource = {
@@ -276,14 +280,18 @@
         seriesSources: seriesSources(model?.seriesModels),
         windowKey: viewport.window?.key,
       };
-      eventSource = currentSource.seriesSources;
-      eventIndexes = current.indexes;
-      eventMarkerSeriesModels = current.markerSeriesModels;
       signature = "";
       return {
         displayIndexes: viewport.indexes || model?.displayIndexes || null,
         ...current,
       };
+    }
+
+    function rangeCoverage(startMs, endMs) {
+      return inspectViewportCoverage(current.window, [startMs, endMs], {
+        edgeRatio: options.edgeRatio,
+        toleranceMs: dayMs,
+      });
     }
 
     function eventArguments(model, fallback = {}) {
@@ -293,65 +301,65 @@
           ? new Date(timestamp).toISOString().slice(0, 10)
           : String(value || "").slice(0, 10);
       };
-      const start = windowDate("start", fallback.start);
-      const end = windowDate("end", fallback.end);
-      // Series transforms are updated after the viewport is built. Re-slice the
-      // live model so a marker refresh cannot restore its pre-drag coordinates.
-      const canReuseEventSlice = eventIndexes === current.indexes
-        && sameSeriesSources(eventSource, model?.seriesModels);
-      let markerSeriesModels = eventMarkerSeriesModels;
-      if (canReuseEventSlice) {
-        cacheStats.eventSliceHits += 1;
-      } else if (model?.seriesModels?.length) {
-        cacheStats.eventSliceMisses += 1;
-        markerSeriesModels = sliceSeriesModels(model.seriesModels, current.indexes);
-        eventSource = seriesSources(model.seriesModels);
-        eventIndexes = current.indexes;
-        eventMarkerSeriesModels = markerSeriesModels;
-      } else {
-        markerSeriesModels = current.markerSeriesModels;
-      }
+      const markerStart = windowDate("start", fallback.start);
+      const markerEnd = windowDate("end", fallback.end);
+      const rows = Array.isArray(model?.rows) ? model.rows : [];
+      // Event calculations already cover the loaded history. Keep their traces
+      // attached to the full parent series and let Plotly clip off-screen points;
+      // the viewport window is used only to size marker spacing.
+      const coverageStart = String(rows[0]?.date || fallback.start || markerStart).slice(0, 10);
+      const coverageEnd = String(rows.at(-1)?.date || fallback.end || markerEnd).slice(0, 10);
       return [
         model?.selected || [],
-        markerSeriesModels.length ? markerSeriesModels : (model?.seriesModels || []),
-        start,
-        end,
-        start,
-        end,
+        model?.seriesModels || [],
+        coverageStart,
+        coverageEnd,
+        markerStart,
+        markerEnd,
       ];
     }
 
     function schedule(startMs, endMs) {
-      const coverage = inspectViewportCoverage(current.window, [startMs, endMs], {
-        edgeRatio: options.edgeRatio,
-        toleranceMs: dayMs,
-      });
+      const coverage = rangeCoverage(startMs, endMs);
       if (!coverage.needsRefresh || typeof setTimer !== "function") return false;
       const nextSignature = `${Math.round(startMs / dayMs)}:${Math.round(endMs / dayMs)}`;
       if (timer && signature === nextSignature) return true;
       if (timer && typeof clearTimer === "function") clearTimer(timer);
       signature = nextSignature;
+      const configuredDelay = Number(options.delayMs);
+      const delayMs = Number.isFinite(configuredDelay) ? Math.max(0, configuredDelay) : 48;
       timer = setTimer(() => {
         timer = 0;
         options.requestRender?.({ outside: coverage.outside });
-      }, coverage.outside ? 0 : Math.max(0, Number(options.delayMs) || 48));
+      }, coverage.outside ? 0 : delayMs);
       return true;
     }
 
-    function dispose() {
+    function cancelScheduled() {
+      const hadPending = Boolean(timer);
       if (timer && typeof clearTimer === "function") clearTimer(timer);
       timer = 0;
       signature = "";
-      currentSource = null;
-      eventSource = null;
-      eventIndexes = null;
-      eventMarkerSeriesModels = [];
+      return hadPending;
+    }
+
+    function invalidate() {
+      cancelScheduled();
+      resetWindowState();
+    }
+
+    function dispose() {
+      invalidate();
     }
 
     return Object.freeze({
       build,
+      cancelScheduled,
       dispose,
       eventArguments,
+      hasScheduledRefresh: () => Boolean(timer),
+      invalidate,
+      needsRefresh: (startMs, endMs) => rangeCoverage(startMs, endMs).needsRefresh,
       schedule,
       snapshot: () => current,
       stats: () => {
@@ -360,8 +368,6 @@
           hits: cacheStats.hits,
           misses: cacheStats.misses,
           hitRate: total ? cacheStats.hits / total : 0,
-          eventSliceHits: cacheStats.eventSliceHits,
-          eventSliceMisses: cacheStats.eventSliceMisses,
           hitReasons: { ...cacheStats.hitReasons },
           missReasons: { ...cacheStats.missReasons },
           seriesBands: Object.fromEntries(Object.entries(cacheStats.seriesBands)

@@ -73,6 +73,7 @@ import {
 } from "./forecast-journal.mjs";
 import {
   buildCrisisSignalRows,
+  buildTreasurySpreadRows,
   fetchCrisisSignalSources,
   normalizeFredObservations,
 } from "./crisis-signal.mjs";
@@ -185,7 +186,7 @@ const ADR_CACHE_KEY = `adr-market:${ADR_CACHE_SCHEMA}:latest`;
 const ADR_CACHE_FRESH_MS = sourcePolicy("adr").liveConfirmMs;
 const ADR_CACHE_ROW_LIMIT = 900;
 const ADR_RESPONSE_MAX_BYTES = 2 * 1024 * 1024;
-const CRISIS_CACHE_SCHEMA = 8;
+const CRISIS_CACHE_SCHEMA = 10;
 const CRISIS_CACHE_KEY = `fred-crisis-signal:${CRISIS_CACHE_SCHEMA}`;
 const VKOSPI_LIVE_FRESH_MS = sourcePolicy("indices").liveConfirmMs;
 const VKOSPI_SETTLEMENT_RECHECK_MS = 15 * 60 * 1000;
@@ -749,9 +750,18 @@ async function crisisSignalResponse(env, origin, refresh = false) {
     );
     const vixSeries = vixRows.map((row) => ({ date: row.date, value: row.vix }));
     const krwUsdSeries = sources.krwUsd || cachedKrwUsd;
+    const treasuryYields = sources.treasuryYields || null;
+    const termSpreadRows = treasuryYields
+      ? buildTreasurySpreadRows(treasuryYields.DGS10, treasuryYields.DGS1)
+      : (Array.isArray(cached?.termSpreadRows) ? cached.termSpreadRows : []);
+    const creditRates = sources.creditRates || null;
+    const creditSpreadRows = creditRates?.rows?.length
+      ? creditRates.rows
+      : (Array.isArray(cached?.creditSpreadRows) ? cached.creditSpreadRows : []);
     const records = sources.core
       ? buildCrisisSignalRows({
         ...sources.core,
+        ...(treasuryYields || {}),
         VIXCLS: vixSeries,
         DEXKOUS: krwUsdSeries,
       })
@@ -761,6 +771,9 @@ async function crisisSignalResponse(env, origin, refresh = false) {
       sources.errors.core && "FRED 경기 지표 갱신 지연",
       sources.errors.vix && "FRED VIX 갱신 지연",
       sources.errors.krwUsd && "FRED 원달러 환율 갱신 지연",
+      sources.errors.treasuryYields && "FRED 장단기금리 갱신 지연",
+      sources.errors.creditRates && "FRED 미국 신용스프레드 갱신 지연",
+      creditRates?.warning,
       yahooVixResult.error && "VIX 최신 시세 보완 지연",
     ].filter(Boolean).join(" / ");
     let vkospiRows = cachedRows;
@@ -828,6 +841,8 @@ async function crisisSignalResponse(env, origin, refresh = false) {
       lastCheckedDate: checkDate,
       latestDate: [
         records.at(-1)?.date || "",
+        termSpreadRows.at(-1)?.date || "",
+        creditSpreadRows.at(-1)?.date || "",
         vkospiRows.at(-1)?.date || "",
         vixRows.at(-1)?.date || "",
       ].sort().at(-1),
@@ -837,6 +852,9 @@ async function crisisSignalResponse(env, origin, refresh = false) {
           : "FRED + KRX + Stockplus (settlement fallback)")
         : "FRED + KRX"}${vixLiveDate ? " + Yahoo VIX (latest)" : ""}`,
       records,
+      termSpreadRows,
+      creditSpreadRows,
+      creditSpreadSource: creditRates?.source || cached?.creditSpreadSource || "",
       vkospiRows,
       vixRows,
       vixOfficialLatestDate,
@@ -1237,10 +1255,11 @@ async function readKrxMarketSnapshot(env, market, baseDate) {
   }
 }
 
-async function fetchKrxMarketSnapshot(env, market, endpoint, baseDate) {
-  const cached = await readKrxMarketSnapshot(env, market, baseDate);
+async function fetchKrxMarketSnapshot(env, market, endpoint, baseDate, options = {}) {
+  const forceRefresh = options.forceRefresh === true;
+  const cached = forceRefresh ? null : await readKrxMarketSnapshot(env, market, baseDate);
   if (cached) return cached;
-  const requestKey = `${market}:${baseDate}`;
+  const requestKey = `${forceRefresh ? "force" : "normal"}:${market}:${baseDate}`;
   if (krxMarketSnapshotRequests.has(requestKey)) return krxMarketSnapshotRequests.get(requestKey);
   const request = (async () => {
     const response = await fetch(`${KRX_STOCK_BASE_URL}/${endpoint}?basDd=${apiDate(baseDate)}`, {
@@ -1280,17 +1299,22 @@ async function fetchKrxMarketSnapshot(env, market, endpoint, baseDate) {
   }
 }
 
-async function fetchLatestKrxStockPoint(env, ticker, today = koreanDateText()) {
+async function fetchLatestKrxStockPoint(env, ticker, today = koreanDateText(), options = {}) {
   const market = String(ticker || "").toUpperCase().endsWith(".KQ") ? "KQ" : "KS";
   const endpoint = market === "KQ" ? "ksq_bydd_trd" : "stk_bydd_trd";
   const stockCode = TICKER_PATTERN.exec(String(ticker || "").trim().toUpperCase())?.[1] || "";
   let lastError = null;
   let marketDate = "";
   let cacheHits = 0;
+  const forceDate = isValidIsoDate(String(options.forceDate || ""))
+    ? String(options.forceDate).slice(0, 10)
+    : today;
   for (let offset = 0; offset <= KRX_LATEST_LOOKBACK_DAYS; offset += 1) {
     const baseDate = shiftDate(today, -offset);
     try {
-      const snapshot = await fetchKrxMarketSnapshot(env, market, endpoint, baseDate);
+      const snapshot = await fetchKrxMarketSnapshot(env, market, endpoint, baseDate, {
+        forceRefresh: options.forceRefresh === true && baseDate === forceDate,
+      });
       if (!snapshot || snapshot.empty) continue;
       if (snapshot.cached) cacheHits += 1;
       if (!marketDate || snapshot.marketDate > marketDate) marketDate = snapshot.marketDate;
@@ -1495,7 +1519,7 @@ async function fetchLatestNaverStockPoints(ticker, today = koreanDateText()) {
   return stockCode ? fetchLatestNaverSymbolPoints(stockCode, today) : [];
 }
 
-async function buildKrxPricePayload(env, ticker, now = new Date()) {
+async function buildKrxPricePayload(env, ticker, now = new Date(), options = {}) {
   if (!env.KRX_API_KEY) throw new Error("Cloudflare에 KRX 키가 설정되지 않았습니다.");
   const today = koreanDateText(now);
   const expectedDate = expectedLatestKoreanTradingDate(now);
@@ -1508,7 +1532,10 @@ async function buildKrxPricePayload(env, ticker, now = new Date()) {
   let crossCheck = "not-needed";
   const warnings = [];
   try {
-    krxResult = await fetchLatestKrxStockPoint(env, ticker, today);
+    krxResult = await fetchLatestKrxStockPoint(env, ticker, today, {
+      ...options,
+      forceDate: currentPriceWindow ? today : expectedDate,
+    });
     point = krxResult?.point || null;
   } catch (error) {
     krxError = error;
@@ -1565,15 +1592,15 @@ async function buildKrxPricePayload(env, ticker, now = new Date()) {
   };
 }
 
-async function krxPriceResponse(env, ticker, origin) {
+async function krxPriceResponse(env, ticker, origin, forceRefresh = false) {
   try {
-    return jsonResponse(await buildKrxPricePayload(env, ticker), 200, origin);
+    return jsonResponse(await buildKrxPricePayload(env, ticker, new Date(), { forceRefresh }), 200, origin);
   } catch (error) {
     return jsonResponse({ ok: false, error: error?.message || "KRX 가격 조회에 실패했습니다." }, 503, origin);
   }
 }
 
-async function krxBatchPriceResponse(env, tickers, origin) {
+async function krxBatchPriceResponse(env, tickers, origin, forceRefresh = false) {
   const targets = [...new Set((Array.isArray(tickers) ? tickers : [])
     .map((ticker) => String(ticker || "").trim().toUpperCase())
     .filter((ticker) => TICKER_PATTERN.test(ticker)))].slice(0, 10);
@@ -1581,7 +1608,7 @@ async function krxBatchPriceResponse(env, tickers, origin) {
   const now = new Date();
   const results = await Promise.all(targets.map(async (ticker) => {
     try {
-      return await buildKrxPricePayload(env, ticker, now);
+      return await buildKrxPricePayload(env, ticker, now, { forceRefresh });
     } catch (error) {
       return { ok: false, ticker, error: error?.message || "가격 조회 실패" };
     }
@@ -1605,7 +1632,7 @@ async function runtimeBootstrapResponse(env, url, origin) {
   const responses = await Promise.allSettled([
     krxCoreIndexResponse(env, origin, refresh, since),
     targets.length
-      ? krxBatchPriceResponse(env, targets, origin)
+      ? krxBatchPriceResponse(env, targets, origin, refresh)
       : Promise.resolve(jsonResponse({ ok: true, requested: 0, succeeded: 0, results: [] }, 200, origin)),
   ]);
   const responsePayload = async (result, label) => {
@@ -1677,8 +1704,14 @@ const ROUTE_HANDLERS = Object.freeze({
     env,
     String(url.searchParams.get("tickers") || "").split(","),
     origin,
+    queryFlag(url.searchParams.get("refresh")),
   ),
-  prices: ({ env, ticker, origin }) => krxPriceResponse(env, ticker, origin),
+  prices: ({ env, ticker, origin, url }) => krxPriceResponse(
+    env,
+    ticker,
+    origin,
+    queryFlag(url.searchParams.get("refresh")),
+  ),
   "research-history": ({ env, ticker, origin, url }) => researchHistoryResponse(
     env,
     ticker,

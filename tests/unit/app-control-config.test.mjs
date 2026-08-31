@@ -5,19 +5,28 @@ import {
   APP_RUNTIME_KEYS,
   ADR_SERIES,
   BASE_DISPLAY_NAMES,
+  BASE_HOVER_NAMES,
+  BASE_SERIES_HELP_NAMES,
   CHART_RIGHT_PADDING_MAX_DAYS,
   CURSOR_LINE_LABELS,
   CURSOR_LINE_MODES,
+  DEFAULT_HIDDEN_MAIN_SERIES,
   MAIN_CHART_FINGERPRINT_CACHE_MAX_ENTRIES,
   MAIN_CHART_MODEL_CACHE_MAX_ENTRIES,
   MAIN_CHART_MODEL_CACHE_MAX_WEIGHT,
+  MAIN_MACRO_SERIES,
+  MARKET_INDEX_SERIES,
   MAX_CUSTOM_STOCKS,
   MAX_VISIBLE_MAIN_SERIES,
+  OPTIMIZED_VISIBLE_MAIN_SERIES,
   STOCK_TICKER_PATTERN,
   createChartApplicationControlConfig,
   isForecastSeries,
+  isMarketPriceSeries,
   normalizeChartRightPaddingDays,
+  resolveMainChartDisplayPointBudget,
   resolveAppBuildVersion,
+  seriesSupportsFeature,
 } from "../../docs/modules/app-control-config.mjs";
 
 function createContext() {
@@ -28,7 +37,6 @@ function createContext() {
     chartSession: {
       autoChartReset: true,
       pendingAutoChartFit: false,
-      pendingAutoChartFitExpandOnly: true,
       showAiForecast: false,
       showDisclosures: false,
       showEps: false,
@@ -71,7 +79,6 @@ test("builds control bindings from explicit application dependencies", async () 
   await config.eps.onEnabled();
   assert.equal(context.chartSession.showEps, true);
   assert.equal(context.chartSession.pendingAutoChartFit, true);
-  assert.equal(context.chartSession.pendingAutoChartFitExpandOnly, false);
   assert.deepEqual(context.calls, ["enable-eps", "prepare-eps"]);
 
   config.eps.onDisabled();
@@ -133,12 +140,68 @@ test("owns stable runtime keys and chart control limits outside app.js", () => {
   assert.equal(normalizeChartRightPaddingDays(99), 30);
   assert.equal(MAX_CUSTOM_STOCKS, 20);
   assert.equal(MAX_VISIBLE_MAIN_SERIES, 10);
+  assert.equal(OPTIMIZED_VISIBLE_MAIN_SERIES, 5);
   assert.equal(MAIN_CHART_MODEL_CACHE_MAX_ENTRIES, 10);
   assert.equal(MAIN_CHART_MODEL_CACHE_MAX_WEIGHT, 800000);
   assert.equal(MAIN_CHART_FINGERPRINT_CACHE_MAX_ENTRIES, 12);
+  assert.equal(resolveMainChartDisplayPointBudget(1000, 1, false), 1450);
+  assert.equal(resolveMainChartDisplayPointBudget(1000, 5, false), 1300);
+  assert.equal(resolveMainChartDisplayPointBudget(390, 10, true), 420);
   assert.deepEqual(ADR_SERIES, ["adr_kospi", "adr_kosdaq"]);
   assert.equal(BASE_DISPLAY_NAMES["^KS11"], "코스피");
   assert.equal(Object.isFrozen(BASE_DISPLAY_NAMES), true);
+  assert.equal(BASE_HOVER_NAMES.t10y1y, "미국채 10년/1년 금리차");
+  assert.equal(BASE_HOVER_NAMES.us_credit_spread, "미국 회사채 3년/국채 3년 금리차");
+  assert.equal(
+    BASE_SERIES_HELP_NAMES.leading_cycle,
+    "한국은행 선행지수 순환변동치\n2달 후행",
+  );
+  assert.equal(
+    BASE_SERIES_HELP_NAMES.us_credit_spread,
+    "미국 회사채(투자등급) 1-3년/미국채 3년 금리차\n최근 일별 · 과거 월간",
+  );
+  assert.deepEqual(Object.keys(BASE_SERIES_HELP_NAMES), [
+    "leading_cycle",
+    "t10y1y",
+    "us_credit_spread",
+    "customer_deposit",
+    "kospi_credit",
+    "kosdaq_credit",
+  ]);
+  assert.equal(BASE_SERIES_HELP_NAMES.customer_deposit, "2일 후행");
+  assert.equal(BASE_SERIES_HELP_NAMES.kospi_credit, "2일 후행");
+  assert.equal(BASE_SERIES_HELP_NAMES.kosdaq_credit, "2일 후행");
+  assert.equal(Object.isFrozen(BASE_HOVER_NAMES), true);
+  assert.equal(Object.isFrozen(BASE_SERIES_HELP_NAMES), true);
+  assert.deepEqual(MARKET_INDEX_SERIES, ["^KS11", "^KQ11"]);
+  assert.deepEqual(MAIN_MACRO_SERIES, [
+    "leading_cycle",
+    "t10y1y",
+    "us_credit_spread",
+    "customer_deposit",
+    "kospi_credit",
+    "kosdaq_credit",
+  ]);
+  assert.deepEqual(DEFAULT_HIDDEN_MAIN_SERIES, [
+    "leading_cycle",
+    "t10y1y",
+    "us_credit_spread",
+    "customer_deposit",
+    "kospi_credit",
+    "kosdaq_credit",
+    "^KQ11",
+  ]);
+  assert.equal(isMarketPriceSeries("005930.KS"), true);
+  assert.equal(isMarketPriceSeries("^KS11"), true);
+  assert.equal(seriesSupportsFeature("005930.KS", "co-movement"), true);
+  assert.equal(seriesSupportsFeature("^KS11", "co-movement"), true);
+  assert.equal(seriesSupportsFeature("^KQ11", "signal"), true);
+  assert.equal(seriesSupportsFeature("005930.KS", "disclosure"), true);
+  assert.equal(seriesSupportsFeature("^KS11", "disclosure"), false);
+  assert.equal(seriesSupportsFeature("leading_cycle", "signal"), false);
+  assert.equal(seriesSupportsFeature("t10y1y", "ai"), false);
+  assert.equal(seriesSupportsFeature("customer_deposit", "co-movement"), false);
+  assert.equal(seriesSupportsFeature("leading_cycle", "scale"), true);
   assert.equal(isForecastSeries("005930.KS"), true);
   assert.equal(isForecastSeries("^KQ11"), true);
   assert.equal(isForecastSeries("leading_cycle"), false);

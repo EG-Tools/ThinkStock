@@ -87,10 +87,107 @@ test("stock research Worker loads its bundled dependencies without global collis
   expect(response).toEqual({ id: 1, ready: true });
 });
 
+test("stock research blocked list scrolls after five rows and unblocks one stock", async ({ page }) => {
+  await stubExternalRefreshes(page);
+  await installDataRoutes(page);
+  await page.addInitScript((researchContract) => {
+    const entries = Array.from({ length: 20 }, (_, index) => ({
+      ticker: `${String(index + 1).padStart(6, "0")}.KS`,
+      name: index === 0
+        ? "삼성전자"
+        : (index === 1 ? "삼성바이오로직스우" : `차단종목${index + 1}`),
+      market: "KOSPI",
+      blockedAt: `2026-08-${String(Math.min(28, index + 1)).padStart(2, "0")}T00:00:00.000Z`,
+    }));
+    localStorage.setItem(researchContract.BLOCKED_KEY, JSON.stringify({
+      schema: researchContract.BLOCKED_SCHEMA,
+      entries,
+    }));
+    localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "private" }));
+  }, RESEARCH_CONTRACT);
+
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await page.locator("#stockResearchBtn").click();
+  await expect(page.locator("#stockResearchModal")).toBeVisible();
+  await expect(page.locator("#stockResearchModalBlockedClearBtn")).toHaveText("차단 20 종목");
+  await page.locator("#stockResearchModalBlockedClearBtn").click();
+
+  const blockedPopover = page.locator("#stockResearchPanel .stock-research-list-popover");
+  const blockedList = blockedPopover.locator(".chart-hover-summary-lines");
+  await expect(blockedPopover).toBeVisible();
+  await expect(blockedList.locator(".chart-hover-summary-row")).toHaveCount(20);
+  await expect(blockedList.locator(".chart-hover-summary-title").nth(1)).toHaveText("삼성바이오로직스...");
+  await expect(blockedPopover).toHaveClass(/can-scroll-down/);
+  await expect(blockedPopover).not.toHaveClass(/can-scroll-up/);
+  await page.locator("#stockResearchPanel").dispatchEvent("pointerdown");
+  await expect(blockedPopover).toBeHidden();
+  await expect(page.locator("#stockResearchModalBlockedClearBtn")).toHaveAttribute("aria-expanded", "false");
+  await page.locator("#stockResearchModalBlockedClearBtn").click();
+  await expect(blockedPopover).toBeVisible();
+  const scrolling = await blockedList.evaluate((element) => {
+    const firstRow = element.querySelector(".chart-hover-summary-row");
+    const rowHeight = firstRow?.getBoundingClientRect().height || 0;
+    return {
+      clientHeight: element.clientHeight,
+      rowHeight,
+      scrollHeight: element.scrollHeight,
+      touchAction: getComputedStyle(element).touchAction,
+      scrollbarWidth: getComputedStyle(element).scrollbarWidth,
+      width: element.closest(".stock-research-list-popover")?.getBoundingClientRect().width || 0,
+    };
+  });
+  expect(scrolling.scrollHeight).toBeGreaterThan(scrolling.clientHeight);
+  expect(Math.round(scrolling.clientHeight / scrolling.rowHeight)).toBe(5);
+  expect(scrolling.touchAction).toBe("pan-y");
+  expect(["none", "auto"].includes(scrolling.scrollbarWidth)).toBe(true);
+  expect(scrolling.width).toBeLessThanOrEqual(191);
+  await blockedList.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  await expect.poll(() => blockedList.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await expect(blockedPopover).toHaveClass(/can-scroll-up/);
+  await expect(blockedPopover).not.toHaveClass(/can-scroll-down/);
+
+  const blockedAction = blockedList.locator(".chart-hover-summary-action").first();
+  await expect(blockedAction).toHaveAttribute("aria-label", "삼성전자 해제");
+  await blockedAction.click();
+  await expect(page.locator("#stockResearchModalBlockedClearBtn")).toHaveText("차단 19 종목");
+  await expect(blockedList.locator(".chart-hover-summary-row")).toHaveCount(20);
+  await expect(blockedAction).toHaveText("차단");
+  await expect(blockedAction).toHaveAttribute("aria-label", "삼성전자 차단");
+  await expect(blockedPopover).toBeVisible();
+  await blockedAction.click();
+  await expect(page.locator("#stockResearchModalBlockedClearBtn")).toHaveText("차단 20 종목");
+  await expect(blockedAction).toHaveText("해제");
+  await expect(blockedAction).toHaveAttribute("aria-label", "삼성전자 해제");
+});
+
 test("stock research popup preserves results while adding multiple candidates", async ({ page }) => {
   await stubExternalRefreshes(page);
   let researchUniverseRequests = 0;
   let fullHistoryRequests = 0;
+  await page.route("https://thinkstock-api.keg0320.workers.dev/api/research/history?*", async (route) => {
+    const ticker = new URL(route.request().url()).searchParams.get("ticker") || "";
+    if (ticker !== "279570.KS") {
+      await route.abort();
+      return;
+    }
+    await route.fulfill({ json: {
+      ok: true,
+      ticker,
+      rows: [{ date: "2026-08-28", close: 15000, volume: 120000 }],
+    } });
+  });
+  await page.route("https://thinkstock-api.keg0320.workers.dev/api/prices?*", async (route) => {
+    const ticker = new URL(route.request().url()).searchParams.get("ticker") || "";
+    await route.fulfill({ json: {
+      ok: true,
+      ticker,
+      source: "KRX",
+      latestDate: ticker === "279570.KS" ? "2026-08-28" : "",
+      records: ticker === "279570.KS"
+        ? [{ date: "2026-08-28", close: 15000, volume: 120000 }]
+        : [],
+    } });
+  });
   await page.route("**/api/research/universe*", async (route) => {
     researchUniverseRequests += 1;
     await route.abort();
@@ -175,6 +272,24 @@ test("stock research popup preserves results while adding multiple candidates", 
       candidatePool: candidates,
       candidateOrder: candidates.map((candidate) => candidate.ticker),
       candidatePageIndex: 0,
+      failed: 2,
+      universeTickers: ["279570.KS", "950260.KQ"],
+      universeState: {
+        "279570.KS": {
+          fingerprint: "279570.KS|KOSPI|케이뱅크",
+          metadataFingerprint: "279570.KS|케이뱅크|120|100000",
+          signalFingerprint: "",
+          analysisStatus: "failed",
+          failureCount: 1,
+        },
+        "950260.KQ": {
+          fingerprint: "950260.KQ|KOSDAQ|인제니아테라퓨틱스(Reg.S)",
+          metadataFingerprint: "950260.KQ|인제니아테라퓨틱스(Reg.S)|180|50000",
+          signalFingerprint: "",
+          analysisStatus: "failed",
+          failureCount: 1,
+        },
+      },
     }));
     localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "private" }));
   }, RESEARCH_CONTRACT);
@@ -215,6 +330,51 @@ test("stock research popup preserves results while adding multiple candidates", 
   }));
   await page.locator("#stockResearchBtn").click();
   await expect(page.locator("#stockResearchModal")).toBeVisible();
+  await expect(page.locator("#stockResearchFailedBtn")).toHaveText("추출 실패 2개");
+  await expect(page.locator("#stockResearchFailedBtn")).toBeVisible();
+  await page.locator("#stockResearchFailedBtn").click();
+  const failurePopover = page.locator("#stockResearchPanel .chart-hover-summary");
+  await expect(failurePopover).toBeVisible();
+  await expect(page.locator("#stockResearchFailedBtn")).toHaveAttribute("aria-pressed", "true");
+  await expect(failurePopover).toContainText("케이뱅크");
+  await expect(failurePopover.locator('[title="인제니아테라퓨틱스(Reg.S)"]')).toHaveCount(1);
+  await expect(failurePopover).not.toContainText("279570.KS");
+  await expect(failurePopover.getByRole("button")).toHaveCount(2);
+  await expect(page.getByRole("button", { name: "케이뱅크 추가" })).toBeVisible();
+  await page.locator("#stockResearchPanel").dispatchEvent("pointerdown");
+  await expect(failurePopover).toBeHidden();
+  await expect(page.locator("#stockResearchFailedBtn")).toHaveAttribute("aria-pressed", "false");
+  await page.locator("#stockResearchFailedBtn").click();
+  const failedStockAction = failurePopover.locator(".chart-hover-summary-action").first();
+  await expect(failedStockAction).toHaveAttribute("aria-label", "케이뱅크 추가");
+  await failedStockAction.click();
+  await expect(page.locator('[data-series="279570.KS"]')).toHaveClass(/is-on/);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const trace = (element.data || []).find((item) => item?.meta?.seriesKey === "279570.KS");
+    const grouped = (element.data || []).find((item) => item?.meta?.hoverGroupTicker === "279570.KS");
+    return {
+      count: trace?.x?.length || 0,
+      listingDate: trace?.meta?.listingDate || "",
+      marker: trace?.marker?.symbol || "",
+      mode: trace?.mode || "",
+      showsListingDate: [trace?.text || [], grouped?.text || []]
+        .flat()
+        .some((text) => String(text).includes("상장일")),
+    };
+  })).toEqual({
+    count: 1,
+    listingDate: "2026-08-28",
+    marker: "circle",
+    mode: "markers",
+    showsListingDate: true,
+  });
+  await expect(failedStockAction).toHaveText("제거");
+  await expect(failedStockAction).toHaveAttribute("aria-label", "케이뱅크 제거");
+  await failedStockAction.click();
+  await expect(page.locator('[data-series="279570.KS"]')).toHaveCount(0);
+  await expect(failedStockAction).toHaveText("추가");
+  await page.locator("#stockResearchFailedBtn").click();
+  await expect(failurePopover).toBeHidden();
   await expect.poll(() => researchUniverseRequests).toBe(0);
   await expect(page.locator("#stockResearchAsOf")).toContainText("2026-08-07");
   await expect(page.locator("#stockResearchAsOf")).toContainText("검출종목 6개 · 탐구기준");
@@ -355,15 +515,23 @@ test("stock research popup preserves results while adding multiple candidates", 
   await page.locator('[data-research-block="218410.KQ"]').click();
   await expect(page.locator('[data-research-ticker="218410.KQ"]')).toHaveCount(0);
   await expect(page.locator("#stockResearchModalBlockedClearBtn")).toBeEnabled();
-  await expect(page.locator("#stockResearchModalBlockedClearBtn")).toHaveText("차단 1 리셋");
+  await expect(page.locator("#stockResearchModalBlockedClearBtn")).toHaveText("차단 1 종목");
   await expect(page.locator("#stockResearchAsOf")).toContainText("검출종목 5개 · 탐구기준");
   await expect(page.locator("#stockResearchList .stock-research-item")).toHaveCount(5);
   await expect(page.locator('[data-research-ticker="000004.KS"]')).toBeVisible();
   await page.locator("#stockResearchModalBlockedClearBtn").click();
+  await expect(failurePopover).toBeVisible();
+  await expect(failurePopover.locator(".chart-hover-summary-row")).toHaveCount(1);
+  await expect(failurePopover).toContainText("RFHIC");
+  await page.getByRole("button", { name: "RFHIC 해제" }).click();
+  await expect(failurePopover).toBeVisible();
+  await expect(page.getByRole("button", { name: "RFHIC 차단" })).toBeVisible();
   await expect(page.locator("#stockResearchModalBlockedClearBtn")).toBeDisabled();
   await expect(page.locator("#stockResearchModalBlockedClearBtn")).toHaveText("차단 0 종목");
   await expect(page.locator('[data-research-ticker="218410.KQ"]')).toBeVisible();
   await expect(page.locator("#stockResearchAsOf")).toContainText("검출종목 6개 · 탐구기준");
+  await page.locator("#stockResearchPanel").dispatchEvent("pointerdown");
+  await expect(failurePopover).toBeHidden();
   await page.locator("#stockResearchCloseBtn").click();
   await expect(page.locator("#stockResearchModal")).toBeHidden();
   await page.locator("#apiOptionsBtn").click();
@@ -396,6 +564,7 @@ test("stock research popup preserves results while adding multiple candidates", 
   await expect.poll(() => researchUniverseRequests).toBe(1);
   await expect(page.locator("#stockResearchRefreshBtn")).toBeEnabled();
   await expect(page.locator("#stockResearchRefreshBtn")).toHaveText("재검색");
+  await expect(page.locator("#stockResearchProgress .stock-research-progress-track")).toBeHidden();
   await page.locator("#stockResearchCloseBtn").click();
   await page.locator("#apiOptionsBtn").click();
   await expect(page.locator("#appCacheBtn")).toBeEnabled();
@@ -432,16 +601,21 @@ test("options reset UI state without deleting access credentials or caches", asy
     sessionStorage.setItem("thinkstock-state-reset-test-seeded", "1");
     localStorage.setItem("thinkstock-v5", JSON.stringify({
       autoChartReset: false,
+      hoverShowPopup: false,
+      showChartTools: false,
       showChartHandles: false,
-      showCoMovement: true,
-      showDisclosures: false,
+      showCoMovement: false,
+      showRecessionSignals: false,
+      showDisclosures: true,
+      showInsiderTrades: true,
+      creditOffset: -9,
       customStocks: [{
         ticker: "005930.KS",
         code: "005930",
         name: "삼성전자",
         market: "KOSPI",
       }],
-      hiddenSeries: ["leading_cycle", "^KQ11"],
+      hiddenSeries: ["^KS11"],
       hiddenAuxiliarySeries: ["fear_greed"],
       seriesOffsets: { "005930.KS": 12 },
       seriesScales: { "005930.KS": 1.8 },
@@ -468,14 +642,43 @@ test("options reset UI state without deleting access credentials or caches", asy
   await page.locator("#apiOptionsBtn").click();
   await expect(page.locator("#appCacheBtn")).toHaveText(/^캐시 \S+$/);
 
+  await page.locator("#appStateResetBtn").click();
+  await expect(page.locator("#appStateResetConfirm")).toBeVisible();
+  await expect(page.locator("#appStateResetConfirmBtn")).toHaveText("예");
+  await expect(page.locator("#appStateResetCancelBtn")).toHaveText("아니오");
+  await page.locator("#appStateResetCancelBtn").click();
+  await expect(page.locator("#appStateResetConfirm")).toBeHidden();
+  await page.locator("#appStateResetBtn").click();
   await Promise.all([
     page.waitForLoadState("domcontentloaded"),
-    page.locator("#appStateResetBtn").click(),
+    page.locator("#appStateResetConfirmBtn").click(),
   ]);
 
   await expect(page.locator('[data-custom-series="005930.KS"]')).toHaveCount(0);
+  await expect(page.locator("#hoverToggle")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#chartToolsToggle")).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#resetHandles")).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#chartHandlesToggle")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#coMovementToggle")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#recessionToggle")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#disclosureToggle")).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#insiderTradeToggle")).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#epsToggle")).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#creditOffset")).toHaveValue("-2");
+  await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getActiveMonths())).toBe(6);
+  await expect(page.locator('[data-series="^KS11"]')).toHaveClass(/\bis-on\b/);
+  for (const key of [
+    "leading_cycle",
+    "t10y1y",
+    "us_credit_spread",
+    "customer_deposit",
+    "kospi_credit",
+    "kosdaq_credit",
+    "^KQ11",
+  ]) {
+    await expect(page.locator(`[data-series="${key}"]`)).not.toHaveClass(/\bis-on\b/);
+  }
   const researchStorageKeys = {
     BLOCKED_KEY: RESEARCH_CONTRACT.BLOCKED_KEY,
     MINIMUM_KEY: RESEARCH_CONTRACT.MINIMUM_KEY,
@@ -866,6 +1069,31 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await expect(page.locator("#mainAppMeta")).toHaveCSS("margin-top", "2px");
   await page.locator("#apiOptionsBtn").click();
   await expect(page.locator("#apiSettingsTitle")).toHaveText("설정");
+  const settingsScrollStyle = await page.locator("#apiSettingsModal .api-settings-panel").evaluate((panel) => ({
+    overflowY: getComputedStyle(panel).overflowY,
+    scrollbarWidth: getComputedStyle(panel).scrollbarWidth,
+    touchAction: getComputedStyle(panel).touchAction,
+  }));
+  expect(settingsScrollStyle).toEqual({
+    overflowY: "auto",
+    scrollbarWidth: "none",
+    touchAction: "pan-y",
+  });
+  await expect.poll(() => page.locator("#apiSettingsModal").evaluate((modal) => (
+    modal.classList.contains("can-scroll-down")
+  ))).toBe(true);
+  await page.locator("#apiSettingsModal .api-settings-panel").evaluate((panel) => {
+    panel.scrollTop = panel.scrollHeight;
+    panel.dispatchEvent(new Event("scroll"));
+  });
+  await expect.poll(() => page.locator("#apiSettingsModal").evaluate((modal) => ({
+    down: modal.classList.contains("can-scroll-down"),
+    up: modal.classList.contains("can-scroll-up"),
+  }))).toEqual({ down: false, up: true });
+  await page.locator("#apiSettingsModal .api-settings-panel").evaluate((panel) => {
+    panel.scrollTop = 0;
+    panel.dispatchEvent(new Event("scroll"));
+  });
   await expect(page.locator("#apiSettingsModal .api-settings-panel > .api-settings-header")).not.toContainText("Version");
   await expect(page.locator(".api-settings-version")).toHaveText(`Version : ${displayedVersion}`);
   await expect(page.locator("#settingsAppMeta")).toBeVisible();
@@ -1638,6 +1866,10 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
     );
   };
   if (!(await disclosurePointIsVisible())) {
+    if (await chartResetButton.getAttribute("aria-pressed") !== "true") {
+      await chartResetButton.click();
+      await expect(chartResetButton).toHaveAttribute("aria-pressed", "true");
+    }
     await page.locator("#chartRange1Year").click();
     await expect.poll(async () => {
       disclosurePoint = await getDisclosurePoint();

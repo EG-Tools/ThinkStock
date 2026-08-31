@@ -205,17 +205,6 @@ export function createApplicationFeatureLifecycleDescriptors(context = {}) {
       restore: context.restoreDart,
     },
     {
-      name: "ai",
-      enabled: () => Boolean(state.showAiForecast),
-      refresh: context.refreshAi,
-      restore: context.restoreAi,
-    },
-    {
-      name: "eps",
-      enabled: () => Boolean(state.showEps),
-      refresh: context.refreshEps,
-    },
-    {
       name: "insider",
       enabled: () => Boolean(state.showInsiderTrades && context.canUseInsider?.()),
       refresh: context.refreshInsider,
@@ -283,6 +272,7 @@ export function createStartupTaskRuntime(options = {}) {
     throw new Error("startup task scheduler is required");
   }
   const recordError = typeof options.recordError === "function" ? options.recordError : () => {};
+  const defaultDeferredDelayMs = Math.max(0, Number(options.defaultDeferredDelayMs) || 0);
   let deferredSequence = 0;
   let supplementalSequence = 0;
 
@@ -299,6 +289,10 @@ export function createStartupTaskRuntime(options = {}) {
       () => ++deferredSequence,
     );
     const userVisible = taskOptions.userVisible === true;
+    const explicitDelayMs = Number(taskOptions.delayMs);
+    const delayMs = Number.isFinite(explicitDelayMs)
+      ? Math.max(0, explicitDelayMs)
+      : (userVisible ? 0 : defaultDeferredDelayMs);
     scheduler.enqueue(taskKey, async (taskContext) => {
       await taskContext.checkpoint?.();
       const result = await task(taskContext);
@@ -308,7 +302,7 @@ export function createStartupTaskRuntime(options = {}) {
       return result;
     }, {
       group: "startup-deferred",
-      delayMs: taskOptions.delayMs,
+      delayMs,
       ...(taskOptions.taskKey || taskOptions.taskName ? { coalesceRunning: true } : {}),
       priority: Number.isFinite(Number(taskOptions.priority))
         ? Number(taskOptions.priority)

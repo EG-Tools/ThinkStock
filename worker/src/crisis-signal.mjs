@@ -16,6 +16,12 @@ const EXTERNAL_RISK_SERIES_IDS = Object.freeze([
   "DEXKOUS",
 ]);
 
+const US_CREDIT_SPREAD_SERIES_IDS = Object.freeze({
+  historicalCorporate: "HQMCB3YR",
+  treasury3y: "DGS3",
+  dailyOas: "BAMLC1A0C13Y",
+});
+
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const finite = (value) => {
   const number = Number(value);
@@ -47,6 +53,66 @@ export function normalizeFredObservations(observations) {
   return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
 }
 
+export function buildTreasurySpreadRows(longMaturityRows, shortMaturityRows) {
+  return buildDerivedDifferenceRows(longMaturityRows, shortMaturityRows, {
+    outputKey: "t10y1y",
+  });
+}
+
+export function buildDerivedDifferenceRows(
+  minuendRows,
+  subtrahendRows,
+  { outputKey, alignment = "exact" } = {},
+) {
+  if (!outputKey) throw new Error("Derived difference outputKey is required");
+  const subtrahendByPeriod = new Map();
+  normalizeFredObservations(subtrahendRows).forEach((row) => {
+    const period = alignment === "monthly-average" ? row.date.slice(0, 7) : row.date;
+    const current = subtrahendByPeriod.get(period) || { sum: 0, count: 0 };
+    current.sum += row.value;
+    current.count += 1;
+    subtrahendByPeriod.set(period, current);
+  });
+
+  return normalizeFredObservations(minuendRows).flatMap((row) => {
+    const period = alignment === "monthly-average" ? row.date.slice(0, 7) : row.date;
+    const subtrahend = subtrahendByPeriod.get(period);
+    if (!subtrahend?.count) return [];
+    const difference = row.value - (subtrahend.sum / subtrahend.count);
+    return [{
+      date: row.date,
+      [outputKey]: Math.round(difference * 10000) / 10000,
+    }];
+  });
+}
+
+function directSeriesRows(rows, outputKey) {
+  return normalizeFredObservations(rows).map((row) => ({
+    date: row.date,
+    [outputKey]: row.value,
+  }));
+}
+
+export function buildUsCreditSpreadRows({
+  historicalCorporateRows = [],
+  treasury3yRows = [],
+  dailyOasRows = [],
+} = {}) {
+  const outputKey = "us_credit_spread";
+  const historicalRows = buildDerivedDifferenceRows(
+    historicalCorporateRows,
+    treasury3yRows,
+    { outputKey, alignment: "monthly-average" },
+  );
+  const dailyRows = directSeriesRows(dailyOasRows, outputKey);
+  const dailyStartDate = dailyRows[0]?.date || "";
+  if (!dailyStartDate) return historicalRows;
+  return [
+    ...historicalRows.filter((row) => row.date < dailyStartDate),
+    ...dailyRows,
+  ];
+}
+
 export function fredSeriesUrl(seriesId, apiKey, startDate = "1986-01-01") {
   const url = new URL("https://api.stlouisfed.org/fred/series/observations");
   url.searchParams.set("series_id", seriesId);
@@ -64,6 +130,59 @@ export async function fetchFredSeries(fetchImpl, apiKey, seriesId, startDate = "
   const rows = normalizeFredObservations(payload?.observations);
   if (!rows.length) throw new Error(`FRED ${seriesId} returned no observations`);
   return rows;
+}
+
+const settledRows = (result) => result.status === "fulfilled" ? result.value : [];
+const settledError = (result) => result.status === "rejected"
+  ? String(result.reason?.message || result.reason || "FRED refresh failed")
+  : "";
+
+export async function fetchUsCreditSpreadSeries(
+  fetchImpl,
+  apiKey,
+  { startDate = "1984-01-01", includeHistory = true } = {},
+) {
+  const ids = US_CREDIT_SPREAD_SERIES_IDS;
+  const [historicalCorporate, treasury3y, dailyOas] = await Promise.allSettled([
+    includeHistory
+      ? fetchFredSeries(fetchImpl, apiKey, ids.historicalCorporate, startDate)
+      : Promise.resolve([]),
+    includeHistory
+      ? fetchFredSeries(fetchImpl, apiKey, ids.treasury3y, startDate)
+      : Promise.resolve([]),
+    fetchFredSeries(fetchImpl, apiKey, ids.dailyOas, startDate),
+  ]);
+  const rows = buildUsCreditSpreadRows({
+    historicalCorporateRows: settledRows(historicalCorporate),
+    treasury3yRows: settledRows(treasury3y),
+    dailyOasRows: settledRows(dailyOas),
+  });
+  if (!rows.length) {
+    throw new Error([
+      settledError(dailyOas),
+      settledError(historicalCorporate),
+      settledError(treasury3y),
+    ].filter(Boolean).join(" / ") || "FRED US credit spread returned no observations");
+  }
+  const usedDailyOas = settledRows(dailyOas).length > 0;
+  const warning = [
+    settledError(historicalCorporate) && "과거 월간 신용스프레드 지연",
+    settledError(treasury3y) && "미국채 3년물 지연",
+    settledError(dailyOas) && "일별 OAS 지연",
+  ].filter(Boolean).join(" / ");
+  return Object.freeze({
+    rows,
+    source: usedDailyOas
+      ? "FRED 1-3Y Corporate OAS (daily) + HQM/DGS3 (history)"
+      : "FRED HQM/DGS3 (monthly)",
+    warning,
+    dailyStartDate: usedDailyOas
+      ? (settledRows(dailyOas)[0]?.date || "")
+      : "",
+    HQMCB3YR: settledRows(historicalCorporate),
+    DGS3: settledRows(treasury3y),
+    BAMLC1A0C13Y: settledRows(dailyOas),
+  });
 }
 
 function claimsSignals(rows) {
@@ -145,6 +264,7 @@ function componentScores(state) {
 export function buildCrisisSignalRows(series = {}) {
   const t10y2y = normalizeFredObservations(series.T10Y2Y);
   const t10y3m = normalizeFredObservations(series.T10Y3M);
+  const t10y1y = buildTreasurySpreadRows(series.DGS10, series.DGS1);
   const unemployment = normalizeFredObservations(series.UNRATE);
   const claims = claimsSignals(normalizeFredObservations(series.ICSA));
   const credit = normalizeFredObservations(series.BAA10Y);
@@ -155,6 +275,7 @@ export function buildCrisisSignalRows(series = {}) {
   const dates = [...new Set([
     ...t10y2y.map((row) => row.date),
     ...t10y3m.map((row) => row.date),
+    ...t10y1y.map((row) => row.date),
     ...credit.map((row) => row.date),
     ...vix.map((row) => row.date),
     ...krwUsd.map((row) => row.date),
@@ -164,6 +285,7 @@ export function buildCrisisSignalRows(series = {}) {
   const cursors = {
     t10y2y: cursorFor(t10y2y),
     t10y3m: cursorFor(t10y3m),
+    t10y1y: cursorFor(t10y1y.map((row) => ({ date: row.date, value: row.t10y1y }))),
     unemployment: cursorFor(unemployment),
     claims: cursorFor(claims),
     credit: cursorFor(credit),
@@ -183,6 +305,7 @@ export function buildCrisisSignalRows(series = {}) {
   dates.forEach((date, dateIndex) => {
     const spread2y = cursors.t10y2y.advance(date);
     const spread3m = cursors.t10y3m.advance(date);
+    const spread1y = cursors.t10y1y.advance(date);
     const unemploymentRow = cursors.unemployment.advance(date);
     const claimsRow = cursors.claims.advance(date);
     const creditRow = cursors.credit.advance(date);
@@ -237,6 +360,7 @@ export function buildCrisisSignalRows(series = {}) {
       credit: components.credit,
       t10y2y: spread2y?.value ?? null,
       t10y3m: spread3m?.value ?? null,
+      t10y1y: spread1y?.value ?? null,
       unemployment: unemploymentRow?.value ?? null,
       initialClaims4w: Number.isFinite(claimsRow?.average4) ? Math.round(claimsRow.average4) : null,
       creditSpread: creditRow?.value ?? null,
@@ -281,10 +405,15 @@ export async function fetchCrisisSignalSeries(fetchImpl, apiKey, options = {}) {
 }
 
 export async function fetchCrisisSignalSources(fetchImpl, apiKey) {
-  const [core, vix, krwUsd] = await Promise.allSettled([
+  const [core, vix, krwUsd, treasuryYields, creditRates] = await Promise.allSettled([
     fetchCrisisSignalSeries(fetchImpl, apiKey),
     fetchFredSeries(fetchImpl, apiKey, "VIXCLS", "1990-01-01"),
     fetchFredSeries(fetchImpl, apiKey, "DEXKOUS"),
+    Promise.all([
+      fetchFredSeries(fetchImpl, apiKey, "DGS10"),
+      fetchFredSeries(fetchImpl, apiKey, "DGS1"),
+    ]).then(([DGS10, DGS1]) => ({ DGS10, DGS1 })),
+    fetchUsCreditSpreadSeries(fetchImpl, apiKey),
   ]);
   const errorText = (result) => result.status === "rejected"
     ? String(result.reason?.message || result.reason || "FRED refresh failed")
@@ -293,12 +422,16 @@ export async function fetchCrisisSignalSources(fetchImpl, apiKey) {
     core: core.status === "fulfilled" ? core.value : null,
     vix: vix.status === "fulfilled" ? vix.value : null,
     krwUsd: krwUsd.status === "fulfilled" ? krwUsd.value : null,
+    treasuryYields: treasuryYields.status === "fulfilled" ? treasuryYields.value : null,
+    creditRates: creditRates.status === "fulfilled" ? creditRates.value : null,
     errors: Object.freeze({
       core: errorText(core),
       vix: errorText(vix),
       krwUsd: errorText(krwUsd),
+      treasuryYields: errorText(treasuryYields),
+      creditRates: errorText(creditRates),
     }),
   });
 }
 
-export { EXTERNAL_RISK_SERIES_IDS, SERIES_IDS };
+export { EXTERNAL_RISK_SERIES_IDS, SERIES_IDS, US_CREDIT_SPREAD_SERIES_IDS };

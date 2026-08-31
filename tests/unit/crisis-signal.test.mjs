@@ -3,8 +3,12 @@ import test from "node:test";
 
 import {
   buildCrisisSignalRows,
+  buildDerivedDifferenceRows,
+  buildTreasurySpreadRows,
+  buildUsCreditSpreadRows,
   fetchCrisisSignalSources,
   fetchCrisisSignalSeries,
+  fetchUsCreditSpreadSeries,
   fredSeriesUrl,
   normalizeFredObservations,
 } from "../../worker/src/crisis-signal.mjs";
@@ -34,6 +38,72 @@ test("builds an authenticated FRED observations URL", () => {
   assert.equal(url.searchParams.get("series_id"), "T10Y2Y");
   assert.equal(url.searchParams.get("api_key"), "secret");
   assert.equal(url.searchParams.get("observation_start"), "2000-01-01");
+});
+
+test("builds the daily 10-year minus 1-year Treasury spread from matching FRED dates", () => {
+  assert.deepEqual(buildTreasurySpreadRows([
+    { date: "2026-08-27", value: "4.21" },
+    { date: "2026-08-28", value: "4.18" },
+  ], [
+    { date: "2026-08-27", value: "3.82" },
+    { date: "2026-08-28", value: "4.31" },
+    { date: "2026-08-29", value: "4.25" },
+  ]), [
+    { date: "2026-08-27", t10y1y: 0.39 },
+    { date: "2026-08-28", t10y1y: -0.13 },
+  ]);
+});
+
+test("builds monthly-average derived differences without filling missing periods", () => {
+  assert.deepEqual(buildDerivedDifferenceRows([
+    { date: "2026-07-01", value: "4.72" },
+    { date: "2026-08-01", value: "4.81" },
+    { date: "2026-09-01", value: "4.90" },
+  ], [
+    { date: "2026-07-01", value: "4.00" },
+    { date: "2026-07-02", value: "4.20" },
+    { date: "2026-08-03", value: "4.15" },
+  ], { outputKey: "us_credit_spread", alignment: "monthly-average" }), [
+    { date: "2026-07-01", us_credit_spread: 0.62 },
+    { date: "2026-08-01", us_credit_spread: 0.66 },
+  ]);
+});
+
+test("uses monthly history only before the daily OAS series begins", () => {
+  assert.deepEqual(buildUsCreditSpreadRows({
+    historicalCorporateRows: [
+      { date: "2026-07-01", value: "4.72" },
+      { date: "2026-08-01", value: "4.81" },
+    ],
+    treasury3yRows: [
+      { date: "2026-07-01", value: "4.00" },
+      { date: "2026-07-02", value: "4.20" },
+      { date: "2026-08-03", value: "4.15" },
+    ],
+    dailyOasRows: [
+      { date: "2026-08-27", value: "0.39" },
+      { date: "2026-08-28", value: "0.41" },
+    ],
+  }), [
+    { date: "2026-07-01", us_credit_spread: 0.62 },
+    { date: "2026-08-01", us_credit_spread: 0.66 },
+    { date: "2026-08-27", us_credit_spread: 0.39 },
+    { date: "2026-08-28", us_credit_spread: 0.41 },
+  ]);
+});
+
+test("incremental credit-spread refresh requests only the direct daily OAS", async () => {
+  const requested = [];
+  const result = await fetchUsCreditSpreadSeries(async (url) => {
+    requested.push(new URL(url).searchParams.get("series_id"));
+    return {
+      ok: true,
+      json: async () => ({ observations: [{ date: "2026-08-27", value: "0.39" }] }),
+    };
+  }, "secret", { startDate: "2026-08-27", includeHistory: false });
+
+  assert.deepEqual(requested, ["BAMLC1A0C13Y"]);
+  assert.deepEqual(result.rows, [{ date: "2026-08-27", us_credit_spread: 0.39 }]);
 });
 
 test("fetches global VIX and won-dollar series only for an explicit experiment", async () => {
@@ -72,6 +142,12 @@ test("refreshes VIX independently when another FRED group fails", async () => {
   assert.equal(result.core, null);
   assert.equal(result.vix.at(-1).value, 15.84);
   assert.equal(result.krwUsd.at(-1).value, 1);
+  assert.ok(result.treasuryYields.DGS10.length > 0);
+  assert.ok(result.treasuryYields.DGS1.length > 0);
+  assert.ok(result.creditRates.HQMCB3YR.length > 0);
+  assert.ok(result.creditRates.DGS3.length > 0);
+  assert.ok(result.creditRates.BAMLC1A0C13Y.length > 0);
+  assert.ok(result.creditRates.rows.length > 0);
   assert.match(result.errors.core, /claims unavailable/);
   assert.equal(result.errors.vix, "");
 });
@@ -127,6 +203,8 @@ test("preserves VIX and won-dollar candidates without changing the crisis score 
   const withoutCandidates = buildCrisisSignalRows(base);
   const withCandidates = buildCrisisSignalRows({
     ...base,
+    DGS10: observations(daily, () => 4.2),
+    DGS1: observations(daily, (index) => (index < 45 ? 4.8 : 3.7)),
     VIXCLS: observations(daily, (index) => 15 + index * 0.1),
     DEXKOUS: observations(daily, (index) => 1300 + index),
   });
@@ -137,4 +215,5 @@ test("preserves VIX and won-dollar candidates without changing the crisis score 
   assert.ok(latest.vixChange20 > 0);
   assert.ok(latest.krwUsd > 1300);
   assert.ok(latest.krwUsdChange20 > 0);
+  assert.equal(latest.t10y1y, 0.5);
 });

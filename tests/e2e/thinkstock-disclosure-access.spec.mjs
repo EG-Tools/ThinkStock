@@ -17,6 +17,7 @@ test("new stock loads its own Cloudflare DART disclosures", async ({ page }) => 
   await installDataRoutes(page);
   await page.addInitScript(() => {
     localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "e2e-token" }));
+    localStorage.setItem("thinkstock-v5", JSON.stringify({ showDisclosures: true }));
   });
   let newStockDisclosureRequests = 0;
   const requestedDisclosureTickers = [];
@@ -356,6 +357,9 @@ test("API settings save only a verified personal access token", async ({ page })
 
 test("new stock loads its deployed disclosure file without a gateway token", async ({ page }) => {
   await installDataRoutes(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({ showDisclosures: true }));
+  });
   let requestedStaticDisclosure = false;
   let gatewayApiRequests = 0;
   await page.route("**/data/disclosures.json*", async (route) => {

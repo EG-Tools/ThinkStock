@@ -7,6 +7,12 @@ const stockResearchContract = require("./stock-research-contract.js");
     400,
     Number(stockResearchContract?.UNIVERSE_SIZE_HIGH) || 1000,
   );
+  const FAILURE_RETRY_DELAYS_MS = Object.freeze([
+    15 * 60 * 1000,
+    60 * 60 * 1000,
+    6 * 60 * 60 * 1000,
+    24 * 60 * 60 * 1000,
+  ]);
 
   function tickerOf(value) {
     return String(value || "").trim().toUpperCase();
@@ -106,8 +112,58 @@ const stockResearchContract = require("./stock-research-contract.js");
         fingerprint: String(state.fingerprint || "").slice(0, 240),
         metadataFingerprint: String(state.metadataFingerprint || "").slice(0, 240),
         signalFingerprint: String(state.signalFingerprint || "").slice(0, 240),
+        analysisStatus: state.analysisStatus === "failed"
+          ? "failed"
+          : (state.analysisStatus === "success" ? "success" : ""),
+        failureCount: Math.max(0, Math.round(Number(state.failureCount) || 0)),
+        lastFailureAt: String(state.lastFailureAt || "").slice(0, 32),
+        retryAfter: String(state.retryAfter || "").slice(0, 32),
       }]];
     }).slice(0, MAX_UNIVERSE_STATE));
+  }
+
+  function universeAnalysisFailures(value) {
+    return Object.entries(normalizeUniverseState(value)).flatMap(([ticker, state]) => {
+      if (state.analysisStatus !== "failed") return [];
+      const name = String(state.metadataFingerprint || "").split("|")[1]?.trim() || ticker;
+      return [{ ticker, name }];
+    });
+  }
+
+  function failureRetryDelayMs(failureCount) {
+    const index = Math.max(0, Math.min(
+      FAILURE_RETRY_DELAYS_MS.length - 1,
+      Math.round(Number(failureCount) || 1) - 1,
+    ));
+    return FAILURE_RETRY_DELAYS_MS[index];
+  }
+
+  function universeFailureRetryDue(state, now = Date.now()) {
+    if (state?.analysisStatus !== "failed") return false;
+    const retryAt = Date.parse(String(state.retryAfter || ""));
+    return !Number.isFinite(retryAt) || Number(now) >= retryAt;
+  }
+
+  function markUniverseAnalysisSuccess(state) {
+    return {
+      ...(state || {}),
+      analysisStatus: "success",
+      failureCount: 0,
+      lastFailureAt: "",
+      retryAfter: "",
+    };
+  }
+
+  function markUniverseAnalysisFailure(state, now = Date.now()) {
+    const timestamp = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+    const failureCount = Math.max(0, Math.round(Number(state?.failureCount) || 0)) + 1;
+    return {
+      ...(state || {}),
+      analysisStatus: "failed",
+      failureCount,
+      lastFailureAt: new Date(timestamp).toISOString(),
+      retryAfter: new Date(timestamp + failureRetryDelayMs(failureCount)).toISOString(),
+    };
   }
 
   function candidateSignalFingerprint(candidate) {
@@ -154,6 +210,10 @@ const stockResearchContract = require("./stock-research-contract.js");
         fingerprint,
         metadataFingerprint,
         signalFingerprint: prior[ticker]?.signalFingerprint || "",
+        analysisStatus: prior[ticker]?.analysisStatus || "",
+        failureCount: prior[ticker]?.failureCount || 0,
+        lastFailureAt: prior[ticker]?.lastFailureAt || "",
+        retryAfter: prior[ticker]?.retryAfter || "",
       };
       if (addedTickers.has(ticker)) return;
       if (!prior[ticker]?.fingerprint || prior[ticker].fingerprint !== fingerprint) changed.push(item);
@@ -163,6 +223,27 @@ const stockResearchContract = require("./stock-research-contract.js");
       }
     });
     return { ...composition, changed, metadataChanged, unchanged, state };
+  }
+
+  function selectIncrementalScanRecords(records, options = {}) {
+    const source = Array.isArray(records) ? records : [];
+    if (options.canIncrement !== true) return [...source];
+    const changed = options.directlyChangedTickers instanceof Set
+      ? options.directlyChangedTickers
+      : new Set(options.directlyChangedTickers || []);
+    const changedMarkets = options.sharedMarketsChanged instanceof Set
+      ? options.sharedMarketsChanged
+      : new Set(options.sharedMarketsChanged || []);
+    const previousState = normalizeUniverseState(options.previousState);
+    const now = Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now();
+    return source.filter((item) => {
+      const ticker = tickerOf(item?.ticker);
+      const market = String(item?.market || "").trim().toUpperCase()
+        || (ticker.endsWith(".KQ") ? "KOSDAQ" : "KOSPI");
+      return changed.has(ticker)
+        || changedMarkets.has(market)
+        || universeFailureRetryDue(previousState[ticker], now);
+    });
   }
 
   function selectRandomBatch(pool, seenTickers = [], options = {}) {
@@ -240,16 +321,23 @@ const stockResearchContract = require("./stock-research-contract.js");
   const stockResearchNavigation = Object.freeze({
     MAX_UNIVERSE_STATE,
     DISPLAY_LIMIT,
+    FAILURE_RETRY_DELAYS_MS,
     candidateSignalFingerprint,
     diffUniverse,
     diffUniverseState,
+    failureRetryDelayMs,
+    markUniverseAnalysisFailure,
+    markUniverseAnalysisSuccess,
     mergeCandidateProfiles,
     normalizeUniverseState,
     normalizeCandidateOrder,
     sharedResearchFingerprint,
     sharedResearchFingerprints,
     selectCandidatePage,
+    selectIncrementalScanRecords,
     selectRandomBatch,
+    universeAnalysisFailures,
+    universeFailureRetryDue,
     universeFingerprint,
     universeMetadataFingerprint,
   });

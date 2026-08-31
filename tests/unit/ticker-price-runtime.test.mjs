@@ -243,9 +243,11 @@ test("coalesces full-history requests and requires every visible ticker to be co
   let loadCount = 0;
   let releaseLoad;
   const loadedSeries = new Set();
+  const loadOptions = [];
   const coordinator = runtime.createHistoryCoverageCoordinator({
     loadSeries: async (ticker, options) => {
       loadCount += 1;
+      loadOptions.push(options);
       await new Promise((resolve) => { releaseLoad = resolve; });
       loadedSeries.add(ticker);
       assert.equal(options.returnAfterCache, false);
@@ -274,6 +276,26 @@ test("coalesces full-history requests and requires every visible ticker to be co
   const cached = await coordinator.load("005930.KS", { requireFullHistory: true });
   assert.equal(cached.cached, true);
   assert.equal(loadCount, 1);
+
+  const forced = coordinator.load("005930.KS", {
+    forceRefresh: true,
+    requireFullHistory: true,
+  });
+  assert.equal(loadCount, 2);
+  releaseLoad();
+  await forced;
+  assert.equal(loadOptions.at(-1).forceRefresh, true);
+
+  const latest = coordinator.load("005930.KS", {
+    latestPoints: [{ date: "2026-08-31", close: 72500 }],
+    requireFullHistory: true,
+  });
+  assert.equal(loadCount, 3);
+  releaseLoad();
+  await latest;
+  assert.deepEqual(loadOptions.at(-1).latestPoints, [
+    { date: "2026-08-31", close: 72500 },
+  ]);
 });
 
 test("touches ticker cache metadata at most once per interval", () => {

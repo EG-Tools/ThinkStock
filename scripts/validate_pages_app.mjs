@@ -49,8 +49,7 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractio
   stat(path.join(root, "docs", "vendor", "plotly-thinkstock-2.35.2.min.js")),
   stat(path.join(root, "docs", "assets", "app.bundle.min.js")),
 ]);
-const [deferredDiagnostics, dataHealth, pagesEntry, styles, insiderTrades, workerIndex, workerRouter, workerDartHandler, kofiaClient, marketTimingService, marketTimingWorker, aiScenarioPaths, aiForecastWorker, optionalFeatureRuntime, stockResearchApp, aiForecastCache, aiForecastQualityRuntime, chartModelCache, chartPointerRuntime, chartHoverRuntime, chartMarkerRuntime, auxiliaryChartRuntime, mainChartEvents, apiPeriods, settingsPanelRuntime, aiForecastTraces, runtimeRefreshOrchestrator, progressView, mainChartModel, chartEventLayer] = await Promise.all([
-  readFile(path.join(root, "docs", "modules", "deferred-diagnostics.mjs"), "utf8"),
+const [dataHealth, pagesEntry, styles, insiderTrades, workerIndex, workerRouter, workerDartHandler, kofiaClient, marketTimingService, marketTimingWorker, aiScenarioPaths, aiForecastWorker, optionalFeatureRuntime, stockResearchApp, aiForecastCache, aiForecastQualityRuntime, chartModelCache, chartPointerRuntime, chartHoverRuntime, chartMarkerRuntime, auxiliaryChartRuntime, mainChartEvents, apiPeriods, settingsPanelRuntime, aiForecastTraces, runtimeRefreshOrchestrator, progressView, mainChartModel, chartEventLayer] = await Promise.all([
   readFile(path.join(root, "docs", "modules", "data-health.mjs"), "utf8"),
   readFile(path.join(root, "scripts", "pages-entry.mjs"), "utf8"),
   readFile(path.join(root, "docs", "styles.css"), "utf8"),
@@ -229,10 +228,11 @@ assert.ok(appBootstrapOrchestrator.includes("createAppBootstrapOrchestrator")
 "standard application orchestration modules are incomplete");
 assert.ok(
   app.includes("shouldHydrateChartData(invalidation)")
-    && app.includes("if (shouldHydrateChartData) queueInsiderTradeRefresh()")
+    && !app.includes("queueInsiderTradeRefresh")
+    && app.includes("restoreDart: restoreVisibleDartLayers")
     && app.includes("if (shouldHydrateChartData) scheduleVisibleEpsData()")
     && app.includes("prepareEventModels: shouldHydrateChartData ? prepareMarketTimingModels : null"),
-  "viewport-only chart updates must not restart external data hydration",
+  "viewport-only chart updates must not restart DART or EPS data hydration",
 );
 assert.ok(
   appControlConfig.includes("export const MAX_VISIBLE_MAIN_SERIES = 10;")
@@ -963,7 +963,10 @@ assert.equal(packageJson.scripts?.["backtest:ai:verify"],
   "node scripts/run_ai_walkforward_validation.mjs",
   "AI walk-forward regression guard is not wired to one command");
 assert.ok(app.includes('const MAIN_LINE_TRACE_TYPE = "scatter";'), "main chart is not using the SVG scatter path");
-assert.ok(app.includes("MAIN_CHART_TOTAL_VISIBLE_POINT_TARGET_MOBILE"), "adaptive mobile chart budget is missing");
+assert.ok(app.includes("resolveMainChartDisplayPointBudget(width, visibleSeriesCount, mobile)")
+  && appControlConfig.includes("export function resolveMainChartDisplayPointBudget(")
+  && appControlConfig.includes("const totalTarget = mobile ? 2800"),
+"adaptive mobile chart budget is missing");
 assert.ok(app.includes("preparePlotly: ensurePlotlyReady")
   && appBootstrapOrchestrator.includes("const plotlyReadyTask = Promise.resolve()")
   && appBootstrapOrchestrator.includes("prepareInitialData"),
@@ -988,16 +991,16 @@ assert.ok(performanceMonitor.includes("createPerformanceMonitor")
 assert.ok(!app.includes('from "./modules/deferred-diagnostics.mjs"')
   && optionalFeatureRuntime.includes('"diagnostics-runtime"')
   && optionalFeatureRuntime.includes('"./assets/diagnostics-runtime-feature.bundle.min.js"')
-  && diagnosticsRuntimeFeatureEntry.includes('from "../../docs/modules/deferred-diagnostics.mjs"')
   && diagnosticsRuntimeFeatureEntry.includes('from "../../docs/modules/performance-diagnostics.mjs"')
-  && deferredDiagnostics.includes("createDeferredDiagnostics")
-  && !deferredDiagnostics.includes("ThinkStockPerformanceDiagnostics")
+  && !diagnosticsRuntimeFeatureEntry.includes("deferred-diagnostics.mjs")
+  && performanceDiagnostics.includes("createDeferredDiagnostics")
+  && !performanceDiagnostics.includes("ThinkStockPerformanceDiagnostics")
   && performanceDiagnostics.includes("createPerformanceDiagnostics")
   && performanceDiagnostics.includes("readStorageState")
   && sw.includes('"/assets/diagnostics-runtime-feature.bundle.min.js"'),
   "persistent performance diagnostics are incomplete");
 assert.ok(performanceDiagnostics.includes("startAutomaticCapture")
-  && deferredDiagnostics.includes("scheduleAutomaticCapture")
+  && performanceDiagnostics.includes("scheduleAutomaticCapture")
   && performanceMonitor.includes("diagnosticSamples"),
   "automatic local performance history is incomplete");
 assert.ok(!pagesEntry.includes("performance-diagnostics")

@@ -61,7 +61,11 @@ import {
   fetchKofiaCreditAndDepositRows,
   mergeCreditRows,
 } from "../worker/src/kofia-client.mjs";
-import { fetchFredSeries } from "../worker/src/crisis-signal.mjs";
+import {
+  buildTreasurySpreadRows,
+  fetchFredSeries,
+  fetchUsCreditSpreadSeries,
+} from "../worker/src/crisis-signal.mjs";
 import {
   RESEARCH_SUMMARY_BODY_LIMIT,
   normalizeResearchMinimum,
@@ -1130,6 +1134,8 @@ export async function createThinkStockServer(options = {}) {
   let vkospiLiveCache = null;
   let localVixCache = null;
   let localVixLiveCache = null;
+  let localTreasurySpreadCache = null;
+  let localUsCreditSpreadCache = null;
   async function syncCreditRowsToWorker(rows) {
     if (!workerAccessToken) return false;
     const recentRows = mergeCreditRows([], rows).slice(-45);
@@ -1746,6 +1752,89 @@ export async function createThinkStockServer(options = {}) {
                 warning: [
                   payload?.warning,
                   `FRED VIX 보완 지연: ${error?.message || error}`,
+                ].filter(Boolean).join(" / "),
+              };
+            }
+          }
+          if (fredApiKey) {
+            try {
+              const workerCreditSpreadRows = Array.isArray(payload?.creditSpreadRows)
+                ? payload.creditSpreadRows
+                : [];
+              const workerLatestDate = String(workerCreditSpreadRows.at(-1)?.date || "").slice(0, 10);
+              if (forceRefresh || localUsCreditSpreadCache?.checkedDate !== today) {
+                const startDate = workerLatestDate || "1984-01-01";
+                const refreshed = await fetchUsCreditSpreadSeries(
+                  fetchImpl,
+                  fredApiKey,
+                  { startDate, includeHistory: workerCreditSpreadRows.length === 0 },
+                );
+                localUsCreditSpreadCache = {
+                  checkedDate: today,
+                  rows: refreshed.rows,
+                  source: refreshed.source,
+                  warning: refreshed.warning,
+                };
+              }
+              const merged = new Map(workerCreditSpreadRows.map((row) => [row.date, row]));
+              (localUsCreditSpreadCache?.rows || []).forEach((row) => merged.set(row.date, row));
+              const creditSpreadRows = [...merged.values()]
+                .sort((left, right) => left.date.localeCompare(right.date));
+              payload = {
+                ...payload,
+                latestDate: [payload?.latestDate || "", creditSpreadRows.at(-1)?.date || ""]
+                  .sort().at(-1),
+                creditSpreadRows,
+                creditSpreadSource: localUsCreditSpreadCache?.source
+                  || payload?.creditSpreadSource
+                  || "",
+                warning: [payload?.warning, localUsCreditSpreadCache?.warning]
+                  .filter(Boolean)
+                  .join(" / "),
+              };
+            } catch (error) {
+              payload = {
+                ...payload,
+                warning: [
+                  payload?.warning,
+                  `FRED 미국 신용스프레드 보완 지연: ${error?.message || error}`,
+                ].filter(Boolean).join(" / "),
+              };
+            }
+          }
+          if (fredApiKey) {
+            try {
+              const workerSpreadRows = Array.isArray(payload?.termSpreadRows)
+                ? payload.termSpreadRows
+                : [];
+              const workerLatestDate = String(workerSpreadRows.at(-1)?.date || "").slice(0, 10);
+              if (forceRefresh || localTreasurySpreadCache?.checkedDate !== today) {
+                const startDate = workerLatestDate || "1986-01-01";
+                const [dgs10, dgs1] = await Promise.all([
+                  fetchFredSeries(fetchImpl, fredApiKey, "DGS10", startDate),
+                  fetchFredSeries(fetchImpl, fredApiKey, "DGS1", startDate),
+                ]);
+                localTreasurySpreadCache = {
+                  checkedDate: today,
+                  rows: buildTreasurySpreadRows(dgs10, dgs1),
+                };
+              }
+              const merged = new Map(workerSpreadRows.map((row) => [row.date, row]));
+              (localTreasurySpreadCache?.rows || []).forEach((row) => merged.set(row.date, row));
+              const termSpreadRows = [...merged.values()]
+                .sort((left, right) => left.date.localeCompare(right.date));
+              payload = {
+                ...payload,
+                latestDate: [payload?.latestDate || "", termSpreadRows.at(-1)?.date || ""]
+                  .sort().at(-1),
+                termSpreadRows,
+              };
+            } catch (error) {
+              payload = {
+                ...payload,
+                warning: [
+                  payload?.warning,
+                  `FRED 장단기금리 보완 지연: ${error?.message || error}`,
                 ].filter(Boolean).join(" / "),
               };
             }

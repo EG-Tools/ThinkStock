@@ -10,7 +10,7 @@
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" href="./icon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./styles.css">
-  <script defer src="./assets/app.bundle.min.js?v=dev&amp;build=3.28&amp;asset=3a9db5531275"></script>
+  <script defer src="./assets/app.bundle.min.js?v=dev&amp;build=3.31&amp;asset=4fd7eb4e7fd9"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -28,7 +28,7 @@
           <button id="hoverToggle" class="chart-toggle hover-toggle-btn top-control-toggle top-info-btn" title="정보창 ON/OFF">정보창</button>
           <button id="chartToolsToggle" class="chart-toggle reset-btn top-control-toggle top-chart-tools-btn is-active" type="button" title="메인차트 도구를 숨깁니다." aria-pressed="true">도구</button>
           <button id="chartHandlesToggle" class="chart-toggle reset-btn top-control-toggle top-chart-handles-btn is-active" type="button" title="차트 좌우 조절 핸들 ON/OFF" aria-pressed="true">핸들</button>
-          <label class="credit-offset-wrap" title="예탁금·신용 발표 시차 보정(일)">
+          <label class="credit-offset-wrap" title="2일 후행">
             <span class="credit-offset-label">자금옵셋</span>
             <input id="creditOffset" class="credit-offset-input" type="number" value="-2" step="1" min="-30" max="30">
           </label>
@@ -38,10 +38,12 @@
         <div class="series-toggle-board" id="seriesToggleBoard">
           <div class="series-row base-row">
             <button class="series-toggle-btn" data-series="leading_cycle">선행순환변동</button>
+            <button class="series-toggle-btn" data-series="t10y1y">장단기금리차</button>
             <button class="series-toggle-btn" data-series="^KS11">코스피</button>
             <button class="series-toggle-btn" data-series="^KQ11">코스닥</button>
           </div>
           <div class="series-row base-row">
+            <button class="series-toggle-btn" data-series="us_credit_spread">신용스프레드</button>
             <button class="series-toggle-btn" data-series="customer_deposit">고객예탁금</button>
             <button class="series-toggle-btn" data-series="kospi_credit">코스피신용</button>
             <button class="series-toggle-btn" data-series="kosdaq_credit">코스닥신용</button>
@@ -70,6 +72,7 @@
           <span class="ui-progress-track chart-progress-track"><i id="epsProgressBar" class="ui-progress-fill"></i></span>
         </div>
         <div class="chart-refresh-tools">
+          <div id="runtimeRefreshStatus" class="ui-fade-message chart-help-message runtime-refresh-status" role="status" aria-live="polite" hidden>최신 데이터 확인 대기</div>
           <button id="refreshData" class="refresh-btn chart-refresh-btn" type="button" title="최신 데이터 새로고침" aria-label="최신 데이터 새로고침">&#x21BB;</button>
           <button id="chartCursorModeBtn" class="chart-range-btn chart-cursor-mode-btn" type="button" data-chart-cursor-mode="vertical" title="세로 차트선 방식 사용 중. 눌러서 변경" aria-label="세로 차트선 방식 사용 중. 눌러서 변경"><span class="cursor-line-glyph" aria-hidden="true"></span></button>
           <div id="chartRangeControls" class="chart-range-controls" aria-label="차트 기간과 최신 구간 이동">
@@ -79,7 +82,6 @@
             <button id="chartJumpLatest" class="chart-range-btn chart-latest-btn" type="button" title="현재 기간 폭을 유지하고 최신 구간으로 이동" aria-label="현재 기간 폭을 유지하고 최신 구간으로 이동"><span class="chart-latest-symbol" aria-hidden="true"></span></button>
           </div>
         </div>
-        <div id="runtimeRefreshStatus" class="ui-fade-message chart-help-message runtime-refresh-status" role="status" aria-live="polite" hidden>최신 데이터 확인 대기</div>
         <div id="chartNavigationMessage" class="ui-fade-message chart-help-message chart-navigation-message" role="status" aria-live="polite" hidden></div>
         <div id="coMovementPanel" class="co-movement-panel" role="status" aria-live="polite" hidden></div>
         <button id="aiForecastToggle" class="chart-toggle reset-btn chart-ai-btn" type="button" title="6개월 AI 가상 흐름 (투자 판단용 아님)" aria-pressed="false" aria-disabled="true" disabled>AI</button>
@@ -113,7 +115,7 @@
           This product uses the FRED&reg; API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.
         </p>
         <p id="mainAppMeta" class="app-company-line app-company-line-main">
-              <span>Version : <span data-app-version-copy>3.28</span></span>
+              <span>Version : <span data-app-version-copy>3.31</span></span>
           <span>회사 : Life User</span>
           <span>이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a></span>
         </p>
@@ -122,7 +124,7 @@
 
     <div id="stockResearchModal" class="ui-modal stock-research-modal" hidden>
       <div class="ui-modal-backdrop stock-research-backdrop"></div>
-      <section class="ui-dialog-panel stock-research-panel" role="dialog" aria-modal="true" aria-labelledby="stockResearchTitle">
+      <section id="stockResearchPanel" class="ui-dialog-panel stock-research-panel" role="dialog" aria-modal="true" aria-labelledby="stockResearchTitle">
         <header class="stock-research-header">
           <h2 id="stockResearchTitle">종목탐구</h2>
           <div class="stock-research-filters" role="group" aria-label="종목탐구 신호 필터">
@@ -130,7 +132,9 @@
             <button id="stockResearchSellFilter" class="ui-compact-control" type="button" aria-pressed="false">매도</button>
             <button id="stockResearchTodayFilter" class="ui-compact-control" type="button" aria-label="1일 신호 기간 비활성" aria-pressed="false" data-signal-window="0">1일</button>
           </div>
-          <button id="stockResearchModalBlockedClearBtn" class="stock-research-header-blocked-btn" type="button" disabled>차단 0 종목</button>
+          <div class="stock-research-blocked-menu">
+            <button id="stockResearchModalBlockedClearBtn" class="stock-research-header-blocked-btn" type="button" aria-haspopup="dialog" aria-expanded="false" disabled>차단 0 종목</button>
+          </div>
           <button id="stockResearchCloseBtn" class="ui-circle-button stock-research-close-btn" type="button" aria-label="종목탐구 닫기">×</button>
         </header>
         <p id="stockResearchAsOf" class="stock-research-as-of">마지막 탐구 결과가 없습니다.</p>
@@ -138,7 +142,10 @@
         <div id="stockResearchProgress" class="stock-research-progress" role="status" aria-live="polite" hidden>
           <div class="stock-research-progress-copy">
             <span id="stockResearchProgressText">탐구 준비 0%</span>
-            <span id="stockResearchProgressCount"></span>
+            <span class="stock-research-progress-details">
+              <span id="stockResearchProgressCount"></span>
+              <button id="stockResearchFailedBtn" class="stock-research-failed-btn" type="button" aria-pressed="false" hidden>추출 실패 0개</button>
+            </span>
           </div>
           <span class="ui-progress-track stock-research-progress-track"><i id="stockResearchProgressBar" class="ui-progress-fill"></i></span>
         </div>
@@ -274,10 +281,22 @@
           <p id="appCacheEmpty" class="app-cache-empty" hidden>저장된 캐시가 없습니다.</p>
         </section>
         <p id="settingsAppMeta" class="app-company-line">
-        <span class="api-settings-version">Version : <span id="appVersionText">3.28</span></span>
+        <span class="api-settings-version">Version : <span id="appVersionText">3.31</span></span>
           <span>회사 : Life User</span>
           <span>이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a></span>
         </p>
+      </section>
+    </div>
+
+    <div id="appStateResetConfirm" class="ui-modal settings-confirm-modal" hidden>
+      <div class="ui-modal-backdrop settings-confirm-backdrop" data-reset-confirm-close="1"></div>
+      <section class="ui-dialog-panel settings-confirm-panel" role="alertdialog" aria-modal="true" aria-labelledby="appStateResetConfirmTitle" aria-describedby="appStateResetConfirmDescription">
+        <strong id="appStateResetConfirmTitle">전체초기화</strong>
+        <p id="appStateResetConfirmDescription">화면 설정과 종목 목록을 기본 상태로 되돌릴까요?</p>
+        <div class="settings-confirm-actions">
+          <button id="appStateResetCancelBtn" class="api-action-btn" type="button">아니오</button>
+          <button id="appStateResetConfirmBtn" class="api-action-btn is-destructive" type="button">예</button>
+        </div>
       </section>
     </div>
 

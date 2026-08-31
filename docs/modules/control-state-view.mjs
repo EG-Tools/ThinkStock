@@ -1,6 +1,92 @@
+import {
+  reconcileSeriesActivationOrder,
+  updateSeriesActivationOrder,
+} from "./chart-session-controller.mjs";
+
   "use strict";
 
   const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
+
+  function createScrollAffordance(scope = globalThis, options = {}) {
+    const upClass = String(options.upClass || "can-scroll-up");
+    const downClass = String(options.downClass || "can-scroll-down");
+    const hostClass = String(options.hostClass || "ui-scroll-affordance");
+    const onStateChange = typeof options.onStateChange === "function"
+      ? options.onStateChange
+      : null;
+    let container = null;
+    let indicator = null;
+    let frameId = 0;
+    let resizeObserver = null;
+
+    const requestFrame = typeof scope.requestAnimationFrame === "function"
+      ? scope.requestAnimationFrame.bind(scope)
+      : (callback) => globalThis.setTimeout(callback, 0);
+    const cancelFrame = typeof scope.cancelAnimationFrame === "function"
+      ? scope.cancelAnimationFrame.bind(scope)
+      : (id) => globalThis.clearTimeout(id);
+
+    function clearState() {
+      indicator?.classList?.remove(upClass, downClass);
+    }
+
+    function syncNow() {
+      frameId = 0;
+      if (!container || !indicator) return;
+      const maximumScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+      const scrollTop = Math.max(0, container.scrollTop);
+      const canScrollUp = scrollTop > 1;
+      const canScrollDown = maximumScrollTop - scrollTop > 1;
+      indicator.classList.toggle(upClass, canScrollUp);
+      indicator.classList.toggle(downClass, canScrollDown);
+      onStateChange?.({
+        canScrollDown,
+        canScrollUp,
+        container,
+        indicator,
+        maximumScrollTop,
+        scrollTop,
+      });
+    }
+
+    function schedule() {
+      if (frameId) return;
+      frameId = requestFrame(syncNow);
+    }
+
+    function detach() {
+      if (frameId) cancelFrame(frameId);
+      frameId = 0;
+      container?.removeEventListener?.("scroll", schedule);
+      scope.removeEventListener?.("resize", schedule);
+      resizeObserver?.disconnect?.();
+      resizeObserver = null;
+      clearState();
+      container = null;
+      indicator = null;
+    }
+
+    function bind(nextContainer, nextIndicator = nextContainer) {
+      if (container === nextContainer && indicator === nextIndicator) {
+        schedule();
+        return;
+      }
+      detach();
+      if (!nextContainer || !nextIndicator) return;
+      container = nextContainer;
+      indicator = nextIndicator;
+      indicator.classList?.add(hostClass);
+      container.addEventListener?.("scroll", schedule, { passive: true });
+      scope.addEventListener?.("resize", schedule, { passive: true });
+      if (typeof scope.ResizeObserver === "function") {
+        resizeObserver = new scope.ResizeObserver(schedule);
+        resizeObserver.observe(container);
+      }
+      schedule();
+    }
+
+    return Object.freeze({ bind, clearState, detach, schedule, syncNow });
+  }
 
   function syncControl(button, state = {}) {
     if (!button) return null;
@@ -117,6 +203,7 @@
     const document = scope.document;
     const state = options.state;
     const panelKeys = [...(options.panelKeys || [])].map(String);
+    const seriesKeys = [...(options.seriesKeys || [])].map(String);
     const controlsSignature = options.controlsSignature || ((controls) => JSON.stringify(controls || []));
     if (!document || !state?.hiddenAuxiliaryPanels || !state?.hiddenAuxiliarySeries) {
       throw new Error("auxiliary panel control dependencies are incomplete");
@@ -138,6 +225,15 @@
 
     function isPanelVisible(panelKey) {
       return panelKeys.includes(panelKey) && !state.hiddenAuxiliaryPanels.has(panelKey);
+    }
+
+    function seriesOrder() {
+      const visible = seriesKeys.filter((key) => !state.hiddenAuxiliarySeries.has(key));
+      state.auxiliarySeriesOrder = reconcileSeriesActivationOrder(
+        state.auxiliarySeriesOrder,
+        visible,
+      );
+      return [...state.auxiliarySeriesOrder];
     }
 
     function sync() {
@@ -164,8 +260,14 @@
     function toggleSeries(key) {
       const seriesKey = String(key || "");
       if (!seriesKey) return;
-      if (state.hiddenAuxiliarySeries.has(seriesKey)) state.hiddenAuxiliarySeries.delete(seriesKey);
+      const visible = state.hiddenAuxiliarySeries.has(seriesKey);
+      if (visible) state.hiddenAuxiliarySeries.delete(seriesKey);
       else state.hiddenAuxiliarySeries.add(seriesKey);
+      state.auxiliarySeriesOrder = updateSeriesActivationOrder(
+        state.auxiliarySeriesOrder,
+        seriesKey,
+        visible,
+      );
       publish();
     }
 
@@ -241,6 +343,7 @@
       bindToggle,
       isPanelVisible,
       normalizeOrder,
+      seriesOrder,
       sync,
       syncRepresentativeToggles,
       togglePanel,
@@ -252,6 +355,7 @@ export {
     clampPercent,
     createAuxiliaryPanelControlView,
     createProgressView,
+    createScrollAffordance,
     renderMessage,
     syncChoiceControls,
     syncControl,

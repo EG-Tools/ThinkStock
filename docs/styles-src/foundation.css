@@ -457,9 +457,9 @@ body {
 .runtime-refresh-status {
   position: absolute;
   z-index: 120;
-  top: 16px;
-  right: 72px;
-  max-width: min(260px, calc(100% - 120px));
+  top: 2px;
+  right: calc(100% + 8px);
+  max-width: min(260px, calc(100vw - 120px));
   padding: 4px 8px;
   line-height: 1.2;
   white-space: nowrap;
@@ -474,10 +474,13 @@ body {
 .co-movement-panel {
   position: absolute;
   z-index: 119;
-  top: 10px;
+  top: auto;
+  bottom: 38px;
   left: 50%;
   width: max-content;
   max-width: calc(100% - 176px);
+  padding: 0;
+  border: 0;
   transform: translateX(-50%);
   display: flex;
   align-items: center;
@@ -485,13 +488,17 @@ body {
   gap: 10px;
   min-height: 26px;
   overflow-x: auto;
+  background: none;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   color: var(--muted);
   font-size: 11px;
   line-height: 1.2;
   white-space: nowrap;
   scrollbar-width: none;
   text-align: center;
-  text-shadow: 0 1px 3px #111, 0 0 7px #111;
+  text-shadow: none;
 }
 
 .co-movement-panel::-webkit-scrollbar { display: none; }

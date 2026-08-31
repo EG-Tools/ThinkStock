@@ -66,6 +66,7 @@ test("auxiliary panel controls own visibility, activation order, and persistence
   let changed = 0;
   const state = {
     auxiliaryPanelOrder: ["adr", "fearGreed", "newsSentiment", "vkospi"],
+    auxiliarySeriesOrder: ["adr_kospi", "adr_kosdaq", "vkospi", "vix"],
     hiddenAuxiliaryPanels: new Set(["vkospi"]),
     hiddenAuxiliarySeries: new Set(),
   };
@@ -74,6 +75,7 @@ test("auxiliary panel controls own visibility, activation order, and persistence
   }, {
     state,
     panelKeys: ["adr", "vkospi", "fearGreed", "newsSentiment"],
+    seriesKeys: ["adr_kospi", "adr_kosdaq", "vkospi", "vix"],
     persist: () => { persisted += 1; },
     onChange: () => { changed += 1; },
   });
@@ -84,6 +86,9 @@ test("auxiliary panel controls own visibility, activation order, and persistence
   assert.equal(state.auxiliaryPanelOrder.at(-1), "vkospi");
   controls.toggleSeries("vix");
   assert.equal(state.hiddenAuxiliarySeries.has("vix"), true);
-  assert.equal(persisted, 2);
-  assert.equal(changed, 2);
+  controls.toggleSeries("vix");
+  assert.equal(state.hiddenAuxiliarySeries.has("vix"), false);
+  assert.equal(controls.seriesOrder().at(-1), "vix");
+  assert.equal(persisted, 3);
+  assert.equal(changed, 3);
 });

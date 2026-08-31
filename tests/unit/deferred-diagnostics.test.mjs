@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 
-import * as deferredDiagnostics from "../../docs/modules/deferred-diagnostics.mjs";
+import * as deferredDiagnostics from "../../docs/modules/performance-diagnostics.mjs";
 
 test("uses an injected diagnostics factory without loading another script", async () => {
   const created = { ready: true };

@@ -29,12 +29,17 @@ const defaultValue = (key) => (key === "pricePayload" ? null : []);
 
 /**
  * @param {Partial<Record<AppDataKey, unknown>>} [initial]
+ * @param {{equalsByKey?: Partial<Record<AppDataKey, (left: unknown, right: unknown, key: AppDataKey) => boolean>>}} [options]
  */
-function createAppDataStore(initial = {}) {
+function createAppDataStore(initial = {}, options = {}) {
   const values = Object.create(null);
   const revisions = Object.create(null);
   const listeners = new Set();
+  const equalsByKey = options.equalsByKey || {};
   let revision = 0;
+  let replacements = 0;
+  let touches = 0;
+  let skipped = 0;
 
   APP_DATA_KEYS.forEach((key) => {
     values[key] = Object.hasOwn(initial, key) ? initial[key] : defaultValue(key);
@@ -53,12 +58,28 @@ function createAppDataStore(initial = {}) {
   }
 
   /** @param {AppDataKey} key */
+  function valuesMatch(key, left, right) {
+    if (Object.is(left, right)) return true;
+    const comparator = equalsByKey[key];
+    if (typeof comparator !== "function") return false;
+    try {
+      return comparator(left, right, key) === true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /** @param {AppDataKey} key */
   function set(key, value, options = {}) {
     if (!APP_DATA_KEYS.includes(key)) throw new Error(`Unknown app data key: ${key}`);
-    if (Object.is(values[key], value)) return false;
+    if (valuesMatch(key, values[key], value)) {
+      skipped += 1;
+      return false;
+    }
     values[key] = value;
     revision += 1;
     revisions[key] += 1;
+    replacements += 1;
     if (options.silent !== true) emit([key]);
     return true;
   }
@@ -68,10 +89,15 @@ function createAppDataStore(initial = {}) {
     if (unknown) throw new Error(`Unknown app data key: ${unknown}`);
     const changed = [];
     APP_DATA_KEYS.forEach((key) => {
-      if (!Object.hasOwn(next, key) || Object.is(values[key], next[key])) return;
+      if (!Object.hasOwn(next, key)) return;
+      if (valuesMatch(key, values[key], next[key])) {
+        skipped += 1;
+        return;
+      }
       values[key] = next[key];
       revision += 1;
       revisions[key] += 1;
+      replacements += 1;
       changed.push(key);
     });
     if (options.silent !== true) emit(changed);
@@ -87,6 +113,7 @@ function createAppDataStore(initial = {}) {
     if (!APP_DATA_KEYS.includes(key)) throw new Error(`Unknown app data key: ${key}`);
     revision += 1;
     revisions[key] += 1;
+    touches += 1;
     if (options.silent !== true) emit([key]);
     return revisions[key];
   }
@@ -102,6 +129,13 @@ function createAppDataStore(initial = {}) {
     patch,
     revision: (key = "") => (key ? Number(revisions[key]) || 0 : revision),
     snapshot,
+    stats: () => Object.freeze({
+      revision,
+      replacements,
+      touches,
+      skipped,
+      revisions: Object.freeze({ ...revisions }),
+    }),
     touch,
     subscribe(listener) {
       if (typeof listener !== "function") return () => {};

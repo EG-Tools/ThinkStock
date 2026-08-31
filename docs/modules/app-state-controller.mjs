@@ -258,9 +258,11 @@
         store.write({
           activeMonths: state.activeMonths,
           hiddenSeries: [...state.hiddenSeries],
+          mainHoverSeriesOrder: [...(state.mainHoverSeriesOrder || [])],
           hiddenAuxiliarySeries: [...state.hiddenAuxiliarySeries],
           hiddenAuxiliaryPanels: [...state.hiddenAuxiliaryPanels],
           auxiliaryPanelOrder: [...state.auxiliaryPanelOrder],
+          auxiliarySeriesOrder: [...(state.auxiliarySeriesOrder || [])],
           customStocks: options.getCustomStocks?.() || [],
           seriesOffsets: state.seriesOffsets,
           seriesScales: state.seriesScales,
@@ -292,10 +294,25 @@
           state.activeMonths = persisted.activeMonths;
         }
         if (Array.isArray(persisted.hiddenSeries)) state.hiddenSeries = new Set(persisted.hiddenSeries);
+        if (Array.isArray(persisted.mainHoverSeriesOrder)) {
+          state.mainHoverSeriesOrder = [...new Set(persisted.mainHoverSeriesOrder
+            .map((value) => String(value || "").trim())
+            .filter(Boolean))].slice(0, 30);
+        }
         if (Array.isArray(persisted.hiddenAuxiliarySeries)) {
           state.hiddenAuxiliarySeries = new Set(persisted.hiddenAuxiliarySeries);
         }
         migrateAuxiliaryVisibility(state, persisted, { panelKeys, seriesKeys });
+        const auxiliarySeriesKeys = Object.values(seriesKeys).map(String).filter(Boolean);
+        const savedAuxiliarySeriesOrder = Array.isArray(persisted.auxiliarySeriesOrder)
+          ? persisted.auxiliarySeriesOrder
+          : state.auxiliarySeriesOrder;
+        state.auxiliarySeriesOrder = [...new Set([
+          ...(Array.isArray(savedAuxiliarySeriesOrder) ? savedAuxiliarySeriesOrder : []),
+          ...auxiliarySeriesKeys,
+        ])].filter((key) => (
+          auxiliarySeriesKeys.includes(key) && !state.hiddenAuxiliarySeries.has(key)
+        ));
         if (Array.isArray(persisted.auxiliaryPanelOrder)) {
           state.auxiliaryPanelOrder = [
             ...new Set([...persisted.auxiliaryPanelOrder, ...panelKeys]),

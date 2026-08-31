@@ -306,6 +306,102 @@
   font-weight: 400;
 }
 
+.chart-hover-summary {
+  position: absolute;
+  z-index: 130;
+  width: max-content;
+  max-width: min(230px, calc(100% - 24px));
+  padding: 7px 9px;
+  border: 1px solid var(--chart-hover-border);
+  border-radius: 4px;
+  background: var(--chart-hover-bg);
+  color: var(--chart-hover-color);
+  font-family: var(--chart-font-family);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  pointer-events: none;
+  backdrop-filter: blur(6px);
+}
+
+.chart-hover-summary[hidden] { display: none !important; }
+
+.chart-hover-summary-lines {
+  display: grid;
+  gap: 1px;
+}
+
+.chart-hover-summary-lines span { white-space: nowrap; }
+
+.chart-hover-summary.stock-research-list-popover {
+  width: min(190px, calc(100% - 24px));
+  max-width: min(190px, calc(100% - 24px));
+  pointer-events: auto;
+}
+
+.stock-research-list-popover .chart-hover-summary-lines {
+  grid-auto-rows: 30px;
+  max-height: 150px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+.stock-research-list-popover .chart-hover-summary-lines::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.stock-research-list-popover .chart-hover-summary-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.stock-research-list-popover .chart-hover-summary-title {
+  min-width: 0;
+  max-width: 8em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stock-research-list-popover .chart-hover-summary-action {
+  min-width: 38px;
+  height: 25px;
+  padding: 0 8px;
+  border: 1px solid rgba(74, 222, 128, 0.34);
+  border-radius: 999px;
+  background: rgba(74, 222, 128, 0.08);
+  color: var(--accent);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.stock-research-list-popover .chart-hover-summary-action:disabled {
+  opacity: 0.45;
+  cursor: wait;
+}
+
+.stock-research-list-popover .chart-hover-summary-action.is-destructive {
+  border-color: rgba(239, 120, 120, 0.3);
+  background: rgba(160, 58, 58, 0.1);
+  color: #d99898;
+}
+
+.stock-research-list-popover .chart-hover-summary-action.is-destructive:hover,
+.stock-research-list-popover .chart-hover-summary-action.is-destructive:focus-visible {
+  background: rgba(190, 68, 68, 0.22);
+  color: #f0b0b0;
+}
+
 .message-area { margin-top: 12px; }
 .message { padding: 12px 14px; border-radius: 18px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border); color: var(--muted); }
 .message.error { background: rgba(187, 67, 40, 0.2); color: #f87171; }

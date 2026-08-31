@@ -157,3 +157,50 @@ test("reuses dated marker bindings instead of rebuilding the full source date ma
   assert.deepEqual(second.yUpdates, [[125, 6425]]);
   assert.ok(sourceDateReads - firstPassReads <= 4);
 });
+
+test("attaches every event marker to its owning price point during viewport fitting", () => {
+  const element = {
+    data: [
+      {
+        x: ["2026-08-01", "2026-08-02"],
+        y: [100, 120],
+        meta: { overlayKind: "price", seriesKey: "005930.KS" },
+      },
+      {
+        x: ["2026-08-01"],
+        y: [104],
+        meta: {
+          isDisclosureTrace: true,
+          pointTickers: ["005930.KS"],
+          markerGapFactors: [1],
+        },
+      },
+      {
+        x: ["2026-08-02"],
+        y: [111.2],
+        meta: {
+          isMarketTimingBuyTrace: true,
+          pointTickers: ["005930.KS"],
+          markerGapFactors: [-1.1],
+        },
+      },
+    ],
+  };
+
+  const result = layout.collectViewportAnchoredYUpdates(element, {
+    viewportRange: [0, 200],
+    gapRatio: 0.02,
+  });
+
+  assert.deepEqual(result.traceIndexes, [2]);
+  assert.deepEqual(result.yUpdates, [[115.6]]);
+
+  // Plotly can retain the array identity while updating the latest value in place.
+  element.data[0].y[1] = 140;
+  const refreshed = layout.collectViewportAnchoredYUpdates(element, {
+    viewportRange: [0, 200],
+    gapRatio: 0.02,
+  });
+  assert.deepEqual(refreshed.traceIndexes, [2]);
+  assert.deepEqual(refreshed.yUpdates, [[135.6]]);
+});

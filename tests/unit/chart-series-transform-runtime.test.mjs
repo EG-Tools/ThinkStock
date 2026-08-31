@@ -5,6 +5,7 @@ import {
   createChartSeriesTransformRuntime,
   createSeriesTransformGestureRuntime,
 } from "../../docs/modules/chart-series-transform-runtime.mjs";
+import adjustments from "../../docs/modules/chart-adjustments.mjs";
 
 function describeTrace(trace) {
   const kind = String(trace?.meta?.overlayKind || "price");
@@ -58,6 +59,94 @@ test("shares one buffered transform contract across base and linked series", () 
   });
   assert.deepEqual(price.y, [100, 110]);
   assert.deepEqual(scenario.y, [100, 105]);
+});
+
+test("reframes every visible series to the same viewport span without cumulative drift", () => {
+  const dates = ["2026-01-01", "2026-02-01", "2026-03-01", "2026-04-01"];
+  const bases = {
+    A: [80, 90, 100, 120],
+    B: [99, 100, 101, 102],
+  };
+  const runtime = createChartSeriesTransformRuntime({
+    baseValuesFor: (seriesKey) => bases[seriesKey],
+    describeTrace,
+    finiteDatedRange: adjustments.finiteDatedRange,
+    groupedHoverYUpdate: (_traces, sourceTraceIndex, values) => ({
+      traceIndex: sourceTraceIndex === 1 ? 3 : 4,
+      y: [values.at(-1)],
+    }),
+    resolveOffset: () => 0,
+    resolveScale: () => 1,
+    transformValuesInto,
+    transformViewportValuesInto: adjustments.transformViewportValuesInto,
+  });
+  const linked = {
+    x: ["2026-03-01", "2026-04-01"],
+    y: [100, 120],
+    meta: {
+      overlayKind: "ai-scenario",
+      seriesKey: "A",
+      seriesTransformBaseValues: [100, 120],
+    },
+  };
+  const traces = [
+    linked,
+    { x: dates, y: [...bases.A], meta: { overlayKind: "price", seriesKey: "A" } },
+    { x: dates, y: [...bases.B], meta: { overlayKind: "price", seriesKey: "B" } },
+    { x: dates, y: [...bases.A], meta: { overlayKind: "grouped-hover" } },
+    { x: dates, y: [...bases.B], meta: { overlayKind: "grouped-hover" } },
+  ];
+  const range = ["2026-02-01", "2026-04-01"];
+  const first = runtime.collectViewportFrameUpdates(traces, range, { targetSpan: 20 });
+  const updates = new Map(first.seriesUpdates.map((item) => [item.seriesKey, item]));
+  const visibleSpan = (values) => Math.max(...values.slice(1)) - Math.min(...values.slice(1));
+  assert.equal(visibleSpan(updates.get("A").nextY), 20);
+  assert.equal(visibleSpan(updates.get("B").nextY), 20);
+  assert.deepEqual(updates.get("A").linkedUpdate.traceIndexes, [0]);
+  assert.deepEqual(first.traceIndexes, [0, 1, 3, 2, 4]);
+
+  traces[1].y = updates.get("A").nextY;
+  traces[2].y = updates.get("B").nextY;
+  const repeated = runtime.collectViewportFrameUpdates(traces, range, { targetSpan: 20 });
+  const repeatedUpdates = new Map(repeated.seriesUpdates.map((item) => [item.seriesKey, item]));
+  assert.deepEqual(repeatedUpdates.get("A").nextY, updates.get("A").nextY);
+  assert.deepEqual(repeatedUpdates.get("B").nextY, updates.get("B").nextY);
+  assert.deepEqual(runtime.stats(), {
+    viewportFrames: 2,
+    viewportTraceDescriptions: 10,
+    viewportSeriesTransforms: 4,
+    viewportLinkedTransforms: 2,
+  });
+});
+
+test("can reframe one requested series for a live handle gesture", () => {
+  const dates = ["2026-01-01", "2026-02-01", "2026-03-01"];
+  const bases = {
+    A: [80, 100, 120],
+    B: [95, 100, 105],
+  };
+  const runtime = createChartSeriesTransformRuntime({
+    baseValuesFor: (seriesKey) => bases[seriesKey],
+    describeTrace,
+    finiteDatedRange: adjustments.finiteDatedRange,
+    resolveOffset: () => 0,
+    resolveScale: () => 0.5,
+    transformValuesInto,
+    transformViewportValuesInto: adjustments.transformViewportValuesInto,
+  });
+  const traces = [
+    { x: dates, y: [...bases.A], meta: { overlayKind: "price", seriesKey: "A" } },
+    { x: dates, y: [...bases.B], meta: { overlayKind: "price", seriesKey: "B" } },
+  ];
+
+  const frame = runtime.collectViewportSeriesUpdates(
+    traces,
+    ["2026-01-01", "2026-03-01"],
+    { targetSpan: 20, seriesKeys: ["B"] },
+  );
+
+  assert.deepEqual(frame.seriesUpdates.map((update) => update.seriesKey), ["B"]);
+  assert.equal(Math.max(...frame.seriesUpdates[0].nextY) - Math.min(...frame.seriesUpdates[0].nextY), 10);
 });
 
 test("uses one gesture contract for line offsets and scale handles", () => {

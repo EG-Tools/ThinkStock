@@ -97,7 +97,7 @@ test("slices aligned auxiliary arrays with the same viewport indexes", () => {
   assert.equal(result.arrays[0].at(-1), dates.indexOf(result.dates.at(-1)) * 2);
 });
 
-test("viewport controller reuses one buffered window for lines and markers", async () => {
+test("viewport controller buffers lines while event markers retain full loaded coverage", async () => {
   const timers = [];
   const renders = [];
   const controller = sampler.createViewportWindowController({}, {
@@ -127,9 +127,16 @@ test("viewport controller reuses one buffered window for lines and markers", asy
   };
   const built = controller.build(model, [rows[8].date, rows[10].date]);
   assert.ok(built.displayIndexes.length < rows.length);
-  assert.equal(built.markerSeriesModels[0].values.length, built.displayIndexes.length);
-  assert.equal(controller.eventArguments(model, { start: rows[0].date, end: rows.at(-1).date })[1][0].values.length,
-    built.displayIndexes.length);
+  const initialArguments = controller.eventArguments(model, {
+    start: rows[0].date,
+    end: rows.at(-1).date,
+  });
+  assert.equal(initialArguments[1][0], model.seriesModels[0]);
+  assert.equal(initialArguments[1][0].values.length, rows.length);
+  assert.equal(initialArguments[2], rows[0].date);
+  assert.equal(initialArguments[3], rows.at(-1).date);
+  assert.ok(initialArguments[4] > rows[0].date);
+  assert.ok(initialArguments[5] < rows.at(-1).date);
 
   model.seriesModels[0].values = model.seriesModels[0].values.map((value) => value + 100);
   const liveMarkerModel = controller.eventArguments(model, {
@@ -138,16 +145,14 @@ test("viewport controller reuses one buffered window for lines and markers", asy
   })[1][0];
   assert.deepEqual(
     liveMarkerModel.values,
-    built.displayIndexes.map((index) => index + 100),
-    "marker refresh must use the transformed live series instead of the initial viewport copy",
+    rows.map((_, index) => index + 100),
+    "marker refresh must use the transformed full parent series",
   );
   const repeatedArguments = controller.eventArguments(model, {
     start: rows[0].date,
     end: rows.at(-1).date,
   });
   assert.equal(repeatedArguments[1][0], liveMarkerModel);
-  assert.equal(controller.stats().eventSliceHits, 2);
-  assert.equal(controller.stats().eventSliceMisses, 1);
 
   assert.equal(controller.schedule(Date.parse(rows[0].date), Date.parse(rows[2].date)), true);
   timers.at(-1).callback();
@@ -180,8 +185,8 @@ test("viewport controller preserves sliced array identities for an unchanged mod
   const shiftedInsideBuffer = controller.build(model, [rows[13].date, rows[21].date]);
 
   assert.equal(second.displayIndexes, first.displayIndexes);
-  assert.equal(second.markerSeriesModels, first.markerSeriesModels);
-  assert.equal(shiftedInsideBuffer.markerSeriesModels, first.markerSeriesModels);
+  assert.equal(second.window, first.window);
+  assert.equal(shiftedInsideBuffer.window, first.window);
   assert.equal(controller.stats().hits, 2);
   assert.equal(controller.stats().misses, 1);
   assert.equal(controller.stats().hitRate, 2 / 3);
@@ -191,8 +196,116 @@ test("viewport controller preserves sliced array identities for an unchanged mod
 
   model.seriesModels[0].values = [...model.seriesModels[0].values];
   const changed = controller.build(model, [rows[12].date, rows[22].date]);
-  assert.notEqual(changed.markerSeriesModels, first.markerSeriesModels);
+  assert.notEqual(changed.window, first.window);
   assert.equal(controller.stats().hits, 2);
   assert.equal(controller.stats().misses, 2);
   assert.deepEqual(controller.stats().missReasons, { cold: 1, series: 1 });
+});
+
+test("viewport controller honors an immediate prefetch and can discard an uncommitted window", () => {
+  const timers = [];
+  const controller = sampler.createViewportWindowController({}, {
+    bufferRatio: 0.5,
+    dayMs: DAY_MS,
+    delayMs: 0,
+    minimumBufferMs: 0,
+    setTimer: (callback, delay) => {
+      timers.push({ callback, delay });
+      return timers.length;
+    },
+    clearTimer: () => {},
+    requestRender: () => {},
+  });
+  const modelRows = Array.from({ length: 60 }, (_, index) => ({
+    date: new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10),
+  }));
+  const model = {
+    rows: modelRows,
+    selected: ["A"],
+    seriesModels: [{
+      series: "A",
+      xValues: modelRows.map((row) => row.date),
+      values: modelRows.map((_, index) => index),
+      baseValues: modelRows.map((_, index) => index),
+      rawTexts: modelRows.map((_, index) => String(index)),
+    }],
+  };
+
+  controller.build(model, [modelRows[20].date, modelRows[29].date]);
+  assert.equal(controller.schedule(
+    Date.parse(modelRows[15].date),
+    Date.parse(modelRows[24].date),
+  ), true);
+  assert.equal(timers.at(-1).delay, 0);
+
+  controller.invalidate();
+  assert.equal(controller.snapshot().window, null);
+  assert.equal(controller.stats().misses, 1);
+});
+
+test("viewport controller exposes and cancels only pending buffered refresh work", () => {
+  const timers = [];
+  const cancelled = [];
+  const controller = sampler.createViewportWindowController({}, {
+    bufferRatio: 0.5,
+    dayMs: DAY_MS,
+    delayMs: 16,
+    minimumBufferMs: DAY_MS,
+    setTimer: (callback, delay) => {
+      timers.push({ callback, delay });
+      return timers.length;
+    },
+    clearTimer: (timer) => cancelled.push(timer),
+  });
+  const rows = Array.from({ length: 80 }, (_, index) => ({
+    date: new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10),
+  }));
+  const model = {
+    rows,
+    selected: ["series"],
+    seriesModels: [{ series: "series", xValues: rows.map((row) => row.date), values: rows.map((_, index) => index) }],
+  };
+  controller.build(model, [rows[30].date, rows[39].date]);
+
+  assert.equal(controller.needsRefresh(Date.parse(rows[32].date), Date.parse(rows[36].date)), false);
+  assert.equal(controller.schedule(Date.parse(rows[10].date), Date.parse(rows[19].date)), true);
+  assert.equal(controller.hasScheduledRefresh(), true);
+  assert.equal(controller.cancelScheduled(), true);
+  assert.equal(controller.hasScheduledRefresh(), false);
+  assert.deepEqual(cancelled, [1]);
+  assert.equal(controller.cancelScheduled(), false);
+});
+
+test("committing a viewport window cancels an older queued edge refresh", () => {
+  const cancelled = [];
+  let nextTimer = 0;
+  const controller = sampler.createViewportWindowController({}, {
+    bufferRatio: 0.5,
+    dayMs: DAY_MS,
+    delayMs: 16,
+    minimumBufferMs: DAY_MS,
+    setTimer: () => ++nextTimer,
+    clearTimer: (timer) => cancelled.push(timer),
+  });
+  const rows = Array.from({ length: 80 }, (_, index) => ({
+    date: new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10),
+  }));
+  const model = {
+    rows,
+    selected: ["series"],
+    seriesModels: [{
+      series: "series",
+      xValues: rows.map((row) => row.date),
+      values: rows.map((_, index) => index),
+    }],
+  };
+
+  controller.build(model, [rows[30].date, rows[39].date]);
+  assert.equal(controller.schedule(Date.parse(rows[10].date), Date.parse(rows[19].date)), true);
+  assert.equal(controller.hasScheduledRefresh(), true);
+
+  controller.build(model, [rows[10].date, rows[19].date]);
+
+  assert.equal(controller.hasScheduledRefresh(), false);
+  assert.deepEqual(cancelled, [1]);
 });

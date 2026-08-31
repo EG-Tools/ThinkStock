@@ -59,3 +59,39 @@ test("credit refresh isolates each balance series and reports its own date", asy
   assert.equal(result.latestDate, "2026-08-19");
   assert.equal(result.applied.length, 1);
 });
+
+test("crisis refresh commits both US spread series through the macro path", async () => {
+  const committed = [];
+  const controller = {
+    buildMacroIndicatorLiveRows: (rows, keys, _targets, options) => {
+      assert.equal(options.positiveOnly, false);
+      return rows;
+    },
+    commitMacroBuild: (rows, keys) => {
+      committed.push({ rows, keys });
+      return { latestDate: rows.at(-1)?.date || "", updated: rows.length };
+    },
+    applyCrisisSignalRows: () => ({ latestDate: "", updated: 0 }),
+  };
+  const refresh = createRuntimeMarketRefresh({
+    gateway: { fetchCrisisSignal: async () => ({
+      records: [],
+      termSpreadRows: [{ date: "2026-08-28", t10y1y: 0.39 }],
+      creditSpreadRows: [{ date: "2026-08-01", us_credit_spread: 0.66 }],
+      vkospiRows: [],
+      vixRows: [],
+    }) },
+    getSeriesController: () => controller,
+    isLocal: true,
+  });
+
+  const result = await refresh.refreshCrisis();
+
+  assert.deepEqual(committed.map((entry) => entry.keys), [
+    ["t10y1y"],
+    ["us_credit_spread"],
+  ]);
+  assert.equal(result.components["macro:termSpread"].ok, true);
+  assert.equal(result.components["macro:creditSpread"].ok, true);
+  assert.equal(result.latestDate, "2026-08-28");
+});

@@ -17,6 +17,100 @@ import {
   FINANCIAL_SUMMARY_VERSION,
 } from "../../shared/company-analysis-contract.mjs";
 
+async function expectMainAuxiliaryRangesLinked(page, toleranceMs = 86400000) {
+  await expect.poll(() => page.evaluate(() => {
+    const toMs = (value) => typeof value === "number" ? value : Date.parse(value);
+    const main = document.getElementById("chart")?._fullLayout?.xaxis?.range?.map(toMs);
+    if (!main?.every(Number.isFinite)) return Number.POSITIVE_INFINITY;
+    const companions = ["chart-macd", "chart-adr"].flatMap((id) => {
+      const element = document.getElementById(id);
+      const range = element?._fullLayout?.xaxis?.range?.map(toMs);
+      const hasVisibleData = (element?.data || []).some((trace) => (
+        trace?.visible !== false
+        && trace?.visible !== "legendonly"
+        && Array.isArray(trace?.x)
+        && trace.x.length > 0
+      ));
+      return element && !element.hidden && hasVisibleData && range?.every(Number.isFinite)
+        ? [range]
+        : [];
+    });
+    if (!companions.length) return Number.POSITIVE_INFINITY;
+    return Math.max(...companions.flatMap((range) => [
+      Math.abs(main[0] - range[0]),
+      Math.abs(main[1] - range[1]),
+    ]));
+  })).toBeLessThanOrEqual(toleranceMs);
+}
+
+async function expectVisibleAuxiliaryDataCoversMainRange(page) {
+  await expect.poll(() => page.evaluate(() => {
+    const toMs = (value) => typeof value === "number" ? value : Date.parse(value);
+    const mainRange = document.getElementById("chart")?._fullLayout?.xaxis?.range?.map(toMs);
+    if (!mainRange?.every(Number.isFinite)) return [];
+    const [rangeStart, rangeEnd] = [Math.min(...mainRange), Math.max(...mainRange)];
+    const traceCoversRange = (trace) => {
+      if (trace?.visible === false || trace?.visible === "legendonly") return false;
+      return (trace.x || []).some((date, index) => {
+        const time = toMs(date);
+        return time >= rangeStart
+          && time <= rangeEnd
+          && Number.isFinite(Number(trace.y?.[index]));
+      });
+    };
+
+    const covered = new Set();
+    const macd = document.getElementById("chart-macd");
+    if ((macd?.data || []).some((trace) => (
+      trace?.meta?.macdSeriesKey && traceCoversRange(trace)
+    ))) covered.add("macd");
+
+    const panelBySeries = {
+      adr_kospi: "adr",
+      adr_kosdaq: "adr",
+      fear_greed: "fearGreed",
+      news_sentiment: "newsSentiment",
+      vkospi: "vkospi",
+      vix: "vkospi",
+    };
+    const auxiliary = document.getElementById("chart-adr");
+    (auxiliary?.data || []).forEach((trace) => {
+      const meta = trace?.meta || {};
+      const panel = panelBySeries[meta.auxiliarySeriesKey];
+      if (!panel || meta.auxiliaryHoverProxy || meta.auxiliaryZoneFill) return;
+      if (traceCoversRange(trace)) covered.add(panel);
+    });
+    return [...covered].sort();
+  })).toEqual(["adr", "fearGreed", "macd", "newsSentiment", "vkospi"]);
+}
+
+test("full reset restores the device default chart period", async ({ page, isMobile }) => {
+  await stubExternalRefreshes(page);
+  await page.addInitScript(() => {
+    if (sessionStorage.getItem("thinkstock-device-reset-range-seeded") === "1") return;
+    sessionStorage.setItem("thinkstock-device-reset-range-seeded", "1");
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 36,
+      autoChartReset: false,
+      customStocks: [],
+      hiddenSeries: ["^KQ11"],
+    }));
+  });
+  await installDataRoutes(page);
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getActiveMonths())).toBe(36);
+
+  await page.locator("#apiOptionsBtn").click();
+  await page.locator("#appStateResetBtn").click();
+  await Promise.all([
+    page.waitForLoadState("domcontentloaded"),
+    page.locator("#appStateResetConfirmBtn").click(),
+  ]);
+
+  await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getActiveMonths()))
+    .toBe(isMobile ? 6 : 12);
+});
+
 test("illiquid preferred stock can be added across long historical trading gaps", async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "e2e-token" }));
@@ -64,7 +158,7 @@ test("illiquid preferred stock can be added across long historical trading gaps"
   await expect(page.locator('[data-series="019175.KS"]')).toHaveClass(/is-on/);
 });
 
-test("a hidden research stock revives an empty chart at the latest one-year range", async ({ page }) => {
+test("a hidden research stock revives an empty chart at the latest device range", async ({ page, isMobile }) => {
   const ticker = "460930.KQ";
   let historyRequestCount = 0;
   const rows = [];
@@ -89,6 +183,8 @@ test("a hidden research stock revives an empty chart at the latest one-year rang
       customStocks: [{ ticker: stockTicker, code: "460930", name: "현대힘스", market: "KOSDAQ" }],
       hiddenSeries: [
         "leading_cycle",
+        "t10y1y",
+        "us_credit_spread",
         "^KS11",
         "^KQ11",
         "customer_deposit",
@@ -128,22 +224,27 @@ test("a hidden research stock revives an empty chart at the latest one-year rang
   await button.click();
   await expect.poll(() => historyRequestCount).toBeGreaterThan(0);
   await expect(button).toHaveClass(/is-on/);
+  const latest = Date.parse("2026-08-28T00:00:00Z");
   await expect.poll(() => page.locator("#chart").evaluate((element, seriesKey) => {
     const trace = (element.data || []).find((item) => item?.meta?.seriesKey === seriesKey);
     const range = (element._fullLayout?.xaxis?.range || []).map(Date.parse);
     return {
       visible: Boolean(trace && trace.visible !== "legendonly" && trace.x?.length),
-      start: range[0],
-      end: range[1],
+      latestSettled: Number.isFinite(range[1])
+        && Math.abs(range[1] - Date.parse("2026-08-28T00:00:00Z")) <= 4 * 86400000,
     };
-  }, ticker)).toMatchObject({ visible: true });
+  }, ticker)).toMatchObject({
+    visible: true,
+    latestSettled: true,
+  });
   const viewport = await page.locator("#chart").evaluate((element) => (
     element._fullLayout.xaxis.range.map(Date.parse)
   ));
-  const latest = Date.parse("2026-08-28T00:00:00Z");
   expect(Math.abs(viewport[1] - latest)).toBeLessThanOrEqual(4 * 86400000);
-  expect(viewport[1] - viewport[0]).toBeGreaterThan(330 * 86400000);
-  expect(viewport[1] - viewport[0]).toBeLessThan(400 * 86400000);
+  const expectedMinimumDays = isMobile ? 165 : 330;
+  const expectedMaximumDays = isMobile ? 200 : 400;
+  expect(viewport[1] - viewport[0]).toBeGreaterThan(expectedMinimumDays * 86400000);
+  expect(viewport[1] - viewport[0]).toBeLessThan(expectedMaximumDays * 86400000);
 });
 
 test("RFHIC EPS prioritizes quarterly values and rises through annual estimates", async ({ page, isMobile }) => {
@@ -243,7 +344,9 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
   const beforeEpsRange = await page.locator("#chart").evaluate((element) => (
     element._fullLayout.xaxis.range.map(Date.parse)
   ));
-  await page.locator("#hoverToggle").click();
+  if (await page.locator("#hoverToggle").getAttribute("aria-pressed") !== "true") {
+    await page.locator("#hoverToggle").click();
+  }
   await expect(page.locator("#hoverToggle")).toHaveClass(/is-active/);
   await page.locator("#epsToggle").click();
   await expect(page.locator("#epsToggle")).toHaveClass(/is-active/);
@@ -747,18 +850,18 @@ test("main chart allows more than five visible stocks and indices", async ({ pag
   await page.locator('[data-series="^KQ11"]').click();
   await page.locator('[data-series="customer_deposit"]').click();
   await page.locator('[data-series="kospi_credit"]').click();
-  await expect.poll(visibleMainSeriesCount).toBe(5);
+  await expect.poll(visibleMainSeriesCount).toBe(4);
 
   await page.locator('[data-series="kosdaq_credit"]').click();
   await expect(page.locator('[data-series="kosdaq_credit"]')).toHaveClass(/is-on/);
-  await expect.poll(visibleMainSeriesCount).toBe(6);
+  await expect.poll(visibleMainSeriesCount).toBe(5);
 
   await page.locator("#stockSearchInput").fill("삼성전자");
   await page.locator(".stock-suggest-item").filter({ hasText: "삼성전자" }).click();
   const samsungToggle = page.locator('[data-series="005930.KS"]');
   await expect(samsungToggle).toBeVisible();
   await expect(samsungToggle).toHaveClass(/is-on/);
-  await expect.poll(visibleMainSeriesCount).toBe(7);
+  await expect.poll(visibleMainSeriesCount).toBe(6);
 
   const storedStocks = await page.evaluate(() => (
     JSON.parse(localStorage.getItem("thinkstock-v5") || "{}").customStocks || []
@@ -771,19 +874,19 @@ test("main chart allows more than five visible stocks and indices", async ({ pag
   ]).not.toContain(firstStockColor);
 
   await page.locator('[data-series="^KQ11"]').click();
-  await expect.poll(visibleMainSeriesCount).toBe(6);
+  await expect.poll(visibleMainSeriesCount).toBe(5);
   await samsungToggle.click();
   await expect(samsungToggle).toHaveClass(/is-off/);
+  await expect.poll(visibleMainSeriesCount).toBe(4);
+
+  await samsungToggle.click();
+  await expect(samsungToggle).toHaveClass(/is-on/);
   await expect.poll(visibleMainSeriesCount).toBe(5);
 
   await samsungToggle.click();
-  await expect(samsungToggle).toHaveClass(/is-on/);
-  await expect.poll(visibleMainSeriesCount).toBe(6);
-
-  await samsungToggle.click();
   await samsungToggle.click();
   await expect(samsungToggle).toHaveClass(/is-on/);
-  await expect.poll(visibleMainSeriesCount).toBe(6);
+  await expect.poll(visibleMainSeriesCount).toBe(5);
 
   await page.locator('.stock-remove-btn[data-remove-series="005930.KS"]').click();
   await expect(samsungToggle).toHaveCount(0);
@@ -807,6 +910,644 @@ test("main chart allows more than five visible stocks and indices", async ({ pag
   expect(readdedStockColor).not.toBe(firstStockColor);
 });
 
+test("main information rows follow activation order and stack long macro values", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 12,
+      autoChartReset: true,
+      hoverShowPopup: true,
+      customStocks: [],
+      hiddenSeries: [
+        "leading_cycle",
+        "t10y1y",
+        "us_credit_spread",
+        "^KS11",
+        "^KQ11",
+        "customer_deposit",
+        "kospi_credit",
+        "kosdaq_credit",
+      ],
+    }));
+  });
+  await installDataRoutes(page, { includeMacroSpreads: true });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+
+  const hoverState = () => page.locator("#chart").evaluate((element) => {
+    const grouped = (element.data || []).filter((trace) => trace?.meta?.isGroupedHoverTrace);
+    return {
+      order: grouped.map((trace) => trace.meta.hoverGroupTicker),
+      text: Object.fromEntries(grouped.map((trace) => [
+        trace.meta.hoverGroupTicker,
+        String(trace.text?.find(Boolean) || ""),
+      ])),
+    };
+  });
+
+  await page.locator('[data-series="^KS11"]').click();
+  await waitForChartRenderIdle(page);
+  await page.locator('[data-series="leading_cycle"]').click();
+  await waitForChartRenderIdle(page);
+  await expect.poll(hoverState).toMatchObject({ order: ["^KS11", "leading_cycle"] });
+  await expect(page.locator('[data-series="leading_cycle"]')).toHaveAttribute(
+    "title",
+    "한국은행 선행지수 순환변동치\n2달 후행",
+  );
+  await expect(page.locator('[data-series="t10y1y"]')).toHaveAttribute(
+    "title",
+    "미국채 10년/1년 금리차",
+  );
+  await expect(page.locator('[data-series="us_credit_spread"]')).toHaveAttribute(
+    "title",
+    "미국 회사채(투자등급) 1-3년/미국채 3년 금리차\n최근 일별 · 과거 월간",
+  );
+  for (const series of ["customer_deposit", "kospi_credit", "kosdaq_credit"]) {
+    await expect(page.locator(`[data-series="${series}"]`)).toHaveAttribute("title", "2일 후행");
+  }
+  await expect(page.locator('[data-series="^KS11"]')).not.toHaveAttribute("title", /.+/);
+  await expect(page.locator(".credit-offset-wrap")).toHaveAttribute("title", "2일 후행");
+  let state = await hoverState();
+  expect(state.text["^KS11"]).toContain("</b> · 가격");
+  expect(state.text.leading_cycle).toContain("한국 선행지수 순환변동치</b><br>가격");
+
+  await page.locator('[data-series="us_credit_spread"]').click();
+  await waitForChartRenderIdle(page);
+  state = await hoverState();
+  expect(state.text.us_credit_spread).toContain("미국 회사채 3년/국채 3년 금리차</b><br>가격");
+  await page.locator('[data-series="us_credit_spread"]').click();
+  await waitForChartRenderIdle(page);
+
+  await page.locator('[data-series="^KS11"]').click();
+  await page.locator('[data-series="^KS11"]').click();
+  await waitForChartRenderIdle(page);
+  state = await hoverState();
+  expect(state.order).toEqual(["leading_cycle", "^KS11"]);
+});
+
+test("auto scale fits every active macro line before and after a fifth series joins", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 12,
+      autoChartReset: true,
+      showChartHandles: true,
+      customStocks: [],
+      hiddenSeries: [
+        "leading_cycle",
+        "t10y1y",
+        "us_credit_spread",
+        "^KS11",
+        "^KQ11",
+        "customer_deposit",
+        "kospi_credit",
+        "kosdaq_credit",
+      ],
+    }));
+  });
+  await installDataRoutes(page, { includeMacroSpreads: true });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+
+  const fitState = () => page.locator("#chart").evaluate((element) => {
+    const [xStart, xEnd] = element._fullLayout.xaxis.range.map(Date.parse);
+    const yRange = element._fullLayout.yaxis.range.map(Number);
+    const low = Math.min(...yRange);
+    const high = Math.max(...yRange);
+    const visibleSeries = new Set();
+    const values = [];
+    (element.data || []).forEach((trace) => {
+      if (!trace?.meta?.seriesKey
+        || !Number.isFinite(trace?.meta?.sourcePointCount)
+        || trace.visible === "legendonly"
+        || !String(trace.mode || "").includes("lines")) return;
+      visibleSeries.add(trace.meta.seriesKey);
+      (trace.x || []).forEach((date, index) => {
+        const time = Date.parse(date);
+        const value = Number(trace.y?.[index]);
+        if (time >= xStart && time <= xEnd && Number.isFinite(value)) values.push(value);
+      });
+    });
+    const dataLow = values.length ? Math.min(...values) : NaN;
+    const dataHigh = values.length ? Math.max(...values) : NaN;
+    const axisSpan = high - low;
+    const chartRect = element.getBoundingClientRect();
+    const handles = [...document.querySelectorAll(".y-handle-left, .y-handle-right")]
+      .filter((handle) => visibleSeries.has(handle.dataset.seriesKey))
+      .filter((handle) => getComputedStyle(handle).display !== "none");
+    const handlesInside = handles.every((handle) => {
+      const rect = handle.getBoundingClientRect();
+      return rect.top >= chartRect.top - 2 && rect.bottom <= chartRect.bottom + 2;
+    });
+    return {
+      handlesInside,
+      handleCount: handles.length,
+      inside: values.length > 0 && dataLow >= low && dataHigh <= high,
+      series: [...visibleSeries].sort(),
+      utilization: axisSpan > 0 ? (dataHigh - dataLow) / axisSpan : 0,
+    };
+  });
+
+  const enabledSeries = [];
+  for (const series of ["leading_cycle", "t10y1y", "us_credit_spread", "customer_deposit"]) {
+    await page.locator(`[data-series="${series}"]`).click();
+    await waitForChartRenderIdle(page);
+    enabledSeries.push(series);
+    await expect.poll(fitState).toMatchObject({
+      handlesInside: true,
+      inside: true,
+      series: [...enabledSeries].sort(),
+    });
+    const state = await fitState();
+    expect(state.handleCount).toBeGreaterThanOrEqual(enabledSeries.length);
+    expect(state.utilization).toBeGreaterThan(0.7);
+  }
+
+  await page.locator('[data-series="^KS11"]').click();
+  await waitForChartRenderIdle(page);
+  await expect.poll(fitState).toMatchObject({
+    handlesInside: true,
+    inside: true,
+    series: ["^KS11", "customer_deposit", "leading_cycle", "t10y1y", "us_credit_spread"],
+  });
+  expect((await fitState()).handleCount).toBeGreaterThanOrEqual(5);
+  expect((await fitState()).utilization).toBeGreaterThan(0.7);
+});
+
+test("auto scale keeps every macro line fitted when a stock is added later", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 12,
+      autoChartReset: true,
+      customStocks: [],
+      hiddenSeries: [
+        "leading_cycle",
+        "t10y1y",
+        "us_credit_spread",
+        "^KS11",
+        "^KQ11",
+        "customer_deposit",
+        "kospi_credit",
+        "kosdaq_credit",
+      ],
+    }));
+  });
+  await installDataRoutes(page, { includeMacroSpreads: true });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+
+  const macroSeries = ["leading_cycle", "t10y1y", "us_credit_spread", "customer_deposit"];
+  for (const series of macroSeries) {
+    await page.locator(`[data-series="${series}"]`).click();
+    await waitForChartRenderIdle(page);
+  }
+
+  await page.locator("#stockSearchInput").fill("삼성전자");
+  await page.locator(".stock-suggest-item").filter({ hasText: "삼성전자" }).click();
+  await expect(page.locator('[data-series="005930.KS"]')).toHaveClass(/is-on/);
+  await waitForChartRenderIdle(page);
+
+  const expectedSeries = [...macroSeries, "005930.KS"];
+  const fitState = () => page.locator("#chart").evaluate((element, seriesKeys) => {
+    const [xStart, xEnd] = element._fullLayout.xaxis.range.map(Date.parse);
+    const yRange = element._fullLayout.yaxis.range.map(Number);
+    const axisSpan = Math.abs(yRange[1] - yRange[0]);
+    const utilization = Object.fromEntries(seriesKeys.map((seriesKey) => {
+      const trace = (element.data || []).find((item) => (
+        item?.meta?.seriesKey === seriesKey
+          && Number.isFinite(item?.meta?.sourcePointCount)
+          && String(item.mode || "").includes("lines")
+          && item.visible !== "legendonly"
+      ));
+      const values = (trace?.x || []).flatMap((date, index) => {
+        const time = Date.parse(date);
+        const value = Number(trace?.y?.[index]);
+        return time >= xStart && time <= xEnd && Number.isFinite(value) ? [value] : [];
+      });
+      const span = values.length > 1 ? Math.max(...values) - Math.min(...values) : 0;
+      return [seriesKey, axisSpan > 0 ? span / axisSpan : 0];
+    }));
+    return {
+      series: [...new Set((element.data || [])
+        .filter((trace) => (
+          trace?.meta?.seriesKey
+          && Number.isFinite(trace?.meta?.sourcePointCount)
+          && trace.visible !== "legendonly"
+          && String(trace.mode || "").includes("lines")
+        ))
+        .map((trace) => trace.meta.seriesKey))].sort(),
+      utilization,
+    };
+  }, expectedSeries);
+
+  await expect.poll(async () => (await fitState()).series).toEqual([...expectedSeries].sort());
+  await expect.poll(async () => Math.min(...Object.values((await fitState()).utilization)), {
+    timeout: 5000,
+  }).toBeGreaterThan(0.55);
+});
+
+test("auto scale gives quiet and multibagger stocks equal visual height", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 12,
+      autoChartReset: true,
+      customStocks: [
+        { ticker: "005930.KS", code: "005930", name: "삼성전자", market: "KOSPI" },
+        { ticker: "000660.KS", code: "000660", name: "SK하이닉스", market: "KOSPI" },
+      ],
+      hiddenSeries: [
+        "leading_cycle",
+        "t10y1y",
+        "us_credit_spread",
+        "^KS11",
+        "^KQ11",
+        "customer_deposit",
+        "kospi_credit",
+        "kosdaq_credit",
+      ],
+    }));
+  });
+  await installDataRoutes(page, {
+    payloadOverrides: {
+      "prices_recent.json": columnar(
+        ["^KS11", "^KQ11", "005930.KS", "000660.KS"],
+        recentDates,
+        {
+          "^KS11": [2800, 2900, 3000, 3100, 3200],
+          "^KQ11": [780, 800, 820, 840, 860],
+          "005930.KS": [90, 80, 85, 110, 100],
+          "000660.KS": [9, 20, 45, 75, 100],
+        },
+      ),
+    },
+  });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await waitForChartRenderIdle(page);
+
+  await expect.poll(async () => Math.min(
+    await visibleTracePixelSpan(page, "005930.KS"),
+    await visibleTracePixelSpan(page, "000660.KS"),
+  )).toBeGreaterThan(100);
+  const quietSpan = await visibleTracePixelSpan(page, "005930.KS");
+  const multibaggerSpan = await visibleTracePixelSpan(page, "000660.KS");
+  const verticalRanges = await page.locator("#chart").evaluate((element) => Object.fromEntries(
+    ["005930.KS", "000660.KS"].map((seriesKey) => {
+      const trace = (element.data || []).find((item) => (
+        item?.meta?.seriesKey === seriesKey
+          && Number.isFinite(item?.meta?.sourcePointCount)
+          && String(item.mode || "").includes("lines")
+      ));
+      const values = (trace?.y || []).filter(Number.isFinite);
+      return [seriesKey, [Math.min(...values), Math.max(...values)]];
+    }),
+  ));
+  expect(quietSpan).toBeGreaterThan(100);
+  expect(multibaggerSpan).toBeGreaterThan(100);
+  expect(Math.abs(quietSpan - multibaggerSpan)).toBeLessThan(3);
+  expect(Math.abs(verticalRanges["005930.KS"][0] - verticalRanges["000660.KS"][0])).toBeLessThan(0.02);
+  expect(Math.abs(verticalRanges["005930.KS"][1] - verticalRanges["000660.KS"][1])).toBeLessThan(0.02);
+});
+
+test("auto scale keeps its live macro fit after historical panning ends", async ({ page, isMobile }) => {
+  test.skip(isMobile, "Mouse viewport fitting is covered on desktop.");
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 6,
+      autoChartReset: true,
+      customStocks: [],
+      showDisclosures: false,
+      showInsiderTrades: false,
+      showRecessionSignals: false,
+      hiddenSeries: [
+        "leading_cycle",
+        "t10y1y",
+        "us_credit_spread",
+        "^KS11",
+        "^KQ11",
+        "customer_deposit",
+        "kospi_credit",
+        "kosdaq_credit",
+      ],
+    }));
+  });
+  await installDataRoutes(page, { includeMacroSpreads: true });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await waitForChartRenderIdle(page);
+
+  const series = ["leading_cycle", "t10y1y", "us_credit_spread"];
+  for (const key of series) {
+    await page.locator(`[data-series="${key}"]`).click();
+    await waitForChartRenderIdle(page);
+  }
+  await page.evaluate(() => globalThis.ThinkStockE2E.setActiveMonthsForTest(6));
+  await waitForChartRenderIdle(page);
+
+  const initialStart = await page.locator("#chart").evaluate((element) => (
+    Date.parse(element._fullLayout.xaxis.range[0])
+  ));
+  const drag = await page.locator("#chart").evaluate(async (element) => {
+    await globalThis.Plotly.relayout(element, {
+      "yaxis.range[0]": -10000,
+      "yaxis.range[1]": 10000,
+      "yaxis.autorange": false,
+    });
+    const rect = element.getBoundingClientRect();
+    const xAxis = element._fullLayout.xaxis;
+    const yAxis = element._fullLayout.yaxis;
+    const startX = rect.left + xAxis._offset + xAxis._length * 0.25;
+    const blankY = [0.9, 0.8, 0.7, 0.3, 0.2]
+      .map((ratio) => rect.top + yAxis._offset + yAxis._length * ratio)
+      .find((clientY) => !globalThis.ThinkStockE2E.getLineDragTargetAt(startX, clientY));
+    return {
+      startX,
+      endX: rect.left + xAxis._offset + xAxis._length * 0.85,
+      y: blankY ?? (rect.top + yAxis._offset + yAxis._length * 0.95),
+    };
+  });
+  await page.mouse.move(drag.startX, drag.y);
+  await page.mouse.down();
+  await expect(page.locator("#chart")).toHaveClass(/is-viewport-panning/);
+  await page.mouse.move(drag.endX, drag.y, { steps: 8 });
+  await expect.poll(() => page.locator("#chart").evaluate((element, previousStart) => ({
+    moved: Date.parse(element._fullLayout.xaxis.range[0]) < previousStart,
+    fitted: Math.abs(
+      Number(element._fullLayout.yaxis.range[1]) - Number(element._fullLayout.yaxis.range[0]),
+    ) < 20000,
+  }), initialStart)).toEqual({ moved: true, fitted: true });
+  const duringDrag = await page.locator("#chart").evaluate((element) => ({
+    start: Date.parse(element._fullLayout.xaxis.range[0]),
+    ySpan: Math.abs(
+      Number(element._fullLayout.yaxis.range[1]) - Number(element._fullLayout.yaxis.range[0]),
+    ),
+  }));
+  expect(duringDrag.start).toBeLessThan(initialStart);
+  expect(duringDrag.ySpan).toBeLessThan(20000);
+  await page.mouse.up();
+
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    Date.parse(element._fullLayout.xaxis.range[0])
+  ))).toBeLessThan(initialStart);
+  await page.waitForTimeout(350);
+  const afterRelease = await page.locator("#chart").evaluate((element) => ({
+    start: Date.parse(element._fullLayout.xaxis.range[0]),
+    ySpan: Math.abs(
+      Number(element._fullLayout.yaxis.range[1]) - Number(element._fullLayout.yaxis.range[0]),
+    ),
+  }));
+  expect(afterRelease.start).toBeLessThan(initialStart);
+  expect(afterRelease.ySpan).toBeCloseTo(duringDrag.ySpan, 3);
+  const seriesUtilization = () => page.locator("#chart").evaluate((element, keys) => {
+    const [xStart, xEnd] = element._fullLayout.xaxis.range.map(Date.parse);
+    const yRange = element._fullLayout.yaxis.range.map(Number);
+    const axisSpan = Math.abs(yRange[1] - yRange[0]);
+    return Object.fromEntries(keys.map((key) => {
+      const trace = (element.data || []).find((item) => (
+        item?.meta?.seriesKey === key
+          && Number.isFinite(item?.meta?.sourcePointCount)
+          && String(item.mode || "").includes("lines")
+      ));
+      const values = (trace?.x || []).flatMap((date, index) => {
+        const time = Date.parse(date);
+        const value = Number(trace?.y?.[index]);
+        return time >= xStart && time <= xEnd && Number.isFinite(value) ? [value] : [];
+      });
+      const span = values.length >= 2 ? Math.max(...values) - Math.min(...values) : 0;
+      return [key, axisSpan > 0 ? span / axisSpan : 0];
+    }));
+  }, series);
+  await expect.poll(async () => Math.min(...Object.values(await seriesUtilization())), {
+    timeout: 5000,
+  }).toBeGreaterThan(0.25);
+
+  await page.locator("#chartJumpLatest").click();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    element.classList.contains("is-viewport-panning")
+  ))).toBe(false);
+  await waitForChartRenderIdle(page);
+  await expect.poll(async () => Math.min(...Object.values(await seriesUtilization())), {
+    timeout: 5000,
+  }).toBeGreaterThan(0.25);
+  expect(await page.evaluate(() => globalThis.ThinkStockE2E.isViewportNormalizationLocked())).toBe(false);
+});
+
+test("repeated historical panning never leaves the visible main window without line data", async ({ page, isMobile }) => {
+  test.skip(isMobile, "Repeated mouse panning is covered on desktop.");
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 6,
+      autoChartReset: true,
+      customStocks: [],
+      showDisclosures: false,
+      showInsiderTrades: false,
+      showRecessionSignals: false,
+      hiddenSeries: [
+        "leading_cycle",
+        "t10y1y",
+        "us_credit_spread",
+        "^KS11",
+        "^KQ11",
+        "customer_deposit",
+        "kospi_credit",
+        "kosdaq_credit",
+      ],
+    }));
+  });
+  await installDataRoutes(page, { includeMacroSpreads: true });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  const expectedSeries = ["leading_cycle", "t10y1y", "us_credit_spread"];
+  for (const key of expectedSeries) {
+    await page.locator(`[data-series="${key}"]`).click();
+    await waitForChartRenderIdle(page);
+  }
+  await page.locator("#chartRange6Months").click();
+  await waitForChartRenderIdle(page);
+  const readVisibleState = () => page.locator("#chart").evaluate((element, keys) => {
+    const xRange = element._fullLayout.xaxis.range.map(Date.parse);
+    const yRange = element._fullLayout.yaxis.range.map(Number);
+    const visibleCounts = Object.fromEntries(keys.map((key) => {
+      const trace = (element.data || []).find((item) => (
+        item?.meta?.seriesKey === key
+        && Number.isFinite(item?.meta?.sourcePointCount)
+        && String(item.mode || "").includes("lines")
+      ));
+      const count = (trace?.x || []).reduce((total, date, index) => {
+        const timestamp = Date.parse(date);
+        return total + Number(
+          timestamp >= xRange[0]
+          && timestamp <= xRange[1]
+          && Number.isFinite(Number(trace?.y?.[index])),
+        );
+      }, 0);
+      return [key, count];
+    }));
+    return { visibleCounts, xRange, yRange };
+  }, expectedSeries);
+  const expectVisibleState = async () => {
+    const state = await readVisibleState();
+    expect(state.xRange.every(Number.isFinite)).toBe(true);
+    expect(state.yRange.every(Number.isFinite)).toBe(true);
+    expect(Math.min(...Object.values(state.visibleCounts))).toBeGreaterThan(0);
+  };
+
+  for (let pass = 0; pass < 6; pass += 1) {
+    const drag = await page.locator("#chart").evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const xAxis = element._fullLayout.xaxis;
+      const yAxis = element._fullLayout.yaxis;
+      const startX = rect.left + xAxis._offset + xAxis._length * 0.25;
+      const blankY = [0.92, 0.82, 0.72, 0.28, 0.18]
+        .map((ratio) => rect.top + yAxis._offset + yAxis._length * ratio)
+        .find((clientY) => !globalThis.ThinkStockE2E.getLineDragTargetAt(startX, clientY));
+      return {
+        startX,
+        endX: rect.left + xAxis._offset + xAxis._length * 0.86,
+        y: blankY ?? (rect.top + yAxis._offset + yAxis._length * 0.95),
+      };
+    });
+    await page.mouse.move(drag.startX, drag.y);
+    await page.mouse.down();
+    for (let step = 1; step <= 8; step += 1) {
+      const x = drag.startX + ((drag.endX - drag.startX) * step) / 8;
+      await page.mouse.move(x, drag.y);
+      await page.waitForTimeout(16);
+      await expectVisibleState();
+    }
+    await page.mouse.up();
+    // Inspect the next visible frame rather than waiting for a background
+    // viewport-window rebuild to hide a transient blank chart.
+    await page.waitForTimeout(32);
+
+    await expectVisibleState();
+  }
+  await waitForChartRenderIdle(page);
+});
+
+test("historical panning refits series whose volatility regimes reverse", async ({ page, isMobile }) => {
+  test.skip(isMobile, "Repeated mouse panning is covered on desktop.");
+  const dates = Array.from({ length: 132 }, (_, index) => {
+    const date = new Date(Date.UTC(2024, 0, 1 + (index * 7)));
+    return date.toISOString().slice(0, 10);
+  });
+  const values = dates.map((_, index) => {
+    const wave = Math.sin(index * 0.72);
+    const recent = index >= 92;
+    return {
+      kospi: 1000 + (wave * (recent ? 260 : 6)),
+      kosdaq: 1000 + (wave * (recent ? 6 : 260)),
+    };
+  });
+  const split = 88;
+  const payload = (range) => columnar(
+    ["^KS11", "^KQ11"],
+    range.map((index) => dates[index]),
+    {
+      "^KS11": range.map((index) => values[index].kospi),
+      "^KQ11": range.map((index) => values[index].kosdaq),
+    },
+  );
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 6,
+      autoChartReset: true,
+      customStocks: [],
+      showDisclosures: false,
+      showInsiderTrades: false,
+      showRecessionSignals: false,
+      hiddenSeries: [
+        "leading_cycle",
+        "t10y1y",
+        "us_credit_spread",
+        "customer_deposit",
+        "kospi_credit",
+        "kosdaq_credit",
+      ],
+    }));
+  });
+  await installDataRoutes(page, {
+    payloadOverrides: {
+      "prices_history.json": payload(Array.from({ length: split }, (_, index) => index)),
+      "prices_recent.json": payload(Array.from(
+        { length: dates.length - split },
+        (_, index) => index + split,
+      )),
+    },
+  });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await waitForChartRenderIdle(page);
+  await page.locator("#chartRange6Months").click();
+  await waitForChartRenderIdle(page);
+
+  const readVisibleFit = () => page.locator("#chart").evaluate((element, keys) => {
+    const [start, end] = element._fullLayout.xaxis.range.map(Date.parse);
+    const yRange = element._fullLayout.yaxis.range.map(Number);
+    const axisSpan = Math.abs(yRange[1] - yRange[0]);
+    return Object.fromEntries(keys.map((key) => {
+      const trace = (element.data || []).find((item) => item?.meta?.seriesKey === key);
+      const visible = (trace?.x || []).flatMap((date, index) => {
+        const timestamp = Date.parse(date);
+        const value = Number(trace?.y?.[index]);
+        return timestamp >= start && timestamp <= end && Number.isFinite(value) ? [value] : [];
+      });
+      const span = visible.length > 1 ? Math.max(...visible) - Math.min(...visible) : 0;
+      return [key, axisSpan > 0 ? span / axisSpan : 0];
+    }));
+  }, ["^KS11", "^KQ11"]);
+
+  for (let pass = 0; pass < 3; pass += 1) {
+    const drag = await page.locator("#chart").evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const xAxis = element._fullLayout.xaxis;
+      const yAxis = element._fullLayout.yaxis;
+      const startX = rect.left + xAxis._offset + (xAxis._length * 0.25);
+      return {
+        startX,
+        endX: rect.left + xAxis._offset + (xAxis._length * 0.85),
+        // Start in the plot's top margin so a late auto-fit cannot move a line
+        // under the pointer and turn this viewport gesture into a line drag.
+        y: rect.top + Math.max(4, yAxis._offset - 10),
+      };
+    });
+    if (pass === 0) {
+      await page.locator("#chart").evaluate((element) => {
+        element.addEventListener("pointerdown", (event) => {
+          globalThis.__thinkstockTestPointerId = event.pointerId;
+        }, { capture: true, once: true });
+      });
+    }
+    await page.mouse.move(drag.startX, drag.y);
+    await page.mouse.down();
+    await expect(page.locator("#chart")).toHaveClass(/is-viewport-panning/);
+    await page.mouse.move(drag.endX, drag.y, { steps: 10 });
+    if (pass === 0) {
+      await expect.poll(() => page.evaluate(() => (
+        globalThis.ThinkStockE2E.isViewportNormalizationLocked()
+      ))).toBe(true);
+      await page.evaluate(({ clientX, clientY }) => {
+        globalThis.dispatchEvent(new PointerEvent("pointercancel", {
+          bubbles: true,
+          cancelable: true,
+          clientX,
+          clientY,
+          isPrimary: true,
+          pointerId: globalThis.__thinkstockTestPointerId,
+          pointerType: "mouse",
+        }));
+      }, { clientX: drag.endX, clientY: drag.y });
+      await page.mouse.up();
+      await expect.poll(() => page.evaluate(() => (
+        globalThis.ThinkStockE2E.isViewportNormalizationLocked()
+      ))).toBe(false);
+    } else {
+      await page.mouse.up();
+    }
+    await waitForChartRenderIdle(page);
+    const fitted = await readVisibleFit();
+    expect(Math.min(...Object.values(fitted))).toBeGreaterThan(0.25);
+  }
+
+  await page.locator("#chartJumpLatest").click();
+  await expect(page.locator("#chart")).toHaveClass(/is-viewport-panning/);
+  await expect(page.locator("#chart")).not.toHaveClass(/is-viewport-panning/);
+  await waitForChartRenderIdle(page);
+  const latestFit = await readVisibleFit();
+  expect(Math.min(...Object.values(latestFit))).toBeGreaterThan(0.25);
+});
+
 test("ten visible stocks remain interactive and the eleventh starts disabled", async ({ page }) => {
   const stocks = Array.from({ length: 10 }, (_, index) => {
     const code = String(100001 + index).padStart(6, "0");
@@ -819,6 +1560,8 @@ test("ten visible stocks remain interactive and the eleventh starts disabled", a
       customStocks,
       hiddenSeries: [
         "leading_cycle",
+        "t10y1y",
+        "us_credit_spread",
         "^KS11",
         "^KQ11",
         "customer_deposit",
@@ -932,14 +1675,21 @@ test("re-enabling a recently hidden series reuses the chart model", async ({ pag
   expect(afterRestore.modelCache.hits).toBeGreaterThan(beforeRestore.modelCache.hits);
 });
 
-test("the first series enabled after an all-off state restores its price and viewport", async ({ page }) => {
+test("the first series enabled after an all-off state restores its price and viewport", async ({ page, isMobile }) => {
   await installDataRoutes(page);
   await page.addInitScript(() => {
     localStorage.setItem("thinkstock-v5", JSON.stringify({
       activeMonths: 6,
       autoChartReset: true,
       customStocks: [],
-      hiddenSeries: ["leading_cycle", "customer_deposit", "kospi_credit", "kosdaq_credit"],
+      hiddenSeries: [
+        "leading_cycle",
+        "t10y1y",
+        "us_credit_spread",
+        "customer_deposit",
+        "kospi_credit",
+        "kosdaq_credit",
+      ],
       showDisclosures: false,
       showInsiderTrades: false,
       showRecessionSignals: false,
@@ -996,8 +1746,13 @@ test("the first series enabled after an all-off state restores its price and vie
       };
     });
     return state;
-  }).toEqual({ visible: true, overlapsViewport: true, spanDays: 365, fitsScale: true });
-  expect(await page.evaluate(() => window.ThinkStockE2E.getActiveMonths())).toBe(12);
+  }).toEqual({
+    visible: true,
+    overlapsViewport: true,
+    spanDays: isMobile ? 181 : 365,
+    fitsScale: true,
+  });
+  expect(await page.evaluate(() => window.ThinkStockE2E.getActiveMonths())).toBe(isMobile ? 6 : 12);
 });
 
 test("adding a fresher stock advances a stale credit viewport that was at its latest edge", async ({ page }) => {
@@ -1008,7 +1763,6 @@ test("adding a fresher stock advances a stale credit viewport that was at its la
   await page.locator('[data-series="customer_deposit"]').click();
   await page.locator('[data-series="kospi_credit"]').click();
   await waitForChartRenderIdle(page);
-  await page.locator('[data-series="leading_cycle"]').click();
   await page.locator('[data-series="^KS11"]').click();
   await waitForChartRenderIdle(page);
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
@@ -1111,6 +1865,7 @@ test("bundled recent data boots through the chart worker", async ({ page }, test
         - Math.min(refresh.right, ...buttons.map((button) => button.right)),
       contentFits: [...tools.querySelectorAll(".chart-range-btn")]
         .every((button) => button.scrollWidth <= button.clientWidth),
+      statusFollowsTools: status?.parentElement === tools,
       statusRight: statusRect.right,
     } : null;
   });
@@ -1120,6 +1875,7 @@ test("bundled recent data boots through the chart worker", async ({ page }, test
   ))).toBe(true);
   expect(rangeControlLayout?.rightSpread).toBeLessThanOrEqual(1);
   expect(rangeControlLayout?.contentFits).toBe(true);
+  expect(rangeControlLayout?.statusFollowsTools).toBe(true);
   expect(rangeControlLayout?.statusRight).toBeLessThanOrEqual(rangeControlLayout?.refreshLeft || 0);
 
   const chartLineState = () => page.locator("#chart").evaluate((element) => ({
@@ -1184,8 +1940,29 @@ test("bundled recent data boots through the chart worker", async ({ page }, test
   ))).toBe(true);
   await expect(page.locator("#chartRightPaddingValue")).toHaveText("0");
   await expect(page.locator("#chartRightPaddingDecrease")).toBeDisabled();
+  const paddingBaseline = await page.locator("#chart").evaluate((element) => ({
+    xRange: (element._fullLayout?.xaxis?.range || []).map(Date.parse),
+    yRange: [...(element._fullLayout?.yaxis?.range || [])].map(Number),
+  }));
   await page.locator("#chartRightPaddingIncrease").evaluate((button) => {
-    for (let index = 0; index < 35; index += 1) button.click();
+    for (let index = 0; index < 10; index += 1) button.click();
+  });
+  await expect(page.locator("#chartRightPaddingValue")).toHaveText("10");
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element._fullLayout?.xaxis?.range || []).map(Date.parse)
+  ))).toEqual([
+    paddingBaseline.xRange[0],
+    paddingBaseline.xRange[1] + (10 * 24 * 60 * 60 * 1000),
+  ]);
+  const paddedViewport = await page.locator("#chart").evaluate((element) => ({
+    yRange: [...(element._fullLayout?.yaxis?.range || [])].map(Number),
+  }));
+  expect(paddedViewport.yRange).toHaveLength(paddingBaseline.yRange.length);
+  paddedViewport.yRange.forEach((value, index) => {
+    expect(Math.abs(value - paddingBaseline.yRange[index])).toBeLessThan(0.001);
+  });
+  await page.locator("#chartRightPaddingIncrease").evaluate((button) => {
+    for (let index = 0; index < 25; index += 1) button.click();
   });
   await expect(page.locator("#chartRightPaddingValue")).toHaveText("30");
   await expect(page.locator("#chartRightPaddingIncrease")).toBeDisabled();
@@ -1348,6 +2125,7 @@ test("range presets end at the latest date and the latest control slides there",
   });
   expect(sixMonthDays).toBeGreaterThan(170);
   expect(sixMonthDays).toBeLessThan(190);
+  await waitForChartRenderIdle(page);
   const prepared = await page.locator("#chart").evaluate(async (element) => {
     const range = element._fullLayout.xaxis.range.map(Date.parse);
     const dates = (element.data || [])
@@ -1390,18 +2168,53 @@ test("range presets end at the latest date and the latest control slides there",
   }, prepared)).toEqual({ endGap: 0, spanGap: 0, panning: false });
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const [start, end] = element._fullLayout.xaxis.range.map(Date.parse);
-    const values = (element.data || []).flatMap((trace) => {
-      if (!trace?.meta?.seriesKey || trace.visible === "legendonly") return [];
-      return (trace.x || []).flatMap((date, index) => {
+    const visibleLines = (element.data || []).filter((trace) => (
+      trace?.meta?.seriesKey
+      && trace.visible !== "legendonly"
+      && String(trace.mode || "").includes("lines")
+      && !trace?.meta?.isAiForecastTrace
+      && !String(trace?.meta?.seriesKey || "").startsWith("eps:")
+    ));
+    const counts = visibleLines.map((trace) => (trace.x || []).reduce((count, date, index) => {
         const timestamp = Date.parse(date);
         const value = Number(trace.y?.[index]);
-        return timestamp >= start && timestamp <= end && Number.isFinite(value) ? [value] : [];
-      });
-    });
+        return count + (timestamp >= start && timestamp <= end && Number.isFinite(value) ? 1 : 0);
+      }, 0));
+    const values = visibleLines.flatMap((trace) => (trace.x || []).flatMap((date, index) => {
+      const timestamp = Date.parse(date);
+      const value = Number(trace.y?.[index]);
+      return timestamp >= start && timestamp <= end && Number.isFinite(value) ? [value] : [];
+    }));
     const dataSpan = values.length ? Math.max(...values) - Math.min(...values) : 0;
     const axisSpan = Math.abs(element._fullLayout.yaxis.range[1] - element._fullLayout.yaxis.range[0]);
-    return axisSpan > 0 ? dataSpan / axisSpan : 0;
+    return {
+      allVisible: visibleLines.length > 0 && counts.every((count) => count > 0),
+      fill: axisSpan > 0 ? dataSpan / axisSpan : 0,
+    };
+  })).toEqual({ allVisible: true, fill: expect.any(Number) });
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const [start, end] = element._fullLayout.xaxis.range.map(Date.parse);
+    const values = (element.data || []).flatMap((trace) => (trace.x || []).flatMap((date, index) => {
+      const timestamp = Date.parse(date);
+      const value = Number(trace.y?.[index]);
+      return timestamp >= start && timestamp <= end && Number.isFinite(value) ? [value] : [];
+    }));
+    const axisSpan = Math.abs(element._fullLayout.yaxis.range[1] - element._fullLayout.yaxis.range[0]);
+    return axisSpan > 0 && values.length ? (Math.max(...values) - Math.min(...values)) / axisSpan : 0;
   })).toBeGreaterThan(0.5);
+  const latestReleasedYRange = await page.locator("#chart").evaluate((element) => (
+    element._fullLayout.yaxis.range.map(Number)
+  ));
+  await waitForChartRenderIdle(page);
+  await page.waitForTimeout(250);
+  const latestSettledYRange = await page.locator("#chart").evaluate((element) => (
+    element._fullLayout.yaxis.range.map(Number)
+  ));
+  const latestReleasedSpan = Math.max(1, Math.abs(latestReleasedYRange[1] - latestReleasedYRange[0]));
+  expect(Math.max(
+    Math.abs(latestSettledYRange[0] - latestReleasedYRange[0]),
+    Math.abs(latestSettledYRange[1] - latestReleasedYRange[1]),
+  ) / latestReleasedSpan).toBeLessThan(0.005);
 });
 
 test("chart dates stay synchronized while desktop drag and iPhone pinch zoom", async ({ page, isMobile }) => {
@@ -1512,7 +2325,8 @@ test("chart dates stay synchronized while desktop drag and iPhone pinch zoom", a
 
   if (isMobile) {
     expect(initial.touchAction).toBe("pan-y");
-    await page.locator("#hoverToggle").click();
+    const hoverToggle = page.locator("#hoverToggle");
+    if (await hoverToggle.getAttribute("aria-pressed") !== "true") await hoverToggle.click();
     await expect.poll(() => page.locator("#chart").evaluate((element) => element._fullLayout?.hovermode))
       .toBe("x unified");
     await waitForChartRenderIdle(page);
@@ -1718,6 +2532,7 @@ test("chart dates stay synchronized while desktop drag and iPhone pinch zoom", a
     });
     expect(panned.span).toBeCloseTo(zoomed.span, -3);
     expect(panned.center).toBeLessThan(zoomed.center);
+    await expectMainAuxiliaryRangesLinked(page);
     const beforePreset = await page.locator("#chart").evaluate((element) => {
       const range = element._fullLayout.xaxis.range.map(Date.parse);
       return range[1] - range[0];
@@ -1877,12 +2692,26 @@ test("desktop wheel anchors the latest edge and keeps pointer anchoring in histo
   await page.addInitScript(() => {
     localStorage.setItem("thinkstock-v5", JSON.stringify({
       activeMonths: 6,
-      hiddenSeries: ["leading_cycle", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit"],
+      customStocks: [{ ticker: "005930.KS", code: "005930", name: "삼성전자", market: "KOSPI" }],
+      hiddenSeries: [
+        "leading_cycle",
+        "t10y1y",
+        "us_credit_spread",
+        "^KQ11",
+        "customer_deposit",
+        "kospi_credit",
+        "kosdaq_credit",
+      ],
     }));
   });
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   expect(await page.evaluate(() => window.ThinkStockE2E.getActiveMonths())).toBe(6);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => (
+      trace?.meta?.seriesKey && trace.visible !== "legendonly" && String(trace.mode || "").includes("lines")
+    )).length
+  ))).toBeGreaterThanOrEqual(2);
 
   const initial = await page.locator("#chart").evaluate((element) => {
     const range = element._fullLayout.xaxis.range.map(Date.parse);
@@ -1894,6 +2723,12 @@ test("desktop wheel anchors the latest edge and keeps pointer anchoring in histo
     return rect.left + axis._offset + axis._length * 0.25;
   });
   await page.locator("#chart").dispatchEvent("wheel", { deltaY: 120, clientX: wheelPoint });
+  await page.waitForTimeout(50);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const range = element._fullLayout.xaxis.range.map(Date.parse);
+    return range[1] - range[0];
+  })).toBeGreaterThan(initial.span);
+  await expectMainAuxiliaryRangesLinked(page);
   await page.locator("#chart").dispatchEvent("wheel", { deltaY: 120, clientX: wheelPoint });
   await page.locator("#chart").dispatchEvent("wheel", { deltaY: 120, clientX: wheelPoint });
   expect(await page.evaluate(() => window.ThinkStockE2E.getActiveMonths())).toBe(6);
@@ -1901,6 +2736,21 @@ test("desktop wheel anchors the latest edge and keeps pointer anchoring in histo
     const range = element._fullLayout.xaxis.range.map(Date.parse);
     return range[1] - range[0];
   })).toBeGreaterThan(initial.span * 1.15);
+  await expectMainAuxiliaryRangesLinked(page);
+  await page.waitForTimeout(250);
+  const wheelReleasedYRange = await page.locator("#chart").evaluate((element) => (
+    element._fullLayout.yaxis.range.map(Number)
+  ));
+  await waitForChartRenderIdle(page);
+  await page.waitForTimeout(250);
+  const wheelSettledYRange = await page.locator("#chart").evaluate((element) => (
+    element._fullLayout.yaxis.range.map(Number)
+  ));
+  const wheelReleasedSpan = Math.max(1, Math.abs(wheelReleasedYRange[1] - wheelReleasedYRange[0]));
+  expect(Math.max(
+    Math.abs(wheelSettledYRange[0] - wheelReleasedYRange[0]),
+    Math.abs(wheelSettledYRange[1] - wheelReleasedYRange[1]),
+  ) / wheelReleasedSpan).toBeLessThan(0.005);
   const zoomedOut = await page.locator("#chart").evaluate((element) => {
     const range = element._fullLayout.xaxis.range.map(Date.parse);
     return { span: range[1] - range[0], center: (range[0] + range[1]) / 2 };
@@ -1984,11 +2834,239 @@ test("desktop wheel anchors the latest edge and keeps pointer anchoring in histo
     return [start, end];
   });
   await page.evaluate((range) => window.ThinkStockE2E.setViewportRangeForTest(range), minimumRange);
+  await waitForChartRenderIdle(page);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    element._fullLayout.xaxis.range.map((value) => (
+      typeof value === "number" ? value : Date.parse(value)
+    ))
+  ))).toEqual(minimumRange);
   await page.locator("#chart").dispatchEvent("wheel", { deltaY: -120, clientX: wheelPoint });
   await expect(page.locator("#chartNavigationMessage")).toHaveText("기간을 더 이상 줄일 수 없습니다.");
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
-    element._fullLayout.xaxis.range.map(Date.parse)
+    element._fullLayout.xaxis.range.map((value) => (
+      typeof value === "number" ? value : Date.parse(value)
+    ))
   ))).toEqual(minimumRange);
+});
+
+test("desktop main-chart drag commits the same range to auxiliary charts", async ({ page, isMobile }) => {
+  test.skip(isMobile, "Mouse drag behavior is desktop-only.");
+  await stubExternalRefreshes(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 12,
+      customStocks: [{ ticker: "005930.KS", code: "005930", name: "삼성전자", market: "KOSPI" }],
+      hiddenSeries: [
+        "leading_cycle",
+        "t10y1y",
+        "us_credit_spread",
+        "^KQ11",
+        "customer_deposit",
+        "kospi_credit",
+        "kosdaq_credit",
+      ],
+    }));
+  });
+  await installDataRoutes(page);
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await expect(page.locator("#chart-macd .main-svg").first()).toBeVisible();
+  await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => (
+      trace?.meta?.seriesKey && trace.visible !== "legendonly" && String(trace.mode || "").includes("lines")
+    )).length
+  ))).toBeGreaterThanOrEqual(2);
+  await page.locator("#chartRange6Months").click();
+
+  const drag = await page.locator("#chart").evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const axis = element._fullLayout.xaxis;
+    const range = axis.range.map(Date.parse);
+    return {
+      beforeCenter: (range[0] + range[1]) / 2,
+      startX: rect.left + axis._offset + axis._length * 0.3,
+      endX: rect.left + axis._offset + axis._length * 0.5,
+      y: rect.top + element._fullLayout.yaxis._offset + element._fullLayout.yaxis._length * 0.95,
+    };
+  });
+
+  await page.mouse.move(drag.startX, drag.y);
+  await page.mouse.down();
+  await page.mouse.move(drag.endX, drag.y, { steps: 5 });
+  await expectMainAuxiliaryRangesLinked(page);
+  await page.mouse.up();
+
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const range = element._fullLayout.xaxis.range.map(Date.parse);
+    return (range[0] + range[1]) / 2;
+  })).not.toBe(drag.beforeCenter);
+  await expectMainAuxiliaryRangesLinked(page);
+  const releasedYRange = await page.locator("#chart").evaluate((element) => (
+    element._fullLayout.yaxis.range.map(Number)
+  ));
+  await waitForChartRenderIdle(page);
+  await page.waitForTimeout(250);
+  const settledYRange = await page.locator("#chart").evaluate((element) => (
+    element._fullLayout.yaxis.range.map(Number)
+  ));
+  const releasedSpan = Math.max(1, Math.abs(releasedYRange[1] - releasedYRange[0]));
+  expect(Math.max(
+    Math.abs(settledYRange[0] - releasedYRange[0]),
+    Math.abs(settledYRange[1] - releasedYRange[1]),
+  ) / releasedSpan).toBeLessThan(0.005);
+});
+
+test("auxiliary drag and wheel control the shared viewport owner", async ({ page, isMobile }) => {
+  test.skip(isMobile, "Desktop auxiliary input is covered separately from touch pinch.");
+  await stubExternalRefreshes(page);
+  await installDataRoutes(page);
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
+  await page.locator("#chartRange6Months").click();
+  await waitForChartRenderIdle(page);
+
+  const drag = await page.locator("#chart-adr").evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const axis = element._fullLayout.xaxis;
+    const mainRange = document.getElementById("chart")._fullLayout.xaxis.range.map(Date.parse);
+    return {
+      beforeCenter: (mainRange[0] + mainRange[1]) / 2,
+      startX: rect.left + axis._offset + axis._length * 0.3,
+      endX: rect.left + axis._offset + axis._length * 0.5,
+      y: rect.top + 4,
+    };
+  });
+  await page.mouse.move(drag.startX, drag.y);
+  await page.mouse.down();
+  await page.mouse.move(drag.endX, drag.y, { steps: 5 });
+  await expectMainAuxiliaryRangesLinked(page);
+  await page.mouse.up();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const range = element._fullLayout.xaxis.range.map(Date.parse);
+    return (range[0] + range[1]) / 2;
+  })).not.toBe(drag.beforeCenter);
+
+  const beforeWheelSpan = await page.locator("#chart").evaluate((element) => {
+    const range = element._fullLayout.xaxis.range.map(Date.parse);
+    return range[1] - range[0];
+  });
+  await page.locator("#chart-adr").dispatchEvent("wheel", {
+    deltaY: -120,
+    clientX: drag.endX,
+    clientY: drag.y,
+  });
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const range = element._fullLayout.xaxis.range.map(Date.parse);
+    return range[1] - range[0];
+  })).toBeLessThan(beforeWheelSpan);
+  await expectMainAuxiliaryRangesLinked(page);
+});
+
+test("wheel zoom followed by panning keeps every visible auxiliary panel populated", async ({ page, isMobile }) => {
+  test.skip(isMobile, "Desktop wheel and mouse panning are covered separately from touch pinch.");
+  const denseDates = [];
+  for (
+    let cursor = Date.UTC(2024, 0, 2);
+    cursor <= Date.UTC(2026, 6, 14);
+    cursor += 24 * 60 * 60 * 1000
+  ) {
+    const date = new Date(cursor);
+    if (date.getUTCDay() > 0 && date.getUTCDay() < 6) {
+      denseDates.push(date.toISOString().slice(0, 10));
+    }
+  }
+  const values = (base, step, wave = 0) => denseDates.map((_, index) => (
+    base + index * step + Math.sin(index / 2) * wave
+  ));
+  await stubExternalRefreshes(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 6,
+      autoChartReset: true,
+      customStocks: [
+        { ticker: "005930.KS", code: "005930", name: "삼성전자", market: "KOSPI" },
+      ],
+      hiddenSeries: [
+        "leading_cycle",
+        "t10y1y",
+        "us_credit_spread",
+        "^KQ11",
+        "customer_deposit",
+        "kospi_credit",
+        "kosdaq_credit",
+      ],
+      hiddenAuxiliaryPanels: [],
+      hiddenAuxiliarySeries: [],
+    }));
+  });
+  await installDataRoutes(page, {
+    payloadOverrides: {
+      "prices_recent.json": columnar(
+        ["^KS11", "^KQ11", "005930.KS"],
+        denseDates,
+        {
+          "^KS11": values(2500, 20, 70),
+          "^KQ11": values(700, 5, 25),
+          "005930.KS": values(55000, 700, 4200),
+        },
+      ),
+      "macro_data_recent.json": columnar(
+        ["leading_cycle", "news_sentiment"],
+        denseDates,
+        {
+          leading_cycle: values(98, 0.08, 0.7),
+          news_sentiment: values(95, 0.25, 8),
+        },
+      ),
+      "adr_data_recent.json": columnar(
+        ["adr_kospi", "adr_kosdaq", "fear_greed"],
+        denseDates,
+        {
+          adr_kospi: values(92, 0.5, 12),
+          adr_kosdaq: values(88, 0.6, 14),
+          fear_greed: values(42, 0.4, 18),
+        },
+      ),
+      "vkospi_data.json": {
+        format: "records-v1",
+        generated_at: "2026-07-15T00:00:00Z",
+        source: "KRX 파생상품지수 시세정보",
+        records: denseDates.map((date, index) => ({
+          date,
+          vkospi: 20 + Math.sin(index / 2) * 4,
+        })),
+      },
+    },
+  });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await expect(page.locator("#chart-macd .main-svg").first()).toBeVisible();
+  await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
+  await page.locator("#chartRange6Months").click();
+  await waitForChartRenderIdle(page);
+  await expectVisibleAuxiliaryDataCoversMainRange(page);
+
+  const chartBox = await waitForBoundingBox(page.locator("#chart"));
+  const pointerX = chartBox.x + chartBox.width * 0.52;
+  const pointerY = chartBox.y + chartBox.height * 0.14;
+  await page.locator("#chart").dispatchEvent("wheel", {
+    deltaY: -120,
+    clientX: pointerX,
+    clientY: pointerY,
+  });
+  await waitForChartRenderIdle(page);
+
+  for (let index = 0; index < 4; index += 1) {
+    await page.mouse.move(chartBox.x + chartBox.width * 0.3, pointerY);
+    await page.mouse.down();
+    await page.mouse.move(chartBox.x + chartBox.width * 0.62, pointerY, { steps: 5 });
+    await page.mouse.up();
+  }
+  await waitForChartRenderIdle(page);
+  await expectMainAuxiliaryRangesLinked(page);
+  await expectVisibleAuxiliaryDataCoversMainRange(page);
 });
 
 test("restored chart pans immediately without a toggle or zoom warm-up", async ({ page, isMobile }) => {
@@ -1999,7 +3077,15 @@ test("restored chart pans immediately without a toggle or zoom warm-up", async (
       activeMonths: 6,
       autoChartReset: true,
       customStocks: [],
-      hiddenSeries: ["leading_cycle", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit"],
+      hiddenSeries: [
+        "leading_cycle",
+        "t10y1y",
+        "us_credit_spread",
+        "^KQ11",
+        "customer_deposit",
+        "kospi_credit",
+        "kosdaq_credit",
+      ],
       showDisclosures: false,
       showInsiderTrades: false,
       showRecessionSignals: false,
@@ -2055,7 +3141,15 @@ test("auto scale fits the full lifetime of the longest remaining visible series"
       customStocks: [
         { ticker: "005930.KS", code: "005930", name: "삼성전자", market: "KOSPI" },
       ],
-      hiddenSeries: ["leading_cycle", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit"],
+      hiddenSeries: [
+        "leading_cycle",
+        "t10y1y",
+        "us_credit_spread",
+        "^KQ11",
+        "customer_deposit",
+        "kospi_credit",
+        "kosdaq_credit",
+      ],
     }));
   });
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
@@ -2083,13 +3177,22 @@ test("auto scale fits the full lifetime of the longest remaining visible series"
   }, originalStart)).toEqual({ visibleCount: 1, startGap: 0, endGap: 0, movedStart: true });
 });
 
-test("auto scale reset clears live transforms while preserving the historical viewport", async ({ page }) => {
+test("auto scale reset clears live transforms while preserving the historical viewport", async ({ page, isMobile }) => {
+  test.skip(isMobile, "Mouse handle transforms are covered by the desktop viewport project.");
   await stubExternalRefreshes(page);
   await page.addInitScript(() => {
     localStorage.setItem("thinkstock-v5", JSON.stringify({
       activeMonths: 120,
       autoChartReset: true,
-      hiddenSeries: ["customer_deposit", "kospi_credit", "^KQ11", "kosdaq_credit"],
+      hiddenSeries: [
+        "leading_cycle",
+        "t10y1y",
+        "us_credit_spread",
+        "customer_deposit",
+        "kospi_credit",
+        "^KQ11",
+        "kosdaq_credit",
+      ],
       seriesOffsets: { kospi_credit: 42 },
       seriesScales: { kospi_credit: 0.1 },
     }));
@@ -2109,6 +3212,10 @@ test("auto scale reset clears live transforms while preserving the historical vi
     offsets: {},
     scales: {},
   });
+  await page.locator('.series-toggle-btn[data-series="kospi_credit"]').click();
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.seriesKey && trace.visible !== "legendonly").length
+  ))).toBe(1);
   const zoomSpan = await page.locator("#chart").evaluate(async (element) => {
     const range = element._fullLayout.xaxis.range.map(Date.parse);
     const span = range[1] - range[0];
@@ -2151,20 +3258,24 @@ test("auto scale reset clears live transforms while preserving the historical vi
   await expect.poll(() => page.locator("#chart").evaluate((element, previousStart) => (
     Date.parse(element._fullLayout.xaxis.range[0]) < previousStart
   ), beforeHistoricalPan[0])).toBe(true);
+  await expect.poll(() => page.evaluate(() => {
+    const rangeSync = window.ThinkStockE2E.getChartWorkerStats().rangeSync;
+    return Boolean(rangeSync?.pending || rangeSync?.running);
+  })).toBe(false);
+  await waitForChartRenderIdle(page);
   const autoResetXRange = await page.locator("#chart").evaluate((element) => (
     element._fullLayout.xaxis.range.map(Date.parse)
   ));
-  const scaleSpanBefore = await visibleTracePixelSpan(page, "^KS11");
   const autoResetScaleHandle = page.locator('.y-handle-right[data-series-key="^KS11"]');
   const autoResetHandleBox = await waitForBoundingBox(autoResetScaleHandle);
-  await page.mouse.move(
-    autoResetHandleBox.x + autoResetHandleBox.width / 2,
-    autoResetHandleBox.y + autoResetHandleBox.height / 2,
-  );
+  const scaleHandleCenterY = autoResetHandleBox.y + autoResetHandleBox.height / 2;
+  const scaleTargetY = scaleHandleCenterY + 35;
+  await autoResetScaleHandle.hover();
+  const scaleSpanBefore = await visibleTracePixelSpan(page, "^KS11");
   await page.mouse.down();
   await page.mouse.move(
     autoResetHandleBox.x + autoResetHandleBox.width / 2,
-    autoResetHandleBox.y + autoResetHandleBox.height / 2 + 35,
+    scaleTargetY,
   );
   await expect.poll(() => page.evaluate(() => (
     Object.keys(window.ThinkStockE2E.getSeriesTransforms().scales).length

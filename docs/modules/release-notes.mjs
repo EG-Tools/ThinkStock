@@ -3,6 +3,36 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.31",
+      date: "2026.08.30",
+      items: Object.freeze([
+        "종목탐구 성공 결과와 전체 신호 캐시 재사용",
+        "변경·신규 종목만 계산하는 빠른 재검색",
+        "실패 종목 중복 대기 제거와 단계별 재시도",
+        "추출 실패 수의 검색 완료 요약 유지",
+      ]),
+    }),
+    Object.freeze({
+      version: "3.30",
+      date: "2026.08.30",
+      items: Object.freeze([
+        "AI·EPS 클릭 전용 로딩과 부팅 작업 축소",
+        "공시·내부거래 부팅 완료 후 진행 복원",
+        "부가기능 OFF 상태의 종목 보조작업 제거",
+        "5개 차트 기준 성능 정책과 새로고침 도움말 배치 개선",
+      ]),
+    }),
+    Object.freeze({
+      version: "3.29",
+      date: "2026.08.30",
+      items: Object.freeze([
+        "부팅 완료 직후 비필수 작업 안정 구간 추가",
+        "사용자 요청 작업과 백그라운드 작업 우선순위 분리",
+        "동일 데이터 재적용 차단과 연쇄 재계산 축소",
+        "차트·데이터 갱신 성능 진단 보강",
+      ]),
+    }),
+    Object.freeze({
       version: "3.28",
       date: "2026.08.30",
       items: Object.freeze([

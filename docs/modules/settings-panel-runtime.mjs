@@ -1,3 +1,5 @@
+import { createScrollAffordance } from "./control-state-view.mjs";
+
 function createSettingsPanelRuntime(scope = globalThis, options = {}) {
     const {
       ADMIN_ACCESS_MASK,
@@ -71,6 +73,27 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
       const modal = document.getElementById("apiSettingsModal");
       const openBtn = document.getElementById("apiOptionsBtn");
       if (!modal || !openBtn) return;
+      const settingsPanel = modal.querySelector(".api-settings-panel");
+      const settingsScrollAffordance = modal._thinkstockScrollAffordance
+        || createScrollAffordance(scope, {
+          onStateChange: ({ container, indicator }) => {
+            const rect = container.getBoundingClientRect();
+            const viewportHeight = Number(scope.innerHeight)
+              || document.documentElement?.clientHeight
+              || rect.bottom;
+            indicator.style.setProperty(
+              "--ui-scroll-cue-left",
+              `${Math.round(rect.left + rect.width * 0.5)}px`,
+            );
+            indicator.style.setProperty("--ui-scroll-cue-top", `${Math.round(rect.top + 10)}px`);
+            indicator.style.setProperty(
+              "--ui-scroll-cue-bottom",
+              `${Math.max(8, Math.round(viewportHeight - rect.bottom + 10))}px`,
+            );
+          },
+        });
+      modal._thinkstockScrollAffordance = settingsScrollAffordance;
+      settingsScrollAffordance.bind(settingsPanel, modal);
     
       const closeBtn = document.getElementById("apiSettingsCloseBtn");
       const appCacheBtn = document.getElementById("appCacheBtn");
@@ -84,6 +107,9 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
       const appCacheLocalSize = document.getElementById("appCacheLocalSize");
       const appCacheSessionSize = document.getElementById("appCacheSessionSize");
       const appStateResetBtn = document.getElementById("appStateResetBtn");
+      const appStateResetConfirm = document.getElementById("appStateResetConfirm");
+      const appStateResetCancelBtn = document.getElementById("appStateResetCancelBtn");
+      const appStateResetConfirmBtn = document.getElementById("appStateResetConfirmBtn");
       const diagnosticsExportBtn = document.getElementById("diagnosticsExportBtn");
       const releaseNotesBtn = document.getElementById("releaseNotesBtn");
       const releaseNotesPanel = document.getElementById("releaseNotesPanel");
@@ -126,6 +152,7 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
       const setInformationPanelState = (button, panel, visible) => {
         if (panel) panel.hidden = !visible;
         controlStateView.syncControl(button, { pressed: visible, expanded: visible });
+        settingsScrollAffordance.schedule();
       };
       const closeInformationPanels = () => {
         setInformationPanelState(releaseNotesBtn, releaseNotesPanel, false);
@@ -345,6 +372,16 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
       const close = () => {
         closeInformationPanels();
         modal.hidden = true;
+        settingsScrollAffordance.clearState();
+      };
+      const closeResetConfirmation = () => {
+        if (appStateResetConfirm) appStateResetConfirm.hidden = true;
+        appStateResetBtn?.focus?.({ preventScroll: true });
+      };
+      const openResetConfirmation = () => {
+        if (!appStateResetConfirm) return;
+        appStateResetConfirm.hidden = false;
+        appStateResetCancelBtn?.focus?.({ preventScroll: true });
       };
       const open = () => {
         if (dartGatewayTokenInput) dartGatewayTokenInput.value = getDartGatewayAccessToken();
@@ -357,6 +394,7 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
         syncStockResearchUniverseUi();
         renderReleaseNotes(releaseNotesNavigator.reset());
         modal.hidden = false;
+        settingsScrollAffordance.schedule();
         syncAppCacheUi().then(captureDiagnosticsLog);
       };
       openPanel = open;
@@ -415,6 +453,10 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
       });
       document.addEventListener("keydown", (event) => {
         if (event.key !== "Escape") return;
+        if (appStateResetConfirm && !appStateResetConfirm.hidden) {
+          closeResetConfirmation();
+          return;
+        }
         if (!modal.hidden) close();
       });
     
@@ -443,9 +485,16 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
           appCacheDeleteBtn.textContent = "캐시삭제";
         }
       });
-      appStateResetBtn?.addEventListener("click", () => {
+      appStateResetBtn?.addEventListener("click", openResetConfirmation);
+      appStateResetCancelBtn?.addEventListener("click", closeResetConfirmation);
+      appStateResetConfirm?.querySelectorAll("[data-reset-confirm-close='1']").forEach((node) => {
+        node.addEventListener("click", closeResetConfirmation);
+      });
+      appStateResetConfirm?.addEventListener("click", (event) => event.stopPropagation());
+      appStateResetConfirmBtn?.addEventListener("click", () => {
         try {
           resetStoredAppState();
+          if (appStateResetConfirm) appStateResetConfirm.hidden = true;
           close();
           scope.location?.reload?.();
         } catch (err) {

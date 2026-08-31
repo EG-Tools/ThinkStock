@@ -60,6 +60,63 @@ test("rapid wheel input accumulates from the latest requested range", () => {
   ]);
 });
 
+test("wheel zoom requests live vertical fitting while auto scale is on", () => {
+  const applied = [];
+  const navigation = createChartNavigation({}, {
+    viewport,
+    dayMs: 1,
+    minimumSpan: 100,
+    getElement: fakeElement,
+    getCurrentRange: () => [200, 800],
+    getDataRange: () => [0, 1000],
+    isHistoryReady: () => true,
+    isAutoScale: () => true,
+    applyRange: (...args) => applied.push(args),
+  });
+
+  navigation.zoom(-1, "wheel-zoom");
+  assert.equal(applied[0][2].liveFit, true);
+});
+
+test("smooth wheel zoom updates the linked viewport over animation frames", () => {
+  const frames = [];
+  const applied = [];
+  const navigation = createChartNavigation({}, {
+    viewport,
+    dayMs: 1,
+    minimumSpan: 100,
+    getElement: fakeElement,
+    getCurrentRange: () => [200, 800],
+    getDataRange: () => [0, 1000],
+    isHistoryReady: () => true,
+    isAutoScale: () => true,
+    smoothWheelZoom: true,
+    requestFrame: (callback) => { frames.push(callback); return frames.length; },
+    cancelFrame: () => {},
+    applyRange: (...args) => {
+      applied.push(args);
+      return true;
+    },
+  });
+
+  navigation.zoom(-1, "wheel-zoom");
+  assert.equal(applied.length, 0);
+  frames.shift()(0);
+  frames.shift()(48);
+  frames.shift()(96);
+
+  assert.equal(applied.length, 3);
+  assert.deepEqual(applied[0].slice(0, 2), [200, 800]);
+  assert.ok(applied[1][0] > 200 && applied[1][0] < 260);
+  assert.ok(applied[1][1] < 800 && applied[1][1] > 740);
+  assert.deepEqual(applied[2].slice(0, 2), [260, 740]);
+  assert.equal(applied[1][2].liveFit, true);
+  assert.equal(applied[0][2].beginsInteraction, true);
+  assert.equal(applied[1][2].beginsInteraction, false);
+  assert.equal(applied[1][2].userInitiated, false);
+  assert.equal(applied[2][2].userInitiated, true);
+});
+
 test("wheel input discards a queued range after an external viewport change", () => {
   const applied = [];
   const message = { ...fakeElement(), textContent: "", hidden: true };
@@ -139,10 +196,29 @@ test("full-history preparation is shared by concurrent navigation requests", asy
   assert.deepEqual(await Promise.all([first, second]), [true, true]);
 });
 
-test("latest navigation animates the current span to the data boundary", () => {
+test("full-lifetime preparation refreshes an already loaded chart before reading its bounds", async () => {
+  const calls = [];
+  const navigation = createChartNavigation({}, {
+    viewport,
+    getElement: fakeElement,
+    getCurrentRange: () => [100, 200],
+    getDataRange: () => [0, 300],
+    isHistoryReady: () => true,
+    loadHistory: async () => calls.push("load"),
+    afterHistoryLoaded: async (range) => calls.push(range),
+    applyRange: () => {},
+  });
+
+  assert.equal(await navigation.ensureHistoryReady(true), true);
+  assert.deepEqual(calls, ["load", [100, 200]]);
+});
+
+test("latest navigation animates the current span to the data boundary", async () => {
   const element = fakeElement();
   const frames = [];
   const applied = [];
+  const renderRequests = [];
+  const completionOrder = [];
   let dragging = false;
   const navigation = createChartNavigation({}, {
     viewport,
@@ -155,6 +231,11 @@ test("latest navigation animates the current span to the data boundary", () => {
     requestFrame: (callback) => { frames.push(callback); return frames.length; },
     cancelFrame: () => {},
     applyRange: (...args) => applied.push(args),
+    applyResetPolicy: () => { completionOrder.push("reset"); },
+    requestRender: (request) => {
+      completionOrder.push("render");
+      renderRequests.push(request);
+    },
     setViewportDragging: (value) => { dragging = value; },
   });
 
@@ -165,7 +246,17 @@ test("latest navigation animates the current span to the data boundary", () => {
   frames.shift()(1000);
   assert.equal(dragging, false);
   assert.deepEqual(applied.at(-1).slice(0, 2), [400_000, 1_000_000]);
+  assert.equal(applied.filter(([start, end]) => start === 400_000 && end === 1_000_000).length, 1);
   assert.equal(element.classList.contains("is-viewport-panning"), false);
+  await navigation.whenRangeSettled();
+  assert.deepEqual(completionOrder, ["render"]);
+  assert.deepEqual(renderRequests, [{
+    preserveZoom: true,
+    range: [400_000, 1_000_000],
+    reason: "latest-slide",
+    reframeNormalization: true,
+    updateClass: "viewport",
+  }]);
 });
 
 test("latest navigation advances on its first delayed browser frame", () => {
@@ -200,6 +291,7 @@ test("period presets keep the requested history before a right-side blank margin
   const padding = 30 * dayMs;
   const applied = [];
   const renderRequests = [];
+  const completionOrder = [];
   const navigation = createChartNavigation({}, {
     viewport,
     dayMs,
@@ -209,7 +301,11 @@ test("period presets keep the requested history before a right-side blank margin
     toMilliseconds: Date.parse,
     shiftMonths: () => "2026-02-01",
     applyRange: (...args) => { applied.push(args); return true; },
-    requestRender: (request) => renderRequests.push(request),
+    applyResetPolicy: () => completionOrder.push("reset"),
+    requestRender: (request) => {
+      completionOrder.push("render");
+      renderRequests.push(request);
+    },
   });
 
   assert.equal(navigation.showLatestPeriod(6), true);
@@ -224,8 +320,10 @@ test("period presets keep the requested history before a right-side blank margin
       latest + padding,
     ],
     reason: "range-preset",
+    reframeNormalization: true,
     updateClass: "viewport-range",
   }]);
+  assert.deepEqual(completionOrder, ["render"]);
 });
 
 test("a rejected period range does not queue a stale viewport render", () => {

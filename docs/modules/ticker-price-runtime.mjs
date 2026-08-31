@@ -286,6 +286,8 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
     async function load(ticker, loadOptions = {}) {
       const key = normalizeTickerKey(ticker);
       const requireFullHistory = loadOptions.requireFullHistory === true;
+      const hasLatestInput = Object.prototype.hasOwnProperty.call(loadOptions, "latestPoints");
+      const refreshRequested = loadOptions.forceRefresh === true || hasLatestInput;
       const requestOptions = { ...loadOptions };
       delete requestOptions.requireFullHistory;
       if (requireFullHistory) requestOptions.returnAfterCache = false;
@@ -295,7 +297,9 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
         return result;
       };
       if (!requireFullHistory) return execute();
-      if (coverageByTicker.get(key) === HISTORY_COVERAGE_FULL && options.hasSeries?.(key)) {
+      if (!refreshRequested
+        && coverageByTicker.get(key) === HISTORY_COVERAGE_FULL
+        && options.hasSeries?.(key)) {
         return {
           ready: true,
           cached: true,

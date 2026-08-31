@@ -4,6 +4,8 @@ import {
   createAuxiliaryPanelControlView,
   syncControl,
 } from "./control-state-view.mjs";
+import { orderItemsByActivation } from "./chart-session-controller.mjs";
+import { resolveRelayoutViewport } from "./chart-viewport-controller.mjs";
 
 const defaultScope = typeof self !== "undefined" ? self : globalThis;
 
@@ -280,6 +282,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       chartDisplaySampler,
       chartSession,
       clearHoverOnChart,
+      commitViewportRange,
       dataRevisionSignature,
       dataState,
       getAuxiliaryChartModel: externalGetAuxiliaryChartModel,
@@ -290,7 +293,6 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       labelName,
       persistState,
       recordPerfSample,
-      scheduleViewportRangeSync,
       setNewsSentimentMovingAverageDays,
       seriesColor,
       startPerfSample,
@@ -303,6 +305,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       || !dataState
       || !syncState
       || !chartDisplaySampler
+      || typeof commitViewportRange !== "function"
       || typeof buildThresholdFillPolygons !== "function"
       || typeof fitRangeForTraces !== "function") {
       throw new Error("auxiliary chart runtime dependencies are incomplete");
@@ -427,16 +430,6 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       spikecolor: "rgba(0,0,0,0)",
     });
 
-    function relayoutViewport(eventData = {}) {
-      const pair = Array.isArray(eventData["xaxis.range"]) ? eventData["xaxis.range"] : null;
-      const start = eventData["xaxis.range[0]"] ?? pair?.[0] ?? null;
-      const end = eventData["xaxis.range[1]"] ?? pair?.[1] ?? null;
-      return {
-        autorange: eventData["xaxis.autorange"] === true,
-        range: start != null && end != null ? [start, end] : null,
-      };
-    }
-
     function bindAuxiliaryHoverHandlers(element, targetIds) {
       const targets = () => targetIds
         .map((id) => document.getElementById(id))
@@ -463,6 +456,8 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     let adrRenderPromise = null;
     let lastMacdTraceCount = 0;
     let lastMacdRenderKey = "";
+    let lastMacdViewportWindows = [];
+    let lastAdrViewportWindows = [];
     let macdHandlerSet = false;
     let auxiliaryPartialRenderCount = 0;
     let auxiliaryFullRenderCount = 0;
@@ -491,6 +486,29 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     const sliceVisiblePanel = (visible, dates, arrays, xRange) => (
       visible ? sliceViewport(dates, arrays, xRange) : emptyViewportSlice(arrays.length)
     );
+    const viewportTime = (value) => (
+      typeof value === "number" && Number.isFinite(value)
+        ? value
+        : Date.parse(String(value || ""))
+    );
+    const viewportWindowNeedsRefresh = (window, xRange) => {
+      if (!window || !Array.isArray(xRange) || xRange.length !== 2) return false;
+      const startMs = viewportTime(xRange[0]);
+      const endMs = viewportTime(xRange[1]);
+      if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs === endMs) return false;
+      const low = Math.max(Math.min(startMs, endMs), Number(window.dataStartMs));
+      const high = Math.min(Math.max(startMs, endMs), Number(window.dataEndMs));
+      if (!Number.isFinite(low) || !Number.isFinite(high) || high <= low) return false;
+      return chartDisplaySampler.inspectViewportCoverage(window, [low, high], {
+        edgeRatio: 0.35,
+        toleranceMs: 24 * 60 * 60 * 1000,
+      }).needsRefresh;
+    };
+    const viewportWindowsNeedRefresh = (windows, xRange) => (
+      (Array.isArray(windows) ? windows : []).some((window) => (
+        viewportWindowNeedsRefresh(window, xRange)
+      ))
+    );
     const controlsSignature = (controls) => JSON.stringify((controls || []).map((control) => ({
       active: control.active !== false,
       available: control.available !== false,
@@ -512,6 +530,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     const panelControlView = createAuxiliaryPanelControlView(scope, {
       state: chartSession,
       panelKeys: AUXILIARY_PANEL_KEYS,
+      seriesKeys: Object.values(AUXILIARY_SERIES_KEYS),
       controlsSignature,
       persist: persistState,
       onChange: () => {
@@ -524,6 +543,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     const bindAuxiliaryToggle = panelControlView.bindToggle;
     const isAuxiliaryPanelVisible = panelControlView.isPanelVisible;
     const normalizeAuxiliaryPanelOrder = panelControlView.normalizeOrder;
+    const normalizeAuxiliarySeriesOrder = panelControlView.seriesOrder;
     const syncAuxiliaryRepresentativeToggles = panelControlView.syncRepresentativeToggles;
     const toggleAuxiliaryPanel = panelControlView.togglePanel;
     const toggleAuxiliarySeries = panelControlView.toggleSeries;
@@ -775,10 +795,14 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       const renderedSeries = (chartSession.currentMainChartModel?.seriesModels || [])
         .map((model) => String(model?.series || "").toUpperCase())
         .filter((series) => series && !chartSession.hiddenSeries.has(series));
-      const visibleSeries = renderedSeries.filter((series) => MACD_STOCK_PATTERN.test(series));
+      const visibleSeries = orderItemsByActivation(
+        renderedSeries.filter((series) => MACD_STOCK_PATTERN.test(series)),
+        chartSession.mainHoverSeriesOrder,
+      );
       if (!visibleSeries.length) {
         el.hidden = true;
         lastMacdTraceCount = 0;
+        lastMacdViewportWindows = [];
         return;
       }
     
@@ -798,7 +822,12 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         if (Array.isArray(xRange)
           && xRange.length === 2
           && !xRangeMatches(el, xRange[0], xRange[1])) {
-          scheduleViewportRangeSync(el, { "xaxis.range[0]": xRange[0], "xaxis.range[1]": xRange[1] });
+          commitViewportRange(xRange, {
+            source: "macd-render-range",
+            fit: false,
+            liveFit: chartSession.autoChartReset,
+            userInitiated: false,
+          });
         }
         return;
       }
@@ -810,10 +839,12 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       );
       const traces = [];
       const allValues = [];
+      const viewportWindows = [];
       visibleSeries.forEach((series) => {
         const model = getMacdModelForSeries(series);
         if (!model) return;
         const viewportSeries = sliceViewport(model.dates, [model.normalized], xRange);
+        if (viewportSeries.window) viewportWindows.push(viewportSeries.window);
         const viewportDates = viewportSeries.dates;
         const viewportValues = viewportSeries.arrays[0] || [];
         const displayDates = [];
@@ -839,7 +870,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
             color: baseColor,
             width: 1,
           },
-          opacity: visibleSeries.length > 1 ? 0.78 : 0.9,
+          opacity: 1,
           hoverinfo: chartSession.hoverShowPopup ? undefined : "skip",
           hovertemplate: chartSession.hoverShowPopup
             ? "%{x|%Y.%-m.%-d}<br>오실레이터 %{y:.3f}%<extra>%{fullData.name}</extra>"
@@ -912,18 +943,16 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       else if (renderResult.mode === "full") auxiliaryFullRenderCount += 1;
       else auxiliarySkippedRenderCount += 1;
       lastMacdRenderKey = renderKey;
+      lastMacdViewportWindows = viewportWindows;
       if (!macdHandlerSet) {
         el.on("plotly_relayout", (eventData) => {
           if (syncState.chartSyncing) return;
-          const viewport = relayoutViewport(eventData);
+          const viewport = resolveRelayoutViewport(eventData, el);
           if (!viewport.range) return;
-          chartSession.pinnedXRange = viewport.range;
-          [document.getElementById("chart"), document.getElementById("chart-adr")]
-            .filter((target) => target?.data)
-            .forEach((target) => scheduleViewportRangeSync(target, {
-              "xaxis.range[0]": viewport.range[0],
-              "xaxis.range[1]": viewport.range[1],
-            }));
+          commitViewportRange(viewport.range, {
+            source: "macd-plotly-relayout",
+            liveFit: chartSession.autoChartReset,
+          });
         });
         bindAuxiliaryHoverHandlers(el, ["chart", "chart-adr"]);
         macdHandlerSet = true;
@@ -962,6 +991,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         chartSession.newsSentimentMovingAverageDays,
       ].join("::");
       const panelOrder = normalizeAuxiliaryPanelOrder();
+      const seriesOrder = normalizeAuxiliarySeriesOrder();
       const renderKey = [
         modelKey,
         endDate,
@@ -971,6 +1001,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         [...chartSession.hiddenAuxiliarySeries].sort().join(","),
         [...chartSession.hiddenAuxiliaryPanels].sort().join(","),
         panelOrder.join(","),
+        seriesOrder.join(","),
       ].join("::");
       if (lastAdrRenderKey === renderKey
         && (el.data?.length || el.dataset.auxiliaryEmpty === "true")) {
@@ -978,18 +1009,12 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
           && Array.isArray(xRange)
           && xRange.length === 2
           && !xRangeMatches(el, xRange[0], xRange[1])) {
-          const rangePayload = addViewportYRangeToRelayout(el, {
-            "xaxis.range[0]": xRange[0],
-            "xaxis.range[1]": xRange[1],
+          commitViewportRange(xRange, {
+            source: "auxiliary-render-range",
+            fit: false,
+            liveFit: chartSession.autoChartReset,
+            userInitiated: false,
           });
-          syncState.chartSyncing = true;
-          try {
-            await scope.Plotly.relayout(el, rangePayload);
-          } catch (_) {
-            // A newer queued viewport request will retry with the latest range.
-          } finally {
-            syncState.chartSyncing = false;
-          }
         }
         recordPerfSample("renderAdrChart", perfStartedAt, { rows: el.data[0]?.x?.length || 0, cacheHit: true });
         return;
@@ -1054,6 +1079,15 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         [model.vixValues],
         xRange,
       );
+      const viewportWindows = [
+        commonSlice.window,
+        adrKospiSlice.window,
+        adrKosdaqSlice.window,
+        fearGreedSlice.window,
+        newsSlice.window,
+        vkospiSlice.window,
+        vixSlice.window,
+      ].filter(Boolean);
       const renderModel = {
         ...model,
         dates: commonSlice.dates,
@@ -1283,6 +1317,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
           type: "scatter",
           mode: "lines",
           name: "ADR HOVER",
+          meta: { auxiliaryHoverProxy: true },
           yaxis: panelLayout.axes.adr,
           showlegend: false,
           visible: panelLayout.active.adr,
@@ -1329,7 +1364,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         },
       ];
     
-      const traces = [
+      const unorderedTraces = [
         ...adrZoneFillTraces,
         ...buildAdrZoneTraces(
           adrKospiDates,
@@ -1421,6 +1456,20 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         },
         ...hoverProxyTraces,
       ].filter((trace) => trace.visible !== false);
+      const backgroundTraces = unorderedTraces.filter((trace) => trace.meta?.auxiliaryZoneFill);
+      const hoverTraces = unorderedTraces.filter((trace) => trace.meta?.auxiliaryHoverProxy === true);
+      const foregroundTraces = unorderedTraces.filter((trace) => (
+        !trace.meta?.auxiliaryZoneFill && trace.meta?.auxiliaryHoverProxy !== true
+      ));
+      const traces = [
+        ...backgroundTraces,
+        ...orderItemsByActivation(
+          foregroundTraces,
+          seriesOrder,
+          (trace) => trace?.meta?.auxiliarySeriesKey,
+        ),
+        ...hoverTraces,
+      ];
 
       const annotations = [
         ...(panelLayout.active.adr ? [
@@ -1617,6 +1666,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         else if (renderResult.mode === "full") auxiliaryFullRenderCount += 1;
         else auxiliarySkippedRenderCount += 1;
         lastAdrRenderKey = renderKey;
+        lastAdrViewportWindows = viewportWindows;
         syncAuxiliarySeparators(
           el,
           panelLayout.separators,
@@ -1630,33 +1680,13 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     
       if (!adrHandlerSet) {
         el.on("plotly_relayout", (eventData) => {
-          const viewport = relayoutViewport(eventData);
+          const viewport = resolveRelayoutViewport(eventData, el);
           if (syncState.chartSyncing) return;
           if (syncState.cursorSyncing && !viewport.range && !viewport.autorange) return;
-          const syncedCharts = [
-            document.getElementById("chart"),
-            document.getElementById("chart-macd"),
-          ].filter((target) => target?.data && !target.hidden);
-          if (syncedCharts.length) {
-            if (viewport.range) {
-              chartSession.pinnedXRange = viewport.range;
-              syncedCharts.forEach((target) => scheduleViewportRangeSync(target, {
-                "xaxis.range[0]": viewport.range[0],
-                "xaxis.range[1]": viewport.range[1],
-              }));
-            } else if (viewport.autorange) {
-              chartSession.pinnedXRange = null;
-              const adrRange = el._fullLayout?.xaxis?.range?.slice();
-              if (Array.isArray(adrRange) && adrRange.length === 2) {
-                syncedCharts.forEach((target) => scheduleViewportRangeSync(target, {
-                  "xaxis.range[0]": adrRange[0],
-                  "xaxis.range[1]": adrRange[1],
-                }));
-              } else {
-                syncedCharts.forEach((target) => scheduleViewportRangeSync(target, { "xaxis.autorange": true }));
-              }
-            }
-          }
+          if (viewport.range) commitViewportRange(viewport.range, {
+            source: "auxiliary-plotly-relayout",
+            liveFit: chartSession.autoChartReset,
+          });
         });
         bindAuxiliaryHoverHandlers(el, ["chart", "chart-macd"]);
         adrHandlerSet = true;
@@ -1695,12 +1725,19 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
 
     function invalidateAdr() {
       lastAdrRenderKey = "";
+      lastAdrViewportWindows = [];
       auxiliaryChartRenderGeneration += 1;
       auxiliaryModelResolver?.invalidate();
     }
 
     function invalidateMacd() {
       lastMacdRenderKey = "";
+      lastMacdViewportWindows = [];
+    }
+
+    function needsViewportRefresh(xRange) {
+      return viewportWindowsNeedRefresh(lastMacdViewportWindows, xRange)
+        || viewportWindowsNeedRefresh(lastAdrViewportWindows, xRange);
     }
 
     async function renderAll(xRange) {
@@ -1718,6 +1755,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       invalidateMacd,
       addViewportYRangeToRelayout,
       cachedModel: () => auxiliaryModelResolver?.cachedModel?.() || null,
+      needsViewportRefresh,
       renderAll,
       renderAdrChart,
       renderMacdChart,

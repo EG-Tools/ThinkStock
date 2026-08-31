@@ -78,6 +78,38 @@
     return target;
   }
 
+  function transformViewportValuesInto(
+    values,
+    center = 100,
+    viewportScale = 1,
+    seriesScale = 1,
+    offset = 0,
+    output = null,
+  ) {
+    if (!Array.isArray(values)) return null;
+    const target = Array.isArray(output) && output.length === values.length
+      ? output
+      : new Array(values.length);
+    const normalizedCenter = Number.isFinite(Number(center)) ? Number(center) : 100;
+    const normalizedViewportScale = Number.isFinite(Number(viewportScale))
+      ? Number(viewportScale)
+      : 1;
+    const normalizedSeriesScale = Number.isFinite(Number(seriesScale))
+      ? Number(seriesScale)
+      : 1;
+    const normalizedOffset = Number.isFinite(Number(offset)) ? Number(offset) : 0;
+    finiteRangeCache.delete(target);
+    for (let index = 0; index < values.length; index += 1) {
+      const value = values[index];
+      target[index] = value !== null && Number.isFinite(value)
+        ? 100
+          + ((value - normalizedCenter) * normalizedViewportScale * normalizedSeriesScale)
+          + normalizedOffset
+        : null;
+    }
+    return target;
+  }
+
   function invertTransformValues(values, scale = 1, offset = 0) {
     if (!Array.isArray(values)) return null;
     const normalizedScale = Number(scale);
@@ -147,6 +179,43 @@
       : null;
   }
 
+  function finiteDatedRange(dates, values, xRange = null) {
+    if (!Array.isArray(dates) || !Array.isArray(values)) return null;
+    const pointCount = Math.min(dates.length, values.length);
+    if (!pointCount) return null;
+    const parsedRange = Array.isArray(xRange) && xRange.length >= 2
+      ? xRange.slice(0, 2).map((value) => (
+          typeof value === "number" && Number.isFinite(value) ? value : Date.parse(value)
+        ))
+      : null;
+    const hasRange = parsedRange?.every(Number.isFinite);
+    if (!hasRange) return finiteRangeBetween(values, 0, pointCount);
+    const rangeLow = Math.min(...parsedRange);
+    const rangeHigh = Math.max(...parsedRange);
+    const dateIndex = timestampIndex(dates);
+    const startIndex = dateIndex?.sorted
+      ? lowerBound(dateIndex.timestamps, rangeLow, pointCount)
+      : 0;
+    const endIndex = dateIndex?.sorted
+      ? upperBound(dateIndex.timestamps, rangeHigh, pointCount)
+      : pointCount;
+    if (dateIndex?.sorted) return finiteRangeBetween(values, startIndex, endIndex);
+
+    let minimum = Number.POSITIVE_INFINITY;
+    let maximum = Number.NEGATIVE_INFINITY;
+    let count = 0;
+    for (let index = startIndex; index < endIndex; index += 1) {
+      const value = values[index];
+      const timestamp = dateIndex?.timestamps?.[index];
+      if (value === null || !Number.isFinite(value)
+        || !Number.isFinite(timestamp) || timestamp < rangeLow || timestamp > rangeHigh) continue;
+      minimum = Math.min(minimum, value);
+      maximum = Math.max(maximum, value);
+      count += 1;
+    }
+    return count ? { minimum, maximum, count } : null;
+  }
+
   function offsetFromDrag(startOffset, startClientY, clientY, yAxis) {
     const range = yAxis?.range;
     if (!Array.isArray(range) || range.length < 2 || !Number.isFinite(yAxis?._length) || yAxis._length === 0) {
@@ -167,37 +236,15 @@
   function fitRangeForTraces(traces, xRange = null, options = {}) {
     const paddingRatio = Number.isFinite(options.paddingRatio) ? options.paddingRatio : 0.08;
     const minimumPadding = Number.isFinite(options.minimumPadding) ? options.minimumPadding : 0.6;
-    const parsedRange = Array.isArray(xRange) && xRange.length >= 2
-      ? xRange.slice(0, 2).map((value) => Date.parse(value))
-      : null;
-    const hasRange = parsedRange?.every(Number.isFinite);
-    const rangeLow = hasRange ? Math.min(...parsedRange) : Number.NEGATIVE_INFINITY;
-    const rangeHigh = hasRange ? Math.max(...parsedRange) : Number.POSITIVE_INFINITY;
     let minimum = Number.POSITIVE_INFINITY;
     let maximum = Number.NEGATIVE_INFINITY;
 
     (Array.isArray(traces) ? traces : []).forEach((trace) => {
       if (trace?.visible === "legendonly") return;
-      const pointCount = Math.min(trace?.x?.length || 0, trace?.y?.length || 0);
-      const dates = hasRange ? timestampIndex(trace?.x) : null;
-      const startIndex = dates?.sorted ? lowerBound(dates.timestamps, rangeLow, pointCount) : 0;
-      const endIndex = dates?.sorted ? upperBound(dates.timestamps, rangeHigh, pointCount) : pointCount;
-      if (!hasRange || dates?.sorted) {
-        const range = finiteRangeBetween(trace.y, startIndex, endIndex);
-        if (range) {
-          minimum = Math.min(minimum, range.minimum);
-          maximum = Math.max(maximum, range.maximum);
-        }
-        return;
-      }
-      for (let index = startIndex; index < endIndex; index += 1) {
-        const value = trace.y[index];
-        if (!Number.isFinite(value)) continue;
-        const timestamp = dates?.timestamps?.[index];
-        if (!Number.isFinite(timestamp) || timestamp < rangeLow || timestamp > rangeHigh) continue;
-        minimum = Math.min(minimum, value);
-        maximum = Math.max(maximum, value);
-      }
+      const range = finiteDatedRange(trace?.x, trace?.y, xRange);
+      if (!range) return;
+      minimum = Math.min(minimum, range.minimum);
+      maximum = Math.max(maximum, range.maximum);
     });
     if (!Number.isFinite(minimum) || !Number.isFinite(maximum)) return null;
     const span = maximum - minimum;
@@ -224,8 +271,10 @@
     resolveScale,
     transformValues,
     transformValuesInto,
+    transformViewportValuesInto,
     invertTransformValues,
     finiteRangeBetween,
+    finiteDatedRange,
     offsetFromDrag,
     scaleFromDrag,
     resetTransforms,
@@ -236,6 +285,7 @@ export {
   defaultScale,
   expandRangeToContain,
   finiteRangeBetween,
+  finiteDatedRange,
   fitRangeForTraces,
   invertTransformValues,
   offsetFromDrag,
@@ -244,5 +294,6 @@ export {
   scaleFromDrag,
   transformValues,
   transformValuesInto,
+  transformViewportValuesInto,
 };
 export default chartAdjustments;

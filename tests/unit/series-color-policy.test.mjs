@@ -6,7 +6,7 @@ import {
   SERIES_COLORS,
   createSeriesColorResolver,
   fallbackCustomColor,
-} from "../../docs/modules/series-color-policy.mjs";
+} from "../../docs/modules/app-control-config.mjs";
 
 test("keeps fixed market colors separate from custom stock colors", () => {
   const stocks = [{ ticker: "218410.KQ", color: "#12ab34" }];

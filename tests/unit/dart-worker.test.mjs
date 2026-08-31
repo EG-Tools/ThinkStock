@@ -212,8 +212,8 @@ test("serves cached public VIX data without a personal access token or forced up
   const officialDate = expectedLatestKoreanTradingDate(now, { closeHour: 16, closeMinute: 0 });
   const savedAt = Date.now();
   const cache = memoryKv({
-    "fred-crisis-signal:8": JSON.stringify({
-      schema: 8,
+    "fred-crisis-signal:10": JSON.stringify({
+      schema: 10,
       savedAt,
       lastCheckedDate: checkDate,
       latestDate: officialDate,
@@ -957,6 +957,63 @@ test("uses Naver only when it is newer than a delayed KRX close", async () => {
     assert.equal(payload.source, "NAVER_FALLBACK");
     assert.equal(payload.latestDate, "2026-08-03");
     assert.deepEqual(payload.records, [{ date: "2026-08-03", close: 61800 }]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("explicit stock price refresh bypasses only the latest KRX market snapshot", async () => {
+  const latestDate = koreanDateText(new Date());
+  const latestDateCode = latestDate.replaceAll("-", "");
+  const originalFetch = globalThis.fetch;
+  let sourceClose = 71000;
+  let krxSourceCalls = 0;
+  globalThis.fetch = async (url) => {
+    const target = new URL(url);
+    if (target.hostname === "api.finance.naver.com") {
+      return new Response(JSON.stringify([
+        [latestDateCode, sourceClose, sourceClose, sourceClose, sourceClose, 1],
+      ]), { status: 200 });
+    }
+    krxSourceCalls += 1;
+    const baseDate = target.searchParams.get("basDd");
+    return new Response(JSON.stringify({
+      OutBlock_1: baseDate === latestDateCode ? [{
+        ISU_SRT_CD: "005930",
+        BAS_DD: latestDateCode,
+        TDD_CLSPRC: String(sourceClose),
+      }] : [],
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const env = {
+      KRX_API_KEY: "krx-secret",
+      THINKSTOCK_ACCESS_TOKEN: "private",
+      DISCLOSURE_CACHE: memoryKv(),
+    };
+    const first = await handleRequest(
+      request("/api/prices?ticker=005930.KS", { token: "private" }),
+      env,
+    );
+    assert.equal((await first.json()).records.at(-1).close, 71000);
+    const callsAfterFirst = krxSourceCalls;
+
+    sourceClose = 72500;
+    const cached = await handleRequest(
+      request("/api/prices?ticker=005930.KS", { token: "private" }),
+      env,
+    );
+    assert.equal((await cached.json()).records.at(-1).close, 71000);
+    assert.equal(krxSourceCalls, callsAfterFirst);
+
+    const refreshed = await handleRequest(
+      request("/api/prices?ticker=005930.KS&refresh=1", { token: "private" }),
+      env,
+    );
+    const refreshedPayload = await refreshed.json();
+    assert.equal(refreshedPayload.records.at(-1).close, 72500);
+    assert.equal(refreshedPayload.cached, false);
+    assert.equal(krxSourceCalls, callsAfterFirst + 1);
   } finally {
     globalThis.fetch = originalFetch;
   }

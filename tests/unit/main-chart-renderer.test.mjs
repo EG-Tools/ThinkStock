@@ -167,6 +167,50 @@ test("main chart composition builds line, EPS, AI, and event layers in one pipel
   assert.equal(result.displayPointCount, 2);
 });
 
+test("uses detailed macro names and stacks long macro prices on a second line", () => {
+  const macroSeries = ["leading_cycle", "t10y1y", "us_credit_spread"];
+  const detailedNames = {
+    leading_cycle: "한국 선행지수 순환변동치",
+    t10y1y: "미국채 10년/1년 금리차",
+    us_credit_spread: "미국 회사채 3년/국채 3년 금리차",
+  };
+  const prices = macroSeries.map((series, index) => ({
+    ...trace(series, [100 + index, 101 + index]),
+    name: series,
+    x: ["2026-08-27", "2026-08-28"],
+    text: [String(index + 1), String(index + 2)],
+    line: { color: "#2dd4bf" },
+  }));
+  const grouped = renderer.buildGroupedHoverTraces({
+    enabled: true,
+    traces: prices,
+    seriesOrder: macroSeries,
+    labelName: (series) => series,
+    hoverLabelName: (series) => detailedNames[series],
+    stackedPriceSeries: macroSeries,
+    revision: "macro-hover-label",
+  });
+
+  assert.deepEqual(grouped.map((item) => item.meta.hoverGroupTicker), macroSeries);
+  grouped.forEach((item, index) => {
+    assert.ok(item.text[0].includes(`${detailedNames[macroSeries[index]]}</b><br>가격`));
+    assert.doesNotMatch(item.text[0], /<\/b> · 가격/);
+  });
+});
+
+test("grouped hover follows its supplied activation order without changing price traces", () => {
+  const first = { ...trace("FIRST", [100]), x: ["2026-08-28"], text: ["100"] };
+  const second = { ...trace("SECOND", [200]), x: ["2026-08-28"], text: ["200"] };
+  const grouped = renderer.buildGroupedHoverTraces({
+    enabled: true,
+    traces: [first, second],
+    seriesOrder: ["SECOND", "FIRST"],
+  });
+
+  assert.deepEqual(grouped.map((item) => item.meta.hoverGroupTicker), ["SECOND", "FIRST"]);
+  assert.deepEqual([first.meta.seriesKey, second.meta.seriesKey], ["FIRST", "SECOND"]);
+});
+
 test("main chart composition reuses prepared future overlays during viewport frames", async () => {
   const model = {
     rows: [{ date: "2026-08-24", TEST: 100 }],
@@ -414,6 +458,24 @@ test("keeps long Korean stock trading suspensions flat until trading resumes", (
   assert.equal(result.traces[0].meta.longGapFillPointCount, 3);
 });
 
+test("renders the latest activated price series last and fully opaque", () => {
+  const seriesModels = ["A", "B"].map((series, index) => ({
+    series,
+    xValues: ["2026-01-01", "2026-01-02"],
+    values: [100, 101 + index],
+    rawTexts: ["100", String(101 + index)],
+    baseValues: [100, 101 + index],
+    baseLineWidth: 1,
+  }));
+  const result = renderer.buildLineTraces({
+    seriesModels,
+    seriesOrder: ["B", "A"],
+    hiddenSeries: new Set(),
+  });
+  assert.deepEqual(result.traces.map((trace) => trace.meta.seriesKey), ["B", "A"]);
+  assert.deepEqual(result.traces.map((trace) => trace.opacity), [1, 1]);
+});
+
 test("does not flatten short stock holidays or non-stock series", () => {
   const shortGap = renderer.carryLongNonTradingGaps(
     ["2026-09-30", "2026-10-01", "2026-10-06"],
@@ -537,6 +599,65 @@ test("builds sampled line traces without reconnecting missing source values", ()
   assert.equal(result.traces[0].meta.fullDataStartMs, Date.parse("2026-01-01"));
   assert.equal(result.traces[0].meta.fullDataEndMs, Date.parse("2026-01-03"));
   assert.deepEqual(result.baseValuesBySeries["^KS11"], [100, 103]);
+});
+
+test("renders a newly listed one-point stock as a circle and labels its first trading day", () => {
+  const result = renderer.buildLineTraces({
+    seriesModels: [{
+      series: "279570.KS",
+      xValues: ["2026-08-30"],
+      values: [15000],
+      rawTexts: ["15,000"],
+      baseValues: [15000],
+      baseLineWidth: 1,
+    }],
+    hiddenSeries: new Set(),
+    hoverShowPopup: true,
+    labelName: () => "신규상장종목",
+    seriesColor: () => "#4ade80",
+  });
+  const trace = result.traces[0];
+
+  assert.equal(trace.mode, "markers");
+  assert.equal(trace.marker.symbol, "circle");
+  assert.equal(trace.meta.listingDate, "2026-08-30");
+  assert.match(trace.text[0], /<br>상장일/);
+
+  const grouped = renderer.buildGroupedHoverTraces({
+    enabled: true,
+    traces: result.traces,
+    seriesOrder: ["279570.KS"],
+    labelName: () => "신규상장종목",
+  });
+  assert.match(grouped[0].text[0], /가격 15,000/);
+  assert.match(grouped[0].text[0], /<br>상장일/);
+});
+
+test("labels only the actual stock history start, not the first point of a viewport slice", () => {
+  const seriesModels = [{
+    series: "005930.KS",
+    xValues: ["1975-06-11", "2025-08-29", "2026-08-30"],
+    values: [100, 70000, 75000],
+    rawTexts: ["100", "70,000", "75,000"],
+    baseValues: [100, 70000, 75000],
+    baseLineWidth: 1,
+  }];
+  const result = renderer.buildLineTraces({
+    seriesModels,
+    displayIndexes: [1, 2],
+    hiddenSeries: new Set(),
+    hoverShowPopup: true,
+    labelName: () => "삼성전자",
+  });
+  assert.equal(result.traces[0].meta.listingDate, "1975-06-11");
+
+  const grouped = renderer.buildGroupedHoverTraces({
+    enabled: true,
+    traces: result.traces,
+    seriesOrder: ["005930.KS"],
+    labelName: () => "삼성전자",
+  });
+  assert.doesNotMatch(grouped[0].text.join("\n"), /상장일/);
 });
 
 test("reuses prepared line data until a transformed value array changes", () => {
@@ -890,7 +1011,6 @@ test("carries chart line mode through a partial layout update", () => {
   assert.equal(payload["xaxis.spikecolor"], "rgba(0,0,0,0)");
   assert.equal(payload["yaxis.spikecolor"], "rgba(0,0,0,0)");
 });
-
 
 test("falls back to a full render when the trace structure changes", async () => {
   const element = {

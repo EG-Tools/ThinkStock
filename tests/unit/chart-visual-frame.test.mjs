@@ -177,6 +177,42 @@ test("updates linked forecast overlays in the same live transform frame", async 
   }]);
 });
 
+test("prefers a viewport series update and its linked traces during live transforms", async () => {
+  const restyles = [];
+  const element = {
+    data: [
+      { meta: { seriesKey: "005930.KS" }, y: [1, 2] },
+      { meta: { overlayKind: "ai-scenario", seriesKey: "005930.KS" }, y: [2, 3] },
+    ],
+  };
+  const apply = visualFrame.createSeriesFrameApplier({
+    getElement: () => element,
+    getPlotly: () => ({
+      restyle: async (_element, update, indexes) => restyles.push({ update, indexes }),
+    }),
+    resolveTraceIndex: () => 0,
+    computeSeriesUpdate: () => ({
+      nextY: [10, 20],
+      linkedUpdate: {
+        traceIndexes: [1],
+        yUpdates: [[12, 22]],
+      },
+    }),
+    computeValues: () => {
+      throw new Error("fallback values should not be used");
+    },
+    collectLinkedTraceUpdates: () => {
+      throw new Error("fallback linked values should not be used");
+    },
+  });
+
+  await apply({ series: [{ seriesKey: "005930.KS", traceIndex: 0 }] });
+  assert.deepEqual(restyles, [{
+    update: { y: [[12, 22], [10, 20]] },
+    indexes: [1, 0],
+  }]);
+});
+
 test("compacts duplicate trace updates and keeps the final value", () => {
   assert.deepEqual(
     visualFrame.compactTraceYUpdates(

@@ -36,7 +36,7 @@ test("application feature lifecycle centralizes restored toggle predicates", () 
     showDisclosures: false,
     showInsiderTrades: true,
     showAiForecast: true,
-    showEps: false,
+    showEps: true,
   };
   const lifecycle = createApplicationFeatureLifecycleDescriptors({
     state,
@@ -52,7 +52,9 @@ test("application feature lifecycle centralizes restored toggle predicates", () 
   lifecycle.restoredActivations.filter((entry) => entry.enabled()).forEach((entry) => entry.run());
   lifecycle.optionalRefreshes.filter((entry) => entry.enabled()).forEach((entry) => entry.run());
 
-  assert.deepEqual(calls, ["timing", "dart", "ai", "refresh-ai", "insider"]);
+  assert.deepEqual(lifecycle.restoredActivations.map((entry) => entry.name), ["timing", "dart"]);
+  assert.deepEqual(lifecycle.optionalRefreshes.map((entry) => entry.name), ["insider"]);
+  assert.deepEqual(calls, ["timing", "dart", "insider"]);
 });
 
 test("runs application startup phases in one deterministic order", async () => {
@@ -423,6 +425,27 @@ test("startup task runtime serializes visible work through the interaction-aware
     group: "startup-deferred",
     priority: 20,
   });
+});
+
+test("startup task runtime gives non-visible work a post-visual quiet window", () => {
+  const enqueued = [];
+  const scheduler = {
+    enqueue(key, task, options) {
+      enqueued.push({ key, task, options });
+      return Promise.resolve(true);
+    },
+  };
+  const runtime = createStartupTaskRuntime({
+    scheduler,
+    defaultDeferredDelayMs: 650,
+  });
+
+  runtime.defer(() => true, { taskName: "maintenance" });
+  runtime.defer(() => true, { taskName: "visible", userVisible: true });
+  runtime.defer(() => true, { taskName: "explicit", delayMs: 90 });
+  runtime.release();
+
+  assert.deepEqual(enqueued.map(({ options }) => options.delayMs), [650, 0, 90]);
 });
 
 test("startup task runtime uses stable scheduler keys for named work", () => {

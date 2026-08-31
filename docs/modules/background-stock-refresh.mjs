@@ -31,6 +31,9 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
     const activitySampleIntervalMs = Math.max(16, Number(options.activitySampleIntervalMs) || 48);
     const maxTaskSliceMs = Math.max(4, Number(options.maxTaskSliceMs) || 12);
     const cooperativeYieldDelayMs = Math.max(0, Number(options.cooperativeYieldDelayMs) || 16);
+    const foregroundPriority = Number.isFinite(Number(options.foregroundPriority))
+      ? Number(options.foregroundPriority)
+      : Number.POSITIVE_INFINITY;
     const isInteractionBusy = typeof options.isInteractionBusy === "function"
       ? options.isInteractionBusy
       : () => false;
@@ -66,6 +69,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
       visibilityDeferrals: 0,
       taskYields: 0,
       cooperativeYields: 0,
+      foregroundWakeups: 0,
       totalQueueWaitMs: 0,
       maxQueueWaitMs: 0,
       totalRunMs: 0,
@@ -134,11 +138,15 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
       return Math.max(0, Math.min(...[...queue.values()].map((entry) => entry.notBefore - currentTime)));
     }
 
-    function interactionPending() {
+    function isForeground(entry = null) {
+      return Number(entry?.priority) >= foregroundPriority;
+    }
+
+    function interactionPending(entry = null) {
       return pageHidden()
         || inputPending()
         || isInteractionBusy()
-        || now() - lastActivityAt < interactionQuietMs;
+        || (!isForeground(entry) && now() - lastActivityAt < interactionQuietMs);
     }
 
     function createTaskContext(entry) {
@@ -146,7 +154,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
       const shouldYield = () => (
         disposed
         || entry.signal?.aborted === true
-        || interactionPending()
+        || interactionPending(entry)
         || now() - sliceStartedAt >= maxTaskSliceMs
       );
       const checkpoint = async (force = false) => {
@@ -157,7 +165,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
               resolve(false);
               return;
             }
-            if (interactionPending()) {
+            if (interactionPending(entry)) {
               scope.setTimeout?.(waitForQuietTurn, retryDelayMs);
               return;
             }
@@ -188,7 +196,10 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
           idleHandle = 0;
           pump();
         };
-        if (typeof scope.requestIdleCallback === "function") {
+        if (isForeground(orderedReady())) {
+          counters.foregroundWakeups += 1;
+          run();
+        } else if (typeof scope.requestIdleCallback === "function") {
           idleHandle = scope.requestIdleCallback(run, { timeout: idleTimeoutMs });
         } else {
           run();
@@ -204,6 +215,11 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
         schedulePump(remainingGap);
         return;
       }
+      const entry = orderedReady();
+      if (!entry) {
+        schedulePump();
+        return;
+      }
       if (inputPending()) {
         counters.inputDeferrals += 1;
         schedulePump(retryDelayMs);
@@ -214,14 +230,9 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
         schedulePump(Math.max(1000, retryDelayMs));
         return;
       }
-      if (isInteractionBusy() || now() - lastActivityAt < interactionQuietMs) {
+      if (isInteractionBusy() || (!isForeground(entry) && now() - lastActivityAt < interactionQuietMs)) {
         counters.activityDeferrals += 1;
         schedulePump(retryDelayMs);
-        return;
-      }
-      const entry = orderedReady();
-      if (!entry) {
-        schedulePump();
         return;
       }
       queue.delete(entry.key);
@@ -670,6 +681,9 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
     const isAiEnabled = typeof options.isAiEnabled === "function"
       ? options.isAiEnabled
       : () => false;
+    const isDartEnabled = typeof options.isDartEnabled === "function"
+      ? options.isDartEnabled
+      : () => false;
     const delayMs = Math.max(0, Number(options.delayMs) || 32);
     const priority = Number(options.priority) || 80;
     const group = String(options.group || "visible-series-supplemental");
@@ -678,6 +692,8 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
     function schedule(tickerValue, context = {}) {
       const ticker = normalizeTicker(tickerValue);
       if (!isSupported(ticker)) return Promise.resolve(false);
+      const hasEnabledWork = () => isDartEnabled() || isEpsEnabled() || isAiEnabled();
+      if (!hasEnabledWork()) return Promise.resolve(false);
       const trackAiProgress = context.trackAiProgress === true && isAiEnabled();
       if (trackAiProgress) options.onAiQueued?.(ticker, context);
 
@@ -687,7 +703,10 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
       });
       return scheduler.enqueue(taskKey(ticker), async (taskContext) => {
         await taskContext.checkpoint?.();
-        const tasks = [Promise.resolve(options.prepareDisclosure?.(ticker, context))];
+        const tasks = [];
+        if (isDartEnabled()) {
+          tasks.push(Promise.resolve(options.prepareDisclosure?.(ticker, context)));
+        }
         const hydrateAi = isAiEnabled();
         if (isEpsEnabled()) {
           tasks.push(Promise.resolve(options.prepareEps?.(ticker, context)));
@@ -716,7 +735,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
         delayMs,
         group,
         priority,
-        shouldRun: () => isActive(ticker),
+        shouldRun: () => isActive(ticker) && hasEnabledWork(),
       }).then((started) => {
         if (started === false) cleanupSkipped();
         return started;

@@ -1,16 +1,17 @@
-import { createPerformanceDiagnostics } from "../../docs/modules/performance-diagnostics.mjs";
+import {
+  createDeferredDiagnostics as createDeferredDiagnosticsRuntime,
+  createPerformanceDiagnostics,
+} from "../../docs/modules/performance-diagnostics.mjs";
 import { createChartRenderTelemetry } from "../../docs/modules/performance-monitor.mjs";
-import * as deferredDiagnostics from "../../docs/modules/deferred-diagnostics.mjs";
 import {
   evaluateChartRenderSeriesBudget,
   evaluatePerformanceBudget,
 } from "../../shared/performance-budget.mjs";
 
 const diagnosticsFeature = Object.freeze({
-  ...deferredDiagnostics,
   createChartRenderTelemetry,
   createDeferredDiagnostics(scope = globalThis, options = {}) {
-    return deferredDiagnostics.createDeferredDiagnostics(scope, {
+    return createDeferredDiagnosticsRuntime(scope, {
       ...options,
       createPerformanceDiagnostics,
       createOptions: {

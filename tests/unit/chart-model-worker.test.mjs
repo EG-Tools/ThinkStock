@@ -250,7 +250,7 @@ test("chart worker renders loaded history while normalizing from the visible fra
 
   assert.equal(response.ok, true);
   assert.equal(response.result.rows.length, dates.length);
-  assert.equal(response.result.normBases.AAA, 190);
+  assert.equal(response.result.normBases.AAA, 194.5);
   assert.equal(response.result.displayIndexes, null);
 });
 

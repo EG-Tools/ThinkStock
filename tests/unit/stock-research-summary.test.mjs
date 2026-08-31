@@ -104,6 +104,39 @@ test("normalizes a compact cross-device stock-research summary", () => {
   );
 });
 
+test("preserves failed universe analysis state in shared summaries", () => {
+  const summary = normalizeResearchSummary({
+    schema: RESEARCH_SUMMARY_SCHEMA,
+    historyQualityVersion: RESEARCH_SUMMARY_HISTORY_QUALITY_VERSION,
+    strategy: "top400-recovery-v1",
+    baseDate: "2026-08-29",
+    minimumBuySignals: 5,
+    universeTickers: ["279570.KS"],
+    universeState: {
+      "279570.KS": {
+        fingerprint: "279570.KS|KOSPI|케이뱅크",
+        metadataFingerprint: "279570.KS|케이뱅크|120|100000",
+        signalFingerprint: "",
+        analysisStatus: "failed",
+        failureCount: 2,
+        lastFailureAt: "2026-08-29T10:00:00.000Z",
+        retryAfter: "2026-08-30T10:00:00.000Z",
+      },
+    },
+    candidatePool: [],
+  }, { strategy: "top400-recovery-v1", minimum: 5 });
+
+  assert.deepEqual(summary.universeState["279570.KS"], {
+    fingerprint: "279570.KS|KOSPI|케이뱅크",
+    metadataFingerprint: "279570.KS|케이뱅크|120|100000",
+    signalFingerprint: "",
+    analysisStatus: "failed",
+    failureCount: 2,
+    lastFailureAt: "2026-08-29T10:00:00.000Z",
+    retryAfter: "2026-08-30T10:00:00.000Z",
+  });
+});
+
 test("keeps cross-device summaries separate for 600 and 1000 stock searches", () => {
   const payload = {
     schema: RESEARCH_SUMMARY_SCHEMA,

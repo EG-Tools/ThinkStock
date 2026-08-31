@@ -78,27 +78,17 @@
       throw new Error("chart session state is required");
     }
 
-    const setTimer = options.setTimer || ((callback, delay) => scope.setTimeout(callback, delay));
-    const clearTimer = options.clearTimer || ((id) => scope.clearTimeout(id));
-    let autoFitTimer = 0;
     let disposed = false;
 
-    function cancelAutoFit() {
-      if (autoFitTimer) clearTimer(autoFitTimer);
-      autoFitTimer = 0;
-    }
-
-    function applyResetPolicy(change, delay = 100) {
+    function applyResetPolicy(change) {
       if (disposed) return false;
       const kind = String(change || "viewport");
-      if (kind === "manual" || kind === "composition") {
+      if (kind === "manual" || kind === "composition" || kind === "viewport") {
         state.viewportNormalizationFrame = null;
       }
-      cancelAutoFit();
 
       if (kind === "manual") {
         state.pendingAutoChartFit = false;
-        state.pendingAutoChartFitExpandOnly = false;
         if (!state.autoChartReset) return false;
         options.clearTransforms?.();
         state.pendingAutoChartFit = true;
@@ -112,14 +102,12 @@
 
       if (kind === "composition") {
         state.pendingAutoChartFit = true;
-        state.pendingAutoChartFitExpandOnly = false;
         return true;
       }
 
-      autoFitTimer = setTimer(() => {
-        autoFitTimer = 0;
-        if (!disposed && !options.isInteractionBusy?.()) options.fitCurrentViewport?.();
-      }, Math.max(0, Number(delay) || 0));
+      // Viewport interaction already applies the latest X/Y ranges together.
+      // Do not run a second delayed fit after release; it causes a visible
+      // squeeze/stretch and repeats work the live interaction just completed.
       return true;
     }
 
@@ -130,10 +118,8 @@
 
       state.autoChartReset = nextEnabled;
       state.pendingAutoChartFit = false;
-      state.pendingAutoChartFitExpandOnly = false;
       state.viewportNormalizationFrame = null;
       state.pendingCompositionViewport = null;
-      cancelAutoFit();
 
       if (nextEnabled) {
         state.pinnedXRange = Array.isArray(visibleRange) && visibleRange.length === 2
@@ -156,14 +142,13 @@
 
     function dispose() {
       disposed = true;
-      cancelAutoFit();
     }
 
     return Object.freeze({
       applyResetPolicy,
       dispose,
       setAutoScale,
-      stats: () => ({ autoFitPending: Boolean(autoFitTimer), disposed }),
+      stats: () => ({ autoFitPending: false, disposed }),
     });
   }
 
@@ -192,6 +177,65 @@
     )) || requested;
   }
 
+  function seriesOrderIdentity(value) {
+    return String(value || "").trim().toUpperCase();
+  }
+
+  function uniqueSeriesOrder(values) {
+    const seen = new Set();
+    return (Array.isArray(values) ? values : []).flatMap((value) => {
+      const key = String(value || "").trim();
+      const identity = seriesOrderIdentity(key);
+      if (!key || seen.has(identity)) return [];
+      seen.add(identity);
+      return [key];
+    });
+  }
+
+  /** Later activations render later so their opaque stroke owns overlap pixels. */
+  function orderItemsByActivation(items, activationOrder, resolveKey = (item) => item) {
+    const source = Array.isArray(items) ? items : [];
+    const ranks = new Map(uniqueSeriesOrder(activationOrder).map((key, index) => (
+      [seriesOrderIdentity(key), index]
+    )));
+    return source.map((item, index) => ({
+      index,
+      item,
+      rank: ranks.get(seriesOrderIdentity(resolveKey(item))),
+    })).sort((left, right) => {
+      const leftRanked = Number.isInteger(left.rank);
+      const rightRanked = Number.isInteger(right.rank);
+      if (leftRanked && rightRanked) return left.rank - right.rank || left.index - right.index;
+      if (leftRanked !== rightRanked) return leftRanked ? 1 : -1;
+      return left.index - right.index;
+    }).map(({ item }) => item);
+  }
+
+  /** Keeps prior activation order and appends newly visible series. */
+  function reconcileSeriesActivationOrder(order, visibleSeries) {
+    const visible = uniqueSeriesOrder(visibleSeries);
+    const visibleByIdentity = new Map(visible.map((key) => [seriesOrderIdentity(key), key]));
+    const reconciled = uniqueSeriesOrder(order).flatMap((key) => {
+      const visibleKey = visibleByIdentity.get(seriesOrderIdentity(key));
+      if (!visibleKey) return [];
+      visibleByIdentity.delete(seriesOrderIdentity(key));
+      return [visibleKey];
+    });
+    return [...reconciled, ...visibleByIdentity.values()];
+  }
+
+  /** A newly activated series always becomes the last information row. */
+  function updateSeriesActivationOrder(order, seriesKey, visible) {
+    const key = String(seriesKey || "").trim();
+    const identity = seriesOrderIdentity(key);
+    if (!identity) return uniqueSeriesOrder(order);
+    const next = uniqueSeriesOrder(order).filter((item) => (
+      seriesOrderIdentity(item) !== identity
+    ));
+    if (visible) next.push(key);
+    return next;
+  }
+
   function createMainSeriesController(options = {}) {
     const hiddenSeries = options.hiddenSeries;
     if (!(hiddenSeries instanceof Set) || typeof options.getSeriesKeys !== "function") {
@@ -200,20 +244,43 @@
     const maximumVisible = Math.max(1, Number(options.maximumVisible) || 10);
     const seriesKeys = () => options.getSeriesKeys().map(String).filter(Boolean);
     const visibleKeys = () => seriesKeys().filter((key) => !hiddenSeries.has(key));
+    const readActivationOrder = () => options.getActivationOrder?.() || [];
+    const writeActivationOrder = (value) => options.setActivationOrder?.(value);
+
+    function activationOrder(visibleSeries = visibleKeys()) {
+      const next = reconcileSeriesActivationOrder(readActivationOrder(), visibleSeries);
+      writeActivationOrder(next);
+      return [...next];
+    }
+
+    function noteActivation(seriesKey, visible) {
+      const next = updateSeriesActivationOrder(readActivationOrder(), seriesKey, visible);
+      writeActivationOrder(next);
+      return next;
+    }
 
     function setVisible(seriesKey, visible, setOptions = {}) {
       const key = resolveSeriesKey(seriesKeys(), seriesKey);
       if (!key) return false;
+      const wasVisible = !hiddenSeries.has(key);
       if (!visible) {
         hiddenSeries.add(key);
+        if (wasVisible) noteActivation(key, false);
         return true;
       }
-      if (!hiddenSeries.has(key)) return true;
+      if (!hiddenSeries.has(key)) {
+        const identity = seriesOrderIdentity(key);
+        if (!uniqueSeriesOrder(readActivationOrder()).some((item) => (
+          seriesOrderIdentity(item) === identity
+        ))) noteActivation(key, true);
+        return true;
+      }
       if (seriesKeys().includes(key) && visibleKeys().length >= maximumVisible) {
         if (setOptions.notify !== false) options.onLimit?.(maximumVisible);
         return false;
       }
       hiddenSeries.delete(key);
+      noteActivation(key, true);
       return true;
     }
 
@@ -227,7 +294,15 @@
         hiddenSeries.add(key);
         hiddenByLimit.push(key);
       });
+      activationOrder(visibleKeys());
       return hiddenByLimit;
+    }
+
+    function forget(seriesKey) {
+      const key = resolveSeriesKey(seriesKeys(), seriesKey);
+      hiddenSeries.delete(key);
+      noteActivation(key, false);
+      return key;
     }
 
     function resolveVisibleStock(currentKey, isStockSeries) {
@@ -235,7 +310,14 @@
       return stocks.includes(currentKey) ? currentKey : stocks.at(-1) || "";
     }
 
-    return Object.freeze({ enforceLimit, resolveVisibleStock, setVisible, visibleKeys });
+    return Object.freeze({
+      activationOrder,
+      enforceLimit,
+      forget,
+      resolveVisibleStock,
+      setVisible,
+      visibleKeys,
+    });
   }
 
 export {
@@ -246,6 +328,9 @@ export {
   createChartSessionController,
   createChartSessionState,
   createMainSeriesController,
+  orderItemsByActivation,
+  reconcileSeriesActivationOrder,
   relatedSeriesTransformKeys,
   resolveSeriesKey,
+  updateSeriesActivationOrder,
 };

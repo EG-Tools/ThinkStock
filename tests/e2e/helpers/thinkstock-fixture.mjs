@@ -115,6 +115,8 @@ function columnar(series, dates, columns) {
       "^KQ11": "코스닥",
       "005930.KS": "삼성전자",
       leading_cycle: "선행순환변동",
+      t10y1y: "장단기금리차",
+      us_credit_spread: "신용스프레드",
       news_sentiment: "뉴스심리",
       customer_deposit: "고객예탁금",
       kospi_credit: "코스피 신용",
@@ -242,16 +244,25 @@ async function installDataRoutes(page, options = {}) {
       "005930.KS": options.shortStockHistory ? [null, null, 28000] : [8000, 15000, 28000],
     },
   );
-  const macroRecent = columnar(
-    ["leading_cycle", "news_sentiment"],
-    recentDates,
-    { leading_cycle: [99, 99.5, 100, 100.5, 101], news_sentiment: [92, 96, 101, 105, 108] },
-  );
-  const macroHistory = columnar(
-    ["leading_cycle", "news_sentiment"],
-    historyDates,
-    { leading_cycle: [96, 97, 98], news_sentiment: [null, 88, 94] },
-  );
+  const macroSeries = options.includeMacroSpreads
+    ? ["leading_cycle", "t10y1y", "us_credit_spread", "news_sentiment"]
+    : ["leading_cycle", "news_sentiment"];
+  const macroRecent = columnar(macroSeries, recentDates, {
+    leading_cycle: [99, 99.5, 100, 100.5, 101],
+    ...(options.includeMacroSpreads ? {
+      t10y1y: [0.18, 0.42, 0.31, 0.68, 0.53],
+      us_credit_spread: [0.74, 0.92, 0.81, 1.16, 0.89],
+    } : {}),
+    news_sentiment: [92, 96, 101, 105, 108],
+  });
+  const macroHistory = columnar(macroSeries, historyDates, {
+    leading_cycle: [96, 97, 98],
+    ...(options.includeMacroSpreads ? {
+      t10y1y: [0.35, -0.18, 0.12],
+      us_credit_spread: [1.42, 1.08, 0.96],
+    } : {}),
+    news_sentiment: [null, 88, 94],
+  });
   const creditDates = options.staleCreditTail ? recentDates.slice(0, -1) : recentDates;
   const creditRecent = columnar(
     ["customer_deposit", "kospi_credit", "kosdaq_credit"],
@@ -305,6 +316,9 @@ async function installDataRoutes(page, options = {}) {
     ["adr_data_history.json", adrHistory],
     ["vkospi_data.json", vkospiData],
   ]);
+  Object.entries(options.payloadOverrides || {}).forEach(([name, payload]) => {
+    payloads.set(name, payload);
+  });
 
   await page.route("**/data/*.json*", async (route) => {
     const name = new URL(route.request().url()).pathname.split("/").pop();

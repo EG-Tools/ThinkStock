@@ -86,11 +86,12 @@ test("credit component updates do not discard unrelated credit series", () => {
 
 test("normalizes only bounded crisis scores", () => {
   assert.deepEqual(merge.normalizeCrisisRows([
-    { date: "2026-08-01", score: 80 },
+    { date: "2026-08-01", score: 80, t10y1y: -0.25 },
     { date: "2026-08-02", score: 120 },
   ]), [{
     date: "2026-08-01",
     score: 80,
+    t10y1y: -0.25,
     stage: "crisis",
     uninversion: false,
   }]);

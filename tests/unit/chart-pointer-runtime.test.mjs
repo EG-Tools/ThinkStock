@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import {
   createHoverIdleController,
   dispatchNativeHoverAtPoint,
+  pointerEventInsideElement,
 } from "../../docs/modules/chart-pointer-runtime.mjs";
 
 const context = { clearTimeout, setTimeout };
@@ -99,6 +100,14 @@ test("idle hover replays one native mouse move at the last pointer position", ()
   assert.equal(events[0].type, "mousemove");
   assert.equal(events[0].clientX, 120);
   assert.equal(events[0].clientY, 240);
+});
+
+test("render-time pointer leave keeps the cursor when the pointer is still inside", () => {
+  const element = {
+    getBoundingClientRect: () => ({ left: 10, right: 210, top: 20, bottom: 120 }),
+  };
+  assert.equal(pointerEventInsideElement({ clientX: 100, clientY: 80 }, element), true);
+  assert.equal(pointerEventInsideElement({ clientX: 220, clientY: 80 }, element), false);
 });
 
 test("each chart uses one pointer-move pipeline for cursor and idle hover work", async () => {

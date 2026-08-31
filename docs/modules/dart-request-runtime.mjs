@@ -264,6 +264,25 @@
       return results.reduce((count, result) => count + (result?.rows?.length || 0), 0);
     }
 
+    async function restoreVisibleLayers(restoreOptions = {}) {
+      const result = {
+        disclosures: [],
+        insiderCount: 0,
+      };
+      // Restore one DART layer at a time so the shared progress view has one
+      // stable owner and the gateway is not flooded immediately after boot.
+      if (restoreOptions.disclosures === true) {
+        result.disclosures = await prepareVisibleDisclosures(restoreOptions.messageElement || null);
+      }
+      if (restoreOptions.insiders === true) {
+        result.insiderCount = await refreshVisibleInsiders({
+          ...(restoreOptions.insiderOptions || {}),
+          trackProgress: restoreOptions.trackProgress !== false,
+        });
+      }
+      return Object.freeze(result);
+    }
+
     function cancelScheduledInsiderRefresh() {
       if (!insiderRefreshTimer) return false;
       clearTimer(insiderRefreshTimer);
@@ -305,6 +324,7 @@
       pendingInsiderCount: () => pendingInsiders.size,
       prepareVisibleDisclosures,
       refreshVisibleInsiders,
+      restoreVisibleLayers,
       scheduleInsiderRefresh,
       setInsiderPending,
       snapshot: () => Object.freeze({

@@ -1,6 +1,7 @@
 "use strict";
 
   const MESSAGE_FADE_DURATION_MS = 2000;
+  const WHEEL_ZOOM_ANIMATION_MS = 96;
 
   function createChartNavigation(scope = globalThis, options = {}) {
     const viewport = options.viewport;
@@ -33,9 +34,26 @@
     let wheelRange = null;
     let wheelRangeHistory = [];
     let wheelRangeTimer = 0;
+    let wheelAnimationFrame = 0;
+    let wheelAnimationFrom = null;
+    let wheelAnimationCurrent = null;
+    let wheelAnimationTarget = null;
+    let wheelAnimationStartedAt = null;
+    const smoothWheelZoom = options.smoothWheelZoom === true
+      && typeof requestFrame === "function";
+
+    function cancelWheelAnimation() {
+      if (wheelAnimationFrame) cancelFrame?.(wheelAnimationFrame);
+      wheelAnimationFrame = 0;
+      wheelAnimationFrom = null;
+      wheelAnimationCurrent = null;
+      wheelAnimationTarget = null;
+      wheelAnimationStartedAt = null;
+    }
 
     function clearWheelRange() {
       if (wheelRangeTimer) clearTimer?.(wheelRangeTimer);
+      cancelWheelAnimation();
       wheelRangeTimer = 0;
       wheelRange = null;
       wheelRangeHistory = [];
@@ -67,6 +85,63 @@
       }, 220) || 0;
     }
 
+    function rememberWheelRenderedRange(range) {
+      if (!Array.isArray(range) || range.length < 2) return;
+      if (!wheelRangeHistory.some((item) => rangesMatch(item, range))) {
+        wheelRangeHistory.push([...range]);
+      }
+      if (wheelRangeHistory.length > 16) wheelRangeHistory = wheelRangeHistory.slice(-16);
+    }
+
+    function applyWheelRange(range, observedRange, source) {
+      if (!smoothWheelZoom) {
+        return options.applyRange(range[0], range[1], {
+          source,
+          fit: false,
+          liveFit: Boolean(options.isAutoScale?.()),
+        });
+      }
+      const startRange = wheelAnimationCurrent || observedRange;
+      if (!Array.isArray(startRange) || startRange.length < 2) return false;
+      wheelAnimationFrom = startRange.slice(0, 2).map(Number);
+      wheelAnimationCurrent = [...wheelAnimationFrom];
+      wheelAnimationTarget = range.slice(0, 2).map(Number);
+      wheelAnimationStartedAt = null;
+      if (wheelAnimationFrame) return true;
+
+      const step = (timestamp) => {
+        wheelAnimationFrame = 0;
+        if (!wheelAnimationFrom || !wheelAnimationTarget) return;
+        const beginsInteraction = wheelAnimationStartedAt === null;
+        if (beginsInteraction) wheelAnimationStartedAt = timestamp;
+        const progress = Math.min(1, Math.max(0, (timestamp - wheelAnimationStartedAt) / WHEEL_ZOOM_ANIMATION_MS));
+        const eased = 1 - ((1 - progress) ** 3);
+        const nextRange = [
+          wheelAnimationFrom[0] + ((wheelAnimationTarget[0] - wheelAnimationFrom[0]) * eased),
+          wheelAnimationFrom[1] + ((wheelAnimationTarget[1] - wheelAnimationFrom[1]) * eased),
+        ];
+        wheelAnimationCurrent = nextRange;
+        rememberWheelRenderedRange(nextRange);
+        const complete = progress >= 1;
+        options.applyRange(nextRange[0], nextRange[1], {
+          source,
+          fit: false,
+          liveFit: Boolean(options.isAutoScale?.()),
+          userInitiated: complete,
+          beginsInteraction,
+        });
+        if (!complete) wheelAnimationFrame = requestFrame(step);
+        else {
+          wheelAnimationFrom = null;
+          wheelAnimationCurrent = null;
+          wheelAnimationTarget = null;
+          wheelAnimationStartedAt = null;
+        }
+      };
+      wheelAnimationFrame = requestFrame(step);
+      return true;
+    }
+
     function showMessage(message, durationMs = 3000) {
       const element = options.getMessageElement?.();
       if (!element) return;
@@ -94,8 +169,15 @@
       return Boolean(options.isHistoryReady?.());
     }
 
-    async function ensureHistoryReady() {
-      if (historyReady()) return true;
+    async function ensureHistoryReady(refreshView = false) {
+      if (historyReady()) {
+        if (refreshView) {
+          await options.loadHistory?.();
+          const visibleRange = options.getCurrentRange(options.getElement());
+          await options.afterHistoryLoaded?.(visibleRange);
+        }
+        return true;
+      }
       if (historyPromise) return historyPromise;
       options.captureNormalization?.();
       const visibleRange = options.getCurrentRange(options.getElement());
@@ -143,14 +225,16 @@
         showMessage(direction > 0 ? messages.maximum : messages.minimum);
         return false;
       }
-      const applied = options.applyRange(nextRange[0], nextRange[1], {
-        source,
-        fit: false,
-        liveFit: Boolean(options.isAutoScale?.()),
-      });
+      const applied = source === "wheel-zoom"
+        ? applyWheelRange(nextRange, observedCurrentRange, source)
+        : options.applyRange(nextRange[0], nextRange[1], {
+          source,
+          fit: false,
+          liveFit: Boolean(options.isAutoScale?.()),
+        });
       if (source === "wheel-zoom" && applied !== false) rememberWheelRange(nextRange, observedCurrentRange);
       else clearWheelRange();
-      if (source !== "wheel-zoom") options.applyResetPolicy?.("viewport", 80);
+      if (source !== "wheel-zoom") options.applyResetPolicy?.("viewport");
       return true;
     }
 
@@ -176,6 +260,36 @@
       animationFrame = 0;
       if (wasActive) options.setViewportDragging?.(false);
       options.getElement()?.classList.remove("is-viewport-panning");
+      if (wasActive) options.applyResetPolicy?.("viewport");
+    }
+
+    function requestSettledRangeRender(
+      range,
+      source,
+      updateClass = "viewport",
+      reframeNormalization = false,
+    ) {
+      const requestedRange = Array.isArray(range) && range.length === 2
+        ? Object.freeze(range.slice(0, 2).map(Number))
+        : null;
+      rangeRenderPromise = Promise.resolve(options.requestRender?.({
+        preserveZoom: true,
+        range: requestedRange,
+        reason: source,
+        reframeNormalization,
+        updateClass,
+      })).catch((error) => {
+        options.onError?.(error);
+      });
+      return rangeRenderPromise;
+    }
+
+    function finalizeAnimatedRange(range, source, applied) {
+      if (applied === false) {
+        options.applyResetPolicy?.("viewport");
+        return Promise.resolve();
+      }
+      return requestSettledRangeRender(range, source, "viewport", true);
     }
 
     function showLatestPeriod(months, source = "range-preset") {
@@ -196,23 +310,23 @@
         ? Math.max(dataRange[0], requestedStart)
         : dataRange[0];
       options.updateActiveMonths?.(requestedMonths);
+      options.captureNormalization?.();
       const applied = options.applyRange(nextStart, dataRange[1], {
         source,
         fit: false,
         liveFit: Boolean(options.isAutoScale?.()),
       });
       if (applied !== false) {
-        rangeRenderPromise = Promise.resolve(options.requestRender?.({
-          preserveZoom: true,
-          range: Object.freeze([nextStart, dataRange[1]]),
-          reason: source,
-          // Presets can reveal data outside the auxiliary chart's buffered window.
-          updateClass: "viewport-range",
-        })).catch((error) => {
-          options.onError?.(error);
-        });
+        // Presets can reveal data outside the auxiliary chart's buffered window.
+        requestSettledRangeRender(
+          [nextStart, dataRange[1]],
+          source,
+          "viewport-range",
+          true,
+        );
+      } else {
+        options.applyResetPolicy?.("viewport");
       }
-      options.applyResetPolicy?.("viewport", 80);
       return true;
     }
 
@@ -227,12 +341,12 @@
 
       const distance = Math.abs(targetRange[0] - currentRange[0]);
       if (distance <= 1000) {
-        options.applyRange(targetRange[0], targetRange[1], {
+        const applied = options.applyRange(targetRange[0], targetRange[1], {
           source,
           fit: false,
           liveFit: Boolean(options.isAutoScale?.()),
         });
-        options.applyResetPolicy?.("viewport", 80);
+        finalizeAnimatedRange(targetRange, source, applied);
         return true;
       }
 
@@ -257,13 +371,14 @@
           : 1 - (((-2 * progress) + 2) ** 3) / 2;
         const start = currentRange[0] + ((targetRange[0] - currentRange[0]) * eased);
         const end = currentRange[1] + ((targetRange[1] - currentRange[1]) * eased);
-        options.applyRange(start, end, {
+        const complete = progress >= 1;
+        const applied = options.applyRange(start, end, {
           source,
           fit: false,
           liveFit: Boolean(options.isAutoScale?.()),
-          userInitiated: false,
+          userInitiated: complete,
         });
-        if (progress < 1) {
+        if (!complete) {
           animationFrame = requestFrame(step);
           return;
         }
@@ -271,12 +386,7 @@
         animationActive = false;
         options.setViewportDragging?.(false);
         element.classList.remove("is-viewport-panning");
-        options.applyRange(targetRange[0], targetRange[1], {
-          source,
-          fit: false,
-          liveFit: Boolean(options.isAutoScale?.()),
-        });
-        options.applyResetPolicy?.("viewport", 80);
+        finalizeAnimatedRange(targetRange, source, applied);
       };
 
       animationFrame = requestFrame(step);
@@ -288,6 +398,7 @@
       if (messageTimer) clearTimer?.(messageTimer);
       if (messageFadeTimer) clearTimer?.(messageFadeTimer);
       if (wheelRangeTimer) clearTimer?.(wheelRangeTimer);
+      cancelWheelAnimation();
       messageTimer = 0;
       messageFadeTimer = 0;
       wheelRangeTimer = 0;

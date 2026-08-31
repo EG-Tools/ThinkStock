@@ -24,3 +24,24 @@ test("captures visible series and source-aware latest tolerance before compositi
 test("does not capture composition state while automatic scaling is off", () => {
   assert.equal(viewport.captureCompositionViewport({ autoScale: false }), null);
 });
+
+test("captures the full series lifetime instead of the rendered viewport slice", () => {
+  const captured = viewport.captureCompositionViewport({
+    autoScale: true,
+    element: { data: [{
+      mode: "lines",
+      x: ["2026-07-01", "2026-08-01"],
+      meta: {
+        seriesKey: "005930.KS",
+        fullDataStartMs: Date.parse("2000-01-01"),
+        fullDataEndMs: Date.parse("2026-08-10"),
+      },
+    }] },
+    getViewRange: () => [Date.parse("2026-07-01"), Date.parse("2026-08-01")],
+  });
+
+  assert.deepEqual(captured.dataRange, [
+    Date.parse("2000-01-01"),
+    Date.parse("2026-08-10"),
+  ]);
+});

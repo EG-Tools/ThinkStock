@@ -9,6 +9,8 @@ import marketData from "./market-data.mjs";
     value != null && Number.isFinite(Number(value)) ? Number(value) : null
   );
   const numberFormat = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 4 });
+  const ADDITIVE_NORMALIZED_SERIES = Object.freeze(["t10y1y", "us_credit_spread"]);
+  const additiveNormalizedSeries = new Set(ADDITIVE_NORMALIZED_SERIES);
   const dependencyModules = Object.freeze({ marketData, adjustments, displaySampler });
 
   function dependencies() {
@@ -21,6 +23,13 @@ import marketData from "./market-data.mjs";
 
   function labelName(key, displayNames) {
     return displayNames?.[key] || key;
+  }
+
+  function resolvePreservedFrameRange(pinnedRange, currentRange, toMilliseconds = Date.parse) {
+    const pinned = Array.isArray(pinnedRange) && pinnedRange.length === 2
+      ? pinnedRange.map(toMilliseconds)
+      : null;
+    return pinned?.every(Number.isFinite) ? pinned : currentRange;
   }
 
   function sortSeries(list, priorityOrder = [], displayNames = {}) {
@@ -257,9 +266,24 @@ import marketData from "./market-data.mjs";
     const visible = selected.filter((series) => !hidden.has(series));
     // Hidden series keep their trace slot for stable toggle behavior, but do not
     // pay the cost of normalizing and transforming decades of unused points.
-    const normBases = resolveNormalizationBases(frameRows, visible, payload.fixedNormBases);
+    const normalizationOptions = {
+      additiveSeries: ADDITIVE_NORMALIZED_SERIES,
+      centerCurrentRange: true,
+      frameEnd,
+      frameStart,
+      minimumTargetRange: 20,
+      postScaleBySeries: {
+        leading_cycle: adjustments.defaultScale("leading_cycle"),
+      },
+    };
+    const normBases = resolveNormalizationBases(
+      frameRows,
+      visible,
+      payload.fixedNormBases,
+      normalizationOptions,
+    );
     const autoScales = mergeFixedAutoScales(
-      autoFitScales(frameRows, visible, normBases),
+      autoFitScales(frameRows, visible, normBases, normalizationOptions),
       payload.fixedAutoScales,
     );
     const seriesModels = selected.map((series) => {
@@ -276,15 +300,24 @@ import marketData from "./market-data.mjs";
       }
       const rawValues = preparedDataset?.rawValuesFor(series)
         || rows.map((row) => toNum(row?.[series]));
-      const rawTexts = preparedDataset?.rawTextsFor(series)
-        || rawValues.map((value) => (Number.isFinite(value) ? numberFormat.format(value) : "N/A"));
+      const isAdditiveNormalized = additiveNormalizedSeries.has(series);
+      const rawTexts = isAdditiveNormalized
+        ? rawValues.map((value) => (
+          Number.isFinite(value) ? `${numberFormat.format(value)}%p` : "N/A"
+        ))
+        : (preparedDataset?.rawTextsFor(series)
+          || rawValues.map((value) => (Number.isFinite(value) ? numberFormat.format(value) : "N/A")));
       const base = normBases[series];
-      let baseValues = (base && base !== 0)
-        ? rawValues.map((value) => (Number.isFinite(value) ? (value / base) * 100 : null))
-        : normalizeSeries(rawValues);
+      let baseValues = isAdditiveNormalized
+        ? rawValues.map((value) => (
+          Number.isFinite(value) && Number.isFinite(base) ? 100 + value - base : null
+        ))
+        : ((base && base !== 0)
+          ? rawValues.map((value) => (Number.isFinite(value) ? (value / base) * 100 : null))
+          : normalizeSeries(rawValues));
       baseValues = centeredScale(
         baseValues,
-        series === "leading_cycle" ? 100 : (autoScales[series] || 100),
+        autoScales[series] || 100,
         true,
       );
       const values = transformValues(
@@ -330,6 +363,7 @@ import marketData from "./market-data.mjs";
     createMainChartSessionModel,
     mainChartCalcCacheKey,
     mainChartDatasetKey,
+    resolvePreservedFrameRange,
     sortedObjectSignature,
     sortSeries,
   });
@@ -340,6 +374,7 @@ export {
     createMainChartSessionModel,
     mainChartCalcCacheKey,
     mainChartDatasetKey,
+    resolvePreservedFrameRange,
     sortedObjectSignature,
     sortSeries,
 };

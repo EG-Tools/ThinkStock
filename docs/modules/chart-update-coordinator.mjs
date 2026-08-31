@@ -60,18 +60,408 @@
     return normalizeChartInvalidation(invalidation).plan.reuseEventMarkers;
   }
 
+  function numericRangeMatches(left, right, tolerance = 0.001) {
+    const a = Array.isArray(left) ? left.slice(0, 2).map(Number) : [];
+    const b = Array.isArray(right) ? right.slice(0, 2).map(Number) : [];
+    if (a.length !== 2 || b.length !== 2 || !a.every(Number.isFinite) || !b.every(Number.isFinite)) {
+      return false;
+    }
+    const span = Math.max(1, Math.abs(b[1] - b[0]));
+    return Math.abs(a[0] - b[0]) <= span * tolerance
+      && Math.abs(a[1] - b[1]) <= span * tolerance;
+  }
+
+  /** Couples the newest horizontal window and its fitted vertical range in one frame. */
+  function buildLiveViewportRangePayload(options = {}) {
+    const payload = { ...(options.payload || {}) };
+    if (options.enabled !== true || typeof options.fitRangeForTraces !== "function") {
+      return Object.freeze({ enabled: false, payload, fittedYRange: null, yChanged: false });
+    }
+    const fittedYRange = options.fitRangeForTraces(
+      Array.isArray(options.traces) ? options.traces : [],
+      options.xRange,
+      options.fitOptions || {},
+    );
+    if (!Array.isArray(fittedYRange) || fittedYRange.length < 2
+      || !fittedYRange.slice(0, 2).every(Number.isFinite)) {
+      return Object.freeze({ enabled: true, payload, fittedYRange: null, yChanged: false });
+    }
+    const range = fittedYRange.slice(0, 2).map(Number);
+    return Object.freeze({
+      enabled: true,
+      payload: {
+        ...payload,
+        "yaxis.range[0]": range[0],
+        "yaxis.range[1]": range[1],
+        "yaxis.autorange": false,
+      },
+      fittedYRange: Object.freeze(range),
+      yChanged: !numericRangeMatches(options.currentYRange, range),
+    });
+  }
+
+  function isVisibleRangeCompanion(element) {
+    return Boolean(
+      element
+      && !element.hidden
+      && Array.isArray(element.data)
+      && element.data.some((trace) => (
+        trace?.visible !== false
+        && trace?.visible !== "legendonly"
+        && Array.isArray(trace?.x)
+        && trace.x.length > 0
+      )),
+    );
+  }
+
+  function hasVisibleDatedDataInRange(element, range, selectTraces) {
+    const [start, end] = Array.isArray(range) ? range.slice(0, 2).map(Number) : [];
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return false;
+    const traces = typeof selectTraces === "function"
+      ? selectTraces(element?.data || [])
+      : element?.data || [];
+    return (Array.isArray(traces) ? traces : []).some((trace) => {
+      if (trace?.visible === false || trace?.visible === "legendonly") return false;
+      const dates = Array.isArray(trace?.x) ? trace.x : [];
+      const values = Array.isArray(trace?.y) ? trace.y : [];
+      return dates.some((date, index) => {
+        const timestamp = typeof date === "number" ? date : Date.parse(String(date || ""));
+        return timestamp >= start && timestamp <= end && Number.isFinite(Number(values[index]));
+      });
+    });
+  }
+
+  function stageTraceYUpdates(traces, traceIndexes, yUpdates) {
+    const source = Array.isArray(traces) ? traces : [];
+    const compacted = compactTraceYUpdates(traceIndexes, yUpdates);
+    if (!compacted.traceIndexes.length) {
+      return Object.freeze({
+        traceIndexes: Object.freeze([]),
+        traces: source,
+        yUpdates: Object.freeze([]),
+      });
+    }
+    const valuesByIndex = new Map(compacted.traceIndexes.map((traceIndex, index) => (
+      [traceIndex, compacted.yUpdates[index]]
+    )));
+    const staged = source.map((trace, traceIndex) => (
+      valuesByIndex.has(traceIndex)
+        ? { ...trace, y: valuesByIndex.get(traceIndex) }
+        : trace
+    ));
+    return Object.freeze({
+      traceIndexes: Object.freeze([...compacted.traceIndexes]),
+      traces: staged,
+      yUpdates: Object.freeze([...compacted.yUpdates]),
+    });
+  }
+
+  /** Builds one linked-chart relayout plan without coupling it to application state. */
+  function buildLinkedViewportRangePlan(options = {}) {
+    const mainElement = options.mainElement;
+    const companionElements = Array.isArray(options.companionElements)
+      ? options.companionElements
+      : [];
+    const [rangeStart, rangeEnd] = Array.isArray(options.xRange) ? options.xRange : [];
+    const payload = {
+      "xaxis.range[0]": rangeStart,
+      "xaxis.range[1]": rangeEnd,
+    };
+    const requestedTraceUpdates = options.traceYUpdates || {};
+    let stagedMain = stageTraceYUpdates(
+      mainElement?.data,
+      requestedTraceUpdates.traceIndexes,
+      requestedTraceUpdates.yUpdates,
+    );
+    const rangeChanged = (element) => Boolean(
+      element?.data
+      && options.xRangeMatches?.(element, rangeStart, rangeEnd) !== true
+    );
+    const liveFit = buildLiveViewportRangePayload({
+      enabled: Boolean(
+        mainElement?.data
+        && options.liveFit === true
+        && options.autoScale === true
+      ),
+      payload,
+      traces: options.rangeBearingTraces?.(stagedMain.traces) || [],
+      xRange: [rangeStart, rangeEnd],
+      currentYRange: mainElement?._fullLayout?.yaxis?.range,
+      fitRangeForTraces: options.fitRangeForTraces,
+      fitOptions: options.fitOptions,
+    });
+    if (liveFit.fittedYRange && typeof options.collectAnchoredYUpdates === "function") {
+      const anchored = options.collectAnchoredYUpdates(
+        { data: stagedMain.traces },
+        { viewportRange: liveFit.fittedYRange },
+      ) || { traceIndexes: [], yUpdates: [] };
+      if (anchored.traceIndexes?.length) {
+        stagedMain = stageTraceYUpdates(
+          mainElement?.data,
+          [...stagedMain.traceIndexes, ...anchored.traceIndexes],
+          [...stagedMain.yUpdates, ...anchored.yUpdates],
+        );
+      }
+    }
+    const companionVisibility = options.isCompanionVisible || isVisibleRangeCompanion;
+    const companionUpdates = companionElements.map((element) => Boolean(
+      companionVisibility(element) && rangeChanged(element)
+    ));
+    const needsMainDataRefresh = Boolean(
+      mainElement?.data
+      && rangeChanged(mainElement)
+      && liveFit.enabled
+      && !liveFit.fittedYRange
+    );
+    const updateMain = Boolean(mainElement?.data && (
+      rangeChanged(mainElement)
+      || liveFit.yChanged
+      || stagedMain.traceIndexes.length
+    ));
+    return Object.freeze({
+      any: updateMain || companionUpdates.some(Boolean),
+      companionUpdates: Object.freeze(companionUpdates),
+      liveFit,
+      mainPayload: liveFit.payload,
+      mainTraceIndexes: stagedMain.traceIndexes,
+      mainYUpdates: stagedMain.yUpdates,
+      needsMainDataRefresh,
+      updateMain,
+    });
+  }
+
+  /** Owns one linked viewport commit across the main chart and every visible companion. */
+  function createLinkedViewportFrameRuntime(options = {}) {
+    const updateRuntime = options.updateRuntime;
+    if (!updateRuntime?.relayoutMany || !updateRuntime?.relayout || !updateRuntime?.update) {
+      throw new Error("linked viewport update runtime is required");
+    }
+    const stats = {
+      requested: 0,
+      applied: 0,
+      skipped: 0,
+      mainUpdates: 0,
+      companionUpdates: 0,
+      dataRefreshes: 0,
+    };
+
+    async function apply(request = {}) {
+      const startMs = Number(request.startMs);
+      const endMs = Number(request.endMs);
+      const meta = request.meta || {};
+      if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+        stats.skipped += 1;
+        return Object.freeze({ applied: false, reason: "invalid-range" });
+      }
+      stats.requested += 1;
+      await options.beforeApply?.({ startMs, endMs, meta });
+      const requestContext = { startMs, endMs, meta };
+      const isRequestCurrent = () => options.isRequestCurrent?.(requestContext) !== false;
+      if (!isRequestCurrent()) {
+        stats.skipped += 1;
+        return Object.freeze({ applied: false, reason: "stale-request" });
+      }
+
+      const mainElement = options.getMainElement?.() || null;
+      const companionElements = (options.getCompanionElements?.() || []).filter(Boolean);
+      const formatRangeValue = options.formatRangeValue || ((value) => new Date(value).toISOString());
+      const xRange = [formatRangeValue(startMs), formatRangeValue(endMs)];
+      const traceYUpdates = options.collectTraceYUpdates?.(mainElement, xRange, meta)
+        || { seriesUpdates: [], traceIndexes: [], yUpdates: [] };
+      const plan = buildLinkedViewportRangePlan({
+        mainElement,
+        companionElements,
+        xRange,
+        xRangeMatches: options.xRangeMatches,
+        liveFit: Boolean(meta.liveFit),
+        autoScale: options.isAutoScale?.() === true,
+        rangeBearingTraces: options.rangeBearingTraces,
+        fitRangeForTraces: options.fitRangeForTraces,
+        fitOptions: options.fitOptions,
+        traceYUpdates,
+        collectAnchoredYUpdates: options.collectAnchoredYUpdates,
+        isCompanionVisible: options.isCompanionVisible,
+      });
+      if (!plan.any) {
+        stats.skipped += 1;
+        return Object.freeze({ applied: false, plan, traceYUpdates });
+      }
+      if (!isRequestCurrent()) {
+        stats.skipped += 1;
+        return Object.freeze({ applied: false, plan, traceYUpdates, reason: "stale-request" });
+      }
+
+      const rangePayload = {
+        "xaxis.range[0]": xRange[0],
+        "xaxis.range[1]": xRange[1],
+      };
+      const companionEntries = plan.companionUpdates.flatMap((shouldUpdate, index) => {
+        if (!shouldUpdate) return [];
+        const element = companionElements[index];
+        const payload = options.buildCompanionPayload?.(element, rangePayload) || rangePayload;
+        return [{ element, payload }];
+      });
+      const applyCompanions = () => (
+        companionEntries.length
+          ? updateRuntime.relayoutMany(companionEntries, {
+              label: options.companionLabel || "viewport-range-sync-companions",
+            })
+          : Promise.resolve([])
+      );
+
+      if (plan.needsMainDataRefresh) {
+        stats.dataRefreshes += 1;
+        stats.companionUpdates += companionEntries.length;
+        options.requestMainDataRefresh?.({ xRange, meta, plan });
+        await applyCompanions();
+        return Object.freeze({
+          applied: true,
+          mainDataRefresh: true,
+          plan,
+          traceYUpdates,
+        });
+      }
+
+      options.beforeMainUpdate?.({ mainElement, plan, traceYUpdates, xRange, meta });
+      const updates = [applyCompanions()];
+      if (plan.updateMain) {
+        if (plan.mainTraceIndexes.length) {
+          updates.push(updateRuntime.update(
+            mainElement,
+            { y: plan.mainYUpdates },
+            plan.mainPayload,
+            plan.mainTraceIndexes,
+            { label: options.mainFrameLabel || "viewport-range-sync-main-frame" },
+          ));
+        } else {
+          updates.push(updateRuntime.relayout(mainElement, plan.mainPayload, {
+            label: options.mainLabel || "viewport-range-sync-main",
+          }));
+        }
+      }
+      await Promise.all(updates);
+      stats.applied += 1;
+      stats.mainUpdates += plan.updateMain ? 1 : 0;
+      stats.companionUpdates += companionEntries.length;
+      await options.afterCommit?.({
+        mainElement,
+        companionElements,
+        plan,
+        traceYUpdates,
+        xRange,
+        meta,
+      });
+      return Object.freeze({ applied: true, plan, traceYUpdates });
+    }
+
+    return Object.freeze({
+      apply,
+      stats: () => Object.freeze({ ...stats }),
+    });
+  }
+
+  /** Finalizes one viewport interaction without allowing an older transaction to win. */
+  async function settleViewportRenderTransaction(options = {}) {
+    const requestedRange = Array.isArray(options.requestedRange)
+      ? options.requestedRange.slice(0, 2).map(Number)
+      : null;
+    const hasRange = requestedRange?.length === 2
+      && requestedRange.every(Number.isFinite)
+      && requestedRange[1] > requestedRange[0];
+    const ownerRevision = options.interactionRevision;
+    const isCurrent = () => ownerRevision === options.getInteractionRevision?.();
+    let rendered = false;
+    let corrected = false;
+    let normalizationReleased = false;
+    try {
+      await options.rangeController?.flush?.();
+      if (!isCurrent()) return { rendered, corrected, stale: true };
+      if (hasRange) options.setPinnedRange?.(requestedRange);
+      const reframeNormalization = hasRange && options.reframeNormalization === true;
+      if (reframeNormalization) {
+        options.releaseNormalization?.();
+        normalizationReleased = true;
+      }
+      const needsRender = Boolean(
+        hasRange
+        && (
+          reframeNormalization
+          ||
+          options.viewportWindowController?.needsRefresh?.(requestedRange[0], requestedRange[1])
+          || !hasVisibleDatedDataInRange(
+            options.mainElement,
+            requestedRange,
+            options.rangeBearingTraces,
+          )
+        ),
+      );
+      if (needsRender) {
+        options.viewportWindowController?.cancelScheduled?.();
+        options.requestRender?.({
+          preserveZoom: options.preserveZoom !== false,
+          reason: options.reason || "viewport-settle",
+          updateClass: options.updateClass || "viewport",
+        });
+        rendered = true;
+      }
+      await options.whenRenderSettled?.();
+      if (!isCurrent()) return { rendered, corrected, stale: true };
+      if (reframeNormalization && rendered) await options.fitAfterRender?.();
+      if (!isCurrent()) return { rendered, corrected, stale: true };
+
+      const currentRange = options.getCurrentRange?.();
+      const tolerance = hasRange
+        ? Math.max(1000, (requestedRange[1] - requestedRange[0]) * 0.00001)
+        : 1000;
+      const mismatch = hasRange && !currentRange?.every((value, index) => (
+        Math.abs(Number(value) - requestedRange[index]) <= tolerance
+      ));
+      if (mismatch) {
+        options.rangeController?.schedule?.(requestedRange[0], requestedRange[1], {
+          source: `${options.reason || "viewport-settle"}-correction`,
+          fit: false,
+          liveFit: options.liveFit === true,
+          userInitiated: false,
+          interactionRevision: ownerRevision,
+        });
+        await options.rangeController?.flush?.();
+        corrected = true;
+      }
+      // The main window may have refreshed during the interaction already.  In
+      // that case `rendered` is false here, but companion traces can still be
+      // backed by the previous buffered window.  Let the companion owner check
+      // its own coverage instead of coupling that decision to the main chart.
+      if (options.refreshCompanions === true) await options.refreshCompanionsNow?.();
+      else options.flushCoMovement?.();
+      return { rendered, corrected, stale: false };
+    } finally {
+      if (isCurrent() && !normalizationReleased) options.releaseNormalization?.();
+    }
+  }
+
   function createMainChartRenderGuard(options = {}) {
     const aiRevision = options.getAiRevision?.();
     const viewportRevision = options.getViewportRevision?.();
-    const viewportSignature = options.getViewportSignature?.();
+    let viewportSignature = options.getViewportSignature?.();
     const aiChanged = () => aiRevision !== options.getAiRevision?.();
     const viewportChanged = () => (
       viewportRevision !== options.getViewportRevision?.()
       || viewportSignature !== options.getViewportSignature?.()
     );
+    let viewportWindowPrepared = false;
+    let viewportWindowCommitted = false;
+
+    function discardViewportWindow() {
+      if (viewportWindowPrepared && !viewportWindowCommitted) {
+        options.invalidateViewportWindow?.();
+      }
+      viewportWindowPrepared = false;
+      viewportWindowCommitted = false;
+    }
 
     function queueCurrentViewportRender() {
       if (!viewportChanged()) return false;
+      discardViewportWindow();
       options.onViewportChanged?.();
       options.requestViewportRender?.();
       return true;
@@ -81,12 +471,44 @@
       return aiChanged() || viewportChanged() || Boolean(invalidation.shouldAbort?.());
     }
 
+    function abortPreparedFrame(invalidation = {}) {
+      const abort = shouldAbort(invalidation);
+      const queued = queueCurrentViewportRender();
+      if (abort && !queued) discardViewportWindow();
+      return abort || queued;
+    }
+
+    function acceptRenderedViewport() {
+      if (viewportRevision !== options.getViewportRevision?.()) return false;
+      viewportSignature = options.getViewportSignature?.();
+      return true;
+    }
+
     return Object.freeze({
+      acceptRenderedViewport,
+      abortPreparedFrame,
       aiChanged,
+      commitViewportWindow: () => {
+        viewportWindowPrepared = true;
+        viewportWindowCommitted = true;
+      },
+      discardViewportWindow,
+      prepareViewportWindow: () => {
+        viewportWindowPrepared = true;
+        viewportWindowCommitted = false;
+      },
       queueCurrentViewportRender,
       shouldAbort,
       viewportChanged,
     });
+  }
+
+  function acceptPlannedViewportRender(renderGuard, element, viewportPlan, rangeMatches) {
+    const range = viewportPlan?.savedXRange || viewportPlan?.defaultXRange;
+    return Array.isArray(range)
+      && range.length === 2
+      && rangeMatches?.(element, range[0], range[1]) === true
+      && renderGuard?.acceptRenderedViewport?.() === true;
   }
 
   function createReusableMainChartTracePlan(element, renderer, invalidation = {}, options = {}) {
@@ -126,11 +548,22 @@
     const eventTraces = reuseEventMarkers
       ? traces.filter((trace) => renderer.isEventMarkerTrace(trace))
       : null;
-    const groupedHoverTraces = deferOverlays
-      ? traces.filter((trace) => (
+    const desiredHoverOrder = (Array.isArray(options.hoverSeriesOrder)
+      ? options.hoverSeriesOrder
+      : options.activeSeries || [])
+      .map(String)
+      .filter((series) => activeSeries.has(series) && !hiddenSeries.has(series));
+    const reusableGroupedHoverTraces = traces.filter((trace) => (
           renderer.chartOverlayDescriptor(trace).kind === "grouped-hover"
           && ownerIsActive(trace)
-        ))
+        ));
+    const reusableHoverOrder = reusableGroupedHoverTraces.map((trace) => (
+      String(trace?.meta?.hoverGroupTicker || "")
+    ));
+    const groupedHoverOrderMatches = desiredHoverOrder.length === reusableHoverOrder.length
+      && desiredHoverOrder.every((series, index) => series === reusableHoverOrder[index]);
+    const groupedHoverTraces = deferOverlays && groupedHoverOrderMatches
+      ? reusableGroupedHoverTraces
       : null;
     const baseValuesBySeries = options.baseValuesBySeries || {};
     const epsTraceModel = reuseFutureOverlays && options.showEps
@@ -191,6 +624,7 @@
         deferOverlays: compositionOptions.deferOverlays,
         hasPendingEvents: compositionOptions.hasPendingEvents,
         hiddenSeries: compositionOptions.hiddenSeries,
+        hoverSeriesOrder: compositionOptions.hoverSeriesOrder,
         showEps: viewport.showEps,
       },
     );
@@ -200,9 +634,13 @@
       hiddenSeries: compositionOptions.hiddenSeries,
       lineTraceType: compositionOptions.lineTraceType,
       hoverShowPopup: compositionOptions.hoverShowPopup,
+      hoverLabelName: compositionOptions.hoverLabelName,
+      hoverSeriesOrder: compositionOptions.hoverSeriesOrder,
       labelName: compositionOptions.labelName,
       renderRevision: compositionOptions.renderRevision,
       seriesColor: compositionOptions.seriesColor,
+      seriesOrder: compositionOptions.seriesOrder,
+      stackedPriceSeries: compositionOptions.stackedPriceSeries,
       prebuiltEpsTraceModel: reusable.epsTraceModel,
       prebuiltAiForecastTraces: reusable.reuseFutureOverlays && viewport.showAiForecast
         ? reusable.aiForecastTraces
@@ -251,9 +689,10 @@
       futureRevealLatestToleranceMs: viewport.futureRevealLatestToleranceMs,
       toMilliseconds: viewport.toMilliseconds,
     });
+    const fittedViewportRange = viewportPlan.savedXRange || viewportPlan.defaultXRange;
     const fittedDefaultYRange = viewportPlan.savedYRange ? null : viewport.fitRangeForTraces(
       composition.traces.filter((trace) => Number.isFinite(trace?.meta?.sourcePointCount)),
-      viewportPlan.defaultXRange,
+      fittedViewportRange,
       { paddingRatio: 0.08, minimumPadding: 0.6 },
     );
     const longRangeTicks = renderer.buildLongRangeTicks({
@@ -370,7 +809,6 @@
       ) === true;
     if (needsDelayedFit) {
       session.pendingAutoChartFit = true;
-      session.pendingAutoChartFitExpandOnly = false;
     }
     return Object.freeze({
       delayedScaleTraceCount: delayedScaleTraces.length,
@@ -390,6 +828,7 @@
   function createPlotlyUpdateRuntime(scope = globalThis, options = {}) {
     let activeOperations = 0;
     const pendingRelayouts = new WeakMap();
+    const elementOperationTails = new WeakMap();
     const stats = {
       relayoutCalls: 0,
       coalescedRelayoutCalls: 0,
@@ -419,6 +858,28 @@
       }).join("|");
     }
 
+    function enqueueElementOperation(element, operation) {
+      if (!element || typeof operation !== "function") return Promise.resolve(undefined);
+      const previous = elementOperationTails.get(element);
+      let task;
+      if (previous) {
+        task = Promise.resolve(previous)
+          .catch(() => undefined)
+          .then(operation);
+      } else {
+        try {
+          task = Promise.resolve(operation());
+        } catch (error) {
+          task = Promise.reject(error);
+        }
+      }
+      elementOperationTails.set(element, task);
+      task.finally(() => {
+        if (elementOperationTails.get(element) === task) elementOperationTails.delete(element);
+      }).catch(() => {});
+      return task;
+    }
+
     function relayoutElement(engine, element, payload) {
       const signature = payloadSignature(payload);
       const pending = pendingRelayouts.get(element);
@@ -426,7 +887,7 @@
         stats.coalescedRelayoutCalls += 1;
         return pending.promise;
       }
-      const promise = Promise.resolve(engine.relayout(element, payload));
+      const promise = enqueueElementOperation(element, () => engine.relayout(element, payload));
       const state = { promise, signature };
       pendingRelayouts.set(element, state);
       promise.finally(() => {
@@ -447,6 +908,10 @@
       } finally {
         finish();
       }
+    }
+
+    function runElement(label, element, operation) {
+      return run(label, () => enqueueElementOperation(element, operation));
     }
 
     /** @param {PlotlyRelayoutEntry[]} entries */
@@ -486,7 +951,7 @@
       const engine = plotly();
       if (!element?.data || typeof engine?.restyle !== "function") return undefined;
       stats.restyleCalls += 1;
-      return run(runtimeOptions.label || "restyle", () => (
+      return runElement(runtimeOptions.label || "restyle", element, () => (
         engine.restyle(element, dataUpdate, traceIndexes)
       ));
     }
@@ -495,7 +960,7 @@
       const engine = plotly();
       if (!element?.data || typeof engine?.update !== "function") return undefined;
       stats.updateCalls += 1;
-      return run(runtimeOptions.label || "update", () => (
+      return runElement(runtimeOptions.label || "update", element, () => (
         engine.update(element, dataUpdate, layoutUpdate, traceIndexes)
       ));
     }
@@ -506,6 +971,7 @@
       relayoutMany,
       restyle,
       run,
+      runElement,
       stats: () => Object.freeze({ ...stats, activeOperations }),
       update,
     });
@@ -954,7 +1420,10 @@
             completedTransactionId = Math.max(completedTransactionId, nextInvalidation.transactionId);
             activeTransaction = null;
             if (!renderAfterFlight) {
-              await options.afterBatch?.();
+              await options.afterBatch?.({
+                invalidation: nextInvalidation,
+                preserveZoom: nextPreserveZoom,
+              });
               break;
             }
             if (yieldBetweenTransactions) {
@@ -1075,7 +1544,10 @@
   function createMainChartRenderRuntime(scope = globalThis, options = {}) {
     const renderer = options.renderer;
     const updateRuntime = options.updateRuntime;
-    if (!renderer?.render || typeof updateRuntime?.run !== "function") {
+    if (!renderer?.render || (
+      typeof updateRuntime?.runElement !== "function"
+      && typeof updateRuntime?.run !== "function"
+    )) {
       throw new Error("main chart render runtime dependencies are incomplete");
     }
 
@@ -1085,7 +1557,10 @@
       const telemetryToken = telemetryEnabled
         ? options.telemetry?.begin?.(invalidation, traces)
         : null;
-      const result = await updateRuntime.run(
+      const runUpdate = typeof updateRuntime.runElement === "function"
+        ? (label, operation) => updateRuntime.runElement(label, element, operation)
+        : (label, operation) => updateRuntime.run(label, operation);
+      const result = await runUpdate(
         "main-chart-render",
         () => renderer.render(
           options.getPlotly?.() || scope.Plotly,
@@ -1125,7 +1600,9 @@
       const commitFrame = seriesUpdates.some((item) => item?.commit === true);
       seriesUpdates.forEach(({ seriesKey, traceIndex: preferredIndex }) => {
         const traceIndex = options.resolveTraceIndex?.(element, seriesKey, preferredIndex) ?? -1;
-        const nextY = options.computeValues?.(seriesKey, traceIndex, element);
+        const computedUpdate = options.computeSeriesUpdate?.(seriesKey, traceIndex, element) || null;
+        const nextY = computedUpdate?.nextY
+          || options.computeValues?.(seriesKey, traceIndex, element);
         if (traceIndex < 0 || !nextY) return;
         if (frame.markers && !seriesKey.startsWith("eps:")) {
           const markerUpdate = options.collectMarkerUpdates?.(element, {
@@ -1136,11 +1613,13 @@
           traceIndexes.push(...markerUpdate.traceIndexes);
           yUpdates.push(...markerUpdate.yUpdates);
         }
-        const linkedUpdate = options.collectLinkedTraceUpdates?.(element, {
-          seriesKey,
-          sourceTraceIndex: traceIndex,
-          nextY,
-        }) || { traceIndexes: [], yUpdates: [] };
+        const linkedUpdate = computedUpdate?.linkedUpdate
+          || options.collectLinkedTraceUpdates?.(element, {
+            seriesKey,
+            sourceTraceIndex: traceIndex,
+            nextY,
+          })
+          || { traceIndexes: [], yUpdates: [] };
         traceIndexes.push(...linkedUpdate.traceIndexes);
         yUpdates.push(...linkedUpdate.yUpdates);
         traceIndexes.push(traceIndex);
@@ -1393,10 +1872,17 @@
   }
 
 export {
+  acceptPlannedViewportRender,
   applyMainChartViewportPlan,
   canReuseEventMarkerTraces,
   canReuseFutureOverlayTraces,
   buildMainChartRenderFrame,
+  buildLiveViewportRangePayload,
+  buildLinkedViewportRangePlan,
+  createLinkedViewportFrameRuntime,
+  hasVisibleDatedDataInRange,
+  isVisibleRangeCompanion,
+  settleViewportRenderTransaction,
   compactTraceYUpdates,
   createMainChartRenderGuard,
   createMainChartRenderRuntime,

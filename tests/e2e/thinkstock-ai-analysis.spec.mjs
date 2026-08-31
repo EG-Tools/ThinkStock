@@ -225,22 +225,49 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
       const rect = element.getBoundingClientRect();
       const range = (xAxis?.range || []).map(Date.parse);
       const midpoint = (range[0] + range[1]) / 2;
+      const priorityPoints = (element.data || []).flatMap((trace) => {
+        const isPriorityMarker = trace?.meta?.isCrisisSignalTrace
+          || trace?.meta?.isMarketTimingBuyTrace
+          || trace?.meta?.isMarketTimingSellTrace
+          || trace?.meta?.isInsiderTradeTrace
+          || trace?.meta?.isDisclosureTrace
+          || trace?.meta?.isAiReportMarkerTrace;
+        if (!isPriorityMarker) return [];
+        return (trace.x || []).flatMap((date, index) => {
+          const x = xAxis?._offset + xAxis?.d2p?.(date);
+          const y = yAxis?._offset + yAxis?.l2p?.(Number(trace.y?.[index]));
+          return Number.isFinite(x) && Number.isFinite(y) ? [{ x, y }] : [];
+        });
+      });
+      const firstForecastMs = Math.min(...(element.data || [])
+        .filter((trace) => trace?.meta?.isAiForecastScenarioTrace)
+        .flatMap((trace) => trace.x || [])
+        .map(Date.parse)
+        .filter(Number.isFinite));
       const candidates = (priceTrace?.x || []).flatMap((date, index) => {
         const time = Date.parse(date);
         const value = Number(priceTrace?.y?.[index]);
-        return Number.isFinite(time) && Number.isFinite(value)
-          && time >= range[0] && time <= range[1]
-          ? [{ index, distance: Math.abs(time - midpoint) }]
-          : [];
+        if (!Number.isFinite(time) || !Number.isFinite(value)
+          || time < range[0] || time > range[1]) return [];
+        const x = xAxis._offset + xAxis.d2p(date);
+        const y = yAxis._offset + yAxis.l2p(value);
+        const markerClearance = priorityPoints.length
+          ? Math.min(...priorityPoints.map((point) => Math.hypot(x - point.x, y - point.y)))
+          : Number.POSITIVE_INFINITY;
+        return [{ index, time, x, y, markerClearance, distance: Math.abs(time - midpoint) }];
       }).sort((left, right) => left.distance - right.distance);
-      const pointIndex = candidates[0]?.index ?? -1;
+      const candidate = candidates.find((item) => (
+        item.markerClearance > 32
+        && (!Number.isFinite(firstForecastMs) || item.time < firstForecastMs - (10 * 86400000))
+      )) || candidates.find((item) => item.markerClearance > 32) || candidates[0];
+      const pointIndex = candidate?.index ?? -1;
       if (priceTraceIndex < 0 || pointIndex < 0 || !xAxis || !yAxis) return null;
       return {
         seriesKey,
         priceTraceIndex,
         pointIndex,
-        x: rect.left + xAxis._offset + xAxis.d2p(priceTrace.x[pointIndex]),
-        y: rect.top + yAxis._offset + yAxis.l2p(Number(priceTrace.y[pointIndex])),
+        x: rect.left + candidate.x,
+        y: rect.top + candidate.y,
         priceBefore: Number(priceTrace.y[pointIndex]),
         scenarioBefore: (element.data || [])
           .filter((trace) => trace?.meta?.isAiForecastScenarioTrace
@@ -274,6 +301,7 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
       Math.abs(delta - linkedMovement.priceDelta) < 0.05
     ))).toBe(true);
   await page.mouse.up();
+  await waitForChartRenderIdle(page);
   const observedEnd = await page.locator("#chart").evaluate((element) => Math.max(
     ...(element.data || [])
       .filter((trace) => !trace?.meta?.isAiForecastScenarioTrace && Array.isArray(trace?.x))
@@ -356,8 +384,43 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
     const previousStart = await page.locator("#chart").evaluate((element) => (
       Date.parse(element?._fullLayout?.xaxis?.range?.[0])
     ));
+    const gestureY = await page.locator("#chart").evaluate((element, clientX) => {
+      const rect = element.getBoundingClientRect();
+      const xAxis = element._fullLayout.xaxis;
+      const yAxis = element._fullLayout.yaxis;
+      const localX = clientX - rect.left - xAxis._offset;
+      const targetTime = Date.parse(xAxis.p2d(localX));
+      const occupiedY = (element.data || []).flatMap((trace) => {
+        if (trace?.visible === "legendonly" || !Array.isArray(trace?.x) || !Array.isArray(trace?.y)) return [];
+        const points = trace.x.flatMap((date, index) => {
+          const time = Date.parse(date);
+          const value = Number(trace.y[index]);
+          return Number.isFinite(time) && Number.isFinite(value) ? [{ time, value }] : [];
+        }).sort((left, right) => left.time - right.time);
+        if (!points.length || targetTime < points[0].time || targetTime > points.at(-1).time) return [];
+        let right = points.findIndex((point) => point.time >= targetTime);
+        if (right < 0) return [];
+        let value = points[right].value;
+        if (points[right].time !== targetTime && right > 0) {
+          const left = points[right - 1];
+          const span = points[right].time - left.time;
+          if (span > 0) value = left.value + ((value - left.value) * (targetTime - left.time) / span);
+        }
+        const pixel = Number(yAxis.l2p(value));
+        return Number.isFinite(pixel) ? [pixel] : [];
+      });
+      const localY = [0.08, 0.2, 0.35, 0.5, 0.65, 0.8, 0.92]
+        .map((ratio) => yAxis._length * ratio)
+        .sort((left, right) => {
+          const clearance = (value) => occupiedY.length
+            ? Math.min(...occupiedY.map((occupied) => Math.abs(occupied - value)))
+            : yAxis._length;
+          return clearance(right) - clearance(left);
+        })[0];
+      return rect.top + yAxis._offset + localY;
+    }, fromX);
     if (isMobile) {
-      await page.locator("#chart").evaluate((element, gesture) => {
+      await page.locator("#chart").evaluate(async (element, gesture) => {
         const pointerId = 181;
         const dispatch = (target, type, x, buttons) => target.dispatchEvent(new PointerEvent(type, {
           bubbles: true,
@@ -372,13 +435,14 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
         dispatch(element, "pointerdown", gesture.fromX, 1);
         for (let step = 1; step <= 6; step += 1) {
           dispatch(window, "pointermove", gesture.fromX + ((gesture.toX - gesture.fromX) * step / 6), 1);
+          await new Promise(requestAnimationFrame);
         }
         dispatch(window, "pointerup", gesture.toX, 0);
-      }, { fromX, toX, y: panState.y });
+      }, { fromX, toX, y: gestureY });
     } else {
-      await page.mouse.move(fromX, panState.y);
+      await page.mouse.move(fromX, gestureY);
       await page.mouse.down();
-      await page.mouse.move(toX, panState.y, { steps: 6 });
+      await page.mouse.move(toX, gestureY, { steps: 6 });
       await page.mouse.up();
     }
     await expect.poll(() => page.locator("#chart").evaluate((element) => (
@@ -587,6 +651,8 @@ test("AI forecast opens for the first enabled series and stays stable while brow
       activeMonths: 120,
       hiddenSeries: [
         "leading_cycle",
+        "t10y1y",
+        "us_credit_spread",
         "^KS11",
         "^KQ11",
         "customer_deposit",
@@ -765,7 +831,15 @@ test("enabling KOSDAQ while AI is active calculates only the new index", async (
   await page.addInitScript(() => {
     localStorage.setItem("thinkstock-v5", JSON.stringify({
       activeMonths: 12,
-      hiddenSeries: ["^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit"],
+      hiddenSeries: [
+        "leading_cycle",
+        "t10y1y",
+        "us_credit_spread",
+        "^KQ11",
+        "customer_deposit",
+        "kospi_credit",
+        "kosdaq_credit",
+      ],
       customStocks: [],
     }));
   });
@@ -927,6 +1001,20 @@ test("market timing applies to a visible stock series", async ({ page }) => {
       .flatMap((trace) => trace.customdata || [])
       .some((row) => row?.[0] === "삼성전자")
   ))).toBe(true);
+  const historicalMarkerCoverage = await page.locator("#chart").evaluate((element) => {
+    const viewportStart = Date.parse(element?._fullLayout?.xaxis?.range?.[0] || "");
+    const markerDates = (element.data || [])
+      .filter((trace) => trace?.meta?.isMarketTimingBuyTrace || trace?.meta?.isMarketTimingSellTrace)
+      .flatMap((trace) => trace.x || [])
+      .map((date) => Date.parse(date))
+      .filter(Number.isFinite);
+    return {
+      markerCount: markerDates.length,
+      hasMarkerBeforeViewport: markerDates.some((date) => date < viewportStart),
+    };
+  });
+  expect(historicalMarkerCoverage.markerCount).toBeGreaterThan(1);
+  expect(historicalMarkerCoverage.hasMarkerBeforeViewport).toBe(true);
   const timingMarkerStyles = await page.locator("#chart").evaluate((element) => (
     (element.data || [])
       .filter((trace) => trace?.meta?.isMarketTimingBuyTrace || trace?.meta?.isMarketTimingSellTrace)
@@ -941,6 +1029,26 @@ test("market timing applies to a visible stock series", async ({ page }) => {
     const gaps = await page.evaluate(() => window.ThinkStockE2E.getTimingMarkerPixelGaps());
     return gaps.length ? Math.max(...gaps) : Number.POSITIVE_INFINITY;
   };
+
+  await page.locator("#apiOptionsBtn").click();
+  await page.locator("#chartRightPaddingIncrease").evaluate((button) => {
+    for (let index = 0; index < 5; index += 1) button.click();
+  });
+  await expect(page.locator("#chartRightPaddingValue")).toHaveText("5");
+  const fiveDayMarkerGaps = await page.evaluate(() => window.ThinkStockE2E.getTimingMarkerPixelGaps());
+  expect(fiveDayMarkerGaps.length).toBeGreaterThan(0);
+  await page.locator("#chartRightPaddingIncrease").evaluate((button) => {
+    for (let index = 0; index < 5; index += 1) button.click();
+  });
+  await expect(page.locator("#chartRightPaddingValue")).toHaveText("10");
+  await expect.poll(async () => {
+    const gaps = await page.evaluate(() => window.ThinkStockE2E.getTimingMarkerPixelGaps());
+    if (gaps.length !== fiveDayMarkerGaps.length) return Number.POSITIVE_INFINITY;
+    return gaps.reduce((maximum, value, index) => (
+      Math.max(maximum, Math.abs(value - fiveDayMarkerGaps[index]))
+    ), 0);
+  }).toBeLessThan(0.5);
+  await page.locator("#apiSettingsCloseBtn").click();
 
   await page.locator("#aiForecastToggle").click();
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
@@ -1095,7 +1203,9 @@ test("timing hover wraps reasons and its shared hit area opens the popover", asy
 
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const traceIndex = (element.data || []).findIndex((trace) => (
-      trace?.meta?.isMarketTimingBuyTrace || trace?.meta?.isMarketTimingSellTrace
+      (trace?.meta?.isMarketTimingBuyTrace || trace?.meta?.isMarketTimingSellTrace)
+      && Array.isArray(trace.x)
+      && trace.x.length > 0
     ));
     if (traceIndex < 0) return null;
     const trace = element.data[traceIndex];
@@ -1105,11 +1215,13 @@ test("timing hover wraps reasons and its shared hit area opens the popover", asy
     const x = rect.left + Number(xaxis?._offset || 0) + Number(xaxis?.d2p?.(trace.x?.[0]));
     const y = rect.top + Number(yaxis?._offset || 0) + Number(yaxis?.d2p?.(trace.y?.[0]));
     return Number.isFinite(x) && Number.isFinite(y) ? { x, y, traceIndex } : null;
-  })).not.toBeNull();
+  }), { timeout: 25000 }).not.toBeNull();
 
   const target = await page.locator("#chart").evaluate((element) => {
     const traceIndex = (element.data || []).findIndex((trace) => (
-      trace?.meta?.isMarketTimingBuyTrace || trace?.meta?.isMarketTimingSellTrace
+      (trace?.meta?.isMarketTimingBuyTrace || trace?.meta?.isMarketTimingSellTrace)
+      && Array.isArray(trace.x)
+      && trace.x.length > 0
     ));
     const trace = element.data[traceIndex];
     window.Plotly.Fx.hover(element, [{ curveNumber: traceIndex, pointNumber: 0 }]);
@@ -1196,16 +1308,22 @@ test("co-movement toggle shows only the last visible stock for the selected peri
     const style = getComputedStyle(panel);
     return {
       centerDelta: Math.abs((panelRect.left + panelRect.right) / 2 - (chartRect.left + chartRect.right) / 2),
-      topOffset: panelRect.top - chartRect.top,
+      bottomOffset: chartRect.bottom - panelRect.bottom,
       borderWidth: style.borderTopWidth,
       backgroundColor: style.backgroundColor,
+      padding: style.padding,
+      backdropFilter: style.backdropFilter || style.webkitBackdropFilter,
+      textShadow: style.textShadow,
     };
   });
   expect(coMovementLayout.centerDelta).toBeLessThanOrEqual(1);
-  expect(coMovementLayout.topOffset).toBeGreaterThanOrEqual(10);
-  expect(coMovementLayout.topOffset).toBeLessThanOrEqual(18);
+  expect(coMovementLayout.bottomOffset).toBeGreaterThanOrEqual(34);
+  expect(coMovementLayout.bottomOffset).toBeLessThanOrEqual(40);
   expect(coMovementLayout.borderWidth).toBe("0px");
   expect(coMovementLayout.backgroundColor).toBe("rgba(0, 0, 0, 0)");
+  expect(coMovementLayout.padding).toBe("0px");
+  expect(coMovementLayout.backdropFilter).toBe("none");
+  expect(coMovementLayout.textShadow).toBe("none");
   await expect(page.locator("#coMovementPanel")).toContainText("SK하이닉스 1년");
   await expect(page.locator("#coMovementPanel")).toContainText("코스피 75%");
   await expect(page.locator("#coMovementPanel")).toContainText("코스닥 75%");

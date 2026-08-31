@@ -107,10 +107,19 @@ function sanitizeUniverseState(value, limit = RESEARCH_SUMMARY_DEFAULT_UNIVERSE_
   return Object.fromEntries(Object.entries(value).flatMap(([tickerValue, state]) => {
     const ticker = String(tickerValue || "").trim().toUpperCase();
     if (!TICKER_PATTERN.test(ticker) || !state || typeof state !== "object") return [];
+    const analysisStatus = state.analysisStatus === "failed"
+      ? "failed"
+      : (state.analysisStatus === "success" ? "success" : "");
     return [[ticker, {
       fingerprint: text(state.fingerprint, 240),
       metadataFingerprint: text(state.metadataFingerprint, 240),
       signalFingerprint: text(state.signalFingerprint, 240),
+      ...(analysisStatus ? {
+        analysisStatus,
+        failureCount: Math.round(finite(state.failureCount, 0, 1000) ?? 0),
+        lastFailureAt: text(state.lastFailureAt, 40),
+        retryAfter: text(state.retryAfter, 40),
+      } : {}),
     }]];
   }).slice(0, normalizeResearchUniverseSize(limit)));
 }

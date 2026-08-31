@@ -12,6 +12,19 @@ test("applies the same centered scale and vertical offset used by the main chart
   assert.deepEqual(adjustments.invertTransformValues([85, 105, 125, null], 2, 5), [90, 100, 110, null]);
 });
 
+test("fits and transforms only the active dated viewport", () => {
+  const dates = ["2026-01-01", "2026-02-01", "2026-03-01", "2026-04-01"];
+  const values = [70, 80, 100, 120];
+  assert.deepEqual(
+    adjustments.finiteDatedRange(dates, values, ["2026-02-01", "2026-04-01"]),
+    { minimum: 80, maximum: 120, count: 3 },
+  );
+  assert.deepEqual(
+    adjustments.transformViewportValuesInto(values, 100, 0.5, 2, 3),
+    [73, 83, 103, 123],
+  );
+});
+
 test("converts pointer movement into chart offset and scale", () => {
   const yAxis = { range: [80, 120], _length: 200 };
   assert.equal(adjustments.offsetFromDrag(3, 100, 120, yAxis), -1);
@@ -64,25 +77,6 @@ test("reuses parsed dates and scans only the visible slice during live fitting",
   } finally {
     Date.parse = originalParse;
   }
-});
-
-test("fits long visible ranges with cached extrema blocks while ignoring gaps", () => {
-  const dates = Array.from({ length: 512 }, (_, index) => (
-    new Date(Date.UTC(2024, 0, index + 1)).toISOString()
-  ));
-  const values = dates.map((_, index) => index);
-  values[130] = null;
-  values[255] = Number.NaN;
-  const trace = { x: dates, y: values };
-  const range = [dates[64], dates[447]];
-  assert.deepEqual(adjustments.fitRangeForTraces([trace], range, {
-    paddingRatio: 0,
-    minimumPadding: 0,
-  }), [64, 447]);
-  assert.deepEqual(adjustments.fitRangeForTraces([trace], range, {
-    paddingRatio: 0,
-    minimumPadding: 0,
-  }), [64, 447]);
 });
 
 test("fits long visible ranges with cached extrema blocks while ignoring gaps", () => {

@@ -13,6 +13,63 @@
   --ui-dialog-max-height: 84vh;
   --ui-dialog-radius: 20px 20px 14px 14px;
   --ui-dialog-margin: 8px;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+.api-settings-panel::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.settings-confirm-modal {
+  --ui-modal-z-index: 2200;
+  --ui-modal-align: center;
+  --ui-modal-padding: 16px;
+}
+
+.settings-confirm-backdrop {
+  --ui-modal-backdrop: rgba(0, 0, 0, 0.72);
+  --ui-modal-backdrop-filter: blur(2px);
+}
+
+.settings-confirm-panel {
+  --ui-dialog-width: min(330px, calc(100vw - 32px));
+  --ui-dialog-max-height: none;
+  --ui-dialog-padding: 18px;
+  --ui-dialog-radius: 16px;
+  overflow: hidden;
+  text-align: center;
+}
+
+.settings-confirm-panel > strong {
+  color: #fff;
+  font-size: 15px;
+}
+
+.settings-confirm-panel > p {
+  margin: 10px 0 16px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.settings-confirm-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+
+.settings-confirm-actions .api-action-btn {
+  min-width: 74px;
+}
+
+.settings-confirm-actions .is-destructive {
+  border-color: rgba(239, 120, 120, 0.38);
+  background: rgba(160, 58, 58, 0.12);
+  color: #efb0b0;
 }
 
 .api-settings-header {

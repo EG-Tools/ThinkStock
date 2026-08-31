@@ -407,6 +407,26 @@
         }
       };
 
+      applyComponent("macro:termSpread", () => controller.commitMacroBuild(
+        controller.buildMacroIndicatorLiveRows(
+          payload.termSpreadRows,
+          ["t10y1y"],
+          undefined,
+          { positiveOnly: false },
+        ),
+        ["t10y1y"],
+        { label: "US Treasury 10Y-1Y spread" },
+      ), "장단기금리차");
+      applyComponent("macro:creditSpread", () => controller.commitMacroBuild(
+        controller.buildMacroIndicatorLiveRows(
+          payload.creditSpreadRows,
+          ["us_credit_spread"],
+          undefined,
+          { positiveOnly: false },
+        ),
+        ["us_credit_spread"],
+        { label: "US 3Y AAA-AA-A corporate minus Treasury spread" },
+      ), "신용스프레드");
       applyComponent("crisis:signal", () => controller.applyCrisisSignalRows(payload.records), "침체 위기신호");
       applyComponent("volatility:vkospi", () => applyVkospiRows(payload.vkospiRows), "VKOSPI");
       applyComponent("volatility:vix", () => applyVixRows(payload.vixRows), "VIX");

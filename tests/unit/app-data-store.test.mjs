@@ -51,6 +51,30 @@ test("app data store can explicitly version a real in-place price mutation", () 
   assert.deepEqual(events[0].changed, ["pricePayload"]);
 });
 
+test("app data store can suppress semantically unchanged network rows", () => {
+  const events = [];
+  const store = createAppDataStore({
+    macroRows: [{ date: "2026-08-28", leading_cycle: 101 }],
+  }, {
+    equalsByKey: {
+      macroRows: (left, right) => JSON.stringify(left) === JSON.stringify(right),
+    },
+  });
+  store.subscribe((event) => events.push(event));
+
+  store.macroRows = [{ date: "2026-08-28", leading_cycle: 101 }];
+
+  assert.equal(store.revision(), 0);
+  assert.equal(events.length, 0);
+  assert.deepEqual(store.stats(), {
+    revision: 0,
+    replacements: 0,
+    touches: 0,
+    skipped: 1,
+    revisions: Object.fromEntries(APP_DATA_KEYS.map((key) => [key, 0])),
+  });
+});
+
 test("revision bridge maps one data replacement to one persisted component invalidation", () => {
   const store = createAppDataStore();
   const revisions = [];

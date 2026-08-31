@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import * as gate from "../../docs/modules/runtime-series-quality-gate.mjs";
+import * as gate from "../../docs/modules/runtime-series-merge.mjs";
 
 test("accepts an ordinary index tail and rejects zero or implausible jumps", () => {
   const currentPayload = {

@@ -588,6 +588,7 @@ test("range sync keeps one active request and only the newest pending range", as
       applied.push(range);
       return new Promise((resolve) => { release = resolve; });
     },
+    extraStats: () => ({ appliedFrames: applied.length }),
   });
 
   controller.schedule(0, 10);
@@ -599,6 +600,7 @@ test("range sync keeps one active request and only the newest pending range", as
   controller.schedule(20, 30);
   controller.schedule(30, 40);
   assert.equal(controller.stats().coalesced, 2);
+  assert.deepEqual(controller.stats().frame, { appliedFrames: 1 });
   release();
   await new Promise((resolve) => setImmediate(resolve));
   frame();
@@ -608,34 +610,23 @@ test("range sync keeps one active request and only the newest pending range", as
   await controller.flush();
 });
 
-test("linked range sync flushes and cancels its companion queue", async () => {
-  let frame = null;
-  const calls = [];
-  const companion = {
-    busy: true,
-    cancelPending() { calls.push("cancel-companion"); this.busy = false; },
-    async flush() { calls.push("flush-companion"); this.busy = false; },
-    isBusy() { return this.busy; },
-    stats() { return { pending: Number(this.busy) }; },
-  };
-  const controller = viewport.createLinkedRangeSyncController({}, {
-    requestFrame: (callback) => { frame = callback; return 1; },
-    cancelFrame: () => calls.push("cancel-frame"),
-    applyRange: ({ startMs, endMs }) => calls.push(`apply:${startMs}-${endMs}`),
-    getCompanionQueue: () => companion,
+test("relayout viewport resolves explicit and autoranged ranges through one contract", () => {
+  assert.deepEqual(viewport.resolveRelayoutViewport({
+    "xaxis.range[0]": "2026-01-01",
+    "xaxis.range[1]": "2026-08-31",
+  }), {
+    autorange: false,
+    explicitRange: true,
+    range: ["2026-01-01", "2026-08-31"],
   });
 
-  controller.schedule(10, 20);
-  assert.equal(controller.isBusy(), true);
-  frame();
-  await controller.flush();
-  assert.deepEqual(calls, ["apply:10-20", "flush-companion"]);
-  assert.equal(controller.isBusy(), false);
-  assert.deepEqual(controller.stats().companions, { pending: 0 });
-
-  controller.schedule(20, 30);
-  controller.cancel();
-  assert.deepEqual(calls.slice(-2), ["cancel-frame", "cancel-companion"]);
+  assert.deepEqual(viewport.resolveRelayoutViewport({ "xaxis.autorange": true }, {
+    _fullLayout: { xaxis: { range: ["2025-01-01", "2026-08-31"] } },
+  }), {
+    autorange: true,
+    explicitRange: false,
+    range: ["2025-01-01", "2026-08-31"],
+  });
 });
 
 test("future overlay controller captures once and restores after the final overlay closes", () => {

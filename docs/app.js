@@ -12,12 +12,20 @@ import {
   APP_RUNTIME_KEYS,
   ADR_SERIES,
   BASE_DISPLAY_NAMES,
+  BASE_HOVER_NAMES,
+  BASE_SERIES_HELP_NAMES,
   CHART_RIGHT_PADDING_MAX_DAYS,
   CHART_RIGHT_PADDING_MIN_DAYS,
   CO_MOVEMENT_COMPARISONS,
+  CORE_SERIES,
+  CUSTOM_COLOR_MIN_FIXED_DISTANCE,
+  CUSTOM_COLOR_MIN_FIXED_HUE_DISTANCE,
+  CUSTOM_COLOR_PALETTE,
+  CUSTOM_RESERVED_COLORS,
   CUSTOM_STOCK_PRELOAD_CONCURRENCY,
   CURSOR_LINE_LABELS,
   CURSOR_LINE_MODES,
+  DEFAULT_HIDDEN_MAIN_SERIES,
   FEAR_GREED_SERIES,
   MAIN_CHART_FINGERPRINT_CACHE_MAX_ENTRIES,
   MAIN_CHART_MODEL_CACHE_MAX_ENTRIES,
@@ -25,16 +33,23 @@ import {
   MAX_CUSTOM_STOCKS,
   MAX_VISIBLE_MAIN_SERIES,
   NEWS_SENTIMENT_SERIES,
+  SERIES_COLORS,
   STARTUP_INTERACTION_SETTLE_MS,
+  STARTUP_POST_VISUAL_QUIET_MS,
+  STACKED_HOVER_PRICE_SERIES,
   STOCK_TICKER_PATTERN,
   SUPPLEMENTAL_SERIES,
   VIX_SERIES,
   VKOSPI_SERIES,
   VOLATILITY_SERIES,
   createChartApplicationControlConfig,
+  createSeriesColorResolver,
+  customStockColorRandom as randomCustomStockColor,
   isForecastSeries,
   normalizeChartRightPaddingDays,
+  resolveMainChartDisplayPointBudget,
   resolveAppBuildVersion,
+  seriesSupportsFeature,
 } from "./modules/app-control-config.mjs";
 import * as appStateControllerModule from "./modules/app-state-controller.mjs";
 import {
@@ -109,19 +124,8 @@ import * as runtimeDataTransactionModule from "./modules/runtime-data-transactio
 import * as runtimeMarketRefreshModule from "./modules/runtime-market-refresh.mjs";
 import * as runtimeRefreshOrchestratorModule from "./modules/runtime-refresh-orchestrator.mjs";
 import * as runtimeSeriesMergeModule from "./modules/runtime-series-merge.mjs";
-import * as runtimeSeriesQualityGateModule from "./modules/runtime-series-quality-gate.mjs";
 import * as runtimeSnapshotControllerModule from "./modules/runtime-snapshot-controller.mjs";
 import * as runtimeSourceHealthModule from "./modules/runtime-source-health.mjs";
-import {
-  CORE_SERIES,
-  CUSTOM_COLOR_MIN_FIXED_DISTANCE,
-  CUSTOM_COLOR_MIN_FIXED_HUE_DISTANCE,
-  CUSTOM_COLOR_PALETTE,
-  CUSTOM_RESERVED_COLORS,
-  SERIES_COLORS,
-  createSeriesColorResolver,
-  customStockColorRandom as randomCustomStockColor,
-} from "./modules/series-color-policy.mjs";
 import * as seriesCacheRetentionModule from "./modules/series-cache-retention.mjs";
 import { createServiceWorkerClient } from "./modules/service-worker-client.mjs";
 import { createScheduledSettlementRuntime } from "./modules/scheduled-settlement-runtime.mjs";
@@ -232,10 +236,13 @@ const {
   latestPointerSample,
 } = chartInteractionControllerModule;
 const {
+  defaultScale: defaultSeriesScale,
   resolveScale: resolveSeriesScale,
   transformValues: transformSeriesValues,
   transformValuesInto: transformSeriesValuesInto,
+  transformViewportValuesInto,
   invertTransformValues: invertSeriesTransform,
+  finiteDatedRange,
   offsetFromDrag,
   scaleFromDrag,
   fitRangeForTraces,
@@ -288,9 +295,11 @@ const recordRuntimeError = (source, error, meta = {}) => (
 const tickerCacheInvalidationModule = createTickerCacheInvalidationContract(cacheLifecyclePolicyModule);
 const cacheRecordHealthModule = cacheLifecyclePolicyModule;
 const backgroundTaskScheduler = backgroundStockRefreshModule.createBackgroundTaskScheduler(globalThis, {
+  foregroundPriority: 15,
   isInteractionBusy: () => isChartInteractionBusy(),
 });
 const startupTaskRuntime = createStartupTaskRuntime({
+  defaultDeferredDelayMs: STARTUP_POST_VISUAL_QUIET_MS,
   scheduler: backgroundTaskScheduler,
   recordError: recordRuntimeError,
 });
@@ -302,6 +311,7 @@ const startupLoader = createStartupLoader(globalThis, {
   },
 });
 const DISPLAY_NAMES = { ...BASE_DISPLAY_NAMES };
+const HOVER_NAMES = { ...BASE_HOVER_NAMES };
 const MAX_VISIBLE_MAIN_SERIES_MESSAGE = `최대 ${MAX_VISIBLE_MAIN_SERIES}개 까지만 추가됩니다.`;
 const STATE_KEY = "thinkstock-v5";
 const API_SETTINGS_KEY = "thinkstock-api-v1";
@@ -357,7 +367,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = tickerPriceRuntimeModule.CORPORATE_ACTION_RATIO_THRESHOLD;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = tickerPriceRuntimeModule.CORPORATE_ACTION_MAX_BOUNDARY_DAYS;
-const APP_VERSION = "3.28";
+const APP_VERSION = "3.31";
 const APP_BUILD_VERSION = resolveAppBuildVersion(globalThis);
 const cacheMigrator = cacheMaintenanceRuntimeModule.createCacheMigrator(globalThis, {
   markerKey: "thinkstock-cache-migrations-v1",
@@ -582,7 +592,6 @@ const DART_GATEWAY_REQUEST_TIMEOUT_MS = 90000;
 const RECENT_DATA_MONTHS = 132;
 const DEFAULT_DESKTOP_ACTIVE_MONTHS = 12;
 const DEFAULT_PHONE_ACTIVE_MONTHS = 6;
-const EMPTY_CHART_RECOVERY_MONTHS = 12;
 const fetchWithTimeout = createFetchWithTimeout({
   defaultTimeoutMs: NETWORK_REQUEST_TIMEOUT_MS,
 });
@@ -718,6 +727,7 @@ const {
 const POPUP_NUMBER_FORMAT = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 4 });
 const formatActualValue = (v) => (Number.isFinite(v) ? POPUP_NUMBER_FORMAT.format(v) : "N/A");
 const labelName = (key) => DISPLAY_NAMES[key] || key;
+const hoverLabelName = (key) => HOVER_NAMES[key] || labelName(key);
 const customStockColorRandom = () => randomCustomStockColor(globalThis);
 const seriesColor = createSeriesColorResolver({
   fixedColors: SERIES_COLORS,
@@ -761,15 +771,24 @@ const MAIN_LINE_TRACE_TYPE = "scatter";
 const MAIN_CHART_PRESERVE_DAILY_POINTS = true;
 const CHART_VIEWPORT_BUFFER_RATIO = 2;
 const CHART_VIEWPORT_MIN_BUFFER_MS = DAY_MS * 45;
-const MAIN_CHART_MIN_DISPLAY_POINTS = 720;
-const MAIN_CHART_MOBILE_MIN_DISPLAY_POINTS = 420;
-const MAIN_CHART_MAX_DISPLAY_POINTS = 1500;
-const MAIN_CHART_POINTS_PER_PIXEL = 1.45;
-const MAIN_CHART_TOTAL_VISIBLE_POINT_TARGET_DESKTOP = 6500;
-const MAIN_CHART_TOTAL_VISIBLE_POINT_TARGET_MOBILE = 2800;
 const INTERACTION_RENDER_DELAY_MS = 260;
 
-const appData = createAppDataStore();
+const sameNumericDatedRows = (left, right) => (
+  runtimeDataTransactionModule.sameDatedRows(left, right)
+);
+const sameTextDatedRows = (left, right) => (
+  runtimeDataTransactionModule.sameDatedRows(left, right, { numericStrings: false })
+);
+const appData = createAppDataStore({}, {
+  equalsByKey: {
+    macroRows: sameNumericDatedRows,
+    creditRows: sameNumericDatedRows,
+    crisisRows: sameNumericDatedRows,
+    adrRows: sameNumericDatedRows,
+    disclosureRows: sameTextDatedRows,
+    insiderTradeRows: sameTextDatedRows,
+  },
+});
 const appDataRevisionBridge = createAppDataRevisionBridge(appData, {
   markChanged: (components) => runtimeSnapshotRevisionTracker.markChanged(components),
   onChanged: scheduleDataFreshnessRender,
@@ -789,9 +808,12 @@ let baseTraceValues = {};
 const chartSeriesTransformRuntime = createChartSeriesTransformRuntime({
   baseValuesFor: (seriesKey) => baseTraceValues[seriesKey],
   describeTrace: (trace) => mainChartRenderer.chartOverlayDescriptor(trace),
+  finiteDatedRange,
+  groupedHoverYUpdate: mainChartRenderer.groupedHoverYUpdate,
   resolveOffset: (seriesKey) => chartSession.seriesOffsets[seriesKey] || 0,
   resolveScale: (seriesKey) => resolveSeriesScale(chartSession.seriesScales, seriesKey),
   transformValuesInto: transformSeriesValuesInto,
+  transformViewportValuesInto,
 });
 let adrFinalRetryController = null;
 let historicalDataLoaded = false;
@@ -867,13 +889,14 @@ tickerDerivedMemoryCaches.register("ai-quality", {
 tickerDerivedMemoryCaches.register("macd", macdModelCache, { sources: ["price"] });
 let chartRenderFacade = null;
 let isHandleDragging = false;
-let isHandlePointerActive = false;
 const chartSession = chartSessionControllerModule.createChartSessionState({
   activeMonths: getDefaultActiveMonths(),
-  hiddenSeries: new Set(["customer_deposit", "kospi_credit", "^KQ11", "kosdaq_credit"]),
+  hiddenSeries: new Set(DEFAULT_HIDDEN_MAIN_SERIES),
+  mainHoverSeriesOrder: [],
   hiddenAuxiliarySeries: new Set(),
   hiddenAuxiliaryPanels: new Set(),
   auxiliaryPanelOrder: [...AUXILIARY_PANEL_KEYS],
+  auxiliarySeriesOrder: Object.values(AUXILIARY_SERIES_KEYS),
   seriesOffsets: {},
   seriesScales: {},
   currentSelected: [],
@@ -883,17 +906,17 @@ const chartSession = chartSessionControllerModule.createChartSessionState({
   currentDataStart: "",
   currentDataEnd: "",
   currentMainChartModel: null,
-  hoverShowPopup: false,
+  hoverShowPopup: true,
   cursorLineMode: "vertical",
   chartRightPaddingDays: 0,
   newsSentimentMovingAverageDays: NEWS_MOVING_AVERAGE_DAYS,
-  showDisclosures: true,
+  showDisclosures: false,
   showEps: false,
   showInsiderTrades: false,
-  showCoMovement: false,
+  showCoMovement: true,
   showChartTools: true,
   showChartHandles: true,
-  showRecessionSignals: false,
+  showRecessionSignals: true,
   showAiForecast: false,
   pinnedXRange: null,
   userViewportPinned: false,
@@ -902,7 +925,6 @@ const chartSession = chartSessionControllerModule.createChartSessionState({
   lockedHistoryYRange: null,
   viewportNormalizationFrame: null,
   pendingAutoChartFit: false,
-  pendingAutoChartFitExpandOnly: false,
   pendingCompositionViewport: null,
 });
 const mainChartControlView = appUiBindingsModule.createMainChartControlView(globalThis, {
@@ -970,6 +992,7 @@ let hoveredLineTraceIndex = null;
 let activeLineTraceIndex = null;
 let appliedLineHighlightTraceIndex = null;
 let lastVisibleStockSeriesKey = "";
+let lastCoMovementSeriesKey = "";
 let isViewportDragging = false;
 let isWheelZooming = false;
 let useViewportEventMarkerGap = false;
@@ -1101,6 +1124,8 @@ const initE2eDebugAccess = __THINKSTOCK_E2E_DIAGNOSTICS__
           progressiveComposition: appRuntimeRegistry
             .peek(APP_RUNTIME_KEYS.progressiveChartComposition)?.stats?.() || null,
           visualFrames: appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartVisualFrame)?.stats?.() || null,
+          rangeSync: appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartRangeSync)?.stats?.() || null,
+          seriesTransforms: chartSeriesTransformRuntime.stats?.() || null,
           viewportWindowCache: appRuntimeRegistry.peek(APP_RUNTIME_KEYS.mainViewportWindow)?.stats?.() || null,
           modelCache: mainChartCalcCache.stats(),
           sourceFingerprintCache: mainChartSourceFingerprintCache.stats(),
@@ -1137,6 +1162,9 @@ const initE2eDebugAccess = __THINKSTOCK_E2E_DIAGNOSTICS__
           offsets: { ...chartSession.seriesOffsets },
           scales: { ...chartSession.seriesScales },
         };
+      },
+      isViewportNormalizationLocked() {
+        return Boolean(chartSession.viewportNormalizationFrame);
       },
       getLineDragTargetAt(clientX, clientY) {
         const chart = document.getElementById("chart");
@@ -1364,35 +1392,35 @@ const runtimeSnapshotComponentContract = runtimeSnapshotControllerModule.createS
     normalize: sanitizeRuntimePricePayload,
     validate: (value) => Boolean(value?.records?.length)
       && tickerPriceRuntimeModule.inspectPricePayloadIntegrity(value).clean
-      && runtimeSeriesQualityGateModule.validateSnapshotComponent("price", value).ok,
+      && runtimeSeriesMergeModule.validateSnapshotComponent("price", value).ok,
   },
   macro: {
     snapshotKey: "macroRows",
     dataKey: "macroRows",
     isIncluded: Array.isArray,
     normalize: normalizePayloadRecords,
-    validate: (value) => runtimeSeriesQualityGateModule.validateSnapshotComponent("macro", value).ok,
+    validate: (value) => runtimeSeriesMergeModule.validateSnapshotComponent("macro", value).ok,
   },
   credit: {
     snapshotKey: "creditRows",
     dataKey: "creditRows",
     isIncluded: Array.isArray,
     normalize: normalizeCreditRows,
-    validate: (value) => runtimeSeriesQualityGateModule.validateSnapshotComponent("credit", value).ok,
+    validate: (value) => runtimeSeriesMergeModule.validateSnapshotComponent("credit", value).ok,
   },
   adr: {
     snapshotKey: "adrRows",
     dataKey: "adrRows",
     isIncluded: Array.isArray,
     normalize: normalizePayloadRecords,
-    validate: (value) => runtimeSeriesQualityGateModule.validateSnapshotComponent("adr", value).ok,
+    validate: (value) => runtimeSeriesMergeModule.validateSnapshotComponent("adr", value).ok,
   },
   crisis: {
     snapshotKey: "crisisRows",
     dataKey: "crisisRows",
     isIncluded: Array.isArray,
     normalize: normalizeCrisisSignalRows,
-    validate: (value) => runtimeSeriesQualityGateModule.validateSnapshotComponent("crisis", value).ok,
+    validate: (value) => runtimeSeriesMergeModule.validateSnapshotComponent("crisis", value).ok,
   },
   disclosure: {
     snapshotKey: "disclosureRows",
@@ -1670,7 +1698,6 @@ function isChartInteractionBusy() {
     || isHandleDragging
     || chartVisualFrameCoordinator?.hasPending?.()
     || appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartCursorSync)?.isBusy?.()
-    || appRuntimeRegistry.peek(APP_RUNTIME_KEYS.viewportRelayout)?.isBusy?.()
   );
 }
 
@@ -1913,7 +1940,7 @@ function visibleEpsTickers() {
   const candidates = modelTickers.length
     ? modelTickers
     : customStocks.map((stock) => String(stock?.ticker || "").trim().toUpperCase());
-  return [...new Set(candidates)].filter((ticker) => STOCK_TICKER_PATTERN.test(ticker)
+  return [...new Set(candidates)].filter((ticker) => seriesSupportsFeature(ticker, "eps")
     && !chartSession.hiddenSeries.has(ticker));
 }
 function syncEpsToggleButton() {
@@ -2232,10 +2259,12 @@ function getChartNavigationController() {
     afterHistoryLoaded: async (visibleRange) => {
       if (visibleRange) chartSession.pinnedXRange = visibleRange.map((value) => new Date(value).toISOString());
       await runMainChartRender(Boolean(visibleRange));
+      await settleChartViewport();
     },
     captureNormalization: captureViewportNormalizationFrame,
     onError: (error) => recordRuntimeError("full-history-navigation", error),
     applyRange: applySyncedXRangeMs,
+    smoothWheelZoom: true,
     applyResetPolicy: applyChartResetPolicy,
     isAutoScale: () => chartSession.autoChartReset,
     getRightPaddingMs: chartRightPaddingMs,
@@ -2247,37 +2276,10 @@ function getChartNavigationController() {
       chartSession.pendingCompositionViewport = null;
       saveState();
     },
-    requestRender: ({ preserveZoom = true, range = null, ...requestOptions } = {}) => {
-      const request = () => requestChartRender(preserveZoom, {
-        deferDuringInteraction: false,
-        ...requestOptions,
-      });
-      // A range preset first changes Plotly's visible range, then rebuilds the
-      // buffered viewport. Rendering before the relayout settles would sample
-      // the old window and leave the newly revealed history empty.
-      if (requestOptions.reason === "range-preset") {
-        const requestedRange = Array.isArray(range) && range.length === 2
-          ? range.map(Number)
-          : null;
-        return getChartRangeSyncController().flush().then(() => {
-          request();
-          return getMainChartRenderScheduler().whenSettled();
-        }).then(async () => {
-          if (requestedRange?.every(Number.isFinite) && requestedRange[1] > requestedRange[0]) {
-            chartSession.pinnedXRange = requestedRange.map((value) => new Date(value).toISOString());
-            getChartRangeSyncController().schedule(requestedRange[0], requestedRange[1], {
-              source: "range-preset-finalize",
-              fit: false,
-              liveFit: chartSession.autoChartReset,
-              userInitiated: false,
-            });
-            await getChartRangeSyncController().flush();
-          }
-          await refreshLoadedChartCompanions();
-        });
-      }
-      return request();
-    },
+    requestRender: (requestOptions = {}) => requestSettledViewportRender({
+      ...requestOptions,
+      refreshCompanions: true,
+    }),
     shiftMonths,
     toMilliseconds: toUtcMs,
     })
@@ -2342,7 +2344,7 @@ function showVisibleAiForecastAvailability() {
 }
 
 function ensureFullHistoryDataReady() {
-  return getChartNavigationController().ensureHistoryReady();
+  return getChartNavigationController().ensureHistoryReady(true);
 }
 
 function zoomChartViewport(direction, source = "button-zoom", options = {}) {
@@ -2401,77 +2403,80 @@ function addViewportYRangeToRelayout(targetEl, payload) {
 }
 
 function getChartRangeSyncController() {
-  return appRuntimeRegistry.get(APP_RUNTIME_KEYS.chartRangeSync, () => (
-    chartViewportControllerModule.createLinkedRangeSyncController(window, {
-      applyRange: async ({ startMs, endMs, meta }) => {
+  return appRuntimeRegistry.get(APP_RUNTIME_KEYS.chartRangeSync, () => {
+    let perfStartedAt = 0;
+    const viewportFrameRuntime = chartUpdateCoordinatorModule.createLinkedViewportFrameRuntime({
+      updateRuntime: plotlyUpdateRuntime,
+      beforeApply: async ({ meta }) => {
         if (meta?.source === "range-preset") {
           const renderScheduler = appRuntimeRegistry.peek(APP_RUNTIME_KEYS.mainChartScheduler);
           if (renderScheduler?.isRendering()) await renderScheduler.whenSettled();
         }
-        const perfStartedAt = startPerfSample();
-        const mainEl = document.getElementById("chart");
-        const macdEl = document.getElementById("chart-macd");
-        const adrEl = document.getElementById("chart-adr");
-        const r0 = new Date(startMs).toISOString();
-        const r1 = new Date(endMs).toISOString();
-        const payload = { "xaxis.range[0]": r0, "xaxis.range[1]": r1 };
-        const updateMain = Boolean(mainEl?.data && !xRangeMatches(mainEl, r0, r1));
-        const updateMacd = Boolean(macdEl?.data && !macdEl.hidden && !xRangeMatches(macdEl, r0, r1));
-        const updateAdr = Boolean(adrEl?.data && !xRangeMatches(adrEl, r0, r1));
-        if (!updateMain && !updateMacd && !updateAdr) return;
-        let mainPayload = payload;
-        let refreshViewportMarkers = false;
-        if (updateMain && meta?.liveFit && chartSession.autoChartReset) {
-          const primaryTraces = mainChartRenderer.rangeBearingTraces(mainEl.data);
-          const fittedYRange = fitRangeForTraces(primaryTraces, [r0, r1], {
-            paddingRatio: 0.08,
-            minimumPadding: 0.6,
-          });
-          if (fittedYRange) {
-            mainPayload = {
-              ...payload,
-              "yaxis.range[0]": fittedYRange[0],
-              "yaxis.range[1]": fittedYRange[1],
-              "yaxis.autorange": false,
-            };
-            useViewportEventMarkerGap = true;
-            invalidateChartInteractionCaches(mainEl);
-            refreshViewportMarkers = chartSession.showDisclosures
-              || chartSession.showInsiderTrades
-              || chartSession.showRecessionSignals;
-          }
-        }
-        // Keep the main chart on the interaction-critical path. Companion Plotly
-        // charts consume only their newest queued range, so a slow auxiliary
-        // relayout cannot throttle the next main pan or pinch frame.
-        if (updateMain) {
-          await plotlyUpdateRuntime.relayout(mainEl, mainPayload, {
-            label: "viewport-range-sync-main",
-          });
-        }
-        if (updateMacd) scheduleViewportRangeSync(macdEl, payload);
-        if (updateAdr) scheduleViewportRangeSync(adrEl, payload);
+        perfStartedAt = startPerfSample();
+      },
+      getMainElement: () => document.getElementById("chart"),
+      getCompanionElements: () => [
+        document.getElementById("chart-macd"),
+        document.getElementById("chart-adr"),
+      ],
+      isRequestCurrent: ({ meta }) => (
+        !isHandleDragging
+        && (
+          !Number.isInteger(meta?.interactionRevision)
+          || meta.interactionRevision === chartViewportInteractionRevision
+        )
+      ),
+      collectTraceYUpdates: (mainElement, xRange, meta) => (
+        meta?.liveFit && chartSession.autoChartReset
+          ? chartSeriesTransformRuntime.collectViewportFrameUpdates(
+              mainElement?.data,
+              xRange,
+              {
+                targetSpan: 20,
+                resolvePostScale: defaultSeriesScale,
+              },
+            )
+          : { seriesUpdates: [], traceIndexes: [], yUpdates: [] }
+      ),
+      xRangeMatches,
+      isAutoScale: () => chartSession.autoChartReset,
+      rangeBearingTraces: mainChartRenderer.rangeBearingTraces,
+      fitRangeForTraces,
+      fitOptions: { paddingRatio: 0.08, minimumPadding: 0.6 },
+      collectAnchoredYUpdates: chartMarkerLayoutModule.collectViewportAnchoredYUpdates,
+      buildCompanionPayload: (element, payload) => addViewportYRangeToRelayout(element, payload),
+      requestMainDataRefresh: () => requestChartRender(true, {
+        deferDuringInteraction: false,
+        reason: "viewport-window-miss",
+        updateClass: "viewport-range",
+      }),
+      beforeMainUpdate: ({ mainElement, plan }) => {
+        if (!plan.updateMain || !plan.mainTraceIndexes.length) return;
+        useViewportEventMarkerGap = Boolean(plan.liveFit.fittedYRange);
+        invalidateChartInteractionCaches(mainElement);
+        mainChartRenderer.invalidateRenderFingerprint(mainElement);
+      },
+      afterCommit: ({ plan, traceYUpdates, meta }) => {
+        const [updateMacd, updateAdr] = plan.companionUpdates;
         recordPerfSample("viewportRangeSync", perfStartedAt, {
-          main: updateMain,
+          main: plan.updateMain,
           macd: updateMacd,
           auxiliary: updateAdr,
           liveFit: Boolean(meta?.liveFit),
+          normalizedSeries: traceYUpdates.seriesUpdates?.length || 0,
           companionsQueued: Number(updateMacd) + Number(updateAdr),
         });
-        if (updateMain) {
-          chartVisualFrameCoordinator?.schedule({
-            markers: refreshViewportMarkers,
-            handles: true,
-            reason: "viewport-axis-range",
-          });
-        }
+        if (plan.updateMain) updateHandles();
         if (chartSession.showCoMovement) renderCoMovementPanel({ deferred: true });
         if (meta?.fit !== false) applyChartResetPolicy("viewport");
       },
-      getCompanionQueue: () => appRuntimeRegistry.peek(APP_RUNTIME_KEYS.viewportRelayout),
+    });
+    return chartViewportControllerModule.createRangeSyncController(window, {
+      applyRange: viewportFrameRuntime.apply,
+      extraStats: viewportFrameRuntime.stats,
       onError: (error) => recordRuntimeError("chart-range-sync", error),
-    })
-  ));
+    });
+  });
 }
 
 function applySyncedXRangeMs(startMs, endMs, meta = {}) {
@@ -2480,15 +2485,62 @@ function applySyncedXRangeMs(startMs, endMs, meta = {}) {
     && meta.source !== "latest-slide") {
     cancelLatestViewportAnimation();
   }
-  appRuntimeRegistry.peek(APP_RUNTIME_KEYS.viewportRelayout)?.cancelPending?.();
   chartSession.pinnedXRange = [new Date(startMs).toISOString(), new Date(endMs).toISOString()];
-  if (meta.userInitiated !== false) {
+  if (meta.beginsInteraction === true || meta.userInitiated !== false) {
     chartViewportInteractionRevision += 1;
-    captureViewportNormalizationFrame();
     chartSession.userViewportPinned = true;
   }
+  const requestMeta = {
+    ...meta,
+    interactionRevision: chartViewportInteractionRevision,
+  };
   scheduleViewportWindowRender(startMs, endMs);
-  return getChartRangeSyncController().schedule(startMs, endMs, meta);
+  return getChartRangeSyncController().schedule(startMs, endMs, requestMeta);
+}
+
+async function requestSettledViewportRender({
+  preserveZoom = true,
+  range = null,
+  reason = "viewport-settle",
+  updateClass = "viewport",
+  refreshCompanions = false,
+  reframeNormalization = false,
+} = {}) {
+  const requestedRange = Array.isArray(range) && range.length === 2
+    ? range.map(Number)
+    : null;
+  const hasRequestedRange = requestedRange?.every(Number.isFinite)
+    && requestedRange[1] > requestedRange[0];
+  const interactionRevision = chartViewportInteractionRevision;
+  return chartUpdateCoordinatorModule.settleViewportRenderTransaction({
+    requestedRange: hasRequestedRange ? requestedRange : null,
+    interactionRevision,
+    getInteractionRevision: () => chartViewportInteractionRevision,
+    rangeController: getChartRangeSyncController(),
+    viewportWindowController: getMainViewportWindowController(),
+    mainElement: document.getElementById("chart"),
+    rangeBearingTraces: mainChartRenderer.rangeBearingTraces,
+    setPinnedRange: (nextRange) => {
+      chartSession.pinnedXRange = nextRange.map((value) => new Date(value).toISOString());
+    },
+    requestRender: (request) => requestChartRender(request.preserveZoom, {
+      deferDuringInteraction: false,
+      reason: request.reason,
+      updateClass: request.updateClass,
+    }),
+    whenRenderSettled: () => getMainChartRenderScheduler().whenSettled(),
+    getCurrentRange: () => getCurrentXRangeMs(document.getElementById("chart")),
+    preserveZoom,
+    reason,
+    updateClass,
+    liveFit: chartSession.autoChartReset,
+    reframeNormalization,
+    fitAfterRender: () => fitCurrentChartRatio(),
+    refreshCompanions,
+    refreshCompanionsNow: refreshLoadedChartCompanions,
+    flushCoMovement: flushLoadedCoMovementPanel,
+    releaseNormalization: () => applyChartResetPolicy("viewport"),
+  });
 }
 
 function scheduleHandleUpdate(delay = HANDLE_UPDATE_DEBOUNCE_MS) {
@@ -2508,38 +2560,9 @@ function scheduleHandleUpdate(delay = HANDLE_UPDATE_DEBOUNCE_MS) {
   scheduleFrame();
 }
 
-function getViewportRelayoutQueue() {
-  return appRuntimeRegistry.get(APP_RUNTIME_KEYS.viewportRelayout, () => (
-    chartUpdateCoordinatorModule.createLatestKeyedFrameQueue(window, {
-      apply: async (pending) => {
-        const entries = pending.flatMap(({ targetEl: el, payload: nextPayload }) => {
-          if (!el?.data) return null;
-          const r0 = nextPayload["xaxis.range[0]"];
-          const r1 = nextPayload["xaxis.range[1]"];
-          if (r0 != null && r1 != null && xRangeMatches(el, r0, r1)) return [];
-          return [{
-            element: el,
-            payload: addViewportYRangeToRelayout(el, nextPayload),
-          }];
-        });
-        if (!entries.length) return;
-        await plotlyUpdateRuntime.relayoutMany(entries, {
-          label: "viewport-relayout-queue",
-          settle: true,
-        });
-        chartVisualFrameCoordinator?.schedule({
-          handles: true,
-          reason: "viewport-relayout",
-        });
-      },
-      onError: (error) => recordRuntimeError("viewport-relayout-queue", error),
-    })
-  ));
-}
-
-function scheduleViewportRangeSync(targetEl, payload) {
-  if (!targetEl?.data || !payload) return;
-  getViewportRelayoutQueue().schedule(targetEl.id || "auxiliary", { targetEl, payload });
+function commitViewportRange(range, meta = {}) {
+  const values = Array.isArray(range) ? range.slice(0, 2).map(toMsSafe) : [];
+  return values.length === 2 ? applySyncedXRangeMs(values[0], values[1], meta) : false;
 }
 
 function syncInsiderTradeToggleButton() {
@@ -2599,8 +2622,6 @@ function openAiForecastReportHit(el, hit, sourceEvent) {
 function clearSeriesTransformsAndInvalidate(seriesKey = "") {
   const changed = chartSessionControllerModule.clearSeriesTransforms(chartSession, seriesKey);
   if (!changed) return false;
-  // Transform state is part of the model cache key. Keep prior default and
-  // custom-scale models reusable instead of discarding unaffected source work.
   mainChartRenderer.invalidateRenderFingerprint(document.getElementById("chart"));
   return true;
 }
@@ -2621,14 +2642,12 @@ function getChartSessionController() {
     getVisibleRange: () => getCurrentXRangeMs(document.getElementById("chart")),
     clearTransforms: () => clearAutoResetSeriesTransforms(),
     captureLockedRange: captureLockedHistoryYRange,
-    fitCurrentViewport: fitCurrentChartRatio,
-    isInteractionBusy: () => isViewportDragging || isHandleDragging,
     })
   ));
 }
 
-function applyChartResetPolicy(change, delay = 100) {
-  return getChartSessionController().applyResetPolicy(change, delay);
+function applyChartResetPolicy(change) {
+  return getChartSessionController().applyResetPolicy(change);
 }
 
 function setAutoChartReset(enabled) {
@@ -2638,9 +2657,6 @@ function setAutoChartReset(enabled) {
   ])] : [];
   const result = getChartSessionController().setAutoScale(enabled);
   if (result.enabled) {
-    // Keep event spacing tied to the visible axis while the reset render fits
-    // that same viewport. Falling back to the buffered data span can place
-    // markers far from their line after a zoomed auto-scale reset.
     useViewportEventMarkerGap = true;
     // Restore the visible traces immediately. The full model refresh can finish in
     // the background without leaving a transformed line on screen in the meantime.
@@ -2745,6 +2761,8 @@ function getMainSeriesController() {
     hiddenSeries: chartSession.hiddenSeries,
     maximumVisible: MAX_VISIBLE_MAIN_SERIES,
     getSeriesKeys: mainChartSeriesKeys,
+    getActivationOrder: () => chartSession.mainHoverSeriesOrder,
+    setActivationOrder: (value) => { chartSession.mainHoverSeriesOrder = value; },
     onLimit: () => showChartNavigationMessage(MAX_VISIBLE_MAIN_SERIES_MESSAGE, 3000),
     })
   ));
@@ -2805,10 +2823,11 @@ function applyMainSeriesVisibilityFast(seriesKey, visible) {
 function changeMainSeriesVisibility(seriesKey, visible) {
   const key = String(seriesKey || "").trim();
   const hadVisibleSeries = visibleMainChartSeriesKeys().length > 0;
+  const compositionViewport = captureCurrentCompositionViewport();
   if (!key || !setMainChartSeriesVisible(key, visible)) return false;
   const revivesEmptyChart = visible && !hadVisibleSeries;
   if (revivesEmptyChart) {
-    chartSession.activeMonths = EMPTY_CHART_RECOVERY_MONTHS;
+    chartSession.activeMonths = getDefaultActiveMonths();
     chartSession.pinnedXRange = null;
     chartSession.userViewportPinned = false;
     chartSession.pendingCompositionViewport = null;
@@ -2821,7 +2840,10 @@ function changeMainSeriesVisibility(seriesKey, visible) {
 
   const requestComposition = () => requestSeriesCompositionUpdate(
     revivesEmptyChart ? "series-visibility-empty-recovery" : "series-visibility",
-    revivesEmptyChart ? { preserveZoom: false } : {},
+    {
+      compositionViewport: revivesEmptyChart ? null : compositionViewport,
+      ...(revivesEmptyChart ? { preserveZoom: false } : {}),
+    },
   );
   const fastUpdate = applyMainSeriesVisibilityFast(key, visible);
   if (visible) {
@@ -2849,28 +2871,34 @@ function enforceMainChartSeriesLimit() {
 }
 
 function resolveCoMovementTarget() {
-  lastVisibleStockSeriesKey = getMainSeriesController().resolveVisibleStock(
-    lastVisibleStockSeriesKey,
-    (key) => STOCK_TICKER_PATTERN.test(key),
-  );
-  return lastVisibleStockSeriesKey;
+  const candidates = getMainSeriesController().activationOrder()
+    .filter((key) => seriesSupportsFeature(key, "co-movement"));
+  if (!candidates.includes(lastCoMovementSeriesKey)) {
+    lastCoMovementSeriesKey = candidates.at(-1) || "";
+  }
+  return lastCoMovementSeriesKey;
 }
 
 function noteStockVisibilityChange(seriesKey) {
-  const ticker = String(seriesKey || "").toUpperCase();
-  if (!STOCK_TICKER_PATTERN.test(ticker)) return;
-  if (chartSession.hiddenSeries.has(ticker)) {
-    if (lastVisibleStockSeriesKey === ticker) lastVisibleStockSeriesKey = "";
-  } else {
-    lastVisibleStockSeriesKey = ticker;
+  const key = String(seriesKey || "").toUpperCase();
+  const hidden = chartSession.hiddenSeries.has(key);
+  if (seriesSupportsFeature(key, "co-movement")) {
+    if (hidden && lastCoMovementSeriesKey === key) lastCoMovementSeriesKey = "";
+    else if (!hidden) lastCoMovementSeriesKey = key;
+  }
+  if (STOCK_TICKER_PATTERN.test(key)) {
+    if (hidden && lastVisibleStockSeriesKey === key) lastVisibleStockSeriesKey = "";
+    else if (!hidden) lastVisibleStockSeriesKey = key;
   }
 }
 
 function selectCoMovementTarget(seriesKey) {
-  const ticker = String(seriesKey || "").toUpperCase();
-  if (!chartSession.showCoMovement || !STOCK_TICKER_PATTERN.test(ticker) || chartSession.hiddenSeries.has(ticker)) return;
-  if (lastVisibleStockSeriesKey === ticker) return;
-  lastVisibleStockSeriesKey = ticker;
+  const key = String(seriesKey || "").toUpperCase();
+  if (!chartSession.showCoMovement
+    || !seriesSupportsFeature(key, "co-movement")
+    || chartSession.hiddenSeries.has(key)) return;
+  if (lastCoMovementSeriesKey === key) return;
+  lastCoMovementSeriesKey = key;
   renderCoMovementPanel();
 }
 
@@ -2903,6 +2931,8 @@ function setCursorLineMode(mode, options = {}) {
 function setChartRightPaddingDays(value, options = {}) {
   const days = normalizeChartRightPaddingDays(value);
   const changed = chartSession.chartRightPaddingDays !== days;
+  const chart = document.getElementById("chart");
+  const currentRange = getCurrentXRangeMs(chart);
   const wasLatest = isLatestChartViewport();
   chartSession.chartRightPaddingDays = days;
   if (!changed) return days;
@@ -2912,8 +2942,18 @@ function setChartRightPaddingDays(value, options = {}) {
     chartSession.pendingCompositionViewport = null;
   }
   saveState();
-  if (options.render !== false) {
-    requestChartRender(!wasLatest, {
+  if (options.render === false || !wasLatest) return days;
+
+  const navigationRange = getChartNavigationDataRangeMs(chart);
+  if (currentRange && navigationRange && navigationRange[1] > currentRange[0]) {
+    applySyncedXRangeMs(currentRange[0], navigationRange[1], {
+      fit: false,
+      liveFit: chartSession.autoChartReset,
+      source: "right-padding",
+      userInitiated: false,
+    });
+  } else {
+    requestChartRender(false, {
       deferDuringInteraction: false,
       reason: "right-padding",
       updateClass: "viewport",
@@ -3044,10 +3084,15 @@ function setActiveLineTarget(target) {
   refreshLineHighlight();
 }
 
-function beginSeriesTransformInteraction({ element, handle, lineTarget, trackHandlePointer = false } = {}) {
+function beginSeriesTransformInteraction({ element, handle, lineTarget } = {}) {
   const lockedXRange = getCurrentMainXRange();
+  // A direct series edit supersedes any viewport render still settling. Keep
+  // its current normalization stable until this newer interaction commits.
+  chartViewportInteractionRevision += 1;
+  getChartRangeSyncController().cancel();
+  applyChartResetPolicy("viewport");
+  captureViewportNormalizationFrame();
   isHandleDragging = true;
-  if (trackHandlePointer) isHandlePointerActive = true;
   handle?.classList.add("dragging");
   if (lineTarget) {
     setActiveLineTarget(lineTarget);
@@ -3058,7 +3103,7 @@ function beginSeriesTransformInteraction({ element, handle, lineTarget, trackHan
   return lockedXRange;
 }
 
-function endSeriesTransformInteraction({ element, handle, lineTarget, trackHandlePointer = false, lockedXRange } = {}) {
+function endSeriesTransformInteraction({ element, handle, lineTarget, lockedXRange } = {}) {
   handle?.classList.remove("dragging");
   if (lineTarget) {
     clearHoverOnChart(element);
@@ -3066,7 +3111,6 @@ function endSeriesTransformInteraction({ element, handle, lineTarget, trackHandl
     setActiveLineTarget(null);
   }
   isHandleDragging = false;
-  if (trackHandlePointer) isHandlePointerActive = false;
   if (lockedXRange) chartSession.pinnedXRange = [...lockedXRange];
 }
 
@@ -3116,6 +3160,7 @@ function getChartPointerRuntime() {
       beginLineOffsetDrag,
       chartSession,
       chartViewportControllerModule,
+      captureViewportNormalization: captureViewportNormalizationFrame,
       clearHoverOnChart,
       createPointerFrameController,
       ensureFullHistoryDataReady,
@@ -3136,6 +3181,21 @@ function getChartPointerRuntime() {
       openAiForecastReportHit,
       openEventMarkerHit,
       recordPerfSample,
+      requestViewportRender: () => {
+        const range = Array.isArray(chartSession.pinnedXRange)
+          ? chartSession.pinnedXRange.map(toMsSafe)
+          : getCurrentXRangeMs(document.getElementById("chart"));
+        const needsWindowRefresh = Array.isArray(range)
+          && range.length === 2
+          && getMainViewportWindowController().needsRefresh(range[0], range[1]);
+        return requestSettledViewportRender({
+          range,
+          reason: "viewport-pointer-settle",
+          updateClass: "viewport",
+          refreshCompanions: true,
+          reframeNormalization: chartSession.autoChartReset && needsWindowRefresh,
+        });
+      },
       resetEventMarkerHoverHighlight,
       scheduleEventMarkerHoverHighlight,
       scheduleSyncedCursor,
@@ -3182,6 +3242,9 @@ function syncSeriesToggleBoard(allSeries) {
   document.querySelectorAll(".series-toggle-btn").forEach((btn) => {
     const key = btn.dataset.series;
     btn.style.setProperty("--series-color", seriesColor(key));
+    const helpName = BASE_SERIES_HELP_NAMES[key];
+    if (helpName) btn.title = helpName;
+    else btn.removeAttribute("title");
     const isAvailable = available.has(key);
     const isVisible = isAvailable && !chartSession.hiddenSeries.has(key);
     btn.disabled = !isAvailable;
@@ -3264,7 +3327,8 @@ function removeCustomStock(ticker) {
   cancelTickerDartRequests(ticker);
   epsRefreshOnNextAdd.add(String(ticker || "").trim().toUpperCase());
   if (lastVisibleStockSeriesKey === ticker) lastVisibleStockSeriesKey = "";
-  chartSession.hiddenSeries.delete(ticker);
+  if (lastCoMovementSeriesKey === ticker) lastCoMovementSeriesKey = "";
+  getMainSeriesController().forget(ticker);
   clearRemovedSeriesTransforms(ticker);
   delete DISPLAY_NAMES[ticker];
   setAiForecastTargetVisibility(ticker, false);
@@ -3333,7 +3397,7 @@ const tickerPriceAppRuntime = createTickerPriceAppRuntime({
   setDisplayName: (ticker, value) => { DISPLAY_NAMES[ticker] = value; },
   onClearSeries: invalidateAiForecastCache,
   onPayloadChanged: () => appData.touch("pricePayload"),
-  assertPricePoints: (assertOptions) => runtimeSeriesQualityGateModule.assertPricePoints(assertOptions),
+  assertPricePoints: (assertOptions) => runtimeSeriesMergeModule.assertPricePoints(assertOptions),
   getStatus: (ticker) => tickerPriceStatusStore.get(ticker),
   setStatus: setTickerPriceStatus,
   priceStoreName: TICKER_PRICE_CACHE_STORE_NAME,
@@ -3392,7 +3456,7 @@ const runtimeIndexRefreshService = runtimeMarketRefreshModule.createRuntimeIndex
   labelName,
   mergeTickerSeries: mergeTickerSeriesIntoPricePayload,
   validateTickerPoints: (ticker, points, validationOptions) => (
-    runtimeSeriesQualityGateModule.assertPricePoints({
+    runtimeSeriesMergeModule.assertPricePoints({
       ticker,
       currentPayload: appData.pricePayload,
       incomingPoints: points,
@@ -3448,6 +3512,7 @@ function getVisibleSeriesSupplementalHydrator() {
       ),
       isEpsEnabled: () => chartSession.showEps,
       isAiEnabled: () => chartSession.showAiForecast,
+      isDartEnabled: () => resolveTickerDartPreloadPlan(chartSession).required,
       prepareDisclosure: (ticker, context) => preloadTickerDartData(ticker, context.msgEl),
       prepareEps: (ticker) => ensureEpsFeatureModules()
         .then(() => prepareVisibleEpsData({ tickers: [ticker] })),
@@ -3490,6 +3555,7 @@ function scheduleVisibleSeriesSupplementalHydration(ticker, msgEl, options = {})
 
 async function addCustomStock(candidate, msgEl, options = {}) {
   const activateRequested = options.activate !== false;
+  const forcePriceRefresh = options.forcePriceRefresh === true;
   const admission = getCustomStockLifecycle().beginAdd(candidate);
   if (!admission.ok) {
     if (admission.reason === "invalid" || admission.reason === "loading") return;
@@ -3520,7 +3586,8 @@ async function addCustomStock(candidate, msgEl, options = {}) {
     const initialLoad = activateRequested
       ? await ensureCustomTickerSeriesLoaded(stockCandidate.ticker, {
           displayName: stockCandidate.name,
-          returnAfterCache: true,
+          forceRefresh: forcePriceRefresh,
+          returnAfterCache: !forcePriceRefresh,
         })
       : null;
     if (trackAiProgress && chartSession.showAiForecast) {
@@ -3534,10 +3601,10 @@ async function addCustomStock(candidate, msgEl, options = {}) {
     epsRefreshOnNextAdd.add(stockCandidate.ticker);
 
     if (activateOnAdd) {
-      chartSession.hiddenSeries.delete(stockCandidate.ticker);
+      setMainChartSeriesVisible(stockCandidate.ticker, true, { notify: false });
       clearAutoResetSeriesTransforms(stockCandidate.ticker);
     } else {
-      chartSession.hiddenSeries.add(stockCandidate.ticker);
+      setMainChartSeriesVisible(stockCandidate.ticker, false, { notify: false });
     }
     setAiForecastTargetVisibility(stockCandidate.ticker, activateOnAdd);
     noteStockVisibilityChange(stockCandidate.ticker);
@@ -3604,7 +3671,8 @@ function getCustomStockPreloader() {
       getCustomStockLifecycle().removeMany(failed, { rememberColor: false });
       failed.forEach((ticker) => {
         if (lastVisibleStockSeriesKey === ticker) lastVisibleStockSeriesKey = "";
-        chartSession.hiddenSeries.delete(ticker);
+        if (lastCoMovementSeriesKey === ticker) lastCoMovementSeriesKey = "";
+        getMainSeriesController().forget(ticker);
         clearRemovedSeriesTransforms(ticker);
         delete DISPLAY_NAMES[ticker];
       });
@@ -3676,7 +3744,11 @@ function mainChartMacroBoundsRows() {
   if (mainChartMacroBoundsCache.revision !== revision) {
     mainChartMacroBoundsCache = {
       revision,
-      rows: appData.macroRows.filter((row) => Number.isFinite(toNum(row?.leading_cycle))),
+      rows: appData.macroRows.filter((row) => (
+        Number.isFinite(toNum(row?.leading_cycle))
+          || Number.isFinite(toNum(row?.t10y1y))
+          || Number.isFinite(toNum(row?.us_credit_spread))
+      )),
     };
   }
   return mainChartMacroBoundsCache.rows;
@@ -3687,11 +3759,13 @@ function getMainViewportWindowController() {
     chartDisplaySamplerModule.createViewportWindowController(globalThis, {
       bufferRatio: CHART_VIEWPORT_BUFFER_RATIO,
       dayMs: DAY_MS,
+      delayMs: 16,
+      edgeRatio: 0.35,
       minimumBufferMs: CHART_VIEWPORT_MIN_BUFFER_MS,
-      requestRender: ({ outside }) => requestChartRender(true, {
-        deferDuringInteraction: !outside,
+      requestRender: () => requestChartRender(true, {
+        deferDuringInteraction: false,
         reason: "viewport-window",
-        updateClass: "viewport",
+        updateClass: "viewport-range",
       }),
     })
   ));
@@ -3710,6 +3784,11 @@ function scheduleViewportWindowRender(startMs, endMs) {
 
 function prepareMainChartRenderInputs(el, preserveZoom) {
   const priceRows = appData.pricePayload?.records || [];
+  const preservedFrameRange = mainChartModelModule.resolvePreservedFrameRange(
+    chartSession.pinnedXRange,
+    getCurrentXRangeMs(el),
+    toMsSafe,
+  );
   return mainChartModelModule.buildMainChartRenderInputs({
     activeMonths: chartSession.activeMonths,
     boundRows: [mainChartMacroBoundsRows(), appData.creditRows],
@@ -3718,7 +3797,7 @@ function prepareMainChartRenderInputs(el, preserveZoom) {
     dateBounds: mainChartRenderer.dateBounds,
     fallbackDate: new Date().toISOString().slice(0, 10),
     hiddenSeries: chartSession.hiddenSeries,
-    preservedFrameRange: preserveZoom ? getCurrentXRangeMs(el) : null,
+    preservedFrameRange: preserveZoom ? preservedFrameRange : null,
     priceRows,
     resolveDisplayBudget: (visibleSeriesCount) => (
       getMainChartDisplayPointBudget(el, visibleSeriesCount)
@@ -3784,6 +3863,10 @@ function setupStockResearch(msgEl) {
             workerUrl: `./assets/stock-research-worker.bundle.min.js?v=${encodeURIComponent(APP_BUILD_VERSION)}`,
             canRun: () => adminAccessGranted,
             createProgressView: controlStateView.createProgressView,
+            toggleFailurePopover: toggleStockResearchPopover,
+            hideFailurePopover: () => hideStockResearchPopover("failed"),
+            toggleBlockedPopover: toggleStockResearchPopover,
+            hideBlockedPopover: () => hideStockResearchPopover("blocked"),
             getData: () => ({
               priceRecords: appData.pricePayload?.records,
               adrRows: appData.adrRows,
@@ -3802,6 +3885,10 @@ function setupStockResearch(msgEl) {
             schedulePrune: scheduleGranularCachePrune,
             isAdded: (ticker) => customStocks.some((item) => item.ticker === ticker),
             addStock: (candidate) => addCustomStock(candidate, msgEl, { activate: false }),
+            addFailedStock: (candidate) => addCustomStock(candidate, msgEl, {
+              activate: true,
+              forcePriceRefresh: true,
+            }),
             removeStock: (ticker) => removeCustomStock(ticker),
           }),
         });
@@ -3879,24 +3966,11 @@ async function getMainChartModel(
 function getMainChartDisplayPointBudget(el, visibleSeriesCount = 1) {
   const width = Math.max(320, Math.round(el?.getBoundingClientRect?.().width || window.innerWidth || 390));
   const mobile = isTouchDevice() || width < 700;
-  const minimum = mobile ? MAIN_CHART_MOBILE_MIN_DISPLAY_POINTS : MAIN_CHART_MIN_DISPLAY_POINTS;
-  const totalTarget = mobile
-    ? MAIN_CHART_TOTAL_VISIBLE_POINT_TARGET_MOBILE
-    : MAIN_CHART_TOTAL_VISIBLE_POINT_TARGET_DESKTOP;
-  const widthBudget = Math.round(width * MAIN_CHART_POINTS_PER_PIXEL);
-  const seriesBudget = Math.round(totalTarget / Math.max(1, visibleSeriesCount));
-  return Math.max(
-    minimum,
-    Math.min(MAIN_CHART_MAX_DISPLAY_POINTS, widthBudget, seriesBudget),
-  );
+  return resolveMainChartDisplayPointBudget(width, visibleSeriesCount, mobile);
 }
 
 function updateHandles(frameGeometry = null) {
-  if (isViewportDragging || isWheelZooming) {
-    scheduleHandleUpdate(HANDLE_UPDATE_DEBOUNCE_MS);
-    return;
-  }
-  if (isHandleDragging || isHandlePointerActive) return;
+  if (isHandleDragging) return;
   if (!chartSession.showChartHandles) {
     document.getElementById("y-handles")?.remove();
     return;
@@ -3915,63 +3989,32 @@ function updateHandles(frameGeometry = null) {
   const layout = mainChartRenderer.buildHandleLayouts(el.data, baseTraceValues, xa, ya, SERIES_COLORS, {
     interpolateAtMs: interpolateTraceYAtMs,
   });
-  if (container.dataset.layoutSignature === layout.signature) return;
-  container.replaceChildren();
-  const pairs = new Map();
-  layout.items.forEach(({ traceIndex, seriesKey, leftY, rightY, rightX, color, isEps, handleLabel }) => {
-    const leftHandle = document.createElement("div");
-    leftHandle.className = "y-handle y-handle-left";
-    if (isEps) leftHandle.classList.add("y-handle-eps");
-    leftHandle.style.top = `${leftY - 7}px`;
-    if (isEps) {
-      leftHandle.style.borderColor = color;
-      leftHandle.style.backgroundColor = "transparent";
-    } else {
-      leftHandle.style.backgroundColor = color;
-    }
-    const title = handleLabel || labelName(seriesKey);
-    leftHandle.title = `${title} (위치)`;
-    leftHandle.dataset.seriesKey = seriesKey;
-    guardHandlePointer(leftHandle);
-    container.appendChild(leftHandle);
-    const rightHandle = document.createElement("div");
-    rightHandle.className = "y-handle y-handle-right";
-    if (isEps) rightHandle.classList.add("y-handle-eps");
-    rightHandle.style.top = `${rightY - 7}px`;
-    rightHandle.style.left = `${rightX}px`;
-    if (isEps) {
-      rightHandle.style.borderColor = color;
-      rightHandle.style.backgroundColor = "transparent";
-    } else {
-      rightHandle.style.backgroundColor = color;
-    }
-    rightHandle.title = `${title} (스케일)`;
-    rightHandle.dataset.seriesKey = seriesKey;
-    guardHandlePointer(rightHandle);
-    container.appendChild(rightHandle);
-    pairs.set(seriesKey, [leftHandle, rightHandle]);
-    setupOffsetDrag(leftHandle, traceIndex, seriesKey, leftY, ya, rightHandle, rightY, {
-      clickTogglesVisibility: !isEps,
-    });
-    setupScaleDrag(rightHandle, traceIndex, seriesKey, rightY, ya);
-  });
-  container._thinkstockHandlePairs = pairs;
-  container.dataset.layoutSignature = layout.signature;
-}
-
-function guardHandlePointer(handle) {
-  handle.addEventListener("pointerenter", () => {
-    isHandlePointerActive = true;
-  });
-  handle.addEventListener("pointerleave", () => {
-    if (isHandleDragging) return;
-    isHandlePointerActive = false;
-    scheduleHandleUpdate(0);
+  mainChartRenderer.syncHandleLayout(container, layout, {
+    axis: ya,
+    labelName,
+    bindHandle: (handle, side) => {
+      if (side === "left") setupOffsetDrag(handle);
+      else setupScaleDrag(handle);
+    },
   });
 }
 
 function computeFinalValues(seriesKey, traceIndex = -1, element = null) {
   return chartSeriesTransformRuntime.computeSeriesValues(seriesKey, traceIndex, element);
+}
+
+function computeFinalSeriesUpdate(seriesKey, traceIndex = -1, element = null) {
+  if (!chartSession.autoChartReset || !element?.data) return null;
+  return chartSeriesTransformRuntime.viewportSeriesUpdate(
+    element.data,
+    element?._fullLayout?.xaxis?.range,
+    seriesKey,
+    traceIndex,
+    {
+      targetSpan: 20,
+      resolvePostScale: defaultSeriesScale,
+    },
+  );
 }
 
 function mainSeriesTraceIndex(el, seriesKey, preferredIndex = null) {
@@ -4009,8 +4052,18 @@ function positionSeriesHandles(el, seriesKey, values, frameGeometry = null) {
   handles.forEach((handle) => {
     handle.hidden = false;
     const top = handle.classList.contains("y-handle-left") ? toTop(first) : toTop(last);
-    if (Number.isFinite(top)) handle.style.top = `${top}px`;
+    if (!Number.isFinite(top)) return;
+    handle.style.top = `${top}px`;
+    if (handle._thinkstockHandleState) {
+      handle._thinkstockHandleState.basePixelY = top + 7;
+      handle._thinkstockHandleState.axis = yAxis;
+    }
   });
+  const [leftHandle, rightHandle] = handles;
+  if (leftHandle?._thinkstockHandleState && rightHandle?._thinkstockHandleState) {
+    leftHandle._thinkstockHandleState.pairedHandle = rightHandle;
+    leftHandle._thinkstockHandleState.pairedPixelY = rightHandle._thinkstockHandleState.basePixelY;
+  }
   document.getElementById("y-handles")?.removeAttribute("data-layout-signature");
 }
 
@@ -4039,7 +4092,9 @@ const applyChartVisualFrame = chartUpdateCoordinatorModule.createSeriesFrameAppl
   restyle: (element, update, indexes, options) => (
     plotlyUpdateRuntime.restyle(element, update, indexes, options)
   ),
-  resolveTraceIndex: mainSeriesTraceIndex, computeValues: computeFinalValues,
+  resolveTraceIndex: mainSeriesTraceIndex,
+  computeSeriesUpdate: computeFinalSeriesUpdate,
+  computeValues: computeFinalValues,
   collectMarkerUpdates: chartMarkerLayoutModule.collectSeriesYDeltaUpdates,
   collectLinkedTraceUpdates: (element, { seriesKey }) => (
     chartSeriesTransformRuntime.collectLinkedSeriesYUpdates(element?.data, seriesKey)
@@ -4110,13 +4165,25 @@ function getSeriesTransformGestureRuntime() {
 async function finishTraceYEdit(rebuildForDisclosures = true, seriesKey = "", options = {}) {
   chartVisualFrameCoordinator.flush();
   await chartVisualFrameCoordinator.whenSettled();
+  if (options.preserveTransform === true) {
+    await getMainChartRenderScheduler().whenSettled();
+    const element = document.getElementById("chart");
+    const traceIndex = mainSeriesTraceIndex(element, seriesKey);
+    if (traceIndex >= 0) {
+      restyleLive(traceIndex, seriesKey, { commit: true });
+      chartVisualFrameCoordinator.flush();
+      await chartVisualFrameCoordinator.whenSettled();
+    }
+  }
   saveState();
   if (chartSession.autoChartReset && options.preserveTransform === true) {
     // The live frame already committed the series. Fit the axis and dated marker
     // offsets in one Plotly transaction instead of rebuilding the whole chart.
     await fitCurrentChartRatio({ expandOnly: true, syncMarkers: true });
+    applyChartResetPolicy("viewport");
     return;
   }
+  if (options.preserveTransform === true) applyChartResetPolicy("viewport");
   if (seriesKey.startsWith("eps:")) {
     scheduleHandleUpdate(0);
     saveLastRuntimeSnapshot().catch(() => {});
@@ -4144,18 +4211,13 @@ function lockCurrentYAxisRange() {
   if (!el || !Array.isArray(range) || range.length < 2) return;
   const lockedRange = [range[0], range[1]];
   useViewportEventMarkerGap = true;
-  const layoutRange = el.layout?.yaxis?.range;
-  const alreadyLocked = el.layout?.yaxis?.autorange === false
-    && Array.isArray(layoutRange)
-    && layoutRange.length >= 2
-    && layoutRange.every((value, index) => Math.abs(Number(value) - Number(lockedRange[index])) < 1e-9);
   if (el.layout?.yaxis) {
     el.layout.yaxis.autorange = false;
     el.layout.yaxis.range = [...lockedRange];
   }
-  // Avoid racing the first live trace/marker frame with a redundant Plotly
-  // relayout. The rendered axis is already locked in the normal chart state.
-  if (alreadyLocked) return Promise.resolve();
+  // A viewport frame may already be in flight when a handle takes ownership.
+  // Queue this lock even when the layout appears locked so that the newer
+  // direct-edit transaction wins after that older frame settles.
   return plotlyUpdateRuntime.relayout(el, {
     "yaxis.range[0]": lockedRange[0],
     "yaxis.range[1]": lockedRange[1],
@@ -4169,18 +4231,20 @@ function getCurrentMainXRange() {
   return [range[0], range[1]];
 }
 
-function setupOffsetDrag(
-  handle,
-  traceIndex,
-  seriesKey,
-  basePixelY,
-  ya,
-  pairedHandle,
-  pairedPixelY,
-  options = {},
-) {
+function setupOffsetDrag(handle) {
   handle.addEventListener("pointerdown", (event) => {
     if (!event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) return;
+    const state = handle._thinkstockHandleState;
+    if (!state) return;
+    const {
+      traceIndex,
+      seriesKey,
+      basePixelY,
+      axis: ya,
+      pairedHandle,
+      pairedPixelY,
+      clickTogglesVisibility,
+    } = state;
     event.preventDefault();
     event.stopPropagation();
     const startClientY = event.clientY;
@@ -4190,15 +4254,15 @@ function setupOffsetDrag(
       traceIndex,
       seriesKey,
       axis: ya,
-      beginOptions: { handle, trackHandlePointer: true },
+      beginOptions: { handle },
       updatePosition: (clientY) => {
-      const dy = clientY - startClientY;
-      handle.style.top = `${basePixelY + dy - 7}px`;
-      if (pairedHandle) pairedHandle.style.top = `${pairedPixelY + dy - 7}px`;
+        const dy = clientY - startClientY;
+        handle.style.top = `${basePixelY + dy - 7}px`;
+        if (pairedHandle) pairedHandle.style.top = `${pairedPixelY + dy - 7}px`;
       },
       onClick: ({ startValue }) => {
         chartSession.seriesOffsets[seriesKey] = startValue;
-        if (options.clickTogglesVisibility === false) {
+        if (clickTogglesVisibility === false) {
           restyleLive(traceIndex, seriesKey, { commit: true });
           scheduleHandleUpdate(0);
           return;
@@ -4213,9 +4277,17 @@ function setupOffsetDrag(
   }, { passive: false });
 }
 
-function setupScaleDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
+function setupScaleDrag(handle) {
   handle.addEventListener("pointerdown", (event) => {
     if (!event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) return;
+    const state = handle._thinkstockHandleState;
+    if (!state) return;
+    const {
+      traceIndex,
+      seriesKey,
+      basePixelY,
+      axis: ya,
+    } = state;
     event.preventDefault();
     event.stopPropagation();
     const startClientY = event.clientY;
@@ -4224,7 +4296,7 @@ function setupScaleDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
       startClientY,
       traceIndex,
       seriesKey,
-      beginOptions: { handle, trackHandlePointer: true },
+      beginOptions: { handle },
       updatePosition: (clientY) => {
       const dy = clientY - startClientY;
       handle.style.top = `${basePixelY + dy - 7}px`;
@@ -4235,33 +4307,15 @@ function setupScaleDrag(handle, traceIndex, seriesKey, basePixelY, ya) {
 }
 
 function visibleLineDataRangeMs(traces) {
-  const fullRanges = (Array.isArray(traces) ? traces : []).flatMap((trace) => {
-    if (trace?.visible === "legendonly") return [];
-    const start = Number(trace?.meta?.fullDataStartMs);
-    const end = Number(trace?.meta?.fullDataEndMs);
-    return Number.isFinite(start) && Number.isFinite(end) && end > start ? [[start, end]] : [];
-  });
-  const range = fullRanges.length ? [
-    Math.min(...fullRanges.map((value) => value[0])),
-    Math.max(...fullRanges.map((value) => value[1])),
-  ] : chartViewportControllerModule.visibleLineDataRangeMs(traces, {
+  const range = chartViewportControllerModule.visibleLineDataRangeMs(traces, {
     toMilliseconds: toMsSafe,
   })?.range || null;
   return extendChartRangeRight(range);
 }
 
-function queueAutoCompositionViewport(forceFitFull = false, options = {}) {
+function captureCurrentCompositionViewport(forceFitFull = false) {
   const element = document.getElementById("chart");
-  if (chartSession.autoChartReset) {
-    // Composition changes are fitted from the final adjustable trace set in one pass.
-    chartSession.pendingAutoChartFit = true;
-    chartSession.pendingAutoChartFitExpandOnly = false;
-  }
-  if (options.preserveFutureOverlayViewport) {
-    chartSession.pendingCompositionViewport = null;
-    return;
-  }
-  const capturedViewport = chartViewportControllerModule.captureCompositionViewport({
+  return chartViewportControllerModule.captureCompositionViewport({
     autoScale: chartSession.autoChartReset,
     element,
     forceFitFull,
@@ -4270,6 +4324,24 @@ function queueAutoCompositionViewport(forceFitFull = false, options = {}) {
     toMilliseconds: toMsSafe,
     rightPaddingMs: chartRightPaddingMs(),
   });
+}
+
+function queueAutoCompositionViewport(forceFitFull = false, options = {}) {
+  if (chartSession.autoChartReset) {
+    // Composition changes are fitted from the final adjustable trace set in one pass.
+    chartSession.pendingAutoChartFit = true;
+  }
+  if (options.preserveFutureOverlayViewport) {
+    chartSession.pendingCompositionViewport = null;
+    return;
+  }
+  const hasPreparedViewport = Object.prototype.hasOwnProperty.call(options, "compositionViewport");
+  // Coalesced data/overlay requests can arrive after visibility already changed.
+  // Keep the first pre-change snapshot until the render plan consumes it.
+  if (!hasPreparedViewport && chartSession.pendingCompositionViewport) return;
+  const capturedViewport = hasPreparedViewport
+    ? options.compositionViewport
+    : captureCurrentCompositionViewport(forceFitFull);
   chartSession.pendingCompositionViewport = capturedViewport;
   if (capturedViewport?.viewRange?.length === 2) {
     // Plotly can briefly expose no settled range while a price-first composition
@@ -4291,6 +4363,7 @@ function requestFutureOverlayCompositionUpdate() {
 async function fitCurrentChartRatio(options = {}) {
   const el = document.getElementById("chart");
   if (!el?._fullLayout?.yaxis || !window.Plotly) return false;
+  if (isHandleDragging && options.allowDuringInteraction !== true) return false;
   const xRange = getCurrentMainXRange();
   const hasEventMarkers = chartSession.showDisclosures
     || chartSession.showInsiderTrades
@@ -4460,12 +4533,103 @@ function hideDisclosurePopover() {
   appRuntimeRegistry.peek(APP_RUNTIME_KEYS.disclosurePopover)?.hide?.();
 }
 
-function showDisclosurePopover(group, sourceEvent) {
+function showOptionalDartPopover(getPopover, group, sourceEvent, errorKey) {
   const loaded = getLoadedDartFeature();
-  if (loaded) return getDisclosurePopover().show(group, sourceEvent);
+  if (loaded) return getPopover().show(group, sourceEvent);
   ensureDartFeatureModules()
-    .then(() => getDisclosurePopover().show(group, sourceEvent))
-    .catch((error) => recordRuntimeError("disclosure-popover-load", error));
+    .then(() => getPopover().show(group, sourceEvent))
+    .catch((error) => recordRuntimeError(errorKey, error));
+  return true;
+}
+
+function showDisclosurePopover(group, sourceEvent) {
+  return showOptionalDartPopover(
+    getDisclosurePopover,
+    group,
+    sourceEvent,
+    "disclosure-popover-load",
+  );
+}
+
+let stockResearchPopoverDesiredVisible = false;
+let stockResearchPopoverKey = "";
+let stockResearchPopoverVisibilityCallback = null;
+let stockResearchPopoverRequestToken = 0;
+
+function updateStockResearchPopoverVisibility(visible) {
+  const callback = stockResearchPopoverVisibilityCallback;
+  if (!visible) {
+    stockResearchPopoverDesiredVisible = false;
+    stockResearchPopoverKey = "";
+    stockResearchPopoverVisibilityCallback = null;
+  }
+  callback?.(visible);
+}
+
+function getStockResearchPopover() {
+  return appRuntimeRegistry.get(APP_RUNTIME_KEYS.stockResearchPopover, () => (
+    requireLoadedDartFeature().popover.createHoverSummaryPopover(globalThis, {
+      chartId: "stockResearchPanel",
+      escapeHtml,
+      interactive: true,
+      variantClassName: "stock-research-list-popover",
+      dismissOnOutsidePointer: true,
+      scrollIndicatorSelector: ".chart-hover-summary-lines",
+      isOutsidePointerIgnored: (event) => Boolean(event.target?.closest?.(
+        "#stockResearchFailedBtn, #stockResearchModalBlockedClearBtn",
+      )),
+      onEventAction: (item) => item?.onAction?.(),
+      onVisibilityChange: updateStockResearchPopoverVisibility,
+    })
+  ), (popover) => popover?.destroy?.());
+}
+
+function hideStockResearchPopover(expectedKey = "") {
+  const key = String(expectedKey || "").trim();
+  if (key && stockResearchPopoverKey && stockResearchPopoverKey !== key) return false;
+  stockResearchPopoverRequestToken += 1;
+  const popover = appRuntimeRegistry.peek(APP_RUNTIME_KEYS.stockResearchPopover);
+  if (popover?.isVisible?.()) popover.hide();
+  else updateStockResearchPopoverVisibility(false);
+  return true;
+}
+
+function toggleStockResearchPopover(group, sourceEvent) {
+  const key = String(group?.popoverKey || "default").trim() || "default";
+  if (stockResearchPopoverDesiredVisible && stockResearchPopoverKey === key) {
+    hideStockResearchPopover(key);
+    return false;
+  }
+
+  if (stockResearchPopoverDesiredVisible) updateStockResearchPopoverVisibility(false);
+  stockResearchPopoverDesiredVisible = true;
+  stockResearchPopoverKey = key;
+  stockResearchPopoverVisibilityCallback = typeof group?.onVisibilityChange === "function"
+    ? group.onVisibilityChange
+    : null;
+  const requestToken = ++stockResearchPopoverRequestToken;
+
+  const show = () => {
+    if (requestToken !== stockResearchPopoverRequestToken
+      || !stockResearchPopoverDesiredVisible
+      || stockResearchPopoverKey !== key) return false;
+    const visible = getStockResearchPopover().show(group, sourceEvent);
+    if (!visible) updateStockResearchPopoverVisibility(false);
+    return visible;
+  };
+
+  const loaded = getLoadedDartFeature();
+  if (loaded) return show();
+  ensureDartFeatureModules()
+    .then(() => {
+      show();
+    })
+    .catch((error) => {
+      if (requestToken === stockResearchPopoverRequestToken) {
+        updateStockResearchPopoverVisibility(false);
+      }
+      recordRuntimeError("stock-research-popover-load", error);
+    });
   return true;
 }
 
@@ -4662,7 +4826,7 @@ function setAiForecastTargetVisibility(series, visible) {
 
 function activeAiAnalysisTickers() {
   return [...aiForecastTargetSeries]
-    .filter((ticker) => /^\d{6}\.(KS|KQ)$/.test(ticker));
+    .filter((ticker) => seriesSupportsFeature(ticker, "company-analysis"));
 }
 
 async function loadAiMarketModel() {
@@ -4946,7 +5110,6 @@ function getEpsDataController() {
       const changedCount = Math.max(0, Number(result.changedCount) || 0);
       if (chartSession.showEps && changedCount && chartSession.autoChartReset) {
         chartSession.pendingAutoChartFit = true;
-        chartSession.pendingAutoChartFitExpandOnly = false;
       }
       if (chartSession.showEps && changedCount && options.render !== false) {
         requestChartCompositionUpdate();
@@ -5136,7 +5299,13 @@ function summarizeAiForecastQualityDiagnostics() {
 }
 
 const runtimeDiagnosticStateCollector = createRuntimeDiagnosticStateCollector({
+  appData: () => appData.stats(),
   backgroundTasks: () => backgroundTaskScheduler.stats(),
+  derivedCaches: () => ({
+    mainChart: mainChartCalcCache.stats(),
+    sourceFingerprints: mainChartSourceFingerprintCache.stats(),
+    tickerSeries: tickerDerivedMemoryCaches.stats(),
+  }),
   startupVisualReady: () => startupTaskRuntime.isReleased(),
   refreshPhases: () => runtimeDataApp.getPhaseStats(),
   refreshStatus: () => runtimeDataApp.getStatus(),
@@ -5171,7 +5340,9 @@ function queueAiForecastJournalSync(ticker, forecast, historyRows) {
 function disclosureTargetTickers() {
   const lifecycle = appRuntimeRegistry.peek(APP_RUNTIME_KEYS.dartEvents);
   return lifecycle?.targetTickers?.()
-    || customStocks.map((stock) => normalizeDartTicker(stock.ticker)).filter(Boolean);
+    || customStocks
+      .map((stock) => normalizeDartTicker(stock.ticker))
+      .filter((ticker) => ticker && seriesSupportsFeature(ticker, "disclosure"));
 }
 
 function visibleDisclosureTargetTickers() {
@@ -5179,7 +5350,9 @@ function visibleDisclosureTargetTickers() {
   return lifecycle?.targetTickers?.({ visible: true })
     || customStocks
       .map((stock) => normalizeDartTicker(stock.ticker))
-      .filter((ticker) => ticker && !chartSession.hiddenSeries.has(ticker));
+      .filter((ticker) => ticker
+        && seriesSupportsFeature(ticker, "disclosure")
+        && !chartSession.hiddenSeries.has(ticker));
 }
 
 function getDartEventLifecycle() {
@@ -5343,12 +5516,14 @@ function refreshInsiderTradesForVisibleSeries(options = {}) {
     .then(() => getDartEventLifecycle().refreshVisibleInsiders(options));
 }
 
-function queueInsiderTradeRefresh() {
-  if (!chartSession.showInsiderTrades) return false;
-  ensureDartFeatureModules()
-    .then(() => getDartEventLifecycle().scheduleInsiderRefresh())
-    .catch((error) => recordRuntimeError("insider-feature-load", error));
-  return true;
+async function restoreVisibleDartLayers() {
+  await ensureDartFeatureModules();
+  return getDartEventLifecycle().restoreVisibleLayers({
+    disclosures: chartSession.showDisclosures,
+    insiders: chartSession.showInsiderTrades,
+    messageElement: document.getElementById("messageArea"),
+    trackProgress: true,
+  });
 }
 
 function syncAiForecastToggleButton(traceCount = lastAiForecastTraceCount) {
@@ -5854,12 +6029,13 @@ function getMainChartRenderScheduler() {
         deferDelayMs: INTERACTION_RENDER_DELAY_MS,
         isInteractionBusy: isChartInteractionBusy,
         yieldBetweenTransactions: true,
-        afterBatch: () => {
+        afterBatch: ({ invalidation } = {}) => {
           if (!chartSession.pendingAutoChartFit) return;
-          const expandOnly = chartSession.pendingAutoChartFitExpandOnly;
+          // Price-first composition is only an interim frame. Keep the fit
+          // pending until every active line has joined the final frame.
+          if (invalidation?.progressiveComposition === true) return;
           chartSession.pendingAutoChartFit = false;
-          chartSession.pendingAutoChartFitExpandOnly = false;
-          if (chartSession.autoChartReset) return fitCurrentChartRatio({ expandOnly });
+          if (chartSession.autoChartReset) return fitCurrentChartRatio();
         },
         afterSettled: flushQueuedEventMarkerRefresh,
         onError: (err) => {
@@ -6029,8 +6205,10 @@ function prependGroupedHoverTraces(traces, seriesOrder, eventRevisions = null) {
   traces.unshift(...mainChartRenderer.buildGroupedHoverTraces({
     enabled: chartSession.hoverShowPopup,
     traces,
-    seriesOrder,
+    seriesOrder: getMainSeriesController().activationOrder(seriesOrder),
+    hoverLabelName,
     labelName,
+    stackedPriceSeries: STACKED_HOVER_PRICE_SERIES,
     revision: eventRevisions
       ? Object.entries(eventRevisions).sort(([left], [right]) => left.localeCompare(right)).join("|")
       : "",
@@ -6095,21 +6273,16 @@ function getMainChartEvents() {
       handlePriorityChartClick,
       hideDisclosurePopover,
       interactionState,
+      isCurrentRange: (element, start, end) => xRangeMatches(element, start, end),
       isTouchDevice,
       normalizeHoverPopupIndent,
-      noteViewportInteraction: ({ hasRange }) => {
-        chartViewportInteractionRevision += 1;
-        chartSession.userViewportPinned = Boolean(hasRange);
-      },
+      commitViewportRange,
       refreshAiForecastTargets,
       renderCoMovementPanel,
       requestChartCompositionUpdate,
       scheduleHandleUpdate,
-      scheduleViewportWindowRender,
-      scheduleViewportRangeSync,
       showChartNavigationMessage,
       syncHoverToChart,
-      toMsSafe,
     });
   });
 }
@@ -6135,7 +6308,12 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
     getViewportRevision: () => chartViewportInteractionRevision,
     getViewportSignature: viewportSignature,
     onViewportChanged: () => {
-      const range = getCurrentXRangeMs(el);
+      const pinnedRange = Array.isArray(chartSession.pinnedXRange)
+        ? chartSession.pinnedXRange.map(toMsSafe)
+        : null;
+      const range = pinnedRange?.length === 2 && pinnedRange.every(Number.isFinite)
+        ? pinnedRange
+        : getCurrentXRangeMs(el);
       if (!range) return;
       chartSession.pinnedXRange = range.map((value) => new Date(value).toISOString());
       chartSession.pendingCompositionViewport = null;
@@ -6146,8 +6324,9 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
       reason: "viewport-revision",
       updateClass: "viewport",
     }),
+    invalidateViewportWindow: () => getMainViewportWindowController().invalidate?.(),
   });
-  const queueCurrentViewportRender = renderGuard.queueCurrentViewportRender;
+  const viewportWindowController = getMainViewportWindowController();
   if (!preserveZoom) useViewportEventMarkerGap = false;
   const msgEl = document.getElementById("messageArea");
   const currentYRange = el?._fullLayout?.yaxis?.range;
@@ -6192,7 +6371,8 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
   );
   if (!model || invalidation.shouldAbort?.()) return;
   const { rows, selected, seriesModels } = model;
-  const viewportSlice = getMainViewportWindowController().build(model, [frameStart, frameEnd]);
+  const viewportSlice = viewportWindowController.build(model, [frameStart, frameEnd]);
+  renderGuard.prepareViewportWindow();
   // Live handle/line transforms belong to the viewport session, not the reusable calculation cache.
   chartUpdateCoordinatorModule.hydrateMainChartSession(chartSession, model, {
     captureLockedFrame: captureLockedChartFrame,
@@ -6205,17 +6385,18 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
   });
   const shouldHydrateChartData = !progressiveComposition
     && chartUpdateCoordinatorModule.shouldHydrateChartData(invalidation);
-  if (shouldHydrateChartData) queueInsiderTradeRefresh();
   if (!chartSession.showDisclosures) hideDisclosurePopover();
   resetMainChartInteractionRenderState(el);
 
   if (!rows.length || !selected.length) {
+    viewportWindowController.invalidate?.();
     markEventMarkerRenderApplied(eventMarkerRevisionsAtStart);
     msgEl.innerHTML = '<div class="message error">표시할 데이터가 없습니다.</div>';
     return;
   }
   msgEl.innerHTML = "";
 
+  const mainSeriesOrder = getMainSeriesController().activationOrder(selected);
   const frame = await chartUpdateCoordinatorModule.buildMainChartRenderFrame({
     element: el,
     renderer: mainChartRenderer,
@@ -6230,9 +6411,13 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
       hiddenSeries: chartSession.hiddenSeries,
       lineTraceType: MAIN_LINE_TRACE_TYPE,
       hoverShowPopup: chartSession.hoverShowPopup,
+      hoverLabelName,
+      hoverSeriesOrder: mainSeriesOrder,
       labelName,
       renderRevision: `${model.renderRevision || ""}|window:${viewportSlice.window?.key || "full"}`,
       seriesColor,
+      seriesOrder: mainSeriesOrder,
+      stackedPriceSeries: STACKED_HOVER_PRICE_SERIES,
       buildEpsTraceModel,
       buildAiForecastTraces,
       // Viewport, transform, and forecast-only frames reuse prepared timing data.
@@ -6249,7 +6434,7 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
       pinnedXRange: chartSession.pinnedXRange,
       userViewportPinned: chartSession.userViewportPinned,
       currentXRange: el._fullLayout?.xaxis?.range,
-      currentYRange: chartSession.pendingAutoChartFit && !chartSession.pendingAutoChartFitExpandOnly
+      currentYRange: chartSession.pendingAutoChartFit
         ? null
         : el._fullLayout?.yaxis?.range,
       lockedYRange: lockedYRangeForRender,
@@ -6273,7 +6458,8 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
     },
   });
   if (!frame) {
-    queueCurrentViewportRender();
+    renderGuard.discardViewportWindow();
+    renderGuard.queueCurrentViewportRender();
     return;
   }
   const {
@@ -6282,16 +6468,26 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
     traces,
     viewportPlan,
   } = frame;
-  if (invalidation.shouldAbort?.() || queueCurrentViewportRender()) return;
+  if (renderGuard.abortPreparedFrame(invalidation)) return;
+  resetMainChartInteractionRenderState(el);
+  if (renderGuard.abortPreparedFrame(invalidation)) return;
+  let renderMode;
+  try {
+    renderMode = await applyMainChartRender(el, traces, layout, invalidation);
+  } catch (error) {
+    renderGuard.discardViewportWindow();
+    throw error;
+  }
+  chartUpdateCoordinatorModule.acceptPlannedViewportRender(
+    renderGuard, el, viewportPlan, xRangeMatches,
+  );
+  if (renderGuard.queueCurrentViewportRender()) return;
   chartUpdateCoordinatorModule.applyMainChartViewportPlan(
     chartSession,
     viewportPlan,
     (plan) => getFutureOverlayController().applyPlan(plan),
   );
-  resetMainChartInteractionRenderState(el);
-  if (invalidation.shouldAbort?.() || queueCurrentViewportRender()) return;
-  const renderMode = await applyMainChartRender(el, traces, layout, invalidation);
-  if (queueCurrentViewportRender()) return;
+  renderGuard.commitViewportWindow();
   const renderedFrameRange = getCurrentXRangeMs(el);
   const finalizedFrame = chartUpdateCoordinatorModule.finalizeMainChartFrameState(
     chartSession,
@@ -6402,7 +6598,6 @@ async function getAuxiliaryChartRuntime() {
     };
     const syncState = {
       get chartSyncing() { return chartSyncing; },
-      set chartSyncing(value) { chartSyncing = Boolean(value); },
       get hoverSyncing() { return hoverSyncing; },
       get cursorSyncing() { return cursorSyncing; },
     };
@@ -6432,6 +6627,7 @@ async function getAuxiliaryChartRuntime() {
       chartDisplaySampler: chartDisplaySamplerModule,
       chartSession,
       clearHoverOnChart,
+      commitViewportRange,
       dataRevisionSignature,
       dataState,
       requestAuxiliaryChartModel: (payload) => getChartModelWorkerClient().request(
@@ -6449,7 +6645,6 @@ async function getAuxiliaryChartRuntime() {
       labelName,
       persistState: saveState,
       recordPerfSample,
-      scheduleViewportRangeSync,
       setNewsSentimentMovingAverageDays,
       seriesColor,
       startPerfSample,
@@ -6463,10 +6658,6 @@ async function getAuxiliaryChartRuntime() {
 
 function invalidateAdrChartRender() {
   appRuntimeRegistry.peek(APP_RUNTIME_KEYS.auxiliaryChart)?.invalidateAdr();
-}
-
-function renderMacdChart(xRange) {
-  return getAuxiliaryChartRuntime().then((runtime) => runtime.renderMacdChart(xRange));
 }
 
 const ADR_SOURCE_URL = "http://www.adrinfo.kr/chart";
@@ -6503,6 +6694,7 @@ async function refreshLoadedAuxiliaryViewport() {
     ? chartSession.pinnedXRange.slice(0, 2)
     : mainElement?._fullLayout?.xaxis?.range?.slice(0, 2);
   if (!runtime || xRange?.length !== 2) return;
+  if (runtime.needsViewportRefresh?.(xRange) === false) return;
   scheduleAuxiliaryChartRender(xRange);
   await getAuxiliaryChartRenderQueue().whenSettled();
 }
@@ -6543,11 +6735,11 @@ async function fetchJsonWithProxyFallback(url, init = null, options = {}) {
   throw new Error(lastError);
 }
 function runtimePoliciesFor(keys) {
-  return runtimeSeriesQualityGateModule.policiesFor(keys);
+  return runtimeSeriesMergeModule.policiesFor(keys);
 }
 
 function validateRuntimeSeriesCandidate(label, currentRows, candidateRows, incomingRows, keys, options = {}) {
-  return runtimeSeriesQualityGateModule.assertRows({
+  return runtimeSeriesMergeModule.assertRows({
     label,
     currentRows,
     candidateRows,
@@ -6875,9 +7067,9 @@ async function loadData(forceNetwork = false, options = {}) {
 }
 
 async function ensureHistoricalDataLoaded(forceNetwork = false) {
+  if (historicalDataLoadPromise) return historicalDataLoadPromise;
   if (historicalDataLoaded && hasHistoricalDataCoverage()) return true;
   historicalDataLoaded = false;
-  if (historicalDataLoadPromise) return historicalDataLoadPromise;
 
   historicalDataLoadPromise = loadData(forceNetwork, {
     mergeWithExisting: true,
@@ -6933,7 +7125,6 @@ async function applyRuntimeRefreshChanges(revisionsBefore, options = {}) {
   if (adrDataChanged) invalidateAdrChartRender();
   if (mainDataChanged && chartSession.autoChartReset) {
     chartSession.pendingAutoChartFit = true;
-    chartSession.pendingAutoChartFitExpandOnly = false;
   }
   if (options.backgroundBatch) {
     const shouldRender = mainDataChanged || renderAuxiliaryOnly || renderDisclosureOnly;
@@ -7106,29 +7297,7 @@ const applicationFeatureLifecycle = createApplicationFeatureLifecycleDescriptors
     reason: "restored-timing",
     updateClass: "data",
   }),
-  restoreDart: () => ensureDartFeatureModules()
-    .then(() => {
-      if (chartSession.showInsiderTrades) queueInsiderTradeRefresh();
-    })
-    .catch((error) => recordRuntimeError("dart-feature-load", error)),
-  refreshAi: async () => {
-    const needsDailyAnalysis = activeAiAnalysisTickers()
-      .some((ticker) => !aiAnalysisIsFresh(aiAnalysisByTicker.get(ticker)));
-    if (needsDailyAnalysis) startAiForecastProgress();
-    await refreshAiAnalysisForVisibleSeries({ forceNetwork: true });
-  },
-  restoreAi: () => {
-    startAiForecastProgress();
-    prepareHistoricalDataForAiForecast().catch(() => {});
-    refreshAiAnalysisForVisibleSeries().catch(() => {});
-    loadAiMarketModel().catch(() => {});
-  },
-  refreshEps: async () => {
-    await prepareVisibleEpsData({ forceNetwork: true, render: false });
-    if (getEpsDataController().lastPrepareResult().changedCount > 0) {
-      requestChartCompositionUpdate();
-    }
-  },
+  restoreDart: restoreVisibleDartLayers,
   canUseInsider: canUseDartGateway,
   refreshInsider: () => refreshInsiderTradesForVisibleSeries({ forceNetwork: true }),
 });
@@ -7205,9 +7374,12 @@ const applicationLifecycle = createApplicationLifecycleRuntime({
   restoredActivations: applicationFeatureLifecycle.restoredActivations,
   scheduleRestoredActivation: (task, { feature, index } = {}) => (
     runAfterStartupVisualReady(task, {
-      delayMs: 1000 + ((Number(index) || 0) * 600),
-      priority: -5 - (Number(index) || 0),
+      delayMs: feature?.name === "dart"
+        ? STARTUP_POST_VISUAL_QUIET_MS
+        : 1000 + ((Number(index) || 0) * 600),
+      priority: feature?.name === "dart" ? 20 : -5 - (Number(index) || 0),
       taskName: String(feature?.name || "restored-feature"),
+      userVisible: feature?.name === "dart",
     })
   ),
   afterActivation: () => {

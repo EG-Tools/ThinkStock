@@ -51,9 +51,9 @@ export const APP_RUNTIME_KEYS = Object.freeze({
   seriesTransformGesture: "series-transform-gesture",
   settingsPanel: "settings-panel",
   stockResearch: "stock-research",
+  stockResearchPopover: "stock-research-popover",
   stockSelection: "stock-selection",
   runtimeSnapshot: "runtime-snapshot",
-  viewportRelayout: "viewport-relayout",
   visibleStockHistoryRefresh: "visible-stock-history-refresh",
 });
 
@@ -67,6 +67,63 @@ export const CHART_RIGHT_PADDING_MIN_DAYS = 0;
 export const CHART_RIGHT_PADDING_MAX_DAYS = 30;
 
 export const STOCK_TICKER_PATTERN = /^\d{6}\.(KS|KQ)$/;
+export const MARKET_INDEX_SERIES = Object.freeze(["^KS11", "^KQ11"]);
+export const MAIN_MACRO_SERIES = Object.freeze([
+  "leading_cycle",
+  "t10y1y",
+  "us_credit_spread",
+  "customer_deposit",
+  "kospi_credit",
+  "kosdaq_credit",
+]);
+export const DEFAULT_HIDDEN_MAIN_SERIES = Object.freeze([
+  ...MAIN_MACRO_SERIES,
+  "^KQ11",
+]);
+export const CORE_SERIES = Object.freeze([
+  "leading_cycle",
+  "t10y1y",
+  "^KS11",
+  "^KQ11",
+  "us_credit_spread",
+  "customer_deposit",
+  "kospi_credit",
+  "kosdaq_credit",
+]);
+export const FIXED_CORE_SERIES_COLORS = Object.freeze({
+  leading_cycle: "#999999",
+  t10y1y: "#2dd4bf",
+  us_credit_spread: "#facc15",
+  customer_deposit: "#f59e0b",
+  "^KS11": "#4ade80",
+  kospi_credit: "#60a5fa",
+  "^KQ11": "#f87171",
+  kosdaq_credit: "#a78bfa",
+});
+export const SERIES_COLORS = Object.freeze({
+  ...FIXED_CORE_SERIES_COLORS,
+  news_sentiment: "#22d3ee",
+  adr_kospi: "#facc15",
+  adr_kosdaq: "#f472b6",
+  fear_greed: "#fb923c",
+  vkospi: "#e5e7eb",
+  vix: "#60a5fa",
+});
+export const CUSTOM_RESERVED_COLORS = Object.freeze(
+  CORE_SERIES.map((key) => FIXED_CORE_SERIES_COLORS[key]),
+);
+export const CUSTOM_COLOR_MIN_FIXED_DISTANCE = 90;
+export const CUSTOM_COLOR_MIN_FIXED_HUE_DISTANCE = 28;
+export const CUSTOM_COLOR_PALETTE = Object.freeze([
+  "#d41111", "#d44211", "#a4d411", "#73d411", "#11d411", "#0da559",
+  "#11d4d4", "#1173d4", "#1142d4", "#1111d4", "#4211d4", "#7311d4",
+  "#a411d4", "#d411d4", "#d411a4", "#d41173", "#d41142", "#eeee2b",
+  "#bdee2b", "#2beeee", "#2b2bee", "#ee2bee", "#f2f25a", "#89f5da",
+  "#9707b0", "#67b007", "#f73be1", "#bff73b", "#14f5df", "#f51481",
+  "#11a2a7", "#9e1a5a", "#76f514", "#d709bf",
+]);
+const marketIndexSeries = new Set(MARKET_INDEX_SERIES);
+const mainMacroSeries = new Set(MAIN_MACRO_SERIES);
 export const ADR_SERIES = Object.freeze(["adr_kospi", "adr_kosdaq"]);
 export const FEAR_GREED_SERIES = Object.freeze(["fear_greed"]);
 export const NEWS_SENTIMENT_SERIES = Object.freeze(["news_sentiment"]);
@@ -86,6 +143,8 @@ export const SUPPLEMENTAL_SERIES = Object.freeze([
 ]);
 export const BASE_DISPLAY_NAMES = Object.freeze({
   leading_cycle: "선행순환변동",
+  t10y1y: "장단기금리차",
+  us_credit_spread: "신용스프레드",
   news_sentiment: "뉴스심리",
   customer_deposit: "고객예탁금",
   kospi_credit: "코스피 신용",
@@ -98,17 +157,102 @@ export const BASE_DISPLAY_NAMES = Object.freeze({
   vkospi: "VKOSPI",
   vix: "VIX",
 });
+export const BASE_HOVER_NAMES = Object.freeze({
+  leading_cycle: "한국 선행지수 순환변동치",
+  t10y1y: "미국채 10년/1년 금리차",
+  us_credit_spread: "미국 회사채 3년/국채 3년 금리차",
+});
+export const BASE_SERIES_HELP_NAMES = Object.freeze({
+  leading_cycle: "한국은행 선행지수 순환변동치\n2달 후행",
+  t10y1y: "미국채 10년/1년 금리차",
+  us_credit_spread: "미국 회사채(투자등급) 1-3년/미국채 3년 금리차\n최근 일별 · 과거 월간",
+  customer_deposit: "2일 후행",
+  kospi_credit: "2일 후행",
+  kosdaq_credit: "2일 후행",
+});
+export const STACKED_HOVER_PRICE_SERIES = Object.freeze([
+  "leading_cycle",
+  "t10y1y",
+  "us_credit_spread",
+]);
 export const MAX_CUSTOM_STOCKS = 20;
 export const MAX_VISIBLE_MAIN_SERIES = 10;
+export const OPTIMIZED_VISIBLE_MAIN_SERIES = 5;
 export const CUSTOM_STOCK_PRELOAD_CONCURRENCY = 3;
 export const STARTUP_INTERACTION_SETTLE_MS = 1600;
+export const STARTUP_POST_VISUAL_QUIET_MS = 650;
 export const MAIN_CHART_MODEL_CACHE_MAX_ENTRIES = 10;
 export const MAIN_CHART_MODEL_CACHE_MAX_WEIGHT = 800000;
 export const MAIN_CHART_FINGERPRINT_CACHE_MAX_ENTRIES = 12;
 
-export function isForecastSeries(value) {
+export function customStockColorRandom(scope = globalThis) {
+  try {
+    const values = new Uint32Array(1);
+    scope.crypto?.getRandomValues?.(values);
+    if (values[0] > 0) return values[0] / 4294967296;
+  } catch (_) {
+    // A visual color choice does not require cryptographic randomness.
+  }
+  return Math.random();
+}
+
+export function fallbackCustomColor(ticker, palette = CUSTOM_COLOR_PALETTE) {
+  const colors = Array.isArray(palette) && palette.length ? palette : CUSTOM_COLOR_PALETTE;
+  const hash = [...String(ticker || "")]
+    .reduce((value, character) => ((value * 31) + character.charCodeAt(0)) >>> 0, 0);
+  return colors[hash % colors.length];
+}
+
+export function createSeriesColorResolver(options = {}) {
+  const fixedColors = options.fixedColors || SERIES_COLORS;
+  const palette = options.palette || CUSTOM_COLOR_PALETTE;
+  const getStocks = typeof options.getStocks === "function" ? options.getStocks : () => [];
+  const normalizeHexColor = typeof options.normalizeHexColor === "function"
+    ? options.normalizeHexColor
+    : (value) => String(value || "").trim();
+  const fallback = String(options.fallback || "#888");
+
+  return function seriesColor(key) {
+    const seriesKey = String(key || "");
+    if (fixedColors[seriesKey]) return fixedColors[seriesKey];
+    const stock = (getStocks() || []).find((item) => item?.ticker === seriesKey);
+    if (!stock) return fallback;
+    return normalizeHexColor(stock.color) || fallbackCustomColor(seriesKey, palette);
+  };
+}
+
+export function resolveMainChartDisplayPointBudget(width, visibleSeriesCount = 1, mobile = false) {
+  const viewportWidth = Math.max(320, Math.round(Number(width) || 390));
+  const minimum = mobile ? 420 : 720;
+  const totalTarget = mobile ? 2800 : OPTIMIZED_VISIBLE_MAIN_SERIES * 1300;
+  return Math.max(
+    minimum,
+    Math.min(1500, Math.round(viewportWidth * 1.45), Math.round(totalTarget / Math.max(1, visibleSeriesCount))),
+  );
+}
+
+export function isMarketPriceSeries(value) {
   const ticker = String(value || "").trim().toUpperCase();
-  return ["^KS11", "^KQ11"].includes(ticker) || STOCK_TICKER_PATTERN.test(ticker);
+  return marketIndexSeries.has(ticker) || STOCK_TICKER_PATTERN.test(ticker);
+}
+
+/** One target policy for features drawn over the main chart. */
+export function seriesSupportsFeature(value, feature) {
+  const ticker = String(value || "").trim().toUpperCase();
+  if (!ticker) return false;
+  if (String(feature || "") === "scale") return true;
+  if (mainMacroSeries.has(ticker)) return false;
+  if (["disclosure", "insider", "eps", "company-analysis"].includes(String(feature || ""))) {
+    return STOCK_TICKER_PATTERN.test(ticker);
+  }
+  if (["co-movement", "signal", "ai"].includes(String(feature || ""))) {
+    return isMarketPriceSeries(ticker);
+  }
+  return false;
+}
+
+export function isForecastSeries(value) {
+  return seriesSupportsFeature(value, "ai");
 }
 
 export function normalizeChartRightPaddingDays(value) {
@@ -232,7 +376,6 @@ export function createChartApplicationControlConfig(context) {
         c.enableFutureOverlay("eps");
         if (session.autoChartReset) {
           session.pendingAutoChartFit = true;
-          session.pendingAutoChartFitExpandOnly = false;
         }
         await c.prepareVisibleEpsData({ render: false });
       },

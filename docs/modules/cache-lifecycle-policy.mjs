@@ -7,8 +7,10 @@ import { RUNTIME_STORAGE_CONTRACT } from "../../shared/runtime-foundation.mjs";
   const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
   const CORE_SERIES_CACHE_KEYS = Object.freeze([
     "leading_cycle",
+    "t10y1y",
     "^KS11",
     "^KQ11",
+    "us_credit_spread",
     "customer_deposit",
     "kospi_credit",
     "kosdaq_credit",

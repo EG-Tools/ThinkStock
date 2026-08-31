@@ -70,6 +70,19 @@ import {
     return true;
   }
 
+  function pointerEventInsideElement(event, element) {
+    const rect = element?.getBoundingClientRect?.();
+    const x = Number(event?.clientX);
+    const y = Number(event?.clientY);
+    return Boolean(rect)
+      && Number.isFinite(x)
+      && Number.isFinite(y)
+      && x >= Number(rect.left)
+      && x <= Number(rect.right)
+      && y >= Number(rect.top)
+      && y <= Number(rect.bottom);
+  }
+
   function createChartPointerRuntime(scope = globalThis, options = {}) {
     const {
       CHART_GEOMETRY_CACHE_MS,
@@ -86,6 +99,7 @@ import {
       clearHoverOnChart,
       createPointerFrameController,
       ensureFullHistoryDataReady,
+      captureViewportNormalization,
       findAiForecastReportAtClientPoint,
       findEventMarkerAtClientPoint,
       findNearestLineDragTarget,
@@ -102,6 +116,7 @@ import {
       openAiForecastReportHit,
       openEventMarkerHit,
       recordPerfSample,
+      requestViewportRender,
       resetEventMarkerHoverHighlight,
       scheduleEventMarkerHoverHighlight,
       scheduleSyncedCursor,
@@ -313,6 +328,7 @@ import {
     
       const onLeave = (event) => {
         if (interactionState.handleDragging || interactionState.viewportDragging) return;
+        if (pointerEventInsideElement(event, event?.currentTarget)) return;
         if (event?.pointerType === "touch" && touchSelectionPinned) return;
         hoverIdleController.cancel();
         pointerMoveController.cancel();
@@ -368,6 +384,7 @@ import {
         const geometry = getChartInteractionGeometry(sourceEl);
         const axisLength = Number(geometry?.xa?._length);
         if (!startRange || !dataRange || !(axisLength > 0)) return false;
+        captureViewportNormalization?.();
         dragState = {
           sourceEl,
           pointerId: event.pointerId,
@@ -420,6 +437,15 @@ import {
         const st = clearViewportDrag();
         if (!st) return;
         const sample = latestPointerSample(upEvent);
+        const settleViewportAndRestorePointer = () => {
+          return Promise.resolve(requestViewportRender?.())
+            .catch(() => undefined)
+            .finally(() => {
+              if (interactionState.viewportDragging || !st.sourceEl?.isConnected) return;
+              previewSyncedCursor(st.sourceEl, sample.clientX, sample.clientY);
+              schedulePointerMove(st.sourceEl, sample.clientX, sample.clientY, false);
+            });
+        };
         previewSyncedCursor(st.sourceEl, sample.clientX, sample.clientY);
         schedulePointerMove(st.sourceEl, sample.clientX, sample.clientY, false);
         if (!cancelled && upEvent.pointerType === "mouse" && chartSession.hoverShowPopup) {
@@ -430,7 +456,14 @@ import {
           });
         }
         if (cancelled || !st.moved) {
-          getChartRangeSyncController().cancel?.();
+          const rangeController = getChartRangeSyncController();
+          rangeController.cancel?.();
+          if (st.moved) {
+            Promise.resolve(rangeController.flush?.())
+              .finally(settleViewportAndRestorePointer);
+          } else {
+            applyChartResetPolicy("viewport");
+          }
           return;
         }
         const finalRange = viewportDragRange(st, sample.clientX);
@@ -441,7 +474,7 @@ import {
         });
         interactionState.suppressPlotlyClickUntil = Date.now() + 700;
         Promise.resolve(getChartRangeSyncController().flush())
-          .finally(() => applyChartResetPolicy("viewport", 80));
+          .finally(settleViewportAndRestorePointer);
       };
     
       const startPinchZoom = (sourceEl) => {
@@ -450,6 +483,7 @@ import {
         const startRange = getCurrentXRangeMs(sourceEl);
         const navigationRange = getChartNavigationDataRangeMs(document.getElementById("chart"));
         if (!startRange || !navigationRange) return false;
+        captureViewportNormalization?.();
         const distance = Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y);
         if (distance < 8) return false;
         const geometry = getChartInteractionGeometry(sourceEl);
@@ -528,7 +562,7 @@ import {
         pointerMoveController?.cancel();
         scheduleSyncedCursor(null);
         Promise.resolve(getChartRangeSyncController().flush())
-          .finally(() => applyChartResetPolicy("viewport", 80));
+          .then(() => requestViewportRender?.());
       };
     
       const performFullVisibleLifetimeToggle = async () => {
@@ -595,6 +629,7 @@ import {
         event.preventDefault();
         if (interactionState.handleDragging || interactionState.viewportDragging) return;
         hoverIdleController.cancel();
+        if (!interactionState.wheelZooming) captureViewportNormalization?.();
         interactionState.wheelZooming = true;
         const sourceEl = event.currentTarget;
         const geometry = getChartInteractionGeometry(sourceEl);
@@ -615,7 +650,7 @@ import {
           wheelRangeTimer = 0;
           interactionState.wheelZooming = false;
           Promise.resolve(getChartRangeSyncController().flush())
-            .finally(() => applyChartResetPolicy("viewport", 80));
+            .then(() => requestViewportRender?.());
         }, 160);
       };
     
@@ -893,4 +928,5 @@ export {
   createHoverIdleController,
   createChartPointerRuntime,
   dispatchNativeHoverAtPoint,
+  pointerEventInsideElement,
 };

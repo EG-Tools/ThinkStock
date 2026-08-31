@@ -49,10 +49,12 @@ test("coalesces typed invalidations and passes one combined render description",
 test("carries price-first composition only through the transaction that requested it", async () => {
   const frames = [];
   const renders = [];
+  const completed = [];
   const scheduler = createChartRenderScheduler({}, {
     requestFrame: (callback) => { frames.push(callback); return frames.length; },
     cancelFrame: () => {},
     render: async (_preserveZoom, invalidation) => { renders.push(invalidation); },
+    afterBatch: ({ invalidation }) => { completed.push(invalidation); },
   });
 
   scheduler.request(true, {
@@ -70,6 +72,8 @@ test("carries price-first composition only through the transaction that requeste
 
   assert.equal(renders[0].progressiveComposition, true);
   assert.equal(renders[1].progressiveComposition, false);
+  assert.equal(completed[0].progressiveComposition, true);
+  assert.equal(completed[1].progressiveComposition, false);
   assert.equal(scheduler.stats().pendingProgressiveComposition, false);
 });
 

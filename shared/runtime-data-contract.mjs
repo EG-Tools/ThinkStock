@@ -248,7 +248,7 @@ export function normalizeCrisisSignalPayload(payload) {
     const score = finiteNumber(row?.score);
     if (!DATE_PATTERN.test(date) || score === null || score < 0 || score > 100) return;
     const normalized = { date, score: Math.round(score) };
-    ["curve", "labor", "credit", "t10y2y", "t10y3m", "unemployment", "initialClaims4w", "creditSpread", "sahm", "fedFunds", "fedFundsChange6m", "vkospi", "vkospiChange20", "vix", "vixChange20", "krwUsd", "krwUsdChange20"]
+    ["curve", "labor", "credit", "t10y2y", "t10y3m", "t10y1y", "unemployment", "initialClaims4w", "creditSpread", "sahm", "fedFunds", "fedFundsChange6m", "vkospi", "vkospiChange20", "vix", "vixChange20", "krwUsd", "krwUsdChange20"]
       .forEach((key) => {
         const value = finiteNumber(row?.[key]);
         if (value !== null) normalized[key] = value;
@@ -260,6 +260,24 @@ export function normalizeCrisisSignalPayload(payload) {
     byDate.set(date, normalized);
   });
   const records = [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
+  const termSpreadByDate = new Map();
+  (Array.isArray(source.termSpreadRows) ? source.termSpreadRows : []).forEach((row) => {
+    const date = String(row?.date || "").slice(0, 10);
+    const t10y1y = finiteNumber(row?.t10y1y);
+    if (!DATE_PATTERN.test(date) || t10y1y === null) return;
+    termSpreadByDate.set(date, { date, t10y1y });
+  });
+  const termSpreadRows = [...termSpreadByDate.values()]
+    .sort((left, right) => left.date.localeCompare(right.date));
+  const creditSpreadByDate = new Map();
+  (Array.isArray(source.creditSpreadRows) ? source.creditSpreadRows : []).forEach((row) => {
+    const date = String(row?.date || "").slice(0, 10);
+    const usCreditSpread = finiteNumber(row?.us_credit_spread);
+    if (!DATE_PATTERN.test(date) || usCreditSpread === null) return;
+    creditSpreadByDate.set(date, { date, us_credit_spread: usCreditSpread });
+  });
+  const creditSpreadRows = [...creditSpreadByDate.values()]
+    .sort((left, right) => left.date.localeCompare(right.date));
   const vkospiByDate = new Map();
   (Array.isArray(source.vkospiRows) ? source.vkospiRows : []).forEach((row) => {
     const date = String(row?.date || "").slice(0, 10);
@@ -286,7 +304,8 @@ export function normalizeCrisisSignalPayload(payload) {
   });
   const vixRows = [...vixByDate.values()]
     .sort((left, right) => left.date.localeCompare(right.date));
-  if (!records.length && !vkospiRows.length && !vixRows.length) {
+  if (!records.length && !termSpreadRows.length && !creditSpreadRows.length
+    && !vkospiRows.length && !vixRows.length) {
     throw new Error("Crisis signal response contains no usable rows");
   }
   const componentWarnings = [];
@@ -300,15 +319,21 @@ export function normalizeCrisisSignalPayload(payload) {
         ? String(source.latestDate).slice(0, 10)
         : "",
       records.at(-1)?.date || "",
+      termSpreadRows.at(-1)?.date || "",
+      creditSpreadRows.at(-1)?.date || "",
       vkospiRows.at(-1)?.date || "",
       vixRows.at(-1)?.date || "",
     ].filter(Boolean).sort().at(-1) || "",
     records,
+    termSpreadRows,
+    creditSpreadRows,
     vkospiRows,
     vixRows,
     componentWarnings,
     componentLatestDates: Object.freeze({
       ...latestSeriesDates(records, ["score"]),
+      ...latestSeriesDates(termSpreadRows, ["t10y1y"]),
+      ...latestSeriesDates(creditSpreadRows, ["us_credit_spread"]),
       ...latestSeriesDates(vkospiRows, ["vkospi"]),
       ...latestSeriesDates(vixRows, ["vix"]),
     }),

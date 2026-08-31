@@ -9,13 +9,15 @@ test("keeps cache retention appropriate to each data type", () => {
   });
   assert.deepEqual(cachePolicy.CORE_SERIES_CACHE_KEYS, [
     "leading_cycle",
+    "t10y1y",
     "^KS11",
     "^KQ11",
+    "us_credit_spread",
     "customer_deposit",
     "kospi_credit",
     "kosdaq_credit",
   ]);
-  assert.equal(cachePolicy.TOTAL_SERIES_CACHE_LIMIT, 30);
+  assert.equal(cachePolicy.TOTAL_SERIES_CACHE_LIMIT, 32);
   assert.equal(cachePolicy.USER_TICKER_CACHE_LIMIT, 24);
   assert.equal(cachePolicy.storePolicy("tickerAiAnalysis").maxIdleMs, 45 * 86400000);
   assert.equal(cachePolicy.storePolicy("tickerAiForecastJournal").maxRecords, 140);

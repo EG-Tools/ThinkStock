@@ -9,9 +9,11 @@ function state() {
   return {
     activeMonths: 6,
     hiddenSeries: new Set(),
+    mainHoverSeriesOrder: [],
     hiddenAuxiliarySeries: new Set(),
     hiddenAuxiliaryPanels: new Set(),
     auxiliaryPanelOrder: ["adr", "fearGreed", "newsSentiment", "vkospi"],
+    auxiliarySeriesOrder: ["adr_kospi", "adr_kosdaq", "vkospi", "vix"],
     seriesOffsets: {},
     seriesScales: {},
     hoverShowPopup: true,
@@ -159,6 +161,7 @@ test("loads legacy auxiliary visibility and keeps AI and EPS disabled at boot", 
     store: {
       read: () => ({
         activeMonths: 12,
+        mainHoverSeriesOrder: ["^KS11", "leading_cycle", "^KS11", ""],
         hiddenAuxiliarySeries: ["adr_kospi", "adr_kosdaq", "fear_greed"],
         auxiliaryPanelOrder: ["vkospi", "adr"],
         autoChartReset: false,
@@ -187,6 +190,7 @@ test("loads legacy auxiliary visibility and keeps AI and EPS disabled at boot", 
 
   assert.equal(controller.load({ allowActiveMonths: true }), true);
   assert.equal(chartState.activeMonths, 12);
+  assert.deepEqual(chartState.mainHoverSeriesOrder, ["^KS11", "leading_cycle"]);
   assert.equal(chartState.showAiForecast, false);
   assert.equal(chartState.showChartTools, false);
   assert.equal(chartState.showEps, false);
@@ -217,5 +221,7 @@ test("saves one normalized application state record", () => {
   assert.equal(saved.showChartTools, true);
   assert.equal(saved.showEps, undefined);
   assert.equal(saved.chartRightPaddingDays, 0);
+  assert.deepEqual(saved.mainHoverSeriesOrder, []);
+  assert.deepEqual(saved.auxiliarySeriesOrder, ["adr_kospi", "adr_kosdaq", "vkospi", "vix"]);
   assert.deepEqual(saved.customStocks, [{ ticker: "005930.KS", name: "삼성전자" }]);
 });
