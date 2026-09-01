@@ -126,14 +126,18 @@ import {
     return list.length;
   }
 
+  function normalizeMessageLines(lines) {
+    return (Array.isArray(lines) ? lines : [lines])
+      .map((line) => String(line || "").trim())
+      .filter(Boolean);
+  }
+
   function renderMessage(element, lines, options = {}) {
     if (!element) return 0;
     const escape = typeof options.escape === "function"
       ? options.escape
       : (value) => String(value ?? "");
-    const list = (Array.isArray(lines) ? lines : [lines])
-      .map((line) => String(line || "").trim())
-      .filter(Boolean);
+    const list = normalizeMessageLines(lines);
     if (!list.length) {
       element.innerHTML = "";
       return 0;
@@ -141,6 +145,60 @@ import {
     const className = `message${options.error ? " error" : ""}`;
     element.innerHTML = `<div class="${className}">${list.map(escape).join("<br>")}</div>`;
     return list.length;
+  }
+
+  function createMessageLogView(options = {}) {
+    const maximumEntries = Math.max(5, Math.round(Number(options.maximumEntries) || 100));
+    const histories = new WeakMap();
+
+    function historyFor(element) {
+      let history = histories.get(element);
+      if (!history) {
+        history = [];
+        histories.set(element, history);
+      }
+      return history;
+    }
+
+    function append(element, lines, appendOptions = {}) {
+      if (!element) return 0;
+      const list = normalizeMessageLines(lines);
+      if (!list.length) return 0;
+      const escape = typeof appendOptions.escape === "function"
+        ? appendOptions.escape
+        : (value) => String(value ?? "");
+      const previousMaximum = Math.max(0,
+        Number(element.scrollHeight || 0) - Number(element.clientHeight || 0));
+      const followsLatest = previousMaximum <= 1
+        || previousMaximum - Number(element.scrollTop || 0) <= 8;
+      const history = historyFor(element);
+      list.forEach((text) => history.push({
+        error: appendOptions.error === true,
+        text,
+      }));
+      if (history.length > maximumEntries) history.splice(0, history.length - maximumEntries);
+      element.classList?.toggle("has-log", true);
+      element.setAttribute?.("aria-live", "polite");
+      element.innerHTML = `<div class="message message-log" role="log">${history.map((entry) => (
+        `<div class="message-log-line${entry.error ? " error" : ""}">${escape(entry.text)}</div>`
+      )).join("")}</div>`;
+      if (followsLatest) element.scrollTop = Number(element.scrollHeight || 0);
+      return list.length;
+    }
+
+    function clear(element) {
+      if (!element) return;
+      histories.delete(element);
+      element.classList?.toggle("has-log", false);
+      element.innerHTML = "";
+      element.scrollTop = 0;
+    }
+
+    function snapshot(element) {
+      return (histories.get(element) || []).map((entry) => ({ ...entry }));
+    }
+
+    return Object.freeze({ append, clear, snapshot });
   }
 
   function clampPercent(value) {
@@ -354,6 +412,7 @@ import {
 export {
     clampPercent,
     createAuxiliaryPanelControlView,
+    createMessageLogView,
     createProgressView,
     createScrollAffordance,
     renderMessage,

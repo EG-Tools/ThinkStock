@@ -298,7 +298,6 @@ import { syncControl } from "./control-state-view.mjs";
     button.addEventListener("click", async () => {
       if (button.classList.contains("spinning")) return;
       button.classList.add("spinning");
-      options.setMessage([]);
       try {
         if (!options.hasRuntimeDataLoaded()) {
           const restored = await options.loadLastRuntimeSnapshot();

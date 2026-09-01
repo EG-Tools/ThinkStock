@@ -1910,8 +1910,9 @@ async function requestAdminSession(payload) {
   }
 }
 
+const appMessageLogView = controlStateView.createMessageLogView({ maximumEntries: 100 });
 function setMessage(msgEl, lines, isError = false) {
-  controlStateView.renderMessage(msgEl, lines, { error: isError, escape: escapeHtml });
+  appMessageLogView.append(msgEl, lines, { error: isError, escape: escapeHtml });
 }
 function syncDisclosureToggleButton() {
   controlStateView.syncControl(document.getElementById("disclosureToggle"), {
@@ -4769,6 +4770,10 @@ function scheduleEventMarkerHoverHighlight(evtData) {
 
   const traceIndex = point.curveNumber;
   const pointIndex = point.pointIndex ?? point.pointNumber;
+  const eventDate = point.data?.x?.[pointIndex];
+  if (chartSession.hoverShowPopup && eventDate != null) {
+    syncHoverToChart(chartEl, eventDate);
+  }
   if (
     eventMarkerRenderState.highlight
     && eventMarkerRenderState.highlight.traceIndex === traceIndex
@@ -6420,10 +6425,9 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
   if (!rows.length || !selected.length) {
     viewportWindowController.invalidate?.();
     markEventMarkerRenderApplied(eventMarkerRevisionsAtStart);
-    msgEl.innerHTML = '<div class="message error">표시할 데이터가 없습니다.</div>';
+    setMessage(msgEl, "표시할 데이터가 없습니다.", true);
     return;
   }
-  msgEl.innerHTML = "";
 
   const mainSeriesOrder = getMainSeriesController().activationOrder(selected);
   const frame = await chartUpdateCoordinatorModule.buildMainChartRenderFrame({

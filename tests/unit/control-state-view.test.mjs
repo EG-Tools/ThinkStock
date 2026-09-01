@@ -61,6 +61,39 @@ test("renders escaped message lines through the shared feedback view", () => {
   assert.equal(element.innerHTML, '<div class="message error">A<br>&lt;B&gt;</div>');
 });
 
+
+test("keeps a bounded scrollable message history when empty updates arrive", () => {
+  const classes = new Set();
+  const attributes = new Map();
+  const element = {
+    clientHeight: 50,
+    innerHTML: "",
+    scrollHeight: 120,
+    scrollTop: 70,
+    classList: { toggle: (name, enabled) => (enabled ? classes.add(name) : classes.delete(name)) },
+    setAttribute: (name, value) => attributes.set(name, String(value)),
+  };
+  const log = view.createMessageLogView({ maximumEntries: 5 });
+  log.append(element, ["A", "B", "C", "D", "E"], { escape: String });
+  log.append(element, "<F>", {
+    error: true,
+    escape: (value) => String(value).replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
+  });
+  log.append(element, []);
+
+  assert.deepEqual(log.snapshot(element), [
+    { error: false, text: "B" },
+    { error: false, text: "C" },
+    { error: false, text: "D" },
+    { error: false, text: "E" },
+    { error: true, text: "<F>" },
+  ]);
+  assert.equal(classes.has("has-log"), true);
+  assert.equal(attributes.get("aria-live"), "polite");
+  assert.match(element.innerHTML, /message-log-line error">&lt;F&gt;/);
+  assert.equal(element.scrollTop, 120);
+});
+
 test("auxiliary panel controls own visibility, activation order, and persistence", () => {
   let persisted = 0;
   let changed = 0;

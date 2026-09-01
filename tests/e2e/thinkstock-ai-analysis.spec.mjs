@@ -1255,7 +1255,7 @@ test("signal calculation shows progress while an uncached timing model is prepar
   ))).toBe(true);
 });
 
-test("timing hover wraps reasons and its shared hit area opens the popover", async ({ page, isMobile }) => {
+test("timing hover wraps reasons and its shared hit area opens the popover", async ({ page }) => {
   await stubExternalRefreshes(page);
   await page.addInitScript(() => {
     localStorage.setItem("thinkstock-v5", JSON.stringify({
@@ -1292,7 +1292,6 @@ test("timing hover wraps reasons and its shared hit area opens the popover", asy
       && trace.x.length > 0
     ));
     const trace = element.data[traceIndex];
-    window.Plotly.Fx.hover(element, [{ curveNumber: traceIndex, pointNumber: 0 }]);
     const rect = element.getBoundingClientRect();
     const xaxis = element?._fullLayout?.xaxis;
     const yaxis = element?._fullLayout?.yaxis;
@@ -1301,9 +1300,11 @@ test("timing hover wraps reasons and its shared hit area opens the popover", asy
       y: rect.top + Number(yaxis?._offset || 0) + Number(yaxis?.d2p?.(trace.y?.[0])),
     };
   });
+  await page.mouse.move(target.x + 12, target.y);
+  await expect(page.locator("#chart")).toHaveClass(/is-event-marker-hovering/);
+  await expect(page.locator("#chart .hoverlayer")).toContainText("근거:");
   await expect(page.locator("#chart .hoverlayer")).not.toContainText("<br>");
-  if (isMobile) await page.touchscreen.tap(target.x + 12, target.y);
-  else await page.mouse.click(target.x + 12, target.y);
+  await page.mouse.click(target.x + 12, target.y);
   await expect(page.locator("#chart .disclosure-popover")).toBeVisible();
   await expect(page.locator("#chart .disclosure-popover")).toContainText("근거:");
 });

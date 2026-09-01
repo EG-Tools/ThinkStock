@@ -337,11 +337,12 @@ test("prepared toggle keeps disabled state when preparation fails", async () => 
 test("manual refresh always clears the spinning state", async () => {
   const button = fakeElement();
   const loadCalls = [];
+  const messages = [];
   const refreshCalls = [];
   const order = [];
   bindings.bindManualRefresh({
     button,
-    setMessage: () => {},
+    setMessage: (...args) => messages.push(args),
     hasServiceWorkerController: () => true,
     requestServiceWorkerDataRefresh: async () => { order.push("service-worker"); return { ok: true }; },
     hasRuntimeDataLoaded: () => true,
@@ -355,6 +356,7 @@ test("manual refresh always clears the spinning state", async () => {
   assert.deepEqual(loadCalls, []);
   assert.deepEqual(refreshCalls, [[{ forceNetwork: true }]]);
   assert.deepEqual(order, ["runtime", "service-worker"]);
+  assert.deepEqual(messages, []);
   assert.equal(button.classList.contains("spinning"), false);
 });
 

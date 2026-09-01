@@ -275,6 +275,9 @@ import {
           const aiReportTarget = interactionTarget?.kind === AI_REPORT_TARGET ? interactionTarget : null;
           sourceEl.classList.toggle("is-ai-report-hovering", Boolean(aiReportTarget));
           if (eventMarkerTarget) {
+            // The exact event-date popup owns hover while the shared marker hit
+            // area is active; a delayed native hover would replace its details.
+            hoverIdleController.cancel();
             const trace = sourceEl.data?.[eventMarkerTarget.traceIndex];
             scheduleEventMarkerHoverHighlight({
               points: [{
