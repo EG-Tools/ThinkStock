@@ -8,11 +8,17 @@ test("release script parses GitHub run status without shell-sensitive jq quoting
   assert.match(source, /ConvertFrom-Json/);
 });
 
-test("release script excludes personal iPhone preview files from commits", async () => {
+test("release script includes shared rules and reproducible local launch helpers", async () => {
   const source = await readFile(new URL("../../scripts/release_pages.ps1", import.meta.url), "utf8");
   assert.doesNotMatch(source, /"add", "-A"/);
-  assert.doesNotMatch(source, /"run_local_iphone13promax\.bat"/);
-  assert.match(source, /:\(exclude\)scripts\/resize_preview_window\.ps1/);
+  assert.match(source, /"\.gitattributes"/);
+  assert.match(source, /"AGENTS\.md"/);
+  assert.match(source, /"run_local_iphone13promax\.bat"/);
+  assert.match(source, /"scripts"/);
+  assert.doesNotMatch(source, /:\(exclude\)scripts\/resize_preview_window\.ps1/);
+  assert.match(source, /Assert-ReleaseWorkspaceReady/);
+  assert.doesNotMatch(source, /TrimStart\(\[char\[\]\]"\.\/"\)/);
+  assert.match(source, /\$normalized = \$normalized -replace "\^\\\.\/", ""/);
 });
 
 test("release script includes reproducibility documentation and Qlib requirements", async () => {
@@ -102,5 +108,5 @@ test("WebKit plan keeps full iPhone coverage without duplicating non-visual desk
 
   assert.match(config, /name: "webkit",[\s\S]*testMatch: \/thinkstock-\.\*\\\.spec\\\.mjs\//);
   assert.match(config, /name: "webkit-desktop",[\s\S]*testMatch: \/thinkstock-viewport\\\.spec\\\.mjs\//);
-  assert.match(packageJson.scripts["test:webkit:built"], /--workers=2/);
+  assert.match(packageJson.scripts["test:webkit:built"], /--workers=1/);
 });

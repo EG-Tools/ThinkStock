@@ -748,6 +748,79 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
         ? options.normalizePoints(loadOptions.latestPoints, key)
         : [];
       throwIfAborted(signal);
+      const hadExistingBeforeCache = options.hasSeries(key);
+      if (loadOptions.latestOnly === true && hadExistingBeforeCache) {
+        try {
+          const rawLatestPoints = hasPrefetchedLatest
+            ? prefetchedLatest
+            : await options.fetchLatest(key, { signal, forceNetwork: forceRefresh });
+          throwIfAborted(signal);
+          const latestPoints = filterLatestTailPoints(options.getPoints(key), rawLatestPoints);
+          if (!latestPoints.length) {
+            return {
+              ready: true,
+              cached: true,
+              changed: false,
+              latestOnly: true,
+              deferredRefresh: false,
+              historyCoverage: HISTORY_COVERAGE_UNKNOWN,
+              latestDate: options.latestDate(key),
+            };
+          }
+          const existingPoints = options.getPoints(key);
+          const rebaseSignal = options.findRebaseSignal?.(existingPoints, latestPoints) || null;
+          const assessment = options.assessPriceUpdate(existingPoints, latestPoints, { rebaseSignal });
+          const latestTailIncomplete = options.isLatestCoverageComplete?.(
+            existingPoints,
+            latestPoints,
+            key,
+          ) === false;
+          // A split/rebase or a missing trading-day boundary needs the validated
+          // history path below. Normal startup stays on the cheap tail merge.
+          if (!assessment.fullHistoryRequired && !latestTailIncomplete) {
+            const changed = options.mergePoints(key, latestPoints) === true;
+            if (changed && assessment.invalidateDerived) {
+              await options.invalidateCache(key, assessment);
+            }
+            if (changed && options.hasVolumeHistory(key)) {
+              await options.writeCache(key, options.getPoints(key), displayName, {
+                historyCoverage: HISTORY_COVERAGE_FULL,
+              });
+            }
+            return {
+              ready: true,
+              cached: !changed,
+              changed,
+              latestOnly: true,
+              deferredRefresh: false,
+              historyCoverage: HISTORY_COVERAGE_UNKNOWN,
+              latestDate: options.latestDate(key),
+            };
+          }
+        } catch (error) {
+          if (options.isAbortError?.(error) || signal?.aborted) throw error;
+          const previous = options.getStatus?.(key) || {};
+          options.setStatus(key, {
+            ...previous,
+            source: previous.source || "LOCAL_CACHE",
+            latestDate: previous.latestDate || options.latestDate(key),
+            cached: true,
+            localCache: true,
+            stale: true,
+            warning: previous.warning || `최신 가격 갱신 실패: ${error?.message || error}`,
+          });
+          return {
+            ready: true,
+            cached: true,
+            stale: true,
+            changed: false,
+            latestOnly: true,
+            deferredRefresh: false,
+            historyCoverage: HISTORY_COVERAGE_UNKNOWN,
+            latestDate: options.latestDate(key),
+          };
+        }
+      }
       const cacheInfo = await options.applySharedCache(key, displayName);
       throwIfAborted(signal);
       const hasExisting = options.hasSeries(key);

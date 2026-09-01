@@ -91,14 +91,14 @@ export const CORE_SERIES = Object.freeze([
   "kosdaq_credit",
 ]);
 export const FIXED_CORE_SERIES_COLORS = Object.freeze({
-  leading_cycle: "#999999",
-  t10y1y: "#2dd4bf",
-  us_credit_spread: "#facc15",
-  customer_deposit: "#f59e0b",
-  "^KS11": "#4ade80",
-  kospi_credit: "#60a5fa",
-  "^KQ11": "#f87171",
-  kosdaq_credit: "#a78bfa",
+  leading_cycle: "#929292",
+  t10y1y: "#cf7777",
+  "^KS11": "#ce9668",
+  "^KQ11": "#c9b65e",
+  us_credit_spread: "#75ad7f",
+  customer_deposit: "#64ada9",
+  kospi_credit: "#6f91bd",
+  kosdaq_credit: "#9680b8",
 });
 export const SERIES_COLORS = Object.freeze({
   ...FIXED_CORE_SERIES_COLORS,
@@ -113,7 +113,7 @@ export const CUSTOM_RESERVED_COLORS = Object.freeze(
   CORE_SERIES.map((key) => FIXED_CORE_SERIES_COLORS[key]),
 );
 export const CUSTOM_COLOR_MIN_FIXED_DISTANCE = 90;
-export const CUSTOM_COLOR_MIN_FIXED_HUE_DISTANCE = 28;
+export const CUSTOM_COLOR_MIN_FIXED_HUE_DISTANCE = 10;
 export const CUSTOM_COLOR_PALETTE = Object.freeze([
   "#d41111", "#d44211", "#a4d411", "#73d411", "#11d411", "#0da559",
   "#11d4d4", "#1173d4", "#1142d4", "#1111d4", "#4211d4", "#7311d4",

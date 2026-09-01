@@ -193,6 +193,7 @@
     let revealAiForecastRange = false;
     let revealEpsForecastRange = false;
     let trimFutureOverlayRange = false;
+    let entryWasAtLatest = false;
 
     function normalizeRange(range) {
       const values = Array.isArray(range) ? range.slice(0, 2).map(toMilliseconds) : [];
@@ -210,6 +211,7 @@
         interactionRevision: Number(options.getInteractionRevision?.()) || 0,
         userViewportPinned: options.getUserViewportPinned?.() === true,
       }) : null;
+      entryWasAtLatest = Boolean(entryViewport) && options.isAtLatest?.() !== false;
       restoreViewport = null;
       return Boolean(entryViewport);
     }
@@ -234,7 +236,10 @@
       const currentRevision = Number(options.getInteractionRevision?.()) || 0;
       restoreViewport = snapshot?.interactionRevision === currentRevision ? snapshot : null;
       trimFutureOverlayRange = !restoreViewport;
-      if (!restoreViewport) options.clampToObservedData?.();
+      if (!restoreViewport && entryWasAtLatest) {
+        options.clampToObservedData?.({ alignLatest: true });
+      }
+      entryWasAtLatest = false;
       return Boolean(restoreViewport);
     }
 
@@ -244,6 +249,7 @@
       revealAiForecastRange = false;
       revealEpsForecastRange = false;
       trimFutureOverlayRange = resetOptions.trim !== false;
+      entryWasAtLatest = false;
     }
 
     function planState() {
@@ -273,6 +279,7 @@
       stats: () => ({
         hasEntryViewport: Boolean(entryViewport),
         hasRestoreViewport: Boolean(restoreViewport),
+        entryWasAtLatest,
         revealAiForecastRange,
         revealEpsForecastRange,
         trimFutureOverlayRange,

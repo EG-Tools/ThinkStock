@@ -30,6 +30,8 @@ import {
   MAIN_CHART_FINGERPRINT_CACHE_MAX_ENTRIES,
   MAIN_CHART_MODEL_CACHE_MAX_ENTRIES,
   MAIN_CHART_MODEL_CACHE_MAX_WEIGHT,
+  MAIN_MACRO_SERIES,
+  MARKET_INDEX_SERIES,
   MAX_CUSTOM_STOCKS,
   MAX_VISIBLE_MAIN_SERIES,
   NEWS_SENTIMENT_SERIES,
@@ -367,7 +369,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = tickerPriceRuntimeModule.CORPORATE_ACTION_RATIO_THRESHOLD;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = tickerPriceRuntimeModule.CORPORATE_ACTION_MAX_BOUNDARY_DAYS;
-const APP_VERSION = "3.31";
+const APP_VERSION = "3.32";
 const APP_BUILD_VERSION = resolveAppBuildVersion(globalThis);
 const cacheMigrator = cacheMaintenanceRuntimeModule.createCacheMigrator(globalThis, {
   markerKey: "thinkstock-cache-migrations-v1",
@@ -473,14 +475,6 @@ const deferredPerformanceDiagnostics = createDeferredDiagnosticsFacade(globalThi
   scheduler: backgroundTaskScheduler,
   performanceApi: performanceMonitor.api,
   onFeatureLoaded: (feature) => chartRenderTelemetry.attach(feature, globalThis),
-});
-const runtimeRefreshRenderBatcher = runtimeRefreshOrchestratorModule.createRuntimeRefreshRenderBatcher({
-  scheduler: backgroundTaskScheduler,
-  // Supplemental data must not replace a range the user already selected.
-  renderMain: () => runMainChartRender(true),
-  renderAuxiliary: () => renderAdrChart(document.getElementById("chart")?._fullLayout?.xaxis?.range?.slice() || null),
-  renderDisclosure: queueDisclosureTraceRefresh,
-  onError: (error) => recordRuntimeError("runtime-refresh-render", error),
 });
 const granularCacheMaintenance = cacheMaintenanceRuntimeModule.createCacheMaintenanceRuntime(globalThis, {
   store: indexedCacheStore,
@@ -923,7 +917,6 @@ const chartSession = chartSessionControllerModule.createChartSessionState({
   autoChartReset: true,
   lockedChartFrame: null,
   lockedHistoryYRange: null,
-  viewportNormalizationFrame: null,
   pendingAutoChartFit: false,
   pendingCompositionViewport: null,
 });
@@ -1163,9 +1156,6 @@ const initE2eDebugAccess = __THINKSTOCK_E2E_DIAGNOSTICS__
           scales: { ...chartSession.seriesScales },
         };
       },
-      isViewportNormalizationLocked() {
-        return Boolean(chartSession.viewportNormalizationFrame);
-      },
       getLineDragTargetAt(clientX, clientY) {
         const chart = document.getElementById("chart");
         const target = findNearestLineDragTarget(chart, Number(clientX), Number(clientY), false);
@@ -1227,9 +1217,9 @@ const initE2eDebugAccess = __THINKSTOCK_E2E_DIAGNOSTICS__
           source: "e2e-range",
           fit: false,
           liveFit: false,
-          userInitiated: false,
+          userInitiated: true,
         });
-        await getChartRangeSyncController().flush();
+        await settleChartViewport();
         return getCurrentXRangeMs(document.getElementById("chart"));
       },
       getMainHoverMode() {
@@ -2261,11 +2251,12 @@ function getChartNavigationController() {
       await runMainChartRender(Boolean(visibleRange));
       await settleChartViewport();
     },
-    captureNormalization: captureViewportNormalizationFrame,
     onError: (error) => recordRuntimeError("full-history-navigation", error),
     applyRange: applySyncedXRangeMs,
-    smoothWheelZoom: true,
-    applyResetPolicy: applyChartResetPolicy,
+    // Plotly range updates cost longer than a short tween frame once multiple
+    // charts are visible. Apply one final wheel range so stale tween frames
+    // cannot surface after a newer input.
+    smoothWheelZoom: false,
     isAutoScale: () => chartSession.autoChartReset,
     getRightPaddingMs: chartRightPaddingMs,
     isInteractionBusy: () => isHandleDragging || isViewportDragging,
@@ -2292,7 +2283,7 @@ async function settleChartViewport() {
   await appRuntimeRegistry.peek(APP_RUNTIME_KEYS.mainChartScheduler)?.whenSettled?.();
   await appRuntimeRegistry.peek(APP_RUNTIME_KEYS.auxiliaryChartRender)?.whenSettled?.();
   await appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartRangeSync)?.flush?.();
-  flushLoadedCoMovementPanel();
+  await flushLoadedCoMovementPanel();
 }
 
 function showChartNavigationMessage(message, durationMs = 3000) {
@@ -2363,16 +2354,17 @@ function slideChartViewportToLatest(source = "latest-slide") {
   return getChartNavigationController().slideToLatest(source);
 }
 
-function clampChartViewportToObservedData() {
+function clampChartViewportToObservedData(options = {}) {
   const el = document.getElementById("chart");
   const viewRange = getCurrentXRangeMs(el);
-  const dataRange = getChartDataRangeMs(el);
-  if (!viewRange || !dataRange || viewRange[1] <= dataRange[1]) return false;
-
-  const start = Math.min(viewRange[0], dataRange[1] - DAY_MS);
+  const observedRange = extendChartRangeRight(getChartDataRangeMs(el));
+  if (!viewRange || !observedRange) return false;
+  if (options.alignLatest !== true && viewRange[1] <= observedRange[1]) return false;
+  const latest = chartViewportControllerModule.latestRange(viewRange, observedRange);
+  if (!latest) return false;
   chartSession.pinnedXRange = [
-    new Date(start).toISOString(),
-    new Date(dataRange[1]).toISOString(),
+    new Date(latest[0]).toISOString(),
+    new Date(latest[1]).toISOString(),
   ];
   return true;
 }
@@ -2385,6 +2377,7 @@ function getFutureOverlayController() {
       getCurrentRange: () => getCurrentXRangeMs(document.getElementById("chart")),
       getInteractionRevision: () => chartViewportInteractionRevision,
       getUserViewportPinned: () => chartSession.userViewportPinned,
+      isAtLatest: isLatestChartViewport,
       clampToObservedData: clampChartViewportToObservedData,
     })
   ));
@@ -2400,6 +2393,20 @@ function finishFutureOverlayDisable(kind) {
 function addViewportYRangeToRelayout(targetEl, payload) {
   return appRuntimeRegistry.peek(APP_RUNTIME_KEYS.auxiliaryChart)
     ?.addViewportYRangeToRelayout?.(targetEl, payload) || payload;
+}
+
+function collectMainViewportTraceYUpdates(mainElement, xRange, meta = {}) {
+  if (!meta?.liveFit || !chartSession.autoChartReset) {
+    return { seriesUpdates: [], traceIndexes: [], yUpdates: [] };
+  }
+  return chartSeriesTransformRuntime.collectViewportFrameUpdates(
+    mainElement?.data,
+    xRange,
+    {
+      targetSpan: 20,
+      resolvePostScale: defaultSeriesScale,
+    },
+  );
 }
 
 function getChartRangeSyncController() {
@@ -2426,18 +2433,7 @@ function getChartRangeSyncController() {
           || meta.interactionRevision === chartViewportInteractionRevision
         )
       ),
-      collectTraceYUpdates: (mainElement, xRange, meta) => (
-        meta?.liveFit && chartSession.autoChartReset
-          ? chartSeriesTransformRuntime.collectViewportFrameUpdates(
-              mainElement?.data,
-              xRange,
-              {
-                targetSpan: 20,
-                resolvePostScale: defaultSeriesScale,
-              },
-            )
-          : { seriesUpdates: [], traceIndexes: [], yUpdates: [] }
-      ),
+      collectTraceYUpdates: collectMainViewportTraceYUpdates,
       xRangeMatches,
       isAutoScale: () => chartSession.autoChartReset,
       rangeBearingTraces: mainChartRenderer.rangeBearingTraces,
@@ -2468,7 +2464,6 @@ function getChartRangeSyncController() {
         });
         if (plan.updateMain) updateHandles();
         if (chartSession.showCoMovement) renderCoMovementPanel({ deferred: true });
-        if (meta?.fit !== false) applyChartResetPolicy("viewport");
       },
     });
     return chartViewportControllerModule.createRangeSyncController(window, {
@@ -2504,7 +2499,6 @@ async function requestSettledViewportRender({
   reason = "viewport-settle",
   updateClass = "viewport",
   refreshCompanions = false,
-  reframeNormalization = false,
 } = {}) {
   const requestedRange = Array.isArray(range) && range.length === 2
     ? range.map(Number)
@@ -2534,12 +2528,9 @@ async function requestSettledViewportRender({
     reason,
     updateClass,
     liveFit: chartSession.autoChartReset,
-    reframeNormalization,
-    fitAfterRender: () => fitCurrentChartRatio(),
     refreshCompanions,
     refreshCompanionsNow: refreshLoadedChartCompanions,
     flushCoMovement: flushLoadedCoMovementPanel,
-    releaseNormalization: () => applyChartResetPolicy("viewport"),
   });
 }
 
@@ -3090,8 +3081,6 @@ function beginSeriesTransformInteraction({ element, handle, lineTarget } = {}) {
   // its current normalization stable until this newer interaction commits.
   chartViewportInteractionRevision += 1;
   getChartRangeSyncController().cancel();
-  applyChartResetPolicy("viewport");
-  captureViewportNormalizationFrame();
   isHandleDragging = true;
   handle?.classList.add("dragging");
   if (lineTarget) {
@@ -3130,10 +3119,10 @@ function beginLineOffsetDrag(el, target, startClientY, pointerId) {
     onClick: ({ startValue }) => {
       chartSession.seriesOffsets[target.seriesKey] = startValue;
       restyleLive(target.traceIndex, target.seriesKey, { commit: true });
-      finishTraceYEdit(false, target.seriesKey, { preserveTransform: true });
+      finishTraceYEdit(target.seriesKey, { preserveTransform: true });
       selectCoMovementTarget(target.seriesKey);
     },
-    onCommit: () => finishTraceYEdit(true, target.seriesKey, { preserveTransform: true }),
+    onCommit: () => finishTraceYEdit(target.seriesKey, { preserveTransform: true }),
   });
 }
 
@@ -3160,7 +3149,6 @@ function getChartPointerRuntime() {
       beginLineOffsetDrag,
       chartSession,
       chartViewportControllerModule,
-      captureViewportNormalization: captureViewportNormalizationFrame,
       clearHoverOnChart,
       createPointerFrameController,
       ensureFullHistoryDataReady,
@@ -3185,15 +3173,11 @@ function getChartPointerRuntime() {
         const range = Array.isArray(chartSession.pinnedXRange)
           ? chartSession.pinnedXRange.map(toMsSafe)
           : getCurrentXRangeMs(document.getElementById("chart"));
-        const needsWindowRefresh = Array.isArray(range)
-          && range.length === 2
-          && getMainViewportWindowController().needsRefresh(range[0], range[1]);
         return requestSettledViewportRender({
           range,
           reason: "viewport-pointer-settle",
           updateClass: "viewport",
           refreshCompanions: true,
-          reframeNormalization: chartSession.autoChartReset && needsWindowRefresh,
         });
       },
       resetEventMarkerHoverHighlight,
@@ -3267,14 +3251,17 @@ function bindSeriesToggleBoard() {
       const stock = customStocks.find((item) => item.ticker === key);
       const displayName = stock?.name || DISPLAY_NAMES[key] || key;
       const hasPriceData = getTickerPricePointsFromPayload(key).length > 0;
+      const pricePlan = planSeriesPriceRefresh([key]);
       let initialLoad = null;
-      if (!hasPriceData) {
+      if (!hasPriceData || pricePlan.shouldRefresh) {
         btn.dataset.loading = "1";
         btn.setAttribute("aria-busy", "true");
         try {
           initialLoad = await ensureCustomTickerSeriesLoaded(key, {
             displayName,
-            returnAfterCache: true,
+            latestOnly: hasPriceData,
+            requireFullHistory: !hasPriceData,
+            returnAfterCache: !pricePlan.shouldRefresh,
           });
         } catch (error) {
           recordRuntimeError("series-price-activation", error, { key });
@@ -3718,6 +3705,27 @@ function getVisibleStockHistoryRefresh() {
 }
 let CREDIT_OFFSET_DAYS = 2;  // Fund-data publication-lag alignment in days (UI uses negative sign for display)
 const CREDIT_COLS = ["customer_deposit", "kospi_credit", "kosdaq_credit"];
+const runtimeRefreshPolicy = runtimeRefreshOrchestratorModule.createRuntimeRefreshPolicy({
+  getCreditSeries: () => CREDIT_COLS,
+  getPricePayload: () => appData.pricePayload,
+  getSession: () => chartSession,
+  getSourceStates: () => runtimeDataApp.getSourceStates?.() || {},
+  getVisibleSeries: visibleMainChartSeriesKeys,
+  isForecastSeries,
+  isStockSeries: (series) => STOCK_TICKER_PATTERN.test(series),
+  latestDatesByTicker: runtimeMarketRefreshModule.latestDatesByTicker,
+  mainMacroSeries: MAIN_MACRO_SERIES,
+  marketIndexSeries: MARKET_INDEX_SERIES,
+  planPriceRefresh: runtimeMarketRefreshModule.planKoreanPriceRefresh,
+  shouldConfirmSource: runtimeFreshnessPolicyModule.shouldConfirmRuntimeSource,
+  toNumber: toNum,
+});
+const {
+  isSourceForeground: isRuntimeRefreshSourceForeground,
+  planCriticalRefresh: planCriticalRuntimeRefresh,
+  planSeriesPriceRefresh,
+  shouldRefreshSource: shouldRefreshRuntimeSource,
+} = runtimeRefreshPolicy;
 
 function dataRevisionSignature(...names) {
   const revisions = getDataRevisions();
@@ -3818,9 +3826,7 @@ function getMainChartSourceFingerprint(priceRows, allowedSeries) {
 }
 
 function currentFixedChartFrame() {
-  return chartSession.viewportNormalizationFrame || (
-    chartSession.autoChartReset ? null : chartSession.lockedChartFrame
-  );
+  return chartSession.autoChartReset ? null : chartSession.lockedChartFrame;
 }
 
 function setupStockResearch(msgEl) {
@@ -3915,10 +3921,6 @@ function captureLockedHistoryYRange() {
     range,
     chartSession.currentMainChartModel,
   );
-}
-
-function captureViewportNormalizationFrame(model = chartSession.currentMainChartModel) {
-  return chartSessionControllerModule.captureViewportNormalizationFrame(chartSession, model);
 }
 
 async function getMainChartModel(
@@ -4092,6 +4094,9 @@ const applyChartVisualFrame = chartUpdateCoordinatorModule.createSeriesFrameAppl
   restyle: (element, update, indexes, options) => (
     plotlyUpdateRuntime.restyle(element, update, indexes, options)
   ),
+  update: (element, data, layout, indexes, options) => (
+    plotlyUpdateRuntime.update(element, data, layout, indexes, options)
+  ),
   resolveTraceIndex: mainSeriesTraceIndex,
   computeSeriesUpdate: computeFinalSeriesUpdate,
   computeValues: computeFinalValues,
@@ -4108,6 +4113,17 @@ const applyChartVisualFrame = chartUpdateCoordinatorModule.createSeriesFrameAppl
   positionHandles: positionSeriesHandles,
   hasEventModel: () => Boolean(chartSession.currentMainChartModel?.seriesModels?.length),
   appendEventUpdates: appendEventMarkerYUpdates,
+  collectAnchoredYUpdates: chartMarkerLayoutModule.collectViewportAnchoredYUpdates,
+  resolveExpandedYRange: (element, stagedTraces) => {
+    if (!chartSession.autoChartReset) return null;
+    const currentRange = element?._fullLayout?.yaxis?.range;
+    const requiredRange = fitRangeForTraces(
+      mainChartRenderer.rangeBearingTraces(stagedTraces),
+      element?._fullLayout?.xaxis?.range,
+      { paddingRatio: 0.08, minimumPadding: 0.6 },
+    );
+    return expandRangeToContain(currentRange, requiredRange);
+  },
   onDisclosureUpdated: () => { eventMarkerRenderState.partialUpdateCount += 1; },
   invalidateInteractionCaches: invalidateChartInteractionCaches,
   invalidateRenderState: mainChartRenderer.invalidateRenderFingerprint,
@@ -4162,7 +4178,7 @@ function getSeriesTransformGestureRuntime() {
   ));
 }
 
-async function finishTraceYEdit(rebuildForDisclosures = true, seriesKey = "", options = {}) {
+async function finishTraceYEdit(seriesKey = "", options = {}) {
   chartVisualFrameCoordinator.flush();
   await chartVisualFrameCoordinator.whenSettled();
   if (options.preserveTransform === true) {
@@ -4177,13 +4193,12 @@ async function finishTraceYEdit(rebuildForDisclosures = true, seriesKey = "", op
   }
   saveState();
   if (chartSession.autoChartReset && options.preserveTransform === true) {
-    // The live frame already committed the series. Fit the axis and dated marker
-    // offsets in one Plotly transaction instead of rebuilding the whole chart.
-    await fitCurrentChartRatio({ expandOnly: true, syncMarkers: true });
-    applyChartResetPolicy("viewport");
+    // Live frames expand the axis only when the edited series crosses its
+    // current boundary. Releasing the pointer keeps that final frame fixed.
+    scheduleHandleUpdate(0);
+    saveLastRuntimeSnapshot().catch(() => {});
     return;
   }
-  if (options.preserveTransform === true) applyChartResetPolicy("viewport");
   if (seriesKey.startsWith("eps:")) {
     scheduleHandleUpdate(0);
     saveLastRuntimeSnapshot().catch(() => {});
@@ -4272,7 +4287,7 @@ function setupOffsetDrag(handle) {
         noteStockVisibilityChange(seriesKey);
         requestChartCompositionUpdate();
       },
-      onCommit: () => finishTraceYEdit(true, seriesKey, { preserveTransform: true }),
+      onCommit: () => finishTraceYEdit(seriesKey, { preserveTransform: true }),
     });
   }, { passive: false });
 }
@@ -4291,17 +4306,31 @@ function setupScaleDrag(handle) {
     event.preventDefault();
     event.stopPropagation();
     const startClientY = event.clientY;
+    const element = document.getElementById("chart");
+    const trace = element?.data?.[traceIndex];
+    const currentScale = resolveSeriesScale(chartSession.seriesScales, seriesKey);
+    const currentOffset = Number(chartSession.seriesOffsets[seriesKey]) || 0;
+    const leftValue = mainChartRenderer.visibleEndpointValues(
+      trace,
+      trace?.y,
+      element?._fullLayout?.xaxis?.range,
+      interpolateTraceYAtMs,
+    ).first;
+    const scaleAnchorCoefficient = Number.isFinite(leftValue) && Math.abs(currentScale) > 1e-9
+      ? (leftValue - 100 - currentOffset) / currentScale
+      : null;
     getSeriesTransformGestureRuntime().startScale({
       pointerId: event.pointerId,
       startClientY,
       traceIndex,
       seriesKey,
+      scaleAnchorCoefficient,
       beginOptions: { handle },
       updatePosition: (clientY) => {
-      const dy = clientY - startClientY;
-      handle.style.top = `${basePixelY + dy - 7}px`;
+        const dy = clientY - startClientY;
+        handle.style.top = `${basePixelY + dy - 7}px`;
       },
-      onCommit: () => finishTraceYEdit(true, seriesKey, { preserveTransform: true }),
+      onCommit: () => finishTraceYEdit(seriesKey, { preserveTransform: true }),
     });
   }, { passive: false });
 }
@@ -4745,6 +4774,9 @@ function scheduleEventMarkerHoverHighlight(evtData) {
     && eventMarkerRenderState.highlight.traceIndex === traceIndex
     && eventMarkerRenderState.highlight.pointIndex === pointIndex
   ) {
+    // Plotly can replace an SVG marker without changing its trace identity.
+    // Reapply the visual state so the cached selection cannot outlive its node.
+    setEventMarkerHighlighted(chartEl, traceIndex, pointIndex, true);
     return;
   }
 
@@ -4768,6 +4800,7 @@ function highlightEventMarkerHoverPoint(evtData) {
     && eventMarkerRenderState.highlight.traceIndex === traceIndex
     && eventMarkerRenderState.highlight.pointIndex === pointIndex
   ) {
+    setEventMarkerHighlighted(chartEl, traceIndex, pointIndex, true);
     return;
   }
 
@@ -6062,10 +6095,6 @@ function withAiForecastRenderHold(task) {
     : task();
 }
 
-function renderChartWhenIdleOrNow(preserveZoom = true) {
-  return getChartRenderFacade().runWhenIdleOrNow(preserveZoom);
-}
-
 function runMainChartRender(preserveZoom = true) {
   return getChartRenderFacade().run(preserveZoom);
 }
@@ -6451,6 +6480,8 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
       ),
       toMilliseconds: toMsSafe,
       fitRangeForTraces,
+      collectTraceYUpdates: collectMainViewportTraceYUpdates,
+      collectAnchoredYUpdates: chartMarkerLayoutModule.collectViewportAnchoredYUpdates,
       dayMs: DAY_MS,
       horizontalMargin: mainChartHorizontalMargin(),
       cursorLineMode: chartSession.cursorLineMode,
@@ -6701,7 +6732,7 @@ async function refreshLoadedAuxiliaryViewport() {
 
 async function refreshLoadedChartCompanions() {
   await refreshLoadedAuxiliaryViewport();
-  flushLoadedCoMovementPanel();
+  await flushLoadedCoMovementPanel();
 }
 
 function flushLoadedCoMovementPanel() {
@@ -6909,6 +6940,9 @@ function isRetryableAdrRefreshError(error) {
 }
 
 function refreshAdrFromWebWithRetry(signal = null, forceNetwork = false) {
+  // Automatic startup must not hold every supplemental source behind ADR's
+  // long retry window. Its caller already schedules a final background retry.
+  if (!forceNetwork) return refreshAdrFromWeb(signal, false);
   return retryOnce(
     () => refreshAdrFromWeb(signal, forceNetwork),
     {
@@ -7110,49 +7144,24 @@ function prepareHistoricalDataForAiForecast() {
     });
 }
 
-async function applyRuntimeRefreshChanges(revisionsBefore, options = {}) {
-  const revisionsAfter = getDataRevisions();
-  const {
-    mainDataChanged,
-    adrDataChanged,
-    disclosureDataChanged,
-    renderAuxiliaryOnly,
-    renderDisclosureOnly,
-  } = runtimeRefreshOrchestratorModule.planRuntimeRefreshRendering(
-    revisionsBefore,
-    revisionsAfter,
-  );
-  if (adrDataChanged) invalidateAdrChartRender();
-  if (mainDataChanged && chartSession.autoChartReset) {
-    chartSession.pendingAutoChartFit = true;
-  }
-  if (options.backgroundBatch) {
-    const shouldRender = mainDataChanged || renderAuxiliaryOnly || renderDisclosureOnly;
-    if (shouldRender) {
-      const renderTask = runtimeRefreshRenderBatcher.schedule({
-        main: mainDataChanged,
-        auxiliary: renderAuxiliaryOnly,
-        disclosure: renderDisclosureOnly,
-      });
-      if (options.awaitBackgroundBatch) await renderTask;
-    }
-    return { revisionsAfter, mainDataChanged, adrDataChanged, disclosureDataChanged };
-  }
-  if (mainDataChanged) {
-    // A background data revision may refit the vertical scale, but it must not
-    // replace the visible horizontal period with the device default. Explicit
-    // range controls own horizontal resets.
-    const preserveViewport = options.preserveViewport !== false;
-    if (options.awaitMainRender) await runMainChartRender(preserveViewport);
-    else renderChartWhenIdleOrNow(preserveViewport);
-  }
-  if (renderAuxiliaryOnly) {
-    const mainEl = document.getElementById("chart");
-    renderAdrChart(mainEl?._fullLayout?.xaxis?.range?.slice() || null);
-  }
-  if (renderDisclosureOnly) queueDisclosureTraceRefresh();
-  return { revisionsAfter, mainDataChanged, adrDataChanged, disclosureDataChanged };
-}
+const applyRuntimeRefreshChanges = runtimeRefreshOrchestratorModule
+  .createRuntimeRefreshChangeApplier({
+    getDataRevisions,
+    invalidateAuxiliary: invalidateAdrChartRender,
+    isAutoScale: () => chartSession.autoChartReset,
+    isTimingVisible: () => chartSession.showRecessionSignals,
+    markPendingAutoFit: () => { chartSession.pendingAutoChartFit = true; },
+    requestAuxiliaryRender: () => scheduleAuxiliaryChartRender(
+      document.getElementById("chart")?._fullLayout?.xaxis?.range?.slice() || null,
+    ),
+    waitForAuxiliaryRender: () => getAuxiliaryChartRenderQueue().whenSettled(),
+    renderDisclosure: queueDisclosureTraceRefresh,
+    requestMainRender: ({ preserveViewport, reason, updateClass }) => requestChartRender(
+      preserveViewport,
+      { deferDuringInteraction: false, reason, updateClass },
+    ),
+    waitForMainRender: () => getMainChartRenderScheduler().whenSettled(),
+  });
 
 function getBackgroundStockRefresh() {
   return appRuntimeRegistry.get(APP_RUNTIME_KEYS.backgroundStockRefresh, () => (
@@ -7187,6 +7196,8 @@ function getRuntimeRefreshOrchestrator() {
       getDataRevisions,
       isAbortError,
       isRetryableAdrRefreshError,
+      isSourceForeground: isRuntimeRefreshSourceForeground,
+      planCriticalRefresh: planCriticalRuntimeRefresh,
       preloadCustomStocks,
       recordPerfSample,
       refreshAdrFromWebWithRetry,
@@ -7198,10 +7209,10 @@ function getRuntimeRefreshOrchestrator() {
       refreshFearGreedFromWeb,
       fetchCriticalRuntimeBootstrap,
       refreshSourceWithRetry,
+      shouldRefreshSource: shouldRefreshRuntimeSource,
       runRefreshPhases,
       runtimeDataApp,
       scheduleAdrFinalRetry,
-      scheduleSupplementalTask: startupTaskRuntime.scheduleSupplemental,
       scheduleHiddenStockRefresh: (refreshOptions) => getBackgroundStockRefresh().schedule(refreshOptions),
       scheduleLastRuntimeSnapshotSave,
       setMessage,
@@ -7209,9 +7220,7 @@ function getRuntimeRefreshOrchestrator() {
       startPerfSample,
       state,
       throwIfAborted,
-      waitForStartupVisualReady: () => new Promise((resolve) => {
-        runAfterStartupVisualReady(resolve, { userVisible: true });
-      }),
+      waitForStartupVisualReady: startupTaskRuntime.whenReleased,
     });
   });
 }
@@ -7344,7 +7353,7 @@ const applicationLifecycle = createApplicationLifecycleRuntime({
   initialData: {
     runtime: runtimeDataApp,
     restoreSnapshot: loadLastRuntimeSnapshot,
-    loadSeed: () => loadData(true),
+    loadSeed: () => loadData(false),
     needsHistorical: () => chartSession.activeMonths > RECENT_DATA_MONTHS && !historicalDataLoaded,
     loadHistorical: () => ensureHistoricalDataLoaded(true),
     onHistoricalError: (messageElement) => {
@@ -7366,6 +7375,7 @@ const applicationLifecycle = createApplicationLifecycleRuntime({
   },
   refresh: {
     runData: (messageElement, options) => runtimeDataApp.refresh(messageElement, options),
+    renderAfterData: false,
     renderMain: runMainChartRender,
     shouldAutoFit: () => chartSession.autoChartReset,
     fitCurrentChart: fitCurrentChartRatio,
@@ -7436,7 +7446,6 @@ const appBootstrap = createAppBootstrapOrchestrator({
   refreshDuringStartup: ({ messageElement, restoredSnapshot }) => (
     runtimeDataApp.refreshDuringStartup(messageElement, {
       restoredSnapshot,
-      mergeSeed: () => loadData(true, { mergeWithExisting: true, preserveExisting: true }),
       onError: (error) => {
         setMessage(messageElement, `최신 데이터 갱신 오류: ${error.message}`, true);
       },
@@ -7476,8 +7485,3 @@ appBootstrap.boot();
 window.addEventListener("pagehide", (event) => {
   if (!event.persisted) applicationLifecycle.dispose();
 });
-
-
-
-
-

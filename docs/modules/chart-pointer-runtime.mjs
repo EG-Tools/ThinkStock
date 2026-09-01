@@ -384,7 +384,6 @@ import {
         const geometry = getChartInteractionGeometry(sourceEl);
         const axisLength = Number(geometry?.xa?._length);
         if (!startRange || !dataRange || !(axisLength > 0)) return false;
-        captureViewportNormalization?.();
         dragState = {
           sourceEl,
           pointerId: event.pointerId,
@@ -461,8 +460,6 @@ import {
           if (st.moved) {
             Promise.resolve(rangeController.flush?.())
               .finally(settleViewportAndRestorePointer);
-          } else {
-            applyChartResetPolicy("viewport");
           }
           return;
         }
@@ -483,7 +480,6 @@ import {
         const startRange = getCurrentXRangeMs(sourceEl);
         const navigationRange = getChartNavigationDataRangeMs(document.getElementById("chart"));
         if (!startRange || !navigationRange) return false;
-        captureViewportNormalization?.();
         const distance = Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y);
         if (distance < 8) return false;
         const geometry = getChartInteractionGeometry(sourceEl);
@@ -627,7 +623,16 @@ import {
       const onWheelRange = (event) => {
         if (event.ctrlKey || !Number.isFinite(event.deltaY) || event.deltaY === 0) return;
         event.preventDefault();
-        if (interactionState.handleDragging || interactionState.viewportDragging) return;
+        if (interactionState.handleDragging) return;
+        if (interactionState.viewportDragging) {
+          const activePointerGesture = Boolean(pinchState)
+            || (Boolean(dragState) && Number(event.buttons) > 0);
+          if (activePointerGesture) return;
+          if (dragState) {
+            clearViewportDrag();
+            getChartRangeSyncController().cancel?.();
+          }
+        }
         hoverIdleController.cancel();
         if (!interactionState.wheelZooming) captureViewportNormalization?.();
         interactionState.wheelZooming = true;

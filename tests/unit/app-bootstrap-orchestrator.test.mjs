@@ -320,7 +320,7 @@ test("lazy runtime registry clears every entry even when one disposer fails", ()
   assert.equal(registry.size(), 0);
 });
 
-test("startup completion gate releases deferred work exactly once", () => {
+test("startup completion gate releases deferred work and readiness exactly once", async () => {
   const scheduled = [];
   const calls = [];
   const gate = createStartupCompletionGate((task, taskOptions) => scheduled.push({ task, taskOptions }));
@@ -330,8 +330,14 @@ test("startup completion gate releases deferred work exactly once", () => {
   assert.equal(gate.defer(() => calls.push("before-b")), true);
   assert.equal(gate.pendingCount(), 2);
   assert.equal(gate.isReleased(), false);
+  let ready = false;
+  const readiness = gate.whenReleased().then((value) => { ready = value; });
+  await Promise.resolve();
+  assert.equal(ready, false);
 
   assert.equal(gate.release(), true);
+  await readiness;
+  assert.equal(ready, true);
   assert.equal(gate.release(), false);
   assert.equal(gate.pendingCount(), 0);
   assert.equal(gate.isReleased(), true);
@@ -363,7 +369,7 @@ test("startup completion gate keeps only the latest named task before release", 
   assert.deepEqual(calls, ["latest", "independent"]);
 });
 
-test("startup task runtime yields before and after supplemental work", async () => {
+test("startup task runtime yields before and after deferred work", async () => {
   const enqueued = [];
   const errors = [];
   const scheduler = {
@@ -383,26 +389,15 @@ test("startup task runtime yields before and after supplemental work", async () 
   runtime.release();
   assert.equal(enqueued[0].key, "startup-deferred-1");
   assert.equal(enqueued[0].options.priority, 3);
+  assert.equal(enqueued[0].options.deferDuringInteraction, false);
   const deferredCheckpoints = [];
   assert.equal(await enqueued[0].task({
     checkpoint: async () => { deferredCheckpoints.push("yield"); },
   }), 1);
   assert.deepEqual(deferredCheckpoints, ["yield", "yield"]);
 
-  const scheduled = runtime.scheduleSupplemental(async () => {
-    calls.push("task");
-    return "ready";
-  }, { index: 2 });
-  assert.equal(enqueued[1].key, "startup-supplemental-1");
-  assert.equal(enqueued[1].options.priority, -4);
-  const checkpoints = [];
-  assert.equal(await enqueued[1].task({
-    checkpoint: async () => { checkpoints.push("yield"); },
-  }), "ready");
-  assert.deepEqual(checkpoints, ["yield", "yield"]);
-  assert.deepEqual(calls, ["deferred", "task"]);
+  assert.deepEqual(calls, ["deferred"]);
   assert.deepEqual(errors, []);
-  await scheduled;
 });
 
 test("startup task runtime serializes visible work through the interaction-aware scheduler", () => {
@@ -424,6 +419,7 @@ test("startup task runtime serializes visible work through the interaction-aware
     delayMs: 120,
     group: "startup-deferred",
     priority: 20,
+    deferDuringInteraction: false,
   });
 });
 
@@ -461,12 +457,9 @@ test("startup task runtime uses stable scheduler keys for named work", () => {
   runtime.defer(() => true, { taskName: "service worker" });
   runtime.release();
   runtime.defer(() => true, { taskName: "service worker" });
-  runtime.scheduleSupplemental(() => true, { taskName: "credit refresh" });
-
   assert.deepEqual(enqueued.map(({ key }) => key), [
     "startup-deferred:service-worker",
     "startup-deferred:service-worker",
-    "startup-supplemental:credit-refresh",
   ]);
   assert.equal(enqueued.every(({ options }) => options.coalesceRunning === true), true);
 });

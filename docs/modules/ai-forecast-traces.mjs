@@ -404,6 +404,7 @@
               appliedSeriesOffset,
             )
             : [...scenario.chartValues];
+          const seriesTransformAnchorBaseValue = Number(seriesTransformBaseValues?.[0]);
           traces.push({
             x: forecast.dates,
             y: scenario.chartValues,
@@ -428,6 +429,10 @@
               ...commonMeta,
               overlayKind: "ai-scenario",
               seriesTransformBaseValues,
+              seriesTransformAnchor: "latest-price",
+              seriesTransformAnchorBaseValue: Number.isFinite(seriesTransformAnchorBaseValue)
+                ? seriesTransformAnchorBaseValue
+                : null,
               isAiForecastTrace: scenarioKey === "sideways",
               isAiForecastScenarioTrace: true,
               aiTraceRole: scenarioKey,
@@ -461,6 +466,14 @@
         });
         const markerScenario = forecast.scenarios?.[scenarioPresentation.rawPrimaryKey];
         if (referenceReports.length && markerScenario?.chartValues?.length && forecast.dates?.length) {
+          const markerScenarioBaseValues = typeof invertSeriesTransform === "function"
+            ? invertSeriesTransform(
+              markerScenario.chartValues,
+              appliedSeriesScale,
+              appliedSeriesOffset,
+            )
+            : [...markerScenario.chartValues];
+          const markerAnchorBaseValue = Number(markerScenarioBaseValues?.[0]);
           const markerIndex = Math.min(
             forecast.dates.length - 1,
             markerScenario.chartValues.length - 1,
@@ -488,15 +501,11 @@
               ...commonMeta,
               overlayKind: "ai-report",
               isAiReportMarkerTrace: true,
-              seriesTransformBaseValues: [
-                typeof invertSeriesTransform === "function"
-                  ? invertSeriesTransform(
-                    [markerScenario.chartValues[markerIndex]],
-                    appliedSeriesScale,
-                    appliedSeriesOffset,
-                  )[0]
-                  : markerScenario.chartValues[markerIndex],
-              ],
+              seriesTransformBaseValues: [markerScenarioBaseValues[markerIndex]],
+              seriesTransformAnchor: "latest-price",
+              seriesTransformAnchorBaseValue: Number.isFinite(markerAnchorBaseValue)
+                ? markerAnchorBaseValue
+                : null,
               reports: referenceReports,
               representativeReport,
             },

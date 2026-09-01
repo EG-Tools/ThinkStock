@@ -61,17 +61,6 @@
     return state.lockedHistoryYRange || null;
   }
 
-  function captureViewportNormalizationFrame(state, model) {
-    if (!state || state.viewportNormalizationFrame || !model) {
-      return state?.viewportNormalizationFrame || null;
-    }
-    state.viewportNormalizationFrame = {
-      normBases: finiteSeriesMap(model.normBases),
-      autoScales: finiteSeriesMap(model.autoScales),
-    };
-    return state.viewportNormalizationFrame;
-  }
-
   function createChartSessionController(scope = globalThis, options = {}) {
     const state = options.state;
     if (!state || typeof state !== "object") {
@@ -82,11 +71,7 @@
 
     function applyResetPolicy(change) {
       if (disposed) return false;
-      const kind = String(change || "viewport");
-      if (kind === "manual" || kind === "composition" || kind === "viewport") {
-        state.viewportNormalizationFrame = null;
-      }
-
+      const kind = String(change || "");
       if (kind === "manual") {
         state.pendingAutoChartFit = false;
         if (!state.autoChartReset) return false;
@@ -104,11 +89,7 @@
         state.pendingAutoChartFit = true;
         return true;
       }
-
-      // Viewport interaction already applies the latest X/Y ranges together.
-      // Do not run a second delayed fit after release; it causes a visible
-      // squeeze/stretch and repeats work the live interaction just completed.
-      return true;
+      return false;
     }
 
     function setAutoScale(enabled) {
@@ -118,7 +99,6 @@
 
       state.autoChartReset = nextEnabled;
       state.pendingAutoChartFit = false;
-      state.viewportNormalizationFrame = null;
       state.pendingCompositionViewport = null;
 
       if (nextEnabled) {
@@ -323,7 +303,6 @@
 export {
   captureLockedChartFrame,
   captureLockedHistoryYRange,
-  captureViewportNormalizationFrame,
   clearSeriesTransforms,
   createChartSessionController,
   createChartSessionState,

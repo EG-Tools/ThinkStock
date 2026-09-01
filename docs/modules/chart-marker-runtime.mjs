@@ -1066,8 +1066,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
 // Marker payload layout belongs to the marker runtime.
   const seriesMarkerBindingCache = new WeakMap();
   const markerTraceEntryCache = new WeakMap();
-  const sourcePointValueCache = new WeakMap();
-  const sourceSeriesValueCache = new WeakMap();
+  const viewportMarkerBindingCache = new WeakMap();
 
   function asTraceList(value) {
     if (Array.isArray(value)) return value.filter(Boolean);
@@ -1133,78 +1132,108 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     return { traceIndexes, yUpdates, updated, structureChanged };
   }
 
-  function sourcePointValues(trace) {
-    const x = Array.isArray(trace?.x) ? trace.x : [];
-    const y = Array.isArray(trace?.y) ? trace.y : [];
-    const count = Math.min(x.length, y.length);
-    const cached = sourcePointValueCache.get(trace);
-    if (cached
-      && cached.x === x
-      && cached.y === y
-      && cached.count === count
-      && cached.firstX === x[0]
-      && cached.lastX === x[count - 1]
-      && cached.firstY === y[0]
-      && cached.lastY === y[count - 1]) return cached.values;
-    const values = new Map();
-    for (let index = 0; index < count; index += 1) {
-      const value = Number(y[index]);
-      if (Number.isFinite(value)) values.set(String(x[index] || ""), value);
-    }
-    sourcePointValueCache.set(trace, {
-      count,
-      firstX: x[0],
-      lastX: x[count - 1],
-      firstY: y[0],
-      lastY: y[count - 1],
-      values,
-      x,
-      y,
+  function viewportMarkerBindingsMatch(cached, traces) {
+    if (!cached
+      || cached.traceCount !== traces.length
+      || !cached.traceRefs.every((trace, index) => trace === traces[index])) return false;
+    return cached.traceEntries.every((entry) => {
+      const trace = traces[entry.traceIndex];
+      return trace === entry.trace
+        && trace?.x === entry.x
+        && trace?.meta?.pointTickers === entry.pointTickers
+        && trace?.meta?.markerGapFactors === entry.gapFactors
+        && trace?.x?.length === entry.pointCount
+        && trace?.x?.[0] === entry.firstX
+        && trace?.x?.[entry.pointCount - 1] === entry.lastX;
+    }) && cached.sourceEntries.every((entry) => {
+      const trace = traces[entry.traceIndex];
+      return trace === entry.trace
+        && trace?.x === entry.x
+        && trace?.x?.length === entry.pointCount
+        && trace?.x?.[0] === entry.firstX
+        && trace?.x?.[entry.pointCount - 1] === entry.lastX;
     });
-    return values;
   }
 
-  function sourceSeriesValues(traces) {
-    const cached = sourceSeriesValueCache.get(traces);
-    const reusable = cached?.traceCount === traces.length
-      && cached.traceRefs.every((trace, index) => trace === traces[index])
-      && cached.entries.every((entry) => (
-        entry.x === entry.trace.x
-        && entry.y === entry.trace.y
-        && entry.firstX === entry.trace.x?.[0]
-        && entry.lastX === entry.trace.x?.[entry.trace.x.length - 1]
-        && entry.firstY === entry.trace.y?.[0]
-        && entry.lastY === entry.trace.y?.[entry.trace.y.length - 1]
-      ));
-    if (reusable) return cached.values;
-
-    const values = new Map();
-    const entries = [];
-    traces.forEach((trace) => {
-      if (trace?.meta?.overlayKind !== "price" || !trace?.meta?.seriesKey) return;
-      values.set(String(trace.meta.seriesKey), sourcePointValues(trace));
-      entries.push({
+  /** Bakes marker dates to owning-series indexes once per chart structure. */
+  function buildViewportMarkerBindings(traces) {
+    const sourceBySeries = new Map();
+    const sourceEntries = [];
+    traces.forEach((trace, traceIndex) => {
+      if (trace?.meta?.overlayKind !== "price" || !trace?.meta?.seriesKey
+        || !Array.isArray(trace.x)) return;
+      const dateIndexes = new Map();
+      trace.x.forEach((date, sourceIndex) => dateIndexes.set(String(date || ""), sourceIndex));
+      sourceBySeries.set(String(trace.meta.seriesKey), { traceIndex, dateIndexes });
+      sourceEntries.push({
         trace,
+        traceIndex,
         x: trace.x,
-        y: trace.y,
-        firstX: trace.x?.[0],
-        lastX: trace.x?.[trace.x.length - 1],
-        firstY: trace.y?.[0],
-        lastY: trace.y?.[trace.y.length - 1],
+        pointCount: trace.x.length,
+        firstX: trace.x[0],
+        lastX: trace.x[trace.x.length - 1],
       });
     });
-    sourceSeriesValueCache.set(traces, {
-      traceCount: traces.length,
-      traceRefs: traces.slice(),
-      entries,
-      values,
+
+    const traceEntries = [];
+    const bindings = [];
+    traces.forEach((trace, markerTraceIndex) => {
+      if (!isEventMarkerTrace(trace)) return;
+      const pointTickers = Array.isArray(trace?.meta?.pointTickers)
+        ? trace.meta.pointTickers
+        : [];
+      const gapFactors = Array.isArray(trace?.meta?.markerGapFactors)
+        ? trace.meta.markerGapFactors
+        : [];
+      const pointCount = Math.min(
+        trace?.x?.length || 0,
+        trace?.y?.length || 0,
+        pointTickers.length,
+        gapFactors.length,
+      );
+      if (!pointCount) return;
+      const points = [];
+      for (let markerIndex = 0; markerIndex < pointCount; markerIndex += 1) {
+        const source = sourceBySeries.get(String(pointTickers[markerIndex] || ""));
+        const sourceIndex = source?.dateIndexes.get(String(trace.x[markerIndex] || ""));
+        const factor = Number(gapFactors[markerIndex]);
+        if (!Number.isInteger(sourceIndex) || !Number.isFinite(factor)) continue;
+        points.push({ factor, markerIndex, sourceIndex, sourceTraceIndex: source.traceIndex });
+      }
+      traceEntries.push({
+        trace,
+        traceIndex: markerTraceIndex,
+        x: trace.x,
+        pointTickers,
+        gapFactors,
+        pointCount,
+        firstX: trace.x[0],
+        lastX: trace.x[pointCount - 1],
+      });
+      if (points.length) bindings.push({ markerTraceIndex, points });
     });
-    return values;
+    return {
+      bindings,
+      sourceEntries,
+      traceCount: traces.length,
+      traceEntries,
+      traceRefs: traces.slice(),
+    };
+  }
+
+  function viewportMarkerBindings(element, traces) {
+    let cached = viewportMarkerBindingCache.get(element);
+    if (!viewportMarkerBindingsMatch(cached, traces)) {
+      cached = buildViewportMarkerBindings(traces);
+      viewportMarkerBindingCache.set(element, cached);
+    }
+    return cached.bindings;
   }
 
   /** Keeps every dated event marker attached to its owning price trace during live fitting. */
   function collectViewportAnchoredYUpdates(element, options = {}) {
-    const traces = Array.isArray(element?.data) ? element.data : [];
+    const sourceTraces = Array.isArray(element?.data) ? element.data : [];
+    const traces = Array.isArray(options.traces) ? options.traces : sourceTraces;
     const viewportRange = Array.isArray(options.viewportRange)
       ? options.viewportRange.slice(0, 2).map(Number)
       : [];
@@ -1216,37 +1245,24 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       : CHART_MARKER_DEFAULTS.constants.eventMarkerGapRatio;
     if (!(span > 1e-9) || !(gapRatio > 0)) return { traceIndexes: [], yUpdates: [] };
 
-    const sourceValuesBySeries = sourceSeriesValues(traces);
-    if (!sourceValuesBySeries.size) return { traceIndexes: [], yUpdates: [] };
-
     const markerGap = span * gapRatio;
     const traceIndexes = [];
     const yUpdates = [];
-    traces.forEach((trace, traceIndex) => {
-      if (!isEventMarkerTrace(trace)) return;
-      const pointTickers = Array.isArray(trace?.meta?.pointTickers)
-        ? trace.meta.pointTickers
-        : [];
-      const gapFactors = Array.isArray(trace?.meta?.markerGapFactors)
-        ? trace.meta.markerGapFactors
-        : [];
-      const count = Math.min(trace?.x?.length || 0, trace?.y?.length || 0, pointTickers.length, gapFactors.length);
-      if (!count) return;
+    viewportMarkerBindings(element, sourceTraces).forEach(({ markerTraceIndex, points }) => {
+      const trace = traces[markerTraceIndex];
+      if (!trace || !Array.isArray(trace.y)) return;
       let changed = false;
       const nextY = trace.y.slice();
-      for (let pointIndex = 0; pointIndex < count; pointIndex += 1) {
-        const sourceY = sourceValuesBySeries
-          .get(String(pointTickers[pointIndex] || ""))
-          ?.get(String(trace.x[pointIndex] || ""));
-        const factor = Number(gapFactors[pointIndex]);
-        if (!Number.isFinite(sourceY) || !Number.isFinite(factor)) continue;
+      points.forEach(({ factor, markerIndex, sourceIndex, sourceTraceIndex }) => {
+        const sourceY = Number(traces[sourceTraceIndex]?.y?.[sourceIndex]);
+        if (!Number.isFinite(sourceY)) return;
         const value = sourceY + markerGap * factor;
-        if (Math.abs(value - Number(trace.y[pointIndex])) <= 1e-9) continue;
-        nextY[pointIndex] = value;
+        if (Math.abs(value - Number(trace.y[markerIndex])) <= 1e-9) return;
+        nextY[markerIndex] = value;
         changed = true;
-      }
+      });
       if (!changed) return;
-      traceIndexes.push(traceIndex);
+      traceIndexes.push(markerTraceIndex);
       yUpdates.push(nextY);
     });
     return { traceIndexes, yUpdates };
@@ -1361,6 +1377,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     if (element) {
       seriesMarkerBindingCache.delete(element);
       markerTraceEntryCache.delete(element);
+      viewportMarkerBindingCache.delete(element);
     }
   }
 

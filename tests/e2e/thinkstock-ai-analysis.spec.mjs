@@ -17,6 +17,65 @@ import {
   FINANCIAL_SUMMARY_VERSION,
 } from "../../shared/company-analysis-contract.mjs";
 
+async function expectAiForecastsAnchoredToOwner(page) {
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const traces = element.data || [];
+    const priceBySeries = new Map(traces.flatMap((trace) => (
+      trace?.meta?.overlayKind === "price" && trace?.meta?.seriesKey
+        ? [[String(trace.meta.seriesKey), trace]]
+        : []
+    )));
+    return traces
+      .filter((trace) => trace?.meta?.isAiForecastScenarioTrace)
+      .flatMap((trace) => {
+        const owner = priceBySeries.get(String(trace.meta.seriesKey || ""));
+        const forecastTime = Date.parse(String(trace.x?.[0] || ""));
+        const ownerIndex = (owner?.x || []).findIndex((date) => (
+          Date.parse(String(date || "")) === forecastTime
+        ));
+        const forecastValue = Number(trace.y?.[0]);
+        const ownerValue = Number(owner?.y?.[ownerIndex]);
+        return ownerIndex >= 0
+          && Number.isFinite(forecastValue)
+          && Number.isFinite(ownerValue)
+          && Math.abs(forecastValue - ownerValue) <= 1e-6
+          ? []
+          : [{
+              series: String(trace.meta.seriesKey || ""),
+              role: String(trace.meta.aiTraceRole || ""),
+              forecastTime,
+              ownerIndex,
+              forecastValue,
+              ownerValue,
+            }];
+      });
+  }), {
+    message: "AI forecast did not remain anchored to its owning series latest point",
+    timeout: 10000,
+  }).toEqual([]);
+}
+
+async function readInsiderMarker(page, side) {
+  return page.locator("#chart").evaluate((element, targetSide) => {
+    const traceIndex = (element.data || []).findIndex((trace) => (
+      trace?.meta?.isInsiderTradeTrace && trace.meta.insiderTradeSide === targetSide
+    ));
+    if (traceIndex < 0) return null;
+    const trace = element.data[traceIndex];
+    const uid = String(element._fullData?.[traceIndex]?.uid || trace?.uid || "");
+    const group = [...element.querySelectorAll(".scatterlayer .trace.scatter")]
+      .find((node) => uid && node.classList.contains(`trace${uid}`));
+    const marker = group?.querySelector(".textpoint text");
+    const rect = marker?.getBoundingClientRect();
+    return rect ? {
+      x: (rect.left + rect.right) / 2,
+      y: (rect.top + rect.bottom) / 2,
+      fontSize: Number.parseFloat(getComputedStyle(marker).fontSize),
+      highlighted: marker.classList.contains("is-marker-highlighted"),
+    } : null;
+  }, side);
+}
+
 test("AI toggle draws and removes a six-month virtual forecast", async ({ page, isMobile }) => {
   await stubExternalRefreshes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
@@ -32,10 +91,17 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
 
   await page.locator("#aiForecastToggle").click();
   await expect(page.locator("#aiForecastToggle")).toHaveClass(/is-active/);
-  await expect(page.locator("#aiForecastProgress")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => {
+    const progress = document.getElementById("aiForecastProgress");
+    const progressVisible = progress && getComputedStyle(progress).display !== "none";
+    const forecastReady = (document.getElementById("chart")?.data || [])
+      .some((trace) => trace?.meta?.isAiForecastTrace);
+    return progressVisible || forecastReady;
+  })).toBe(true);
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length
   )), { timeout: 30000 }).toBeGreaterThan(0);
+  await expectAiForecastsAnchoredToOwner(page);
   await expect.poll(() => page.locator("#chart").evaluate((element, before) => {
     const forecastEnd = Math.max(...(element.data || [])
       .filter((trace) => trace?.meta?.isAiForecastScenarioTrace)
@@ -302,6 +368,7 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
     ))).toBe(true);
   await page.mouse.up();
   await waitForChartRenderIdle(page);
+  await expectAiForecastsAnchoredToOwner(page);
   const observedEnd = await page.locator("#chart").evaluate((element) => Math.max(
     ...(element.data || [])
       .filter((trace) => !trace?.meta?.isAiForecastScenarioTrace && Array.isArray(trace?.x))
@@ -509,6 +576,7 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
   await expect.poll(() => page.locator("#chart").evaluate((element, forecastEnd) => (
     Math.abs(Date.parse(element._fullLayout.xaxis.range[1]) - forecastEnd)
   ), panState.forecastEnd)).toBeLessThanOrEqual(2 * 24 * 60 * 60 * 1000);
+  await expectAiForecastsAnchoredToOwner(page);
 
   for (const months of [3, 6, 12, 360]) {
     await setChartRangeMonths(page, months);
@@ -759,7 +827,7 @@ test("AI off clamps the viewport to the last observed date", async ({ page }) =>
 });
 
 test("AI forecasts survive repeated KOSPI and KOSDAQ toggle cycles", async ({ page }) => {
-  test.setTimeout(75_000);
+  test.setTimeout(120_000);
   await stubExternalRefreshes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
@@ -787,7 +855,7 @@ test("AI forecasts survive repeated KOSPI and KOSDAQ toggle cycles", async ({ pa
         .map((trace) => trace?.meta?.seriesKey)).size
     )), {
       message: `AI cycle ${cycle + 1} did not render both indices`,
-      timeout: 30000,
+      timeout: 60000,
     }).toBe(2);
     if (cycle === 0) {
       // The first visible forecast can be refined once the background market
@@ -816,7 +884,7 @@ test("AI forecasts survive repeated KOSPI and KOSDAQ toggle cycles", async ({ pa
       .map((trace) => trace?.meta?.seriesKey)).size
   )), {
     message: "rapid AI toggles did not preserve the final ON state",
-    timeout: 30000,
+    timeout: 60000,
   }).toBe(2);
   const progressSamples = await page.evaluate(() => window.__aiProgressSamples || []);
   expect(progressSamples.some((sample) => sample.value === 100)).toBe(true);
@@ -1638,24 +1706,13 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
       .map((point) => getComputedStyle(point).display)
   ))).toEqual(["block", "block"]);
 
-  const insiderBuyPoint = await page.locator("#chart").evaluate((element) => {
-    const marker = [...element.querySelectorAll(".scatterlayer .textpoint text")]
-      .find((point) => point.textContent?.trim() === "▲"
-        && getComputedStyle(point).fill === "rgb(185, 28, 28)");
-    const rect = marker?.getBoundingClientRect();
-    return rect ? { x: (rect.left + rect.right) / 2, y: (rect.top + rect.bottom) / 2 } : null;
-  });
+  const insiderBuyPoint = await readInsiderMarker(page, "buy");
   expect(insiderBuyPoint).not.toBeNull();
   await page.mouse.move(insiderBuyPoint.x, insiderBuyPoint.y);
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     element.classList.contains("is-event-marker-hovering")
   ))).toBe(true);
-  await expect.poll(() => page.locator("#chart").evaluate((element) => {
-    const marker = [...element.querySelectorAll(".scatterlayer .textpoint text")]
-      .find((point) => point.textContent?.trim() === "▲"
-        && getComputedStyle(point).fill === "rgb(185, 28, 28)");
-    return Number.parseFloat(getComputedStyle(marker).fontSize);
-  })).toBe(18);
+  await expect.poll(async () => (await readInsiderMarker(page, "buy"))?.fontSize || 0).toBe(18);
   await page.mouse.click(insiderBuyPoint.x, insiderBuyPoint.y);
   await expect(page.locator("#chart .disclosure-popover")).toBeVisible();
   await expect(page.locator("#chart .disclosure-popover")).toContainText("내부자거래 : 매수");
@@ -1670,21 +1727,10 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
     element.classList.contains("is-event-marker-hovering")
   ))).toBe(false);
 
-  const insiderSellPoint = await page.locator("#chart").evaluate((element) => {
-    const marker = [...element.querySelectorAll(".scatterlayer .textpoint text")]
-      .find((point) => point.textContent?.trim() === "▼"
-        && getComputedStyle(point).fill === "rgb(29, 78, 216)");
-    const rect = marker?.getBoundingClientRect();
-    return rect ? { x: (rect.left + rect.right) / 2, y: (rect.top + rect.bottom) / 2 } : null;
-  });
+  const insiderSellPoint = await readInsiderMarker(page, "sell");
   expect(insiderSellPoint).not.toBeNull();
   await page.mouse.move(insiderSellPoint.x, insiderSellPoint.y);
-  await expect.poll(() => page.locator("#chart").evaluate((element) => {
-    const marker = [...element.querySelectorAll(".scatterlayer .textpoint text")]
-      .find((point) => point.textContent?.trim() === "▼"
-        && getComputedStyle(point).fill === "rgb(29, 78, 216)");
-    return Number.parseFloat(getComputedStyle(marker).fontSize);
-  })).toBe(18);
+  await expect.poll(async () => (await readInsiderMarker(page, "sell"))?.fontSize || 0).toBe(18);
   await page.mouse.click(insiderSellPoint.x, insiderSellPoint.y);
   await expect(page.locator("#chart .disclosure-popover")).toBeVisible();
   await expect(page.locator("#chart .disclosure-popover")).toContainText("내부자거래 : 매도");

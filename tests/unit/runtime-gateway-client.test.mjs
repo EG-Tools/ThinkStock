@@ -30,6 +30,20 @@ test("requests startup indices and visible prices through one endpoint", async (
   assert.equal(request.init.headers.Authorization, "Bearer secret");
 });
 
+test("can omit index work from a stock-only bootstrap request", async () => {
+  let requestedUrl = "";
+  const client = module.createRuntimeGatewayClient({
+    fetchWithTimeout: async (url) => {
+      requestedUrl = url;
+      return new Response(JSON.stringify({ ok: true, prices: { ok: true, results: [] } }));
+    },
+    endpoints: { bootstrap: "https://worker.example/api/bootstrap" },
+  });
+
+  await client.fetchBootstrap({ tickers: ["005930.KS"], includeIndices: false });
+  assert.match(requestedUrl, /indices=0/);
+});
+
 test("uses the local endpoint without exposing the access token", async () => {
   let request = null;
   const client = module.createRuntimeGatewayClient({

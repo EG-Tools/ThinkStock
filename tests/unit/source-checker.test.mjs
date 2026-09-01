@@ -12,6 +12,7 @@ import {
   findUnreferencedTopLevelFunctions,
   hasIsolatedClassicScriptScope,
   hasStaticEsmSyntax,
+  normalizedSourceBytes,
   shouldIncludeSource,
 } from "../../scripts/check_javascript_sources.mjs";
 
@@ -25,6 +26,10 @@ test("classifies web and runtime syntax-check scopes without generated bundles",
   assert.equal(shouldIncludeSource("scripts/feature-entries/ai-feature.mjs", "runtime"), false);
   assert.equal(shouldIncludeSource("worker/src/index.mjs", "runtime"), true);
   assert.equal(shouldIncludeSource("docs/app.js", "runtime"), false);
+});
+
+test("source responsibility limits ignore platform line-ending differences", () => {
+  assert.equal(normalizedSourceBytes("one\ntwo\n"), normalizedSourceBytes("one\r\ntwo\r\n"));
 });
 
 test("discovers newly added source modules automatically", async () => {

@@ -204,3 +204,48 @@ test("attaches every event marker to its owning price point during viewport fitt
   assert.deepEqual(refreshed.traceIndexes, [2]);
   assert.deepEqual(refreshed.yUpdates, [[135.6]]);
 });
+
+test("reuses baked viewport marker indexes while transformed prices change", () => {
+  const sourceDates = Array.from({ length: 5000 }, (_, index) => `2026-${String(index).padStart(4, "0")}`);
+  let sourceDateReads = 0;
+  const observedDates = new Array(sourceDates.length);
+  sourceDates.forEach((value, index) => {
+    Object.defineProperty(observedDates, index, {
+      configurable: true,
+      enumerable: true,
+      get() {
+        sourceDateReads += 1;
+        return value;
+      },
+    });
+  });
+  const sourceTrace = {
+    x: observedDates,
+    y: sourceDates.map((_, index) => index),
+    meta: { overlayKind: "price", seriesKey: "005930.KS" },
+  };
+  const markerTrace = {
+    x: [sourceDates[4000]],
+    y: [4004],
+    meta: {
+      isDisclosureTrace: true,
+      pointTickers: ["005930.KS"],
+      markerGapFactors: [1],
+    },
+  };
+  const element = { data: [sourceTrace, markerTrace] };
+  layout.collectViewportAnchoredYUpdates(element, { viewportRange: [0, 200] });
+  const firstPassReads = sourceDateReads;
+
+  const result = layout.collectViewportAnchoredYUpdates(element, {
+    traces: [
+      { ...sourceTrace, y: sourceTrace.y.map((value) => value + 10) },
+      { ...markerTrace, y: markerTrace.y.slice() },
+    ],
+    viewportRange: [0, 200],
+  });
+
+  assert.deepEqual(result.traceIndexes, [1]);
+  assert.deepEqual(result.yUpdates, [[4014]]);
+  assert.ok(sourceDateReads - firstPassReads <= 4);
+});

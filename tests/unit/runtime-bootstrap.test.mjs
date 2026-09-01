@@ -25,6 +25,34 @@ test("runtime bootstrap sends only visible stock tickers with the oldest index d
   assert.equal(request.since, "2026-08-10");
 });
 
+test("runtime bootstrap forwards one shared planned stock and index subset", async () => {
+  let request = null;
+  let latestTickers = null;
+  const service = createRuntimeBootstrapService({
+    canUseGateway: () => true,
+    gatewayClient: { fetchBootstrap: async (options) => { request = options; return { ok: true }; } },
+    getCustomStocks: () => [{ ticker: "005930.KS" }, { ticker: "000660.KS" }],
+    getPricePayload: () => ({ records: [] }),
+    latestDatesByTicker: (_payload, tickers) => {
+      latestTickers = tickers;
+      return { "^KQ11": "2026-08-21" };
+    },
+    timeoutMs: 5000,
+    toNumber: Number,
+  });
+
+  await service.fetchCritical({
+    tickers: ["000660.KS"],
+    indexTickers: ["^KQ11"],
+    includeIndices: false,
+  });
+
+  assert.deepEqual(latestTickers, ["^KQ11"]);
+  assert.deepEqual(request.tickers, ["000660.KS"]);
+  assert.equal(request.includeIndices, false);
+  assert.equal(request.since, "2026-08-21");
+});
+
 test("runtime bootstrap reuses an injected price payload without another request", async () => {
   let priceRequests = 0;
   const statuses = new Map();

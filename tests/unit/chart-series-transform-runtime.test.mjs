@@ -61,6 +61,43 @@ test("shares one buffered transform contract across base and linked series", () 
   assert.deepEqual(scenario.y, [100, 105]);
 });
 
+test("anchors linked AI traces to the owning series latest price", () => {
+  const bases = { A: [80, 90, 110] };
+  const runtime = createChartSeriesTransformRuntime({
+    baseValuesFor: (seriesKey) => bases[seriesKey],
+    describeTrace,
+    resolveOffset: () => 5,
+    resolveScale: () => 2,
+    transformValuesInto,
+  });
+  const scenario = {
+    y: [0, 0],
+    meta: {
+      overlayKind: "ai-scenario",
+      seriesKey: "A",
+      seriesTransformBaseValues: [50, 60],
+      seriesTransformAnchor: "latest-price",
+      seriesTransformAnchorBaseValue: 50,
+    },
+  };
+  const report = {
+    y: [0],
+    meta: {
+      overlayKind: "ai-report",
+      seriesKey: "A",
+      seriesTransformBaseValues: [55],
+      seriesTransformAnchor: "latest-price",
+      seriesTransformAnchorBaseValue: 50,
+    },
+  };
+
+  const updates = runtime.collectLinkedSeriesYUpdates([scenario, report], "A");
+  const ownerLatest = transformValuesInto(bases.A, 2, 5, []).at(-1);
+
+  assert.equal(updates.yUpdates[0][0], ownerLatest);
+  assert.deepEqual(updates.yUpdates, [[125, 145], [135]]);
+});
+
 test("reframes every visible series to the same viewport span without cumulative drift", () => {
   const dates = ["2026-01-01", "2026-02-01", "2026-03-01", "2026-04-01"];
   const bases = {
@@ -119,6 +156,57 @@ test("reframes every visible series to the same viewport span without cumulative
   });
 });
 
+test("keeps AI paths and their report marker linked during viewport reframing", () => {
+  const ownerDates = ["2026-01-01", "2026-02-01", "2026-03-01"];
+  const bases = { A: [80, 100, 110] };
+  const runtime = createChartSeriesTransformRuntime({
+    baseValuesFor: (seriesKey) => bases[seriesKey],
+    describeTrace,
+    finiteDatedRange: adjustments.finiteDatedRange,
+    resolveOffset: () => 0,
+    resolveScale: () => 1,
+    transformValuesInto,
+    transformViewportValuesInto: adjustments.transformViewportValuesInto,
+  });
+  const scenario = {
+    x: ["2026-03-01", "2026-04-01"],
+    y: [50, 60],
+    meta: {
+      overlayKind: "ai-scenario",
+      seriesKey: "A",
+      seriesTransformBaseValues: [50, 60],
+      seriesTransformAnchor: "latest-price",
+      seriesTransformAnchorBaseValue: 50,
+    },
+  };
+  const report = {
+    x: ["2026-03-15"],
+    y: [55],
+    meta: {
+      overlayKind: "ai-report",
+      seriesKey: "A",
+      seriesTransformBaseValues: [55],
+      seriesTransformAnchor: "latest-price",
+      seriesTransformAnchorBaseValue: 50,
+    },
+  };
+  const traces = [
+    scenario,
+    report,
+    { x: ownerDates, y: [...bases.A], meta: { overlayKind: "price", seriesKey: "A" } },
+  ];
+
+  const frame = runtime.collectViewportSeriesUpdates(
+    traces,
+    ["2026-01-01", "2026-03-01"],
+    { targetSpan: 20 },
+  );
+  const update = frame.seriesUpdates[0];
+
+  assert.equal(update.linkedUpdate.yUpdates[0][0], update.nextY.at(-1));
+  assert.ok(Math.abs(update.linkedUpdate.yUpdates[1][0] - (update.nextY.at(-1) + (10 / 3))) < 1e-9);
+});
+
 test("can reframe one requested series for a live handle gesture", () => {
   const dates = ["2026-01-01", "2026-02-01", "2026-03-01"];
   const bases = {
@@ -147,6 +235,33 @@ test("can reframe one requested series for a live handle gesture", () => {
 
   assert.deepEqual(frame.seriesUpdates.map((update) => update.seriesKey), ["B"]);
   assert.equal(Math.max(...frame.seriesUpdates[0].nextY) - Math.min(...frame.seriesUpdates[0].nextY), 10);
+});
+
+test("reframes EPS through the same adjustable-series viewport contract as prices", () => {
+  const dates = ["2026-01-01", "2026-04-01", "2026-07-01"];
+  const bases = {
+    A: [95, 100, 105],
+    "eps:A": [20, 400, 2000],
+  };
+  const runtime = createChartSeriesTransformRuntime({
+    baseValuesFor: (seriesKey) => bases[seriesKey],
+    describeTrace,
+    finiteDatedRange: adjustments.finiteDatedRange,
+    resolveOffset: () => 0,
+    resolveScale: () => 1,
+    transformValuesInto,
+    transformViewportValuesInto: adjustments.transformViewportValuesInto,
+  });
+  const frame = runtime.collectViewportSeriesUpdates([
+    { x: dates, y: [...bases.A], meta: { overlayKind: "price", seriesKey: "A" } },
+    { x: dates, y: [...bases["eps:A"]], meta: { overlayKind: "eps", seriesKey: "eps:A" } },
+  ], dates.slice(0, 2), { targetSpan: 20 });
+  const updates = new Map(frame.seriesUpdates.map((update) => [update.seriesKey, update.nextY]));
+  const visibleSpan = (values) => Math.max(...values.slice(0, 2)) - Math.min(...values.slice(0, 2));
+
+  assert.deepEqual([...updates.keys()], ["A", "eps:A"]);
+  assert.equal(visibleSpan(updates.get("A")), 20);
+  assert.equal(visibleSpan(updates.get("eps:A")), 20);
 });
 
 test("uses one gesture contract for line offsets and scale handles", () => {
@@ -184,4 +299,35 @@ test("uses one gesture contract for line offsets and scale handles", () => {
   }), true);
   activeConfig.applyValue(50);
   assert.equal(scales.TEST, 2);
+});
+
+test("keeps the visible left endpoint fixed while the right scale handle changes span", () => {
+  const offsets = { TEST: 4 };
+  const scales = { TEST: 1.5 };
+  let activeConfig = null;
+  const runtime = createSeriesTransformGestureRuntime({
+    getDragController: () => ({
+      start: (config) => {
+        activeConfig = config;
+        return true;
+      },
+    }),
+    scaleFromDrag: (start, startY, clientY) => start + ((startY - clientY) / 100),
+    resolveOffset: (seriesKey) => offsets[seriesKey],
+    resolveScale: (seriesKey) => scales[seriesKey],
+    setOffset: (seriesKey, value) => { offsets[seriesKey] = value; },
+    setScale: (seriesKey, value) => { scales[seriesKey] = value; },
+  });
+
+  runtime.startScale({
+    pointerId: 2,
+    startClientY: 100,
+    seriesKey: "TEST",
+    scaleAnchorCoefficient: 10,
+  });
+  activeConfig.applyValue(50);
+
+  assert.equal(scales.TEST, 2);
+  assert.equal(offsets.TEST, -1);
+  assert.equal(100 + (10 * 1.5) + 4, 100 + (10 * scales.TEST) + offsets.TEST);
 });

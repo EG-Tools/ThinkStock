@@ -3,6 +3,16 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.32",
+      date: "2026.09.01",
+      items: Object.freeze([
+        "휠 줌의 이전 프레임 역전과 차트 튐 제거",
+        "휠 1회당 연결 뷰포트 최종 범위 1회 적용",
+        "마우스 조작 중에도 부팅 필수 작업 계속 진행",
+        "뷰포트 성능 측정과 WebKit 회귀 검사 보강",
+      ]),
+    }),
+    Object.freeze({
       version: "3.31",
       date: "2026.08.30",
       items: Object.freeze([

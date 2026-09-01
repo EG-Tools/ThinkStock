@@ -118,8 +118,17 @@ test("chart hover normalizes every point-popup content row to the price-popup in
   const ticker = line("RFHIC", 132);
   const eps = line("EPS", 121);
   const lines = [date, ticker, eps];
+  const pathAttributes = new Map();
+  const pointFrame = {
+    getAttribute: (name) => pathAttributes.get(name) ?? null,
+    getBBox: () => ({ x: 2, y: 4, width: 80, height: 44 }),
+    setAttribute: (name, value) => pathAttributes.set(name, String(value)),
+  };
   const hoverLayer = {
-    querySelectorAll: (selector) => (selector.includes("tspan.line") ? lines : []),
+    querySelectorAll: (selector) => {
+      if (selector === "g.hovertext > path") return [pointFrame];
+      return selector.includes("tspan.line") ? lines : [];
+    },
   };
   const runtime = hoverModule.createChartHoverRuntime({
     requestAnimationFrame: () => 1,
@@ -135,6 +144,8 @@ test("chart hover normalizes every point-popup content row to the price-popup in
   }), true);
   assert.equal(ticker.getBoundingClientRect().left, 138);
   assert.equal(eps.getBoundingClientRect().left, 138);
+  assert.equal(pathAttributes.get("data-thinkstock-flat-frame"), "1");
+  assert.match(pathAttributes.get("d"), /^M 6 4 H 78/);
 
   // Re-running on the same Plotly nodes must not accumulate the correction.
   assert.equal(runtime.normalizeHoverPopupIndent({

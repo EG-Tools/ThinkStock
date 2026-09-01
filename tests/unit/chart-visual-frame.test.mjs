@@ -148,6 +148,62 @@ test("keeps dated markers constrained during live and committed series transform
   assert.equal(rebuilds, 0);
 });
 
+test("expands the Y axis and reanchors markers in the same series frame", async () => {
+  const calls = [];
+  const element = {
+    data: [
+      { x: [1, 2], y: [2, 8], meta: { seriesKey: "A" } },
+      { x: [2], y: [9], meta: { overlayKind: "signal" } },
+    ],
+    _fullLayout: { xaxis: { range: [1, 2] }, yaxis: { range: [0, 10] } },
+  };
+  const apply = visualFrame.createSeriesFrameApplier({
+    getElement: () => element,
+    restyle: async (...args) => calls.push(["restyle", ...args]),
+    update: async (...args) => calls.push(["update", ...args]),
+    resolveTraceIndex: () => 0,
+    computeValues: () => [2, 12],
+    resolveExpandedYRange: () => [0, 13],
+    collectAnchoredYUpdates: (_staged, options) => {
+      assert.deepEqual(options.viewportRange, [0, 13]);
+      return { traceIndexes: [1], yUpdates: [[12.5]] };
+    },
+  });
+
+  await apply({ series: [{ seriesKey: "A" }] });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], "update");
+  assert.deepEqual(calls[0][2], { y: [[2, 12], [12.5]] });
+  assert.deepEqual(calls[0][3], {
+    "yaxis.range[0]": 0,
+    "yaxis.range[1]": 13,
+    "yaxis.autorange": false,
+  });
+  assert.deepEqual(calls[0][4], [0, 1]);
+});
+
+test("keeps the Y axis fixed while a transformed series remains inside it", async () => {
+  const calls = [];
+  const element = {
+    data: [{ x: [1, 2], y: [2, 8], meta: { seriesKey: "A" } }],
+    _fullLayout: { xaxis: { range: [1, 2] }, yaxis: { range: [0, 10] } },
+  };
+  const apply = visualFrame.createSeriesFrameApplier({
+    getElement: () => element,
+    restyle: async (...args) => calls.push(["restyle", ...args]),
+    update: async (...args) => calls.push(["update", ...args]),
+    resolveTraceIndex: () => 0,
+    computeValues: () => [3, 7],
+    resolveExpandedYRange: () => [0, 10],
+  });
+
+  await apply({ series: [{ seriesKey: "A" }] });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], "restyle");
+});
+
 test("updates linked forecast overlays in the same live transform frame", async () => {
   const restyles = [];
   const element = {

@@ -63,14 +63,14 @@
   flex: 0 0 8px;
 }
 
-.series-toggle-btn[data-series="leading_cycle"] { --series-color: #999999; }
-.series-toggle-btn[data-series="t10y1y"] { --series-color: #2dd4bf; }
-.series-toggle-btn[data-series="us_credit_spread"] { --series-color: #facc15; }
-.series-toggle-btn[data-series="customer_deposit"] { --series-color: #f59e0b; }
-.series-toggle-btn[data-series="^KS11"] { --series-color: #4ade80; }
-.series-toggle-btn[data-series="^KQ11"] { --series-color: #f87171; }
-.series-toggle-btn[data-series="kospi_credit"] { --series-color: #60a5fa; }
-.series-toggle-btn[data-series="kosdaq_credit"] { --series-color: #a78bfa; }
+.series-toggle-btn[data-series="leading_cycle"] { --series-color: #929292; }
+.series-toggle-btn[data-series="t10y1y"] { --series-color: #cf7777; }
+.series-toggle-btn[data-series="^KS11"] { --series-color: #ce9668; }
+.series-toggle-btn[data-series="^KQ11"] { --series-color: #c9b65e; }
+.series-toggle-btn[data-series="us_credit_spread"] { --series-color: #75ad7f; }
+.series-toggle-btn[data-series="customer_deposit"] { --series-color: #64ada9; }
+.series-toggle-btn[data-series="kospi_credit"] { --series-color: #6f91bd; }
+.series-toggle-btn[data-series="kosdaq_credit"] { --series-color: #9680b8; }
 
 .stock-research-btn {
   min-width: 0;

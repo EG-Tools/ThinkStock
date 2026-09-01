@@ -254,7 +254,6 @@ test("latest navigation animates the current span to the data boundary", async (
     preserveZoom: true,
     range: [400_000, 1_000_000],
     reason: "latest-slide",
-    reframeNormalization: true,
     updateClass: "viewport",
   }]);
 });
@@ -320,7 +319,6 @@ test("period presets keep the requested history before a right-side blank margin
       latest + padding,
     ],
     reason: "range-preset",
-    reframeNormalization: true,
     updateClass: "viewport-range",
   }]);
   assert.deepEqual(completionOrder, ["render"]);

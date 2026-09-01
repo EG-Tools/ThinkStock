@@ -300,19 +300,18 @@ import { syncControl } from "./control-state-view.mjs";
       button.classList.add("spinning");
       options.setMessage([]);
       try {
-        let serviceWorkerRefresh = null;
-        if (options.hasServiceWorkerController()) {
-          serviceWorkerRefresh = await options.requestServiceWorkerDataRefresh();
-        }
-        const forceSeedNetwork = serviceWorkerRefresh?.ok !== true;
-        if (options.hasRuntimeDataLoaded()) {
-          await options.loadData(forceSeedNetwork, { mergeWithExisting: true });
-        } else {
+        if (!options.hasRuntimeDataLoaded()) {
           const restored = await options.loadLastRuntimeSnapshot();
           if (restored) await options.renderChart(false);
-          else await options.loadData(forceSeedNetwork);
+          else await options.loadData(true);
         }
+        // The active in-memory view is refreshed first. Updating the static
+        // service-worker cache afterwards prepares the next boot without
+        // reparsing every seed bundle before the user sees current prices.
         await options.refreshRuntimeData({ forceNetwork: true });
+        if (options.hasServiceWorkerController()) {
+          await options.requestServiceWorkerDataRefresh();
+        }
       } catch (error) {
         options.setMessage(`데이터 갱신 중 오류: ${error.message}`, true);
       } finally {

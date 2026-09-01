@@ -1,3 +1,9 @@
+import {
+  expectedLatestKoreanTradingDate,
+  isKoreanCurrentPriceWindow,
+  koreanDateText,
+} from "../../shared/market-calendar.mjs";
+
 "use strict";
 
   /**
@@ -48,6 +54,37 @@
       .filter((ticker) => STOCK_TICKER_PATTERN.test(ticker)))];
   }
 
+  /**
+   * Selects only price series whose latest saved point can be stale now.
+   * During the live market window the active series is checked once per app
+   * activation even when today's point already exists because its value can move.
+   */
+  function planKoreanPriceRefresh(options = {}) {
+    const tickers = [...new Set((Array.isArray(options.tickers) ? options.tickers : [])
+      .map((ticker) => String(ticker || "").trim().toUpperCase())
+      .filter(Boolean))];
+    const latestDates = options.latestDates || {};
+    const now = options.now instanceof Date ? options.now : new Date(options.now || Date.now());
+    const live = isKoreanCurrentPriceWindow(now, { closeHour: 16 });
+    const targetDate = live
+      ? koreanDateText(now)
+      : expectedLatestKoreanTradingDate(now);
+    const force = options.forceNetwork === true;
+    const requiredTickers = tickers.filter((ticker) => {
+      if (force || live) return true;
+      const latestDate = String(latestDates[ticker] || "").slice(0, 10);
+      return !latestDate || !targetDate || latestDate < targetDate;
+    });
+    return Object.freeze({
+      force,
+      live,
+      targetDate,
+      requiredTickers: Object.freeze(requiredTickers),
+      skippedTickers: Object.freeze(tickers.filter((ticker) => !requiredTickers.includes(ticker))),
+      shouldRefresh: requiredTickers.length > 0,
+    });
+  }
+
   function createRuntimeBootstrapService(options = {}) {
     function visibleTickers() {
       return normalizeStockTickers((options.getCustomStocks?.() || [])
@@ -58,14 +95,21 @@
     /** @param {RuntimeRequestOptions} [requestOptions] */
     async function fetchCritical(requestOptions = {}) {
       if (!options.canUseGateway?.()) return null;
+      const requestedTickers = Array.isArray(requestOptions.tickers)
+        ? normalizeStockTickers(requestOptions.tickers)
+        : visibleTickers();
+      const indexTickers = Array.isArray(requestOptions.indexTickers)
+        ? requestOptions.indexTickers
+        : ["^KS11", "^KQ11"];
       const latestIndices = options.latestDatesByTicker?.(
         options.getPricePayload?.(),
-        ["^KS11", "^KQ11"],
+        indexTickers,
         options.toNumber,
       ) || {};
       try {
         return await options.gatewayClient.fetchBootstrap({
-          tickers: visibleTickers(),
+          tickers: requestedTickers,
+          includeIndices: requestOptions.includeIndices !== false,
           since: Object.values(latestIndices).filter(Boolean).sort()[0] || "",
           forceNetwork: Boolean(requestOptions.forceNetwork),
           signal: requestOptions.signal || null,
@@ -145,7 +189,7 @@
   }
 
   function createRuntimeIndexRefreshService(options = {}) {
-    const tickers = Object.freeze(["^KS11", "^KQ11"]);
+    const defaultTickers = Object.freeze(["^KS11", "^KQ11"]);
     const gatewayClient = options.gatewayClient;
     if (!gatewayClient?.fetchIndices || typeof options.getPricePayload !== "function") {
       throw new Error("runtime index refresh dependencies are incomplete");
@@ -170,6 +214,12 @@
       options.throwIfAborted?.(signal);
       const applied = [];
       const warnings = [];
+      const tickers = [...new Set((Array.isArray(requestOptions.tickers)
+        ? requestOptions.tickers
+        : defaultTickers)
+        .map((ticker) => String(ticker || "").trim().toUpperCase())
+        .filter((ticker) => defaultTickers.includes(ticker)))];
+      if (!tickers.length) return { applied, warnings };
       if (!options.isLocalRuntime && !options.canUseGateway?.()) return { applied, warnings };
       const beforeLatest = latestDatesByTicker(options.getPricePayload(), tickers, options.toNumber);
 
@@ -456,4 +506,5 @@ export {
   latestDatesByTicker,
   normalizeStockTickers,
   normalizeTickerPoints,
+  planKoreanPriceRefresh,
 };

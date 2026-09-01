@@ -98,6 +98,7 @@ import { throwIfAborted } from "./browser-request-runtime.mjs";
           remoteEndpoint: withQuery(options.endpoints.bootstrap, {
             tickers: tickers.join(","),
             since: String(requestOptions.since || "").slice(0, 10),
+            indices: requestOptions.includeIndices === false ? "0" : "",
           }),
           forceNetwork: requestOptions.forceNetwork,
           signal: requestOptions.signal,

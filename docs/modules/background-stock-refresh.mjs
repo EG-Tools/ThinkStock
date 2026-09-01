@@ -8,6 +8,7 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
  * @property {AbortSignal|null} [signal]
  * @property {() => boolean} [shouldRun]
  * @property {boolean} [coalesceRunning]
+ * @property {boolean} [deferDuringInteraction]
  */
 
 /**
@@ -142,9 +143,14 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
       return Number(entry?.priority) >= foregroundPriority;
     }
 
+    function defersDuringInteraction(entry = null) {
+      return entry?.deferDuringInteraction !== false;
+    }
+
     function interactionPending(entry = null) {
-      return pageHidden()
-        || inputPending()
+      if (pageHidden()) return true;
+      if (!defersDuringInteraction(entry)) return false;
+      return inputPending()
         || isInteractionBusy()
         || (!isForeground(entry) && now() - lastActivityAt < interactionQuietMs);
     }
@@ -220,7 +226,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
         schedulePump();
         return;
       }
-      if (inputPending()) {
+      if (defersDuringInteraction(entry) && inputPending()) {
         counters.inputDeferrals += 1;
         schedulePump(retryDelayMs);
         return;
@@ -230,7 +236,8 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
         schedulePump(Math.max(1000, retryDelayMs));
         return;
       }
-      if (isInteractionBusy() || (!isForeground(entry) && now() - lastActivityAt < interactionQuietMs)) {
+      if (defersDuringInteraction(entry)
+        && (isInteractionBusy() || (!isForeground(entry) && now() - lastActivityAt < interactionQuietMs))) {
         counters.activityDeferrals += 1;
         schedulePump(retryDelayMs);
         return;
@@ -320,6 +327,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
         settled: false,
         promise,
         shouldRun: typeof taskOptions.shouldRun === "function" ? taskOptions.shouldRun : null,
+        deferDuringInteraction: taskOptions.deferDuringInteraction !== false,
         resolve,
         reject,
       });
@@ -418,6 +426,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
 
     async function preload(runOptions = {}) {
       const forceRefresh = runOptions.forceRefresh === true;
+      const latestOnly = runOptions.latestOnly === true;
       const signal = runOptions.signal || null;
       const taskContext = runOptions.taskContext || null;
       throwIfAborted(signal);
@@ -463,7 +472,8 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
           await loadSeries(ticker, {
             forceRefresh,
             displayName: name,
-            requireFullHistory: true,
+            latestOnly: latestOnly && hadExisting,
+            requireFullHistory: !latestOnly || !hadExisting,
             signal,
             // An empty/missing batch result is not a successful latest-price check.
             // Omitting the field lets the ticker loader retry its individual source.

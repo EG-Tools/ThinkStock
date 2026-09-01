@@ -140,7 +140,6 @@ import { createRuntimeSourceHealth } from "./runtime-source-health.mjs";
     }
 
     async function refreshDuringStartup(messageElement, flow = {}) {
-      if (flow.restoredSnapshot) await flow.mergeSeed?.();
       let releaseCritical = null;
       let criticalReleased = false;
       const criticalReady = new Promise((resolve) => {
@@ -152,9 +151,10 @@ import { createRuntimeSourceHealth } from "./runtime-source-health.mjs";
       });
       const refreshTask = refresh(messageElement, {
         awaitCriticalRender: true,
-        awaitSupplementalRender: true,
+        // Supplemental data is committed before the render request is queued.
+        // Do not hold source completion behind an unrelated settling render.
+        awaitSupplementalRender: false,
         deferSupplementalUntilReady: true,
-        incrementalSupplementalRender: true,
         onCriticalProgress: flow.onCriticalProgress,
         onCriticalReady: () => releaseCritical({ ok: true }),
       }).then((result) => {

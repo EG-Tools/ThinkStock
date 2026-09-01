@@ -52,12 +52,13 @@ if not defined BROWSER (
     exit /b 1
 )
 
-rem iPhone 13 Pro Max CSS viewport is 428 x 926. The slightly larger app
-rem window compensates for the Windows title bar and border.
-start "" "%BROWSER%" --app="http://127.0.0.1:8787/?iphone13promax=1" --window-size=444,966 --window-position=80,40
+rem Uses the actual pixel dimensions of the manually adjusted reference capture.
+set "PREVIEW_PROFILE=%LOCALAPPDATA%\ThinkStock\iPhonePreviewProfile"
+start "" "%BROWSER%" --user-data-dir="%PREVIEW_PROFILE%" --no-first-run --no-default-browser-check --app="http://127.0.0.1:8787/?iphone13promax=1" --window-size=1109,1990 --window-position=0,0
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\resize_preview_window.ps1 -Width 1109 -Height 1990 -Left 0 -Top 0
 
 echo.
-echo iPhone 13 Pro Max preview opened. Approximate viewport: 428 x 926.
+echo iPhone 13 Pro Max ratio preview opened.
 if "%STARTED_SERVER%"=="1" echo The minimized local server window must remain open.
 timeout /t 3 /nobreak >nul
 endlocal

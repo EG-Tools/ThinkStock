@@ -70,6 +70,23 @@ function createChartSeriesTransformRuntime(options = {}) {
     return Number.isFinite(value) ? value : 0;
   }
 
+  function latestFiniteValue(values) {
+    for (let index = (values?.length || 0) - 1; index >= 0; index -= 1) {
+      const value = Number(values[index]);
+      if (values[index] !== null && Number.isFinite(value)) return value;
+    }
+    return null;
+  }
+
+  function linkedAnchorDelta(trace, ownerBaseValues) {
+    if (trace?.meta?.seriesTransformAnchor !== "latest-price") return 0;
+    const anchor = Number(trace?.meta?.seriesTransformAnchorBaseValue);
+    const ownerLatest = latestFiniteValue(ownerBaseValues);
+    return Number.isFinite(anchor) && Number.isFinite(ownerLatest)
+      ? ownerLatest - anchor
+      : 0;
+  }
+
   function computeSeriesValues(seriesKey, traceIndex = -1, element = null) {
     const baseValues = options.baseValuesFor?.(seriesKey);
     if (!Array.isArray(baseValues)) return null;
@@ -100,16 +117,18 @@ function createChartSeriesTransformRuntime(options = {}) {
     const yUpdates = [];
     const scale = scaleFor(seriesKey);
     const offset = offsetFor(seriesKey);
+    const ownerBaseValues = options.baseValuesFor?.(seriesKey);
     traces.forEach((trace, traceIndex) => {
       if (trace?.visible === "legendonly") return;
       const descriptor = options.describeTrace(trace);
       const baseValues = trace?.meta?.seriesTransformBaseValues;
       if (descriptor?.seriesKey !== seriesKey || !Array.isArray(baseValues)) return;
+      const anchoredOffset = offset + (linkedAnchorDelta(trace, ownerBaseValues) * scale);
       const nextY = linkedBuffers.transform(
         trace,
         baseValues,
         scale,
-        offset,
+        anchoredOffset,
         trace.y,
         options.transformValuesInto,
       );
@@ -134,7 +153,7 @@ function createChartSeriesTransformRuntime(options = {}) {
       ? new Set(config.seriesKeys.map(String).filter(Boolean))
       : null;
     const seriesUpdates = [];
-    const priceEntries = [];
+    const adjustableEntries = [];
     const linkedBySeries = new Map();
     runtimeStats.viewportFrames += 1;
     traces.forEach((trace, traceIndex) => {
@@ -148,15 +167,14 @@ function createChartSeriesTransformRuntime(options = {}) {
         linked.push({ trace, traceIndex, baseValues: linkedBaseValues });
         linkedBySeries.set(seriesKey, linked);
       }
-      if (descriptor?.kind === "price"
-        && descriptor.adjustable === true
+      if (descriptor?.adjustable === true
         && seriesKey
         && (!requestedSeries || requestedSeries.has(seriesKey))) {
-        priceEntries.push({ trace, traceIndex, seriesKey });
+        adjustableEntries.push({ trace, traceIndex, seriesKey });
       }
     });
 
-    priceEntries.forEach(({ trace, traceIndex, seriesKey }) => {
+    adjustableEntries.forEach(({ trace, traceIndex, seriesKey }) => {
       const baseValues = options.baseValuesFor?.(seriesKey);
       if (!Array.isArray(baseValues) || baseValues.length !== trace?.x?.length) return;
       const range = options.finiteDatedRange(trace.x, baseValues, xRange);
@@ -190,6 +208,11 @@ function createChartSeriesTransformRuntime(options = {}) {
         traceIndex: linkedTraceIndex,
         baseValues: linkedBaseValues,
       }) => {
+        const anchoredOffset = offset + (
+          linkedAnchorDelta(linkedTrace, baseValues)
+          * viewportScale
+          * seriesScale
+        );
         const linkedY = viewportLinkedBuffers.map(
           linkedTrace,
           linkedBaseValues,
@@ -199,7 +222,7 @@ function createChartSeriesTransformRuntime(options = {}) {
             center,
             viewportScale,
             seriesScale,
-            offset,
+            anchoredOffset,
             output,
           ),
         );
@@ -286,6 +309,9 @@ function createSeriesTransformGestureRuntime(options = {}) {
       isScale ? options.resolveScale?.(seriesKey) : options.resolveOffset?.(seriesKey),
     );
     const initialValue = Number.isFinite(startValue) ? startValue : (isScale ? 1 : 0);
+    const startOffset = Number(options.resolveOffset?.(seriesKey));
+    const initialOffset = Number.isFinite(startOffset) ? startOffset : 0;
+    const anchorCoefficient = Number(config.scaleAnchorCoefficient);
     const applyFromPointer = isScale
       ? options.scaleFromDrag
       : options.offsetFromDrag;
@@ -299,6 +325,12 @@ function createSeriesTransformGestureRuntime(options = {}) {
           ? applyFromPointer(initialValue, startClientY, clientY)
           : applyFromPointer(initialValue, startClientY, clientY, config.axis);
         assignValue(seriesKey, nextValue);
+        if (isScale && Number.isFinite(anchorCoefficient) && typeof options.setOffset === "function") {
+          options.setOffset(
+            seriesKey,
+            initialOffset + (anchorCoefficient * (initialValue - nextValue)),
+          );
+        }
       },
       onClick: typeof config.onClick === "function"
         ? (event) => config.onClick({ ...event, startValue: initialValue })

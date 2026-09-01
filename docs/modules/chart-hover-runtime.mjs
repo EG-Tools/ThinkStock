@@ -24,6 +24,39 @@
     return Number(line?.getBoundingClientRect?.().left);
   }
 
+  function normalizePointHoverFrame(hoverLayer) {
+    const paths = [...(hoverLayer?.querySelectorAll?.("g.hovertext > path") || [])];
+    paths.forEach((path) => {
+      if (typeof path.getBBox !== "function") return;
+      try {
+        const box = path.getBBox();
+        const x = Number(box?.x);
+        const y = Number(box?.y);
+        const width = Number(box?.width);
+        const height = Number(box?.height);
+        if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return;
+        const radius = Math.min(4, width / 2, height / 2);
+        const right = x + width;
+        const bottom = y + height;
+        path.setAttribute("d", [
+          `M ${x + radius} ${y}`,
+          `H ${right - radius}`,
+          `Q ${right} ${y} ${right} ${y + radius}`,
+          `V ${bottom - radius}`,
+          `Q ${right} ${bottom} ${right - radius} ${bottom}`,
+          `H ${x + radius}`,
+          `Q ${x} ${bottom} ${x} ${bottom - radius}`,
+          `V ${y + radius}`,
+          `Q ${x} ${y} ${x + radius} ${y}`,
+          "Z",
+        ].join(" "));
+        path.setAttribute("data-thinkstock-flat-frame", "1");
+      } catch (_) {
+        // Plotly may replace the transient point popup during the same frame.
+      }
+    });
+  }
+
   function createChartHoverRuntime(scope = globalThis, options = {}) {
     const findNearestHoverPoint = options.findNearestHoverPoint;
     const getTraceTimeMsArray = options.getTraceTimeMsArray;
@@ -52,6 +85,7 @@
     function normalizeHoverPopupIndent(targetEl) {
       const hoverLayer = targetEl?.querySelector?.(".hoverlayer");
       if (!hoverLayer?.querySelectorAll) return false;
+      normalizePointHoverFrame(hoverLayer);
       const pointLines = [...hoverLayer.querySelectorAll("text.nums > tspan.line")];
       const pointDate = pointLines.find((line) => (
         HOVER_DATE_TEXT_PATTERN.test(String(line.textContent || "").trim())

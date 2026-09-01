@@ -338,21 +338,23 @@ test("manual refresh always clears the spinning state", async () => {
   const button = fakeElement();
   const loadCalls = [];
   const refreshCalls = [];
+  const order = [];
   bindings.bindManualRefresh({
     button,
     setMessage: () => {},
     hasServiceWorkerController: () => true,
-    requestServiceWorkerDataRefresh: async () => ({ ok: true }),
+    requestServiceWorkerDataRefresh: async () => { order.push("service-worker"); return { ok: true }; },
     hasRuntimeDataLoaded: () => true,
     loadData: async (...args) => loadCalls.push(args),
     loadLastRuntimeSnapshot: async () => false,
     renderChart: async () => {},
-    refreshRuntimeData: async (...args) => refreshCalls.push(args),
+    refreshRuntimeData: async (...args) => { order.push("runtime"); refreshCalls.push(args); },
   });
 
   await button.dispatch("click");
-  assert.deepEqual(loadCalls, [[false, { mergeWithExisting: true }]]);
+  assert.deepEqual(loadCalls, []);
   assert.deepEqual(refreshCalls, [[{ forceNetwork: true }]]);
+  assert.deepEqual(order, ["runtime", "service-worker"]);
   assert.equal(button.classList.contains("spinning"), false);
 });
 

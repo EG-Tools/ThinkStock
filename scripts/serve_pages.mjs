@@ -3,10 +3,16 @@ import { stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertE2eBundleFresh } from "./e2e-bundle-freshness.mjs";
 import { staticContentType } from "./static_content_type.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "docs");
 const e2eBundlePath = path.resolve(root, "..", ".thinkstock-cache", "e2e", "app.bundle.min.js");
+const productionBundlePath = path.resolve(root, "assets", "app.bundle.min.js");
+assertE2eBundleFresh(
+  await stat(productionBundlePath),
+  await stat(e2eBundlePath),
+);
 const port = Number(process.env.PORT || 4173);
 createServer(async (request, response) => {
   try {

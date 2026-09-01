@@ -1534,7 +1534,10 @@ async function buildKrxPricePayload(env, ticker, now = new Date(), options = {})
   try {
     krxResult = await fetchLatestKrxStockPoint(env, ticker, today, {
       ...options,
-      forceDate: currentPriceWindow ? today : expectedDate,
+      // KRX daily snapshots settle on expectedDate. During market hours the
+      // current day is cross-checked through Naver, so refreshing today's empty
+      // KRX slot must not leave the latest settled snapshot cached.
+      forceDate: expectedDate,
     });
     point = krxResult?.point || null;
   } catch (error) {
@@ -1628,9 +1631,12 @@ async function runtimeBootstrapResponse(env, url, origin) {
     .map((ticker) => String(ticker || "").trim().toUpperCase())
     .filter((ticker) => TICKER_PATTERN.test(ticker)))].slice(0, 10);
   const refresh = queryFlag(url.searchParams.get("refresh"));
+  const includeIndices = String(url.searchParams.get("indices") || "1") !== "0";
   const since = String(url.searchParams.get("since") || "").slice(0, 10);
   const responses = await Promise.allSettled([
-    krxCoreIndexResponse(env, origin, refresh, since),
+    includeIndices
+      ? krxCoreIndexResponse(env, origin, refresh, since)
+      : Promise.resolve(jsonResponse({ ok: false, skipped: true, records: [] }, 200, origin)),
     targets.length
       ? krxBatchPriceResponse(env, targets, origin, refresh)
       : Promise.resolve(jsonResponse({ ok: true, requested: 0, succeeded: 0, results: [] }, 200, origin)),

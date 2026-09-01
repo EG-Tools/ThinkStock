@@ -663,17 +663,37 @@ test("future overlay controller captures once and restores after the final overl
 
 test("future overlay controller trims instead of restoring after user viewport interaction", () => {
   let revision = 1;
-  let clamped = 0;
+  const clampCalls = [];
   const controller = viewport.createFutureOverlayController({
     toMilliseconds: Number,
     getPinnedRange: () => [10, 20],
     getInteractionRevision: () => revision,
-    clampToObservedData: () => { clamped += 1; },
+    isAtLatest: () => true,
+    clampToObservedData: (options) => { clampCalls.push(options); },
   });
   controller.enable("eps");
   revision = 2;
   assert.equal(controller.disable("eps", { ai: false, eps: false }), false);
   assert.equal(controller.planState().restoreFutureOverlayViewport, null);
   assert.equal(controller.planState().trimFutureOverlayRange, true);
-  assert.equal(clamped, 1);
+  assert.deepEqual(clampCalls, [{ alignLatest: true }]);
+});
+
+test("future overlay controller preserves a historical viewport after user interaction", () => {
+  let revision = 1;
+  let clampCalls = 0;
+  const controller = viewport.createFutureOverlayController({
+    toMilliseconds: Number,
+    getPinnedRange: () => [10, 20],
+    getInteractionRevision: () => revision,
+    isAtLatest: () => false,
+    clampToObservedData: () => { clampCalls += 1; },
+  });
+  controller.enable("ai");
+  revision = 2;
+
+  assert.equal(controller.disable("ai", { ai: false, eps: false }), false);
+  assert.equal(controller.planState().restoreFutureOverlayViewport, null);
+  assert.equal(controller.planState().trimFutureOverlayRange, true);
+  assert.equal(clampCalls, 0);
 });

@@ -1,7 +1,48 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createRuntimeMarketRefresh } from "../../docs/modules/runtime-market-refresh.mjs";
+import {
+  createRuntimeMarketRefresh,
+  planKoreanPriceRefresh,
+} from "../../docs/modules/runtime-market-refresh.mjs";
+
+test("price refresh planning checks live values but reuses a settled weekend tail", () => {
+  const tickers = ["005930.KS"];
+  const live = planKoreanPriceRefresh({
+    tickers,
+    latestDates: { "005930.KS": "2026-08-21" },
+    now: new Date("2026-08-21T00:01:00Z"),
+  });
+  assert.equal(live.live, true);
+  assert.deepEqual(live.requiredTickers, tickers);
+
+  const weekend = planKoreanPriceRefresh({
+    tickers,
+    latestDates: { "005930.KS": "2026-08-21" },
+    now: new Date("2026-08-22T03:00:00Z"),
+  });
+  assert.equal(weekend.live, false);
+  assert.equal(weekend.targetDate, "2026-08-21");
+  assert.deepEqual(weekend.requiredTickers, []);
+  assert.deepEqual(weekend.skippedTickers, tickers);
+});
+
+test("price refresh planning requests first use, stale tails, and explicit refreshes", () => {
+  const tickers = ["005930.KS"];
+  const now = new Date("2026-08-22T03:00:00Z");
+  assert.deepEqual(planKoreanPriceRefresh({ tickers, latestDates: {}, now }).requiredTickers, tickers);
+  assert.deepEqual(planKoreanPriceRefresh({
+    tickers,
+    latestDates: { "005930.KS": "2026-08-20" },
+    now,
+  }).requiredTickers, tickers);
+  assert.deepEqual(planKoreanPriceRefresh({
+    tickers,
+    latestDates: { "005930.KS": "2026-08-21" },
+    forceNetwork: true,
+    now,
+  }).requiredTickers, tickers);
+});
 
 test("macro refresh keeps healthy components when another component fails", async () => {
   const controller = {

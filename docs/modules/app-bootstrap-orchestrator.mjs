@@ -110,9 +110,11 @@ export function createApplicationLifecycleRuntime(options = {}) {
 
   async function refreshRuntime(messageElement, refreshOptions = {}) {
     await refresh.runData?.(messageElement, refreshOptions);
-    // Finish the coalesced render before reading its final trace range.
-    await refresh.renderMain?.(true);
-    if (refresh.shouldAutoFit?.()) await refresh.fitCurrentChart?.();
+    if (refresh.renderAfterData !== false) {
+      // Legacy refresh providers may not own chart rendering themselves.
+      await refresh.renderMain?.(true);
+      if (refresh.shouldAutoFit?.()) await refresh.fitCurrentChart?.();
+    }
     for (const feature of optionalRefreshes) {
       if (feature?.enabled?.()) await feature.run?.(messageElement, refreshOptions);
     }
@@ -222,6 +224,8 @@ export function createStartupCompletionGate(schedule = queueMicrotask) {
   const pending = [];
   const pendingByKey = new Map();
   let released = false;
+  let resolveReleased;
+  const releasedPromise = new Promise((resolve) => { resolveReleased = resolve; });
 
   function taskKey(taskOptions = {}) {
     return String(taskOptions.taskKey || taskOptions.taskName || "").trim();
@@ -251,6 +255,7 @@ export function createStartupCompletionGate(schedule = queueMicrotask) {
     const ready = pending.splice(0);
     pendingByKey.clear();
     ready.forEach(({ task, taskOptions }) => scheduleTask(task, taskOptions));
+    resolveReleased(true);
     return true;
   }
 
@@ -259,12 +264,13 @@ export function createStartupCompletionGate(schedule = queueMicrotask) {
     isReleased: () => released,
     pendingCount: () => pending.length,
     release,
+    whenReleased: () => (released ? Promise.resolve(true) : releasedPromise),
   });
 }
 
 /**
- * Owns startup-deferred task naming, foreground priority, and cooperative
- * supplemental work so the application composition root only describes work.
+ * Owns startup-deferred task naming and foreground priority so the application
+ * composition root only describes work.
  */
 export function createStartupTaskRuntime(options = {}) {
   const scheduler = options.scheduler;
@@ -274,7 +280,6 @@ export function createStartupTaskRuntime(options = {}) {
   const recordError = typeof options.recordError === "function" ? options.recordError : () => {};
   const defaultDeferredDelayMs = Math.max(0, Number(options.defaultDeferredDelayMs) || 0);
   let deferredSequence = 0;
-  let supplementalSequence = 0;
 
   function createTaskKey(prefix, taskOptions, nextSequence) {
     const explicitKey = String(taskOptions.taskKey || taskOptions.taskName || "").trim();
@@ -307,6 +312,7 @@ export function createStartupTaskRuntime(options = {}) {
       priority: Number.isFinite(Number(taskOptions.priority))
         ? Number(taskOptions.priority)
         : (userVisible ? 20 : -10),
+      deferDuringInteraction: false,
     }).catch((error) => recordError(
       userVisible ? "startup-visible" : "startup-deferred",
       error,
@@ -316,43 +322,15 @@ export function createStartupTaskRuntime(options = {}) {
 
   const completionGate = createStartupCompletionGate(scheduleDeferred);
 
-  function scheduleSupplemental(task, taskOptions = {}) {
-    const index = Number(taskOptions.index) || 0;
-    const taskKey = createTaskKey(
-      "startup-supplemental",
-      taskOptions,
-      () => ++supplementalSequence,
-    );
-    return scheduler.enqueue(
-      taskKey,
-      async (taskContext) => {
-        await taskContext.checkpoint?.();
-        const result = await task(taskContext);
-        // A network response can finish while the user starts dragging. Wait
-        // for a quiet turn before its result rejoins the refresh pipeline.
-        await taskContext.checkpoint?.();
-        return result;
-      },
-      {
-        group: "startup-supplemental",
-        delayMs: 80,
-        ...(taskOptions.taskKey || taskOptions.taskName ? { coalesceRunning: true } : {}),
-        priority: -2 - index,
-        signal: taskOptions.signal,
-      },
-    );
-  }
-
   return Object.freeze({
     dispose: () => {
       scheduler.cancelGroup?.("startup-deferred");
-      scheduler.cancelGroup?.("startup-supplemental");
     },
     defer: completionGate.defer,
     isReleased: completionGate.isReleased,
     pendingCount: completionGate.pendingCount,
     release: completionGate.release,
-    scheduleSupplemental,
+    whenReleased: completionGate.whenReleased,
   });
 }
 

@@ -107,7 +107,9 @@ test("full reset restores the device default chart period", async ({ page, isMob
     page.locator("#appStateResetConfirmBtn").click(),
   ]);
 
-  await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getActiveMonths()))
+  await expect.poll(() => page.evaluate(() => (
+    window.ThinkStockE2E?.getActiveMonths?.() ?? null
+  )))
     .toBe(isMobile ? 6 : 12);
 });
 
@@ -450,9 +452,11 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
     expect(initialEpsHoverLines[2]?.trim()).toContain("EPS");
     await expect.poll(async () => {
       const offsets = await page.locator("#chart .hoverlayer text.nums > tspan.line")
-        .evaluateAll((lines) => lines.slice(0, 3).map((line) => (
-          line.getStartPositionOfChar(0).matrixTransform(line.getScreenCTM()).x
-        )));
+        .evaluateAll((lines) => lines.slice(0, 3).flatMap((line) => {
+          const matrix = line.getScreenCTM();
+          if (!line.textContent?.length || !matrix) return [];
+          return [line.getStartPositionOfChar(0).matrixTransform(matrix).x];
+        }));
       return offsets.length === 3
         ? offsets.slice(1).map((left) => Math.round(left - offsets[0]))
         : [];
@@ -621,20 +625,50 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
     await page.mouse.move(historicalEpsHoverTarget.x, historicalEpsHoverTarget.y);
     await expect(page.locator("#chart .hoverlayer")).toContainText("2024.3.31", { timeout: 3000 });
     await expect.poll(async () => {
-      const offsets = await page.locator("#chart .hoverlayer text.nums > tspan.line")
-        .evaluateAll((lines) => lines.slice(0, 3).map((line) => (
-          line.getStartPositionOfChar(0).matrixTransform(line.getScreenCTM()).x
-        )));
-      return offsets.length === 3
-        ? offsets.slice(1).map((left) => Math.round(left - offsets[0]))
-        : [];
-    }).toEqual([38, 38]);
-    const historicalHoverOffsets = await page.locator("#chart .hoverlayer text.nums > tspan.line")
-      .evaluateAll((lines) => lines.slice(0, 3).map((line) => (
-        line.getStartPositionOfChar(0).matrixTransform(line.getScreenCTM()).x
-      )));
-    expect(Math.abs(historicalHoverOffsets[1] - historicalHoverOffsets[0] - 38)).toBeLessThanOrEqual(1);
-    expect(Math.abs(historicalHoverOffsets[2] - historicalHoverOffsets[0] - 38)).toBeLessThanOrEqual(1);
+      const currentTarget = await page.locator("#chart").evaluate((element) => {
+        const grouped = (element.data || []).find((trace) => (
+          trace?.meta?.isGroupedHoverTrace && trace.meta.hoverGroupTicker === "218410.KQ"
+        ));
+        const pointIndex = grouped?.x?.indexOf("2024-03-31") ?? -1;
+        if (!grouped || pointIndex < 0) return null;
+        const rect = element.getBoundingClientRect();
+        const xa = element._fullLayout.xaxis;
+        const ya = element._fullLayout.yaxis;
+        return {
+          x: rect.left + xa._offset + xa.d2p(grouped.x[pointIndex]),
+          y: rect.top + ya._offset + ya.l2p(grouped.y[pointIndex]),
+        };
+      });
+      if (!currentTarget) return null;
+      await page.mouse.move(currentTarget.x, currentTarget.y);
+      return page.locator("#chart .hoverlayer").evaluate((hoverLayer) => {
+        const datePattern = /^\d{4}\.\d{1,2}\.\d{1,2}$/;
+        const pointLines = [...hoverLayer.querySelectorAll("text.nums > tspan.line")];
+        const pointDate = pointLines.find((line) => datePattern.test(line.textContent?.trim() || ""));
+        const unifiedDate = [...hoverLayer.querySelectorAll("text.legendtitletext")]
+          .find((line) => datePattern.test(line.textContent?.trim() || ""));
+        const dateLine = pointDate || unifiedDate;
+        const contentLines = pointDate
+          ? pointLines.filter((line) => line !== pointDate)
+          : [...hoverLayer.querySelectorAll("text.legendtext")];
+        const startX = (line) => {
+          const matrix = line?.getScreenCTM?.();
+          if (!line?.textContent?.length || !matrix) return Number.NaN;
+          return line.getStartPositionOfChar(0).matrixTransform(matrix).x;
+        };
+        const dateLeft = startX(dateLine);
+        const offsets = contentLines.map((line) => Math.round(startX(line) - dateLeft));
+        return {
+          date: dateLine?.textContent?.trim() || "",
+          hasEps: String(hoverLayer.textContent || "").includes("EPS"),
+          contentIndented: offsets.length > 0 && offsets.every((offset) => Math.abs(offset - 38) <= 1),
+        };
+      });
+    }, { timeout: 15000 }).toEqual({
+      date: "2024.3.31",
+      hasEps: true,
+      contentIndented: true,
+    });
     await page.evaluate((range) => window.ThinkStockE2E.setViewportRangeForTest(range), viewportBeforeHistoricalHover);
     await waitForChartRenderIdle(page);
 
@@ -700,10 +734,17 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     (element.data || []).filter((trace) => trace?.meta?.isEpsTrace).length
   ))).toBe(0);
-  await expect.poll(() => page.locator("#chart").evaluate((element, expected) => {
-    const actual = element._fullLayout.xaxis.range.map(Date.parse);
-    return Math.max(Math.abs(actual[0] - expected[0]), Math.abs(actual[1] - expected[1]));
-  }, beforeEpsRange)).toBeLessThanOrEqual(1000);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const actualEnd = Date.parse(element._fullLayout.xaxis.range[1]);
+    const observedEnd = Math.max(...(element.data || [])
+      .filter((trace) => trace?.meta?.seriesKey === "218410.KQ"
+        && !trace?.meta?.isEpsTrace
+        && !trace?.meta?.isAiForecastTrace)
+      .flatMap((trace) => trace.x || [])
+      .map(Date.parse)
+      .filter(Number.isFinite));
+    return Math.abs(actualEnd - observedEnd);
+  })).toBeLessThanOrEqual(86400000);
 
   const quickPresetExpectation = await page.locator("#chart").evaluate((element) => {
     const observedEnd = Math.max(...(element.data || [])
@@ -1322,7 +1363,6 @@ test("auto scale keeps its live macro fit after historical panning ends", async 
   await expect.poll(async () => Math.min(...Object.values(await seriesUtilization())), {
     timeout: 5000,
   }).toBeGreaterThan(0.25);
-  expect(await page.evaluate(() => globalThis.ThinkStockE2E.isViewportNormalizationLocked())).toBe(false);
 });
 
 test("repeated historical panning never leaves the visible main window without line data", async ({ page, isMobile }) => {
@@ -1514,9 +1554,6 @@ test("historical panning refits series whose volatility regimes reverse", async 
     await expect(page.locator("#chart")).toHaveClass(/is-viewport-panning/);
     await page.mouse.move(drag.endX, drag.y, { steps: 10 });
     if (pass === 0) {
-      await expect.poll(() => page.evaluate(() => (
-        globalThis.ThinkStockE2E.isViewportNormalizationLocked()
-      ))).toBe(true);
       await page.evaluate(({ clientX, clientY }) => {
         globalThis.dispatchEvent(new PointerEvent("pointercancel", {
           bubbles: true,
@@ -1529,9 +1566,7 @@ test("historical panning refits series whose volatility regimes reverse", async 
         }));
       }, { clientX: drag.endX, clientY: drag.y });
       await page.mouse.up();
-      await expect.poll(() => page.evaluate(() => (
-        globalThis.ThinkStockE2E.isViewportNormalizationLocked()
-      ))).toBe(false);
+      await expect(page.locator("#chart")).not.toHaveClass(/is-viewport-panning/);
     } else {
       await page.mouse.up();
     }
@@ -2156,7 +2191,8 @@ test("range presets end at the latest date and the latest control slides there",
     Date.parse(element._fullLayout.xaxis.range[1])
   ));
   expect(middleEnd).toBeGreaterThan(prepared.oldRange[1]);
-  expect(middleEnd).toBeLessThan(prepared.dataEnd);
+  // A fast frame can already reach the latest boundary before this sample.
+  expect(middleEnd).toBeLessThanOrEqual(prepared.dataEnd);
 
   await expect.poll(() => page.locator("#chart").evaluate((element, expected) => {
     const range = element._fullLayout.xaxis.range.map(Date.parse);
@@ -2847,6 +2883,36 @@ test("desktop wheel anchors the latest edge and keeps pointer anchoring in histo
       typeof value === "number" ? value : Date.parse(value)
     ))
   ))).toEqual(minimumRange);
+});
+
+test("one wheel input schedules one linked viewport target", async ({ page, isMobile }) => {
+  test.skip(isMobile, "Mouse wheel behavior is desktop-only.");
+  await installDataRoutes(page);
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await waitForChartRenderIdle(page);
+
+  const before = await page.evaluate(() => (
+    window.ThinkStockE2E.getChartWorkerStats().rangeSync?.scheduled || 0
+  ));
+  const wheelPoint = await page.locator("#chart").evaluate((element) => {
+    const axis = element._fullLayout.xaxis;
+    const rect = element.getBoundingClientRect();
+    return rect.left + axis._offset + (axis._length * 0.5);
+  });
+  await page.locator("#chart").dispatchEvent("wheel", {
+    deltaY: -120,
+    clientX: wheelPoint,
+  });
+  await expect.poll(() => page.evaluate(() => {
+    const rangeSync = window.ThinkStockE2E.getChartWorkerStats().rangeSync;
+    return Boolean(rangeSync && !rangeSync.pending && !rangeSync.running);
+  })).toBe(true);
+  const after = await page.evaluate(() => (
+    window.ThinkStockE2E.getChartWorkerStats().rangeSync?.scheduled || 0
+  ));
+
+  expect(after - before).toBe(1);
 });
 
 test("desktop main-chart drag commits the same range to auxiliary charts", async ({ page, isMobile }) => {

@@ -215,7 +215,8 @@ assert.ok(
     && app.includes("createAppBootstrapOrchestrator({")
     && app.includes("createLazyRuntimeRegistry")
     && app.includes("const startupTaskRuntime = createStartupTaskRuntime({")
-    && app.includes("scheduleSupplementalTask: startupTaskRuntime.scheduleSupplemental")
+    && app.includes("waitForStartupVisualReady: startupTaskRuntime.whenReleased")
+    && !app.includes("scheduleSupplementalTask: startupTaskRuntime.scheduleSupplemental")
     && !app.includes("async function boot()"),
   "app startup and control wiring are not using the standard module boundary",
 );
@@ -514,23 +515,28 @@ assert.ok(dataSeedLoader.includes("fetchSegmentedSeedText"), "data seed loader m
 assert.ok(dataSeedLoader.includes("fetchDataManifest") && dataSeedLoader.includes("manifestSegmentPath"),
   "segmented data manifest is not consumed by the app");
 assert.ok(!app.includes("async function fetchSeedText("), "seed network loading still lives in app.js");
-assert.ok(runtimeRefreshOrchestrator.includes('criticalTask("indices", coreIndexTask)')
-  && runtimeRefreshOrchestrator.includes('criticalTask("prices-visible", preloadTask)')
-  && runtimeRefreshOrchestrator.includes("const criticalTotal = 2;"),
-"critical startup refresh tasks are not grouped");
-assert.ok(runtimeRefreshOrchestrator.includes("supplementalTasks: [")
+assert.ok(runtimeRefreshOrchestrator.includes("planCriticalRefresh({")
+  && runtimeRefreshOrchestrator.includes("...(refreshIndices ? [criticalTask(\"indices\", coreIndexTask)] : [])")
+  && runtimeRefreshOrchestrator.includes("...(refreshVisiblePrices ? [criticalTask(\"prices-visible\", preloadTask)] : [])")
+  && runtimeRefreshOrchestrator.includes("startSupplementalAfterCritical: true"),
+"critical startup refresh is not planned before supplemental inputs");
+assert.ok(runtimeRefreshOrchestrator.includes("supplementalTasks: foregroundSourceTasks.map")
+  && runtimeRefreshOrchestrator.includes("shouldScheduleHiddenStockRefresh(options)")
   && !runtimeRefreshOrchestrator.includes("hiddenPriceTask,")
   && app.includes("initialLoad = await ensureCustomTickerSeriesLoaded(key, {")
-  && app.includes("returnAfterCache: true,"),
+  && app.includes("latestOnly: hasPriceData,")
+  && app.includes("requireFullHistory: !hasPriceData,")
+  && app.includes("returnAfterCache: !pricePlan.shouldRefresh,"),
 "hidden stock prices are not deferred until the stock becomes visible");
 assert.ok(runtimeRefreshOrchestrator.includes('reportCriticalProgress("chart", 96)')
   && runtimeDataApp.includes("onCriticalProgress: flow.onCriticalProgress"),
 "startup progress does not follow critical refresh completion");
-assert.ok(runtimeRefreshOrchestrator.includes("runSupplementalTask")
-  && runtimeRefreshOrchestrator.includes("scheduleSupplementalTask")
-  && /createTaskKey\(\s*"startup-supplemental"/.test(appBootstrapOrchestrator)
-  && appBootstrapOrchestrator.includes("await taskContext.checkpoint?.();"),
-"startup supplemental refreshes must yield to foreground interaction");
+assert.ok(runtimeDataApp.includes("deferSupplementalUntilReady: true")
+  && runtimeRefreshOrchestrator.includes("beforeSupplemental:")
+  && runtimeRefreshOrchestrator.includes("waitForStartupVisualReady")
+  && app.includes("waitForStartupVisualReady: startupTaskRuntime.whenReleased")
+  && !/createTaskKey\(\s*"startup-supplemental"/.test(appBootstrapOrchestrator),
+"startup supplemental refreshes must begin after one shared visual-ready boundary");
 assert.ok(runtimeDataApp.includes("awaitCriticalRender: true")
   && runtimeDataApp.includes("onCriticalReady"),
 "startup loader does not wait for the critical render phase");
@@ -761,10 +767,14 @@ assert.ok(runtimeRefresh.includes("const criticalPromise")
   && runtimeRefreshOrchestrator.includes("supplementalConcurrency: options?.deferSupplementalUntilReady ? 2 : (forceNetwork ? 3 : 2)")
   && runtimeRefreshOrchestrator.includes("beforeSupplemental:")
   && runtimeRefreshOrchestrator.includes("waitForStartupVisualReady")
-  && runtimeRefreshOrchestrator.includes("incrementalSupplementalRender")
-  && runtimeRefreshOrchestrator.includes("scheduleSupplementalTask(")
-  && runtimeRefreshOrchestrator.includes("canStart === false")
-  && runtimeRefreshOrchestrator.includes(": task()"),
+  && runtimeRefreshOrchestrator.includes("const applyPhaseChanges = async")
+  && runtimeRefreshOrchestrator.includes("pendingDerivedInputChanged")
+  && runtimeRefreshOrchestrator.includes("finalizeDerived: true")
+  && !runtimeRefreshOrchestrator.includes("incrementalSupplementalRender")
+  && runtimeRefreshOrchestrator.includes("supplementalTasks: foregroundSourceTasks.map")
+  && !runtimeRefreshOrchestrator.includes("scheduleSupplementalTask(")
+  && runtimeRefreshOrchestrator.includes("startSupplementalAfterCritical: true")
+  && runtimeRefreshOrchestrator.includes("runTaskFactoriesWithConcurrency("),
 "refresh phases do not preserve critical-first bounded startup work");
 assert.ok(runtimeRefreshOrchestrator.includes("coreIndexTask")
   && runtimeRefreshOrchestrator.includes("preloadTask"),

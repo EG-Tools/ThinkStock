@@ -22,6 +22,56 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw "Git is requir
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw "Node.js is required." }
 if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { throw "GitHub CLI is required." }
 
+$ReleasePaths = @(
+  ".gitattributes",
+  "AGENTS.md",
+  ".github",
+  ".gitignore",
+  "README.md",
+  "deploy_pages.bat",
+  "docs",
+  "package.json",
+  "package-lock.json",
+  "playwright.config.mjs",
+  "requirements-pages.txt",
+  "requirements-qlib.txt",
+  "run_local_pages.bat",
+  "run_local_iphone13promax.bat",
+  "scripts",
+  "shared",
+  "tests",
+  "worker"
+)
+
+function Test-ReleasePath {
+  param([string]$Path)
+  $normalized = [String]$Path -replace "\\", "/"
+  $normalized = $normalized -replace "^\./", ""
+  foreach ($releasePath in $ReleasePaths) {
+    $root = ([String]$releasePath -replace "\\", "/").TrimEnd("/")
+    if ($normalized -eq $root -or $normalized.StartsWith("$root/")) { return $true }
+  }
+  return $false
+}
+
+function Assert-ReleaseWorkspaceReady {
+  $unstaged = @(& git diff --name-only --)
+  if ($LASTEXITCODE -ne 0) { throw "Unable to inspect unstaged release files." }
+  $untracked = @(& git ls-files --others --exclude-standard)
+  if ($LASTEXITCODE -ne 0) { throw "Unable to inspect untracked release files." }
+  $unexpected = @($unstaged + $untracked | Where-Object { $_ } | Sort-Object -Unique)
+  if ($unexpected.Count -gt 0) {
+    throw "Release workspace still contains files outside the prepared commit:`n$($unexpected -join "`n")"
+  }
+
+  $staged = @(& git diff --cached --name-only --)
+  if ($LASTEXITCODE -ne 0) { throw "Unable to inspect staged release files." }
+  $unexpectedStaged = @($staged | Where-Object { -not (Test-ReleasePath $_) })
+  if ($unexpectedStaged.Count -gt 0) {
+    throw "Unexpected files were staged for release:`n$($unexpectedStaged -join "`n")"
+  }
+}
+
 $Branch = (& git branch --show-current).Trim()
 if ($Branch -ne "main") { throw "Pages releases must run from main, not $Branch." }
 
@@ -45,25 +95,8 @@ if (-not $BuiltWebApp) {
   Invoke-Checked npm @("run", "build:web")
 }
 Invoke-Checked node @("scripts/validate_pages_app.mjs")
-Invoke-Checked git @(
-  "add", "--",
-  ".github",
-  ".gitignore",
-  "README.md",
-  "deploy_pages.bat",
-  "docs",
-  "package.json",
-  "package-lock.json",
-  "playwright.config.mjs",
-  "requirements-pages.txt",
-  "requirements-qlib.txt",
-  "run_local_pages.bat",
-  "scripts",
-  "shared",
-  "tests",
-  "worker",
-  ":(exclude)scripts/resize_preview_window.ps1"
-)
+Invoke-Checked git (@("add", "--") + $ReleasePaths)
+Assert-ReleaseWorkspaceReady
 
 & git diff --cached --quiet
 if ($PreparedCommit) {

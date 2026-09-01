@@ -4,7 +4,6 @@ import test from "node:test";
 import {
   captureLockedChartFrame,
   captureLockedHistoryYRange,
-  captureViewportNormalizationFrame,
   clearSeriesTransforms,
   createChartSessionController,
   orderItemsByActivation,
@@ -16,7 +15,6 @@ function session(overrides = {}) {
   return {
     autoChartReset: false,
     pendingAutoChartFit: false,
-    viewportNormalizationFrame: "old",
     pendingCompositionViewport: {},
     pinnedXRange: null,
     userViewportPinned: true,
@@ -61,31 +59,10 @@ test("disabling auto scale captures a stable manual vertical range", () => {
   assert.equal(state.pendingCompositionViewport, null);
 });
 
-test("viewport completion keeps the live fit and clears only its temporary normalization frame", () => {
-  const state = session({
-    autoChartReset: true,
-    viewportNormalizationFrame: { normBases: { A: 10 }, autoScales: { A: 2 } },
-  });
-  let fitted = 0;
-  let normalized = 0;
-  const controller = createChartSessionController({}, {
-    state,
-    fitCurrentViewport: () => { fitted += 1; },
-    normalizeCurrentViewport: () => { normalized += 1; },
-  });
-
-  assert.equal(controller.applyResetPolicy("viewport"), true);
-  assert.equal(state.viewportNormalizationFrame, null);
-  assert.equal(normalized, 0);
-  assert.equal(fitted, 0);
-  assert.deepEqual(controller.stats(), { autoFitPending: false, disposed: false });
-});
-
-test("one session contract captures manual scale and viewport normalization frames", () => {
+test("one session contract captures the manual scale frame", () => {
   const state = session({
     lockedChartFrame: { normBases: { A: 10 }, autoScales: { A: 2 } },
     lockedHistoryYRange: null,
-    viewportNormalizationFrame: null,
   });
   const model = {
     normBases: { A: 99, B: 20, empty: 0 },
@@ -97,10 +74,6 @@ test("one session contract captures manual scale and viewport normalization fram
     autoScales: { A: 2, B: 3 },
   });
   assert.deepEqual(captureLockedHistoryYRange(state, [4, 8], model), [4, 8]);
-  assert.deepEqual(captureViewportNormalizationFrame(state, model), {
-    normBases: { A: 99, B: 20 },
-    autoScales: { A: 9, B: 3 },
-  });
 });
 
 test("clearing a stock transform also clears its dependent EPS transform", () => {

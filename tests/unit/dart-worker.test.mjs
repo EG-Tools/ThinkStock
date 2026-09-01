@@ -963,7 +963,7 @@ test("uses Naver only when it is newer than a delayed KRX close", async () => {
 });
 
 test("explicit stock price refresh bypasses only the latest KRX market snapshot", async () => {
-  const latestDate = koreanDateText(new Date());
+  const latestDate = expectedLatestKoreanTradingDate(new Date());
   const latestDateCode = latestDate.replaceAll("-", "");
   const originalFetch = globalThis.fetch;
   let sourceClose = 71000;
@@ -1310,6 +1310,40 @@ test("returns indices and visible prices through one authenticated bootstrap req
     assert.equal(response.status, 200);
     assert.equal(payload.partial, false);
     assert.deepEqual(payload.indices.records.map((row) => row.ticker), ["^KS11", "^KQ11"]);
+    assert.deepEqual(payload.prices.results.map((row) => row.ticker), ["005930.KS"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("stock-only bootstrap skips both KRX index requests", async () => {
+  const expectedDate = expectedLatestKoreanTradingDate(new Date());
+  const rawDate = expectedDate.replaceAll("-", "");
+  const originalFetch = globalThis.fetch;
+  let indexCalls = 0;
+  globalThis.fetch = async (url) => {
+    const target = new URL(url);
+    if (target.hostname === "api.finance.naver.com") {
+      return new Response("[]", { status: 200 });
+    }
+    if (target.pathname.includes("/idx/")) indexCalls += 1;
+    return new Response(JSON.stringify({
+      OutBlock_1: [{ ISU_CD: "005930", BAS_DD: rawDate, TDD_CLSPRC: "90,000" }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const response = await handleRequest(
+      request("/api/bootstrap?tickers=005930.KS&indices=0", { token: "private" }),
+      {
+        KRX_API_KEY: "krx-secret",
+        THINKSTOCK_ACCESS_TOKEN: "private",
+        DISCLOSURE_CACHE: memoryKv(),
+      },
+    );
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(indexCalls, 0);
+    assert.equal(payload.indices.skipped, true);
     assert.deepEqual(payload.prices.results.map((row) => row.ticker), ["005930.KS"]);
   } finally {
     globalThis.fetch = originalFetch;

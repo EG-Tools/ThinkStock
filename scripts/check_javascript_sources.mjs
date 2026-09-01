@@ -40,6 +40,10 @@ const SHARED_ESM_GLOBAL_ALLOWLIST = new Set([
 export const DOCS_ESM_MODULE_MAX = 96;
 const APP_SOURCE_MAX_BYTES = 290000;
 
+export function normalizedSourceBytes(source) {
+  return Buffer.byteLength(String(source || "").replace(/\r\n?/g, "\n"), "utf8");
+}
+
 function isWebScript(relative) {
   return WEB_SCRIPT_FILES.has(relative) || relative.startsWith("scripts/feature-entries/");
 }
@@ -269,7 +273,7 @@ async function main() {
   }
   if (files.includes("docs/app.js")) {
     const appSource = await readFile(path.join(ROOT, "docs", "app.js"), "utf8");
-    if (Buffer.byteLength(appSource, "utf8") > APP_SOURCE_MAX_BYTES) {
+    if (normalizedSourceBytes(appSource) > APP_SOURCE_MAX_BYTES) {
       throw new Error(
         `docs/app.js responsibility boundary grew beyond ${APP_SOURCE_MAX_BYTES} bytes`,
       );

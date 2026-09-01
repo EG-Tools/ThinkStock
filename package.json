@@ -17,7 +17,7 @@
     "test:affected": "node scripts/test_affected.mjs",
     "test:quick": "npm run test:affected",
     "test:webkit": "npm run build:web && npm run test:webkit:built",
-    "test:webkit:built": "playwright test --workers=2 --project=webkit --project=webkit-desktop --project=webkit-sw",
+    "test:webkit:built": "playwright test --workers=1 --project=webkit --project=webkit-desktop --project=webkit-sw",
     "test:webkit:mobile": "npm run build:web && npm run test:webkit:mobile:built",
     "test:webkit:mobile:built": "playwright test --workers=1 --project=webkit",
     "test:webkit:smoke": "npm run build:web && node scripts/run_webkit_scope.mjs smoke",

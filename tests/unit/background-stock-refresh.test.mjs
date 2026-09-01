@@ -297,6 +297,59 @@ test("background work waits until pointer activity has been quiet", async () => 
   assert.equal(scheduler.stats().activityDeferrals, 2);
 });
 
+test("visible startup preload checks only the latest tail for existing series", async () => {
+  const loaded = [];
+  const preloader = createCustomStockPreloader({
+    getItems: () => [
+      { ticker: "A.KS", name: "A" },
+      { ticker: "B.KQ", name: "B" },
+    ],
+    hasExisting: (ticker) => ticker === "A.KS",
+    canFetchLatestBatch: () => true,
+    fetchLatestBatch: async () => new Map([
+      ["A.KS", [{ date: "2026-08-31", close: 11 }]],
+      ["B.KQ", [{ date: "2026-08-31", close: 22 }]],
+    ]),
+    loadSeries: async (ticker, options) => loaded.push({ ticker, options }),
+  });
+
+  await preloader.preload({ latestOnly: true, scope: "visible" });
+
+  assert.equal(loaded[0].ticker, "A.KS");
+  assert.equal(loaded[0].options.latestOnly, true);
+  assert.equal(loaded[0].options.requireFullHistory, false);
+  assert.equal(loaded[1].ticker, "B.KQ");
+  assert.equal(loaded[1].options.latestOnly, false);
+  assert.equal(loaded[1].options.requireFullHistory, true);
+});
+
+test("non-deferring startup work continues while pointer input is active", async () => {
+  const calls = [];
+  let pendingInput = true;
+  const clock = fakeClock(() => pendingInput);
+  const scheduler = createBackgroundTaskScheduler(clock.scope, {
+    now: clock.now,
+    isInteractionBusy: () => true,
+  });
+  clock.dispatch("pointermove");
+  scheduler.enqueue("startup", async (context) => {
+    calls.push("start");
+    assert.equal(context.shouldYield(), false);
+    await context.checkpoint();
+    calls.push("finish");
+  }, { deferDuringInteraction: false });
+
+  clock.runNext();
+  clock.runNext();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.deepEqual(calls, ["start", "finish"]);
+  assert.equal(scheduler.stats().inputDeferrals, 0);
+  assert.equal(scheduler.stats().activityDeferrals, 0);
+  pendingInput = false;
+});
+
 test("background work pauses while its document is hidden", async () => {
   const calls = [];
   const listeners = new Map();

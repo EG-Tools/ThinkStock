@@ -621,6 +621,80 @@ test("series loader reuses a complete fresh cache after one latest-point check",
   assert.deepEqual(calls, ["latest", "merge", "write"]);
 });
 
+test("latest-only series refresh bypasses full cache and history work", async () => {
+  const calls = [];
+  let currentPoints = [{ date: "2026-08-28", close: 70000 }];
+  const loader = runtime.createSeriesLoader({
+    applySharedCache: async () => { throw new Error("shared cache should not be read"); },
+    assessPriceUpdate: () => ({ invalidateDerived: true, fullHistoryRequired: false }),
+    clearSeries: () => {},
+    fetchHistory: async () => { throw new Error("history should not be fetched"); },
+    fetchLatest: async () => { throw new Error("prefetched latest should be reused"); },
+    getPoints: () => currentPoints,
+    hasSeries: () => true,
+    hasVolumeHistory: () => false,
+    invalidateCache: async () => calls.push("invalidate"),
+    isCacheFresh: () => false,
+    isLatestCoverageComplete: () => true,
+    latestDate: () => currentPoints.at(-1)?.date || "",
+    mergePoints: (_ticker, points) => {
+      calls.push("merge");
+      const changed = points.some((point) => (
+        !currentPoints.some((current) => current.date === point.date && current.close === point.close)
+      ));
+      currentPoints = [...currentPoints.filter((point) => point.date !== points[0].date), ...points];
+      return changed;
+    },
+    normalizePoints: (points) => points,
+    setStatus: () => {},
+    writeCache: async () => calls.push("write"),
+  });
+
+  const result = await loader.load("005930.KS", {
+    latestOnly: true,
+    latestPoints: [{ date: "2026-08-31", close: 71000 }],
+  });
+
+  assert.equal(result.latestOnly, true);
+  assert.equal(result.changed, true);
+  assert.equal(result.latestDate, "2026-08-31");
+  assert.deepEqual(calls, ["merge", "invalidate"]);
+});
+
+test("latest-only series refresh preserves derived results when the tail is unchanged", async () => {
+  const calls = [];
+  const currentPoints = [{ date: "2026-08-31", close: 71000 }];
+  const loader = runtime.createSeriesLoader({
+    applySharedCache: async () => { throw new Error("shared cache should not be read"); },
+    assessPriceUpdate: () => ({ invalidateDerived: true, fullHistoryRequired: false }),
+    clearSeries: () => {},
+    fetchHistory: async () => { throw new Error("history should not be fetched"); },
+    fetchLatest: async () => { throw new Error("prefetched latest should be reused"); },
+    getPoints: () => currentPoints,
+    hasSeries: () => true,
+    hasVolumeHistory: () => false,
+    invalidateCache: async () => calls.push("invalidate"),
+    isCacheFresh: () => false,
+    isLatestCoverageComplete: () => true,
+    latestDate: () => "2026-08-31",
+    mergePoints: () => {
+      calls.push("merge");
+      return false;
+    },
+    normalizePoints: (points) => points,
+    setStatus: () => {},
+    writeCache: async () => calls.push("write"),
+  });
+
+  const result = await loader.load("005930.KS", {
+    latestOnly: true,
+    latestPoints: [{ date: "2026-08-31", close: 71000 }],
+  });
+
+  assert.equal(result.changed, false);
+  assert.deepEqual(calls, ["merge"]);
+});
+
 test("series loader repairs missing recent sessions instead of accepting only the newest point", async () => {
   const calls = [];
   let currentPoints = [

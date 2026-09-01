@@ -179,7 +179,6 @@
         return true;
       }
       if (historyPromise) return historyPromise;
-      options.captureNormalization?.();
       const visibleRange = options.getCurrentRange(options.getElement());
       historyPromise = Promise.resolve(options.loadHistory?.())
         .then(async () => {
@@ -234,7 +233,6 @@
         });
       if (source === "wheel-zoom" && applied !== false) rememberWheelRange(nextRange, observedCurrentRange);
       else clearWheelRange();
-      if (source !== "wheel-zoom") options.applyResetPolicy?.("viewport");
       return true;
     }
 
@@ -260,14 +258,12 @@
       animationFrame = 0;
       if (wasActive) options.setViewportDragging?.(false);
       options.getElement()?.classList.remove("is-viewport-panning");
-      if (wasActive) options.applyResetPolicy?.("viewport");
     }
 
     function requestSettledRangeRender(
       range,
       source,
       updateClass = "viewport",
-      reframeNormalization = false,
     ) {
       const requestedRange = Array.isArray(range) && range.length === 2
         ? Object.freeze(range.slice(0, 2).map(Number))
@@ -276,7 +272,6 @@
         preserveZoom: true,
         range: requestedRange,
         reason: source,
-        reframeNormalization,
         updateClass,
       })).catch((error) => {
         options.onError?.(error);
@@ -285,11 +280,8 @@
     }
 
     function finalizeAnimatedRange(range, source, applied) {
-      if (applied === false) {
-        options.applyResetPolicy?.("viewport");
-        return Promise.resolve();
-      }
-      return requestSettledRangeRender(range, source, "viewport", true);
+      if (applied === false) return Promise.resolve();
+      return requestSettledRangeRender(range, source, "viewport");
     }
 
     function showLatestPeriod(months, source = "range-preset") {
@@ -310,7 +302,6 @@
         ? Math.max(dataRange[0], requestedStart)
         : dataRange[0];
       options.updateActiveMonths?.(requestedMonths);
-      options.captureNormalization?.();
       const applied = options.applyRange(nextStart, dataRange[1], {
         source,
         fit: false,
@@ -322,10 +313,7 @@
           [nextStart, dataRange[1]],
           source,
           "viewport-range",
-          true,
         );
-      } else {
-        options.applyResetPolicy?.("viewport");
       }
       return true;
     }
@@ -350,7 +338,6 @@
         return true;
       }
 
-      options.captureNormalization?.();
       options.setViewportPinned?.(true);
       options.setViewportDragging?.(true);
       animationActive = true;

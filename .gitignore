@@ -18,6 +18,7 @@ scripts/dart_key.txt
 node_modules/
 playwright-report/
 test-results/
+tmp/
 .pages-artifact/
 pages-shell/
 .thinkstock-cache/

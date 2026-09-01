@@ -39,6 +39,30 @@ test("requests and merges only the missing validated index tail", async () => {
   assert.match(result.warnings[0], /로컬 서버 업데이트/);
 });
 
+test("refreshes only the index selected by the shared critical plan", async () => {
+  const merged = [];
+  const service = module.createRuntimeIndexRefreshService({
+    isLocalRuntime: false,
+    canUseGateway: () => true,
+    gatewayClient: {
+      fetchIndices: async () => ({
+        ok: true,
+        records: [
+          { ticker: "^KS11", date: "2026-08-21", close: 3200 },
+          { ticker: "^KQ11", date: "2026-08-21", close: 1010 },
+        ],
+      }),
+    },
+    getPricePayload: () => ({ records: [] }),
+    mergeTickerSeries: (ticker) => merged.push(ticker),
+    labelName: (ticker) => ticker,
+    toNumber: Number,
+  });
+
+  await service.refresh({ tickers: ["^KQ11"] });
+  assert.deepEqual(merged, ["^KQ11"]);
+});
+
 test("rethrows transient failures for the shared retry layer", async () => {
   const service = module.createRuntimeIndexRefreshService({
     isLocalRuntime: false,

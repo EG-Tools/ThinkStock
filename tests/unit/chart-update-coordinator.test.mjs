@@ -21,6 +21,7 @@ import {
   fitMainChartToViewport,
   hydrateMainChartSession,
   normalizeChartInvalidation,
+  prepareViewportTraceFrame,
   shouldHydrateChartData,
   shouldUpdateAuxiliary,
   settleViewportRenderTransaction,
@@ -296,7 +297,8 @@ test("fits transformed prices and anchored markers in one viewport update", () =
     },
     fitRangeForTraces: () => [75, 125],
     collectAnchoredYUpdates: (element, options) => {
-      assert.deepEqual(element.data[0].y, transformed);
+      assert.equal(element, mainElement);
+      assert.deepEqual(options.traces[0].y, transformed);
       assert.deepEqual(options.viewportRange, [75, 125]);
       return { traceIndexes: [1], yUpdates: [[123]] };
     },
@@ -305,6 +307,51 @@ test("fits transformed prices and anchored markers in one viewport update", () =
   assert.deepEqual(plan.mainTraceIndexes, [0, 1]);
   assert.deepEqual(plan.mainYUpdates, [transformed, [123]]);
   assert.deepEqual(plan.liveFit.fittedYRange, [75, 125]);
+});
+
+test("prepares a composed frame with transformed series before reanchoring reused markers", () => {
+  const traces = [
+    {
+      x: ["2026-01-01", "2026-02-01"],
+      y: [95, 105],
+      meta: { overlayKind: "price", seriesKey: "A" },
+    },
+    {
+      x: ["2026-02-01"],
+      y: [108],
+      meta: {
+        markerGapFactors: [0.2],
+        overlayKind: "timing-buy",
+        pointTickers: ["A"],
+      },
+    },
+  ];
+  const prepared = prepareViewportTraceFrame({
+    traces,
+    xRange: ["2026-01-01", "2026-02-01"],
+    collectTraceYUpdates: () => ({
+      traceIndexes: [0],
+      yUpdates: [[80, 120]],
+    }),
+    rangeBearingTraces: (items) => [items[0]],
+    fitRangeForTraces: (items) => {
+      assert.deepEqual(items[0].y, [80, 120]);
+      return [75, 125];
+    },
+    collectAnchoredYUpdates: (_element, options) => {
+      assert.deepEqual(options.traces[0].y, [80, 120]);
+      assert.deepEqual(options.viewportRange, [75, 125]);
+      return { traceIndexes: [1], yUpdates: [[123]] };
+    },
+  });
+
+  assert.deepEqual(prepared.fittedYRange, [75, 125]);
+  assert.equal(Object.isFrozen(prepared.fittedYRange), false);
+  assert.deepEqual(prepared.traceIndexes, [0, 1]);
+  assert.deepEqual(prepared.traces[0].y, [80, 120]);
+  assert.deepEqual(prepared.traces[1].y, [123]);
+  assert.deepEqual(traces[0].y, [95, 105]);
+  assert.deepEqual(traces[1].y, [108]);
 });
 
 test("settles an in-buffer viewport without a duplicate render", async () => {
@@ -322,11 +369,10 @@ test("settles an in-buffer viewport without a duplicate render", async () => {
     whenRenderSettled: async () => calls.push("settled"),
     getCurrentRange: () => [100, 500],
     flushCoMovement: () => calls.push("co-movement"),
-    releaseNormalization: () => calls.push("release"),
   });
 
   assert.deepEqual(result, { rendered: false, corrected: false, stale: false });
-  assert.deepEqual(calls, ["flush", ["pin", [100, 500]], "settled", "co-movement", "release"]);
+  assert.deepEqual(calls, ["flush", ["pin", [100, 500]], "settled", "co-movement"]);
 });
 
 test("checks companion trace coverage even when the main window already refreshed", async () => {
@@ -344,34 +390,30 @@ test("checks companion trace coverage even when the main window already refreshe
     getCurrentRange: () => [100, 500],
     refreshCompanions: true,
     refreshCompanionsNow: async () => calls.push("companions"),
-    releaseNormalization: () => calls.push("release"),
   });
 
   assert.deepEqual(result, { rendered: false, corrected: false, stale: false });
-  assert.deepEqual(calls, ["flush", ["pin", [100, 500]], "settled", "companions", "release"]);
+  assert.deepEqual(calls, ["flush", ["pin", [100, 500]], "settled", "companions"]);
 });
 
-test("reframes a completed navigation once after its final range is flushed", async () => {
+test("renders a viewport window missing from the current buffer", async () => {
   const calls = [];
   const result = await settleViewportRenderTransaction({
     requestedRange: [100, 500],
     interactionRevision: 4,
     getInteractionRevision: () => 4,
     rangeController: { flush: async () => calls.push("flush") },
-    viewportWindowController: { needsRefresh: () => false },
     mainElement: { data: [{ x: ["1970-01-01T00:00:00.100Z"], y: [1] }] },
     rangeBearingTraces: (traces) => traces,
     setPinnedRange: (range) => calls.push(["pin", range]),
     requestRender: () => calls.push("render"),
     whenRenderSettled: async () => calls.push("settled"),
     getCurrentRange: () => [100, 500],
-    reframeNormalization: true,
-    fitAfterRender: async () => calls.push("fit"),
-    releaseNormalization: () => calls.push("release"),
+    viewportWindowController: { needsRefresh: () => true },
   });
 
   assert.deepEqual(result, { rendered: true, corrected: false, stale: false });
-  assert.deepEqual(calls, ["flush", ["pin", [100, 500]], "release", "render", "settled", "fit"]);
+  assert.deepEqual(calls, ["flush", ["pin", [100, 500]], "render", "settled"]);
 });
 
 test("settlement repairs a target range missing from the rendered traces", async () => {
@@ -390,14 +432,13 @@ test("settlement repairs a target range missing from the rendered traces", async
     requestRender: () => calls.push("render"),
     whenRenderSettled: async () => calls.push("settled"),
     getCurrentRange: () => [100, 500],
-    releaseNormalization: () => calls.push("release"),
   });
 
   assert.deepEqual(result, { rendered: true, corrected: false, stale: false });
-  assert.deepEqual(calls, ["flush", "cancel-window", "render", "settled", "release"]);
+  assert.deepEqual(calls, ["flush", "cancel-window", "render", "settled"]);
 });
 
-test("a newer interaction prevents an older viewport transaction from releasing its lock", async () => {
+test("a newer interaction prevents an older viewport transaction from committing", async () => {
   let revision = 7;
   const calls = [];
   const result = await settleViewportRenderTransaction({
@@ -411,7 +452,6 @@ test("a newer interaction prevents an older viewport transaction from releasing 
     },
     requestRender: () => calls.push("render"),
     whenRenderSettled: async () => { revision = 8; calls.push("settled"); },
-    releaseNormalization: () => calls.push("release"),
   });
 
   assert.deepEqual(result, { rendered: true, corrected: false, stale: true });
@@ -549,6 +589,8 @@ test("skips auxiliary rendering for main-only marker, transform, forecast, and v
   assert.equal(shouldUpdateAuxiliary({ updateClasses: ["transform", "forecast"] }), false);
   assert.equal(shouldUpdateAuxiliary({ updateClasses: ["viewport"] }), false);
   assert.equal(shouldUpdateAuxiliary({ updateClasses: ["viewport-range"] }), true);
+  assert.equal(shouldUpdateAuxiliary({ updateClasses: ["price"] }), true);
+  assert.equal(shouldUpdateAuxiliary({ updateClasses: ["timing"] }), false);
   assert.equal(shouldUpdateAuxiliary({ updateClasses: ["markers", "data"] }), true);
   assert.equal(shouldUpdateAuxiliary({}), true);
 });
@@ -558,6 +600,8 @@ test("hydrates external chart data only for data and composition updates", () =>
   assert.equal(shouldHydrateChartData({ updateClasses: ["composition"] }), true);
   assert.equal(shouldHydrateChartData({ updateClasses: ["viewport"] }), false);
   assert.equal(shouldHydrateChartData({ updateClasses: ["viewport-range"] }), false);
+  assert.equal(shouldHydrateChartData({ updateClasses: ["price"] }), false);
+  assert.equal(shouldHydrateChartData({ updateClasses: ["timing"] }), true);
   assert.equal(shouldHydrateChartData({ updateClasses: ["markers", "transform"] }), false);
   assert.equal(shouldHydrateChartData({}), true);
 });
@@ -566,6 +610,8 @@ test("reuses future overlays only for pure viewport and transform frames", () =>
   assert.equal(canReuseFutureOverlayTraces({ updateClasses: ["viewport"] }), true);
   assert.equal(canReuseFutureOverlayTraces({ updateClasses: ["viewport-range"] }), true);
   assert.equal(canReuseFutureOverlayTraces({ updateClasses: ["viewport", "transform"] }), true);
+  assert.equal(canReuseFutureOverlayTraces({ updateClasses: ["price"] }), true);
+  assert.equal(canReuseFutureOverlayTraces({ updateClasses: ["timing"] }), true);
   assert.equal(canReuseFutureOverlayTraces({ updateClasses: ["forecast"] }), false);
   assert.equal(canReuseFutureOverlayTraces({ updateClasses: ["viewport", "composition"] }), false);
   assert.equal(canReuseFutureOverlayTraces({}), false);
@@ -575,6 +621,8 @@ test("reuses event markers only while the visible date window moves", () => {
   assert.equal(canReuseEventMarkerTraces({ updateClasses: ["viewport"] }), true);
   assert.equal(canReuseEventMarkerTraces({ updateClasses: ["viewport-range"] }), true);
   assert.equal(canReuseEventMarkerTraces({ updateClasses: ["viewport", "viewport-range"] }), true);
+  assert.equal(canReuseEventMarkerTraces({ updateClasses: ["price"] }), true);
+  assert.equal(canReuseEventMarkerTraces({ updateClasses: ["timing"] }), false);
   assert.equal(canReuseEventMarkerTraces({ updateClasses: ["transform"] }), false);
   assert.equal(canReuseEventMarkerTraces({ updateClasses: ["markers"] }), false);
   assert.equal(canReuseEventMarkerTraces({}), false);

@@ -103,6 +103,7 @@ test("runtime startup restores the last view before loading history and renderin
 
 test("runtime startup releases the loader at the critical phase", async () => {
   let refreshOptions = null;
+  let mergedSeed = false;
   const onCriticalProgress = () => {};
   const app = createRuntimeDataApp(createScope(), {
     runRefresh: async (_element, options) => {
@@ -113,15 +114,16 @@ test("runtime startup releases the loader at the critical phase", async () => {
   });
   await app.refreshDuringStartup(null, {
     restoredSnapshot: true,
-    mergeSeed: async () => {},
+    mergeSeed: async () => { mergedSeed = true; },
     onCriticalProgress,
   });
 
   assert.equal(refreshOptions.awaitCriticalRender, true);
-  assert.equal(refreshOptions.awaitSupplementalRender, true);
+  assert.equal(refreshOptions.awaitSupplementalRender, false);
   assert.equal(refreshOptions.deferSupplementalUntilReady, true);
-  assert.equal(refreshOptions.incrementalSupplementalRender, true);
+  assert.equal(Object.hasOwn(refreshOptions, "incrementalSupplementalRender"), false);
   assert.equal(refreshOptions.onCriticalProgress, onCriticalProgress);
+  assert.equal(mergedSeed, false);
 });
 
 test("runtime startup settles a fast supplemental refresh before releasing completion", async () => {
