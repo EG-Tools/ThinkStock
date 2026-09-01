@@ -414,7 +414,7 @@
 }
 .message-area:empty { margin-top: 0; }
 .message-area::-webkit-scrollbar { width: 0; height: 0; }
-.message { padding: 12px 14px; border-radius: 18px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border); color: var(--muted); }
+.message { padding: 12px 14px; border-radius: 18px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border); color: var(--muted); font-size: 15px; }
 .message-log { display: grid; gap: 4px; line-height: 1.4; }
 .message-log-line.error { color: #f87171; }
 .message.error { background: rgba(187, 67, 40, 0.2); color: #f87171; }

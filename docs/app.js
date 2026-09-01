@@ -3390,6 +3390,7 @@ const tickerPriceAppRuntime = createTickerPriceAppRuntime({
   setStatus: setTickerPriceStatus,
   priceStoreName: TICKER_PRICE_CACHE_STORE_NAME,
   researchStoreName: TICKER_RESEARCH_HISTORY_STORE_NAME,
+  researchCacheSchema: stockResearchContract.HISTORY_CACHE_SCHEMA,
   cacheSchema: GRANULAR_CACHE_SCHEMA_VERSION,
   ensureRetention: ensureTickerSeriesCacheRetention,
   retention: tickerSeriesCacheRetention,
@@ -3863,6 +3864,7 @@ function setupStockResearch(msgEl) {
                 ? testDate
                 : expectedLatestKoreanTradingDate(new Date());
             },
+            prepareSharedData: () => ensureHistoricalDataLoaded(false),
             getSignalPriceMode: () => currentSignalPriceMode(),
             getSignalSettlementDelayMs: () => (
               millisecondsUntilKoreanMarketClose(new Date(), { closeHour: 16 })
@@ -4770,10 +4772,6 @@ function scheduleEventMarkerHoverHighlight(evtData) {
 
   const traceIndex = point.curveNumber;
   const pointIndex = point.pointIndex ?? point.pointNumber;
-  const eventDate = point.data?.x?.[pointIndex];
-  if (chartSession.hoverShowPopup && eventDate != null) {
-    syncHoverToChart(chartEl, eventDate);
-  }
   if (
     eventMarkerRenderState.highlight
     && eventMarkerRenderState.highlight.traceIndex === traceIndex
@@ -4785,6 +4783,10 @@ function scheduleEventMarkerHoverHighlight(evtData) {
     return;
   }
 
+  const eventDate = point.data?.x?.[pointIndex];
+  if (chartSession.hoverShowPopup && eventDate != null) {
+    syncHoverToChart(chartEl, eventDate);
+  }
   highlightEventMarkerHoverPoint(evtData);
 }
 
@@ -4991,7 +4993,8 @@ function aiAnalysisHasEps(analysis) {
     && analysis.financials.some((record) => Number.isFinite(Number(record?.eps)));
 }
 const aiAnalysisHasCurrentEpsCoverage = (analysis) => (
-  getLoadedAiFeature()?.analysis?.hasCurrentFinancialSummary?.(analysis) === true
+  getLoadedAiFeature()?.analysis?.isFinancialSummaryFresh?.(analysis, DAY_MS) === true
+  && koreanDateText(new Date(analysis?.financialSummarySavedAt)) === koreanDateText()
 );
 function getBrokerResearchApp() {
   const feature = requireLoadedBrokerResearchFeature();
@@ -7118,8 +7121,6 @@ async function ensureHistoricalDataLoaded(forceNetwork = false) {
     if (!result.loadedAny || !result.historicalDataLoaded) {
       throw new Error("과거 데이터 묶음을 불러오지 못했습니다.");
     }
-    // Source revisions are part of every model key. Keep recent short-range
-    // models reusable while the newly merged historical revision warms up.
     invalidateAdrChartRender();
     return true;
   }).finally(() => {

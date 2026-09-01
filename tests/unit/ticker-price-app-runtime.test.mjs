@@ -129,6 +129,48 @@ test("owns ticker payload state behind one app runtime boundary", () => {
   assert.equal(changed, 2);
 });
 
+test("reads the current stock-research history schema instead of discarding its cache", async () => {
+  const ticker = "018260.KS";
+  const rows = Array.from({ length: 252 }, (_, index) => ({
+    date: new Date(Date.UTC(2025, 0, 1 + index)).toISOString().slice(0, 10),
+    close: 100000 + index,
+    volume: 1000 + index,
+  }));
+  const researchRecord = {
+    schema: 2,
+    ticker,
+    savedAt: Date.now(),
+    lastAccessed: Date.now(),
+    historyCoverage: "partial",
+    historyCoverageVersion: tickerPriceRuntime.HISTORY_COVERAGE_VERSION,
+    rows,
+  };
+  const runtime = createTickerPriceAppRuntime({
+    tickerPriceRuntime,
+    tickerCacheInvalidation: createTickerCacheInvalidationContract(cacheLifecycle),
+    cacheLifecycle,
+    getPayload: () => ({ records: [] }),
+    setPayload() {},
+    volumesByTicker: new Map(),
+    toNumber: Number,
+    sameNumber: (left, right) => left === right,
+    normalizePricePoints: (points) => [...(points || [])],
+    isMarketPricePoint: () => true,
+    getDisplayName: () => "삼성에스디에스",
+    priceStoreName: "tickerPrices",
+    researchStoreName: "tickerResearchHistory",
+    cacheSchema: 5,
+    researchCacheSchema: 2,
+    readRecords: async (storeName) => new Map(storeName === "tickerResearchHistory"
+      ? [[ticker, researchRecord]]
+      : []),
+  });
+
+  const records = await runtime.readResearchHistories([ticker]);
+  assert.equal(records.get(ticker)?.schema, 2);
+  assert.equal(records.get(ticker)?.rows.length, 252);
+});
+
 test("shares ticker network loads while preserving cache-only reads and forced refresh order", async () => {
   const registry = createSharedRequestRegistry();
   const releases = [];

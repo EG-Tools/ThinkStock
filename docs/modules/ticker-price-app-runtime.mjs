@@ -221,12 +221,15 @@ export function createTickerPriceAppRuntime(options = {}) {
   }
 
   function normalizeResearchHistory(value, ticker) {
-    return runtime.normalizeResearchHistoryCache(value, ticker, normalizePointsForTicker);
+    return runtime.normalizeResearchHistoryCache(value, ticker, normalizePointsForTicker, {
+      schema: options.researchCacheSchema,
+    });
   }
 
   function priceCacheToResearchHistory(value, ticker) {
     return runtime.priceCacheToResearchHistory(value, ticker, normalizePointsForTicker, {
       priceSchema: options.cacheSchema,
+      researchSchema: options.researchCacheSchema,
     });
   }
 

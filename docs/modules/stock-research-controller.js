@@ -49,6 +49,7 @@
     diffUniverse,
     diffUniverseState,
     markUniverseAnalysisFailure,
+    markUniverseAnalysisInsufficientHistory,
     markUniverseAnalysisSuccess,
     mergeCandidateProfiles,
     normalizeCandidateOrder,
@@ -125,6 +126,7 @@
       fetchWithTimeout: requireFunction(options.fetchWithTimeout, "request"),
       requestTimeoutMs: Math.max(1000, Number(options.requestTimeoutMs) || 90000),
       getExpectedLatestTradingDate: requireFunction(options.getExpectedLatestTradingDate, "latest trading date"),
+      prepareSharedData: typeof options.prepareSharedData === "function" ? options.prepareSharedData : null,
       getSignalPriceMode: requireFunction(options.getSignalPriceMode, "signal price mode"),
       getSignalSettlementDelayMs: requireFunction(options.getSignalSettlementDelayMs, "signal settlement delay"),
       workerUrl: String(options.workerUrl || ""),
@@ -183,6 +185,8 @@
   }
 
   function retryableResearchHistoryError(error) {
+    if (String(error?.code || "") === "insufficient-history"
+      || /가격 이력이 1년 미만/.test(String(error?.message || error || ""))) return false;
     const status = Math.round(Number(error?.status) || 0);
     if ([408, 425, 429].includes(status) || status >= 500) return true;
     return /\b(?:408|425|429|500|502|503|504)\b|failed to fetch|fetch failed|network|timed?\s*out|timeout/i
@@ -245,6 +249,7 @@
     const getAccessToken = options.getAccessToken || (() => "");
     const getData = options.getData || (() => ({}));
     const getExpectedLatestTradingDate = options.getExpectedLatestTradingDate || (() => "");
+    const prepareSharedData = options.prepareSharedData;
     const getSignalPriceMode = options.getSignalPriceMode || (() => "settled");
     const getSignalSettlementDelayMs = options.getSignalSettlementDelayMs || (() => null);
     const createSettlementRuntime = options.createSettlementRuntime;
@@ -268,6 +273,7 @@
       if (!response.ok || !payload) {
         const error = new Error(payload?.error || `종목탐구 HTTP ${response.status}`);
         error.status = response.status;
+        error.code = String(payload?.code || "");
         throw error;
       }
       return payload;
@@ -1232,6 +1238,10 @@
       const previous = cached;
       const lanes = [];
       try {
+        if (prepareSharedData) {
+          setProgress(3, "공통 지표 이력 확인", "");
+          await prepareSharedData().catch(() => false);
+        }
         if (!forceIndividual && !bypassSummary && (!cached || cached.partial === true)) {
           setProgress(4, "저장된 탐구 요약 확인", "");
           const summary = await loadSummary().catch(() => null);
@@ -1375,6 +1385,7 @@
           }
         }
         let failed = 0;
+        let insufficientHistory = 0;
         let signalChanges = 0;
         let latestAnalyzedDate = latestResearchDate(retainedCandidates);
         const candidates = [...retainedCandidates];
@@ -1419,8 +1430,20 @@
                 });
               }
               if (candidate) candidates.push(candidate);
-            } catch (_) {
-              failedRecords.push(item);
+            } catch (error) {
+              if (String(error?.code || "") === "insufficient-history"
+                || /가격 이력이 1년 미만/.test(String(error?.message || error || ""))) {
+                const previousCandidate = previousCandidateByTicker.get(ticker);
+                if (previousCandidate) candidates.push(previousCandidate);
+                if (nextUniverseState[ticker]) {
+                  nextUniverseState[ticker] = markUniverseAnalysisInsufficientHistory(
+                    nextUniverseState[ticker],
+                  );
+                }
+                insufficientHistory += 1;
+              } else {
+                failedRecords.push(item);
+              }
             } finally {
               processed += 1;
               const percent = 8 + Math.round((processed / Math.max(1, scanRecords.length)) * 86);
@@ -1502,6 +1525,7 @@
               canIncrement ? `재사용 ${reusedCount}` : `${records.length}종목`,
               scanRecords.length ? `재계산 ${processed}` : "",
               signalChanges ? `신호변경 ${signalChanges}` : "",
+              insufficientHistory ? `이력부족 ${insufficientHistory}` : "",
               removedCount ? `탈락 ${removedCount}` : "",
             ].filter(Boolean).join(" · ");
         completeProgress(completionText, completionDetails, failureItems);

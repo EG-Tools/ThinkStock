@@ -407,6 +407,9 @@ test("groups price, EPS, disclosures, and signals by series in one hover entry",
   assert.equal(renderer.buildLayout().xaxis.hoverformat, "%Y.%-m.%-d");
   assert.match(grouped[0].text[0], /<br>공시/);
   assert.match(grouped[0].text[0], /<br>매수 신호/);
+  assert.ok(grouped[0].text[0].indexOf("가격 32,000") < grouped[0].text[0].indexOf("매수 신호"));
+  assert.equal(grouped[0].text[0].match(/RFHIC/g)?.length, 1);
+  assert.doesNotMatch(grouped[0].text[0], /2024\.3\.29/);
   assert.match(
     grouped[0].text[epsHoverIndex],
     /<br>EPS/,

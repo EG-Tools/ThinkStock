@@ -229,6 +229,15 @@ import * as cacheLifecycle from "./cache-lifecycle-policy.mjs";
     return inspectCompanyAnalysisQuality(record).completeFinancialSummary === true;
   }
 
+  function isFinancialSummaryFresh(record, maxAgeMs, now = Date.now()) {
+    const savedAt = Number(record?.financialSummarySavedAt);
+    return hasCurrentFinancialSummary(record)
+      && Number.isFinite(savedAt)
+      && savedAt > 0
+      && now - savedAt >= 0
+      && now - savedAt <= Math.max(0, Number(maxAgeMs) || 0);
+  }
+
   function hasDartEpsHistoryCoverage(record, range, version = 1) {
     const startYear = Math.trunc(Number(range?.startYear));
     const endYear = Math.trunc(Number(range?.endYear));
@@ -250,6 +259,7 @@ import * as cacheLifecycle from "./cache-lifecycle-policy.mjs";
     hasDartEpsHistoryCoverage,
     hasCurrentFinancialSummary,
     isAnalysisFresh,
+    isFinancialSummaryFresh,
     mergeFinancialRecords,
     mergeSnapshots,
     normalizeAnalysisRecord,
@@ -267,6 +277,7 @@ export {
   hasCurrentFinancialSummary,
   hasDartEpsHistoryCoverage,
   isAnalysisFresh,
+  isFinancialSummaryFresh,
   mergeFinancialRecords,
   mergeSnapshots,
   normalizeAnalysisRecord,

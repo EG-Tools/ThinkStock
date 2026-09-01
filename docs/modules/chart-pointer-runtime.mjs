@@ -245,23 +245,35 @@ import {
       }) => {
         const perfStartedAt = startPerfSample();
         const interactionContext = {};
-        if (runHitTest && !interactionState.viewportDragging) {
-          const interactionTarget = findChartInteractionTarget(
+        if (!interactionState.viewportDragging) {
+          // Marker hover owns the exact-date popup, so it cannot share the
+          // throttled line hit test. Otherwise the last pointer frame can miss
+          // the marker and a delayed native price popup replaces its details.
+          const eventMarkerHit = findEventMarkerAtClientPoint?.(
             sourceEl,
             clientX,
             clientY,
             false,
             geometry,
-            {
-              findAiForecastReportAtClientPoint,
-              findEventMarkerAtClientPoint,
-              findNearestLineDragTarget,
-              interactionContext,
-            },
+            interactionContext,
           );
-          const eventMarkerTarget = interactionTarget?.kind === EVENT_MARKER_TARGET
-            ? interactionTarget
+          const eventMarkerTarget = eventMarkerHit
+            ? { kind: EVENT_MARKER_TARGET, ...eventMarkerHit }
             : null;
+          const interactionTarget = eventMarkerTarget || (runHitTest
+            ? findChartInteractionTarget(
+              sourceEl,
+              clientX,
+              clientY,
+              false,
+              geometry,
+              {
+                findAiForecastReportAtClientPoint,
+                findNearestLineDragTarget,
+                interactionContext,
+              },
+            )
+            : null);
           lastEventMarkerHoverHit = eventMarkerTarget
             ? {
               ...eventMarkerTarget,
@@ -290,8 +302,10 @@ import {
           } else {
             resetEventMarkerHoverHighlight(sourceEl);
           }
-          const lineTarget = interactionTarget?.kind === LINE_TARGET ? interactionTarget : null;
-          setHoveredLineTarget(lineTarget);
+          if (runHitTest || eventMarkerTarget) {
+            const lineTarget = interactionTarget?.kind === LINE_TARGET ? interactionTarget : null;
+            setHoveredLineTarget(lineTarget);
+          }
         }
         moveAt(
           sourceEl,

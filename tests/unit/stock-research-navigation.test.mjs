@@ -42,6 +42,49 @@ test("incremental research skips successful unchanged stocks and backs off failu
   }), [records[1]]);
 });
 
+test("treats a newly listed stock as temporarily ineligible instead of a failure", () => {
+  const now = Date.parse("2026-09-01T00:00:00.000Z");
+  const record = { ticker: "279570.KS", market: "KOSPI", close: 15000 };
+  const state = navigation.diffUniverseState({}, [record]).state;
+  state[record.ticker] = navigation.markUniverseAnalysisInsufficientHistory(
+    state[record.ticker],
+    now,
+  );
+
+  assert.deepEqual(navigation.universeAnalysisFailures(state), []);
+  assert.deepEqual(navigation.selectIncrementalScanRecords([record], {
+    canIncrement: true,
+    directlyChangedTickers: new Set([record.ticker]),
+    previousState: state,
+    now: now + 1000,
+  }), []);
+  assert.deepEqual(navigation.selectIncrementalScanRecords([record], {
+    canIncrement: true,
+    directlyChangedTickers: new Set([record.ticker]),
+    previousState: state,
+    now: now + navigation.INSUFFICIENT_HISTORY_RETRY_MS,
+  }), [record]);
+});
+
+test("rechecks one legacy failure once so typed ineligible histories can migrate", () => {
+  const record = { ticker: "279570.KS", market: "KOSPI", close: 15000 };
+  const state = navigation.diffUniverseState({}, [record]).state;
+  state[record.ticker] = {
+    ...state[record.ticker],
+    analysisStatus: "failed",
+    failureCount: 4,
+    retryAfter: "2099-01-01T00:00:00.000Z",
+  };
+
+  assert.deepEqual(navigation.selectIncrementalScanRecords([record], {
+    canIncrement: true,
+    previousState: state,
+    now: Date.parse("2026-09-01T00:00:00.000Z"),
+  }), [record]);
+  const migrated = navigation.markUniverseAnalysisInsufficientHistory(state[record.ticker]);
+  assert.equal(migrated.failureKind, "insufficient-history");
+});
+
 test("incremental research recalculates direct and market-wide input changes only", () => {
   const records = [
     { ticker: "005930.KS", market: "KOSPI" },

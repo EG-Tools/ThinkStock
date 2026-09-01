@@ -6,6 +6,7 @@ import {
   hasCurrentFinancialSummary,
   hasDartEpsHistoryCoverage,
   isAnalysisFresh,
+  isFinancialSummaryFresh,
   mergeFinancialRecords,
   mergeSnapshots,
   normalizeAnalysisRecord,
@@ -43,6 +44,33 @@ test("refreshes legacy partial EPS caches once and accepts current coverage", ()
   }, legacy);
   assert.equal(current.financialSummaryVersion, FINANCIAL_SUMMARY_VERSION);
   assert.equal(hasCurrentFinancialSummary(current), true);
+});
+
+test("keeps DART history writes from making stale EPS forecasts look current", () => {
+  const now = Date.UTC(2026, 8, 1, 3);
+  const staleSummaryAt = now - (3 * 24 * 60 * 60 * 1000);
+  const current = normalizeAnalysisRecord("018260.KS", {
+    savedAt: now,
+    financialSummarySavedAt: staleSummaryAt,
+    financialSummaryVersion: FINANCIAL_SUMMARY_VERSION,
+    financials: [{
+      ticker: "018260.KS",
+      period: "2026-06",
+      frequency: "quarter",
+      estimate: false,
+      eps: 2314.2,
+    }, {
+      ticker: "018260.KS",
+      period: "2028-12",
+      frequency: "annual",
+      estimate: true,
+      eps: 12440.96,
+    }],
+  }, null, now);
+
+  assert.equal(hasCurrentFinancialSummary(current), true);
+  assert.equal(isAnalysisFresh(current, 24 * 60 * 60 * 1000, now), true);
+  assert.equal(isFinancialSummaryFresh(current, 24 * 60 * 60 * 1000, now), false);
 });
 
 test("merges complementary financial fields without erasing cached values", () => {

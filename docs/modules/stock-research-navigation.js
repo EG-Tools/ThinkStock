@@ -13,6 +13,7 @@ const stockResearchContract = require("./stock-research-contract.js");
     6 * 60 * 60 * 1000,
     24 * 60 * 60 * 1000,
   ]);
+  const INSUFFICIENT_HISTORY_RETRY_MS = 7 * 24 * 60 * 60 * 1000;
 
   function tickerOf(value) {
     return String(value || "").trim().toUpperCase();
@@ -112,9 +113,12 @@ const stockResearchContract = require("./stock-research-contract.js");
         fingerprint: String(state.fingerprint || "").slice(0, 240),
         metadataFingerprint: String(state.metadataFingerprint || "").slice(0, 240),
         signalFingerprint: String(state.signalFingerprint || "").slice(0, 240),
-        analysisStatus: state.analysisStatus === "failed"
-          ? "failed"
-          : (state.analysisStatus === "success" ? "success" : ""),
+        analysisStatus: ["failed", "success", "insufficient-history"].includes(state.analysisStatus)
+          ? state.analysisStatus
+          : "",
+        failureKind: ["transient", "insufficient-history"].includes(state.failureKind)
+          ? state.failureKind
+          : "",
         failureCount: Math.max(0, Math.round(Number(state.failureCount) || 0)),
         lastFailureAt: String(state.lastFailureAt || "").slice(0, 32),
         retryAfter: String(state.retryAfter || "").slice(0, 32),
@@ -139,7 +143,8 @@ const stockResearchContract = require("./stock-research-contract.js");
   }
 
   function universeFailureRetryDue(state, now = Date.now()) {
-    if (state?.analysisStatus !== "failed") return false;
+    if (!["failed", "insufficient-history"].includes(state?.analysisStatus)) return false;
+    if (state.analysisStatus === "failed" && !state.failureKind) return true;
     const retryAt = Date.parse(String(state.retryAfter || ""));
     return !Number.isFinite(retryAt) || Number(now) >= retryAt;
   }
@@ -148,6 +153,7 @@ const stockResearchContract = require("./stock-research-contract.js");
     return {
       ...(state || {}),
       analysisStatus: "success",
+      failureKind: "",
       failureCount: 0,
       lastFailureAt: "",
       retryAfter: "",
@@ -160,9 +166,22 @@ const stockResearchContract = require("./stock-research-contract.js");
     return {
       ...(state || {}),
       analysisStatus: "failed",
+      failureKind: "transient",
       failureCount,
       lastFailureAt: new Date(timestamp).toISOString(),
       retryAfter: new Date(timestamp + failureRetryDelayMs(failureCount)).toISOString(),
+    };
+  }
+
+  function markUniverseAnalysisInsufficientHistory(state, now = Date.now()) {
+    const timestamp = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+    return {
+      ...(state || {}),
+      analysisStatus: "insufficient-history",
+      failureKind: "insufficient-history",
+      failureCount: 0,
+      lastFailureAt: "",
+      retryAfter: new Date(timestamp + INSUFFICIENT_HISTORY_RETRY_MS).toISOString(),
     };
   }
 
@@ -211,6 +230,7 @@ const stockResearchContract = require("./stock-research-contract.js");
         metadataFingerprint,
         signalFingerprint: prior[ticker]?.signalFingerprint || "",
         analysisStatus: prior[ticker]?.analysisStatus || "",
+        failureKind: prior[ticker]?.failureKind || "",
         failureCount: prior[ticker]?.failureCount || 0,
         lastFailureAt: prior[ticker]?.lastFailureAt || "",
         retryAfter: prior[ticker]?.retryAfter || "",
@@ -240,9 +260,12 @@ const stockResearchContract = require("./stock-research-contract.js");
       const ticker = tickerOf(item?.ticker);
       const market = String(item?.market || "").trim().toUpperCase()
         || (ticker.endsWith(".KQ") ? "KOSDAQ" : "KOSPI");
+      const previous = previousState[ticker];
+      if (["failed", "insufficient-history"].includes(previous?.analysisStatus)
+        && !universeFailureRetryDue(previous, now)) return false;
       return changed.has(ticker)
         || changedMarkets.has(market)
-        || universeFailureRetryDue(previousState[ticker], now);
+        || universeFailureRetryDue(previous, now);
     });
   }
 
@@ -322,11 +345,13 @@ const stockResearchContract = require("./stock-research-contract.js");
     MAX_UNIVERSE_STATE,
     DISPLAY_LIMIT,
     FAILURE_RETRY_DELAYS_MS,
+    INSUFFICIENT_HISTORY_RETRY_MS,
     candidateSignalFingerprint,
     diffUniverse,
     diffUniverseState,
     failureRetryDelayMs,
     markUniverseAnalysisFailure,
+    markUniverseAnalysisInsufficientHistory,
     markUniverseAnalysisSuccess,
     mergeCandidateProfiles,
     normalizeUniverseState,

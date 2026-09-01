@@ -593,7 +593,12 @@ export async function fetchLocalResearchHistory(
       verifiedUniversePoint ? [verifiedUniversePoint] : [],
       cutoff,
     );
-    if (rows.length < 252) throw new Error("가격 이력이 1년 미만입니다.");
+    if (rows.length < 252) {
+      const error = new Error("가격 이력이 1년 미만입니다.");
+      error.code = "insufficient-history";
+      error.status = 422;
+      throw error;
+    }
     if (fullHistory) {
       const olderDensity = inspectDailyPriceHistoryDensity(rows, { beforeDate: fiveYearsBefore(asOfDate) });
       if (!olderDensity.dense) throw new Error("과거 가격 이력이 일별 자료가 아닙니다.");
@@ -1574,7 +1579,11 @@ export async function createThinkStockServer(options = {}) {
         );
         sendJson(request, response, 200, projectLocalResearchHistory(payload, sinceDate, forceFull));
       } catch (error) {
-        sendJson(request, response, 503, { ok: false, error: error?.message || String(error) });
+        sendJson(request, response, Number(error?.status) || 503, {
+          ok: false,
+          code: String(error?.code || ""),
+          error: error?.message || String(error),
+        });
       }
       return;
     }

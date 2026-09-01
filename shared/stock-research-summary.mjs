@@ -107,15 +107,16 @@ function sanitizeUniverseState(value, limit = RESEARCH_SUMMARY_DEFAULT_UNIVERSE_
   return Object.fromEntries(Object.entries(value).flatMap(([tickerValue, state]) => {
     const ticker = String(tickerValue || "").trim().toUpperCase();
     if (!TICKER_PATTERN.test(ticker) || !state || typeof state !== "object") return [];
-    const analysisStatus = state.analysisStatus === "failed"
-      ? "failed"
-      : (state.analysisStatus === "success" ? "success" : "");
+    const analysisStatus = ["failed", "success", "insufficient-history"].includes(state.analysisStatus)
+      ? state.analysisStatus
+      : "";
     return [[ticker, {
       fingerprint: text(state.fingerprint, 240),
       metadataFingerprint: text(state.metadataFingerprint, 240),
       signalFingerprint: text(state.signalFingerprint, 240),
       ...(analysisStatus ? {
         analysisStatus,
+        failureKind: text(state.failureKind, 24),
         failureCount: Math.round(finite(state.failureCount, 0, 1000) ?? 0),
         lastFailureAt: text(state.lastFailureAt, 40),
         retryAfter: text(state.retryAfter, 40),

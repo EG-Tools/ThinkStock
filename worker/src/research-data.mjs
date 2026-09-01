@@ -301,7 +301,12 @@ export async function researchHistoryResponse(env, ticker, origin, options = {})
       incoming,
       yearsBefore(today, historyYears),
     );
-    if (rows.length < 252) throw new Error("가격 이력이 1년 미만입니다.");
+    if (rows.length < 252) {
+      const error = new Error("가격 이력이 1년 미만입니다.");
+      error.code = "insufficient-history";
+      error.status = 422;
+      throw error;
+    }
     if (forceFull) {
       const olderDensity = inspectDailyPriceHistoryDensity(rows, {
         beforeDate: yearsBefore(today, RESEARCH_HISTORY_YEARS),
@@ -345,8 +350,9 @@ export async function researchHistoryResponse(env, ticker, origin, options = {})
     }
     return jsonResponse({
       ok: false,
+      code: String(error?.code || ""),
       error: `${ticker} 가격 이력 조회 실패: ${error?.message || error}`,
-    }, 503, origin);
+    }, error?.status || 503, origin);
   }
 }
 

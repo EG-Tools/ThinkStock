@@ -1304,6 +1304,13 @@ test("timing hover wraps reasons and its shared hit area opens the popover", asy
   await expect(page.locator("#chart")).toHaveClass(/is-event-marker-hovering/);
   await expect(page.locator("#chart .hoverlayer")).toContainText("근거:");
   await expect(page.locator("#chart .hoverlayer")).not.toContainText("<br>");
+  for (const offset of [10, 13, 11, 14, 12]) {
+    await page.mouse.move(target.x + offset, target.y + ((offset % 2) ? 1 : -1));
+    await page.waitForTimeout(45);
+  }
+  await page.waitForTimeout(220);
+  await expect(page.locator("#chart")).toHaveClass(/is-event-marker-hovering/);
+  await expect(page.locator("#chart .hoverlayer")).toContainText("근거:");
   await page.mouse.click(target.x + 12, target.y);
   await expect(page.locator("#chart .disclosure-popover")).toBeVisible();
   await expect(page.locator("#chart .disclosure-popover")).toContainText("근거:");
