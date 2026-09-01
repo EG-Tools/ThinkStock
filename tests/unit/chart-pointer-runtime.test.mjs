@@ -120,3 +120,34 @@ test("each chart uses one pointer-move pipeline for cursor and idle hover work",
   assert.equal(source.includes("onPointerHoverPreview"), false);
   assert.match(source, /hoverIdleController\.schedule\(\{[\s\S]*schedulePointerMove/);
 });
+
+test("viewport movement never replays a pointer sampled before the final render", async () => {
+  const source = await readFile(
+    new URL("../../docs/modules/chart-pointer-runtime.mjs", import.meta.url),
+    "utf8",
+  );
+
+  assert.equal(source.includes("wheelPointerSample"), false);
+  assert.equal(source.includes("settleViewportAndRestorePointer"), false);
+  assert.equal(source.includes("lastEpsMarkerHoverHit"), false);
+  assert.match(source, /onWaitStart:\s*\(\) => clearRenderedPointerHover\(mainEl\)/);
+  assert.match(source, /classList\?\.remove\("is-event-marker-hovering", "is-ai-report-hovering"\)/);
+  assert.match(source, /invalidateViewportPointerState\(sourceEl\);\s*clearPointerOwnedHover\(sourceEl\);\s*hideSyncedCursor\(\);/);
+  const wheelSettleStart = source.indexOf(
+    "wheelRangeTimer = setTimeout(() => {",
+    source.indexOf("const onWheelRange ="),
+  );
+  const wheelSettleEnd = source.indexOf("}, 160);", wheelSettleStart);
+  const wheelSettleBlock = source.slice(wheelSettleStart, wheelSettleEnd);
+  assert.ok(wheelSettleBlock.indexOf("interactionState.wheelZooming = false") >= 0);
+  assert.ok(
+    wheelSettleBlock.indexOf("interactionState.wheelZooming = false")
+      < wheelSettleBlock.indexOf("requestViewportRender?.()"),
+  );
+  const movingBlock = source.slice(
+    source.indexOf("const processPointerMove ="),
+    source.indexOf("pointerMoveController = createPointerFrameController"),
+  );
+  assert.equal(movingBlock.includes("scheduleEventMarkerHoverHighlight"), false);
+  assert.equal(movingBlock.includes("syncHoverToChart"), false);
+});

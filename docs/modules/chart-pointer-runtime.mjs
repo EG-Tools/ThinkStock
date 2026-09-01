@@ -109,6 +109,7 @@ import {
       getChartRangeSyncController,
       getCurrentXRangeMs,
       hideDisclosurePopover,
+      invalidateChartInteractionCaches,
       interactionState,
       isTouchDevice,
       latestPointerSample,
@@ -181,11 +182,41 @@ import {
       const hoverIdleController = createHoverIdleController(window, {
         delayMs: HOVER_IDLE_DELAY_MS,
         getElements: () => [mainEl, macdEl, adrEl],
+        onWaitStart: () => clearRenderedPointerHover(mainEl),
         onIdle: ({ sourceEl, clientX, clientY }) => {
           if (!chartSession.hoverShowPopup || interactionState.handleDragging
             || interactionState.viewportDragging || interactionState.wheelZooming) return;
           if (sourceEl === mainEl) {
             const geometry = getChartInteractionGeometry(sourceEl);
+            const eventMarkerTarget = findEventMarkerAtClientPoint?.(
+              sourceEl,
+              clientX,
+              clientY,
+              false,
+              geometry,
+              {},
+            );
+            if (eventMarkerTarget) {
+              const trace = sourceEl.data?.[eventMarkerTarget.traceIndex];
+              lastEventMarkerHoverHit = {
+                kind: EVENT_MARKER_TARGET,
+                ...eventMarkerTarget,
+                sourceEl,
+                trace,
+                clientX,
+                clientY,
+              };
+              sourceEl.classList.add("is-event-marker-hovering");
+              scheduleEventMarkerHoverHighlight({
+                points: [{
+                  curveNumber: eventMarkerTarget.traceIndex,
+                  pointIndex: eventMarkerTarget.pointIndex,
+                  pointNumber: eventMarkerTarget.pointIndex,
+                  data: trace,
+                }],
+              });
+              return;
+            }
             const markerTarget = findNearestLineDragTarget(
               sourceEl,
               clientX,
@@ -207,11 +238,26 @@ import {
         },
       });
       activeHoverIdleController = hoverIdleController;
+
+      const clearRenderedPointerHover = (sourceEl = mainEl) => {
+        lastEventMarkerHoverHit = null;
+        resetEventMarkerHoverHighlight(mainEl);
+        new Set([mainEl, sourceEl].filter(Boolean)).forEach((element) => {
+          element.classList?.remove("is-event-marker-hovering", "is-ai-report-hovering");
+          clearHoverOnChart(element);
+        });
+      };
+      const clearPointerOwnedHover = (sourceEl = mainEl) => {
+        hoverIdleController.cancel();
+        clearRenderedPointerHover(sourceEl);
+      };
     
       let touchStartPoint = null;
       let dragState = null;
       let pinchState = null;
       const activeTouchPointers = new Map();
+      let wheelRangeTimer = 0;
+      let wheelSettleRevision = 0;
 
       const scheduleViewportRange = (range, meta) => {
         if (!range) return false;
@@ -286,22 +332,7 @@ import {
           sourceEl.classList.toggle("is-event-marker-hovering", Boolean(eventMarkerTarget));
           const aiReportTarget = interactionTarget?.kind === AI_REPORT_TARGET ? interactionTarget : null;
           sourceEl.classList.toggle("is-ai-report-hovering", Boolean(aiReportTarget));
-          if (eventMarkerTarget) {
-            // The exact event-date popup owns hover while the shared marker hit
-            // area is active; a delayed native hover would replace its details.
-            hoverIdleController.cancel();
-            const trace = sourceEl.data?.[eventMarkerTarget.traceIndex];
-            scheduleEventMarkerHoverHighlight({
-              points: [{
-                curveNumber: eventMarkerTarget.traceIndex,
-                pointIndex: eventMarkerTarget.pointIndex,
-                pointNumber: eventMarkerTarget.pointIndex,
-                data: trace,
-              }],
-            });
-          } else {
-            resetEventMarkerHoverHighlight(sourceEl);
-          }
+          resetEventMarkerHoverHighlight(sourceEl);
           if (runHitTest || eventMarkerTarget) {
             const lineTarget = interactionTarget?.kind === LINE_TARGET ? interactionTarget : null;
             setHoveredLineTarget(lineTarget);
@@ -363,6 +394,11 @@ import {
         pointerMoveController?.invalidate();
         getChartCursorSyncController().invalidateGeometry?.();
       };
+      const invalidateViewportPointerState = (sourceEl = mainEl) => {
+        pointerMoveController?.invalidate(sourceEl);
+        getChartCursorSyncController().invalidateGeometry?.();
+        invalidateChartInteractionCaches?.(mainEl);
+      };
       listen(window, "resize", invalidatePointerGeometry, { passive: true });
       listen(window, "scroll", invalidatePointerGeometry, { passive: true });
     
@@ -411,7 +447,7 @@ import {
           moved: false,
         };
         interactionState.viewportDragging = true;
-        hoverIdleController.cancel();
+        clearPointerOwnedHover(sourceEl);
         touchSelectionPinned = false;
         sourceEl.classList.add("is-viewport-panning");
         pointerMoveController?.cancel();
@@ -453,30 +489,36 @@ import {
         const st = clearViewportDrag();
         if (!st) return;
         const sample = latestPointerSample(upEvent);
-        const settleViewportAndRestorePointer = () => {
+        const settleViewport = () => {
           return Promise.resolve(requestViewportRender?.())
             .catch(() => undefined)
             .finally(() => {
               if (interactionState.viewportDragging || !st.sourceEl?.isConnected) return;
-              previewSyncedCursor(st.sourceEl, sample.clientX, sample.clientY);
-              schedulePointerMove(st.sourceEl, sample.clientX, sample.clientY, false);
+              invalidateViewportPointerState(st.sourceEl);
+              clearPointerOwnedHover(st.sourceEl);
+              if (!cancelled && upEvent.pointerType === "mouse") {
+                previewSyncedCursor(st.sourceEl, sample.clientX, sample.clientY);
+              } else {
+                hideSyncedCursor();
+              }
             });
         };
-        previewSyncedCursor(st.sourceEl, sample.clientX, sample.clientY);
-        schedulePointerMove(st.sourceEl, sample.clientX, sample.clientY, false);
-        if (!cancelled && upEvent.pointerType === "mouse" && chartSession.hoverShowPopup) {
-          hoverIdleController.schedule({
-            sourceEl: st.sourceEl,
-            clientX: sample.clientX,
-            clientY: sample.clientY,
-          });
-        }
         if (cancelled || !st.moved) {
           const rangeController = getChartRangeSyncController();
           rangeController.cancel?.();
           if (st.moved) {
             Promise.resolve(rangeController.flush?.())
-              .finally(settleViewportAndRestorePointer);
+              .finally(settleViewport);
+          } else if (!cancelled) {
+            previewSyncedCursor(st.sourceEl, sample.clientX, sample.clientY);
+            schedulePointerMove(st.sourceEl, sample.clientX, sample.clientY, false);
+            if (upEvent.pointerType === "mouse" && chartSession.hoverShowPopup) {
+              hoverIdleController.schedule({
+                sourceEl: st.sourceEl,
+                clientX: sample.clientX,
+                clientY: sample.clientY,
+              });
+            }
           }
           return;
         }
@@ -488,7 +530,7 @@ import {
         });
         interactionState.suppressPlotlyClickUntil = Date.now() + 700;
         Promise.resolve(getChartRangeSyncController().flush())
-          .finally(settleViewportAndRestorePointer);
+          .finally(settleViewport);
       };
     
       const startPinchZoom = (sourceEl) => {
@@ -525,7 +567,7 @@ import {
           anchorRatio,
         };
         interactionState.viewportDragging = true;
-        hoverIdleController.cancel();
+        clearPointerOwnedHover(sourceEl);
         touchSelectionPinned = false;
         touchStartPoint = null;
         lastTouchTapAt = 0;
@@ -575,7 +617,8 @@ import {
         pointerMoveController?.cancel();
         scheduleSyncedCursor(null);
         Promise.resolve(getChartRangeSyncController().flush())
-          .then(() => requestViewportRender?.());
+          .then(() => requestViewportRender?.())
+          .finally(() => invalidateViewportPointerState(mainEl));
       };
     
       const performFullVisibleLifetimeToggle = async () => {
@@ -636,7 +679,6 @@ import {
         event.stopImmediatePropagation();
       };
     
-      let wheelRangeTimer = 0;
       const onWheelRange = (event) => {
         if (event.ctrlKey || !Number.isFinite(event.deltaY) || event.deltaY === 0) return;
         event.preventDefault();
@@ -650,10 +692,15 @@ import {
             getChartRangeSyncController().cancel?.();
           }
         }
-        hoverIdleController.cancel();
-        if (!interactionState.wheelZooming) captureViewportNormalization?.();
+        if (!interactionState.wheelZooming) {
+          captureViewportNormalization?.();
+          clearPointerOwnedHover(event.currentTarget);
+          hideSyncedCursor();
+        }
         interactionState.wheelZooming = true;
         const sourceEl = event.currentTarget;
+        wheelSettleRevision += 1;
+        const settleRevision = wheelSettleRevision;
         const geometry = getChartInteractionGeometry(sourceEl);
         const axisLeft = Number(geometry?.rect?.left) + Number(geometry?.xa?._offset);
         const axisLength = Number(geometry?.xa?._length);
@@ -670,9 +717,23 @@ import {
         if (wheelRangeTimer) clearTimeout(wheelRangeTimer);
         wheelRangeTimer = setTimeout(() => {
           wheelRangeTimer = 0;
-          interactionState.wheelZooming = false;
           Promise.resolve(getChartRangeSyncController().flush())
-            .then(() => requestViewportRender?.());
+            .then(() => {
+              if (settleRevision !== wheelSettleRevision) return undefined;
+              // Settled renders are intentionally deferred during live input.
+              // Release the wheel interaction before requesting that render,
+              // otherwise each side waits for the other indefinitely.
+              interactionState.wheelZooming = false;
+              return requestViewportRender?.();
+            })
+            .finally(() => {
+              if (settleRevision !== wheelSettleRevision) return;
+              interactionState.wheelZooming = false;
+              if (!sourceEl?.isConnected) return;
+              invalidateViewportPointerState(sourceEl);
+              clearPointerOwnedHover(sourceEl);
+              hideSyncedCursor();
+            });
         }, 160);
       };
     
@@ -813,6 +874,11 @@ import {
           return;
         }
         const sample = latestPointerSample(event);
+        if (interactionState.wheelZooming) {
+          hoverIdleController.cancel();
+          pointerMoveController?.cancel();
+          return;
+        }
         if (event.pointerType === "mouse") {
           if (chartSession.hoverShowPopup && !interactionState.wheelZooming) {
             hoverIdleController.schedule({

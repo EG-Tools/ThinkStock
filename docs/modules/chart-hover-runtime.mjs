@@ -24,33 +24,78 @@
     return Number(line?.getBoundingClientRect?.().left);
   }
 
-  function normalizePointHoverFrame(hoverLayer) {
+  function roundedRectPath(x, y, width, height) {
+    const radius = Math.min(4, width / 2, height / 2);
+    const right = x + width;
+    const bottom = y + height;
+    return [
+      `M ${x + radius} ${y}`,
+      `H ${right - radius}`,
+      `Q ${right} ${y} ${right} ${y + radius}`,
+      `V ${bottom - radius}`,
+      `Q ${right} ${bottom} ${right - radius} ${bottom}`,
+      `H ${x + radius}`,
+      `Q ${x} ${bottom} ${x} ${bottom - radius}`,
+      `V ${y + radius}`,
+      `Q ${x} ${y} ${x + radius} ${y}`,
+      "Z",
+    ].join(" ");
+  }
+
+  function normalizePointHoverFrame(targetEl, hoverLayer) {
     const paths = [...(hoverLayer?.querySelectorAll?.("g.hovertext > path") || [])];
     paths.forEach((path) => {
       if (typeof path.getBBox !== "function") return;
       try {
-        const box = path.getBBox();
-        const x = Number(box?.x);
-        const y = Number(box?.y);
-        const width = Number(box?.width);
-        const height = Number(box?.height);
+        const group = path.parentElement;
+        const currentTransform = group?.getAttribute?.("transform") || "";
+        const previousNormalizedTransform = group?.getAttribute?.(
+          "data-thinkstock-normalized-transform",
+        );
+        if (group && (!group.hasAttribute?.("data-thinkstock-base-transform")
+          || (previousNormalizedTransform && currentTransform !== previousNormalizedTransform))) {
+          group.setAttribute("data-thinkstock-base-transform", currentTransform);
+        }
+        const baseTransform = group?.getAttribute?.("data-thinkstock-base-transform");
+        if (group && baseTransform != null) group.setAttribute("transform", baseTransform);
+
+        const text = group?.querySelector?.("text.nums");
+        const measured = typeof text?.getBBox === "function" ? text.getBBox() : path.getBBox();
+        const paddingX = text ? 8 : 0;
+        const paddingY = text ? 3 : 0;
+        const x = Number(measured?.x) - paddingX;
+        const y = Number(measured?.y) - paddingY;
+        const width = Number(measured?.width) + (paddingX * 2);
+        const height = Number(measured?.height) + (paddingY * 2);
         if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return;
-        const radius = Math.min(4, width / 2, height / 2);
-        const right = x + width;
-        const bottom = y + height;
-        path.setAttribute("d", [
-          `M ${x + radius} ${y}`,
-          `H ${right - radius}`,
-          `Q ${right} ${y} ${right} ${y + radius}`,
-          `V ${bottom - radius}`,
-          `Q ${right} ${bottom} ${right - radius} ${bottom}`,
-          `H ${x + radius}`,
-          `Q ${x} ${bottom} ${x} ${bottom - radius}`,
-          `V ${y + radius}`,
-          `Q ${x} ${y} ${x + radius} ${y}`,
-          "Z",
-        ].join(" "));
+        path.setAttribute("d", roundedRectPath(x, y, width, height));
         path.setAttribute("data-thinkstock-flat-frame", "1");
+
+        const frameRect = path.getBoundingClientRect?.();
+        const chartRect = targetEl?.getBoundingClientRect?.();
+        const xAxis = targetEl?._fullLayout?.xaxis;
+        const yAxis = targetEl?._fullLayout?.yaxis;
+        if (!group || !frameRect || !chartRect) return;
+        const leftLimit = chartRect.left + Number(xAxis?._offset || 0) + 4;
+        const rightLimit = leftLimit + Number(xAxis?._length || chartRect.width) - 8;
+        const topLimit = chartRect.top + Number(yAxis?._offset || 0) + 4;
+        const bottomLimit = topLimit + Number(yAxis?._length || chartRect.height) - 8;
+        let shiftX = 0;
+        let shiftY = 0;
+        if (frameRect.left < leftLimit) shiftX = leftLimit - frameRect.left;
+        else if (frameRect.right > rightLimit) shiftX = rightLimit - frameRect.right;
+        if (frameRect.top < topLimit) shiftY = topLimit - frameRect.top;
+        else if (frameRect.bottom > bottomLimit) shiftY = bottomLimit - frameRect.bottom;
+        const translate = String(baseTransform || "").match(
+          /^translate\(\s*(-?[\d.]+)(?:[ ,]+)(-?[\d.]+)\s*\)$/,
+        );
+        if ((shiftX || shiftY) && translate) {
+          const nextTransform = `translate(${Number(translate[1]) + shiftX},${Number(translate[2]) + shiftY})`;
+          group.setAttribute("transform", nextTransform);
+          group.setAttribute("data-thinkstock-normalized-transform", nextTransform);
+        } else {
+          group.setAttribute("data-thinkstock-normalized-transform", baseTransform || currentTransform);
+        }
       } catch (_) {
         // Plotly may replace the transient point popup during the same frame.
       }
@@ -76,6 +121,7 @@
     let hoverSyncFrame = 0;
     let pendingHoverSync = null;
     let lastHoverSyncKey = "";
+    const hoverPopupStamps = new WeakMap();
 
     function setSyncing(value) {
       hoverSyncing = Boolean(value);
@@ -85,7 +131,6 @@
     function normalizeHoverPopupIndent(targetEl) {
       const hoverLayer = targetEl?.querySelector?.(".hoverlayer");
       if (!hoverLayer?.querySelectorAll) return false;
-      normalizePointHoverFrame(hoverLayer);
       const pointLines = [...hoverLayer.querySelectorAll("text.nums > tspan.line")];
       const pointDate = pointLines.find((line) => (
         HOVER_DATE_TEXT_PATTERN.test(String(line.textContent || "").trim())
@@ -110,8 +155,11 @@
       if (!contentLines.length) return false;
 
       contentLines.forEach((line) => {
-        if (!line.hasAttribute?.("data-thinkstock-base-x")) {
-          line.setAttribute("data-thinkstock-base-x", line.getAttribute?.("x") || "0");
+        const currentX = line.getAttribute?.("x") || "0";
+        const normalizedX = line.getAttribute?.("data-thinkstock-normalized-x");
+        if (!line.hasAttribute?.("data-thinkstock-base-x")
+          || (normalizedX != null && currentX !== normalizedX)) {
+          line.setAttribute("data-thinkstock-base-x", currentX);
         }
         line.setAttribute("x", line.getAttribute("data-thinkstock-base-x") || "0");
       });
@@ -122,8 +170,11 @@
         const baseX = Number.parseFloat(line.getAttribute("data-thinkstock-base-x"));
         const lineLeft = hoverTextStartX(line);
         if (!Number.isFinite(baseX) || !Number.isFinite(lineLeft)) return;
-        line.setAttribute("x", String(baseX + contentLeft - lineLeft));
+        const normalizedX = String(baseX + contentLeft - lineLeft);
+        line.setAttribute("x", normalizedX);
+        line.setAttribute("data-thinkstock-normalized-x", normalizedX);
       });
+      normalizePointHoverFrame(targetEl, hoverLayer);
       return true;
     }
 
@@ -154,11 +205,73 @@
       }
     }
 
-    function syncHoverToChartNow(targetEl, xValue) {
+    function groupedHoverRevision(targetEl) {
+      return (targetEl?.data || []).flatMap((trace) => {
+        if (!trace?.meta?.isGroupedHoverTrace || trace.visible === "legendonly") return [];
+        const x = Array.isArray(trace.x) ? trace.x : [];
+        return [[
+          trace.meta.renderFingerprint || "",
+          trace.meta.hoverGroupTicker || "",
+          x.length,
+          x[0] || "",
+          x[x.length - 1] || "",
+        ].join(":")];
+      }).join("|");
+    }
+
+    function groupedDetailPointAtX(targetEl, xValue) {
+      const targetDate = String(xValue || "").slice(0, 10);
+      if (!targetDate) return null;
+      const curveNumber = (targetEl?.data || []).findIndex((trace) => (
+        trace?.meta?.isGroupedHoverOwnerTrace
+      ));
+      if (curveNumber < 0) return null;
+      const trace = targetEl.data[curveNumber];
+      const pointNumber = (trace.x || []).findIndex((date) => (
+        String(date || "").slice(0, 10) === targetDate
+      ));
+      if (pointNumber < 0 || !trace.meta?.hoverGroupHasDetails?.[pointNumber]) return null;
+      return { curveNumber, pointIndex: pointNumber, pointNumber };
+    }
+
+    function expectedHoverPopup(targetEl, expectsDetailPoint) {
+      return targetEl?.querySelector?.(
+        expectsDetailPoint ? ".hoverlayer > g.hovertext" : ".hoverlayer > g.legend",
+      ) || null;
+    }
+
+    function hoverPopupContent(popup) {
+      const pointText = popup?.querySelector?.("text.nums");
+      if (pointText) {
+        return String(pointText.getAttribute?.("data-unformatted") || pointText.textContent || "");
+      }
+      return [...(popup?.querySelectorAll?.("text.legendtitletext, text.legendtext") || [])]
+        .map((node) => String(node.textContent || ""))
+        .join("\n");
+    }
+
+    function stampHoverPopup(targetEl, key, expectsDetailPoint) {
+      const popup = expectedHoverPopup(targetEl, expectsDetailPoint);
+      if (!popup || (typeof popup !== "object" && typeof popup !== "function")) return false;
+      hoverPopupStamps.set(popup, { key, content: hoverPopupContent(popup) });
+      return true;
+    }
+
+    function hoverPopupMatches(targetEl, key, expectsDetailPoint) {
+      const popup = expectedHoverPopup(targetEl, expectsDetailPoint);
+      const stamp = popup && hoverPopupStamps.get(popup);
+      return Boolean(stamp)
+        && stamp.key === key
+        && stamp.content === hoverPopupContent(popup);
+    }
+
+    function syncHoverToChartNow(targetEl, xValue, syncKey) {
       const plotly = scope.Plotly;
       if (!targetEl || !plotly?.Fx?.hover || xValue == null) return;
       setSyncing(true);
       const nearestPoint = findNearestHoverPoint(targetEl, xValue);
+      const groupedDetailPoint = groupedDetailPointAtX(targetEl, xValue);
+      const expectsDetailPoint = Boolean(groupedDetailPoint);
       let usedPointFallback = false;
       try {
         // A native hit on a large EPS point can leave Plotly in single-point hover
@@ -166,10 +279,15 @@
         if (targetEl.querySelector?.(".hoverlayer > g.hovertext")) {
           plotly.Fx.unhover?.(targetEl);
         }
-        // xval lets Plotly rebuild the complete unified popup. A single point is
-        // only a compatibility fallback for chart types that reject xval.
-        plotly.Fx.hover(targetEl, [{ xval: xValue }], ["xy"]);
+        // Exact marker dates already exist in the grouped owner. Addressing that
+        // point directly avoids Plotly snapping EPS or event details to a nearby
+        // daily price while preserving unified-x hover for ordinary prices.
+        usedPointFallback = groupedDetailPoint
+          ? showPointFallback(plotly, targetEl, groupedDetailPoint)
+          : false;
+        if (!usedPointFallback) plotly.Fx.hover(targetEl, [{ xval: xValue }], ["xy"]);
         normalizeHoverPopupIndent(targetEl);
+        stampHoverPopup(targetEl, syncKey, expectsDetailPoint);
       } catch (_) {
         if (!nearestPoint) {
           requestFrame(() => setSyncing(false));
@@ -181,17 +299,25 @@
         const unifiedPopupVisible = Boolean(
           targetEl.querySelector?.(".hoverlayer > g.legend"),
         );
-        if (!unifiedPopupVisible && !usedPointFallback && nearestPoint) {
+        const pointPopupVisible = Boolean(
+          targetEl.querySelector?.(".hoverlayer > g.hovertext"),
+        );
+        if (!unifiedPopupVisible && !pointPopupVisible && !usedPointFallback && nearestPoint) {
           showPointFallback(plotly, targetEl, nearestPoint);
         }
         normalizeHoverPopupIndent(targetEl);
+        stampHoverPopup(targetEl, syncKey, expectsDetailPoint);
         setSyncing(false);
       });
     }
 
     function syncHoverToChart(targetEl, xValue) {
       if (!targetEl || xValue == null) return;
-      const key = `${targetEl.id || "chart"}|${String(xValue)}`;
+      const key = [
+        targetEl.id || "chart",
+        String(xValue),
+        groupedHoverRevision(targetEl),
+      ].join("|");
       pendingHoverSync = { targetEl, xValue, key };
       if (hoverSyncFrame) return;
       hoverSyncFrame = requestFrame(() => {
@@ -199,15 +325,13 @@
         pendingHoverSync = null;
         hoverSyncFrame = 0;
         if (!pending) return;
-        // A point fallback is only a temporary compatibility path. Treating it
-        // as a completed popup leaves the first EPS hover in the compact format
-        // until the pointer visits another date. Only a unified popup is stable.
-        const unifiedPopupVisible = Boolean(
-          pending.targetEl.querySelector?.(".hoverlayer > g.legend"),
+        const expectsDetailPoint = Boolean(
+          groupedDetailPointAtX(pending.targetEl, pending.xValue),
         );
-        if (pending.key === lastHoverSyncKey && unifiedPopupVisible) return;
+        if (pending.key === lastHoverSyncKey
+          && hoverPopupMatches(pending.targetEl, pending.key, expectsDetailPoint)) return;
         lastHoverSyncKey = pending.key;
-        syncHoverToChartNow(pending.targetEl, pending.xValue);
+        syncHoverToChartNow(pending.targetEl, pending.xValue, pending.key);
       });
     }
 

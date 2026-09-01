@@ -558,11 +558,9 @@
       : new Set(options.hiddenSeries || []);
     const ownerIsActive = (trace) => {
       const descriptor = renderer.chartOverlayDescriptor(trace);
-      const owner = descriptor.kind === "grouped-hover"
-        ? String(trace?.meta?.hoverGroupTicker || "")
-        : (descriptor.kind === "eps"
-          ? String(descriptor.seriesKey || "").replace(/^eps:/, "")
-          : String(descriptor.seriesKey || ""));
+      const owner = descriptor.kind === "eps"
+        ? String(descriptor.seriesKey || "").replace(/^eps:/, "")
+        : String(descriptor.seriesKey || "");
       return !owner || (!hiddenSeries.has(owner) && (!activeSeries.size || activeSeries.has(owner)));
     };
     const reuseFutureOverlays = deferOverlays || canReuseFutureOverlayTraces(invalidation);
@@ -586,23 +584,6 @@
     const eventTraces = reuseEventMarkers
       ? traces.filter((trace) => renderer.isEventMarkerTrace(trace))
       : null;
-    const desiredHoverOrder = (Array.isArray(options.hoverSeriesOrder)
-      ? options.hoverSeriesOrder
-      : options.activeSeries || [])
-      .map(String)
-      .filter((series) => activeSeries.has(series) && !hiddenSeries.has(series));
-    const reusableGroupedHoverTraces = traces.filter((trace) => (
-          renderer.chartOverlayDescriptor(trace).kind === "grouped-hover"
-          && ownerIsActive(trace)
-        ));
-    const reusableHoverOrder = reusableGroupedHoverTraces.map((trace) => (
-      String(trace?.meta?.hoverGroupTicker || "")
-    ));
-    const groupedHoverOrderMatches = desiredHoverOrder.length === reusableHoverOrder.length
-      && desiredHoverOrder.every((series, index) => series === reusableHoverOrder[index]);
-    const groupedHoverTraces = deferOverlays && groupedHoverOrderMatches
-      ? reusableGroupedHoverTraces
-      : null;
     const baseValuesBySeries = options.baseValuesBySeries || {};
     const epsTraceModel = reuseFutureOverlays && options.showEps
       ? {
@@ -621,7 +602,6 @@
       epsTraceModel,
       epsTraces,
       eventTraces,
-      groupedHoverTraces,
       reuseEventMarkers,
       reuseFutureOverlays,
     });
@@ -684,7 +664,6 @@
         ? reusable.aiForecastTraces
         : null,
       prebuiltEventTraces: reusable.eventTraces,
-      prebuiltGroupedHoverTraces: reusable.groupedHoverTraces,
       deferOverlays: compositionOptions.deferOverlays,
       buildEpsTraceModel: compositionOptions.buildEpsTraceModel,
       buildAiForecastTraces: compositionOptions.buildAiForecastTraces,

@@ -30,6 +30,8 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
   const GROUPED_HOVER_CACHE_LIMIT = 4;
   const groupedHoverTraceCache = new Map();
   const groupedHoverCacheCounters = { hits: 0, misses: 0, evictions: 0 };
+  const GROUPED_HOVER_SEPARATOR_HTML = '<br><span style="color:rgba(180,180,180,0.42)">────────────</span>';
+  const GROUPED_HOVER_SEPARATOR_END_PATTERN = /<br><span style="color:rgba\(180,180,180,0\.42\)">────────────<\/span>$/;
   const OVERLAY_HOVER_PRIORITIES = Object.freeze({
     eps: 10,
     disclosure: 20,
@@ -406,6 +408,7 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
       ...trace,
       meta: {
         ...trace.meta,
+        hoverGroupHasDetails: trace.meta?.hoverGroupHasDetails,
         hoverGroupPointKinds: trace.meta?.hoverGroupPointKinds,
       },
       marker: {
@@ -413,6 +416,16 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
         line: trace.marker?.line ? { ...trace.marker.line } : trace.marker?.line,
       },
     };
+  }
+
+  function suppressEventTraceHover(trace) {
+    if (!trace) return;
+    const hoverDetailTemplates = trace.meta?.hoverDetailTemplates ?? trace.hovertemplate;
+    if (hoverDetailTemplates) {
+      trace.meta = { ...trace.meta, hoverDetailTemplates };
+    }
+    trace.hoverinfo = "skip";
+    trace.hovertemplate = undefined;
   }
 
   function readGroupedHoverCache(key, traces) {
@@ -426,8 +439,7 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
     cached.suppressedEventIdentities.forEach((identity) => {
       const trace = traces.find((candidate) => traceIdentity(candidate) === identity);
       if (!trace) return;
-      trace.hoverinfo = "skip";
-      trace.hovertemplate = undefined;
+      suppressEventTraceHover(trace);
     });
     groupedHoverCacheCounters.hits += 1;
     return cached.traces.map(cloneGroupedHoverTrace);
@@ -567,8 +579,7 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
         }
       });
       if (coveredPoints === (trace.x || []).length && coveredPoints > 0) {
-        trace.hoverinfo = "skip";
-        trace.hovertemplate = undefined;
+        suppressEventTraceHover(trace);
         suppressedEventIdentities.add(traceIdentity(trace));
       }
     });
@@ -587,7 +598,7 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
         .sort((left, right) => left.date.localeCompare(right.date));
       if (!rows.length) return [];
       const separator = seriesIndex < activeSeries.length - 1
-        ? '<br><span style="color:rgba(180,180,180,0.42)">────────────</span>'
+        ? GROUPED_HOVER_SEPARATOR_HTML
         : "";
       const hoverText = rows.map((row) => {
         const detailLines = [...row.details]
@@ -623,6 +634,7 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
           overlayKind: "grouped-hover",
           isGroupedHoverTrace: true,
           hoverGroupTicker: series,
+          hoverGroupHasDetails: rows.map((row) => row.details.length > 0),
           hoverGroupPointKinds: rows.map((row) => row.anchorKind),
           pointHoverTemplate: groupedHoverTemplate(true),
           renderFingerprint: `hover:${series}:${priceTraces.get(series)?.meta?.renderFingerprint || ""}:${overlayRevision}`,
@@ -635,6 +647,55 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
         },
       }];
     });
+    if (groupedTraces.length) {
+      const rowsByDate = new Map();
+      groupedTraces.forEach((trace) => {
+        (trace.x || []).forEach((date, index) => {
+          const key = String(date || "");
+          if (!key) return;
+          const entry = rowsByDate.get(key) || {
+            anchorKind: trace.meta?.hoverGroupPointKinds?.[index] || "price",
+            contents: [],
+            hasDetails: Boolean(trace.meta?.hoverGroupHasDetails?.[index]),
+            hoverSize: Number(trace.marker?.size?.[index]) || 1,
+            y: Number(trace.y?.[index]),
+          };
+          const content = String(trace.text?.[index] || "")
+            .replace(GROUPED_HOVER_SEPARATOR_END_PATTERN, "");
+          if (content) entry.contents.push(content);
+          entry.hasDetails = entry.hasDetails
+            || Boolean(trace.meta?.hoverGroupHasDetails?.[index]);
+          entry.hoverSize = Math.max(entry.hoverSize, Number(trace.marker?.size?.[index]) || 1);
+          if (!Number.isFinite(entry.y) && Number.isFinite(Number(trace.y?.[index]))) {
+            entry.y = Number(trace.y[index]);
+            entry.anchorKind = trace.meta?.hoverGroupPointKinds?.[index] || "price";
+          }
+          rowsByDate.set(key, entry);
+        });
+      });
+      const aggregateRows = [...rowsByDate.entries()]
+        .filter(([, entry]) => Number.isFinite(entry.y) && entry.contents.length)
+        .sort(([left], [right]) => left.localeCompare(right));
+      const owner = groupedTraces[0];
+      owner.x = aggregateRows.map(([date]) => date);
+      owner.y = aggregateRows.map(([, entry]) => entry.y);
+      owner.text = aggregateRows.map(([, entry]) => (
+        entry.contents.join(`${GROUPED_HOVER_SEPARATOR_HTML}<br>`)
+      ));
+      owner.customdata = owner.text;
+      owner.marker.size = aggregateRows.map(([, entry]) => entry.hoverSize);
+      owner.meta = {
+        ...owner.meta,
+        hoverGroupHasDetails: aggregateRows.map(([, entry]) => entry.hasDetails),
+        hoverGroupPointKinds: aggregateRows.map(([, entry]) => entry.anchorKind),
+        isGroupedHoverOwnerTrace: true,
+        renderFingerprint: `aggregate:${groupedTraces.map((trace) => trace.meta?.renderFingerprint || "").join("|")}`,
+      };
+      groupedTraces.slice(1).forEach((trace) => {
+        trace.hoverinfo = "skip";
+        trace.hovertemplate = undefined;
+      });
+    }
     rememberGroupedHoverCache(cacheKey, groupedTraces, suppressedEventIdentities);
     return groupedTraces;
   }
@@ -1427,19 +1488,17 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
       ...aiForecastTraces,
       ...(Array.isArray(eventTraces) ? eventTraces : []),
     ];
-    const groupedHoverTraces = deferOverlays && Array.isArray(options.prebuiltGroupedHoverTraces)
-      ? options.prebuiltGroupedHoverTraces
-      : buildGroupedHoverTraces({
-          enabled: options.hoverShowPopup,
-          traces,
-          seriesOrder: Array.isArray(options.hoverSeriesOrder)
-            ? options.hoverSeriesOrder
-            : selected,
-          hoverLabelName: options.hoverLabelName,
-          labelName: options.labelName,
-          stackedPriceSeries: options.stackedPriceSeries,
-          revision: String(options.eventRevisionKey || ""),
-        });
+    const groupedHoverTraces = buildGroupedHoverTraces({
+      enabled: options.hoverShowPopup,
+      traces,
+      seriesOrder: Array.isArray(options.hoverSeriesOrder)
+        ? options.hoverSeriesOrder
+        : selected,
+      hoverLabelName: options.hoverLabelName,
+      labelName: options.labelName,
+      stackedPriceSeries: options.stackedPriceSeries,
+      revision: String(options.eventRevisionKey || ""),
+    });
     traces.unshift(...groupedHoverTraces);
     return {
       aiForecastTraces,

@@ -87,6 +87,19 @@ async function waitForChartRenderIdle(page) {
   }, { intervals: [80, 100, 140, 180] }).toBe(true);
 }
 
+async function waitForAppReady(page) {
+  await expect.poll(() => page.evaluate(() => {
+    const title = document.querySelector(".hero h1");
+    const aiToggle = document.getElementById("aiForecastToggle");
+    return Number(title?.getAttribute("aria-valuenow")) >= 100
+      && !title?.classList.contains("is-loading")
+      && aiToggle?.dataset?.bound === "1";
+  }), {
+    message: "Think Stock did not reach its user-visible 100% ready state",
+    timeout: 30000,
+  }).toBe(true);
+}
+
 async function visibleTracePixelSpan(page, seriesKey) {
   return page.locator("#chart").evaluate((element, targetSeries) => {
     const trace = (element.data || []).find((item) => item?.meta?.seriesKey === targetSeries);
@@ -438,6 +451,7 @@ export {
   DESKTOP_PERF_BUDGET,
   setChartRangeMonths,
   waitForBoundingBox,
+  waitForAppReady,
   waitForChartRenderIdle,
   visibleTracePixelSpan,
   columnar,

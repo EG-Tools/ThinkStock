@@ -5,6 +5,7 @@ import {
   historyDates,
   DESKTOP_PERF_BUDGET,
   setChartRangeMonths,
+  waitForAppReady,
   waitForBoundingBox,
   waitForChartRenderIdle,
   visibleTracePixelSpan,
@@ -80,6 +81,7 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
   await stubExternalRefreshes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await waitForAppReady(page);
   await page.locator("#chartRange6Months").click();
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const [start, end] = element._fullLayout.xaxis.range.map(Date.parse);
@@ -637,7 +639,7 @@ test("AI explains insufficient price history and fades the message", async ({ pa
   await stubExternalRefreshes(page);
   await page.addInitScript(() => {
     localStorage.setItem("thinkstock-v5", JSON.stringify({
-      activeMonths: 12,
+      activeMonths: 360,
       hiddenSeries: [
         "leading_cycle", "^KS11", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit",
       ],
@@ -732,6 +734,7 @@ test("AI forecast opens for the first enabled series and stays stable while brow
   });
   await page.goto(pageUrl, { waitUntil: "domcontentloaded" });
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await waitForAppReady(page);
   await expect(page.locator('.series-toggle-btn[data-series="^KS11"]')).toHaveClass(/is-off/);
 
   await page.locator("#aiForecastToggle").click();
@@ -1255,7 +1258,7 @@ test("signal calculation shows progress while an uncached timing model is prepar
   ))).toBe(true);
 });
 
-test("timing hover wraps reasons and its shared hit area opens the popover", async ({ page }) => {
+test("timing hover wraps reasons and its shared hit area opens the popover", async ({ page, isMobile }) => {
   await stubExternalRefreshes(page);
   await page.addInitScript(() => {
     localStorage.setItem("thinkstock-v5", JSON.stringify({
@@ -1304,16 +1307,177 @@ test("timing hover wraps reasons and its shared hit area opens the popover", asy
   await expect(page.locator("#chart")).toHaveClass(/is-event-marker-hovering/);
   await expect(page.locator("#chart .hoverlayer")).toContainText("근거:");
   await expect(page.locator("#chart .hoverlayer")).not.toContainText("<br>");
-  for (const offset of [10, 13, 11, 14, 12]) {
-    await page.mouse.move(target.x + offset, target.y + ((offset % 2) ? 1 : -1));
-    await page.waitForTimeout(45);
+  if (!isMobile) {
+    for (const offset of [10, 13, 11, 14, 12]) {
+      await page.mouse.move(target.x + offset, target.y + ((offset % 2) ? 1 : -1));
+      await page.waitForTimeout(45);
+      await expect(page.locator("#chart .hoverlayer > g")).toBeHidden();
+    }
+    await page.waitForTimeout(220);
+    const popupDistance = await page.locator("#chart .hoverlayer > g.hovertext").evaluate((popup, point) => {
+      const rect = popup.getBoundingClientRect();
+      const dx = Math.max(rect.left - point.x, 0, point.x - rect.right);
+      const dy = Math.max(rect.top - point.y, 0, point.y - rect.bottom);
+      return Math.hypot(dx, dy);
+    }, { x: target.x + 12, y: target.y });
+    expect(popupDistance).toBeLessThanOrEqual(24);
   }
-  await page.waitForTimeout(220);
   await expect(page.locator("#chart")).toHaveClass(/is-event-marker-hovering/);
   await expect(page.locator("#chart .hoverlayer")).toContainText("근거:");
   await page.mouse.click(target.x + 12, target.y);
   await expect(page.locator("#chart .disclosure-popover")).toBeVisible();
   await expect(page.locator("#chart .disclosure-popover")).toContainText("근거:");
+});
+
+test("timing hover keeps active signal rows after viewport zoom", async ({ page, isMobile }) => {
+  await stubExternalRefreshes(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 12,
+      customStocks: [
+        { ticker: "218410.KQ", name: "RFHIC", code: "218410", market: "KOSDAQ" },
+        { ticker: "033100.KQ", name: "제룡전기", code: "033100", market: "KOSDAQ" },
+      ],
+      showRecessionSignals: true,
+    }));
+  });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+
+  const findSignalGroup = () => page.locator("#chart").evaluate((element) => {
+    const byDate = new Map();
+    (element.data || []).forEach((trace, traceIndex) => {
+      if (!trace?.meta?.isMarketTimingBuyTrace && !trace?.meta?.isMarketTimingSellTrace) return;
+      (trace.x || []).forEach((date, pointIndex) => {
+        const ticker = String(trace.meta?.pointTickers?.[pointIndex] || "");
+        const label = String(trace.customdata?.[pointIndex]?.[0] || ticker);
+        if (!["^KS11", "218410.KQ", "033100.KQ"].includes(ticker) || !date) return;
+        const key = String(date).slice(0, 10);
+        const points = byDate.get(key) || [];
+        points.push({ date: key, label, pointIndex, ticker, traceIndex });
+        byDate.set(key, points);
+      });
+    });
+    return [...byDate.values()]
+      .filter((points) => points.length > 0)
+      .sort((left, right) => {
+        const tickerDifference = new Set(right.map((point) => point.ticker)).size
+          - new Set(left.map((point) => point.ticker)).size;
+        return tickerDifference
+          || String(right[0]?.date || "").localeCompare(String(left[0]?.date || ""));
+      })[0]
+      || null;
+  });
+  await expect.poll(findSignalGroup, { timeout: 30000 }).not.toBeNull();
+  const points = await findSignalGroup();
+  const targets = [...new Map(points.map((point) => [point.ticker, point])).values()]
+    .sort((left, right) => Number(left.ticker.startsWith("^")) - Number(right.ticker.startsWith("^")))
+    .slice(0, 2);
+
+  const hoverMarker = async (target) => page.locator("#chart").evaluate((element, point) => {
+    let trace = null;
+    let pointIndex = -1;
+    for (const candidate of element.data || []) {
+      if (!candidate?.meta?.isMarketTimingBuyTrace && !candidate?.meta?.isMarketTimingSellTrace) continue;
+      const index = (candidate.x || []).findIndex((date, candidateIndex) => (
+        String(date).slice(0, 10) === point.date
+        && String(candidate.meta?.pointTickers?.[candidateIndex] || "") === point.ticker
+      ));
+      if (index < 0) continue;
+      trace = candidate;
+      pointIndex = index;
+      break;
+    }
+    const rect = element.getBoundingClientRect();
+    const xaxis = element?._fullLayout?.xaxis;
+    const yaxis = element?._fullLayout?.yaxis;
+    if (!trace || pointIndex < 0 || !xaxis || !yaxis) return null;
+    return {
+      x: rect.left + Number(xaxis._offset || 0) + Number(xaxis.d2p(trace.x?.[pointIndex])),
+      y: rect.top + Number(yaxis._offset || 0) + Number(yaxis.d2p(trace.y?.[pointIndex])),
+    };
+  }, target);
+  const expectEverySignal = async () => {
+    await expect.poll(async () => {
+      const popupText = await page.locator("#chart .hoverlayer").textContent();
+      return targets.every((target) => popupText.includes(target.label))
+        && (popupText.match(/신호/g) || []).length >= targets.length;
+    }).toBe(true);
+    await expect(page.locator(
+      "#chart .hoverlayer > g.legend, #chart .hoverlayer > g.hovertext",
+    )).toHaveCount(1);
+    const popupGeometry = () => page.locator("#chart").evaluate((element) => {
+      const popup = element.querySelector(".hoverlayer > g.hovertext");
+      const frame = popup?.querySelector("path")?.getBoundingClientRect?.();
+      const lines = [...(popup?.querySelectorAll?.("text.nums > tspan.line") || [])]
+        .map((line) => line.getBoundingClientRect?.())
+        .filter((rect) => rect && rect.width > 0 && rect.height > 0);
+      if (!frame || !lines.length) return null;
+      const content = {
+        left: Math.min(...lines.map((rect) => rect.left)),
+        right: Math.max(...lines.map((rect) => rect.right)),
+        top: Math.min(...lines.map((rect) => rect.top)),
+        bottom: Math.max(...lines.map((rect) => rect.bottom)),
+      };
+      return {
+        contains: content.left >= frame.left - 1
+          && content.right <= frame.right + 1
+          && content.top >= frame.top - 1
+          && content.bottom <= frame.bottom + 1,
+        content,
+        frame: {
+          bottom: frame.bottom,
+          height: frame.height,
+          left: frame.left,
+          right: frame.right,
+          top: frame.top,
+          width: frame.width,
+        },
+        horizontalPadding: (frame.width - (content.right - content.left)),
+      };
+    });
+    await expect.poll(popupGeometry).toMatchObject({ contains: true });
+  };
+
+  let marker = await hoverMarker(targets[0]);
+  expect(marker).not.toBeNull();
+  await page.mouse.move(marker.x, marker.y);
+  await expect(page.locator("#chart")).toHaveClass(/is-event-marker-hovering/);
+  await expectEverySignal();
+
+  const targetTime = Date.parse(`${targets[0].date}T00:00:00Z`);
+  const zoomedRange = [targetTime - (180 * 86400000), targetTime + (180 * 86400000)];
+  await page.evaluate((range) => window.ThinkStockE2E.setViewportRangeForTest(range), zoomedRange);
+  await expect.poll(() => page.locator("#chart").evaluate((element, expectedRange) => {
+    const actualRange = (element._fullLayout?.xaxis?.range || []).map(Date.parse);
+    return actualRange.length === 2
+      && Math.max(...actualRange.map((value, index) => Math.abs(value - expectedRange[index]))) < 86400000;
+  }, zoomedRange)).toBe(true);
+  marker = await hoverMarker(targets[0]);
+  expect(marker).not.toBeNull();
+  await page.mouse.move(marker.x, marker.y);
+  await expect(page.locator("#chart")).toHaveClass(/is-event-marker-hovering/);
+  await expectEverySignal();
+
+  if (!isMobile) {
+    // Wheel input may rebuild the grouped popup trace. Once the final viewport
+    // settles, stale screen coordinates stay cleared and the next real pointer
+    // movement must still include every signal row.
+    for (const deltaY of [-360, 360]) {
+      await page.mouse.wheel(0, deltaY);
+      await page.waitForTimeout(500);
+      await expect(page.locator("#chart")).not.toHaveClass(/is-event-marker-hovering/);
+      await expect(page.locator(
+        "#chart .hoverlayer > g.legend, #chart .hoverlayer > g.hovertext",
+      )).toHaveCount(0);
+      marker = await hoverMarker(targets[0]);
+      expect(marker).not.toBeNull();
+      await page.mouse.move(marker.x + 30, marker.y + 30);
+      await page.mouse.move(marker.x, marker.y);
+      await expect(page.locator("#chart")).toHaveClass(/is-event-marker-hovering/);
+      await expectEverySignal();
+    }
+  }
 });
 
 test("co-movement toggle shows only the last visible stock for the selected period", async ({ page }) => {
@@ -2162,6 +2326,7 @@ test("AI analysis loads only on demand and reuses today's browser cache", async 
 
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await waitForAppReady(page);
   await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator("#aiForecastToggle")).toBeEnabled();
   expect(analysisRequests).toBe(0);

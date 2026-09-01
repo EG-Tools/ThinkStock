@@ -228,9 +228,12 @@
     const writeActivationOrder = (value) => options.setActivationOrder?.(value);
 
     function activationOrder(visibleSeries = visibleKeys()) {
-      const next = reconcileSeriesActivationOrder(readActivationOrder(), visibleSeries);
-      writeActivationOrder(next);
-      return [...next];
+      // Only authoritative visibility may mutate the persisted activation order.
+      // An older async render can pass a partial series list here after a newer
+      // toggle; that list is only a projection and must not rewrite user order.
+      const current = reconcileSeriesActivationOrder(readActivationOrder(), visibleKeys());
+      writeActivationOrder(current);
+      return reconcileSeriesActivationOrder(current, visibleSeries);
     }
 
     function noteActivation(seriesKey, visible) {

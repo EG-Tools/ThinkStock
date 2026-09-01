@@ -3162,6 +3162,7 @@ function getChartPointerRuntime() {
       getChartRangeSyncController,
       getCurrentXRangeMs,
       hideDisclosurePopover,
+      invalidateChartInteractionCaches,
       interactionState,
       isCurrentRange: (element, start, end) => xRangeMatches(element, start, end),
       isTouchDevice,
@@ -4762,7 +4763,7 @@ function resetEventMarkerHoverHighlight(chartEl = document.getElementById("chart
 }
 
 function scheduleEventMarkerHoverHighlight(evtData) {
-  if (isViewportDragging || isHandleDragging) return;
+  if (isViewportDragging || isWheelZooming || isHandleDragging) return;
   const chartEl = document.getElementById("chart");
   const point = findEventMarkerPoint(evtData);
   if (!chartEl || !point) {
@@ -4772,6 +4773,10 @@ function scheduleEventMarkerHoverHighlight(evtData) {
 
   const traceIndex = point.curveNumber;
   const pointIndex = point.pointIndex ?? point.pointNumber;
+  const eventDate = point.data?.x?.[pointIndex];
+  if (chartSession.hoverShowPopup && eventDate != null) {
+    syncHoverToChart(chartEl, eventDate);
+  }
   if (
     eventMarkerRenderState.highlight
     && eventMarkerRenderState.highlight.traceIndex === traceIndex
@@ -4783,10 +4788,6 @@ function scheduleEventMarkerHoverHighlight(evtData) {
     return;
   }
 
-  const eventDate = point.data?.x?.[pointIndex];
-  if (chartSession.hoverShowPopup && eventDate != null) {
-    syncHoverToChart(chartEl, eventDate);
-  }
   highlightEventMarkerHoverPoint(evtData);
 }
 

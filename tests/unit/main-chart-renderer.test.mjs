@@ -277,7 +277,6 @@ test("price-first composition reuses passive overlays without running their buil
   const eps = { meta: { overlayKind: "eps", seriesKey: "eps:TEST" } };
   const ai = { meta: { overlayKind: "ai-scenario", seriesKey: "TEST" } };
   const event = { meta: { overlayKind: "timing-buy", isMarketTimingBuyTrace: true } };
-  const grouped = { meta: { overlayKind: "grouped-hover", hoverGroupTicker: "TEST" } };
   const result = await renderer.buildMainChartComposition({
     model: {
       rows: [{ date: "2026-08-24", TEST: 100 }],
@@ -295,7 +294,6 @@ test("price-first composition reuses passive overlays without running their buil
     prebuiltEpsTraceModel: { traces: [eps], baseValuesBySeries: { "eps:TEST": [100] } },
     prebuiltAiForecastTraces: [ai],
     prebuiltEventTraces: [event],
-    prebuiltGroupedHoverTraces: [grouped],
     buildEpsTraceModel: () => { calls.push("eps"); return { traces: [] }; },
     buildAiForecastTraces: () => { calls.push("ai"); return []; },
     prepareEventModels: () => { calls.push("events"); },
@@ -304,8 +302,8 @@ test("price-first composition reuses passive overlays without running their buil
 
   assert.deepEqual(calls, []);
   assert.equal(result.deferredOverlays, true);
-  assert.deepEqual(result.traces.slice(0, 5), [grouped, result.traces[1], eps, ai, event]);
-  assert.equal(result.traces[1].meta.overlayKind, "price");
+  assert.equal(result.traces[0].meta.overlayKind, "price");
+  assert.deepEqual(result.traces.slice(1), [eps, ai, event]);
 });
 
 test("joins valid trading points across internal calendar gaps", () => {
@@ -383,11 +381,24 @@ test("groups price, EPS, disclosures, and signals by series in one hover entry",
     labelName: (series) => series === "218410.KQ" ? "RFHIC" : "SK하이닉스",
   });
   const cacheAfterReuse = renderer.groupedHoverCacheStats();
+  rfhicPrice.text = ["32,100", "33,100"];
+  const rebuiltGrouped = renderer.buildGroupedHoverTraces({
+    enabled: true,
+    traces,
+    seriesOrder: ["218410.KQ", "000660.KS"],
+    labelName: (series) => series === "218410.KQ" ? "RFHIC" : "SK하이닉스",
+  });
 
   assert.deepEqual(grouped.map((item) => item.meta.hoverGroupTicker), ["218410.KQ", "000660.KS"]);
   assert.equal(cacheAfterReuse.hits, cacheBeforeReuse.hits + 1);
   assert.notEqual(reusedGrouped[0], grouped[0]);
   assert.equal(reusedGrouped[0].text, grouped[0].text);
+  assert.match(rebuiltGrouped[0].text[0], /가격 32,100/);
+  assert.match(rebuiltGrouped[0].text[0], /<br>매수 신호/);
+  assert.match(rebuiltGrouped[0].text[0], /<br>공시/);
+  assert.equal(rebuiltGrouped[0].meta.hoverGroupHasDetails[0], true);
+  assert.equal(timing.meta.hoverDetailTemplates, "<b>%{customdata[0]} 매수 신호</b><br>근거 · %{customdata[1]}<extra></extra>");
+  assert.deepEqual(disclosure.meta.hoverDetailTemplates, ["<b>공시</b><br>분기보고서<extra></extra>"]);
   assert.equal(grouped.every((item) => item.type === "scattergl"), true);
   const epsHoverIndex = grouped[0].x.indexOf("2024-03-31");
   assert.ok(epsHoverIndex >= 0);
@@ -399,7 +410,7 @@ test("groups price, EPS, disclosures, and signals by series in one hover entry",
     grouped[0].hovertemplate,
     "%{text}<extra></extra>",
   );
-  assert.equal(grouped[1].hovertemplate, grouped[0].hovertemplate);
+  assert.equal(grouped[1].hovertemplate, undefined);
   assert.equal(
     grouped[0].meta.pointHoverTemplate,
     "%{x|%Y.%-m.%-d}<br>%{customdata}<extra></extra>",
@@ -407,6 +418,11 @@ test("groups price, EPS, disclosures, and signals by series in one hover entry",
   assert.equal(renderer.buildLayout().xaxis.hoverformat, "%Y.%-m.%-d");
   assert.match(grouped[0].text[0], /<br>공시/);
   assert.match(grouped[0].text[0], /<br>매수 신호/);
+  assert.match(grouped[0].text[0], /RFHIC[\s\S]*SK하이닉스/);
+  assert.equal((grouped[0].text[0].match(/매수 신호/g) || []).length, 2);
+  assert.equal(grouped[0].meta.isGroupedHoverOwnerTrace, true);
+  assert.equal(grouped[0].meta.hoverGroupHasDetails[0], true);
+  assert.equal(grouped[1].hoverinfo, "skip");
   assert.ok(grouped[0].text[0].indexOf("가격 32,000") < grouped[0].text[0].indexOf("매수 신호"));
   assert.equal(grouped[0].text[0].match(/RFHIC/g)?.length, 1);
   assert.doesNotMatch(grouped[0].text[0], /2024\.3\.29/);

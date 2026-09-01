@@ -28,3 +28,25 @@ test("resolves the latest visible stock without duplicating app-level selection 
   });
   assert.equal(controller.resolveVisibleStock("", (key) => key.endsWith(".KS")), "035420.KS");
 });
+
+test("stale render projections cannot rewrite the latest activation order", () => {
+  const hidden = new Set(["A", "B"]);
+  let activationOrder = [];
+  const controller = createMainSeriesController({
+    hiddenSeries: hidden,
+    maximumVisible: 3,
+    getSeriesKeys: () => ["A", "B"],
+    getActivationOrder: () => activationOrder,
+    setActivationOrder: (value) => { activationOrder = [...value]; },
+  });
+
+  controller.setVisible("A", true);
+  controller.setVisible("B", true);
+  controller.setVisible("A", false);
+  controller.setVisible("A", true);
+  assert.deepEqual(activationOrder, ["B", "A"]);
+
+  assert.deepEqual(controller.activationOrder(["A"]), ["A"]);
+  assert.deepEqual(activationOrder, ["B", "A"]);
+  assert.deepEqual(controller.activationOrder(["A", "B"]), ["B", "A"]);
+});

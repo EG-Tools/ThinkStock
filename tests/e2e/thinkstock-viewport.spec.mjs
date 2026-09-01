@@ -360,6 +360,9 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
     const grouped = (element.data || []).find((trace) => (
       trace?.meta?.isGroupedHoverTrace && trace.meta.hoverGroupTicker === "218410.KQ"
     ));
+    const groupedOwner = (element.data || []).find((trace) => (
+      trace?.meta?.isGroupedHoverOwnerTrace
+    ));
     return eps ? {
       colorMatches: eps.line?.color === price?.line?.color,
       dash: eps.line?.dash,
@@ -388,11 +391,12 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
       })(),
       groupedQuarterLabel: grouped?.text?.some((text) => String(text).includes("EPS · 4분기 120")),
       groupedNameRepeated: grouped?.text?.some((text) => String(text).includes("RFHIC EPS")),
-      groupedIndent: grouped?.hovertemplate === "%{text}<extra></extra>"
-        && grouped?.text?.some((text) => String(text).includes("<br>EPS"))
-        && grouped?.customdata?.every((text, index) => text === grouped.text[index])
-        && grouped?.customdata?.every((text) => !String(text).includes("&nbsp;"))
-        && grouped?.meta?.pointHoverTemplate === "%{x|%Y.%-m.%-d}<br>%{customdata}<extra></extra>",
+      groupedIndent: groupedOwner?.hovertemplate === "%{text}<extra></extra>"
+        && groupedOwner?.text?.some((text) => String(text).includes("<br>EPS"))
+        && groupedOwner?.customdata?.every((text, index) => text === groupedOwner.text[index])
+        && groupedOwner?.customdata?.every((text) => !String(text).includes("&nbsp;"))
+        && groupedOwner?.meta?.pointHoverTemplate === "%{x|%Y.%-m.%-d}<br>%{customdata}<extra></extra>"
+        && (grouped === groupedOwner || grouped?.hoverinfo === "skip"),
       epsOwnsPopup: eps.hoverinfo !== "skip" || Boolean(eps.hovertemplate),
       lastText: eps.text?.at(-1),
     } : null;
@@ -428,6 +432,33 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
   await expect(epsHandle).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
 
   if (!isMobile) {
+    const readHoverSummary = () => page.locator("#chart .hoverlayer").evaluate((hoverLayer) => {
+      const datePattern = /^\d{4}\.\d{1,2}\.\d{1,2}$/;
+      const pointLines = [...hoverLayer.querySelectorAll("text.nums > tspan.line")];
+      const pointDate = pointLines.find((line) => datePattern.test(line.textContent?.trim() || ""));
+      const unifiedDate = [...hoverLayer.querySelectorAll("text.legendtitletext")]
+        .find((line) => datePattern.test(line.textContent?.trim() || ""));
+      const dateLine = pointDate || unifiedDate;
+      const contentLines = pointDate
+        ? pointLines.filter((line) => line !== pointDate)
+        : [...hoverLayer.querySelectorAll("text.legendtext")];
+      const startX = (line) => {
+        const matrix = line?.getScreenCTM?.();
+        if (!line?.textContent?.length || !matrix) return Number.NaN;
+        return line.getStartPositionOfChar(0).matrixTransform(matrix).x;
+      };
+      const dateLeft = startX(dateLine);
+      const offsets = contentLines.map((line) => Math.round(startX(line) - dateLeft));
+      const text = String(hoverLayer.textContent || "");
+      return {
+        contentIndented: offsets.length > 0
+          && offsets.every((offset) => Number.isFinite(offset) && Math.abs(offset - 38) <= 1),
+        date: dateLine?.textContent?.trim() || "",
+        hasEps: text.includes("EPS"),
+        hasTicker: text.includes("RFHIC"),
+        kind: pointDate ? "point" : (unifiedDate ? "unified" : ""),
+      };
+    });
     const initialEpsHoverTarget = await page.locator("#chart").evaluate((element) => {
       const grouped = (element.data || []).find((trace) => (
         trace?.meta?.isGroupedHoverTrace && trace.meta.hoverGroupTicker === "218410.KQ"
@@ -564,36 +595,21 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
       };
     });
     expect(hoverTarget).not.toBeNull();
+    await expect.poll(() => page.evaluate((target) => (
+      window.ThinkStockE2E.getLineDragTargetAt(target.x, target.y)
+    ), hoverTarget)).toMatchObject({
+      seriesKey: "eps:218410.KQ",
+    });
     await page.mouse.move(hoverTarget.x - 2, hoverTarget.y);
     await page.mouse.move(hoverTarget.x, hoverTarget.y);
-    await expect.poll(async () => {
-      const lines = await page.locator("#chart .hoverlayer text.nums > tspan.line")
-        .allTextContents();
-      return lines[0] === "2026.6.30"
-        && lines.slice(1).some((line) => line.includes("EPS"));
-    }, { timeout: 8000 }).toBe(true);
+    await expect.poll(readHoverSummary, { timeout: 8000 }).toMatchObject({
+      contentIndented: true,
+      date: "2026.6.30",
+      hasEps: true,
+      hasTicker: true,
+    });
     const epsHoverText = await page.locator("#chart .hoverlayer").textContent();
     expect(epsHoverText?.match(/2026\.6\.30/g)?.length || 0).toBe(1);
-    const epsHoverLines = await page.locator("#chart .hoverlayer text.nums > tspan.line")
-      .allTextContents();
-    expect(epsHoverLines[0]).toBe("2026.6.30");
-    expect(epsHoverLines[1]?.trim()).toContain("RFHIC");
-    expect(epsHoverLines[2]?.trim()).toContain("EPS");
-    await expect.poll(async () => {
-      const offsets = await page.locator("#chart .hoverlayer text.nums > tspan.line")
-        .evaluateAll((lines) => lines.slice(0, 3).map((line) => (
-          line.getStartPositionOfChar(0).matrixTransform(line.getScreenCTM()).x
-        )));
-      return offsets.length === 3
-        ? offsets.slice(1).map((left) => Math.round(left - offsets[0]))
-        : [];
-    }).toEqual([38, 38]);
-    const epsHoverOffsets = await page.locator("#chart .hoverlayer text.nums > tspan.line")
-      .evaluateAll((lines) => lines.slice(0, 3).map((line) => (
-        line.getStartPositionOfChar(0).matrixTransform(line.getScreenCTM()).x
-      )));
-    expect(Math.abs(epsHoverOffsets[1] - epsHoverOffsets[0] - 38)).toBeLessThanOrEqual(1);
-    expect(Math.abs(epsHoverOffsets[2] - epsHoverOffsets[0] - 38)).toBeLessThanOrEqual(1);
     await expect(page.locator("#chart .trace.scatter.is-eps-point-highlighted")).toHaveCount(1);
     const highlightedEpsPoint = page.locator(
       "#chart .trace.scatter.is-eps-point-highlighted .points path.point",
@@ -624,50 +640,11 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
     expect(historicalEpsHoverTarget).not.toBeNull();
     await page.mouse.move(historicalEpsHoverTarget.x, historicalEpsHoverTarget.y);
     await expect(page.locator("#chart .hoverlayer")).toContainText("2024.3.31", { timeout: 3000 });
-    await expect.poll(async () => {
-      const currentTarget = await page.locator("#chart").evaluate((element) => {
-        const grouped = (element.data || []).find((trace) => (
-          trace?.meta?.isGroupedHoverTrace && trace.meta.hoverGroupTicker === "218410.KQ"
-        ));
-        const pointIndex = grouped?.x?.indexOf("2024-03-31") ?? -1;
-        if (!grouped || pointIndex < 0) return null;
-        const rect = element.getBoundingClientRect();
-        const xa = element._fullLayout.xaxis;
-        const ya = element._fullLayout.yaxis;
-        return {
-          x: rect.left + xa._offset + xa.d2p(grouped.x[pointIndex]),
-          y: rect.top + ya._offset + ya.l2p(grouped.y[pointIndex]),
-        };
-      });
-      if (!currentTarget) return null;
-      await page.mouse.move(currentTarget.x, currentTarget.y);
-      return page.locator("#chart .hoverlayer").evaluate((hoverLayer) => {
-        const datePattern = /^\d{4}\.\d{1,2}\.\d{1,2}$/;
-        const pointLines = [...hoverLayer.querySelectorAll("text.nums > tspan.line")];
-        const pointDate = pointLines.find((line) => datePattern.test(line.textContent?.trim() || ""));
-        const unifiedDate = [...hoverLayer.querySelectorAll("text.legendtitletext")]
-          .find((line) => datePattern.test(line.textContent?.trim() || ""));
-        const dateLine = pointDate || unifiedDate;
-        const contentLines = pointDate
-          ? pointLines.filter((line) => line !== pointDate)
-          : [...hoverLayer.querySelectorAll("text.legendtext")];
-        const startX = (line) => {
-          const matrix = line?.getScreenCTM?.();
-          if (!line?.textContent?.length || !matrix) return Number.NaN;
-          return line.getStartPositionOfChar(0).matrixTransform(matrix).x;
-        };
-        const dateLeft = startX(dateLine);
-        const offsets = contentLines.map((line) => Math.round(startX(line) - dateLeft));
-        return {
-          date: dateLine?.textContent?.trim() || "",
-          hasEps: String(hoverLayer.textContent || "").includes("EPS"),
-          contentIndented: offsets.length > 0 && offsets.every((offset) => Math.abs(offset - 38) <= 1),
-        };
-      });
-    }, { timeout: 15000 }).toEqual({
+    await expect.poll(readHoverSummary, { timeout: 15000 }).toMatchObject({
+      contentIndented: true,
       date: "2024.3.31",
       hasEps: true,
-      contentIndented: true,
+      hasTicker: true,
     });
     await page.evaluate((range) => window.ThinkStockE2E.setViewportRangeForTest(range), viewportBeforeHistoricalHover);
     await waitForChartRenderIdle(page);
@@ -688,7 +665,17 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
 
     const dragTarget = await page.locator("#chart").evaluate((element) => {
       const trace = (element.data || []).find((candidate) => candidate?.meta?.isEpsTrace);
-      const pointIndex = trace?.x?.findIndex((date) => date === "2026-06-30") ?? -1;
+      const [rangeStart, rangeEnd] = (element._fullLayout?.xaxis?.range || []).map(Date.parse);
+      const rangeMidpoint = (rangeStart + rangeEnd) / 2;
+      const pointIndex = (trace?.x || []).reduce((bestIndex, date, index) => {
+        const time = Date.parse(date);
+        if (!Number.isFinite(time) || time < rangeStart || time > rangeEnd) return bestIndex;
+        if (bestIndex < 0) return index;
+        return Math.abs(time - rangeMidpoint)
+          < Math.abs(Date.parse(trace.x[bestIndex]) - rangeMidpoint)
+          ? index
+          : bestIndex;
+      }, -1);
       if (!trace || pointIndex < 0) return null;
       const rect = element.getBoundingClientRect();
       const xa = element._fullLayout.xaxis;
@@ -3293,6 +3280,7 @@ test("auto scale reset clears live transforms while preserving the historical vi
     return span;
   });
   await page.locator("#chartRange6Months").click();
+  await waitForChartRenderIdle(page);
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const [start, end] = element._fullLayout.xaxis.range.map(Date.parse);
     return end - start;

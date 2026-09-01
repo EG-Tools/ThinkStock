@@ -731,7 +731,7 @@ test("reuses EPS, AI, and event traces through one composition plan", () => {
   assert.deepEqual(plan.eventTraces, [event]);
 });
 
-test("price-first composition reuses only active passive overlays even with pending events", () => {
+test("price-first composition ignores grouped hover reuse while keeping passive overlays", () => {
   const descriptor = (trace) => ({ kind: trace.kind, seriesKey: trace.meta?.seriesKey || "" });
   const groupedA = { kind: "grouped-hover", meta: { hoverGroupTicker: "A" } };
   const groupedB = { kind: "grouped-hover", meta: { hoverGroupTicker: "B" } };
@@ -755,34 +755,12 @@ test("price-first composition reuses only active passive overlays even with pend
     },
   );
 
-  assert.deepEqual(plan.groupedHoverTraces, [groupedA]);
   assert.deepEqual(plan.epsTraces, [epsA]);
   assert.deepEqual(plan.aiForecastTraces, [aiA]);
   assert.deepEqual(plan.eventTraces, [event]);
   assert.equal(plan.reuseFutureOverlays, true);
   assert.equal(plan.reuseEventMarkers, true);
-});
-
-test("price-first composition rebuilds grouped hover when activation order changed", () => {
-  const descriptor = (trace) => ({ kind: trace.kind, seriesKey: trace.meta?.seriesKey || "" });
-  const groupedA = { kind: "grouped-hover", meta: { hoverGroupTicker: "A" } };
-  const groupedB = { kind: "grouped-hover", meta: { hoverGroupTicker: "B" } };
-  const plan = createReusableMainChartTracePlan(
-    { data: [groupedA, groupedB] },
-    {
-      chartOverlayDescriptor: descriptor,
-      isEventMarkerTrace: () => false,
-    },
-    { updateClasses: ["composition"] },
-    {
-      activeSeries: ["A", "B"],
-      hoverSeriesOrder: ["B", "A"],
-      deferOverlays: true,
-      hiddenSeries: new Set(),
-    },
-  );
-
-  assert.equal(plan.groupedHoverTraces, null);
+  assert.equal(Object.hasOwn(plan, "groupedHoverTraces"), false);
 });
 
 test("hydrates chart session state from one normalized model boundary", () => {
