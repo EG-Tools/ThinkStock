@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -97,6 +97,7 @@ export async function verifyPagesDeployment(options = {}) {
   const expectedVersion = String(options.expectedVersion || "").trim();
   const expectedBuild = String(options.expectedBuild || "").trim();
   const expectedBundleHash = String(options.expectedBundleHash || "").trim().toLowerCase();
+  const expectedAssets = Array.isArray(options.expectedAssets) ? options.expectedAssets : [];
   const expectedDataManifest = options.expectedDataManifest || null;
   const attempts = Math.max(1, Number(options.attempts) || 12);
   const requestedRetryDelay = Number(options.retryDelayMs);
@@ -128,6 +129,21 @@ export async function verifyPagesDeployment(options = {}) {
       assert.equal(bundleResponse.ok, true, `public app bundle HTTP ${bundleResponse.status}`);
       const deployedHash = sha256(Buffer.from(await bundleResponse.arrayBuffer()));
       if (expectedBundleHash) assert.equal(deployedHash, expectedBundleHash, "public app bundle does not match the release");
+
+      for (const expectedAsset of expectedAssets) {
+        const assetPath = String(expectedAsset?.path || "").replace(/^\/+/, "");
+        const expectedHash = String(expectedAsset?.sha256 || "").trim().toLowerCase();
+        assert.ok(assetPath && expectedHash, "local release asset metadata is incomplete");
+        const assetUrl = new URL(assetPath, pageUrl);
+        if (expectedBuild) assetUrl.searchParams.set("v", expectedBuild);
+        const assetResponse = await fetchImpl(cacheBustedUrl(assetUrl, attempt), {
+          cache: "no-store",
+          headers: { "Cache-Control": "no-cache" },
+        });
+        assert.equal(assetResponse.ok, true, `public release asset HTTP ${assetResponse.status}: ${assetPath}`);
+        const deployedAssetHash = sha256(Buffer.from(await assetResponse.arrayBuffer()));
+        assert.equal(deployedAssetHash, expectedHash, `public release asset is stale: ${assetPath}`);
+      }
 
       let dataRevision = "";
       let newsSentimentCoverage = null;
@@ -182,6 +198,7 @@ export async function verifyPagesDeployment(options = {}) {
         : null;
       return {
         attempts: attempt,
+        assetCount: expectedAssets.length,
         bundleUrl: bundleUrl.href,
         dataRevision,
         deployedHash,
@@ -202,20 +219,29 @@ async function main() {
   const runId = String(process.env.GITHUB_RUN_ID || process.argv[3] || "").trim();
   const sha = String(process.env.GITHUB_SHA || process.argv[4] || "").trim();
   const expectedBuild = runId ? `${runId}${sha ? `-${sha.slice(0, 12)}` : ""}` : "";
-  const [html, bundle, dataManifestText] = await Promise.all([
+  const [html, bundle, dataManifestText, assetNames] = await Promise.all([
     readFile(path.join(root, "docs", "index.html"), "utf8"),
     readFile(path.join(root, "docs", "assets", "app.bundle.min.js")),
     readFile(path.join(root, "docs", "data", "data_manifest.json"), "utf8"),
+    readdir(path.join(root, "docs", "assets")),
   ]);
+  const expectedAssets = await Promise.all(assetNames
+    .filter((name) => name.endsWith(".bundle.min.js") && name !== "app.bundle.min.js")
+    .sort()
+    .map(async (name) => ({
+      path: `assets/${name}`,
+      sha256: sha256(await readFile(path.join(root, "docs", "assets", name))),
+    })));
   const result = await verifyPagesDeployment({
     pageUrl,
     expectedVersion: parsePagesAppVersion(html),
     expectedBuild,
     expectedBundleHash: sha256(bundle),
+    expectedAssets,
     expectedDataManifest: JSON.parse(dataManifestText),
     workerUrl: process.env.THINKSTOCK_WORKER_URL || "https://thinkstock-api.keg0320.workers.dev",
   });
-  console.log(`Public Pages verified: v${result.deployedVersion}, ${result.deployedHash.slice(0, 12)}, data ${result.dataRevision}, news ${result.newsSentimentCoverage?.firstDate}-${result.newsSentimentCoverage?.latestDate}, Worker API ${result.workerRuntime?.apiVersion}, analysis ${result.workerRuntime?.analysisContractVersion}, attempt ${result.attempts}`);
+  console.log(`Public Pages verified: v${result.deployedVersion}, ${result.deployedHash.slice(0, 12)}, assets ${result.assetCount}, data ${result.dataRevision}, news ${result.newsSentimentCoverage?.firstDate}-${result.newsSentimentCoverage?.latestDate}, Worker API ${result.workerRuntime?.apiVersion}, analysis ${result.workerRuntime?.analysisContractVersion}, attempt ${result.attempts}`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

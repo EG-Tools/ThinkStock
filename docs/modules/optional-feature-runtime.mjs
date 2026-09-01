@@ -397,6 +397,11 @@ function createOptionalFeatureLoader(scope = globalThis, options = {}) {
     const documentRef = options.document || scope.document;
     const version = String(options.version || "dev");
     const importModule = options.importModule || ((url) => import(url));
+    const retryDelays = Array.isArray(options.retryDelays)
+      ? options.retryDelays.map(Number).filter(Number.isFinite).map((delay) => Math.max(0, delay))
+      : [250, 1000];
+    const waitForRetry = options.waitForRetry
+      || ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
     const featureTasks = new Map();
 
     function versionedUrl(path) {
@@ -405,10 +410,31 @@ function createOptionalFeatureLoader(scope = globalThis, options = {}) {
       return url.toString();
     }
 
+    function isRetryableImportError(error) {
+      const message = String(error?.message || error || "");
+      return error?.name === "TypeError"
+        || /failed to fetch dynamically imported module|importing a module script failed|load failed|network|fetch/i.test(message);
+    }
+
+    async function importWithRetry(url) {
+      let target = url;
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          return await importModule(target);
+        } catch (error) {
+          if (attempt >= retryDelays.length || !isRetryableImportError(error)) throw error;
+          await waitForRetry(retryDelays[attempt]);
+          const retryUrl = new URL(url);
+          retryUrl.searchParams.set("retry", String(attempt + 1));
+          target = retryUrl.toString();
+        }
+      }
+    }
+
     function loadModuleFeature(name, path, select = null) {
       const key = String(name || "feature");
       if (featureTasks.has(key)) return featureTasks.get(key);
-      const task = importModule(versionedUrl(path))
+      const task = importWithRetry(versionedUrl(path))
         .then((module) => {
           const value = typeof select === "function" ? select(module) : (module.default || module);
           if (!value) throw new Error(`${key} 기능 초기화에 실패했습니다.`);

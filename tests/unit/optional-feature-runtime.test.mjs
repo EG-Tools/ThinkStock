@@ -184,31 +184,48 @@ test("loads each optional feature only once and creates one timing service", asy
   assert.deepEqual(featurePaths.get("settings"), ["./assets/settings-feature.bundle.min.js"]);
 });
 
-test("module feature loader imports one versioned ESM bundle and retries failures", async () => {
+test("module feature loader retries a transient import failure with a fresh URL", async () => {
   const imported = [];
   let fail = true;
   const loader = createOptionalFeatureLoader({}, {
     document: { baseURI: "https://example.test/ThinkStock/", scripts: [] },
     version: "3.12",
+    retryDelays: [0],
     importModule: async (url) => {
       imported.push(url);
       if (fail) {
         fail = false;
-        throw new Error("network retry");
+        throw new TypeError("Failed to fetch dynamically imported module");
       }
       return { feature: { ready: true } };
     },
   });
 
-  await assert.rejects(
-    loader.loadModuleFeature("example", "./assets/example.js", (module) => module.feature),
-    /network retry/,
-  );
   const first = loader.loadModuleFeature("example", "./assets/example.js", (module) => module.feature);
   const second = loader.loadModuleFeature("example", "./assets/example.js", (module) => module.feature);
 
   assert.equal(first, second);
   assert.deepEqual(await first, { ready: true });
   assert.equal(imported.length, 2);
-  assert.match(imported[1], /example\.js\?v=3\.12$/);
+  assert.match(imported[0], /example\.js\?v=3\.12$/);
+  assert.match(imported[1], /example\.js\?v=3\.12&retry=1$/);
+});
+
+test("module feature loader does not retry module evaluation errors", async () => {
+  let imports = 0;
+  const loader = createOptionalFeatureLoader({}, {
+    document: { baseURI: "https://example.test/ThinkStock/", scripts: [] },
+    version: "3.12",
+    retryDelays: [0, 0],
+    importModule: async () => {
+      imports += 1;
+      throw new SyntaxError("Unexpected token");
+    },
+  });
+
+  await assert.rejects(
+    loader.loadModuleFeature("broken", "./assets/broken.js"),
+    /Unexpected token/,
+  );
+  assert.equal(imports, 1);
 });

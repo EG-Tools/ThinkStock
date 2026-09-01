@@ -49,6 +49,33 @@ test("public deployment verifier rejects stale HTML and accepts the matching bun
   assert.equal(result.deployedVersion, "2.51");
 });
 
+test("public deployment verifier checks every deferred release bundle", async () => {
+  const appBundle = Buffer.from("matching-app");
+  const analyticsBundle = Buffer.from("matching-analytics");
+  const result = await verifyPagesDeployment({
+    pageUrl: "https://example.test/ThinkStock/",
+    expectedVersion: "3.32",
+    expectedBuild: "123-abcdef",
+    expectedBundleHash: sha256(appBundle),
+    expectedAssets: [{
+      path: "assets/analytics-core-feature.bundle.min.js",
+      sha256: sha256(analyticsBundle),
+    }],
+    attempts: 1,
+    fetchImpl: async (url) => {
+      const target = new URL(url);
+      if (target.pathname.endsWith("app.bundle.min.js")) return new Response(appBundle);
+      if (target.pathname.endsWith("analytics-core-feature.bundle.min.js")) {
+        assert.equal(target.searchParams.get("v"), "123-abcdef");
+        return new Response(analyticsBundle);
+      }
+      return new Response('<span id="appVersionText">3.32</span><script src="./assets/app.bundle.min.js?v=123-abcdef"></script>');
+    },
+  });
+
+  assert.equal(result.assetCount, 1);
+});
+
 test("public deployment verifier checks deployed macro files and long news history", async () => {
   const bundle = Buffer.from("matching-bundle");
   const history = {

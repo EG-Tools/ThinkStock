@@ -204,7 +204,8 @@ async function cacheFirst(request) {
     await putIfOk(cache, request, response);
     return response;
   } catch (_) {
-    return (await caches.match(request, { ignoreSearch: true })) || caches.match("./index.html");
+    // A versioned JavaScript request must never receive stale code or index.html.
+    return Response.error();
   }
 }
 
