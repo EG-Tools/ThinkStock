@@ -281,7 +281,7 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
     (element.data || []).find((trace) => trace?.meta?.overlayKind === "ai-scenario")?.x?.length || 0
   ));
   expect(horizonPoints).toBe(127);
-  const linkedDrag = await page.locator("#chart").evaluate((element) => {
+  const linkedDrag = await page.locator("#chart").evaluate((element, mobile) => {
       const scenario = (element.data || []).find((trace) => trace?.meta?.overlayKind === "ai-scenario");
       const seriesKey = scenario?.meta?.seriesKey;
       const priceTraceIndex = (element.data || []).findIndex((trace) => (
@@ -326,10 +326,11 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
           : Number.POSITIVE_INFINITY;
         return [{ index, time, x, y, markerClearance, distance: Math.abs(time - midpoint) }];
       }).sort((left, right) => left.distance - right.distance);
+      const markerClearance = mobile ? 44 : 32;
       const candidate = candidates.find((item) => (
-        item.markerClearance > 32
+        item.markerClearance > markerClearance
         && (!Number.isFinite(firstForecastMs) || item.time < firstForecastMs - (10 * 86400000))
-      )) || candidates.find((item) => item.markerClearance > 32) || candidates[0];
+      )) || candidates.find((item) => item.markerClearance > markerClearance) || candidates[0];
       const pointIndex = candidate?.index ?? -1;
       if (priceTraceIndex < 0 || pointIndex < 0 || !xAxis || !yAxis) return null;
       return {
@@ -344,11 +345,32 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
             && trace?.meta?.seriesKey === seriesKey)
           .map((trace) => Number(trace.y?.[0])),
       };
-    });
+    }, isMobile);
     expect(linkedDrag).not.toBeNull();
-    await page.mouse.move(linkedDrag.x, linkedDrag.y);
-    await page.mouse.down();
-    await page.mouse.move(linkedDrag.x, linkedDrag.y + 24);
+    if (isMobile) {
+      await page.locator("#chart").evaluate(async (element, drag) => {
+        const pointerId = 201;
+        const dispatch = (target, type, clientY, buttons) => target.dispatchEvent(new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          pointerId,
+          pointerType: "touch",
+          isPrimary: true,
+          buttons,
+          clientX: drag.x,
+          clientY,
+        }));
+        dispatch(element, "pointerdown", drag.y, 1);
+        for (const deltaY of [8, 16, 24]) {
+          dispatch(document, "pointermove", drag.y + deltaY, 1);
+          await new Promise(requestAnimationFrame);
+        }
+      }, linkedDrag);
+    } else {
+      await page.mouse.move(linkedDrag.x, linkedDrag.y);
+      await page.mouse.down();
+      await page.mouse.move(linkedDrag.x, linkedDrag.y + 24);
+    }
     await expect.poll(() => page.evaluate(() => (
       Object.keys(window.ThinkStockE2E.getSeriesTransforms().offsets).length
     ))).toBeGreaterThan(0);
@@ -370,7 +392,20 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
     expect(linkedMovement.scenarioDeltas.every((delta) => (
       Math.abs(delta - linkedMovement.priceDelta) < 0.05
     ))).toBe(true);
-  await page.mouse.up();
+  if (isMobile) {
+    await page.evaluate((drag) => document.dispatchEvent(new PointerEvent("pointerup", {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 201,
+      pointerType: "touch",
+      isPrimary: true,
+      buttons: 0,
+      clientX: drag.x,
+      clientY: drag.y + 24,
+    })), linkedDrag);
+  } else {
+    await page.mouse.up();
+  }
   await waitForChartRenderIdle(page);
   await expectAiForecastsAnchoredToOwner(page);
   const observedEnd = await page.locator("#chart").evaluate((element) => Math.max(
@@ -702,6 +737,7 @@ test("AI forecast opens for the first enabled series and stays stable while brow
     message: "KOSPI AI forecast did not render after an empty boot",
     timeout: 30000,
   }).toBe(3);
+  await waitForChartRenderIdle(page);
   const visibleRange = await page.locator("#chart").evaluate((element) => {
     const observedEnd = Math.max(
       ...(element.data || [])

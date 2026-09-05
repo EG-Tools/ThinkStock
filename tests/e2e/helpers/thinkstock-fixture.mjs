@@ -109,6 +109,8 @@ async function waitForChartRenderIdle(page) {
   await expect.poll(async () => {
     const runtime = await page.evaluate(() => window.ThinkStockE2E?.getChartWorkerStats?.() || null);
     const scheduler = runtime?.scheduler;
+    const progressiveComposition = runtime?.progressiveComposition;
+    const visualFrames = runtime?.visualFrames;
     const completed = Number(scheduler?.completedTransactionId) || 0;
     const stable = completed === previousCompleted
       && completed === (Number(scheduler?.lastTransactionId) || 0)
@@ -118,7 +120,14 @@ async function waitForChartRenderIdle(page) {
       && !scheduler?.renderAfterFlight
       && !(scheduler?.pendingReasons || []).length
       && !runtime?.activeType
-      && !(runtime?.queuedTypes || []).length;
+      && !(runtime?.queuedTypes || []).length
+      && !progressiveComposition?.inFlight
+      && !(Number(progressiveComposition?.pending) || 0)
+      && !visualFrames?.framePending
+      && !visualFrames?.inFlight
+      && !(Number(visualFrames?.pendingSeries) || 0)
+      && !visualFrames?.pendingMarkers
+      && !visualFrames?.pendingHandles;
     previousCompleted = completed;
     return stable;
   }, { intervals: [80, 100, 140, 180] }).toBe(true);

@@ -6,6 +6,7 @@ import {
   DESKTOP_PERF_BUDGET,
   setChartRangeMonths,
   waitForBoundingBox,
+  waitForAppReady,
   waitForChartRenderIdle,
   visibleTracePixelSpan,
   columnar,
@@ -107,6 +108,7 @@ test("stock research blocked list scrolls after five rows and unblocks one stock
   }, RESEARCH_CONTRACT);
 
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await waitForAppReady(page);
   await page.locator("#stockResearchBtn").click();
   await expect(page.locator("#stockResearchModal")).toBeVisible();
   await expect(page.locator("#stockResearchModalBlockedClearBtn")).toHaveText("차단 20 종목");

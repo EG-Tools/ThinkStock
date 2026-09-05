@@ -702,11 +702,13 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
       const trace = (element.data || []).find((candidate) => candidate?.meta?.overlayKind === "eps");
       return Math.abs(Number(trace?.y?.[target.pointIndex]) - Number(target.before));
     }, dragTarget)).toBeGreaterThan(0.1);
+    await waitForChartRenderIdle(page);
     expect(await page.evaluate(() => window.ThinkStockE2E.getChartRenderGeneration()))
       .toBe(generationBeforeEpsDrag);
 
     await page.locator('[data-series="218410.KQ"]').click();
     await page.locator('[data-series="218410.KQ"]').click();
+    await waitForChartRenderIdle(page);
     await expect.poll(() => page.evaluate(() => (
       window.ThinkStockE2E.getSeriesTransforms()
     ))).toEqual({ offsets: {}, scales: {} });
@@ -2985,6 +2987,12 @@ test("one wheel input schedules one linked viewport target", async ({ page, isMo
   await installDataRoutes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (
+    window.ThinkStockE2E?.getRefreshPhaseStats?.().supplementalReady || 0
+  )), {
+    message: "startup supplemental refresh did not settle before wheel measurement",
+    timeout: 20_000,
+  }).toBeGreaterThan(0);
   await waitForChartRenderIdle(page);
 
   const before = await page.evaluate(() => (
