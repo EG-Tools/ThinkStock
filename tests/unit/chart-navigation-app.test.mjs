@@ -60,6 +60,155 @@ test("rapid wheel input accumulates from the latest requested range", () => {
   ]);
 });
 
+test("long wheel zoom-in bursts never fall back to a stale rendered range", () => {
+  const applied = [];
+  const navigation = createChartNavigation({}, {
+    viewport,
+    dayMs: 1,
+    minimumSpan: 100,
+    getElement: fakeElement,
+    // Simulate a slow renderer that has not committed any burst frame yet.
+    getCurrentRange: () => [0, 1000],
+    getDataRange: () => [0, 1000],
+    isHistoryReady: () => true,
+    applyRange: (start, end) => {
+      applied.push([start, end]);
+      return true;
+    },
+  });
+
+  for (let index = 0; index < 12; index += 1) navigation.zoom(-1, "wheel-zoom");
+
+  const spans = applied.map(([start, end]) => end - start);
+  assert.equal(spans.length, 11);
+  assert.ok(spans.every((span, index) => index === 0 || span < spans[index - 1]));
+  assert.ok(Math.abs(spans.at(-1) - 100) < 0.001);
+});
+
+test("finishing a wheel gesture starts the next gesture from the rendered viewport", () => {
+  const applied = [];
+  let currentRange = [200, 800];
+  const navigation = createChartNavigation({}, {
+    viewport,
+    dayMs: 1,
+    minimumSpan: 100,
+    getElement: fakeElement,
+    getCurrentRange: () => [...currentRange],
+    getDataRange: () => [0, 1000],
+    isHistoryReady: () => true,
+    applyRange: (start, end) => {
+      applied.push([start, end]);
+      return true;
+    },
+  });
+
+  navigation.zoom(-1, "wheel-zoom");
+  currentRange = [100, 900];
+  navigation.finishWheelZoom();
+  navigation.zoom(-1, "wheel-zoom");
+
+  assert.deepEqual(applied, [
+    [260, 740],
+    [180, 820],
+  ]);
+});
+
+test("the first zoom-out uses already loaded history without waiting for full history", () => {
+  const applied = [];
+  let historyLoads = 0;
+  const navigation = createChartNavigation({}, {
+    viewport,
+    dayMs: 1,
+    minimumSpan: 100,
+    getElement: fakeElement,
+    getCurrentRange: () => [200, 800],
+    getDataRange: () => [0, 1000],
+    isHistoryReady: () => false,
+    loadHistory: async () => { historyLoads += 1; },
+    applyRange: (start, end) => {
+      applied.push([start, end]);
+      return true;
+    },
+  });
+
+  navigation.zoom(1, "wheel-zoom");
+
+  assert.equal(historyLoads, 0);
+  assert.deepEqual(applied, [[140, 860]]);
+});
+
+test("zoom-out requests at the loaded boundary share one history load and one range update", async () => {
+  const applied = [];
+  let historyLoads = 0;
+  let dataRange = [0, 1000];
+  let releaseHistory;
+  const historyGate = new Promise((resolve) => { releaseHistory = resolve; });
+  const navigation = createChartNavigation({}, {
+    viewport,
+    dayMs: 1,
+    minimumSpan: 100,
+    getElement: fakeElement,
+    getCurrentRange: () => [0, 1000],
+    getDataRange: () => [...dataRange],
+    isHistoryReady: () => false,
+    loadHistory: async () => {
+      historyLoads += 1;
+      await historyGate;
+      dataRange = [-1000, 1000];
+    },
+    applyRange: (start, end) => {
+      applied.push([start, end]);
+      return true;
+    },
+  });
+
+  navigation.zoom(1, "wheel-zoom", { anchorRatio: 0.5 });
+  navigation.zoom(1, "wheel-zoom", { anchorRatio: 0.5 });
+  navigation.zoom(1, "wheel-zoom", { anchorRatio: 0.5 });
+  assert.equal(historyLoads, 1);
+  assert.equal(applied.length, 0);
+
+  releaseHistory();
+  await navigation.ensureHistoryReady();
+  await Promise.resolve();
+
+  assert.deepEqual(applied, [[-200, 1000]]);
+});
+
+test("a newer zoom-in cancels a delayed boundary zoom-out", async () => {
+  const applied = [];
+  let dataRange = [0, 1000];
+  let releaseHistory;
+  const historyGate = new Promise((resolve) => { releaseHistory = resolve; });
+  const navigation = createChartNavigation({}, {
+    viewport,
+    dayMs: 1,
+    minimumSpan: 100,
+    getElement: fakeElement,
+    getCurrentRange: () => [0, 1000],
+    getDataRange: () => [...dataRange],
+    isHistoryReady: () => false,
+    loadHistory: async () => {
+      await historyGate;
+      dataRange = [-1000, 1000];
+    },
+    applyRange: (start, end) => {
+      applied.push([start, end]);
+      return true;
+    },
+  });
+
+  navigation.zoom(1, "wheel-zoom");
+  navigation.zoom(-1, "wheel-zoom");
+  assert.deepEqual(applied, [[100, 900]]);
+
+  releaseHistory();
+  await navigation.ensureHistoryReady();
+  await Promise.resolve();
+
+  assert.deepEqual(applied, [[100, 900]]);
+});
+
 test("wheel zoom requests live vertical fitting while auto scale is on", () => {
   const applied = [];
   const navigation = createChartNavigation({}, {

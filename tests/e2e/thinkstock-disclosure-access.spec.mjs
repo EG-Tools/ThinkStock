@@ -17,7 +17,10 @@ test("new stock loads its own Cloudflare DART disclosures", async ({ page }) => 
   await installDataRoutes(page);
   await page.addInitScript(() => {
     localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "e2e-token" }));
-    localStorage.setItem("thinkstock-v5", JSON.stringify({ showDisclosures: true }));
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      showDisclosures: true,
+      showRecessionSignals: false,
+    }));
   });
   let newStockDisclosureRequests = 0;
   const requestedDisclosureTickers = [];
@@ -120,7 +123,7 @@ test("new stock loads its own Cloudflare DART disclosures", async ({ page }) => 
     stockVisible: (element.data || []).some((trace) => (
       trace?.meta?.seriesKey === "000660.KS" && trace.visible !== "legendonly"
     )),
-    aiTraceCount: (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length,
+    aiTraceCount: (element.data || []).filter((trace) => trace?.meta?.overlayKind === "ai-scenario").length,
   }))).toEqual({ stockVisible: true, aiTraceCount: 0 });
   await expect.poll(currentViewport).toEqual(lockedViewport);
   await expect.poll(() => newStockDisclosureRequests).toBe(1);
@@ -128,12 +131,12 @@ test("new stock loads its own Cloudflare DART disclosures", async ({ page }) => 
   expect([...new Set(requestedDisclosureTickers)]).toEqual(["000660.KS"]);
   await expect(page.locator("#disclosureToggle")).toHaveAttribute("aria-pressed", "false");
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
-    (element.data || []).some((trace) => trace?.meta?.isDisclosureTrace)
+    (element.data || []).some((trace) => trace?.meta?.overlayKind === "disclosure")
   ))).toBe(false);
   await page.locator("#disclosureToggle").click();
   await expect(page.locator("#disclosureToggle")).toHaveAttribute("aria-pressed", "true");
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
-    const trace = (element.data || []).find((candidate) => candidate?.meta?.isDisclosureTrace);
+    const trace = (element.data || []).find((candidate) => candidate?.meta?.overlayKind === "disclosure");
     return trace?.meta?.overlayKind === "disclosure"
       && String(trace?.mode || "").includes("text")
       && (trace?.text || []).includes("◆")
@@ -142,7 +145,7 @@ test("new stock loads its own Cloudflare DART disclosures", async ({ page }) => 
   })).toBeGreaterThan(0);
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const stockTrace = (element.data || []).find((trace) => trace?.meta?.seriesKey === "000660.KS");
-    const disclosureTrace = (element.data || []).find((trace) => trace?.meta?.isDisclosureTrace);
+    const disclosureTrace = (element.data || []).find((trace) => trace?.meta?.overlayKind === "disclosure");
     const markerColors = disclosureTrace?.textfont?.color;
     return Array.isArray(markerColors) && markerColors.includes(stockTrace?.line?.color);
   })).toBe(true);
@@ -164,6 +167,7 @@ test("late disclosure and insider data reconcile without toggling the stock", as
       customStocks: [],
       showDisclosures: false,
       showInsiderTrades: true,
+      showRecessionSignals: false,
     }));
   });
 
@@ -237,8 +241,8 @@ test("late disclosure and insider data reconcile without toggling the stock", as
   });
 
   const eventTraceCounts = () => page.locator("#chart").evaluate((element) => ({
-    disclosure: (element.data || []).filter((trace) => trace?.meta?.isDisclosureTrace).length,
-    insider: (element.data || []).filter((trace) => trace?.meta?.isInsiderTradeTrace).length,
+    disclosure: (element.data || []).filter((trace) => trace?.meta?.overlayKind === "disclosure").length,
+    insider: (element.data || []).filter((trace) => trace?.meta?.overlayKind === "insider").length,
   }));
 
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
@@ -412,7 +416,7 @@ test("new stock loads its deployed disclosure file without a gateway token", asy
 
   await expect.poll(() => requestedStaticDisclosure).toBe(true);
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
-    const trace = (element.data || []).find((candidate) => candidate?.meta?.isDisclosureTrace);
+    const trace = (element.data || []).find((candidate) => candidate?.meta?.overlayKind === "disclosure");
     return trace?.meta?.overlayKind === "disclosure"
       && String(trace?.mode || "").includes("text")
       && (trace?.text || []).includes("◆")

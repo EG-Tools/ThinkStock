@@ -30,7 +30,7 @@ test("chart hover requests the complete unified popup at the selected x value", 
     querySelector: (selector) => (popupVisible && selector.includes(".legend") ? {} : null),
     data: [{
       x: ["2026-08-08", "2026-08-11"],
-      meta: { seriesKey: "005930.KS" },
+      meta: { overlayKind: "price", seriesKey: "005930.KS" },
     }],
   };
 
@@ -44,6 +44,46 @@ test("chart hover requests the complete unified popup at the selected x value", 
   runtime.syncHoverToChart(chart, "2026-08-10");
   frames.shift()();
   assert.equal(hoverCalls.length, 2);
+});
+
+test("chart hover opens the specifically selected AI scenario instead of the first scenario", () => {
+  const frames = [];
+  const hoverCalls = [];
+  const scope = {
+    Plotly: {
+      Fx: {
+        hover: (...args) => hoverCalls.push(args),
+        unhover: () => {},
+      },
+    },
+    requestAnimationFrame: (callback) => {
+      frames.push(callback);
+      return frames.length;
+    },
+    cancelAnimationFrame: () => {},
+  };
+  const runtime = hoverModule.createChartHoverRuntime(scope, {
+    findNearestHoverPoint: (_chart, _xValue, traceIndex) => ({
+      curveNumber: traceIndex,
+      pointNumber: 0,
+    }),
+    getTraceTimeMsArray: (trace) => trace.x.map((date) => Date.parse(`${date}T00:00:00Z`)),
+    toMsSafe: (value) => Date.parse(`${String(value).slice(0, 10)}T00:00:00Z`),
+  });
+  const chart = {
+    id: "chart",
+    querySelector: () => null,
+    data: [
+      { x: ["2026-09-01"], meta: { overlayKind: "ai-scenario", aiTraceRole: "upside" } },
+      { x: ["2026-09-01"], meta: { overlayKind: "ai-scenario", aiTraceRole: "sideways" } },
+      { x: ["2026-09-01"], meta: { overlayKind: "ai-scenario", aiTraceRole: "downside" } },
+    ],
+  };
+
+  runtime.syncHoverToChart(chart, "2026-09-01", 2);
+  frames.shift()();
+
+  assert.deepEqual(hoverCalls[0][1], [{ curveNumber: 2, pointNumber: 0 }]);
 });
 
 test("chart hover requests one unified date after grouped rows are combined", () => {
@@ -60,7 +100,7 @@ test("chart hover requests one unified date after grouped rows are combined", ()
       customdata: [combined],
       hovertemplate: "%{text}<extra></extra>",
       meta: {
-        isGroupedHoverTrace: true,
+        overlayKind: "grouped-hover",
         isGroupedHoverOwnerTrace: true,
         hoverGroupTicker: "218410.KQ",
         pointHoverTemplate: "%{x}<br>%{customdata}<extra></extra>",
@@ -72,7 +112,7 @@ test("chart hover requests one unified date after grouped rows are combined", ()
       customdata: ["삼성전자 · 가격 88,000<br>매도 신호"],
       hoverinfo: "skip",
       meta: {
-        isGroupedHoverTrace: true,
+        overlayKind: "grouped-hover",
         hoverGroupTicker: "005930.KS",
         pointHoverTemplate: "%{x}<br>%{customdata}<extra></extra>",
       },
@@ -146,7 +186,7 @@ test("chart hover refreshes the same date when grouped popup data changes", () =
     id: "chart",
     data: [{
       x: ["2026-07-10"],
-      meta: { isGroupedHoverTrace: true, renderFingerprint: "before-zoom" },
+      meta: { overlayKind: "grouped-hover", renderFingerprint: "before-zoom" },
     }],
     querySelector: (selector) => (selector.includes(".legend") ? {} : null),
   };
@@ -156,7 +196,7 @@ test("chart hover refreshes the same date when grouped popup data changes", () =
   frames.shift()();
   chart.data = [{
     x: ["2026-07-10"],
-    meta: { isGroupedHoverTrace: true, renderFingerprint: "after-zoom" },
+    meta: { overlayKind: "grouped-hover", renderFingerprint: "after-zoom" },
   }];
   runtime.syncHoverToChart(chart, "2026-07-10");
   frames.shift()();
@@ -175,7 +215,7 @@ test("chart hover pins grouped marker details to their exact owner point", () =>
     meta: {
       hoverGroupHasDetails: [false, true],
       isGroupedHoverOwnerTrace: true,
-      isGroupedHoverTrace: true,
+      overlayKind: "grouped-hover",
       pointHoverTemplate: "%{x}<br>%{customdata}<extra></extra>",
       renderFingerprint: "eps-detail",
     },
@@ -224,7 +264,7 @@ test("chart hover adds one date header only for a point popup fallback", () => {
     x: ["2026-06-30"],
     hovertemplate: "%{text}<extra></extra>",
     meta: {
-      isGroupedHoverTrace: true,
+      overlayKind: "grouped-hover",
       pointHoverTemplate: "%{x|%Y.%-m.%-d}<br>%{customdata}<extra></extra>",
     },
   };
@@ -365,6 +405,135 @@ test("chart hover keeps the unified price popup on the same indent", () => {
   assert.equal(ticker.getBoundingClientRect().left, 138);
 });
 
+test("chart hover positions a unified popup at the nearest price line", () => {
+  function textLine(text, left, x) {
+    const baseX = Number.parseFloat(x) || 0;
+    const attributes = new Map([["x", x]]);
+    return {
+      textContent: text,
+      contains: () => false,
+      getAttribute: (name) => attributes.get(name) ?? null,
+      getBoundingClientRect: () => ({
+        left: left + (Number.parseFloat(attributes.get("x")) || 0) - baseX,
+      }),
+      hasAttribute: (name) => attributes.has(name),
+      setAttribute: (name, value) => attributes.set(name, String(value)),
+    };
+  }
+  const attributes = new Map([["transform", "translate(20,50)"]]);
+  const group = {
+    getAttribute: (name) => attributes.get(name) ?? null,
+    hasAttribute: (name) => attributes.has(name),
+    removeAttribute: (name) => attributes.delete(name),
+    setAttribute: (name, value) => attributes.set(name, String(value)),
+    getBoundingClientRect: () => {
+      const y = Number(String(attributes.get("transform")).match(/,(-?[\d.]+)/)?.[1] || 50);
+      return { top: 150 + y - 50, bottom: 210 + y - 50, height: 60 };
+    },
+  };
+  const date = textLine("2026.8.25", 100, "3");
+  const ticker = textLine("B", 138, "40");
+  const hoverLayer = {
+    querySelector: (selector) => (selector === "g.legend" ? group : null),
+    querySelectorAll: (selector) => {
+      if (selector === "text.legendtitletext") return [date];
+      if (selector === "text.legendtext") return [ticker];
+      return [];
+    },
+  };
+  const runtime = hoverModule.createChartHoverRuntime({
+    requestAnimationFrame: () => 1,
+    cancelAnimationFrame: () => {},
+  }, {
+    findNearestHoverPoint: () => null,
+    getTraceTimeMsArray: () => [],
+    toMsSafe: () => NaN,
+  });
+  const chart = {
+    _fullLayout: { yaxis: { _offset: 10, _length: 300 } },
+    getBoundingClientRect: () => ({ top: 100, height: 340 }),
+    querySelector: () => hoverLayer,
+  };
+
+  runtime.setHoverPopupAnchor(chart, 120);
+  assert.equal(runtime.normalizeHoverPopupIndent(chart), true);
+  assert.equal(attributes.get("transform"), "translate(20,120)");
+  assert.equal(attributes.get("data-thinkstock-anchor-local-y"), "120");
+
+  runtime.setHoverPopupAnchor(chart, null);
+  runtime.normalizeHoverPopupIndent(chart);
+  assert.equal(attributes.get("transform"), "translate(20,50)");
+});
+
+test("chart hover positions a point fallback at the nearest price line", () => {
+  const groupAttributes = new Map([["transform", "translate(20,50)"]]);
+  const pathAttributes = new Map();
+  const group = {
+    getAttribute: (name) => groupAttributes.get(name) ?? null,
+    hasAttribute: (name) => groupAttributes.has(name),
+    removeAttribute: (name) => groupAttributes.delete(name),
+    setAttribute: (name, value) => groupAttributes.set(name, String(value)),
+    querySelector: () => null,
+  };
+  const pointFrame = {
+    parentElement: group,
+    getAttribute: (name) => pathAttributes.get(name) ?? null,
+    getBBox: () => ({ x: 2, y: 4, width: 80, height: 44 }),
+    getBoundingClientRect: () => {
+      const y = Number(String(groupAttributes.get("transform")).match(/,(-?[\d.]+)/)?.[1] || 50);
+      return { left: 120, right: 200, top: 150 + y - 50, bottom: 200 + y - 50 };
+    },
+    setAttribute: (name, value) => pathAttributes.set(name, String(value)),
+  };
+  const dateAttributes = new Map([["x", "3"]]);
+  const date = {
+    textContent: "2026.8.25",
+    contains: () => false,
+    getAttribute: (name) => dateAttributes.get(name) ?? null,
+    getBoundingClientRect: () => ({ left: 100 }),
+    hasAttribute: (name) => dateAttributes.has(name),
+    setAttribute: (name, value) => dateAttributes.set(name, String(value)),
+  };
+  const tickerAttributes = new Map([["x", "40"]]);
+  const ticker = {
+    textContent: "B",
+    contains: () => false,
+    getAttribute: (name) => tickerAttributes.get(name) ?? null,
+    getBoundingClientRect: () => ({ left: 138 }),
+    hasAttribute: (name) => tickerAttributes.has(name),
+    setAttribute: (name, value) => tickerAttributes.set(name, String(value)),
+  };
+  const hoverLayer = {
+    querySelector: () => null,
+    querySelectorAll: (selector) => {
+      if (selector === "g.hovertext > path") return [pointFrame];
+      if (selector.includes("tspan.line")) return [date, ticker];
+      return [];
+    },
+  };
+  const runtime = hoverModule.createChartHoverRuntime({
+    requestAnimationFrame: () => 1,
+    cancelAnimationFrame: () => {},
+  }, {
+    findNearestHoverPoint: () => null,
+    getTraceTimeMsArray: () => [],
+    toMsSafe: () => NaN,
+  });
+  const chart = {
+    _fullLayout: {
+      xaxis: { _offset: 10, _length: 400 },
+      yaxis: { _offset: 10, _length: 300 },
+    },
+    getBoundingClientRect: () => ({ left: 100, top: 100, width: 440, height: 340 }),
+    querySelector: () => hoverLayer,
+  };
+
+  runtime.setHoverPopupAnchor(chart, 120);
+  assert.equal(runtime.normalizeHoverPopupIndent(chart), true);
+  assert.equal(groupAttributes.get("transform"), "translate(20,120)");
+  assert.equal(groupAttributes.get("data-thinkstock-anchor-local-y"), "120");
+});
+
 test("chart hover retries the same date while only a point fallback is visible", () => {
   const frames = [];
   const hoverCalls = [];
@@ -430,7 +599,7 @@ test("chart hover rebuilds signal details when Plotly reuses the point popup for
     meta: {
       hoverGroupHasDetails: [true],
       isGroupedHoverOwnerTrace: true,
-      isGroupedHoverTrace: true,
+      overlayKind: "grouped-hover",
       pointHoverTemplate: "%{x}<br>%{customdata}<extra></extra>",
     },
   };
@@ -491,9 +660,9 @@ test("chart hover exposes event markers only on the exact selected date", () => 
     getTraceTimeMsArray: (trace) => trace.x.map((date) => Date.parse(`${date}T00:00:00Z`)),
     toMsSafe: (value) => Date.parse(`${String(value).slice(0, 10)}T00:00:00Z`),
   });
-  const line = { x: ["2026-08-08", "2026-08-11"], meta: { seriesKey: "005930.KS" } };
-  const exact = { x: ["2026-08-11"], meta: { isDisclosureTrace: true } };
-  const other = { x: ["2026-08-08"], meta: { isInsiderTradeTrace: true } };
+  const line = { x: ["2026-08-08", "2026-08-11"], meta: { overlayKind: "price", seriesKey: "005930.KS" } };
+  const exact = { x: ["2026-08-11"], meta: { overlayKind: "disclosure" } };
+  const other = { x: ["2026-08-08"], meta: { overlayKind: "insider" } };
   const chart = {
     data: [line, exact, other],
     _fullData: [line, exact, other],
@@ -515,10 +684,10 @@ test("grouped chart hover keeps visual event glyphs silent", () => {
     getTraceTimeMsArray: (trace) => trace.x.map((date) => Date.parse(`${date}T00:00:00Z`)),
     toMsSafe: (value) => Date.parse(`${String(value).slice(0, 10)}T00:00:00Z`),
   });
-  const line = { x: ["2026-08-11"], meta: { seriesKey: "005930.KS" } };
-  const grouped = { x: ["2026-08-11"], meta: { isGroupedHoverTrace: true } };
-  const disclosure = { x: ["2026-08-11"], hoverinfo: "all", meta: { isDisclosureTrace: true } };
-  const insider = { x: ["2026-08-11"], hoverinfo: "none", meta: { isInsiderTradeTrace: true } };
+  const line = { x: ["2026-08-11"], meta: { overlayKind: "price", seriesKey: "005930.KS" } };
+  const grouped = { x: ["2026-08-11"], meta: { overlayKind: "grouped-hover" } };
+  const disclosure = { x: ["2026-08-11"], hoverinfo: "all", meta: { overlayKind: "disclosure" } };
+  const insider = { x: ["2026-08-11"], hoverinfo: "none", meta: { overlayKind: "insider" } };
   const chart = {
     data: [line, grouped, disclosure, insider],
     _fullData: [line, grouped, disclosure, insider],

@@ -9,7 +9,11 @@ test("prepares stable handle geometry without rebuilding unchanged handles", () 
     x: ["2026-01-01", "2026-01-02"],
     y: [100, 140],
     line: { color: "#33ddaa" },
-    meta: { seriesKey: "eps:218410.KQ", isEpsTrace: true, handleLabel: "RFHIC EPS" },
+    meta: {
+      overlayKind: "eps",
+      seriesKey: "eps:218410.KQ",
+      handleLabel: "RFHIC EPS",
+    },
   }];
   const xAxis = { _offset: 20, _length: 300, range: ["2026-01-01", "2026-01-02"] };
   const yAxis = { _offset: 10, _length: 200, range: [0, 200], l2p: (value) => 200 - value };
@@ -27,7 +31,7 @@ test("anchors sparse EPS handles to the visible line intersections", () => {
   const trace = {
     x: ["2026-03-31", "2026-06-30"],
     y: [100, 190],
-    meta: { isEpsTrace: true },
+    meta: { overlayKind: "eps", seriesKey: "eps:218410.KQ" },
   };
   const endpoints = renderer.visibleEndpointValues(
     trace,
@@ -45,12 +49,12 @@ test("updates only matching EPS dates in the grouped hover trace", () => {
     {
       x: ["2026-03-31", "2026-06-30"],
       y: [100, 120],
-      meta: { seriesKey: "eps:218410.KQ", isEpsTrace: true },
+      meta: { overlayKind: "eps", seriesKey: "eps:218410.KQ" },
     },
     {
       x: ["2026-03-31", "2026-04-01", "2026-06-30"],
       y: [100, 77, 120],
-      meta: { isGroupedHoverTrace: true, hoverGroupTicker: "218410.KQ" },
+      meta: { overlayKind: "grouped-hover", hoverGroupTicker: "218410.KQ" },
     },
   ];
   const update = renderer.groupedHoverYUpdate(traces, 0, [130, 170]);
@@ -64,13 +68,13 @@ test("updates price hover anchors without overwriting EPS anchors", () => {
     {
       x: ["2026-03-31", "2026-04-01", "2026-06-30"],
       y: [100, 101, 120],
-      meta: { seriesKey: "218410.KQ" },
+      meta: { overlayKind: "price", seriesKey: "218410.KQ" },
     },
     {
       x: ["2026-03-31", "2026-04-01", "2026-06-30"],
       y: [300, 101, 400],
       meta: {
-        isGroupedHoverTrace: true,
+        overlayKind: "grouped-hover",
         hoverGroupTicker: "218410.KQ",
         hoverGroupPointKinds: ["eps", "price", "eps"],
       },
@@ -98,7 +102,7 @@ test("uses one shared grouped-hover content path for historical and forecast EPS
       text: ["2026년 1분기 EPS 100", "2027년 1분기 전망 EPS 160"],
       hoverinfo: "skip",
       hovertemplate: undefined,
-      meta: { overlayKind: "eps", seriesKey: "eps:218410.KQ", isEpsTrace: true },
+      meta: { overlayKind: "eps", seriesKey: "eps:218410.KQ" },
     },
   ];
 

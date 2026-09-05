@@ -36,7 +36,7 @@
     return times;
   }
 
-  function findNearestHoverPoint(element, xValue) {
+  function findNearestHoverPoint(element, xValue, preferredTraceIndex = null) {
     if (!element?.data?.length) return null;
     const targetMs = toMsSafe(xValue);
     if (targetMs === null) return null;
@@ -45,6 +45,8 @@
     let bestDiff = Number.POSITIVE_INFINITY;
     element.data.forEach((trace, curveNumber) => {
       if (
+        (Number.isInteger(preferredTraceIndex) && curveNumber !== preferredTraceIndex)
+        ||
         !trace
         || trace.visible === "legendonly"
         || trace.hoverinfo === "skip"
@@ -265,12 +267,12 @@
     return ys[leftIndex] + ((ys[nextIndex] - ys[leftIndex]) * ratio);
   }
 
-  function findNearestLineTarget(index, targetMs, localY, yAxis, tolerance) {
+  function findNearestLineTarget(index, targetMs, localY, yAxis, tolerance, includeEntry = null) {
     if (!Array.isArray(index) || !Number.isFinite(targetMs) || !Number.isFinite(localY)) return null;
     let best = null;
     let bestDistance = Number.POSITIVE_INFINITY;
     index.forEach((entry) => {
-      if (entry.trace?.visible === "legendonly") return;
+      if (entry.trace?.visible === "legendonly" || (includeEntry && !includeEntry(entry))) return;
       const y = interpolateLineHitEntry(entry, targetMs);
       const pixelY = yValueToLocalPixelFromAxis(yAxis, y);
       if (!Number.isFinite(pixelY)) return;
@@ -281,7 +283,13 @@
         || (visuallyTied && entry.traceIndex > Number(best?.traceIndex ?? -1))
       )) {
         bestDistance = distance;
-        best = { traceIndex: entry.traceIndex, seriesKey: entry.seriesKey };
+        best = {
+          traceIndex: entry.traceIndex,
+          seriesKey: entry.seriesKey,
+          yValue: y,
+          localY: pixelY,
+          distancePx: distance,
+        };
       }
     });
     return best;

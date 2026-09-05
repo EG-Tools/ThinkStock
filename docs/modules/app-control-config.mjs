@@ -163,7 +163,7 @@ export const BASE_HOVER_NAMES = Object.freeze({
   us_credit_spread: "미국 회사채 3년/국채 3년 금리차",
 });
 export const BASE_SERIES_HELP_NAMES = Object.freeze({
-  leading_cycle: "한국은행 선행지수 순환변동치\n2달 후행",
+  leading_cycle: "한국은행 선행지수 순환변동치\n공개일 기준",
   t10y1y: "미국채 10년/1년 금리차",
   us_credit_spread: "미국 회사채(투자등급) 1-3년/미국채 3년 금리차\n최근 일별 · 과거 월간",
   customer_deposit: "2일 후행",
@@ -179,7 +179,6 @@ export const MAX_CUSTOM_STOCKS = 20;
 export const MAX_VISIBLE_MAIN_SERIES = 10;
 export const OPTIMIZED_VISIBLE_MAIN_SERIES = 5;
 export const CUSTOM_STOCK_PRELOAD_CONCURRENCY = 3;
-export const STARTUP_INTERACTION_SETTLE_MS = 1600;
 export const STARTUP_POST_VISUAL_QUIET_MS = 650;
 export const MAIN_CHART_MODEL_CACHE_MAX_ENTRIES = 10;
 export const MAIN_CHART_MODEL_CACHE_MAX_WEIGHT = 800000;
@@ -266,7 +265,11 @@ export function resolveAppBuildVersion(scope = globalThis, assetName = "app.bund
     const script = documentRef?.currentScript
       || [...(documentRef?.scripts || [])].find((node) => String(node?.src || "").includes(`/${assetName}`));
     const src = String(script?.src || "");
-    return src ? (new URL(src, scope?.location?.href || "http://localhost/").searchParams.get("v") || "dev") : "dev";
+    if (!src) return "dev";
+    const params = new URL(src, scope?.location?.href || "http://localhost/").searchParams;
+    const version = params.get("v") || "dev";
+    const runtimeFingerprint = params.get("asset") || "";
+    return runtimeFingerprint ? `${version}-${runtimeFingerprint}` : version;
   } catch (_) {
     return "dev";
   }
@@ -309,6 +312,7 @@ export function createChartApplicationControlConfig(context) {
       prepare: c.ensureMarketTimingFeature,
       syncButton: c.syncRecessionToggleButton,
       onError: (error) => c.setMessage(`타이밍 준비 오류: ${error.message}`, true),
+      onEnabled: () => c.refreshRuntimeData({ requireDerivedInputs: true }),
       onDisabled: c.cancelSignalProgress,
       onChanged: c.requestChartCompositionUpdate,
     },
@@ -328,9 +332,7 @@ export function createChartApplicationControlConfig(context) {
         c.enableFutureOverlay("ai");
         c.startAiForecastProgress();
         c.showVisibleAiForecastAvailability?.();
-        // The final composition must observe the inputs loaded for this toggle.
-        // Fire-and-forget work could otherwise finish after an older render and
-        // leave a cached forecast without its analysis evidence until retoggled.
+        // Keep refreshed inputs and the final forecast in one awaited update.
         await c.withAiForecastRenderHold(() => Promise.allSettled([
           c.prepareHistoricalDataForAiForecast(),
           c.refreshAiAnalysisForVisibleSeries(),

@@ -171,8 +171,8 @@ export function createTickerPriceAppRuntime(options = {}) {
     return getPayloadController().points(ticker);
   }
 
-  function hasVolumeHistory(ticker) {
-    return getPayloadController().hasVolumeHistory(ticker);
+  function hasVolumeHistory(ticker, minimumPoints = 20) {
+    return getPayloadController().hasVolumeHistory(ticker, minimumPoints);
   }
 
   function isCacheFresh(candidateLatestDate, ticker) {
@@ -419,6 +419,7 @@ export function createTickerPriceAppRuntime(options = {}) {
       historyCoordinator = runtime.createHistoryCoverageCoordinator({
         loadSeries: runTickerPriceRequest,
         hasSeries,
+        hasVolumeHistory,
         latestDate,
       });
     }

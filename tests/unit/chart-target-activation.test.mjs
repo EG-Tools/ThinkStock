@@ -13,6 +13,7 @@ import {
   isPriorityChartPressValid,
   openPriorityChartTarget,
 } from "../../docs/modules/chart-target-activation.mjs";
+import * as chartMath from "../../docs/modules/chart-interaction-math.mjs";
 
 test("shares pointer press movement thresholds across chart targets", () => {
   assert.equal(chartPressMovementPx(false), 8);
@@ -100,6 +101,77 @@ test("chart target runtime owns and invalidates line hit indexes", () => {
   runtime.invalidate(element, { markers: false });
   runtime.findNearestLineDragTarget(element, 70, 50);
   assert.equal(builds, 2);
+});
+
+test("hover anchoring selects the closest price line without changing trace order", () => {
+  const element = {
+    data: [
+      { x: ["2026-08-25"], y: [20], meta: { overlayKind: "price", seriesKey: "A" } },
+      { x: ["2026-08-25"], y: [80], meta: { overlayKind: "price", seriesKey: "B" } },
+      { x: ["2026-08-25"], y: [85], meta: { overlayKind: "eps", seriesKey: "eps:A" } },
+    ],
+    _fullLayout: {
+      xaxis: { _offset: 0, _length: 200 },
+      yaxis: { _offset: 0, _length: 100, range: [0, 100] },
+    },
+    getBoundingClientRect: () => ({ left: 0, top: 0 }),
+  };
+  const runtime = createChartTargetRuntime({
+    getMainElement: () => element,
+    getBaseTraceValues: () => ({}),
+    axisPixelToXValue: () => "2026-08-25",
+    toMilliseconds: Date.parse,
+    adjustableSeriesKeys: () => ["A", "B", "eps:A"],
+    lineHitIndexMatches: chartMath.lineHitIndexMatches,
+    buildLineHitIndex: chartMath.buildLineHitIndex,
+    findNearestLineTarget: chartMath.findNearestLineTarget,
+  });
+
+  const target = runtime.findNearestHoverLineTarget(element, 50, 22);
+  assert.deepEqual({
+    traceIndex: target.traceIndex,
+    seriesKey: target.seriesKey,
+    yValue: target.yValue,
+    xValue: target.xValue,
+  }, {
+    traceIndex: 1,
+    seriesKey: "B",
+    yValue: 80,
+    xValue: "2026-08-25",
+  });
+  assert.ok(Math.abs(target.localY - 20) < 1e-9);
+  assert.ok(Math.abs(target.distancePx - 2) < 1e-9);
+});
+
+test("hover anchoring selects each AI scenario by its rendered y position", () => {
+  const element = {
+    data: [
+      { x: ["2026-09-01"], y: [100], meta: { overlayKind: "price", seriesKey: "A" } },
+      { x: ["2026-09-01"], y: [130], meta: { overlayKind: "ai-scenario", seriesKey: "A", aiTraceRole: "upside" } },
+      { x: ["2026-09-01"], y: [100], meta: { overlayKind: "ai-scenario", seriesKey: "A", aiTraceRole: "sideways" } },
+      { x: ["2026-09-01"], y: [70], meta: { overlayKind: "ai-scenario", seriesKey: "A", aiTraceRole: "downside" } },
+    ],
+    _fullLayout: {
+      xaxis: { _offset: 0, _length: 200 },
+      yaxis: { _offset: 0, _length: 100, range: [0, 200] },
+    },
+    getBoundingClientRect: () => ({ left: 0, top: 0 }),
+  };
+  const runtime = createChartTargetRuntime({
+    getMainElement: () => element,
+    getBaseTraceValues: () => ({}),
+    axisPixelToXValue: () => "2026-09-01",
+    toMilliseconds: Date.parse,
+    adjustableSeriesKeys: () => ["A", "", "", ""],
+    lineHitIndexMatches: chartMath.lineHitIndexMatches,
+    buildLineHitIndex: chartMath.buildLineHitIndex,
+    findNearestLineTarget: chartMath.findNearestLineTarget,
+  });
+
+  const downside = runtime.findNearestHoverLineTarget(element, 50, 65);
+  assert.equal(downside.traceIndex, 3);
+  assert.equal(downside.overlayKind, "ai-scenario");
+  assert.equal(downside.seriesKey, "A");
 });
 
 test("shares one axis conversion across report and line hit tests in a pointer frame", () => {

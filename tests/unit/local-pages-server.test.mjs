@@ -227,6 +227,65 @@ test("parses ADR chart arrays into one row per date", () => {
   assert.deepEqual(rows, [{ date: "2026-08-06", adr_kospi: 91.2, adr_kosdaq: 87.4 }]);
 });
 
+test("local fear-greed route returns the same full history used by the deployed app", async () => {
+  let requestedUrl = "";
+  const history = {
+    rows: [
+      { date: "2026-08-12", score: 43 },
+      { date: "2026-09-04", score: 32 },
+    ],
+  };
+  const server = await createThinkStockServer({
+    syncPagesData: false,
+    fetchImpl: async (url) => {
+      requestedUrl = String(url);
+      return new Response(JSON.stringify(history), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+    gateway: { apiKey: "", initialize: async () => {} },
+  });
+  try {
+    const port = await listenTestServer(server);
+    const payload = await fetch(`http://127.0.0.1:${port}/api/fear-greed`)
+      .then((response) => response.json());
+
+    assert.match(requestedUrl, /action=kospi-history/);
+    assert.deepEqual(payload.rows, history.rows);
+  } finally {
+    server.close();
+    await once(server, "close");
+  }
+});
+
+test("local fear-greed latest route uses the lightweight current snapshot", async () => {
+  let requestedUrl = "";
+  const server = await createThinkStockServer({
+    syncPagesData: false,
+    fetchImpl: async (url) => {
+      requestedUrl = String(url);
+      return new Response(JSON.stringify({ updated: "2026-09-04", score: 32 }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+    gateway: { apiKey: "", initialize: async () => {} },
+  });
+  try {
+    const port = await listenTestServer(server);
+    const payload = await fetch(`http://127.0.0.1:${port}/api/fear-greed?latest=1`)
+      .then((response) => response.json());
+
+    assert.match(requestedUrl, /action=kospi(?:&|$)/);
+    assert.doesNotMatch(requestedUrl, /kospi-history/);
+    assert.equal(payload.score, 32);
+  } finally {
+    server.close();
+    await once(server, "close");
+  }
+});
+
 test("mirrors deployed segmented data into an ignored local cache", async () => {
   const cacheDir = await mkdtemp(path.join(os.tmpdir(), "thinkstock-pages-data-"));
   const recentText = JSON.stringify({ dates: ["2026-08-05"], columns: { adr_kospi: [90] } });
@@ -579,8 +638,8 @@ test("local research history sends only an overlapping tail unless a full reset 
 test("loads both core indices directly from the local KRX key", async () => {
   assert.deepEqual(localKrxIndexPointFromRows([
     { IDX_NM: "KOSPI 200", BAS_DD: "20260805", CLSPRC_IDX: "500.1" },
-    { IDX_NM: "KOSPI", BAS_DD: "20260805", CLSPRC_IDX: "3,210.5" },
-  ], "KOSPI"), { date: "2026-08-05", close: 3210.5 });
+    { IDX_NM: "KOSPI", BAS_DD: "20260805", CLSPRC_IDX: "3,210.5", ACC_TRDVOL: "123,456" },
+  ], "KOSPI"), { date: "2026-08-05", close: 3210.5, volume: 123456 });
   const payload = await fetchLocalKrxCoreIndices(async (url, options = {}) => {
     assert.equal(options.headers.AUTH_KEY, "krx-secret");
     const target = new URL(url);
@@ -642,8 +701,8 @@ test("overlays same-day Naver indices during the Korean market session", async (
   }, "krx-secret", new Date("2026-08-10T00:30:00Z"));
 
   assert.deepEqual(payload.records, [
-    { ticker: "^KS11", date: "2026-08-10", close: 3250.7, source: "NAVER_FALLBACK" },
-    { ticker: "^KQ11", date: "2026-08-10", close: 1024.4, source: "NAVER_FALLBACK" },
+    { ticker: "^KS11", date: "2026-08-10", close: 3250.7, volume: 1, source: "NAVER_FALLBACK" },
+    { ticker: "^KQ11", date: "2026-08-10", close: 1024.4, volume: 1, source: "NAVER_FALLBACK" },
   ]);
   assert.equal(payload.stale, false);
 });

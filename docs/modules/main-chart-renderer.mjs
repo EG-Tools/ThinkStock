@@ -1,6 +1,9 @@
 import { chartLoader } from "./chart-loader.mjs";
 import { chartMarkerRuntime as markerRuntime } from "./chart-marker-runtime.mjs";
-import { assertChartRenderPayload } from "./chart-render-contract.mjs";
+import {
+  assertMainChartRenderPayload,
+  chartTraceOverlayKind,
+} from "./chart-render-contract.mjs";
 import { orderItemsByActivation } from "./chart-session-controller.mjs";
 
   const DAY_MS = 24 * 60 * 60 * 1000;
@@ -41,18 +44,6 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
     insider: 40,
   });
 
-  function legacyOverlayKind(trace) {
-    if (trace?.meta?.isGroupedHoverTrace) return "grouped-hover";
-    const markerKind = markerRuntime?.eventMarkerKind?.(trace) || "";
-    if (markerKind) return markerKind;
-    if (trace?.meta?.isAiForecastBand) return "ai-band";
-    if (trace?.meta?.isAiForecastScenarioTrace) return "ai-scenario";
-    if (trace?.meta?.isAiReportMarkerTrace) return "ai-report";
-    if (trace?.meta?.isAiForecastTrace) return "ai";
-    if (trace?.meta?.isEpsTrace) return "eps";
-    return trace?.meta?.seriesKey ? "price" : "";
-  }
-
   function chartOverlayDescriptor(trace) {
     if (!trace || typeof trace !== "object") {
       return {
@@ -67,7 +58,7 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
       };
     }
     const cached = overlayDescriptorCache.get(trace);
-    const kind = String(trace?.meta?.overlayKind || legacyOverlayKind(trace));
+    const kind = chartTraceOverlayKind(trace);
     const seriesKey = String(trace?.meta?.seriesKey || "");
     const role = String(trace?.meta?.aiTraceRole || "");
     const hoverTicker = String(trace?.meta?.hoverGroupTicker || "");
@@ -632,7 +623,6 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
         hovertemplate: groupedHoverTemplate(false),
         meta: {
           overlayKind: "grouped-hover",
-          isGroupedHoverTrace: true,
           hoverGroupTicker: series,
           hoverGroupHasDetails: rows.map((row) => row.details.length > 0),
           hoverGroupPointKinds: rows.map((row) => row.anchorKind),
@@ -715,7 +705,7 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
     const sourceKind = chartOverlayDescriptor(sourceTrace).kind === "eps" ? "eps" : "price";
     const ticker = sourceSeries.replace(/^eps:/, "");
     const groupedIndex = traces.findIndex((trace) => (
-      trace?.meta?.isGroupedHoverTrace && trace.meta.hoverGroupTicker === ticker
+      chartTraceOverlayKind(trace) === "grouped-hover" && trace.meta.hoverGroupTicker === ticker
     ));
     if (groupedIndex < 0) return null;
     const grouped = traces[groupedIndex];
@@ -873,7 +863,7 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
       last = visibleValueAt(index);
       if (last !== null) break;
     }
-    if (hasRange && trace?.meta?.isEpsTrace && typeof interpolateAtMs === "function") {
+    if (hasRange && chartTraceOverlayKind(trace) === "eps" && typeof interpolateAtMs === "function") {
       const interpolationTrace = values === trace.y ? trace : { ...trace, y: yValues };
       const leftBoundary = interpolateAtMs(interpolationTrace, low);
       const rightBoundary = interpolateAtMs(interpolationTrace, high);
@@ -1604,7 +1594,7 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
   }
 
   async function render(plotly, element, traces, layout, config, options = {}) {
-    assertChartRenderPayload(traces, layout);
+    assertMainChartRenderPayload(traces, layout);
     let attemptedPartial = false;
     const fallbacks = [];
     const nextRenderState = buildRenderState(traces, layout, config);

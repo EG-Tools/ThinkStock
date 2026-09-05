@@ -19,6 +19,21 @@ test("finds the nearest visible chart point by date", () => {
   });
 });
 
+test("finds a hover point inside the explicitly selected scenario trace", () => {
+  const element = {
+    data: [
+      { x: ["2026-09-01"], y: [120], meta: { overlayKind: "ai-scenario", aiTraceRole: "upside" } },
+      { x: ["2026-09-01"], y: [100], meta: { overlayKind: "ai-scenario", aiTraceRole: "sideways" } },
+      { x: ["2026-09-01"], y: [80], meta: { overlayKind: "ai-scenario", aiTraceRole: "downside" } },
+    ],
+  };
+
+  assert.deepEqual(chartMath.findNearestHoverPoint(element, "2026-09-01", 2), {
+    curveNumber: 2,
+    pointNumber: 0,
+  });
+});
+
 
 test("converts chart pixels and interpolates line values", () => {
   const element = {
@@ -77,7 +92,13 @@ test("builds and reuses a numeric line hit index", () => {
     170,
     { _offset: 10, _length: 200, range: [0, 100] },
     2,
-  ), { traceIndex: 0, seriesKey: "first" });
+  ), {
+    traceIndex: 0,
+    seriesKey: "first",
+    yValue: 20,
+    localY: 170,
+    distancePx: 0,
+  });
 
   traces[0].y = [20, 40];
   assert.equal(chartMath.lineHitIndexMatches(index, traces, seriesKeys), false);
@@ -100,7 +121,41 @@ test("prefers the visually topmost line when two series overlap", () => {
     110,
     { _offset: 10, _length: 200, range: [0, 100] },
     4,
-  ), { traceIndex: 1, seriesKey: "stock" });
+  ), {
+    traceIndex: 1,
+    seriesKey: "stock",
+    yValue: 50,
+    localY: 110,
+    distancePx: 0,
+  });
+});
+
+test("selects the closest price line while excluding other overlays", () => {
+  const traces = [
+    { x: ["2026-01-01"], y: [20], meta: { overlayKind: "price" } },
+    { x: ["2026-01-01"], y: [78], meta: { overlayKind: "price" } },
+    { x: ["2026-01-01"], y: [80], meta: { overlayKind: "eps" } },
+  ];
+  const index = chartMath.buildLineHitIndex(traces, ["first", "second", "eps:first"]);
+  const target = chartMath.findNearestLineTarget(
+    index,
+    Date.parse("2026-01-01"),
+    52,
+    { _offset: 10, _length: 200, range: [0, 100] },
+    Number.POSITIVE_INFINITY,
+    (entry) => entry.trace.meta.overlayKind === "price",
+  );
+  assert.deepEqual({
+    traceIndex: target.traceIndex,
+    seriesKey: target.seriesKey,
+    yValue: target.yValue,
+  }, {
+    traceIndex: 1,
+    seriesKey: "second",
+    yValue: 78,
+  });
+  assert.ok(Math.abs(target.localY - 54) < 1e-9);
+  assert.ok(Math.abs(target.distancePx - 2) < 1e-9);
 });
 
 
@@ -109,7 +164,7 @@ test("prioritizes a marker inside its two-dimensional hit radius", () => {
     x: ["2026-01-01", "2026-03-31"],
     y: [20, 40],
     marker: { size: [0, 15] },
-    meta: { isEpsTrace: true },
+    meta: { overlayKind: "eps" },
   };
   const index = chartMath.buildLineHitIndex([trace], ["eps:first"]);
   const target = chartMath.findNearestMarkerTarget(
@@ -119,7 +174,7 @@ test("prioritizes a marker inside its two-dimensional hit radius", () => {
     { _offset: 10, d2p: (value) => value === "2026-03-31" ? 100 : 0 },
     { _offset: 10, _length: 200, range: [0, 100] },
     24,
-    (entry, pointIndex) => entry.trace.meta.isEpsTrace && entry.trace.marker.size[pointIndex] > 0,
+    (entry, pointIndex) => entry.trace.meta.overlayKind === "eps" && entry.trace.marker.size[pointIndex] > 0,
   );
 
   assert.deepEqual(target, { traceIndex: 0, seriesKey: "eps:first", pointIndex: 1 });
@@ -138,7 +193,7 @@ test("skips dense price entries before scanning sparse EPS markers", () => {
     x: ["eps-0", "eps-1"],
     y: [20, 40],
     marker: { size: [0, 15] },
-    meta: { isEpsTrace: true },
+    meta: { overlayKind: "eps" },
   };
   const index = chartMath.buildLineHitIndex([densePrice, eps], ["price", "eps:price"]);
   const target = chartMath.findNearestMarkerTarget(
@@ -149,10 +204,10 @@ test("skips dense price entries before scanning sparse EPS markers", () => {
     { _offset: 10, _length: 200, range: [0, 100] },
     24,
     (entry, pointIndex) => {
-      if (!entry.trace.meta.isEpsTrace) pricePointChecks.count += 1;
+      if (entry.trace.meta.overlayKind !== "eps") pricePointChecks.count += 1;
       return entry.trace.marker.size[pointIndex] > 0;
     },
-    (entry) => entry.trace.meta.isEpsTrace,
+    (entry) => entry.trace.meta.overlayKind === "eps",
   );
 
   assert.equal(pricePointChecks.count, 0);
@@ -168,7 +223,7 @@ test("limits sorted EPS marker hit tests to points near the cursor date", () => 
     x: dates,
     y: dates.map(() => 50),
     marker: { size: dates.map(() => 12) },
-    meta: { isEpsTrace: true },
+    meta: { overlayKind: "eps" },
   };
   const index = chartMath.buildLineHitIndex([trace], ["eps:first"]);
   let pointChecks = 0;
@@ -183,7 +238,7 @@ test("limits sorted EPS marker hit tests to points near the cursor date", () => 
       pointChecks += 1;
       return true;
     },
-    (entry) => entry.trace.meta.isEpsTrace,
+    (entry) => entry.trace.meta.overlayKind === "eps",
     Date.parse(dates[250]),
   );
 

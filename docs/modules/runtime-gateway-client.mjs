@@ -144,6 +144,7 @@ import { throwIfAborted } from "./browser-request-runtime.mjs";
           forceNetwork: requestOptions.forceNetwork,
           signal: requestOptions.signal,
           timeoutMs: requestOptions.timeoutMs,
+          normalize: options.contract?.normalizeIndexPayload,
         });
       },
       fetchMacro(requestOptions = {}) {
@@ -168,6 +169,33 @@ import { throwIfAborted } from "./browser-request-runtime.mjs";
           signal: requestOptions.signal,
           timeoutMs: requestOptions.timeoutMs,
           normalize: options.contract?.normalizeCreditPayload,
+        });
+      },
+      fetchAdr(requestOptions = {}) {
+        const endpointKey = requestOptions.latestOnly === true ? "adrLatest" : "adr";
+        return requestJson({
+          label: "ADR",
+          contractSource: "adr-contract",
+          localEndpoint: options.localEndpoints?.[endpointKey],
+          remoteEndpoint: options.endpoints?.[endpointKey],
+          forceNetwork: requestOptions.forceNetwork,
+          signal: requestOptions.signal,
+          timeoutMs: requestOptions.timeoutMs,
+          normalize: options.contract?.normalizeAdrPayload,
+        });
+      },
+      fetchFearGreed(requestOptions = {}) {
+        const endpointKey = requestOptions.latestOnly === true ? "fearGreedLatest" : "fearGreed";
+        return requestJson({
+          label: "fear-greed",
+          authenticated: false,
+          contractSource: "fear-greed-contract",
+          localEndpoint: options.localEndpoints?.[endpointKey],
+          remoteEndpoint: options.endpoints?.[endpointKey],
+          forceNetwork: requestOptions.forceNetwork,
+          signal: requestOptions.signal,
+          timeoutMs: requestOptions.timeoutMs,
+          normalize: options.contract?.normalizeFearGreedPayload,
         });
       },
       fetchCrisisSignal(requestOptions = {}) {

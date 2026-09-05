@@ -34,9 +34,7 @@ import {
   MARKET_INDEX_SERIES,
   MAX_CUSTOM_STOCKS,
   MAX_VISIBLE_MAIN_SERIES,
-  NEWS_SENTIMENT_SERIES,
   SERIES_COLORS,
-  STARTUP_INTERACTION_SETTLE_MS,
   STARTUP_POST_VISUAL_QUIET_MS,
   STACKED_HOVER_PRICE_SERIES,
   STOCK_TICKER_PATTERN,
@@ -121,13 +119,51 @@ import {
   createRuntimeDiagnosticStateCollector,
 } from "./modules/performance-monitor.mjs";
 import * as runtimeGatewayClientModule from "./modules/runtime-gateway-client.mjs";
-import * as runtimeDataAppModule from "./modules/runtime-data-app.mjs";
-import * as runtimeDataTransactionModule from "./modules/runtime-data-transaction.mjs";
-import * as runtimeMarketRefreshModule from "./modules/runtime-market-refresh.mjs";
-import * as runtimeRefreshOrchestratorModule from "./modules/runtime-refresh-orchestrator.mjs";
-import * as runtimeSeriesMergeModule from "./modules/runtime-series-merge.mjs";
-import * as runtimeSnapshotControllerModule from "./modules/runtime-snapshot-controller.mjs";
-import * as runtimeSourceHealthModule from "./modules/runtime-source-health.mjs";
+import { createRuntimeDataApp } from "./modules/runtime-data-app.mjs";
+import {
+  mergeRuntimeSeedComponents,
+  sameDatedRows as sameRuntimeDatedRows,
+} from "./modules/runtime-data-transaction.mjs";
+import {
+  createRuntimeBootstrapService,
+  createRuntimeIndexRefreshService,
+  createRuntimeMarketRefresh,
+  isRetryableAdrRefreshError,
+  latestDatesByTicker,
+  planKoreanPriceRefresh,
+} from "./modules/runtime-market-refresh.mjs";
+import {
+  createRuntimeRefreshChangeApplier,
+  createRuntimeRefreshOrchestrator,
+  createRuntimeRefreshPolicy,
+  isRetryableRuntimeError,
+  retryOnce,
+  runRefreshPhases,
+  waitForRetryDelay as waitForDelay,
+} from "./modules/runtime-refresh-orchestrator.mjs";
+import {
+  assertPricePoints as assertRuntimePricePoints,
+  assertRows as assertRuntimeRows,
+  createRuntimeSeriesController,
+  normalizeCreditInputRows,
+  normalizeCrisisRows,
+  policiesFor as runtimeSeriesPoliciesFor,
+  sameNullableNumber,
+  validateSnapshotComponent,
+} from "./modules/runtime-series-merge.mjs";
+import {
+  buildCompactSnapshot,
+  buildSignature as buildRuntimeSnapshotSignature,
+  createRevisionTracker,
+  createRuntimeSnapshotController,
+  createSnapshotComponentContract,
+  hasCoreHistoricalCoverage,
+  isSnapshotUsable,
+} from "./modules/runtime-snapshot-controller.mjs";
+import {
+  createRuntimeSourceHealth,
+  summarizeSourceStates,
+} from "./modules/runtime-source-health.mjs";
 import * as seriesCacheRetentionModule from "./modules/series-cache-retention.mjs";
 import { createServiceWorkerClient } from "./modules/service-worker-client.mjs";
 import { createScheduledSettlementRuntime } from "./modules/scheduled-settlement-runtime.mjs";
@@ -187,11 +223,6 @@ const signalProgress = createTaskProgress(globalThis, {
 const serviceWorkerClient = createServiceWorkerClient(globalThis);
 const requestServiceWorkerDataRefresh = serviceWorkerClient.requestDataRefresh;
 const scheduleServiceWorkerRegistration = serviceWorkerClient.scheduleRegistration;
-const {
-  retryOnce,
-  runRefreshPhases,
-  waitForRetryDelay: waitForDelay,
-} = runtimeRefreshOrchestratorModule;
 const appRequestRegistry = createSharedRequestRegistry();
 const appRuntimeRegistry = createLazyRuntimeRegistry();
 const {
@@ -339,7 +370,7 @@ const DATA_CACHE_DB_VERSION = runtimeStorageContract.dbVersion;
 const DATA_CACHE_STORE_NAME = runtimeStorageContract.stores.snapshots;
 const DATA_CACHE_RECORD_KEY = runtimeStorageContract.snapshotRecordKey;
 const DATA_CACHE_LOCAL_KEY = runtimeStorageContract.localSnapshotKey;
-const DATA_CACHE_SCHEMA_VERSION = 12;
+const DATA_CACHE_SCHEMA_VERSION = 13;
 const DATA_CACHE_MAX_AGE_DAYS = 7;
 const RUNTIME_SNAPSHOT_FORMAT = "component-v1";
 const RUNTIME_SNAPSHOT_COMPONENT_KEYS = Object.freeze({
@@ -369,7 +400,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = tickerPriceRuntimeModule.CORPORATE_ACTION_RATIO_THRESHOLD;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = tickerPriceRuntimeModule.CORPORATE_ACTION_MAX_BOUNDARY_DAYS;
-const APP_VERSION = "3.32";
+const APP_VERSION = "3.33";
 const APP_BUILD_VERSION = resolveAppBuildVersion(globalThis);
 const cacheMigrator = cacheMaintenanceRuntimeModule.createCacheMigrator(globalThis, {
   markerKey: "thinkstock-cache-migrations-v1",
@@ -444,10 +475,10 @@ const optionalFeatureRuntime = createOptionalFeatureRuntime(globalThis, {
     },
   ),
 });
-const runtimeDataApp = runtimeDataAppModule.createRuntimeDataApp(globalThis, {
+const runtimeDataApp = createRuntimeDataApp(globalThis, {
   isAbortError,
   runRefresh: (messageElement, options) => getRuntimeRefreshOrchestrator().run(messageElement, options),
-  sourceLedger: runtimeSourceHealthModule.createRuntimeSourceHealth(globalThis, {
+  sourceLedger: createRuntimeSourceHealth(globalThis, {
     persistDelayMs: 350,
   }),
 });
@@ -468,14 +499,16 @@ function scheduleDeferredServiceWorkerRegistration() {
     { delayMs: 12000, group: "app-maintenance", priority: -20 },
   ).catch(() => {});
 }
-const deferredPerformanceDiagnostics = createDeferredDiagnosticsFacade(globalThis, {
-  registry: appRuntimeRegistry,
-  runtimeKey: APP_RUNTIME_KEYS.deferredDiagnostics,
-  optional: optionalFeatureRuntime,
-  scheduler: backgroundTaskScheduler,
-  performanceApi: performanceMonitor.api,
-  onFeatureLoaded: (feature) => chartRenderTelemetry.attach(feature, globalThis),
-});
+const deferredPerformanceDiagnostics = __THINKSTOCK_E2E_DIAGNOSTICS__
+  ? createDeferredDiagnosticsFacade(globalThis, {
+    registry: appRuntimeRegistry,
+    runtimeKey: APP_RUNTIME_KEYS.deferredDiagnostics,
+    optional: optionalFeatureRuntime,
+    scheduler: backgroundTaskScheduler,
+    performanceApi: performanceMonitor.api,
+    onFeatureLoaded: (feature) => chartRenderTelemetry.attach(feature, globalThis),
+  })
+  : null;
 const granularCacheMaintenance = cacheMaintenanceRuntimeModule.createCacheMaintenanceRuntime(globalThis, {
   store: indexedCacheStore,
   lifecyclePolicy: cacheLifecyclePolicyModule,
@@ -514,10 +547,24 @@ const runtimeSnapshotCacheConfig = Object.freeze({
   format: RUNTIME_SNAPSHOT_FORMAT,
   componentKeys: RUNTIME_SNAPSHOT_COMPONENT_KEYS,
 });
-const runtimeSnapshotRevisionTracker = runtimeSnapshotControllerModule.createRevisionTracker(
+const runtimeSnapshotRevisionTracker = createRevisionTracker(
   Object.keys(RUNTIME_SNAPSHOT_COMPONENT_KEYS),
 );
-const FEAR_GREED_LIVE_URL = "https://kospi.feargreedchart.com/api/?action=kospi-history";
+const AUXILIARY_DATA_FIELDS_BY_KEY = Object.freeze({
+  adrRows: Object.freeze([
+    AUXILIARY_SERIES_KEYS.adrKospi,
+    AUXILIARY_SERIES_KEYS.adrKosdaq,
+    AUXILIARY_SERIES_KEYS.fearGreed,
+    AUXILIARY_SERIES_KEYS.vkospi,
+    AUXILIARY_SERIES_KEYS.vix,
+  ]),
+  macroRows: Object.freeze([AUXILIARY_SERIES_KEYS.newsSentiment]),
+});
+const auxiliaryDataRevisionTracker = createRevisionTracker(
+  Object.values(AUXILIARY_DATA_FIELDS_BY_KEY).flat(),
+);
+const FEAR_GREED_HISTORY_URL = "https://kospi.feargreedchart.com/api/?action=kospi-history";
+const FEAR_GREED_LATEST_URL = "https://kospi.feargreedchart.com/api/?action=kospi";
 const IS_E2E_RUNTIME = typeof window !== "undefined"
   && new URLSearchParams(window.location.search).has("e2e");
 const IS_LOCAL_RUNTIME = typeof window !== "undefined"
@@ -594,7 +641,7 @@ const dataSeedLoader = dataSeedLoaderModule.createDataSeedLoader({
   appendCacheBust,
 });
 const seedBundleParser = dataSeedLoaderModule.createSeedBundleParser(globalThis, {
-    workerUrl: `./modules/data-worker.mjs?v=${encodeURIComponent(APP_BUILD_VERSION || "dev")}`,
+    workerUrl: `./assets/data-worker.bundle.min.js?v=${encodeURIComponent(APP_BUILD_VERSION || "dev")}`,
   parseSync: parseSeedBundleSync,
 });
 const seedBundleLoader = dataSeedLoaderModule.createSeedBundleLoader({
@@ -629,6 +676,10 @@ const runtimeGatewayClient = runtimeGatewayClientModule.createRuntimeGatewayClie
     indices: KRX_GATEWAY_INDEX_ENDPOINT,
     macro: ECOS_GATEWAY_MACRO_ENDPOINT,
     credit: CREDIT_GATEWAY_ENDPOINT,
+    adr: ADR_GATEWAY_ENDPOINT,
+    adrLatest: `${ADR_GATEWAY_ENDPOINT}?latest=1`,
+    fearGreed: FEAR_GREED_HISTORY_URL,
+    fearGreedLatest: FEAR_GREED_LATEST_URL,
     crisisSignal: CRISIS_SIGNAL_GATEWAY_ENDPOINT,
     disclosures: DART_GATEWAY_DISCLOSURE_ENDPOINT,
     epsHistory: DART_GATEWAY_EPS_ENDPOINT,
@@ -638,6 +689,10 @@ const runtimeGatewayClient = runtimeGatewayClientModule.createRuntimeGatewayClie
     indices: "./api/indices",
     macro: "./api/macro",
     credit: "./api/credit",
+    adr: "./api/adr",
+    adrLatest: "./api/adr?latest=1",
+    fearGreed: "./api/fear-greed",
+    fearGreedLatest: "./api/fear-greed?latest=1",
     crisisSignal: "./api/crisis-signal",
     disclosures: "./api/dart/disclosures",
     epsHistory: "./api/dart/eps-history",
@@ -677,12 +732,11 @@ const mergeInsiderTradeRowsWithChange = appFeatures.mergeInsiderRowsWithChange;
 const ensureEpsFeatureModules = appFeatures.ensureEps;
 const ensureMarketTimingFeature = appFeatures.ensureMarketTiming;
 const toNum = (v) => (v != null && Number.isFinite(Number(v))) ? Number(v) : null;
-const normalizeCreditRows = (rows) => runtimeSeriesMergeModule.normalizeCreditInputRows(
+const normalizeCreditRows = (rows) => normalizeCreditInputRows(
   rows,
   CREDIT_COLS,
 );
-const normalizeCrisisSignalRows = (rows) => runtimeSeriesMergeModule.normalizeCrisisRows(rows);
-const sameNullableNumber = (left, right) => runtimeSeriesMergeModule.sameNullableNumber(left, right);
+const normalizeCrisisSignalRows = (rows) => normalizeCrisisRows(rows);
 const fetchPreferredTickerHistory = createPreferredTickerHistoryFetcher({
   endpoint: TICKER_HISTORY_ENDPOINT,
   fetchWithTimeout,
@@ -768,10 +822,10 @@ const CHART_VIEWPORT_MIN_BUFFER_MS = DAY_MS * 45;
 const INTERACTION_RENDER_DELAY_MS = 260;
 
 const sameNumericDatedRows = (left, right) => (
-  runtimeDataTransactionModule.sameDatedRows(left, right)
+  sameRuntimeDatedRows(left, right)
 );
 const sameTextDatedRows = (left, right) => (
-  runtimeDataTransactionModule.sameDatedRows(left, right, { numericStrings: false })
+  sameRuntimeDatedRows(left, right, { numericStrings: false })
 );
 const appData = createAppDataStore({}, {
   equalsByKey: {
@@ -785,7 +839,17 @@ const appData = createAppDataStore({}, {
 });
 const appDataRevisionBridge = createAppDataRevisionBridge(appData, {
   markChanged: (components) => runtimeSnapshotRevisionTracker.markChanged(components),
-  onChanged: scheduleDataFreshnessRender,
+  onChanged: (components, event) => {
+    (event?.changed || []).forEach((dataKey) => {
+      const supported = AUXILIARY_DATA_FIELDS_BY_KEY[dataKey] || [];
+      if (!supported.length) return;
+      const explicit = event?.changedFieldsByKey?.[dataKey];
+      auxiliaryDataRevisionTracker.markChanged(
+        Array.isArray(explicit) ? explicit.filter((key) => supported.includes(key)) : supported,
+      );
+    });
+    scheduleDataFreshnessRender(components, event);
+  },
 });
 let disclosureManifest = null;
 let disclosureSeedLoadedTickers = new Set();
@@ -1034,18 +1098,29 @@ const initE2eDebugAccess = __THINKSTOCK_E2E_DIAGNOSTICS__
       getTimingMarkerPixelGaps() {
         const chart = document.getElementById("chart");
         const axis = chart?._fullLayout?.yaxis;
-        const models = chartSession.currentMainChartModel?.seriesModels || [];
-        const selected = chartSession.currentMainChartModel?.selected || [];
-        if (!axis || typeof axis.d2p !== "function" || !models.length) return [];
-        const pointIndex = buildDisclosurePointIndex(models, new Set(selected));
+        const traces = Array.isArray(chart?.data) ? chart.data : [];
+        if (!axis || typeof axis.d2p !== "function" || !traces.length) return [];
+        const visibleXRange = (chart?._fullLayout?.xaxis?.range || []).map((value) => Date.parse(value));
+        const hasVisibleXRange = visibleXRange.length === 2 && visibleXRange.every(Number.isFinite);
+        const renderedPricePoints = new Map(traces.flatMap((trace) => {
+          if (trace?.meta?.overlayKind !== "price" || !trace?.meta?.seriesKey) return [];
+          const values = new Map((trace.x || []).map((date, index) => [
+            String(date || "").slice(0, 10),
+            Number(trace.y?.[index]),
+          ]));
+          return [[String(trace.meta.seriesKey), values]];
+        }));
         return (chart.data || []).flatMap((trace) => {
-          if (!trace?.meta?.isMarketTimingBuyTrace && !trace?.meta?.isMarketTimingSellTrace) return [];
+          if (!chartMarkerRuntimeModule.isTimingSignalTrace(trace)) return [];
           return (trace.x || []).flatMap((date, index) => {
-            const ticker = selected.find((series) => labelName(series) === trace.customdata?.[index]?.[0]);
-            const point = findPointOnOrAfterDate(date, ticker, pointIndex, 4);
+            const pointTime = Date.parse(date);
+            if (hasVisibleXRange && (!Number.isFinite(pointTime)
+              || pointTime < visibleXRange[0] || pointTime > visibleXRange[1])) return [];
+            const ticker = String(trace?.meta?.pointTickers?.[index] || "");
+            const sourceY = renderedPricePoints.get(ticker)?.get(String(date || "").slice(0, 10));
             const markerY = Number(trace.y?.[index]);
-            return point && Number.isFinite(markerY)
-              ? [Math.abs(axis.d2p(markerY) - axis.d2p(point.y))]
+            return Number.isFinite(sourceY) && Number.isFinite(markerY)
+              ? [Math.abs(axis.d2p(markerY) - axis.d2p(sourceY))]
               : [];
           });
         });
@@ -1219,7 +1294,12 @@ const initE2eDebugAccess = __THINKSTOCK_E2E_DIAGNOSTICS__
           liveFit: false,
           userInitiated: true,
         });
-        await settleChartViewport();
+        await requestSettledViewportRender({
+          range: [startMs, endMs],
+          reason: "e2e-range",
+          updateClass: "viewport",
+          refreshCompanions: true,
+        });
         return getCurrentXRangeMs(document.getElementById("chart"));
       },
       getMainHoverMode() {
@@ -1239,7 +1319,9 @@ const initE2eDebugAccess = __THINKSTOCK_E2E_DIAGNOSTICS__
       },
       openFirstDisclosure(offsetX = 0, offsetY = 0) {
         const chart = document.getElementById("chart");
-        const traceIndex = chart?.data?.findIndex((item) => item?.meta?.isDisclosureTrace) ?? -1;
+        const traceIndex = chart?.data?.findIndex((item) => (
+          chartMarkerRuntimeModule.eventMarkerKind(item) === "disclosure"
+        )) ?? -1;
         const trace = traceIndex >= 0 ? chart.data[traceIndex] : null;
         const xaxis = chart?._fullLayout?.xaxis;
         const yaxis = trace?.yaxis === "y2"
@@ -1374,7 +1456,7 @@ function sanitizeRuntimePricePayload(raw) {
   });
 }
 
-const runtimeSnapshotComponentContract = runtimeSnapshotControllerModule.createSnapshotComponentContract({
+const runtimeSnapshotComponentContract = createSnapshotComponentContract({
   price: {
     snapshotKey: "pricePayload",
     dataKey: "pricePayload",
@@ -1382,35 +1464,35 @@ const runtimeSnapshotComponentContract = runtimeSnapshotControllerModule.createS
     normalize: sanitizeRuntimePricePayload,
     validate: (value) => Boolean(value?.records?.length)
       && tickerPriceRuntimeModule.inspectPricePayloadIntegrity(value).clean
-      && runtimeSeriesMergeModule.validateSnapshotComponent("price", value).ok,
+      && validateSnapshotComponent("price", value).ok,
   },
   macro: {
     snapshotKey: "macroRows",
     dataKey: "macroRows",
     isIncluded: Array.isArray,
     normalize: normalizePayloadRecords,
-    validate: (value) => runtimeSeriesMergeModule.validateSnapshotComponent("macro", value).ok,
+    validate: (value) => validateSnapshotComponent("macro", value).ok,
   },
   credit: {
     snapshotKey: "creditRows",
     dataKey: "creditRows",
     isIncluded: Array.isArray,
     normalize: normalizeCreditRows,
-    validate: (value) => runtimeSeriesMergeModule.validateSnapshotComponent("credit", value).ok,
+    validate: (value) => validateSnapshotComponent("credit", value).ok,
   },
   adr: {
     snapshotKey: "adrRows",
     dataKey: "adrRows",
     isIncluded: Array.isArray,
     normalize: normalizePayloadRecords,
-    validate: (value) => runtimeSeriesMergeModule.validateSnapshotComponent("adr", value).ok,
+    validate: (value) => validateSnapshotComponent("adr", value).ok,
   },
   crisis: {
     snapshotKey: "crisisRows",
     dataKey: "crisisRows",
     isIncluded: Array.isArray,
     normalize: normalizeCrisisSignalRows,
-    validate: (value) => runtimeSeriesMergeModule.validateSnapshotComponent("crisis", value).ok,
+    validate: (value) => validateSnapshotComponent("crisis", value).ok,
   },
   disclosure: {
     snapshotKey: "disclosureRows",
@@ -1452,7 +1534,7 @@ async function buildRuntimeDataSnapshot(taskContext = null) {
 }
 
 function buildCompactLocalSnapshot() {
-  return runtimeSnapshotControllerModule.buildCompactSnapshot({
+  return buildCompactSnapshot({
     metadata: {
       version: DATA_CACHE_SCHEMA_VERSION,
       format: "compact-v1",
@@ -1470,7 +1552,7 @@ function buildCompactLocalSnapshot() {
 }
 
 function getRuntimeDataSignature() {
-  return runtimeSnapshotControllerModule.buildSignature(
+  return buildRuntimeSnapshotSignature(
     historicalDataLoaded,
     Object.keys(RUNTIME_SNAPSHOT_COMPONENT_KEYS),
     getDataRevisions(),
@@ -1478,7 +1560,7 @@ function getRuntimeDataSignature() {
 }
 
 function isRuntimeSnapshotUsable(snapshot) {
-  return runtimeSnapshotControllerModule.isSnapshotUsable(snapshot, {
+  return isSnapshotUsable(snapshot, {
     schemaVersion: DATA_CACHE_SCHEMA_VERSION,
     futureToleranceMs: DAY_MS,
     maxAgeMs: DATA_CACHE_MAX_AGE_DAYS * DAY_MS,
@@ -1693,7 +1775,7 @@ function isChartInteractionBusy() {
 
 function getRuntimeSnapshotController() {
   return appRuntimeRegistry.get(APP_RUNTIME_KEYS.runtimeSnapshot, () => (
-    runtimeSnapshotControllerModule.createRuntimeSnapshotController(globalThis, {
+    createRuntimeSnapshotController(globalThis, {
       idleTimeoutMs: SNAPSHOT_SAVE_IDLE_TIMEOUT_MS,
       scheduler: backgroundTaskScheduler,
       getSignature: getRuntimeDataSignature,
@@ -2108,12 +2190,12 @@ function setupApiSettingsPanel(msgEl) {
   openButton.addEventListener("click", openSettings);
 }
 
-function hasHistoricalDataCoverage() {
-  return runtimeSnapshotControllerModule.hasCoreHistoricalCoverage({
+function hasHistoricalDataCoverage(months = RECENT_DATA_MONTHS) {
+  return hasCoreHistoricalCoverage({
     price: appData.pricePayload?.records,
     macro: appData.macroRows,
     credit: appData.creditRows,
-  }, RECENT_DATA_MONTHS);
+  }, months);
 }
 
 
@@ -2128,8 +2210,8 @@ function getChartHoverRuntime() {
   ));
 }
 
-function syncHoverToChart(targetEl, xValue) {
-  getChartHoverRuntime().syncHoverToChart(targetEl, xValue);
+function syncHoverToChart(...args) {
+  getChartHoverRuntime().syncHoverToChart(...args);
 }
 
 function normalizeHoverPopupIndent(targetEl) {
@@ -2237,16 +2319,8 @@ function getChartNavigationController() {
     getMessageElement: () => document.getElementById("chartNavigationMessage"),
     getCurrentRange: getCurrentXRangeMs,
     getDataRange: getChartNavigationDataRangeMs,
-    isHistoryReady: () => historicalDataLoaded
-      && hasHistoricalDataCoverage()
-      && visibleCustomTickerHistoriesReady(),
-    loadHistory: async () => {
-      const [sharedReady, tickerReady] = await Promise.all([
-        ensureHistoricalDataLoaded(false),
-        ensureVisibleCustomTickerHistoriesReady(),
-      ]);
-      return sharedReady && tickerReady;
-    },
+    isHistoryReady: allVisibleHistoryInputsReady,
+    loadHistory: () => ensureAllVisibleHistoryInputsReady(),
     afterHistoryLoaded: async (visibleRange) => {
       if (visibleRange) chartSession.pinnedXRange = visibleRange.map((value) => new Date(value).toISOString());
       await runMainChartRender(Boolean(visibleRange));
@@ -2254,9 +2328,6 @@ function getChartNavigationController() {
     },
     onError: (error) => recordRuntimeError("full-history-navigation", error),
     applyRange: applySyncedXRangeMs,
-    // Plotly range updates cost longer than a short tween frame once multiple
-    // charts are visible. Apply one final wheel range so stale tween frames
-    // cannot surface after a newer input.
     smoothWheelZoom: false,
     isAutoScale: () => chartSession.autoChartReset,
     getRightPaddingMs: chartRightPaddingMs,
@@ -2278,13 +2349,17 @@ function getChartNavigationController() {
   ));
 }
 
-async function settleChartViewport() {
+async function settleAllChartWork() {
   await appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartNavigation)?.whenRangeSettled?.();
   await appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartRangeSync)?.flush?.();
   await appRuntimeRegistry.peek(APP_RUNTIME_KEYS.mainChartScheduler)?.whenSettled?.();
   await appRuntimeRegistry.peek(APP_RUNTIME_KEYS.auxiliaryChartRender)?.whenSettled?.();
   await appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartRangeSync)?.flush?.();
   await flushLoadedCoMovementPanel();
+}
+
+function settleChartViewport() {
+  return getChartRenderFacade().whenSettled();
 }
 
 function showChartNavigationMessage(message, durationMs = 3000) {
@@ -2337,10 +2412,6 @@ function showVisibleAiForecastAvailability() {
 
 function ensureFullHistoryDataReady() {
   return getChartNavigationController().ensureHistoryReady(true);
-}
-
-function zoomChartViewport(direction, source = "button-zoom", options = {}) {
-  return getChartNavigationController().zoom(direction, source, options);
 }
 
 function cancelLatestViewportAnimation() {
@@ -2494,7 +2565,7 @@ function applySyncedXRangeMs(startMs, endMs, meta = {}) {
   return getChartRangeSyncController().schedule(startMs, endMs, requestMeta);
 }
 
-async function requestSettledViewportRender({
+async function performSettledViewportRender({
   preserveZoom = true,
   range = null,
   reason = "viewport-settle",
@@ -2535,6 +2606,10 @@ async function requestSettledViewportRender({
   });
 }
 
+function requestSettledViewportRender(options = {}) {
+  return getChartRenderFacade().settleViewport(options);
+}
+
 function scheduleHandleUpdate(delay = HANDLE_UPDATE_DEBOUNCE_MS) {
   if (handleUpdateTimer) clearTimeout(handleUpdateTimer);
   handleUpdateTimer = 0;
@@ -2572,22 +2647,8 @@ function syncInsiderTradeToggleButton() {
   });
 }
 
-function findNearestLineDragTarget(
-  el,
-  clientX,
-  clientY,
-  isTouch = false,
-  geometry = null,
-  interactionContext = null,
-) {
-  return getChartTargetRuntime().findNearestLineDragTarget(
-    el,
-    clientX,
-    clientY,
-    isTouch,
-    geometry,
-    interactionContext,
-  );
+function findNearestLineDragTarget(...args) {
+  return getChartTargetRuntime().findNearestLineDragTarget(...args);
 }
 function findAiForecastReportAtClientPoint(
   el,
@@ -2706,7 +2767,9 @@ function setTraceLineHighlighted(el, traceIndex, highlighted) {
   const nextWidth = chartEventLayerModule.interactiveLineWidth(baseWidth, highlighted);
   const paths = getTraceLinePaths(el, traceIndex);
   const group = paths[0]?.closest(".trace.scatter");
-  if (trace.meta?.isEpsTrace && group) group.classList.toggle("is-eps-point-highlighted", highlighted);
+  if (chartRenderContractModule.chartTraceOverlayKind(trace) === "eps" && group) {
+    group.classList.toggle("is-eps-point-highlighted", highlighted);
+  }
   paths.forEach((path) => {
     path.style.strokeWidth = `${nextWidth}px`;
     path.setAttribute("stroke-width", String(nextWidth));
@@ -2839,9 +2902,7 @@ function changeMainSeriesVisibility(seriesKey, visible) {
   );
   const fastUpdate = applyMainSeriesVisibilityFast(key, visible);
   if (visible) {
-    // ON must never wait for EPS, AI, hover, or a stale OFF transaction.
-    // The existing price trace is restored immediately while a price-first
-    // composition independently guarantees recovery if that trace was removed.
+    // Restore the price trace before any supplemental feature work.
     requestComposition();
     fastUpdate?.catch((error) => (
       recordRuntimeError("main-series-visibility", error, { key, visible })
@@ -3110,6 +3171,9 @@ function beginLineOffsetDrag(el, target, startClientY, pointerId) {
   if (!target || !ya || !Array.isArray(range) || range.length < 2 || !ya._length) return false;
 
   suppressPlotlyClickUntil = Date.now() + 500;
+  // Selecting a visible line is independent from whether the pointer later
+  // becomes a click or a drag. Commit the shared target at pointer-down time.
+  selectCoMovementTarget(target.seriesKey);
   return getSeriesTransformGestureRuntime().startOffset({
     pointerId,
     startClientY,
@@ -3121,7 +3185,6 @@ function beginLineOffsetDrag(el, target, startClientY, pointerId) {
       chartSession.seriesOffsets[target.seriesKey] = startValue;
       restyleLive(target.traceIndex, target.seriesKey, { commit: true });
       finishTraceYEdit(target.seriesKey, { preserveTransform: true });
-      selectCoMovementTarget(target.seriesKey);
     },
     onCommit: () => finishTraceYEdit(target.seriesKey, { preserveTransform: true }),
   });
@@ -3155,9 +3218,11 @@ function getChartPointerRuntime() {
       ensureFullHistoryDataReady,
       findAiForecastReportAtClientPoint,
       findEventMarkerAtClientPoint,
+      findNearestHoverLineTarget: getChartTargetRuntime().findNearestHoverLineTarget,
       findNearestLineDragTarget,
       getChartCursorSyncController,
       getChartInteractionGeometry,
+      getChartNavigationController,
       getChartNavigationDataRangeMs,
       getChartRangeSyncController,
       getCurrentXRangeMs,
@@ -3186,10 +3251,10 @@ function getChartPointerRuntime() {
       scheduleEventMarkerHoverHighlight,
       scheduleSyncedCursor,
       setHoveredLineTarget,
+      setHoverPopupAnchor: getChartHoverRuntime().setHoverPopupAnchor,
       showChartNavigationMessage,
       startPerfSample,
       syncHoverToChart,
-      zoomChartViewport,
     });
   });
 }
@@ -3216,11 +3281,7 @@ function getSeriesPriorityOrder() {
   ];
 }
 
-/* Dense macro interpolation (for daily data) */
-
 function syncSeriesToggleBoard(allSeries) {
-  // A saved stock remains a valid lazy-load target before its first price trace
-  // has joined the current chart model.
   const available = new Set([
     ...(allSeries || []),
     ...customStocks.map((item) => String(item?.ticker || "").trim().toUpperCase()),
@@ -3253,7 +3314,7 @@ function bindSeriesToggleBoard() {
       const stock = customStocks.find((item) => item.ticker === key);
       const displayName = stock?.name || DISPLAY_NAMES[key] || key;
       const hasPriceData = getTickerPricePointsFromPayload(key).length > 0;
-      const pricePlan = planSeriesPriceRefresh([key]);
+      const pricePlan = claimStockPriceRefresh([key]);
       let initialLoad = null;
       if (!hasPriceData || pricePlan.shouldRefresh) {
         btn.dataset.loading = "1";
@@ -3266,6 +3327,7 @@ function bindSeriesToggleBoard() {
             returnAfterCache: !pricePlan.shouldRefresh,
           });
         } catch (error) {
+          forgetStockPriceRefresh(key);
           recordRuntimeError("series-price-activation", error, { key });
           showChartNavigationMessage(`${displayName} 가격을 불러오지 못했습니다.`, 5000);
           return;
@@ -3309,6 +3371,7 @@ function renderCustomStockButtons() {
 
 function removeCustomStock(ticker) {
   if (!getCustomStockLifecycle().remove(ticker)) return;
+  forgetStockPriceRefresh(ticker);
   const fastHide = applyMainSeriesVisibilityFast(ticker, false);
   if (visibleSeriesSupplementalHydrator) visibleSeriesSupplementalHydrator.cancel(ticker);
   else backgroundTaskScheduler.cancel(`visible-series-supplemental:${ticker}`);
@@ -3386,7 +3449,7 @@ const tickerPriceAppRuntime = createTickerPriceAppRuntime({
   setDisplayName: (ticker, value) => { DISPLAY_NAMES[ticker] = value; },
   onClearSeries: invalidateAiForecastCache,
   onPayloadChanged: () => appData.touch("pricePayload"),
-  assertPricePoints: (assertOptions) => runtimeSeriesMergeModule.assertPricePoints(assertOptions),
+  assertPricePoints: (assertOptions) => assertRuntimePricePoints(assertOptions),
   getStatus: (ticker) => tickerPriceStatusStore.get(ticker),
   setStatus: setTickerPriceStatus,
   priceStoreName: TICKER_PRICE_CACHE_STORE_NAME,
@@ -3432,21 +3495,36 @@ const {
 const tickerIsHidden = (item) => chartSession.hiddenSeries.has(item.ticker);
 const visibleCustomTickerHistoriesReady = () => tickerPriceAppRuntime.visibleReady(customStocks, tickerIsHidden);
 const ensureVisibleCustomTickerHistoriesReady = () => tickerPriceAppRuntime.ensureVisible(customStocks, tickerIsHidden);
+const allVisibleHistoryInputsReady = () => hasHistoricalDataCoverage()
+  && visibleCustomTickerHistoriesReady();
+const ensureAllVisibleHistoryInputsReady = async (months = RECENT_DATA_MONTHS) => {
+  await Promise.allSettled([
+    ensureHistoricalDataLoaded(false),
+    ensureVisibleCustomTickerHistoriesReady(),
+  ]);
+  return hasHistoricalDataCoverage(months) && visibleCustomTickerHistoriesReady();
+};
+const marketTimingInputGate = chartMarkerRuntimeModule.createMarketTimingInputGate({
+  coreTickers: MARKET_INDEX_SERIES, getData: () => appData, priceRuntime: tickerPriceAppRuntime,
+  loadBaseInputs: loadData,
+  loadIndexVolumes: (tickers) => refreshCoreIndexSeries({ tickers, requireVolumeHistory: true }),
+});
 const ensureCustomTickerSeriesLoaded = (ticker, options = {}) => tickerPriceAppRuntime.load(ticker, options);
 
-const runtimeIndexRefreshService = runtimeMarketRefreshModule.createRuntimeIndexRefreshService({
+const runtimeIndexRefreshService = createRuntimeIndexRefreshService({
   canUseGateway: canUseDartGateway,
   fetchWithTimeout,
   gatewayClient: runtimeGatewayClient,
   getPricePayload: () => appData.pricePayload,
   isAbortError,
   isLocalRuntime: IS_LOCAL_RUNTIME,
-  isRetryableError: runtimeRefreshOrchestratorModule.isRetryableRuntimeError,
+  isRetryableError: isRetryableRuntimeError,
   appVersion: APP_VERSION,
   labelName,
   mergeTickerSeries: mergeTickerSeriesIntoPricePayload,
+  hasVolumeHistory: (ticker) => tickerPriceAppRuntime.hasVolumeHistory(ticker),
   validateTickerPoints: (ticker, points, validationOptions) => (
-    runtimeSeriesMergeModule.assertPricePoints({
+    assertRuntimePricePoints({
       ticker,
       currentPayload: appData.pricePayload,
       incomingPoints: points,
@@ -3464,7 +3542,7 @@ function refreshCoreIndexSeries(options = {}) {
 
 function getRuntimeBootstrapService() {
   return appRuntimeRegistry.get(APP_RUNTIME_KEYS.runtimeBootstrap, () => (
-    runtimeMarketRefreshModule.createRuntimeBootstrapService({
+    createRuntimeBootstrapService({
       canUseGateway: canUseDartGateway,
       gatewayClient: runtimeGatewayClient,
       getCustomStocks: () => customStocks,
@@ -3472,7 +3550,7 @@ function getRuntimeBootstrapService() {
       getTickerStatus: (ticker) => tickerPriceStatusStore.get(ticker),
       isAbortError,
       isHidden: (ticker) => chartSession.hiddenSeries.has(ticker),
-      latestDatesByTicker: runtimeMarketRefreshModule.latestDatesByTicker,
+      latestDatesByTicker,
       mapWithConcurrency,
       setTickerStatus: setTickerPriceStatus,
       timeoutMs: NETWORK_REQUEST_TIMEOUT_MS,
@@ -3573,6 +3651,7 @@ async function addCustomStock(candidate, msgEl, options = {}) {
   }
   try {
     DISPLAY_NAMES[stockCandidate.ticker] = stockCandidate.name;
+    if (activateRequested) claimStockPriceRefresh([stockCandidate.ticker], { forceNetwork: forcePriceRefresh });
     const initialLoad = activateRequested
       ? await ensureCustomTickerSeriesLoaded(stockCandidate.ticker, {
           displayName: stockCandidate.name,
@@ -3660,6 +3739,7 @@ function getCustomStockPreloader() {
     removeFailed: (failed) => {
       getCustomStockLifecycle().removeMany(failed, { rememberColor: false });
       failed.forEach((ticker) => {
+        forgetStockPriceRefresh(ticker);
         if (lastVisibleStockSeriesKey === ticker) lastVisibleStockSeriesKey = "";
         if (lastCoMovementSeriesKey === ticker) lastCoMovementSeriesKey = "";
         getMainSeriesController().forget(ticker);
@@ -3708,7 +3788,7 @@ function getVisibleStockHistoryRefresh() {
 }
 let CREDIT_OFFSET_DAYS = 2;  // Fund-data publication-lag alignment in days (UI uses negative sign for display)
 const CREDIT_COLS = ["customer_deposit", "kospi_credit", "kosdaq_credit"];
-const runtimeRefreshPolicy = runtimeRefreshOrchestratorModule.createRuntimeRefreshPolicy({
+const runtimeRefreshPolicy = createRuntimeRefreshPolicy({
   getCreditSeries: () => CREDIT_COLS,
   getPricePayload: () => appData.pricePayload,
   getSession: () => chartSession,
@@ -3716,29 +3796,34 @@ const runtimeRefreshPolicy = runtimeRefreshOrchestratorModule.createRuntimeRefre
   getVisibleSeries: visibleMainChartSeriesKeys,
   isForecastSeries,
   isStockSeries: (series) => STOCK_TICKER_PATTERN.test(series),
-  latestDatesByTicker: runtimeMarketRefreshModule.latestDatesByTicker,
+  hasVolumeHistory: (ticker) => tickerPriceAppRuntime.hasVolumeHistory(ticker),
+  latestDatesByTicker,
   mainMacroSeries: MAIN_MACRO_SERIES,
   marketIndexSeries: MARKET_INDEX_SERIES,
-  planPriceRefresh: runtimeMarketRefreshModule.planKoreanPriceRefresh,
+  planPriceRefresh: planKoreanPriceRefresh,
   shouldConfirmSource: runtimeFreshnessPolicyModule.shouldConfirmRuntimeSource,
   toNumber: toNum,
 });
 const {
+  claimStockPriceRefresh,
+  forgetStockPriceRefresh,
   isSourceForeground: isRuntimeRefreshSourceForeground,
   planCriticalRefresh: planCriticalRuntimeRefresh,
-  planSeriesPriceRefresh,
   shouldRefreshSource: shouldRefreshRuntimeSource,
 } = runtimeRefreshPolicy;
 
 function dataRevisionSignature(...names) {
-  const revisions = getDataRevisions();
-  return names.map((name) => `${name}:${Number(revisions[name]) || 0}`).join("|");
+  return runtimeSnapshotRevisionTracker.signature(...names);
+}
+
+function auxiliaryDataRevisionSignature(...names) {
+  return auxiliaryDataRevisionTracker.signature(...names);
 }
 
 function getChartModelWorkerClient() {
   return appRuntimeRegistry.get(APP_RUNTIME_KEYS.chartModelWorker, () => (
     chartModelWorkerClientModule.createChartModelWorkerClient(globalThis, {
-      workerUrl: () => `./modules/chart-model-worker.mjs?v=${encodeURIComponent(APP_BUILD_VERSION || "dev")}`,
+      workerUrl: () => `./assets/chart-model-worker.bundle.min.js?v=${encodeURIComponent(APP_BUILD_VERSION || "dev")}`,
       workerType: "module",
       workerName: "thinkstock-chart-model",
       timeoutMs: 10000,
@@ -4361,7 +4446,6 @@ function captureCurrentCompositionViewport(forceFitFull = false) {
 
 function queueAutoCompositionViewport(forceFitFull = false, options = {}) {
   if (chartSession.autoChartReset) {
-    // Composition changes are fitted from the final adjustable trace set in one pass.
     chartSession.pendingAutoChartFit = true;
   }
   if (options.preserveFutureOverlayViewport) {
@@ -4369,8 +4453,6 @@ function queueAutoCompositionViewport(forceFitFull = false, options = {}) {
     return;
   }
   const hasPreparedViewport = Object.prototype.hasOwnProperty.call(options, "compositionViewport");
-  // Coalesced data/overlay requests can arrive after visibility already changed.
-  // Keep the first pre-change snapshot until the render plan consumes it.
   if (!hasPreparedViewport && chartSession.pendingCompositionViewport) return;
   const capturedViewport = hasPreparedViewport
     ? options.compositionViewport
@@ -4393,7 +4475,7 @@ function requestFutureOverlayCompositionUpdate() {
   return getChartRenderFacade().requestFutureOverlayComposition();
 }
 
-async function fitCurrentChartRatio(options = {}) {
+async function applyCurrentChartFit(options = {}) {
   const el = document.getElementById("chart");
   if (!el?._fullLayout?.yaxis || !window.Plotly) return false;
   if (isHandleDragging && options.allowDuringInteraction !== true) return false;
@@ -4412,10 +4494,17 @@ async function fitCurrentChartRatio(options = {}) {
     syncMarkers: options.syncMarkers,
     hasEventMarkers,
     appendEventMarkerYUpdates,
-    beforeApply: () => {
+    beforeApply: (_yRange, fitPlan) => {
       if (xRange) chartSession.pinnedXRange = [...xRange];
       useViewportEventMarkerGap = true;
-      invalidateChartInteractionCaches(el);
+      invalidateChartInteractionCaches(el, {
+        lines: false,
+        markers: true,
+        reports: false,
+      });
+      if (fitPlan?.markerTraceIndexes?.length) {
+        mainChartRenderer.invalidateRenderFingerprint(el);
+      }
     },
     onMarkerPartialUpdate: (markerUpdate) => {
       if (markerUpdate.disclosureUpdated) eventMarkerRenderState.partialUpdateCount += 1;
@@ -4434,18 +4523,8 @@ async function fitCurrentChartRatio(options = {}) {
   return true;
 }
 
-function tracesExceedVisibleYRange(traces, xRange, yRange) {
-  const current = Array.isArray(yRange) ? yRange.slice(0, 2).map(Number) : [];
-  if (current.length < 2 || !current.every(Number.isFinite)) return false;
-  const required = fitRangeForTraces(traces, xRange, {
-    paddingRatio: 0.08,
-    minimumPadding: 0.6,
-  });
-  if (!required) return false;
-  const low = Math.min(...current);
-  const high = Math.max(...current);
-  const tolerance = Math.max(0.05, (high - low) * 0.002);
-  return required[0] < low - tolerance || required[1] > high + tolerance;
+function fitCurrentChartRatio(options = {}) {
+  return getChartRenderFacade().fitCurrent(options);
 }
 
 function getChartMarkerRuntime() {
@@ -4453,8 +4532,10 @@ function getChartMarkerRuntime() {
     chartMarkerRuntimeModule.createChartMarkerRuntime(globalThis, {
     chartEventLayer: chartEventLayerModule,
     chartSession,
+    areMarketTimingInputsReady: marketTimingInputGate.ready,
     buildInsiderMarkerTraces,
     dataRevisionSignature,
+    ensureMarketTimingInputs: marketTimingInputGate.ensure,
     ensureMarketTimingFeature,
     escapeHtml,
     getAdrRows: () => appData.adrRows,
@@ -4475,7 +4556,10 @@ function getChartMarkerRuntime() {
     netSameReporterInsiderTrades,
     recordPerfSample,
     recordRuntimeError,
-    shouldPrepareMarketTimingModels: () => startupTaskRuntime.isReleased(),
+    onMarketTimingInputsPrepared: () => requestSeriesCompositionUpdate("signal-inputs"),
+    shouldPrepareMarketTimingModels: () => (
+      startupTaskRuntime.isReleased() && runtimeDataApp.isDerivedInputReady()
+    ),
     onCrisisCount: (count) => { lastRecessionSignalCount = Number(count) || 0; },
     onDisclosureStats: (stats) => { eventMarkerRenderState.disclosureStats = stats; },
     onInsiderStats: (stats) => { eventMarkerRenderState.insiderStats = stats; },
@@ -4488,10 +4572,6 @@ function getChartMarkerRuntime() {
     toUtcMs,
     })
   ));
-}
-
-function buildDisclosurePointIndex(seriesModels, tickers) {
-  return chartEventLayerModule.buildPointIndex(seriesModels, tickers, toUtcMs);
 }
 
 function findPointOnOrAfterDate(eventDate, ticker, pointIndex, maxDays = 14) {
@@ -5340,39 +5420,41 @@ function summarizeAiForecastQualityDiagnostics() {
     || { seriesCount: 0, statuses: {}, weakSeries: [], byContext: {}, series: {} };
 }
 
-const runtimeDiagnosticStateCollector = createRuntimeDiagnosticStateCollector({
-  appData: () => appData.stats(),
-  backgroundTasks: () => backgroundTaskScheduler.stats(),
-  derivedCaches: () => ({
-    mainChart: mainChartCalcCache.stats(),
-    sourceFingerprints: mainChartSourceFingerprintCache.stats(),
-    tickerSeries: tickerDerivedMemoryCaches.stats(),
-  }),
-  startupVisualReady: () => startupTaskRuntime.isReleased(),
-  refreshPhases: () => runtimeDataApp.getPhaseStats(),
-  refreshStatus: () => runtimeDataApp.getStatus(),
-  chartRender: () => chartRenderTelemetry.snapshot(),
-  chartUpdates: () => appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartUpdates)?.stats?.() || null,
-  auxiliaryChart: () => appRuntimeRegistry.peek(APP_RUNTIME_KEYS.auxiliaryChart)?.stats?.() || null,
-  marketTiming: () => optionalFeatureRuntime.peekMarketTiming?.()?.stats?.() || null,
-  aiForecast: () => {
-    const cache = appRuntimeRegistry.peek(APP_RUNTIME_KEYS.aiForecastCache);
-    const quality = appRuntimeRegistry.peek(APP_RUNTIME_KEYS.aiForecastQuality);
-    return {
-      cache: cache?.stats?.() || null,
-      quality: summarizeAiForecastQualityDiagnostics(),
-      journal: quality?.stats?.() || null,
-    };
-  },
-  runtimeSources: () => runtimeSourceHealthModule.summarizeSourceStates(
-    runtimeDataApp.getSourceStates(),
-  ),
-}, {
-  onError: (error, section) => recordRuntimeError(`runtime-diagnostics:${section}`, error),
-});
+const runtimeDiagnosticStateCollector = __THINKSTOCK_E2E_DIAGNOSTICS__
+  ? createRuntimeDiagnosticStateCollector({
+    appData: () => appData.stats(),
+    backgroundTasks: () => backgroundTaskScheduler.stats(),
+    derivedCaches: () => ({
+      mainChart: mainChartCalcCache.stats(),
+      sourceFingerprints: mainChartSourceFingerprintCache.stats(),
+      tickerSeries: tickerDerivedMemoryCaches.stats(),
+    }),
+    startupVisualReady: () => startupTaskRuntime.isReleased(),
+    refreshPhases: () => runtimeDataApp.getPhaseStats(),
+    refreshStatus: () => runtimeDataApp.getStatus(),
+    chartRender: () => chartRenderTelemetry.snapshot(),
+    chartUpdates: () => appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartUpdates)?.stats?.() || null,
+    auxiliaryChart: () => appRuntimeRegistry.peek(APP_RUNTIME_KEYS.auxiliaryChart)?.stats?.() || null,
+    marketTiming: () => optionalFeatureRuntime.peekMarketTiming?.()?.stats?.() || null,
+    aiForecast: () => {
+      const cache = appRuntimeRegistry.peek(APP_RUNTIME_KEYS.aiForecastCache);
+      const quality = appRuntimeRegistry.peek(APP_RUNTIME_KEYS.aiForecastQuality);
+      return {
+        cache: cache?.stats?.() || null,
+        quality: summarizeAiForecastQualityDiagnostics(),
+        journal: quality?.stats?.() || null,
+      };
+    },
+    runtimeSources: () => summarizeSourceStates(
+      runtimeDataApp.getSourceStates(),
+    ),
+  }, {
+    onError: (error, section) => recordRuntimeError(`runtime-diagnostics:${section}`, error),
+  })
+  : null;
 
 function buildRuntimeDiagnosticAppState() {
-  return runtimeDiagnosticStateCollector.snapshot();
+  return runtimeDiagnosticStateCollector?.snapshot?.() || {};
 }
 
 function queueAiForecastJournalSync(ticker, forecast, historyRows) {
@@ -5930,6 +6012,9 @@ function getChartRenderFacade() {
     getScheduler: getMainChartRenderScheduler,
     getState: () => chartSession,
     getAiApp: getLoadedAiForecastApp,
+    fitCurrent: applyCurrentChartFit,
+    settleViewport: performSettledViewportRender,
+    whenSettled: settleAllChartWork,
   });
   return chartRenderFacade;
 }
@@ -6258,12 +6343,16 @@ async function applyEventMarkerOnlyRender(el, invalidation, eventMarkerRevisions
   if (!mainChartRenderer.isMarkerOnlyInvalidation(invalidation)) return false;
   const model = chartSession.currentMainChartModel;
   if (!model?.selected?.length || !model?.seriesModels?.length || !Array.isArray(el?.data)) return false;
-  const disclosureWasPresent = el.data.some((trace) => trace?.meta?.isDisclosureTrace);
+  const disclosureWasPresent = el.data.some((trace) => (
+    chartMarkerRuntimeModule.eventMarkerKind(trace) === "disclosure"
+  ));
   const staticTraces = el.data.filter((trace) => !mainChartRenderer.isEventMarkerTrace(trace));
   if (!staticTraces.length) return false;
   const markerArguments = currentEventMarkerArguments(model);
   const traces = [
-    ...staticTraces.filter((trace) => !trace?.meta?.isGroupedHoverTrace),
+    ...staticTraces.filter((trace) => (
+      chartRenderContractModule.chartTraceOverlayKind(trace) !== "grouped-hover"
+    )),
     ...buildCurrentEventMarkerTraces(markerArguments),
   ];
   prependGroupedHoverTraces(traces, model.selected, eventMarkerRevisionsAtStart);
@@ -6330,6 +6419,7 @@ function resetMainChartInteractionRenderState(element) {
   activeLineTraceIndex = null;
   appliedLineHighlightTraceIndex = null;
   eventMarkerRenderState.highlight = null;
+  invalidateChartInteractionCaches(element);
   element?.classList?.remove("is-line-hovering", "is-line-dragging", "is-event-marker-hovering");
 }
 
@@ -6411,7 +6501,6 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
   const { rows, selected, seriesModels } = model;
   const viewportSlice = viewportWindowController.build(model, [frameStart, frameEnd]);
   renderGuard.prepareViewportWindow();
-  // Live handle/line transforms belong to the viewport session, not the reusable calculation cache.
   chartUpdateCoordinatorModule.hydrateMainChartSession(chartSession, model, {
     captureLockedFrame: captureLockedChartFrame,
     createSessionModel: mainChartModelModule.createMainChartSessionModel,
@@ -6424,9 +6513,9 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
   const shouldHydrateChartData = !progressiveComposition
     && chartUpdateCoordinatorModule.shouldHydrateChartData(invalidation);
   if (!chartSession.showDisclosures) hideDisclosurePopover();
-  resetMainChartInteractionRenderState(el);
 
   if (!rows.length || !selected.length) {
+    resetMainChartInteractionRenderState(el);
     viewportWindowController.invalidate?.();
     markEventMarkerRenderApplied(eventMarkerRevisionsAtStart);
     setMessage(msgEl, "표시할 데이터가 없습니다.", true);
@@ -6457,7 +6546,6 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
       stackedPriceSeries: STACKED_HOVER_PRICE_SERIES,
       buildEpsTraceModel,
       buildAiForecastTraces,
-      // Viewport, transform, and forecast-only frames reuse prepared timing data.
       prepareEventModels: shouldHydrateChartData ? prepareMarketTimingModels : null,
       buildEventArguments: currentEventMarkerArguments,
       buildEventTraces: buildCurrentEventMarkerTraces,
@@ -6507,7 +6595,6 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
     traces,
     viewportPlan,
   } = frame;
-  if (renderGuard.abortPreparedFrame(invalidation)) return;
   resetMainChartInteractionRenderState(el);
   if (renderGuard.abortPreparedFrame(invalidation)) return;
   let renderMode;
@@ -6533,7 +6620,7 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
     frame,
     {
       renderedRange: renderedFrameRange,
-      tracesExceedVisibleYRange,
+      tracesExceedVisibleYRange: chartAdjustmentsModule.tracesExceedVisibleYRange,
       xRange: el?._fullLayout?.xaxis?.range,
       yRange: el?._fullLayout?.yaxis?.range,
     },
@@ -6667,6 +6754,7 @@ async function getAuxiliaryChartRuntime() {
       chartSession,
       clearHoverOnChart,
       commitViewportRange,
+      auxiliaryDataRevisionSignature,
       dataRevisionSignature,
       dataState,
       requestAuxiliaryChartModel: (payload) => getChartModelWorkerClient().request(
@@ -6684,13 +6772,13 @@ async function getAuxiliaryChartRuntime() {
       labelName,
       persistState: saveState,
       recordPerfSample,
+      runPlotlyUpdate: plotlyUpdateRuntime.runElement,
       setNewsSentimentMovingAverageDays,
       seriesColor,
       startPerfSample,
       syncHoverToChart,
       syncState,
       thinMacdPoints: macdModule.thinMacdPoints,
-      xRangeMatches,
     });
   });
 }
@@ -6774,11 +6862,11 @@ async function fetchJsonWithProxyFallback(url, init = null, options = {}) {
   throw new Error(lastError);
 }
 function runtimePoliciesFor(keys) {
-  return runtimeSeriesMergeModule.policiesFor(keys);
+  return runtimeSeriesPoliciesFor(keys);
 }
 
 function validateRuntimeSeriesCandidate(label, currentRows, candidateRows, incomingRows, keys, options = {}) {
-  return runtimeSeriesMergeModule.assertRows({
+  return assertRuntimeRows({
     label,
     currentRows,
     candidateRows,
@@ -6791,16 +6879,19 @@ function validateRuntimeSeriesCandidate(label, currentRows, candidateRows, incom
 
 function getRuntimeSeriesController() {
   return appRuntimeRegistry.get(APP_RUNTIME_KEYS.runtimeSeries, () => (
-    runtimeSeriesMergeModule.createRuntimeSeriesController({
+    createRuntimeSeriesController({
     creditKeys: CREDIT_COLS,
     buildDenseMacroRows,
     getPriceDates: () => (appData.pricePayload?.records || []).map((row) => row?.date).filter(Boolean),
     getRows: (name) => ({ macro: appData.macroRows, credit: appData.creditRows, crisis: appData.crisisRows, adr: appData.adrRows }[name]),
-    setRows: (name, rows) => {
-      if (name === "macro") appData.macroRows = rows;
-      else if (name === "credit") appData.creditRows = rows;
-      else if (name === "crisis") appData.crisisRows = rows;
-      else if (name === "adr") appData.adrRows = rows;
+    setRows: (name, rows, changedFields = []) => {
+      const key = {
+        macro: "macroRows",
+        credit: "creditRows",
+        crisis: "crisisRows",
+        adr: "adrRows",
+      }[name];
+      if (key) appData.set(key, rows, { assumeChanged: true, changedFields });
     },
     policiesFor: runtimePoliciesFor,
     validate: validateRuntimeSeriesCandidate,
@@ -6814,18 +6905,30 @@ const applyNewsSentimentLiveRows = (...args) => (
 
 function getRuntimeMarketRefresh() {
   return appRuntimeRegistry.get(APP_RUNTIME_KEYS.runtimeMarketRefresh, () => (
-    runtimeMarketRefreshModule.createRuntimeMarketRefresh({
+    createRuntimeMarketRefresh({
       gateway: runtimeGatewayClient,
       timeoutMs: DART_GATEWAY_REQUEST_TIMEOUT_MS,
       isLocal: IS_LOCAL_RUNTIME,
       canUseGateway: canUseDartGateway,
       creditKeys: CREDIT_COLS,
+      adrKeys: ADR_SERIES,
+      fearGreedKey: FEAR_GREED_SERIES[0],
       vkospiSeries: VKOSPI_SERIES,
       vixSeries: VIX_SERIES,
       getPricePayload: () => appData.pricePayload,
       getCreditRows: () => appData.creditRows,
+      getAdrRows: () => appData.adrRows,
+      getAdrBenchmarkDate: () => ["^KS11", "^KQ11"]
+        .map((ticker) => getLatestTickerDateFromPricePayload(ticker))
+        .filter(Boolean)
+        .sort()
+        .at(-1) || "",
       getSeriesController: getRuntimeSeriesController,
       policiesFor: runtimePoliciesFor,
+      fetchAdrFallback: fetchAdrFallbackFromWeb,
+      retryOnce,
+      adrRetryDelayMs: ADR_RETRY_DELAY_MS,
+      isAbortError,
     })
   ));
 }
@@ -6833,90 +6936,17 @@ function getRuntimeMarketRefresh() {
 const refreshEcosMacroFromGateway = (...args) => getRuntimeMarketRefresh().refreshMacro(...args);
 const refreshCreditFromGateway = (...args) => getRuntimeMarketRefresh().refreshCredit(...args);
 const refreshCrisisSignalFromGateway = (...args) => getRuntimeMarketRefresh().refreshCrisis(...args);
-
+const refreshAdrFromWebWithRetry = (...args) => getRuntimeMarketRefresh().refreshAdrWithRetry(...args);
+const refreshFearGreedFromWeb = (...args) => getRuntimeMarketRefresh().refreshFearGreed(...args);
 function refreshSourceWithRetry(kind, task, signal = null) {
   return runtimeFreshnessPolicyModule.executeRuntimeSourcePlan(kind, {
     primary: () => task(),
   }, {
     signal,
-    isRetryable: runtimeRefreshOrchestratorModule.isRetryableRuntimeError,
+    isRetryable: isRetryableRuntimeError,
   }).then((result) => result.value);
 }
-function applyAdrLiveRows(incomingRows) {
-  const result = adrDataModule.mergeAdrLiveRows(appData.adrRows, incomingRows);
-  if (result.changed) {
-    const validation = validateRuntimeSeriesCandidate(
-      "ADR",
-      appData.adrRows,
-      result.rows,
-      incomingRows,
-      ADR_SERIES,
-    );
-    appData.adrRows = validation.rows || result.rows;
-  }
-  return result;
-}
-
-function latestAdrBenchmarkDate() {
-  return ["^KS11", "^KQ11"]
-    .map((ticker) => getLatestTickerDateFromPricePayload(ticker))
-    .filter(Boolean)
-    .sort()
-    .at(-1) || "";
-}
-
-function isAdrSourceDelayed(sourceLatestDate, upstreamDelayed = false) {
-  const benchmarkDate = latestAdrBenchmarkDate();
-  if (benchmarkDate) return !sourceLatestDate || sourceLatestDate < benchmarkDate;
-  return upstreamDelayed;
-}
-
-async function fetchAdrJsonEndpoint(endpoint, signal, headers = {}) {
-  const response = await fetchWithTimeout(endpoint, {
-    cache: "no-store",
-    headers,
-    signal,
-  }, DART_GATEWAY_REQUEST_TIMEOUT_MS);
-  const payload = await response.json().catch(() => null);
-  if (!response.ok || payload?.ok !== true || !Array.isArray(payload.rows)) {
-    if (response.status === 401) clearInvalidDartGatewayAccessToken();
-    throw new Error(payload?.error || `ADR HTTP ${response.status}`);
-  }
-  throwIfAborted(signal);
-  const sourceLatestDate = String(payload.latestDate || payload.rows.at(-1)?.date || "").slice(0, 10);
-  return {
-    ...applyAdrLiveRows(payload.rows),
-    sourceLatestDate,
-    stale: payload.stale === true,
-    delayed: isAdrSourceDelayed(sourceLatestDate, payload.delayed === true),
-  };
-}
-
-async function refreshAdrFromWeb(signal = null, forceNetwork = false) {
-  let endpointError = null;
-  const endpoint = IS_LOCAL_RUNTIME
-    ? appendCacheBust(`./api/adr${forceNetwork ? "?refresh=1" : ""}`)
-    : (canUseDartGateway()
-      ? `${ADR_GATEWAY_ENDPOINT}${forceNetwork ? "?refresh=1" : ""}`
-      : "");
-  if (endpoint) {
-    try {
-      const result = await fetchAdrJsonEndpoint(
-        endpoint,
-        signal,
-        IS_LOCAL_RUNTIME ? {} : { Authorization: `Bearer ${getDartGatewayAccessToken()}` },
-      );
-      if (!result.stale && !result.delayed) return result;
-      endpointError = new Error(result.delayed
-        ? `ADR 최신 날짜 지연(${result.sourceLatestDate || "없음"})`
-        : "ADR Worker returned cached stale data");
-      endpointError.retryable = true;
-    } catch (error) {
-      if (isAbortError(error) || signal?.aborted) throw error;
-      endpointError = error;
-    }
-  }
-
+async function fetchAdrFallbackFromWeb(signal = null) {
   try {
     const sourceUrl = appendCacheBust(ADR_SOURCE_URL);
     const proxyUrl = CORS_PROXY + encodeURIComponent(sourceUrl);
@@ -6925,40 +6955,11 @@ async function refreshAdrFromWeb(signal = null, forceNetwork = false) {
     const rows = adrDataModule.parseAdrChartRows(await response.text());
     if (!rows.length) throw new Error("ADR data parse failed. Source format may have changed.");
     throwIfAborted(signal);
-    const result = applyAdrLiveRows(rows);
-    const sourceLatestDate = rows.at(-1)?.date || "";
-    if (isAdrSourceDelayed(sourceLatestDate)) {
-      const delayedError = new Error(`ADR 최신 날짜 지연(${sourceLatestDate || "없음"})`);
-      delayedError.retryable = true;
-      throw delayedError;
-    }
-    return { ...result, sourceLatestDate, delayed: false, stale: false };
+    return { ok: true, rows, latestDate: rows.at(-1)?.date || "" };
   } catch (error) {
     if (isAbortError(error) || signal?.aborted) throw error;
-    const combined = new Error([endpointError?.message, error?.message].filter(Boolean).join(" / "));
-    combined.retryable = true;
-    throw combined;
+    throw error;
   }
-}
-
-function isRetryableAdrRefreshError(error) {
-  const message = String(error?.message || error || "");
-  return error?.retryable === true
-    || /\b(?:403|408|425|429|500|502|503|504)\b|failed to fetch|fetch failed|network|timed?\s*out|timeout/i.test(message);
-}
-
-function refreshAdrFromWebWithRetry(signal = null, forceNetwork = false) {
-  // Automatic startup must not hold every supplemental source behind ADR's
-  // long retry window. Its caller already schedules a final background retry.
-  if (!forceNetwork) return refreshAdrFromWeb(signal, false);
-  return retryOnce(
-    () => refreshAdrFromWeb(signal, forceNetwork),
-    {
-      delayMs: ADR_RETRY_DELAY_MS,
-      signal,
-      shouldRetry: (error) => !isAbortError(error) && isRetryableAdrRefreshError(error),
-    },
-  );
 }
 
 function cancelAdrFinalRetry() {
@@ -6978,7 +6979,7 @@ function scheduleAdrFinalRetry(forceNetwork = false) {
     try {
       await waitForDelay(ADR_FINAL_RETRY_DELAY_MS, controller.signal);
       const revisionsBefore = getDataRevisions();
-      const { changed, latestDate } = await refreshAdrFromWeb(controller.signal, forceNetwork);
+      const { changed, latestDate } = await getRuntimeMarketRefresh().refreshAdr(controller.signal, forceNetwork);
       if (adrFinalRetryController !== controller || controller.signal.aborted) return;
       await applyRuntimeRefreshChanges(revisionsBefore, { awaitMainRender: false });
       renderDataFreshness();
@@ -7007,43 +7008,13 @@ function parseSeedBundleSync(texts) {
       series: Array.isArray(pricePayloadRaw.series) ? pricePayloadRaw.series : getSeriesColumns(priceRows),
       display_names: pricePayloadRaw.display_names && typeof pricePayloadRaw.display_names === "object" ? pricePayloadRaw.display_names : {},
     } : null,
-    macroRows: parseMacroPayload(texts.macroText),
+    macroRows: parseMacroPayload(texts.macroText, { alignLeadingCycle: true }),
     creditRows: parseMacroPayload(texts.creditText),
     adrRows: parseMacroPayload(texts.adrText),
     vkospiRows: parseMacroPayload(texts.vkospiText),
     disclosurePayload,
     disclosureRows: normalizeDisclosureSeedRows(disclosurePayload?.records || []),
   };
-}
-
-async function refreshFearGreedFromWeb(signal = null) {
-  const payload = await fetchJsonWithProxyFallback(
-    appendCacheBust(IS_LOCAL_RUNTIME ? "./api/fear-greed" : FEAR_GREED_LIVE_URL),
-    { signal },
-    { allowProxy: false },
-  );
-  throwIfAborted(signal);
-  const liveRows = marketDataModule.normalizeFearGreedRows(payload);
-  if (!liveRows.length) {
-    throw new Error("공포탐욕 응답 형식이 올바르지 않습니다.");
-  }
-  const result = runtimeSeriesMergeModule.mergeDatedSeries({
-    sourceRows: appData.adrRows,
-    incomingRows: liveRows,
-    keys: FEAR_GREED_SERIES,
-    policies: runtimePoliciesFor(FEAR_GREED_SERIES),
-  });
-  if (result.updated) {
-    const validation = validateRuntimeSeriesCandidate(
-      "fear greed",
-      appData.adrRows,
-      result.rows,
-      liveRows,
-      FEAR_GREED_SERIES,
-    );
-    appData.adrRows = validation.rows || result.rows;
-  }
-  return { added: result.updated, latestDate: result.latestDate };
 }
 
 async function loadData(forceNetwork = false, options = {}) {
@@ -7060,7 +7031,7 @@ async function loadData(forceNetwork = false, options = {}) {
     forceNetwork,
     includeDisclosures,
   });
-  const seedMerge = runtimeDataTransactionModule.mergeRuntimeSeedComponents({
+  const seedMerge = mergeRuntimeSeedComponents({
     current: appData.snapshot([
       "pricePayload",
       "macroRows",
@@ -7150,8 +7121,7 @@ function prepareHistoricalDataForAiForecast() {
     });
 }
 
-const applyRuntimeRefreshChanges = runtimeRefreshOrchestratorModule
-  .createRuntimeRefreshChangeApplier({
+const applyRuntimeRefreshChanges = createRuntimeRefreshChangeApplier({
     getDataRevisions,
     invalidateAuxiliary: invalidateAdrChartRender,
     isAutoScale: () => chartSession.autoChartReset,
@@ -7194,12 +7164,13 @@ function getRuntimeRefreshOrchestrator() {
       get disclosureRows() { return appData.disclosureRows; },
       get lastDisclosureTraceStats() { return eventMarkerRenderState.disclosureStats; },
     };
-    return runtimeRefreshOrchestratorModule.createRuntimeRefreshOrchestrator({
+    return createRuntimeRefreshOrchestrator({
       applyRuntimeRefreshChanges,
       canUseDartGateway,
       cancelAdrFinalRetry,
       chartSession,
       getDataRevisions,
+      hasVolumeHistory: (ticker) => tickerPriceAppRuntime.hasVolumeHistory(ticker),
       isAbortError,
       isRetryableAdrRefreshError,
       isSourceForeground: isRuntimeRefreshSourceForeground,
@@ -7214,6 +7185,7 @@ function getRuntimeRefreshOrchestrator() {
       refreshEcosMacroFromGateway,
       refreshFearGreedFromWeb,
       fetchCriticalRuntimeBootstrap,
+      forgetStockPriceRefresh,
       refreshSourceWithRetry,
       shouldRefreshSource: shouldRefreshRuntimeSource,
       runRefreshPhases,
@@ -7315,9 +7287,12 @@ const applicationFeatureLifecycle = createApplicationFeatureLifecycleDescriptors
   restoreDart: restoreVisibleDartLayers,
   canUseInsider: canUseDartGateway,
   refreshInsider: () => refreshInsiderTradesForVisibleSeries({ forceNetwork: true }),
+  refreshAi: refreshAiAnalysisForVisibleSeries,
+  refreshEps: prepareVisibleEpsData,
 });
 
 const applicationLifecycle = createApplicationLifecycleRuntime({
+  runOptionalRefreshes: (jobs) => mapWithConcurrency(jobs, 2, (job) => job()),
   setupSteps: [
     () => initPerformanceMonitor(),
     () => initE2eDebugAccess(),
@@ -7385,6 +7360,11 @@ const applicationLifecycle = createApplicationLifecycleRuntime({
     renderMain: runMainChartRender,
     shouldAutoFit: () => chartSession.autoChartReset,
     fitCurrentChart: fitCurrentChartRatio,
+    reconcileViewport: async () => {
+      await settleAllChartWork();
+      if (chartSession.autoChartReset) await fitCurrentChartRatio();
+      await settleAllChartWork();
+    },
   },
   optionalRefreshes: applicationFeatureLifecycle.optionalRefreshes,
   restoredActivations: applicationFeatureLifecycle.restoredActivations,
@@ -7412,7 +7392,7 @@ const applicationLifecycle = createApplicationLifecycleRuntime({
     () => runtimeDataApp.dispose?.(),
     () => startupTaskRuntime.dispose?.(),
     () => seedBundleParser.dispose?.(),
-    () => deferredPerformanceDiagnostics.cancelScheduledCapture?.(),
+    () => deferredPerformanceDiagnostics?.cancelScheduledCapture?.(),
     () => granularCacheMaintenance.dispose?.(),
     () => disclosureProgress.dispose?.(),
     () => epsProgress.dispose?.(),
@@ -7458,33 +7438,31 @@ const appBootstrap = createAppBootstrapOrchestrator({
       onCriticalProgress: (progress) => {
         const percent = Number(progress?.percent);
         if (Number.isFinite(percent)) {
-      startupLoader.setProgress(percent, progress?.source || "");
+          startupLoader.setProgress(percent, progress?.source || "");
         }
       },
-      settleAfterCriticalMs: STARTUP_INTERACTION_SETTLE_MS,
     })
   ),
-  afterStartupRefresh: async () => {
-    if (chartSession.autoChartReset) await fitCurrentChartRatio();
-  },
   onRefreshError: (messageElement, error) => {
     setMessage(messageElement, `최신 데이터 갱신 오류: ${error.message}`, true);
   },
   onError: (messageElement, error) => {
     setMessage(messageElement, error.message || "데이터를 가져오지 못했습니다.", true);
   },
-  scheduleDiagnostics: () => runAfterStartupVisualReady(() => {
-    deferredPerformanceDiagnostics.scheduleAutomaticCapture({
-      appVersion: APP_VERSION,
-      buildVersion: APP_BUILD_VERSION,
-    }, {
-      delayMs: 90000,
-      captureOptions: {
-        captureOnIdle: false,
-        metadataProvider: () => ({ appState: buildRuntimeDiagnosticAppState() }),
-      },
-    });
-  }, { taskName: "performance-diagnostics" }),
+  scheduleDiagnostics: __THINKSTOCK_E2E_DIAGNOSTICS__
+    ? () => runAfterStartupVisualReady(() => {
+      deferredPerformanceDiagnostics?.scheduleAutomaticCapture({
+        appVersion: APP_VERSION,
+        buildVersion: APP_BUILD_VERSION,
+      }, {
+        delayMs: 90000,
+        captureOptions: {
+          captureOnIdle: false,
+          metadataProvider: () => ({ appState: buildRuntimeDiagnosticAppState() }),
+        },
+      });
+    }, { taskName: "performance-diagnostics" })
+    : null,
 });
 
 appBootstrap.boot();

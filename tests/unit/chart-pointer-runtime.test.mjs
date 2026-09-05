@@ -144,10 +144,31 @@ test("viewport movement never replays a pointer sampled before the final render"
     wheelSettleBlock.indexOf("interactionState.wheelZooming = false")
       < wheelSettleBlock.indexOf("requestViewportRender?.()"),
   );
+  assert.ok(
+    wheelSettleBlock.indexOf("getChartNavigationController().finishWheelZoom()")
+      < wheelSettleBlock.indexOf("requestViewportRender?.()"),
+  );
   const movingBlock = source.slice(
     source.indexOf("const processPointerMove ="),
     source.indexOf("pointerMoveController = createPointerFrameController"),
   );
   assert.equal(movingBlock.includes("scheduleEventMarkerHoverHighlight"), false);
   assert.equal(movingBlock.includes("syncHoverToChart"), false);
+});
+
+test("destroy cancels the active wheel settlement before removing listeners", async () => {
+  const source = await readFile(
+    new URL("../../docs/modules/chart-pointer-runtime.mjs", import.meta.url),
+    "utf8",
+  );
+  const destroyStart = source.indexOf("function destroy() {");
+  const destroyEnd = source.indexOf("\n    function bind()", destroyStart);
+  const destroyBlock = source.slice(destroyStart, destroyEnd);
+
+  assert.ok(destroyStart >= 0 && destroyEnd > destroyStart);
+  assert.match(destroyBlock, /clearActiveWheelInteraction\?\.\(\);/);
+  assert.ok(
+    destroyBlock.indexOf("clearActiveWheelInteraction?.();")
+      < destroyBlock.indexOf("while (boundListeners.length)"),
+  );
 });

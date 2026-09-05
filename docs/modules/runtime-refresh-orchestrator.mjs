@@ -21,7 +21,7 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
   }
 
   function shouldScheduleHiddenStockRefresh(options = {}) {
-    return options.forceNetwork === true || options.refreshHidden === true;
+    return options.refreshHidden === true;
   }
 
   function partitionRuntimeRefreshSources(sourceTasks = [], options = {}) {
@@ -40,6 +40,34 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
     });
   }
 
+  function planRuntimeRefreshSources(sourceTasks = [], options = {}) {
+    const shouldRefresh = typeof options.shouldRefresh === "function"
+      ? options.shouldRefresh
+      : () => true;
+    const uniqueEntries = [];
+    const skipped = [];
+    const knownSources = new Set();
+    (Array.isArray(sourceTasks) ? sourceTasks : []).forEach((entry) => {
+      const source = String(entry?.source || "").trim();
+      if (!source || typeof entry?.task !== "function" || knownSources.has(source)) {
+        if (source) skipped.push(Object.freeze({ ...entry, source, reason: "duplicate" }));
+        return;
+      }
+      knownSources.add(source);
+      if (shouldRefresh(source) === false) {
+        skipped.push(Object.freeze({ ...entry, source, reason: "fresh" }));
+        return;
+      }
+      uniqueEntries.push(Object.freeze({ ...entry, source }));
+    });
+    const partition = partitionRuntimeRefreshSources(uniqueEntries, options);
+    return Object.freeze({
+      foreground: partition.foreground,
+      deferred: partition.deferred,
+      skipped: Object.freeze(skipped),
+    });
+  }
+
   function createRuntimeRefreshPolicy(options = {}) {
     const normalizeSeries = (values) => [...new Set((Array.isArray(values) ? values : [])
       .map((value) => String(value || "").trim())
@@ -49,8 +77,28 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
     )];
     const visibleSeries = () => normalizeSeries(options.getVisibleSeries?.());
     const session = () => options.getSession?.() || {};
-    const mainMacroSeries = normalizeSeries(options.mainMacroSeries);
     const marketIndexSeries = normalizeSeries(options.marketIndexSeries);
+    const analysisInputSources = new Set(["adr", "crisis", "credit", "fearGreed", "macro"]);
+    const macroSourceSeries = normalizeSeries(options.macroSourceSeries || ["leading_cycle"]);
+    const crisisSourceSeries = normalizeSeries(options.crisisSourceSeries || [
+      "t10y1y",
+      "us_credit_spread",
+    ]);
+    const claimedStockPriceRefreshes = new Set();
+
+    function includeRequiredTickers(plan, tickers) {
+      const requiredTickers = normalizeTickers([
+        ...(plan?.requiredTickers || []),
+        ...(tickers || []),
+      ]);
+      return Object.freeze({
+        ...(plan || {}),
+        requiredTickers: Object.freeze(requiredTickers),
+        skippedTickers: Object.freeze((plan?.skippedTickers || [])
+          .filter((ticker) => !requiredTickers.includes(ticker))),
+        shouldRefresh: requiredTickers.length > 0,
+      });
+    }
 
     function planSeriesPriceRefresh(tickers, requestOptions = {}) {
       const targets = normalizeTickers(tickers);
@@ -66,8 +114,34 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
       });
     }
 
+    function claimStockPriceRefresh(tickers, requestOptions = {}) {
+      const targets = normalizeTickers(tickers).filter((ticker) => (
+        typeof options.isStockSeries !== "function" || options.isStockSeries(ticker) === true
+      ));
+      const refreshTargets = requestOptions.forceNetwork === true
+        ? targets
+        : targets.filter((ticker) => !claimedStockPriceRefreshes.has(ticker));
+      targets.forEach((ticker) => claimedStockPriceRefreshes.add(ticker));
+      return planSeriesPriceRefresh(refreshTargets, requestOptions);
+    }
+
+    function forgetStockPriceRefresh(tickers) {
+      const targets = Array.isArray(tickers) ? tickers : [tickers];
+      normalizeTickers(targets).forEach((ticker) => claimedStockPriceRefreshes.delete(ticker));
+    }
+
     function forecastTargets(series = visibleSeries()) {
       return series.filter((key) => options.isForecastSeries?.(key) === true);
+    }
+
+    function needsAnalysisInputs(series = visibleSeries()) {
+      const chartState = session();
+      return forecastTargets(series).length > 0
+        && (chartState.showRecessionSignals || chartState.showAiForecast);
+    }
+
+    function hasVisibleSeries(keys, hiddenSeries) {
+      return normalizeSeries(keys).some((series) => !hiddenSeries?.has?.(series));
     }
 
     function planCriticalRefresh(requestOptions = {}) {
@@ -82,39 +156,51 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
       const indexTickers = analysisNeedsBenchmarks
         ? marketIndexSeries
         : visible.filter((key) => marketIndexSeries.includes(key));
+      const missingIndexVolumes = indexTickers.filter((ticker) => (
+        options.hasVolumeHistory?.(ticker) === false
+      ));
+      const missingStockVolumes = visibleStocks.filter((ticker) => (
+        options.hasVolumeHistory?.(ticker) === false
+      ));
+      const indices = includeRequiredTickers(
+        planSeriesPriceRefresh(indexTickers, requestOptions),
+        missingIndexVolumes,
+      );
       return Object.freeze({
-        indices: planSeriesPriceRefresh(indexTickers, requestOptions),
-        prices: planSeriesPriceRefresh(visibleStocks, requestOptions),
+        indices: Object.freeze({
+          ...indices,
+          requireVolumeHistory: missingIndexVolumes.length > 0,
+        }),
+        prices: includeRequiredTickers(
+          claimStockPriceRefresh(visibleStocks, requestOptions),
+          missingStockVolumes,
+        ),
       });
     }
 
     function isSourceForeground(source) {
       const key = String(source || "");
       const chartState = session();
-      const hasForecastTarget = forecastTargets().length > 0;
-      const analysisActive = hasForecastTarget
-        && (chartState.showRecessionSignals || chartState.showAiForecast);
+      const analysisActive = needsAnalysisInputs();
       const hiddenSeries = chartState.hiddenSeries;
       const hiddenPanels = chartState.hiddenAuxiliaryPanels;
-      if (key === "crisis") return chartState.showRecessionSignals && hasForecastTarget;
+      if (key === "crisis") {
+        return analysisActive
+          || !hiddenPanels?.has?.("vkospi")
+          || hasVisibleSeries(crisisSourceSeries, hiddenSeries);
+      }
       if (key === "disclosure") {
         return chartState.showDisclosures || chartState.showInsiderTrades;
       }
       if (key === "fearGreed") return analysisActive || !hiddenPanels?.has?.("fearGreed");
-      if (key === "adr") {
-        return analysisActive || ["adr", "vkospi", "newsSentiment"].some((panel) => (
-          !hiddenPanels?.has?.(panel)
-        ));
-      }
+      if (key === "adr") return analysisActive || !hiddenPanels?.has?.("adr");
       if (key === "macro") {
-        return analysisActive || mainMacroSeries.slice(0, 3).some((series) => (
-          !hiddenSeries?.has?.(series)
-        ));
+        return analysisActive
+          || !hiddenPanels?.has?.("newsSentiment")
+          || hasVisibleSeries(macroSourceSeries, hiddenSeries);
       }
       if (key === "credit") {
-        return analysisActive || normalizeSeries(options.getCreditSeries?.()).some((series) => (
-          !hiddenSeries?.has?.(series)
-        ));
+        return analysisActive || hasVisibleSeries(options.getCreditSeries?.(), hiddenSeries);
       }
       return true;
     }
@@ -123,6 +209,9 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
       if (requestOptions.forceNetwork === true) return true;
       const key = String(source || "");
       if (["indices", "prices", "prices-visible"].includes(key)) return true;
+      // A ready record from a previous session only describes its old check.
+      // Active signal/AI inputs must each be confirmed once in this refresh.
+      if (needsAnalysisInputs() && analysisInputSources.has(key)) return true;
       const sourceState = options.getSourceStates?.()?.[key] || null;
       if (
         !sourceState
@@ -139,6 +228,8 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
     }
 
     return Object.freeze({
+      claimStockPriceRefresh,
+      forgetStockPriceRefresh,
       isSourceForeground,
       planCriticalRefresh,
       planSeriesPriceRefresh,
@@ -163,7 +254,9 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
       if (mainDataChanged && options.isAutoScale?.()) options.markPendingAutoFit?.();
 
       const shouldFinalizeDerived = requestOptions.finalizeDerived !== false && (
-        derivedInputChanged || requestOptions.pendingDerivedInputChanged === true
+        derivedInputChanged
+        || requestOptions.pendingDerivedInputChanged === true
+        || requestOptions.forceDerivedFinalize === true
       );
       let updateClass = "";
       if (shouldFinalizeDerived && options.isTimingVisible?.()) updateClass = "timing";
@@ -209,6 +302,7 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
       refreshEcosMacroFromGateway,
       refreshFearGreedFromWeb,
       fetchCriticalRuntimeBootstrap,
+      forgetStockPriceRefresh,
       refreshSourceWithRetry,
       runRefreshPhases,
       runtimeDataApp,
@@ -242,8 +336,11 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
       let disclosureDataChanged = false;
       const forceNetwork = Boolean(options?.forceNetwork);
       const signal = options?.signal || null;
+      const refreshNow = options?.now instanceof Date
+        ? options.now
+        : new Date(options?.now || Date.now());
       const criticalPlan = typeof planCriticalRefresh === "function"
-        ? planCriticalRefresh({ forceNetwork, now: new Date() })
+        ? planCriticalRefresh({ forceNetwork, now: refreshNow })
         : null;
       const plannedIndexTickers = Array.isArray(criticalPlan?.indices?.requiredTickers)
         ? [...criticalPlan.indices.requiredTickers]
@@ -253,7 +350,12 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
         : null;
       const refreshIndices = criticalPlan ? plannedIndexTickers.length > 0 : true;
       const refreshVisiblePrices = criticalPlan ? plannedPriceTickers.length > 0 : true;
+      const requireIndexVolumeHistory = Boolean(
+        criticalPlan?.indices?.requireVolumeHistory
+        || plannedIndexTickers?.some((ticker) => options.hasVolumeHistory?.(ticker) === false),
+      );
       const sourceAttemptDecisions = new Map();
+      const sourceRefreshPromises = new Map();
       const sourceAttempt = (source) => {
         if (!sourceAttemptDecisions.has(source)) {
           sourceAttemptDecisions.set(source, runtimeDataApp.canAttemptSource?.(source, {
@@ -264,17 +366,8 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
       };
       setRuntimeRefreshStatus("loading", "가격·지수 최신분 확인 중");
       const trackSource = (source, task, skippedResult = {}) => {
+        if (sourceRefreshPromises.has(source)) return sourceRefreshPromises.get(source);
         const sourceStartedAt = startPerfSample();
-        if (typeof shouldRefreshSource === "function" && shouldRefreshSource(source, {
-          forceNetwork,
-        }) === false) {
-          recordPerfSample(`runtimeSource:${source}`, sourceStartedAt, {
-            ok: true,
-            skipped: true,
-            reason: "fresh",
-          });
-          return Promise.resolve({ ...skippedResult, skipped: true });
-        }
         const attempt = sourceAttempt(source);
         if (attempt.allowed === false) {
           recordPerfSample(`runtimeSource:${source}`, sourceStartedAt, {
@@ -282,9 +375,11 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
             skipped: true,
             waitMs: attempt.waitMs,
           });
-          return Promise.resolve({ ...skippedResult, skipped: true });
+          const skippedPromise = Promise.resolve({ ...skippedResult, skipped: true });
+          sourceRefreshPromises.set(source, skippedPromise);
+          return skippedPromise;
         }
-        return Promise.resolve()
+        const refreshPromise = Promise.resolve()
           .then(task)
           .then((result) => {
             if (typeof runtimeDataApp.noteSourceResult === "function") {
@@ -298,13 +393,17 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
             recordPerfSample(`runtimeSource:${source}`, sourceStartedAt, { ok: true });
             return result;
           }, (error) => {
-            runtimeDataApp.noteSourceFailure?.(source, error);
+            const cancelled = isAbortError(error) || signal?.aborted;
+            if (!cancelled) runtimeDataApp.noteSourceFailure?.(source, error);
             recordPerfSample(`runtimeSource:${source}`, sourceStartedAt, {
               ok: false,
+              cancelled,
               error: String(error?.message || error || "unknown").slice(0, 120),
             });
             throw error;
           });
+        sourceRefreshPromises.set(source, refreshPromise);
+        return refreshPromise;
       };
 
       let criticalStarted = 0;
@@ -335,6 +434,15 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
         }
       };
 
+      const sourceFailure = (error, label, fallback = {}) => {
+        if (isAbortError(error) || signal?.aborted) throw error;
+        return {
+          info: [],
+          warnings: [`${label}: ${error?.message || error}`],
+          ...fallback,
+        };
+      };
+
       let criticalBootstrapPromise = null;
       const criticalBootstrap = () => {
         if (typeof fetchCriticalRuntimeBootstrap !== "function") return Promise.resolve(null);
@@ -351,6 +459,8 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
               forceNetwork,
               signal,
               includeIndices: refreshIndices,
+              now: refreshNow,
+              requireIndexVolumeHistory,
               ...(plannedIndexTickers ? { indexTickers: plannedIndexTickers } : {}),
               ...(plannedPriceTickers ? { tickers: plannedPriceTickers } : {}),
             }))
@@ -373,6 +483,8 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
             () => refreshCoreIndexSeries({
               signal,
               forceNetwork,
+              now: refreshNow,
+              requireVolumeHistory: requireIndexVolumeHistory,
               ...(plannedIndexTickers ? { tickers: plannedIndexTickers } : {}),
               ...(bootstrap?.indices?.ok === true ? { payload: bootstrap.indices } : {}),
             }),
@@ -400,6 +512,10 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
           }),
           { failedNames: [] },
         );
+        const unconfirmedTickers = result.skipped === true
+          ? (plannedPriceTickers || [])
+          : (result.unconfirmedTickers || []);
+        if (unconfirmedTickers.length) forgetStockPriceRefresh?.(unconfirmedTickers);
         return {
           info: [],
           warnings: result.failedNames.length
@@ -407,6 +523,7 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
             : [],
         };
         } catch (error) {
+          if (plannedPriceTickers?.length) forgetStockPriceRefresh?.(plannedPriceTickers);
           if (isAbortError(error) || signal?.aborted) throw error;
           return { info: [], warnings: [`Price refresh failed: ${error.message}`] };
         }
@@ -432,14 +549,14 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
     
       const fearGreedTask = () => trackSource("fearGreed", () => refreshSourceWithRetry(
         "fearGreed",
-        () => refreshFearGreedFromWeb(signal),
+        () => refreshFearGreedFromWeb(signal, forceNetwork),
         signal,
       ), { added: 0, latestDate: "" })
         .then(({ added, latestDate }) => ({
           info: added > 0 ? [`공포탐욕 최신값 반영(~ ${latestDate})`] : [],
           warnings: [],
         }))
-        .catch((error) => ({ info: [], warnings: [`공포탐욕 불러오기 오류: ${error.message}`] }));
+        .catch((error) => sourceFailure(error, "공포탐욕 불러오기 오류"));
     
       const ecosTask = () => trackSource("macro", () => refreshSourceWithRetry(
         "macro",
@@ -447,7 +564,7 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
         signal,
       ), { applied: [], warnings: [] })
         .then((result) => ({ info: result.applied || [], warnings: result.warnings || [] }))
-        .catch((error) => ({ info: [], warnings: [`ECOS 지표 불러오기 오류: ${error.message}`] }));
+        .catch((error) => sourceFailure(error, "ECOS 지표 불러오기 오류"));
     
       const creditTask = () => {
         return trackSource("credit", () => refreshSourceWithRetry(
@@ -456,7 +573,7 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
           signal,
         ), { applied: [], warnings: [] })
           .then((result) => ({ info: result.applied || [], warnings: result.warnings || [] }))
-          .catch((error) => ({ info: [], warnings: [`신용·예탁금 불러오기 오류: ${error.message}`] }));
+          .catch((error) => sourceFailure(error, "신용·예탁금 불러오기 오류"));
       };
     
       const crisisTask = () => trackSource("crisis", () => refreshSourceWithRetry(
@@ -465,7 +582,7 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
         signal,
       ), { applied: [], warnings: [] })
         .then((result) => ({ info: result.applied || [], warnings: result.warnings || [] }))
-        .catch((error) => ({ info: [], warnings: [`침체 위기신호 불러오기 오류: ${error.message}`] }));
+        .catch((error) => sourceFailure(error, "침체 위기신호 불러오기 오류"));
     
       const dartTask = () => {
         if (!forceNetwork || !canUseDartGateway()) {
@@ -478,11 +595,7 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
           info: result.fetched > 0 ? [`DART 공시 ${result.fetched}건 확인`] : [],
           warnings: result.failed || [],
           refreshed: result.fetched > 0,
-        })).catch((error) => ({
-          info: [],
-          warnings: [`DART 공시 오류: ${error.message}`],
-          refreshed: false,
-        }));
+        })).catch((error) => sourceFailure(error, "DART 공시 오류", { refreshed: false }));
       };
     
       const collectResults = (results) => results.forEach((result) => {
@@ -526,9 +639,11 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
         task: async () => ({ ...(await task()), source }),
       }));
       const refreshDeferredSources = options?.refreshDeferredSources === true || forceNetwork;
-      const sourcePlan = partitionRuntimeRefreshSources(sourceTasks, {
+      const sourcePlan = planRuntimeRefreshSources(sourceTasks, {
         includeDeferred: refreshDeferredSources,
         isForeground: isSourceForeground,
+        shouldRefresh: (source) => typeof shouldRefreshSource !== "function"
+          || shouldRefreshSource(source, { forceNetwork, now: refreshNow }) !== false,
       });
       const foregroundSourceTasks = sourcePlan.foreground;
       const deferredSourceTasks = sourcePlan.deferred;
@@ -561,7 +676,7 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
             finalizeDerived: false,
           });
           reportCriticalProgress("chart", 96);
-          runtimeDataApp.notePhase("criticalReady");
+          runtimeDataApp.notePhase("criticalReady", options?.generation);
           setRuntimeRefreshStatus("loading", "가격·지수 반영 완료 · 보조지표 갱신 중");
           if (typeof options?.onCriticalReady === "function") {
             setMessage(msgEl, [
@@ -576,13 +691,17 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
           throwIfAborted(signal);
           collectResults(results);
           noteDartResult(results);
+          // Mark the input bundle ready before requesting its single final
+          // timing render. Otherwise an unchanged source set can leave the
+          // startup chart without signals until another interaction occurs.
+          runtimeDataApp.notePhase("supplementalReady", options?.generation);
           await applyPhaseChanges({
             awaitMainRender: Boolean(options?.awaitSupplementalRender),
             awaitAuxiliaryRender: Boolean(options?.awaitSupplementalRender),
             phase: "supplemental",
             finalizeDerived: true,
+            forceDerivedFinalize: true,
           });
-          runtimeDataApp.notePhase("supplementalReady");
           if (refreshDeferredSources && deferredSourceTasks.length) {
             setRuntimeRefreshStatus("loading", "현재 화면 갱신 완료 · 숨은 데이터 확인 중");
           }
@@ -596,12 +715,11 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
             phase: "deferred",
             finalizeDerived: true,
           });
-          runtimeDataApp.notePhase("deferredReady");
+          runtimeDataApp.notePhase("deferredReady", options?.generation);
         },
       });
 
-      // Hidden tickers are not required for the current frame. Refresh them
-      // later, outside the visible startup and supplemental critical path.
+      // Hidden tickers stay untouched unless a caller explicitly requests them.
       if (shouldScheduleHiddenStockRefresh(options)) {
         scheduleHiddenStockRefresh?.({ forceRefresh: forceNetwork, signal });
       }
@@ -774,6 +892,7 @@ export {
   createRuntimeRefreshPolicy,
   createRuntimeRefreshOrchestrator,
   isRetryableRuntimeError,
+  planRuntimeRefreshSources,
   planRuntimeRefreshRendering,
   partitionRuntimeRefreshSources,
   retryOnce,

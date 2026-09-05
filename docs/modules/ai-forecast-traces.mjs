@@ -1,5 +1,7 @@
 "use strict";
 
+import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
+
   const SCENARIO_KEYS = Object.freeze(["upside", "sideways", "downside"]);
   const PRIMARY_SCENARIO_STYLE = Object.freeze({
     color: "#ffffff",
@@ -16,7 +18,7 @@
   }
 
   function isThickestAiScenarioTrace(trace) {
-    if (!trace?.meta?.isAiForecastScenarioTrace
+    if (chartTraceOverlayKind(trace) !== "ai-scenario"
       || trace.meta.isEmphasizedAiScenario !== true) return false;
     const renderedWidth = Number(trace.line?.width);
     const thickestWidth = Number(trace.meta?.thickestAiScenarioLineWidth);
@@ -93,7 +95,7 @@
 
   function representativeReportFromForecastClick(eventData) {
     const markerPoint = eventData?.points?.find((candidate) => (
-      candidate?.data?.meta?.isAiReportMarkerTrace
+      chartTraceOverlayKind(candidate?.data) === "ai-report"
       && Array.isArray(candidate?.data?.meta?.reports)
     ));
     const point = markerPoint || eventData?.points?.find((candidate) => (
@@ -433,8 +435,6 @@
               seriesTransformAnchorBaseValue: Number.isFinite(seriesTransformAnchorBaseValue)
                 ? seriesTransformAnchorBaseValue
                 : null,
-              isAiForecastTrace: scenarioKey === "sideways",
-              isAiForecastScenarioTrace: true,
               aiTraceRole: scenarioKey,
               scenarioProbability: scenario.probability,
               scenarioWeight,
@@ -500,7 +500,6 @@
             meta: {
               ...commonMeta,
               overlayKind: "ai-report",
-              isAiReportMarkerTrace: true,
               seriesTransformBaseValues: [markerScenarioBaseValues[markerIndex]],
               seriesTransformAnchor: "latest-price",
               seriesTransformAnchorBaseValue: Number.isFinite(markerAnchorBaseValue)

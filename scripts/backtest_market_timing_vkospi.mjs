@@ -218,11 +218,16 @@ const preparedSeries = seriesEntries.flatMap(([ticker, raw]) => {
   if (!macd) return [];
   const benchmarkKey = ticker === "^KQ11" || ticker.endsWith(".KQ") ? "^KQ11" : "^KS11";
   const benchmarkMap = benchmarkMaps[benchmarkKey];
+  const volumeByDate = new Map((raw.dates || []).map((date, index) => [
+    date,
+    Array.isArray(raw.volumes) ? raw.volumes[index] : null,
+  ]));
   return [[ticker, {
     dates: macd.dates,
     prices: macd.prices,
     oscillator: macd.normalized,
     benchmarkPrices: macd.dates.map((date) => benchmarkMap.get(date) ?? null),
+    volumes: macd.dates.map((date) => volumeByDate.get(date) ?? null),
     dateIndexes: new Map(macd.dates.map((date, index) => [date, index])),
     tags: priceUniverse.validationSampling?.profiles?.[ticker]?.tags || [],
   }]];
@@ -248,6 +253,7 @@ function calculate(policy = null, timingBuilder = buildMarketTimingSignals, prog
       prices: series.prices,
       oscillator: series.oscillator,
       benchmarkPrices: series.benchmarkPrices,
+      volumes: series.volumes,
       adrRows: context.auxiliaryRows || [],
       macroRows: context.macroRows || [],
       creditRows: context.creditRows || [],

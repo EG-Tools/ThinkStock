@@ -217,7 +217,7 @@ test("builds one long-dash EPS trace per visible stock", () => {
   assert.deepEqual(traces[0].marker.size, [12, 12]);
   assert.deepEqual(traces[0].marker.symbol, ["circle", "circle"]);
   assert.deepEqual(traces[0].marker.color, ["#000000", "#000000"]);
-  assert.equal(traces[0].meta.isEpsTrace, true);
+  assert.equal(traces[0].meta.overlayKind, "eps");
   assert.equal(traces[0].meta.seriesKey, `eps:${ticker}`);
   assert.equal(traces[0].text[0], "2025년 4분기 EPS 120");
   assert.equal(traces[0].text[1], "2026년 1분기 EPS 180");

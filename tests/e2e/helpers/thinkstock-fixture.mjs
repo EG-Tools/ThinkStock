@@ -8,6 +8,33 @@ const E2E_ADMIN_SESSION_TOKEN = "v1.ZTJlLWFkbWluLXNlc3Npb24.signature";
 const E2E_ADMIN_CODE = "1234567890";
 const recentDates = ["2025-07-14", "2025-10-14", "2026-01-14", "2026-04-14", "2026-07-14"];
 const historyDates = ["1998-07-14", "2005-07-14", "2012-07-14"];
+const timingVolumeDates = (() => {
+  const dates = [];
+  const cursor = new Date(Date.UTC(2025, 4, 1));
+  const end = Date.parse(`${recentDates.at(-1)}T00:00:00Z`);
+  while (cursor.getTime() <= end) {
+    const day = cursor.getUTCDay();
+    if (day !== 0 && day !== 6) dates.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return dates;
+})();
+
+function timingVolumeRows(ticker) {
+  const key = String(ticker || "").trim().toUpperCase();
+  const baseClose = {
+    "^KS11": 6856.83,
+    "^KQ11": 783.98,
+    "005930.KS": 263000,
+    "218410.KQ": 44750,
+    "033100.KQ": 42100,
+  }[key] || 30000;
+  return timingVolumeDates.map((date, index) => ({
+    date,
+    close: baseClose * (1 + (Math.sin(index / 3) * 0.035) + (index * 0.0015)),
+    volume: 1_000_000 + (index * 12_500),
+  }));
+}
 const test = base.extend({
   adminAccessState: [async ({ page }, use, testInfo) => {
     const shouldStartLocked = testInfo.title === "general mode locks private analysis features"
@@ -78,11 +105,21 @@ async function waitForBoundingBox(locator) {
 }
 
 async function waitForChartRenderIdle(page) {
-  let previousGeneration = -1;
+  let previousCompleted = -1;
   await expect.poll(async () => {
-    const generation = await page.evaluate(() => window.ThinkStockE2E?.getChartRenderGeneration?.() ?? -1);
-    const stable = generation >= 0 && generation === previousGeneration;
-    previousGeneration = generation;
+    const runtime = await page.evaluate(() => window.ThinkStockE2E?.getChartWorkerStats?.() || null);
+    const scheduler = runtime?.scheduler;
+    const completed = Number(scheduler?.completedTransactionId) || 0;
+    const stable = completed === previousCompleted
+      && completed === (Number(scheduler?.lastTransactionId) || 0)
+      && !scheduler?.framePending
+      && !scheduler?.inFlight
+      && !scheduler?.deferred
+      && !scheduler?.renderAfterFlight
+      && !(scheduler?.pendingReasons || []).length
+      && !runtime?.activeType
+      && !(runtime?.queuedTypes || []).length;
+    previousCompleted = completed;
     return stable;
   }, { intervals: [80, 100, 140, 180] }).toBe(true);
 }
@@ -152,10 +189,9 @@ async function stubExternalRefreshes(page, { stubFearGreed = true } = {}) {
   await page.route("https://thinkstock-api.keg0320.workers.dev/api/indices**", async (route) => {
     await route.fulfill({ json: {
       ok: true,
-      records: [
-        { ticker: "^KS11", date: recentDates.at(-1), close: 3200 },
-        { ticker: "^KQ11", date: recentDates.at(-1), close: 860 },
-      ],
+      records: ["^KS11", "^KQ11"].flatMap((ticker) => (
+        timingVolumeRows(ticker).map((row) => ({ ticker, ...row }))
+      )),
     } });
   });
   await page.route("https://thinkstock-api.keg0320.workers.dev/api/bootstrap**", async (route) => {
@@ -182,10 +218,17 @@ async function stubExternalRefreshes(page, { stubFearGreed = true } = {}) {
           ticker,
           source: "KRX",
           latestDate: recentDates.at(-1),
-          records: [{ date: recentDates.at(-1), close: 100 }],
+          records: [{ date: recentDates.at(-1), close: 100, volume: 1_000_000 }],
         })),
       },
     } });
+  });
+  await page.route("https://thinkstock-api.keg0320.workers.dev/api/research/history**", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    const ticker = String(requestUrl.searchParams.get("ticker") || "").trim().toUpperCase();
+    const since = String(requestUrl.searchParams.get("since") || "").slice(0, 10);
+    const rows = timingVolumeRows(ticker).filter((row) => !since || row.date >= since);
+    await route.fulfill({ json: { ok: true, ticker, rows } });
   });
   await page.route("https://thinkstock-api.keg0320.workers.dev/api/prices/batch**", async (route) => {
     const tickers = [...new Set(String(new URL(route.request().url()).searchParams.get("tickers") || "")
@@ -319,6 +362,28 @@ async function installDataRoutes(page, options = {}) {
     })),
   };
   const payloads = new Map([
+    ["data_manifest.json", {
+      format: "segmented-data-v1",
+      revision: "e2e-fixture",
+      datasets: {
+        prices: {
+          recent: { file: "prices_recent.json" },
+          history: { file: "prices_history.json" },
+        },
+        macro_data: {
+          recent: { file: "macro_data_recent.json" },
+          history: { file: "macro_data_history.json" },
+        },
+        credit_data: {
+          recent: { file: "credit_data_recent.json" },
+          history: { file: "credit_data_history.json" },
+        },
+        adr_data: {
+          recent: { file: "adr_data_recent.json" },
+          history: { file: "adr_data_history.json" },
+        },
+      },
+    }],
     ["prices_recent.json", pricesRecent],
     ["prices_history.json", pricesHistory],
     ["macro_data_recent.json", macroRecent],

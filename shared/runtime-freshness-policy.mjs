@@ -57,7 +57,8 @@ export const RUNTIME_SOURCE_POLICIES = Object.freeze({
     failureBackoffMs: Object.freeze([60_000, 300_000, 900_000]),
   }),
   crisis: Object.freeze({
-    liveConfirmMs: 6 * 60 * MINUTE_MS,
+    // This endpoint also owns intraday VKOSPI/VIX, not only slow FRED series.
+    liveConfirmMs: 2 * MINUTE_MS,
     retryDelaysMs: Object.freeze([1000]),
     failureBackoffMs: Object.freeze([60_000, 300_000, 900_000]),
   }),

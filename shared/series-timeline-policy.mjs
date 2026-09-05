@@ -16,7 +16,8 @@ export const SERIES_TIMELINE_POLICIES = Object.freeze({
     maximumAsOfAgeDays: 10,
   }),
   leading_cycle: Object.freeze({
-    availabilityLagDays: 60,
+    availabilityLagDays: 0,
+    availabilityLagMonths: 2,
     latestToleranceDays: 7,
     mutableTailDays: 95,
     maximumAsOfAgeDays: 75,
@@ -111,9 +112,100 @@ export function shiftTimelineDate(date, days) {
   return new Date(timestamp + (Number(days) || 0) * DAY_MS).toISOString().slice(0, 10);
 }
 
+export function shiftTimelineMonth(date, months) {
+  const normalized = normalizeDate(date);
+  if (!normalized) return "";
+  const [year, month, day] = normalized.split("-").map(Number);
+  const monthIndex = (year * 12) + (month - 1) + (Number(months) || 0);
+  const targetYear = Math.floor(monthIndex / 12);
+  const targetMonthIndex = ((monthIndex % 12) + 12) % 12;
+  const lastDay = new Date(Date.UTC(targetYear, targetMonthIndex + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(
+    targetYear,
+    targetMonthIndex,
+    Math.min(day, lastDay),
+  )).toISOString().slice(0, 10);
+}
+
 export function availableOnDate(series, observationDate) {
   const policy = seriesTimelinePolicy(series);
+  if (Number(policy.availabilityLagMonths)) {
+    return shiftTimelineMonth(observationDate, policy.availabilityLagMonths);
+  }
   return shiftTimelineDate(observationDate, policy.availabilityLagDays);
+}
+
+function monthlyObservationRows(rows, key) {
+  const points = rows.flatMap((row) => {
+    const rawValue = row?.[key];
+    const value = rawValue == null || rawValue === "" ? NaN : Number(rawValue);
+    const time = Date.parse(`${row.date}T00:00:00Z`);
+    return Number.isFinite(time) && Number.isFinite(value)
+      ? [{ date: row.date, time, value }]
+      : [];
+  });
+  const months = [...new Set(points.map((point) => point.date.slice(0, 7)))];
+
+  return months.flatMap((month) => {
+    const date = `${month}-01`;
+    const time = Date.parse(`${date}T00:00:00Z`);
+    const exact = points.find((point) => point.time === time);
+    if (exact) return [{ date, [key]: exact.value }];
+
+    const left = points.findLast((point) => point.time < time);
+    const right = points.find((point) => point.time > time);
+    if (left && right && right.time > left.time) {
+      const ratio = (time - left.time) / (right.time - left.time);
+      const value = left.value + ((right.value - left.value) * ratio);
+      return [{ date, [key]: Number(value.toFixed(6)) }];
+    }
+
+    const firstInMonth = points.find((point) => point.date.startsWith(`${month}-`));
+    return firstInMonth ? [{ date, [key]: firstInMonth.value }] : [];
+  });
+}
+
+export function rebaseSeriesRowsToAvailability(rows, series, options = {}) {
+  const key = String(series || "").trim();
+  const source = Array.isArray(rows) ? rows : [];
+  const dateBasis = String(options.dateBasis || "observation").trim().toLowerCase();
+  const byDate = new Map();
+  const normalizedRows = [];
+
+  source.forEach((row) => {
+    const date = normalizeDate(row?.date);
+    if (!date) return;
+    const normalized = { ...(row || {}), date };
+    normalizedRows.push(normalized);
+    const previous = byDate.get(date) || { date };
+    byDate.set(date, { ...previous, ...normalized, date });
+  });
+  if (!key || dateBasis === "availability" || dateBasis === "publication") {
+    return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
+  }
+
+  byDate.forEach((row) => { delete row[key]; });
+  const seriesRows = options.observationCadence === "monthly"
+    ? monthlyObservationRows(normalizedRows, key)
+    : normalizedRows;
+  seriesRows.forEach((row) => {
+    const sourceDate = row.date;
+    const value = row?.[key];
+    if (value == null || !Number.isFinite(Number(value))) return;
+    const explicitDate = normalizeDate(
+      row?.availableDate
+        || row?.available_date
+        || row?.publicationDate
+        || row?.publication_date,
+    );
+    const date = explicitDate || availableOnDate(key, sourceDate);
+    if (!date) return;
+    const target = byDate.get(date) || { date };
+    target[key] = Number(value);
+    byDate.set(date, target);
+  });
+
+  return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
 }
 
 export function latestToleranceMs(seriesList) {
@@ -154,6 +246,8 @@ const api = Object.freeze({
   latestToleranceMs,
   maximumAsOfAgeDays,
   mutableTailStartDate,
+  rebaseSeriesRowsToAvailability,
   seriesTimelinePolicy,
   shiftTimelineDate,
+  shiftTimelineMonth,
 });

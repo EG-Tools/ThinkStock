@@ -104,6 +104,22 @@ test("cancels signal progress when timing signals are disabled", () => {
   assert.deepEqual(context.calls, ["cancel-signal-progress"]);
 });
 
+test("confirming signal inputs reuses the shared runtime refresh", async () => {
+  const context = createContext();
+  context.refreshRuntimeData = async (options) => context.calls.push([
+    "confirm-signal-inputs",
+    options,
+  ]);
+  const config = createChartApplicationControlConfig(context);
+
+  await config.signal.onEnabled();
+
+  assert.deepEqual(context.calls, [[
+    "confirm-signal-inputs",
+    { requireDerivedInputs: true },
+  ]]);
+});
+
 test("waits for AI inputs before requesting the final composition", async () => {
   const context = createContext();
   context.prepareHistoricalDataForAiForecast = async () => context.calls.push("ai-history");
@@ -154,7 +170,7 @@ test("owns stable runtime keys and chart control limits outside app.js", () => {
   assert.equal(BASE_HOVER_NAMES.us_credit_spread, "미국 회사채 3년/국채 3년 금리차");
   assert.equal(
     BASE_SERIES_HELP_NAMES.leading_cycle,
-    "한국은행 선행지수 순환변동치\n2달 후행",
+    "한국은행 선행지수 순환변동치\n공개일 기준",
   );
   assert.equal(
     BASE_SERIES_HELP_NAMES.us_credit_spread,
@@ -220,5 +236,7 @@ test("resolves the stamped build version outside the application composition roo
     },
   };
   assert.equal(resolveAppBuildVersion(scope), "build-327");
+  scope.document.scripts[1].src = "https://example.test/ThinkStock/assets/app.bundle.min.js?v=dev&asset=abc123";
+  assert.equal(resolveAppBuildVersion(scope), "dev-abc123");
   assert.equal(resolveAppBuildVersion({ document: { scripts: [] } }), "dev");
 });

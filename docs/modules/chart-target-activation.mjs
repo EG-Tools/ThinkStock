@@ -1,5 +1,7 @@
 "use strict";
 
+import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
+
 const EVENT_MARKER_TARGET = "event-marker";
 const AI_REPORT_TARGET = "ai-report";
 const LINE_TARGET = "line";
@@ -12,6 +14,7 @@ function chartPressMovementPx(isTouch = false) {
 
 function createChartTargetRuntime(options = {}) {
   let lineHitIndexCache = new WeakMap();
+  let hoverLineHitIndexCache = new WeakMap();
   let aiReportLineHitIndexCache = new WeakMap();
 
   function isMainChart(element) {
@@ -53,6 +56,33 @@ function createChartTargetRuntime(options = {}) {
     return point;
   }
 
+  function lineHitIndex(element) {
+    const seriesKeys = options.adjustableSeriesKeys?.(
+      element.data,
+      options.getBaseTraceValues?.(),
+    ) || [];
+    let index = lineHitIndexCache.get(element);
+    if (!options.lineHitIndexMatches?.(index, element.data, seriesKeys)) {
+      index = options.buildLineHitIndex?.(element.data, seriesKeys) || [];
+      lineHitIndexCache.set(element, index);
+    }
+    return index;
+  }
+
+  function hoverLineHitIndex(element) {
+    const traceKeys = element.data.map((trace, traceIndex) => {
+      const kind = chartTraceOverlayKind(trace);
+      if (kind !== "price" && kind !== "ai-scenario") return "";
+      return `hover:${kind}:${String(trace?.meta?.seriesKey || "")}:${String(trace?.meta?.aiTraceRole || "")}:${traceIndex}`;
+    });
+    let index = hoverLineHitIndexCache.get(element);
+    if (!options.lineHitIndexMatches?.(index, element.data, traceKeys)) {
+      index = options.buildLineHitIndex?.(element.data, traceKeys) || [];
+      hoverLineHitIndexCache.set(element, index);
+    }
+    return index;
+  }
+
   function findNearestLineDragTarget(
     element,
     clientX,
@@ -64,15 +94,7 @@ function createChartTargetRuntime(options = {}) {
     if (!isMainChart(element)) return null;
     const point = chartPoint(element, clientX, clientY, geometry, interactionContext);
     if (!point) return null;
-    const seriesKeys = options.adjustableSeriesKeys?.(
-      element.data,
-      options.getBaseTraceValues?.(),
-    ) || [];
-    let index = lineHitIndexCache.get(element);
-    if (!options.lineHitIndexMatches?.(index, element.data, seriesKeys)) {
-      index = options.buildLineHitIndex?.(element.data, seriesKeys) || [];
-      lineHitIndexCache.set(element, index);
-    }
+    const index = lineHitIndex(element);
     const epsPoint = options.findNearestMarkerTarget?.(
       index,
       point.localX,
@@ -81,7 +103,7 @@ function createChartTargetRuntime(options = {}) {
       point.yAxis,
       options.interactiveMarkerHitRadius?.(isTouch),
       (entry, pointIndex) => Number(entry.trace.marker?.size?.[pointIndex]) > 0,
-      (entry) => entry.trace?.meta?.isEpsTrace,
+      (entry) => chartTraceOverlayKind(entry.trace) === "eps",
       point.targetMs,
     );
     if (epsPoint) return epsPoint;
@@ -95,6 +117,32 @@ function createChartTargetRuntime(options = {}) {
       point.yAxis,
       tolerance,
     ) || null;
+  }
+
+  function findNearestHoverLineTarget(
+    element,
+    clientX,
+    clientY,
+    geometry = null,
+    interactionContext = null,
+  ) {
+    if (!isMainChart(element)) return null;
+    const point = chartPoint(element, clientX, clientY, geometry, interactionContext);
+    if (!point) return null;
+    const target = options.findNearestLineTarget?.(
+      hoverLineHitIndex(element),
+      point.targetMs,
+      point.localY,
+      point.yAxis,
+      Number.POSITIVE_INFINITY,
+    );
+    const targetTrace = target ? element.data?.[target.traceIndex] : null;
+    return target ? {
+      ...target,
+      overlayKind: chartTraceOverlayKind(targetTrace),
+      seriesKey: String(targetTrace?.meta?.seriesKey || target.seriesKey || ""),
+      xValue: point.xValue,
+    } : null;
   }
 
   function findAiForecastReportAtClientPoint(
@@ -111,7 +159,7 @@ function createChartTargetRuntime(options = {}) {
     const markerTarget = options.findMarkerAtClientPoint?.(element, clientX, clientY, {
       geometry,
       cacheKey: "ai-report-markers",
-      tracePredicate: (trace) => trace?.meta?.isAiReportMarkerTrace,
+      tracePredicate: (trace) => chartTraceOverlayKind(trace) === "ai-report",
       isTouch,
     });
     if (markerTarget) return markerTarget;
@@ -184,18 +232,25 @@ function createChartTargetRuntime(options = {}) {
 
   function invalidate(element = null, invalidateOptions = {}) {
     if (element) {
-      if (invalidateOptions.lines !== false) lineHitIndexCache.delete(element);
+      if (invalidateOptions.lines !== false) {
+        lineHitIndexCache.delete(element);
+        hoverLineHitIndexCache.delete(element);
+      }
       if (invalidateOptions.reports !== false) aiReportLineHitIndexCache.delete(element);
       if (invalidateOptions.markers !== false) options.invalidateMarkerPixels?.(element);
       return;
     }
-    if (invalidateOptions.lines !== false) lineHitIndexCache = new WeakMap();
+    if (invalidateOptions.lines !== false) {
+      lineHitIndexCache = new WeakMap();
+      hoverLineHitIndexCache = new WeakMap();
+    }
     if (invalidateOptions.reports !== false) aiReportLineHitIndexCache = new WeakMap();
   }
 
   return Object.freeze({
     findAiForecastReportAtClientPoint,
     findEventMarkerAtClientPoint,
+    findNearestHoverLineTarget,
     findNearestLineDragTarget,
     invalidate,
     isInteractiveEventMarkerTrace,

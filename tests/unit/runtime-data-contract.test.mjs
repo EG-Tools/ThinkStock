@@ -2,13 +2,38 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  normalizeAdrPayload,
   normalizeBootstrapPayload,
   normalizeCrisisSignalPayload,
   normalizeCreditPayload,
+  normalizeFearGreedPayload,
   normalizeMacroPayload,
   normalizePriceBatchPayload,
   normalizePricePayload,
 } from "../../shared/runtime-data-contract.mjs";
+
+test("normalizes ADR and fear-greed through shared runtime contracts", () => {
+  const adr = normalizeAdrPayload({
+    ok: true,
+    rows: [
+      { date: "2026-09-04", adr_kospi: 107.04, adr_kosdaq: 97.14 },
+      { date: "bad", adr_kospi: 100 },
+    ],
+  });
+  assert.deepEqual(adr.rows, [{ date: "2026-09-04", adr_kospi: 107.04, adr_kosdaq: 97.14 }]);
+  assert.equal(adr.latestDate, "2026-09-04");
+
+  const latestFear = normalizeFearGreedPayload({ updated: "2026-09-04", score: 32 });
+  assert.deepEqual(latestFear.rows, [{ date: "2026-09-04", fear_greed: 32 }]);
+  const historyFear = normalizeFearGreedPayload({
+    rows: [
+      { date: "2026-09-03", score: 31 },
+      { date: "2026-09-04", score: 32 },
+    ],
+  });
+  assert.equal(historyFear.latestDate, "2026-09-04");
+  assert.throws(() => normalizeFearGreedPayload({ rows: [{ date: "2026-09-04", score: 101 }] }), /no usable rows/);
+});
 
 test("normalizes a partial startup bootstrap without discarding the usable source", () => {
   const payload = normalizeBootstrapPayload({
@@ -84,11 +109,12 @@ test("accepts partial macro success but rejects an entirely empty response", () 
     policyRateRows: [{ date: "2026-05-01", policy_rate: 2.5 }],
     tradeRows: [{ date: "2026-05-01", export_value: 60, import_value: 55 }],
   });
-  assert.deepEqual(normalized.leadingRows, [{ date: "2026-05-01", leading_cycle: 104.8 }]);
+  assert.deepEqual(normalized.leadingRows, [{ date: "2026-07-01", leading_cycle: 104.8 }]);
+  assert.equal(normalized.leadingDateBasis, "availability");
   assert.deepEqual(normalized.policyRateRows, [{ date: "2026-05-01", policy_rate: 2.5 }]);
   assert.deepEqual(normalized.tradeRows, [{ date: "2026-05-01", export_value: 60, import_value: 55 }]);
   assert.deepEqual(normalized.componentLatestDates, {
-    leading_cycle: "2026-05-01",
+    leading_cycle: "2026-07-01",
     policy_rate: "2026-05-01",
     export_value: "2026-05-01",
     import_value: "2026-05-01",
@@ -118,11 +144,24 @@ test("accepts partial macro success but rejects an entirely empty response", () 
   }), /implausible jump/);
 });
 
+test("macro normalization prefers an explicit release date and is idempotent", () => {
+  const normalized = normalizeMacroPayload({
+    ok: true,
+    leadingRows: [{
+      date: "2026-07-01",
+      available_date: "2026-09-01",
+      leading_cycle: 104.2,
+    }],
+  });
+  assert.deepEqual(normalized.leadingRows, [{ date: "2026-09-01", leading_cycle: 104.2 }]);
+  assert.deepEqual(normalizeMacroPayload(normalized).leadingRows, normalized.leadingRows);
+});
+
 test("rejects an empty or zero latest price so the cached close remains usable", () => {
   assert.deepEqual(normalizePricePayload({
     ok: true,
-    records: [{ date: "2026-08-06", close: 71200 }],
-  }).records, [{ date: "2026-08-06", close: 71200 }]);
+    records: [{ date: "2026-08-06", close: 71200, volume: 123456 }],
+  }).records, [{ date: "2026-08-06", close: 71200, volume: 123456 }]);
   assert.throws(
     () => normalizePricePayload({ ok: true, records: [{ date: "2026-08-07", close: 0 }] }),
     /no usable rows/,

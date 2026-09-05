@@ -11,6 +11,7 @@ import {
   isPriorityChartPressValid,
   openPriorityChartTarget,
 } from "./chart-target-activation.mjs";
+import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
 
   function createHoverIdleController(scope = globalThis, options = {}) {
     const delayMs = Math.max(0, Number(options.delayMs) || 0);
@@ -102,9 +103,11 @@ import {
       captureViewportNormalization,
       findAiForecastReportAtClientPoint,
       findEventMarkerAtClientPoint,
+      findNearestHoverLineTarget,
       findNearestLineDragTarget,
       getChartCursorSyncController,
       getChartInteractionGeometry,
+      getChartNavigationController,
       getChartNavigationDataRangeMs,
       getChartRangeSyncController,
       getCurrentXRangeMs,
@@ -122,10 +125,10 @@ import {
       scheduleEventMarkerHoverHighlight,
       scheduleSyncedCursor,
       setHoveredLineTarget,
+      setHoverPopupAnchor,
       showChartNavigationMessage,
       startPerfSample,
       syncHoverToChart,
-      zoomChartViewport,
     } = options;
     if (!scope.document || !interactionState
       || typeof createPointerFrameController !== "function") {
@@ -150,6 +153,7 @@ import {
     let fullLifetimeToggleTask = Promise.resolve(false);
     let activeHoverIdleController = null;
     let clearActiveViewportDrag = null;
+    let clearActiveWheelInteraction = null;
     const boundListeners = [];
 
     function listen(target, eventName, listener, optionsValue) {
@@ -164,6 +168,8 @@ import {
       pointerMoveController = null;
       clearActiveViewportDrag?.();
       clearActiveViewportDrag = null;
+      clearActiveWheelInteraction?.();
+      clearActiveWheelInteraction = null;
       while (boundListeners.length) boundListeners.pop()?.();
       cursorMoveBound = false;
       chartInteractionsBound = false;
@@ -188,13 +194,22 @@ import {
             || interactionState.viewportDragging || interactionState.wheelZooming) return;
           if (sourceEl === mainEl) {
             const geometry = getChartInteractionGeometry(sourceEl);
+            const interactionContext = {};
+            const pointerLocalY = Number(clientY) - Number(geometry?.rect?.top);
+            // The closest line decides what the popup describes; the settled
+            // pointer itself owns where that popup opens. Re-projecting the
+            // selected line here can use a stale viewport frame after zoom.
+            setHoverPopupAnchor?.(
+              sourceEl,
+              Number.isFinite(pointerLocalY) ? pointerLocalY : null,
+            );
             const eventMarkerTarget = findEventMarkerAtClientPoint?.(
               sourceEl,
               clientX,
               clientY,
               false,
               geometry,
-              {},
+              interactionContext,
             );
             if (eventMarkerTarget) {
               const trace = sourceEl.data?.[eventMarkerTarget.traceIndex];
@@ -223,14 +238,35 @@ import {
               clientY,
               false,
               geometry,
+              interactionContext,
             );
             const markerTrace = sourceEl.data?.[markerTarget?.traceIndex];
-            const markerX = markerTrace?.meta?.isEpsTrace
+            const markerX = chartTraceOverlayKind(markerTrace) === "eps"
               && Number.isInteger(markerTarget?.pointIndex)
               ? markerTrace.x?.[markerTarget.pointIndex]
               : null;
             if (markerX != null && typeof syncHoverToChart === "function") {
               syncHoverToChart(sourceEl, markerX);
+              return;
+            }
+            const hoverLineTarget = findNearestHoverLineTarget?.(
+              sourceEl,
+              clientX,
+              clientY,
+              geometry,
+              interactionContext,
+            );
+            if (hoverLineTarget?.xValue != null && typeof syncHoverToChart === "function") {
+              const scenarioTraceIndex = hoverLineTarget.overlayKind === "ai-scenario"
+                ? hoverLineTarget.traceIndex
+                : null;
+              syncHoverToChart(
+                sourceEl,
+                scenarioTraceIndex == null
+                  ? (nearestMainLineDate?.(sourceEl, hoverLineTarget.xValue) || hoverLineTarget.xValue)
+                  : hoverLineTarget.xValue,
+                scenarioTraceIndex,
+              );
               return;
             }
           }
@@ -258,6 +294,13 @@ import {
       const activeTouchPointers = new Map();
       let wheelRangeTimer = 0;
       let wheelSettleRevision = 0;
+      clearActiveWheelInteraction = () => {
+        if (wheelRangeTimer) clearTimeout(wheelRangeTimer);
+        wheelRangeTimer = 0;
+        wheelSettleRevision += 1;
+        interactionState.wheelZooming = false;
+        getChartNavigationController().finishWheelZoom?.();
+      };
 
       const scheduleViewportRange = (range, meta) => {
         if (!range) return false;
@@ -713,7 +756,11 @@ import {
           requestedAnchorRatio,
           { tolerance: DAY_MS * 2 },
         );
-        zoomChartViewport(event.deltaY > 0 ? 1 : -1, "wheel-zoom", { anchorRatio });
+        getChartNavigationController().zoom(
+          event.deltaY > 0 ? 1 : -1,
+          "wheel-zoom",
+          { anchorRatio },
+        );
         if (wheelRangeTimer) clearTimeout(wheelRangeTimer);
         wheelRangeTimer = setTimeout(() => {
           wheelRangeTimer = 0;
@@ -724,6 +771,7 @@ import {
               // Release the wheel interaction before requesting that render,
               // otherwise each side waits for the other indefinitely.
               interactionState.wheelZooming = false;
+              getChartNavigationController().finishWheelZoom();
               return requestViewportRender?.();
             })
             .finally(() => {
@@ -761,6 +809,7 @@ import {
         if (event.target instanceof Element
           && event.target.closest(".disclosure-popover, .legend, .modebar-container")) return;
         const sourceEl = event.currentTarget;
+        getChartNavigationController().cancelPendingHistoryZoom();
         hoverIdleController.cancel();
         const xa = sourceEl?._fullLayout?.xaxis;
         if (!xa) return;

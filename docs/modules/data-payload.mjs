@@ -1,3 +1,5 @@
+import { rebaseSeriesRowsToAvailability } from "../../shared/series-timeline-policy.mjs";
+
 "use strict";
   const toNum = (value) => (
     value != null && Number.isFinite(Number(value)) ? Number(value) : null
@@ -39,8 +41,15 @@
     return JSON.parse(String(text).replace(/\bNaN\b/g, "null"));
   }
 
-  function parseMacroPayload(text) {
-    return rowsFromColumnarPayload(parsePayloadText(text));
+  function parseMacroPayload(text, options = {}) {
+    const payload = parsePayloadText(text);
+    const rows = rowsFromColumnarPayload(payload);
+    return options.alignLeadingCycle === true
+      ? rebaseSeriesRowsToAvailability(rows, "leading_cycle", {
+          dateBasis: payload?.leadingDateBasis,
+          observationCadence: payload?.leadingDateBasis ? undefined : "monthly",
+        })
+      : rows;
   }
 
   function normalizeDisclosureRows(records) {
@@ -86,7 +95,7 @@
             ? pricePayload.display_names
             : {},
         } : null,
-        macroRows: parseMacro(texts.macroText),
+        macroRows: parseMacro(texts.macroText, { alignLeadingCycle: true }),
         creditRows: parseMacro(texts.creditText),
         adrRows: parseMacro(texts.adrText),
         vkospiRows: parseMacro(texts.vkospiText),

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createMarketTimingService } from "../../docs/modules/market-timing-service.mjs";
+import {
+  createMarketTimingService,
+  createTimingCacheRecord,
+  validTimingCacheRecord,
+} from "../../docs/modules/market-timing-service.mjs";
 
 class FakeWorker {
   constructor() {
@@ -50,6 +54,7 @@ test("transfers timing sources once per data signature and caches each model", a
   assert.equal(service.stats().modelCalculations, 2);
   assert.equal(service.stats().targetCacheHits, 2);
   assert.equal(service.stats().workerRequests, 2);
+  assert.equal(service.stats().inputFingerprintCalculations, 2);
 });
 
 test("keeps unaffected ticker models when only one ticker input changes", async () => {
@@ -93,6 +98,7 @@ test("keeps unaffected ticker models when only one ticker input changes", async 
   assert.equal(service.stats().modelCalculations, 3);
   assert.equal(service.stats().modelCount, 2);
   assert.equal(service.stats().fingerprintCount, 2);
+  assert.equal(service.stats().inputFingerprintCalculations, 4);
 });
 
 test("invalidates one in-memory timing model without clearing its peers", async () => {
@@ -302,6 +308,28 @@ test("reuses a persisted timing model only when its input fingerprint matches", 
   assert.deepEqual(second.get("^KS11").signals, [{ date: "2026-01-05" }]);
   assert.equal(second.stats().persistentCacheHits, 1);
   assert.equal(second.stats().modelCalculations, 0);
+});
+
+test("rejects timing models cached before the publication-date calculation revision", () => {
+  const sources = {
+    dates: ["2025-11-24"],
+    pricesByTicker: { "207940.KS": [1789000], "^KS11": [4200] },
+    volumesByTicker: {},
+    macroRows: [{ date: "2025-11-01", leading_cycle: 100.9 }],
+  };
+  const current = createTimingCacheRecord("207940.KS", sources, {
+    sellSignals: [{ date: "2025-11-24" }],
+  });
+  const stale = {
+    ...current,
+    fingerprint: current.fingerprint.replace(
+      /^market-timing-cache-v\d+/,
+      "market-timing-cache-v3",
+    ),
+  };
+
+  assert.equal(validTimingCacheRecord(stale, "207940.KS", sources), false);
+  assert.equal(validTimingCacheRecord(current, "207940.KS", sources), true);
 });
 
 test("exposes calculated signals before deferred cache persistence finishes", async () => {

@@ -1,10 +1,10 @@
-import { createHash } from "node:crypto";
 import { copyFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { setTimeout as delay } from "node:timers/promises";
 import { stylesheetSourceNames } from "./pages-stylesheet-config.mjs";
+import { runtimeBundleFingerprint } from "./runtime-bundle-fingerprint.mjs";
 
 import { build } from "esbuild";
 import { createBundleReport, summarizeBundle } from "./bundle-metrics.mjs";
@@ -59,6 +59,18 @@ async function replaceBuiltFile(temporaryFile, outputFilePath) {
 }
 
 const featureBundles = Object.freeze([
+  Object.freeze({
+    entry: path.join(root, "docs", "modules", "data-worker.mjs"),
+    output: "data-worker.bundle.min.js",
+    maxBytes: 40_000,
+    format: "esm",
+  }),
+  Object.freeze({
+    entry: path.join(root, "docs", "modules", "chart-model-worker.mjs"),
+    output: "chart-model-worker.bundle.min.js",
+    maxBytes: 160_000,
+    format: "esm",
+  }),
   Object.freeze({
     entry: "analytics-core-feature.mjs",
     output: "analytics-core-feature.bundle.min.js",
@@ -185,7 +197,9 @@ async function buildFeatureBundle(definition) {
   await rm(temporaryFile, { force: true });
   try {
     const result = await build({
-      entryPoints: [path.join(root, "scripts", "feature-entries", definition.entry)],
+      entryPoints: [path.isAbsolute(definition.entry)
+        ? definition.entry
+        : path.join(root, "scripts", "feature-entries", definition.entry)],
       outfile: temporaryFile,
       bundle: true,
       minify: true,
@@ -221,8 +235,7 @@ async function buildFeatureBundle(definition) {
 }
 
 async function stampLocalBundleFingerprint() {
-  const bundle = await readFile(outputFile);
-  const fingerprint = createHash("sha256").update(bundle).digest("hex").slice(0, 12);
+  const fingerprint = await runtimeBundleFingerprint(outputDir);
   const html = await readFile(indexFile, "utf8");
   const nextHtml = html.replace(
     /(<script defer src="\.\/assets\/app\.bundle\.min\.js\?v=dev(?:&amp;build=[^"&]+)?)(?:&amp;asset=[^"]+)?("><\/script>)/,
@@ -251,9 +264,6 @@ try {
   // server or browser still has the previous bundle mapped for reading.
   await replaceBuiltFile(temporaryOutputFile, outputFile);
   console.log(`Built ${path.relative(root, outputFile)} (${outputStats.size} bytes, ${outputGzipBytes} gzip)`);
-  const localFingerprint = await stampLocalBundleFingerprint();
-  console.log(`Stamped local bundle fingerprint ${localFingerprint}`);
-
   await buildBundle(e2eTemporaryOutputFile, true);
   const e2eOutputStats = await stat(e2eTemporaryOutputFile);
   if (e2eOutputStats.size > maxE2eBundleBytes) {
@@ -264,6 +274,8 @@ try {
   const featureReports = await Promise.all(
     featureBundles.map((definition) => buildFeatureBundle(definition)),
   );
+  const localFingerprint = await stampLocalBundleFingerprint();
+  console.log(`Stamped local runtime fingerprint ${localFingerprint}`);
   const report = createBundleReport({
     appVersion,
     bundles: [

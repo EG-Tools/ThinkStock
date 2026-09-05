@@ -5,8 +5,14 @@ import { createRuntimeSourceHealth } from "./runtime-source-health.mjs";
   function createRuntimeDataApp(scope = globalThis, options = {}) {
     let refreshController = null;
     let refreshPromise = null;
+    let refreshRequirements = null;
     let refreshGeneration = 0;
     const phaseStats = { criticalReady: 0, supplementalReady: 0 };
+    let derivedInputState = Object.freeze({
+      generation: 0,
+      phase: "idle",
+      ready: false,
+    });
     let status = { state: "idle", detail: "", updatedAt: 0 };
     let statusHideTimer = 0;
     let statusFadeTimer = 0;
@@ -37,8 +43,26 @@ import { createRuntimeSourceHealth } from "./runtime-source-health.mjs";
       }, 3000);
     }
 
-    function notePhase(name) {
+    function setDerivedInputPhase(generation, phase, ready = false) {
+      const normalizedGeneration = Math.max(0, Number(generation) || 0);
+      if (normalizedGeneration < derivedInputState.generation) return false;
+      derivedInputState = Object.freeze({
+        generation: normalizedGeneration,
+        phase: String(phase || "idle"),
+        ready: ready === true,
+      });
+      return true;
+    }
+
+    function notePhase(name, generation = refreshGeneration) {
+      if (Number(generation) !== refreshGeneration) return false;
       if (Object.hasOwn(phaseStats, name)) phaseStats[name] += 1;
+      if (name === "criticalReady") {
+        setDerivedInputPhase(generation, "critical", false);
+      } else if (name === "supplementalReady" || name === "deferredReady") {
+        setDerivedInputPhase(generation, name === "supplementalReady" ? "supplemental" : "deferred", true);
+      }
+      return true;
     }
 
     function sourceResultDetail(result = {}) {
@@ -82,7 +106,13 @@ import { createRuntimeSourceHealth } from "./runtime-source-health.mjs";
 
     function refresh(messageElement, refreshOptions = {}) {
       const forceNetwork = Boolean(refreshOptions.forceNetwork);
-      if (refreshPromise && !forceNetwork) return refreshPromise;
+      const requireDerivedInputs = refreshOptions.requireDerivedInputs === true;
+      const activeRefreshCoversRequest = Boolean(
+        refreshPromise
+        && !forceNetwork
+        && (!requireDerivedInputs || refreshRequirements?.requireDerivedInputs === true),
+      );
+      if (activeRefreshCoversRequest) return refreshPromise;
       if (refreshController) {
         const superseded = new Error("Superseded by a newer data refresh");
         superseded.name = "AbortError";
@@ -91,18 +121,22 @@ import { createRuntimeSourceHealth } from "./runtime-source-health.mjs";
       const controller = new AbortController();
       const generation = ++refreshGeneration;
       refreshController = controller;
+      refreshRequirements = Object.freeze({ forceNetwork, requireDerivedInputs });
+      setDerivedInputPhase(generation, "refreshing", false);
       const task = Promise.resolve(options.runRefresh(messageElement, {
         ...refreshOptions,
         signal: controller.signal,
         generation,
       })).catch((error) => {
         if (isAbort(error, controller.signal)) return { cancelled: true };
+        setDerivedInputPhase(generation, "failed", false);
         setStatus("error", "최신 데이터 확인 실패 · 저장된 값 사용 중");
         throw error;
       }).finally(() => {
         if (refreshGeneration !== generation) return;
         refreshController = null;
         refreshPromise = null;
+        refreshRequirements = null;
       });
       refreshPromise = task;
       return task;
@@ -164,26 +198,20 @@ import { createRuntimeSourceHealth } from "./runtime-source-health.mjs";
         releaseCritical({ ok: false });
       });
       const criticalResult = await criticalReady;
-      const settleAfterCriticalMs = Math.max(0, Number(flow.settleAfterCriticalMs) || 0);
-      if (!settleAfterCriticalMs) return { critical: criticalResult, settled: false };
-
-      let settleTimer = 0;
-      const settled = await Promise.race([
-        refreshTask.then(() => true, () => true),
-        new Promise((resolve) => {
-          settleTimer = scope.setTimeout(() => resolve(false), settleAfterCriticalMs);
-        }),
-      ]);
-      if (settleTimer) scope.clearTimeout?.(settleTimer);
-      return { critical: criticalResult, settled };
+      // Supplemental work is released by the startup visual gate. Waiting for
+      // it here would make the loader and supplemental refresh wait on each other.
+      void refreshTask;
+      return { critical: criticalResult };
     }
 
     return Object.freeze({
       canAttemptSource: (source, attemptOptions) => sourceLedger?.canAttempt?.(source, attemptOptions)
         || { allowed: true, source: String(source || ""), waitMs: 0, state: null },
       getSourceStates: () => sourceLedger?.snapshot?.() || {},
+      getDerivedInputState: () => ({ ...derivedInputState }),
       getPhaseStats: () => ({ ...phaseStats }),
       getStatus: () => ({ ...status }),
+      isDerivedInputReady: () => derivedInputState.ready === true,
       noteSourceFailure: (source, error) => sourceLedger?.failure?.(source, error) || null,
       noteSourceQuality: (source, detail) => sourceLedger?.observe?.(source, detail) || null,
       noteSourceResult,
@@ -202,6 +230,7 @@ import { createRuntimeSourceHealth } from "./runtime-source-health.mjs";
         refreshGeneration += 1;
         refreshController = null;
         refreshPromise = null;
+        refreshRequirements = null;
         if (statusHideTimer) scope.clearTimeout?.(statusHideTimer);
         if (statusFadeTimer) scope.clearTimeout?.(statusFadeTimer);
         statusHideTimer = 0;

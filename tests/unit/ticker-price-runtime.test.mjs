@@ -298,6 +298,32 @@ test("coalesces full-history requests and requires every visible ticker to be co
   ]);
 });
 
+test("full price coverage is not signal-ready until volume history is present", async () => {
+  let loadCount = 0;
+  let volumeReady = false;
+  const coordinator = runtime.createHistoryCoverageCoordinator({
+    loadSeries: async () => {
+      loadCount += 1;
+      if (loadCount === 2) volumeReady = true;
+      return {
+        ready: true,
+        historyCoverage: runtime.HISTORY_COVERAGE_FULL,
+        latestDate: "2026-08-21",
+      };
+    },
+    hasSeries: () => true,
+    hasVolumeHistory: () => volumeReady,
+    latestDate: () => "2026-08-21",
+  });
+
+  await coordinator.load("005930.KS", { requireFullHistory: true });
+  assert.equal(coordinator.visibleReady([{ ticker: "005930.KS" }]), false);
+
+  await coordinator.load("005930.KS", { requireFullHistory: true });
+  assert.equal(loadCount, 2);
+  assert.equal(coordinator.visibleReady([{ ticker: "005930.KS" }]), true);
+});
+
 test("touches ticker cache metadata at most once per interval", () => {
   const day = 24 * 60 * 60 * 1000;
   assert.equal(runtime.shouldTouchCacheRecord(undefined, day, day), true);
@@ -370,6 +396,26 @@ test("does not replace a healthy cache with a severely truncated full-history re
   assert.equal(runtime.shouldReplaceFullHistory(existing, complete), true);
   assert.equal(runtime.shouldReplaceFullHistory(existing, complete.slice(0, 2)), false);
   assert.equal(runtime.shouldReplaceFullHistory([], complete.slice(0, 2)), true);
+});
+
+test("does not replace a long dated cache with a dense but recent-only response", () => {
+  const existing = [
+    { date: "2017-05-02", close: 270000 },
+    { date: "2026-04-14", close: 76000 },
+    { date: "2026-07-14", close: 78000 },
+  ];
+  const recentOnly = Array.from({ length: 40 }, (_, index) => ({
+    date: new Date(Date.UTC(2026, 4, 1 + index)).toISOString().slice(0, 10),
+    close: 75000 + index,
+  }));
+  const covering = [
+    { date: "2017-05-03", close: 272000 },
+    { date: "2026-04-14", close: 76000 },
+    { date: "2026-07-14", close: 78000 },
+  ];
+
+  assert.equal(runtime.shouldReplaceFullHistory(existing, recentOnly), false);
+  assert.equal(runtime.shouldReplaceFullHistory(existing, covering), true);
 });
 
 test("converts validated price cache records into research history", () => {
@@ -621,18 +667,26 @@ test("series loader reuses a complete fresh cache after one latest-point check",
   assert.deepEqual(calls, ["latest", "merge", "write"]);
 });
 
-test("latest-only series refresh bypasses full cache and history work", async () => {
+test("latest-only series refresh hydrates cached volume history before tail work", async () => {
   const calls = [];
   let currentPoints = [{ date: "2026-08-28", close: 70000 }];
   const loader = runtime.createSeriesLoader({
-    applySharedCache: async () => { throw new Error("shared cache should not be read"); },
+    applySharedCache: async () => {
+      calls.push("cache");
+      currentPoints = [{ date: "2026-08-28", close: 70000, volume: 100 }];
+      return {
+        applied: true,
+        latestDate: "2026-08-28",
+        historyCoverage: runtime.HISTORY_COVERAGE_FULL,
+      };
+    },
     assessPriceUpdate: () => ({ invalidateDerived: true, fullHistoryRequired: false }),
     clearSeries: () => {},
     fetchHistory: async () => { throw new Error("history should not be fetched"); },
     fetchLatest: async () => { throw new Error("prefetched latest should be reused"); },
     getPoints: () => currentPoints,
     hasSeries: () => true,
-    hasVolumeHistory: () => false,
+    hasVolumeHistory: () => currentPoints.some((point) => point.volume > 0),
     invalidateCache: async () => calls.push("invalidate"),
     isCacheFresh: () => false,
     isLatestCoverageComplete: () => true,
@@ -658,21 +712,29 @@ test("latest-only series refresh bypasses full cache and history work", async ()
   assert.equal(result.latestOnly, true);
   assert.equal(result.changed, true);
   assert.equal(result.latestDate, "2026-08-31");
-  assert.deepEqual(calls, ["merge", "invalidate"]);
+  assert.deepEqual(calls, ["cache", "merge", "invalidate", "write"]);
 });
 
 test("latest-only series refresh preserves derived results when the tail is unchanged", async () => {
   const calls = [];
-  const currentPoints = [{ date: "2026-08-31", close: 71000 }];
+  let currentPoints = [{ date: "2026-08-31", close: 71000 }];
   const loader = runtime.createSeriesLoader({
-    applySharedCache: async () => { throw new Error("shared cache should not be read"); },
+    applySharedCache: async () => {
+      calls.push("cache");
+      currentPoints = [{ date: "2026-08-31", close: 71000, volume: 100 }];
+      return {
+        applied: true,
+        latestDate: "2026-08-31",
+        historyCoverage: runtime.HISTORY_COVERAGE_FULL,
+      };
+    },
     assessPriceUpdate: () => ({ invalidateDerived: true, fullHistoryRequired: false }),
     clearSeries: () => {},
     fetchHistory: async () => { throw new Error("history should not be fetched"); },
     fetchLatest: async () => { throw new Error("prefetched latest should be reused"); },
     getPoints: () => currentPoints,
     hasSeries: () => true,
-    hasVolumeHistory: () => false,
+    hasVolumeHistory: () => currentPoints.some((point) => point.volume > 0),
     invalidateCache: async () => calls.push("invalidate"),
     isCacheFresh: () => false,
     isLatestCoverageComplete: () => true,
@@ -692,7 +754,7 @@ test("latest-only series refresh preserves derived results when the tail is unch
   });
 
   assert.equal(result.changed, false);
-  assert.deepEqual(calls, ["merge"]);
+  assert.deepEqual(calls, ["cache", "merge"]);
 });
 
 test("series loader repairs missing recent sessions instead of accepting only the newest point", async () => {

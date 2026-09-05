@@ -20,6 +20,58 @@ const {
   rollingAverage,
 } = auxiliaryChartModel;
 
+test("auxiliary render settlement returns values after every panel finishes", async () => {
+  const values = await auxiliaryRuntime.settleAuxiliaryRenderTasks([
+    Promise.resolve("macd"),
+    Promise.resolve("panels"),
+  ]);
+  assert.deepEqual(values, ["macd", "panels"]);
+});
+
+test("MACD line and legend marker share the stock color without repeating the date", () => {
+  const pair = auxiliaryRuntime.buildMacdSeriesTracePair({
+    series: "218410.KQ",
+    name: "RFHIC",
+    color: "#9acd32",
+    dates: ["2026-08-31", "2026-09-01"],
+    values: [0.2, 0.4],
+    signal: 0.3,
+    showHover: true,
+  });
+
+  assert.equal(pair.lineTrace.line.color, "#9acd32");
+  assert.equal(pair.lineTrace.showlegend, false);
+  assert.equal(pair.lineTrace.hovertemplate.includes("%{x"), false);
+  assert.equal(pair.legendTrace.marker.color, "#9acd32");
+  assert.equal(pair.legendTrace.marker.size, 7);
+  assert.equal(pair.legendTrace.showlegend, true);
+  assert.equal(pair.legendTrace.legendgroup, pair.lineTrace.legendgroup);
+});
+
+test("a disconnected auxiliary latest point receives one visible marker", () => {
+  assert.deepEqual(auxiliaryRuntime.isolatedAuxiliaryMarkerSizes([
+    40, 42, null, 32,
+  ]), [0, 0, 0, 5]);
+  assert.deepEqual(auxiliaryRuntime.isolatedAuxiliaryMarkerSizes([
+    40, null, 32, 34,
+  ]), [5, 0, 0, 0]);
+});
+
+test("auxiliary render settlement waits for siblings before surfacing a failure", async () => {
+  const expected = new Error("MACD render failed");
+  let siblingSettled = false;
+  const sibling = Promise.resolve().then(() => {
+    siblingSettled = true;
+    return "panels";
+  });
+
+  await assert.rejects(
+    auxiliaryRuntime.settleAuxiliaryRenderTasks([Promise.reject(expected), sibling]),
+    (error) => error === expected,
+  );
+  assert.equal(siblingSettled, true);
+});
+
 test("updates stable auxiliary chart topology without rebuilding Plotly", async () => {
   const firstTrace = {
     type: "scatter",
@@ -177,6 +229,34 @@ test("auxiliary model resolver coalesces work, caches the result, and falls back
   assert.equal(fallback.source(), "sync");
   assert.equal(fallback.stats().fallbacks, 1);
   assert.equal(fallbackCalls, 1);
+});
+
+test("auxiliary model resolver sends unchanged source rows to the worker only once", async () => {
+  const payloads = [];
+  const resolver = auxiliaryRuntime.createAuxiliaryChartModelResolver({
+    requestModel: async (payload) => {
+      payloads.push(payload);
+      return { rows: [payload.seriesKeys?.[0] || "none"] };
+    },
+    buildModel: () => ({ rows: ["fallback"] }),
+    normalizeModel: (value) => value?.rows ? value : null,
+  });
+  const sources = { adrRows: [{ date: "2026-09-04", fear_greed: 32 }], macroRows: [] };
+  await resolver.resolve("fear", {
+    datasetKey: "adr:1|macro:1",
+    seriesKeys: ["fear_greed"],
+    sources,
+  });
+  await resolver.resolve("adr", {
+    datasetKey: "adr:1|macro:1",
+    seriesKeys: ["adr_kospi"],
+    sources,
+  });
+
+  assert.equal(payloads.length, 2);
+  assert.equal(payloads[0].sources, sources);
+  assert.equal(payloads[1].sources, undefined);
+  assert.equal(resolver.stats().workerDatasetCached, true);
 });
 
 test("rebuilds auxiliary charts when panel topology changes", async () => {
@@ -577,4 +657,22 @@ test("viewport ranges do not inspect data for hidden auxiliary panels", () => {
   assert.deepEqual(ranges.adr, [77.5, 121.2]);
   assert.deepEqual(ranges.news, [88, 112]);
   assert.deepEqual(ranges.vkospi, [7.6, 42.4]);
+});
+
+test("auxiliary model skips calculations for panels that are off", () => {
+  const model = buildAuxiliaryChartModel({
+    adrRows: [
+      { date: "2026-09-03", adr_kospi: 100, fear_greed: 31, vkospi: 18 },
+      { date: "2026-09-04", adr_kospi: 101, fear_greed: 32, vkospi: 19 },
+    ],
+    macroRows: [{ date: "2026-09-04", news_sentiment: 105 }],
+    seriesKeys: ["fear_greed"],
+  });
+
+  assert.equal(model.availability.adrKospi, true);
+  assert.equal(model.availability.newsSentiment, true);
+  assert.deepEqual(model.adrKospiValues, []);
+  assert.deepEqual(model.newsValues, []);
+  assert.deepEqual(model.vkospiValues, []);
+  assert.deepEqual(model.fearGreedValues, [31, 32]);
 });

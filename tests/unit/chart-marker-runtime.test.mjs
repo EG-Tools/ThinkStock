@@ -2,15 +2,27 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 await import("../../shared/series-integrity.mjs");
-const { chartMarkerRuntime: markerModule } = await import("../../docs/modules/chart-marker-runtime.mjs");
+const {
+  chartMarkerLayout,
+  chartMarkerRuntime: markerModule,
+} = await import("../../docs/modules/chart-marker-runtime.mjs");
+
+test("marker payload equality compares nested values without serialized snapshots", () => {
+  const left = [{ date: "2026-08-20", reasons: ["과열", "둔화"], score: 2 }];
+  const same = [{ score: 2, reasons: ["과열", "둔화"], date: "2026-08-20" }];
+  const changed = [{ score: 2, reasons: ["과열", "분배"], date: "2026-08-20" }];
+
+  assert.equal(chartMarkerLayout.markerArrayMatches(left, same), true);
+  assert.equal(chartMarkerLayout.markerArrayMatches(left, changed), false);
+});
 
 test("event marker registry owns marker identity, layer, and interaction policy", () => {
   const traces = {
-    crisis: { meta: { isCrisisSignalTrace: true } },
-    buy: { meta: { isMarketTimingBuyTrace: true } },
-    sell: { meta: { isMarketTimingSellTrace: true } },
-    insider: { meta: { isInsiderTradeTrace: true, insiderTradeSide: "buy" } },
-    disclosure: { meta: { isDisclosureTrace: true } },
+    crisis: { meta: { overlayKind: "crisis" } },
+    buy: { meta: { overlayKind: "timing-buy" } },
+    sell: { meta: { overlayKind: "timing-sell" } },
+    insider: { meta: { overlayKind: "insider", insiderTradeSide: "buy" } },
+    disclosure: { meta: { overlayKind: "disclosure" } },
   };
   assert.equal(markerModule.eventMarkerIdentity(traces.crisis), "crisis-signal");
   assert.equal(markerModule.eventMarkerIdentity(traces.buy), "market-timing-buy");
@@ -31,7 +43,7 @@ test("event marker popovers prefer the payload embedded in each marker trace", (
   };
   assert.equal(markerModule.buildEventMarkerPopoverGroup({
     pointIndex: 0,
-    data: { meta: { isInsiderTradeTrace: true, eventGroups: [group] } },
+    data: { meta: { overlayKind: "insider", eventGroups: [group] } },
   }), group);
 });
 
@@ -49,12 +61,12 @@ test("event markers share one typography contract", () => {
 
 test("event marker specs and trace materialization share the registry order", () => {
   const specs = markerModule.createEventMarkerSpecs({
-    disclosure: { enabled: true, build: () => ({ meta: { isDisclosureTrace: true } }) },
+    disclosure: { enabled: true, build: () => ({ meta: { overlayKind: "disclosure" } }) },
     insider: {
       enabled: true,
       build: () => [
-        { meta: { isInsiderTradeTrace: true, insiderTradeSide: "sell" } },
-        { meta: { isInsiderTradeTrace: true, insiderTradeSide: "buy" } },
+        { meta: { overlayKind: "insider", insiderTradeSide: "sell" } },
+        { meta: { overlayKind: "insider", insiderTradeSide: "buy" } },
       ],
     },
   });
@@ -85,7 +97,7 @@ test("timing signal popovers reuse the compact marker payload", () => {
       "삼성전자", "신용 과열<br>· MACD 반전", "8.2", "-1.3", "강", "slowdown", 5,
       "trend-exhaustion", "추세형",
     ],
-    data: { name: "타이밍 매도신호", meta: { isMarketTimingSellTrace: true } },
+    data: { name: "타이밍 매도신호", meta: { overlayKind: "timing-sell" } },
   });
   assert.equal(group.name, "삼성전자");
   assert.equal(group.plotDate, "2026-08-21");
@@ -106,7 +118,7 @@ test("exceptional timing moves are labeled as warnings instead of predictions", 
       "삼성전자", "전일대비 30% 하락", "-", "-", "-", "이례", "stress", 2,
       "shock-reversal", "고변동·모멘텀", "과매도 경고",
     ],
-    data: { meta: { isMarketTimingBuyTrace: true } },
+    data: { meta: { overlayKind: "timing-buy" } },
   });
   assert.equal(buy.events[0].title, "과매도 경고 · 이례");
 });
@@ -175,8 +187,8 @@ function createRuntime(overrides = {}) {
     dataRevisionSignature: () => "revision",
     ensureMarketTimingFeature: async () => {},
     escapeHtml: (value) => String(value),
-    getAdrRows: () => [],
-    getCreditRows: () => [],
+    getAdrRows: () => [{ date: "2026-08-12", adr_kospi: 100, adr_kosdaq: 100 }],
+    getCreditRows: () => [{ date: "2026-08-12", kospi_credit: 20, kosdaq_credit: 10 }],
     getCrisisRows: () => [],
     getCustomStocks: () => [],
     getDisclosureRows: () => [{
@@ -192,10 +204,27 @@ function createRuntime(overrides = {}) {
       reporter: "홍길동",
       shares: 10,
     }],
-    getMacroRows: () => [],
+    getMacroRows: () => [{ date: "2026-08-12", leading_cycle: 100 }],
     getMarketTimingService: () => ({ get: (ticker) => timingModels.get(ticker) || null }),
     getPricePayload: () => ({ records: [] }),
-    getTickerVolumeSeriesByTicker: () => new Map(),
+    getTickerVolumeSeriesByTicker: () => new Map([
+      ["^KS11", new Map(Array.from({ length: 20 }, (_, index) => [
+        `2026-07-${String(index + 1).padStart(2, "0")}`,
+        300 + index,
+      ]))],
+      ["^KQ11", new Map(Array.from({ length: 20 }, (_, index) => [
+        `2026-07-${String(index + 1).padStart(2, "0")}`,
+        400 + index,
+      ]))],
+      ["005930.KS", new Map(Array.from({ length: 20 }, (_, index) => [
+        `2026-07-${String(index + 1).padStart(2, "0")}`,
+        100 + index,
+      ]))],
+      ["000660.KS", new Map(Array.from({ length: 20 }, (_, index) => [
+        `2026-07-${String(index + 1).padStart(2, "0")}`,
+        200 + index,
+      ]))],
+    ]),
     getUseViewportMarkerGap: () => false,
     getViewportYRange: () => [0, 120],
     isForecastSeries: (ticker) => ticker.endsWith(".KS"),
@@ -432,6 +461,32 @@ test("point lookup never attaches a marker beyond its allowed trading-day gap", 
   );
 });
 
+test("one timing input gate prepares index and visible-stock volume before signals", async () => {
+  const ready = new Set();
+  const loaded = [];
+  let baseReady = true;
+  const gate = markerModule.createMarketTimingInputGate({
+    coreTickers: ["^KS11", "^KQ11"],
+    isForecastSeries: () => true,
+    isStockSeries: (ticker) => ticker.endsWith(".KS"),
+    hasBaseInputs: () => baseReady,
+    hasVolumeHistory: (ticker) => ready.has(ticker),
+    loadBaseInputs: async () => { baseReady = true; },
+    loadIndexVolumes: async (tickers) => {
+      loaded.push(...tickers);
+      tickers.forEach((ticker) => ready.add(ticker));
+    },
+    loadStockHistory: async (ticker) => {
+      loaded.push(ticker);
+      ready.add(ticker);
+    },
+  });
+
+  assert.equal(gate.ready(["005930.KS"]), false);
+  assert.equal(await gate.ensure({ targets: ["005930.KS"] }), true);
+  assert.deepEqual(loaded, ["^KS11", "^KQ11", "005930.KS"]);
+});
+
 test("timing preparation excludes inactive custom stocks and reuses relevant fingerprints", async () => {
   let prepared = null;
   const progressEvents = [];
@@ -528,6 +583,133 @@ test("skips repeated timing preparation until a data revision changes", async ()
   await runtime.prepareMarketTimingModels(selected, seriesModels);
   assert.equal(prepareCount, 2);
   assert.equal(progressBeginCount, 2);
+});
+
+test("reprepares timing when hydrated volume history changes without a price revision", async () => {
+  const volumes = new Map(Array.from({ length: 20 }, (_, index) => [
+    `2026-07-${String(index + 1).padStart(2, "0")}`,
+    100 + index,
+  ]));
+  let signature = "";
+  let prepareCount = 0;
+  const service = {
+    has: () => true,
+    stats: () => ({ signature, modelCount: 1 }),
+    prepare: async (payload) => {
+      prepareCount += 1;
+      signature = payload.signature;
+    },
+  };
+  const { runtime } = createRuntime({
+    dataRevisionSignature: () => "revision-1",
+    getMarketTimingService: () => service,
+    getTickerVolumeSeriesByTicker: () => new Map([["005930.KS", volumes]]),
+    getPricePayload: () => ({
+      records: [
+        { date: "2026-08-11", "^KS11": 3200, "^KQ11": 800, "005930.KS": 70000 },
+        { date: "2026-08-12", "^KS11": 3210, "^KQ11": 805, "005930.KS": 71000 },
+      ],
+    }),
+  });
+  const selected = ["005930.KS"];
+  const seriesModels = [{ series: "005930.KS" }];
+
+  await runtime.prepareMarketTimingModels(selected, seriesModels);
+  volumes.set("2026-07-21", 121);
+  await runtime.prepareMarketTimingModels(selected, seriesModels);
+
+  assert.equal(prepareCount, 2);
+});
+
+test("prepares complete stock inputs before building a timing model", async () => {
+  let prepareCount = 0;
+  let progressBeginCount = 0;
+  let progressActive = false;
+  let inputPreparationCount = 0;
+  let inputRenderCount = 0;
+  let inputsReady = false;
+  const volumesByTicker = new Map();
+  const { runtime } = createRuntime({
+    areMarketTimingInputsReady: () => inputsReady,
+    ensureMarketTimingInputs: async ({ targets }) => {
+      inputPreparationCount += 1;
+      assert.deepEqual(targets, ["005930.KS"]);
+      volumesByTicker.set("005930.KS", new Map(Array.from({ length: 20 }, (_, index) => [
+        `2026-07-${String(index + 1).padStart(2, "0")}`,
+        100 + index,
+      ])));
+      inputsReady = true;
+      return true;
+    },
+    onMarketTimingInputsPrepared: () => { inputRenderCount += 1; },
+    getMarketTimingService: () => ({
+      has: () => false,
+      stats: () => ({ signature: "", modelCount: 0 }),
+      prepare: async () => { prepareCount += 1; },
+    }),
+    getTickerVolumeSeriesByTicker: () => volumesByTicker,
+    getPricePayload: () => ({
+      records: [
+        { date: "2026-08-11", "^KS11": 3200, "^KQ11": 800, "005930.KS": 70000 },
+        { date: "2026-08-12", "^KS11": 3210, "^KQ11": 805, "005930.KS": 71000 },
+      ],
+    }),
+    signalProgress: {
+      begin: () => {
+        if (progressActive) return false;
+        progressActive = true;
+        progressBeginCount += 1;
+        return true;
+      },
+      update: () => {},
+      complete: () => { progressActive = false; },
+      cancel: () => {},
+    },
+  });
+
+  await runtime.prepareMarketTimingModels(
+    ["005930.KS"],
+    [{ series: "005930.KS" }],
+  );
+  assert.equal(prepareCount, 0);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await runtime.prepareMarketTimingModels(
+    ["005930.KS"],
+    [{ series: "005930.KS" }],
+  );
+
+  assert.equal(inputPreparationCount, 1);
+  assert.equal(inputRenderCount, 1);
+  assert.equal(prepareCount, 1);
+  assert.equal(progressBeginCount, 1);
+});
+
+test("does not calculate timing when complete input preparation fails", async () => {
+  let prepareCount = 0;
+  const { runtime } = createRuntime({
+    areMarketTimingInputsReady: () => false,
+    ensureMarketTimingInputs: async () => false,
+    getMarketTimingService: () => ({
+      stats: () => ({ signature: "", modelCount: 0 }),
+      prepare: async () => { prepareCount += 1; },
+    }),
+    getPricePayload: () => ({
+      records: [{ date: "2026-08-12", "005930.KS": 71000 }],
+    }),
+    signalProgress: {
+      begin: () => true,
+      update: () => {},
+      complete: () => {},
+      cancel: () => {},
+    },
+  });
+
+  await runtime.prepareMarketTimingModels(
+    ["005930.KS"],
+    [{ series: "005930.KS" }],
+  );
+
+  assert.equal(prepareCount, 0);
 });
 
 test("signal progress names the active stocks when a cached chart gains a peer", async () => {

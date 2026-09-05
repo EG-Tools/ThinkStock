@@ -133,7 +133,8 @@ const CORP_CODE_DIR = path.join(DOCS_DIR, "data", "dart_corp_codes");
 const PAGES_DATA_BASE_URL = "https://eg-tools.github.io/ThinkStock/data/";
 const THINKSTOCK_WORKER_URL = "https://thinkstock-api.keg0320.workers.dev";
 const ADR_SOURCE_URL = "http://www.adrinfo.kr/chart";
-const FEAR_GREED_SOURCE_URL = "https://kospi.feargreedchart.com/api/?action=kospi";
+const FEAR_GREED_SOURCE_URL = "https://kospi.feargreedchart.com/api/?action=kospi-history";
+const FEAR_GREED_LATEST_SOURCE_URL = "https://kospi.feargreedchart.com/api/?action=kospi";
 const DART_DISCLOSURE_URL = "https://opendart.fss.or.kr/api/list.json";
 const DISCLOSURE_TTL_MS = 6 * 60 * 60 * 1000;
 const STALE_CACHE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
@@ -232,6 +233,7 @@ export function localKrxIndexPointFromRows(rows, market) {
       ? `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`
       : "";
     const close = krxIndexNumber(row?.CLSPRC_IDX ?? row?.TDD_CLSPRC ?? row?.CLSPRC);
+    const volume = krxIndexNumber(row?.ACC_TRDVOL ?? row?.ACC_TRDVOL_QTY);
     const name = String(row?.IDX_NM ?? row?.IDX_NM_KOR ?? row?.IDX_NM_ENG ?? "")
       .toUpperCase()
       .replace(/\s+/g, "");
@@ -240,9 +242,13 @@ export function localKrxIndexPointFromRows(rows, market) {
     const partial = expected.some((value) => name.includes(value));
     const score = exact ? 100 : (partial ? 50 : 0);
     if (!score) return;
-    if (!best || score > best.score) best = { date, close, score };
+    if (!best || score > best.score) best = { date, close, volume, score };
   });
-  return best ? { date: best.date, close: best.close } : null;
+  return best ? {
+    date: best.date,
+    close: best.close,
+    ...(Number.isFinite(best.volume) && best.volume > 0 ? { volume: best.volume } : {}),
+  } : null;
 }
 
 export async function fetchLocalKrxCoreIndices(fetchImpl, apiKey, now = new Date(), options = {}) {
@@ -1295,10 +1301,14 @@ export async function createThinkStockServer(options = {}) {
     }
     if (requestUrl.pathname === "/api/adr") {
       let workerFallback = null;
+      const latestOnly = ["1", "true", "yes"].includes(String(requestUrl.searchParams.get("latest") || "").toLowerCase());
       if (workerAccessToken) {
         try {
           const refresh = ["1", "true", "yes"].includes(String(requestUrl.searchParams.get("refresh") || "").toLowerCase());
-          const upstream = await fetchImpl(`${THINKSTOCK_WORKER_URL}/api/adr${refresh ? "?refresh=1" : ""}`, {
+          const query = new URLSearchParams();
+          if (refresh) query.set("refresh", "1");
+          if (latestOnly) query.set("latest", "1");
+          const upstream = await fetchImpl(`${THINKSTOCK_WORKER_URL}/api/adr${query.size ? `?${query}` : ""}`, {
             headers: { Authorization: `Bearer ${workerAccessToken}` },
             signal: AbortSignal.timeout(45000),
           });
@@ -1322,7 +1332,12 @@ export async function createThinkStockServer(options = {}) {
         if (!upstream.ok) throw new Error(`adrinfo.kr HTTP ${upstream.status}`);
         const rows = parseAdrChartRows(await upstream.text());
         if (!rows.length) throw new Error("ADR response contained no rows");
-        sendJson(request, response, 200, { ok: true, rows });
+        const responseRows = latestOnly ? rows.slice(-1) : rows;
+        sendJson(request, response, 200, {
+          ok: true,
+          latestDate: rows.at(-1)?.date || "",
+          rows: responseRows,
+        });
       } catch (error) {
         if (workerFallback) sendJson(request, response, 200, workerFallback);
         else sendJson(request, response, 503, { ok: false, error: error?.message || String(error) });
@@ -1331,7 +1346,9 @@ export async function createThinkStockServer(options = {}) {
     }
     if (requestUrl.pathname === "/api/fear-greed") {
       try {
-        const upstream = await fetchImpl(`${FEAR_GREED_SOURCE_URL}&_=${Date.now()}`, {
+        const latestOnly = ["1", "true", "yes"].includes(String(requestUrl.searchParams.get("latest") || "").toLowerCase());
+        const sourceUrl = latestOnly ? FEAR_GREED_LATEST_SOURCE_URL : FEAR_GREED_SOURCE_URL;
+        const upstream = await fetchImpl(`${sourceUrl}&_=${Date.now()}`, {
           headers: { "User-Agent": "ThinkStock-Local/1.0" },
           signal: AbortSignal.timeout(30000),
         });

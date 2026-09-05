@@ -1673,18 +1673,33 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
     const traceIndex = element.data.findIndex((trace) => (
       trace?.visible !== "legendonly"
       && trace?.meta?.seriesKey
-      && !trace?.meta?.isGroupedHoverTrace
-      && !trace?.meta?.isDisclosureTrace
-      && !trace?.meta?.isAiForecastTrace
+      && trace?.meta?.overlayKind !== "grouped-hover"
+      && trace?.meta?.overlayKind !== "disclosure"
+      && trace?.meta?.overlayKind !== "ai-scenario"
       && Array.isArray(trace?.y)
     ));
     const trace = element.data[traceIndex];
-    const pointIndex = Math.max(0, Math.floor(trace.x.length / 2));
     const xaxis = element._fullLayout.xaxis;
     const yaxis = element._fullLayout.yaxis;
+    const [rangeStart, rangeEnd] = xaxis.range.map(Date.parse).sort((left, right) => left - right);
+    const finitePoints = trace.x.flatMap((date, index) => {
+      const time = Date.parse(String(date || ""));
+      const value = Number(trace.y[index]);
+      return Number.isFinite(time) && Number.isFinite(value)
+        ? [{ index, time, value }]
+        : [];
+    });
+    const targetTime = (rangeStart + rangeEnd) / 2;
+    const rightPosition = finitePoints.findIndex((point) => point.time >= targetTime);
+    const rightPoint = finitePoints[Math.max(0, rightPosition)];
+    const leftPoint = finitePoints[Math.max(0, rightPosition - 1)] || rightPoint;
+    const span = Math.max(1, rightPoint.time - leftPoint.time);
+    const targetValue = leftPoint.value
+      + ((rightPoint.value - leftPoint.value) * ((targetTime - leftPoint.time) / span));
+    const pointIndex = leftPoint.index;
     const rect = element.getBoundingClientRect();
-    const clientX = rect.left + xaxis._offset + xaxis.d2p(trace.x[pointIndex]);
-    const clientY = rect.top + yaxis._offset + yaxis.d2p(trace.y[pointIndex]);
+    const clientX = rect.left + xaxis._offset + xaxis.d2p(new Date(targetTime).toISOString());
+    const clientY = rect.top + yaxis._offset + yaxis.d2p(targetValue);
     const dragTarget = window.ThinkStockE2E.getLineDragTargetAt(clientX, clientY);
     const draggedTraceIndex = Number.isInteger(dragTarget?.traceIndex)
       ? dragTarget.traceIndex
@@ -1724,7 +1739,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
       || getComputedStyle(hoverGroupDuringDrag).display === "none";
     const markerSetHiddenDuringDrag = element.classList.contains("is-series-transform-marker-hidden");
     const disclosureTraceIndex = (element.data || [])
-      .findIndex((candidate) => candidate?.meta?.isDisclosureTrace);
+      .findIndex((candidate) => candidate?.meta?.overlayKind === "disclosure");
     const disclosureTrace = element.data?.[disclosureTraceIndex];
     const disclosureTextNodes = [...element.querySelectorAll(".scatterlayer .textpoint text")]
       .filter((node) => node.textContent?.trim() === "◆");
@@ -1811,18 +1826,18 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await page.locator("#disclosureToggle").click();
   await expect(page.locator("#disclosureToggle")).toHaveText("공시");
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
-    (element.data || []).filter((trace) => trace?.meta?.isDisclosureTrace).length
+    (element.data || []).filter((trace) => trace?.meta?.overlayKind === "disclosure").length
   ))).toBe(0);
   await page.locator("#disclosureToggle").click();
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
-    (element.data || []).filter((trace) => trace?.meta?.isDisclosureTrace).length
+    (element.data || []).filter((trace) => trace?.meta?.overlayKind === "disclosure").length
   ))).toBe(1);
   await expect(page.locator("#disclosureToggle")).toHaveText("공시");
   expect(await page.evaluate(() => window.ThinkStockE2E.getChartWorkerStats().partialDisclosureUpdates))
     .toBeGreaterThan(disclosureToggleBefore.partial);
 
   const getDisclosurePoint = () => page.locator("#chart").evaluate((element) => {
-    const traceIndex = (element.data || []).findIndex((trace) => trace?.meta?.isDisclosureTrace);
+    const traceIndex = (element.data || []).findIndex((trace) => trace?.meta?.overlayKind === "disclosure");
     const trace = element.data?.[traceIndex];
     const xAxis = element._fullLayout?.xaxis;
     const yAxis = trace?.yaxis === "y2" ? element._fullLayout?.yaxis2 : element._fullLayout?.yaxis;
@@ -1897,7 +1912,7 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   // before Plotly swaps the visible trace. The visible marker must still own
   // enough data to open its popup without the mutable lookup map.
   await page.locator("#chart").evaluate((element) => {
-    const trace = (element.data || []).find((item) => item?.meta?.isDisclosureTrace);
+    const trace = (element.data || []).find((item) => item?.meta?.overlayKind === "disclosure");
     if (trace?.customdata?.[0]) trace.customdata[0][0] = "d|stale-rendered-marker";
   });
 
@@ -2051,7 +2066,9 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
   await setChartRangeMonths(page, 360);
   await expect.poll(getHistoryRequests).toBe(4);
   expect(await page.evaluate(() => window.ThinkStockE2E.getActiveMonths())).toBe(360);
-  await expect.poll(() => page.locator("#chart").evaluate((element) => element.data?.[0]?.x?.[0]))
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    element.data?.find((trace) => trace?.meta?.seriesKey === "^KS11")?.x?.[0]
+  )))
     .toBe("1998-07-14");
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const firstVisibleDates = (element.data || []).flatMap((trace) => {

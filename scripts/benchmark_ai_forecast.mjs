@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import vm from "node:vm";
+import { rebaseSeriesRowsToAvailability } from "../shared/series-timeline-policy.mjs";
 
 async function readJson(file) {
   return JSON.parse(await readFile(path.resolve(file), "utf8"));
@@ -32,7 +33,11 @@ const [pricePayload, macroPayload, creditPayload, adrPayload] = await Promise.al
   readJson("docs/data/adr_data_recent.json"),
 ]);
 const priceRows = rowsFromColumnar(pricePayload);
-const macroRows = rowsFromColumnar(macroPayload);
+const macroRows = rebaseSeriesRowsToAvailability(
+  rowsFromColumnar(macroPayload),
+  "leading_cycle",
+  { observationCadence: "monthly" },
+);
 const creditRows = rowsFromColumnar(creditPayload);
 const adrRows = rowsFromColumnar(adrPayload);
 const stockSeries = (pricePayload.series || []).filter((series) => /(?:\.KS|\.KQ)$/i.test(series));

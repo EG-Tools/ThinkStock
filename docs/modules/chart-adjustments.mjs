@@ -255,6 +255,23 @@
     return [minimum - padding, maximum + padding];
   }
 
+  function tracesExceedVisibleYRange(traces, xRange, yRange, options = {}) {
+    const current = Array.isArray(yRange) ? yRange.slice(0, 2).map(Number) : [];
+    if (current.length < 2 || !current.every(Number.isFinite)) return false;
+    const required = fitRangeForTraces(traces, xRange, {
+      paddingRatio: Number.isFinite(options.paddingRatio) ? options.paddingRatio : 0.08,
+      minimumPadding: Number.isFinite(options.minimumPadding) ? options.minimumPadding : 0.6,
+    });
+    if (!required) return false;
+    const low = Math.min(...current);
+    const high = Math.max(...current);
+    const tolerance = Math.max(
+      Number.isFinite(options.minimumTolerance) ? options.minimumTolerance : 0.05,
+      (high - low) * (Number.isFinite(options.toleranceRatio) ? options.toleranceRatio : 0.002),
+    );
+    return required[0] < low - tolerance || required[1] > high + tolerance;
+  }
+
   function expandRangeToContain(currentRange, requiredRange) {
     const current = Array.isArray(currentRange) ? currentRange.slice(0, 2).map(Number) : [];
     const required = Array.isArray(requiredRange) ? requiredRange.slice(0, 2).map(Number) : [];
@@ -279,6 +296,7 @@
     scaleFromDrag,
     resetTransforms,
     fitRangeForTraces,
+    tracesExceedVisibleYRange,
     expandRangeToContain,
   });
 export {
@@ -292,6 +310,7 @@ export {
   resetTransforms,
   resolveScale,
   scaleFromDrag,
+  tracesExceedVisibleYRange,
   transformValues,
   transformValuesInto,
   transformViewportValuesInto,

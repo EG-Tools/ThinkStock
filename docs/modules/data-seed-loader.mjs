@@ -86,7 +86,7 @@ import {
   }
 
   function createSeedBundleParser(scope = globalThis, options = {}) {
-    const workerUrl = String(options.workerUrl || "./modules/data-worker.mjs?v=dev");
+    const workerUrl = String(options.workerUrl || "./assets/data-worker.bundle.min.js?v=dev");
     const parseSync = options.parseSync;
     const timeoutMs = Math.max(1000, Number(options.timeoutMs) || 8000);
     const setTimer = options.setTimer || scope.setTimeout?.bind(scope) || globalThis.setTimeout.bind(globalThis);

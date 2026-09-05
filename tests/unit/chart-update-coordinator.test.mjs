@@ -19,6 +19,7 @@ import {
   createSeriesFrameApplier,
   finalizeMainChartFrameState,
   fitMainChartToViewport,
+  hasVisibleDatedDataInRange,
   hydrateMainChartSession,
   normalizeChartInvalidation,
   prepareViewportTraceFrame,
@@ -26,6 +27,20 @@ import {
   shouldUpdateAuxiliary,
   settleViewportRenderTransaction,
 } from "../../docs/modules/chart-update-coordinator.mjs";
+
+test("visible range checks find sparse values without scanning the full history", () => {
+  const dates = Array.from({ length: 5000 }, (_, index) => (
+    new Date(Date.UTC(2010, 0, index + 1)).toISOString().slice(0, 10)
+  ));
+  const values = Array(dates.length).fill(null);
+  values[4900] = 123;
+  const element = { data: [{ x: dates, y: values }] };
+  const start = Date.parse(dates[4890]);
+  const end = Date.parse(dates[4910]);
+
+  assert.equal(hasVisibleDatedDataInRange(element, [start, end]), true);
+  assert.equal(hasVisibleDatedDataInRange(element, [Date.parse(dates[100]), Date.parse(dates[200])]), false);
+});
 
 test("one linked viewport runtime commits main, companions, and final visuals once", async () => {
   const events = [];
@@ -193,6 +208,30 @@ test("fits the main chart and marker layer in one coordinated update", async () 
     "yaxis.autorange": false,
   });
   assert.deepEqual(calls[0][4], [1]);
+});
+
+test("skips an identical fitted range when markers are already anchored", async () => {
+  const calls = [];
+  let beforeApplyCalls = 0;
+  const price = { x: ["2026-01-01"], y: [100], meta: { seriesKey: "005930.KS" } };
+  const result = await fitMainChartToViewport({
+    element: {
+      data: [price],
+      _fullLayout: { yaxis: { range: [95, 105] } },
+    },
+    renderer: { rangeBearingTraces: () => [price] },
+    updateRuntime: {
+      update: async (...args) => calls.push(["update", ...args]),
+      relayout: async (...args) => calls.push(["relayout", ...args]),
+    },
+    xRange: ["2026-01-01", "2026-01-02"],
+    fitRangeForTraces: () => [95, 105],
+    beforeApply: () => { beforeApplyCalls += 1; },
+  });
+
+  assert.equal(result.mode, "unchanged");
+  assert.equal(beforeApplyCalls, 0);
+  assert.deepEqual(calls, []);
 });
 
 test("builds horizontal and fitted vertical viewport ranges in one live frame", () => {
@@ -375,6 +414,43 @@ test("settles an in-buffer viewport without a duplicate render", async () => {
   assert.deepEqual(calls, ["flush", ["pin", [100, 500]], "settled", "co-movement"]);
 });
 
+test("settlement commits one final live fit for an in-buffer viewport", async () => {
+  const calls = [];
+  const result = await settleViewportRenderTransaction({
+    requestedRange: [100, 500],
+    interactionRevision: 4,
+    getInteractionRevision: () => 4,
+    rangeController: {
+      flush: async () => calls.push("flush"),
+      schedule: (start, end, meta) => calls.push(["fit", start, end, meta]),
+    },
+    viewportWindowController: { needsRefresh: () => false },
+    mainElement: { data: [{ x: ["1970-01-01T00:00:00.100Z"], y: [1] }] },
+    rangeBearingTraces: (traces) => traces,
+    setPinnedRange: (range) => calls.push(["pin", range]),
+    whenRenderSettled: async () => calls.push("settled"),
+    getCurrentRange: () => [100, 500],
+    liveFit: true,
+    flushCoMovement: () => calls.push("co-movement"),
+  });
+
+  assert.deepEqual(result, { rendered: false, corrected: false, stale: false });
+  assert.deepEqual(calls, [
+    "flush",
+    ["pin", [100, 500]],
+    "settled",
+    ["fit", 100, 500, {
+      source: "viewport-settle-fit",
+      fit: false,
+      liveFit: true,
+      userInitiated: false,
+      interactionRevision: 4,
+    }],
+    "flush",
+    "co-movement",
+  ]);
+});
+
 test("checks companion trace coverage even when the main window already refreshed", async () => {
   const calls = [];
   const result = await settleViewportRenderTransaction({
@@ -502,6 +578,9 @@ test("routes every app chart request through one render facade", () => {
     }),
     getState: () => ({ showAiForecast: true, showEps: false }),
     getAiApp: () => ({ requestRender: (render) => { calls.push(["ai-hold"]); render(); } }),
+    fitCurrent: (options) => calls.push(["fit", options]),
+    settleViewport: (options) => calls.push(["settle-viewport", options]),
+    whenSettled: () => calls.push(["settled"]),
   });
 
   facade.requestComposition({ reason: "toggle" });
@@ -509,12 +588,21 @@ test("routes every app chart request through one render facade", () => {
   facade.requestAiForecast();
   facade.run(false);
   facade.runWhenIdleOrNow(true);
+  facade.fitCurrent({ expandOnly: true });
+  facade.settleViewport({ reason: "wheel-end" });
+  facade.whenSettled();
 
   assert.equal(calls[0][1].preserveFutureOverlayViewport, true);
   assert.equal(calls[1][1].reason, "future-overlay-composition");
   assert.deepEqual(calls[2], ["ai-hold"]);
   assert.equal(calls[3][2].updateClass, "forecast");
-  assert.deepEqual(calls.slice(-2), [["run", false], ["idle", true]]);
+  assert.deepEqual(calls.slice(-5), [
+    ["run", false],
+    ["idle", true],
+    ["fit", { expandOnly: true }],
+    ["settle-viewport", { reason: "wheel-end" }],
+    ["settled"],
+  ]);
 });
 
 test("main chart render runtime owns render mode selection and telemetry", async () => {

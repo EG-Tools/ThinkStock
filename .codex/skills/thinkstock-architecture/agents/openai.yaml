@@ -1,0 +1,5 @@
+interface:
+  display_name: "ThinkStock Architecture"
+  short_description: "ThinkStock 구조를 Mermaid 다이어그램으로 정리"
+  default_prompt: "Use $thinkstock-architecture to inspect the current ThinkStock code and update its architecture diagrams."
+

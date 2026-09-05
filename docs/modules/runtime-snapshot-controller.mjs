@@ -254,6 +254,14 @@
       return { ...revisions };
     }
 
+    function signature(...requestedNames) {
+      const selected = requestedNames.flat().map(String).filter((name) => (
+        Object.prototype.hasOwnProperty.call(revisions, name)
+      ));
+      const keys = selected.length ? selected : names;
+      return keys.map((name) => `${name}:${Number(revisions[name]) || 0}`).join("|");
+    }
+
     function markChanged(changedNames) {
       (Array.isArray(changedNames) ? changedNames : []).forEach((name) => {
         if (!Object.prototype.hasOwnProperty.call(revisions, name)) return;
@@ -313,6 +321,7 @@
       getRevisions,
       markChanged,
       seedComponent,
+      signature,
       stats,
     });
   }

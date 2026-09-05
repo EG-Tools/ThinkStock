@@ -17,7 +17,11 @@ import {
   sourcePolicy,
 } from "../../shared/runtime-freshness-policy.mjs";
 import { createProviderHttpError } from "../../shared/runtime-provider-resilience.mjs";
-import { mergeIndexRecords } from "../../shared/runtime-data-contract.mjs";
+import {
+  mergeIndexRecords,
+  normalizeMacroPayload,
+} from "../../shared/runtime-data-contract.mjs";
+import { availableOnDate } from "../../shared/series-timeline-policy.mjs";
 import {
   evaluateNaverPriceFallback,
   parseNaverPriceSeries,
@@ -158,7 +162,7 @@ const TICKER_PATTERN = /^(\d{6})\.(KS|KQ)$/;
 const CORP_CODE_PATTERN = /^\d{8}$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const KRX_LATEST_LOOKBACK_DAYS = 10;
-const KRX_INDEX_CACHE_SCHEMA = 4;
+const KRX_INDEX_CACHE_SCHEMA = 5;
 const NAVER_PRICE_LOOKBACK_DAYS = 21;
 const MAX_NAVER_PRICE_BYTES = 1024 * 1024;
 const PRICE_MOVE_WARNING_RATIO = 1.35;
@@ -275,7 +279,7 @@ function normalizeAdrCache(value) {
   };
 }
 
-async function adrMarketResponse(env, origin, forceRefresh = false) {
+async function adrMarketResponse(env, origin, forceRefresh = false, latestOnly = false) {
   const cached = env.DISCLOSURE_CACHE
     ? normalizeAdrCache(await readCacheBestEffort(
       "adr",
@@ -283,7 +287,13 @@ async function adrMarketResponse(env, origin, forceRefresh = false) {
     ))
     : null;
   if (!forceRefresh && cached && Date.now() - cached.savedAt <= ADR_CACHE_FRESH_MS) {
-    return jsonResponse({ ...cached, ok: true, cached: true, stale: false }, 200, origin);
+    return jsonResponse({
+      ...cached,
+      ok: true,
+      cached: true,
+      stale: false,
+      rows: latestOnly ? cached.rows.slice(-1) : cached.rows,
+    }, 200, origin);
   }
 
   try {
@@ -306,7 +316,13 @@ async function adrMarketResponse(env, origin, forceRefresh = false) {
         () => env.DISCLOSURE_CACHE.put(ADR_CACHE_KEY, JSON.stringify(payload)),
       ]);
     }
-    return jsonResponse({ ok: true, cached: false, stale: false, ...payload }, 200, origin);
+    return jsonResponse({
+      ok: true,
+      cached: false,
+      stale: false,
+      ...payload,
+      rows: latestOnly ? rows.slice(-1) : rows,
+    }, 200, origin);
   } catch (error) {
     if (cached) {
       return jsonResponse({
@@ -315,6 +331,7 @@ async function adrMarketResponse(env, origin, forceRefresh = false) {
         cached: true,
         stale: true,
         warning: combineWarnings(cached.warning, "ADR 연결 실패로 마지막 검증 데이터를 사용합니다."),
+        rows: latestOnly ? cached.rows.slice(-1) : cached.rows,
       }, 200, origin);
     }
     return jsonResponse({ ok: false, error: error?.message || "ADR 조회 실패" }, 503, origin);
@@ -339,6 +356,61 @@ function mergeEcosRows(existing, incoming, key) {
     if (isValidIsoDate(date) && value !== null) rows.set(date, { date, [key]: value });
   });
   return [...rows.values()].sort((left, right) => left.date.localeCompare(right.date));
+}
+
+function mergePublishedEcosRows(existing, incoming, key, options = {}) {
+  const checkedDate = String(options.checkedDate || "").slice(0, 10);
+  const previousCheckedDate = String(options.previousCheckedDate || "").slice(0, 10);
+  const existingRows = Array.isArray(existing) ? existing : [];
+  const incomingRows = Array.isArray(incoming) ? incoming : [];
+  const latestLegacyReferenceDate = existingRows
+    .map((row) => String(row?.reference_date || row?.date || "").slice(0, 10))
+    .filter(isValidIsoDate)
+    .sort()
+    .at(-1) || "";
+  const rows = new Map();
+
+  existingRows.forEach((row) => {
+    const referenceDate = String(row?.reference_date || row?.date || "").slice(0, 10);
+    const value = finiteNumber(row?.[key]);
+    if (!isValidIsoDate(referenceDate) || value === null) return;
+    const fallbackDate = availableOnDate(key, referenceDate);
+    const explicitDate = String(row?.available_date || row?.availableDate || "").slice(0, 10);
+    const legacyLatestDate = referenceDate === latestLegacyReferenceDate
+      && isValidIsoDate(previousCheckedDate)
+      && Math.abs(Date.parse(`${previousCheckedDate}T00:00:00Z`) - Date.parse(`${fallbackDate}T00:00:00Z`)) <= 7 * 86400000
+      ? previousCheckedDate
+      : fallbackDate;
+    rows.set(referenceDate, {
+      date: referenceDate,
+      available_date: isValidIsoDate(explicitDate) ? explicitDate : legacyLatestDate,
+      [key]: value,
+    });
+  });
+
+  const hadExistingRows = rows.size > 0;
+  incomingRows.forEach((row) => {
+    const referenceDate = String(row?.date || "").slice(0, 10);
+    const value = finiteNumber(row?.[key]);
+    if (!isValidIsoDate(referenceDate) || value === null) return;
+    const previous = rows.get(referenceDate);
+    const changed = previous && finiteNumber(previous[key]) !== value;
+    const observedDate = isValidIsoDate(checkedDate)
+      ? checkedDate
+      : availableOnDate(key, referenceDate);
+    rows.set(referenceDate, {
+      date: referenceDate,
+      available_date: previous && !changed
+        ? previous.available_date
+        : (hadExistingRows ? observedDate : availableOnDate(key, referenceDate)),
+      [key]: value,
+    });
+  });
+  return [...rows.values()].sort((left, right) => left.date.localeCompare(right.date));
+}
+
+function normalizedEcosMacroPayload(payload) {
+  return normalizeMacroPayload({ ...payload, ok: true });
 }
 
 function mergeEcosFieldRows(...groups) {
@@ -384,7 +456,9 @@ async function ecosMacroResponse(env, origin, refresh = false) {
   const needsRefresh = refresh
     || cached?.schema !== ECOS_CACHE_SCHEMA
     || cached?.lastCheckedDate !== checkDate;
-  if (!needsRefresh) return jsonResponse({ ...cached, ok: true, cached: true }, 200, origin);
+  if (!needsRefresh) {
+    return jsonResponse(normalizedEcosMacroPayload({ ...cached, cached: true }), 200, origin);
+  }
   try {
     const requests = await Promise.allSettled([
       fetchEcosRows(env, { frequency: "M", statCode: ECOS_LEADING_STAT_CODE, itemCode: ECOS_LEADING_ITEM_CODE, start: ecosDateCode(730, true), key: "leading_cycle" }),
@@ -436,7 +510,10 @@ async function ecosMacroResponse(env, origin, refresh = false) {
       schema: ECOS_CACHE_SCHEMA,
       savedAt: Date.now(),
       lastCheckedDate: failedLabels.length ? (cached?.lastCheckedDate || "") : checkDate,
-      leadingRows: mergeEcosRows(cached?.leadingRows, leading, "leading_cycle").slice(-36),
+      leadingRows: mergePublishedEcosRows(cached?.leadingRows, leading, "leading_cycle", {
+        checkedDate: checkDate,
+        previousCheckedDate: cached?.lastCheckedDate,
+      }).slice(-36),
       newsRows: mergeEcosRows(cached?.newsRows, news, "news_sentiment").slice(-180),
       policyRateRows: mergeEcosRows(cached?.policyRateRows, policyRate, "policy_rate").slice(-360),
       tradeRows: mergeEcosFieldRows(cached?.tradeRows, exports, imports).slice(-360),
@@ -450,15 +527,14 @@ async function ecosMacroResponse(env, origin, refresh = false) {
         () => env.DISCLOSURE_CACHE.put(ECOS_CACHE_KEY, JSON.stringify(payload)),
       ]);
     }
-    return jsonResponse({ ok: true, cached: false, ...payload }, 200, origin);
+    return jsonResponse(normalizedEcosMacroPayload({ cached: false, ...payload }), 200, origin);
   } catch (error) {
-    if (cached?.schema === ECOS_CACHE_SCHEMA) return jsonResponse({
+    if (cached?.schema === ECOS_CACHE_SCHEMA) return jsonResponse(normalizedEcosMacroPayload({
       ...cached,
-      ok: true,
       cached: true,
       stale: true,
       warning: combineWarnings(cached.warning, "ECOS 연결 실패로 마지막 저장 지표를 사용했습니다."),
-    }, 200, origin);
+    }), 200, origin);
     return jsonResponse({ ok: false, error: `ECOS 조회 실패: ${error?.message || error}` }, 503, origin);
   }
 }
@@ -1320,11 +1396,16 @@ async function fetchLatestKrxStockPoint(env, ticker, today = koreanDateText(), o
       if (!marketDate || snapshot.marketDate > marketDate) marketDate = snapshot.marketDate;
       const close = snapshot.prices?.[stockCode];
       if (Number.isFinite(close)) {
+        const volume = snapshot.volumes?.[stockCode];
         return {
-          point: { date: snapshot.marketDate, close },
-          marketDate,
-          cached: Boolean(snapshot.cached),
-          cacheHits,
+          point: {
+            date: snapshot.marketDate,
+            close,
+            ...(Number.isFinite(volume) && volume > 0 ? { volume } : {}),
+          },
+      marketDate,
+      cached: Boolean(snapshot.cached),
+      cacheHits,
         };
       }
     } catch (error) {
@@ -1688,7 +1769,12 @@ const ROUTE_HANDLERS = Object.freeze({
     accessAuthorized && queryFlag(url.searchParams.get("refresh")),
   ),
   adr: ({ env, origin, url }) => (
-    adrMarketResponse(env, origin, queryFlag(url.searchParams.get("refresh")))
+    adrMarketResponse(
+      env,
+      origin,
+      queryFlag(url.searchParams.get("refresh")),
+      queryFlag(url.searchParams.get("latest")),
+    )
   ),
   bootstrap: ({ env, origin, url }) => runtimeBootstrapResponse(env, url, origin),
   indices: ({ env, origin, url }) => krxCoreIndexResponse(

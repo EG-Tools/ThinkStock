@@ -23,7 +23,7 @@ export default defineConfig({
     },
     {
       name: "webkit-desktop",
-      testMatch: /thinkstock-viewport\.spec\.mjs/,
+      testMatch: /thinkstock-(?:viewport|ai-desktop)\.spec\.mjs/,
       use: { ...devices["Desktop Safari"] },
     },
     {

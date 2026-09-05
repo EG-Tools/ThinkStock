@@ -225,6 +225,18 @@ test("reuses a normalized snapshot component until its source revision changes",
   });
 });
 
+test("owns stable revision signatures for every dependent cache", () => {
+  const tracker = module.createRevisionTracker(["price", "macro", "credit"]);
+  assert.equal(tracker.signature("price", "macro"), "price:0|macro:0");
+  assert.equal(tracker.signature(), "price:0|macro:0|credit:0");
+
+  tracker.markChanged(["macro"]);
+  assert.equal(tracker.signature("price", "macro"), "price:0|macro:1");
+
+  tracker.applyRevisions({ price: 7 }, ["price"]);
+  assert.equal(tracker.signature("price", "macro"), "price:7|macro:1");
+});
+
 test("normalizes current and restored snapshot components through one contract", () => {
   const contract = module.createSnapshotComponentContract({
     price: {

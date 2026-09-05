@@ -343,7 +343,8 @@ test("returns authenticated ECOS macro updates and reuses the Worker cache", asy
     const refreshed = await handleRequest(request("/api/macro?refresh=1", { token: "private" }), env);
     const payload = await refreshed.json();
     assert.equal(refreshed.status, 200);
-    assert.deepEqual(payload.leadingRows.at(-1), { date: "2026-07-01", leading_cycle: 104.8 });
+    assert.deepEqual(payload.leadingRows.at(-1), { date: "2026-09-01", leading_cycle: 104.8 });
+    assert.equal(payload.leadingDateBasis, "availability");
     assert.deepEqual(payload.newsRows.at(-1), { date: "2026-08-03", news_sentiment: 101.2 });
     assert.deepEqual(payload.policyRateRows.at(-1), { date: "2026-07-01", policy_rate: 2.5 });
     assert.deepEqual(payload.tradeRows.at(-1), {
@@ -744,8 +745,8 @@ test("returns the latest authenticated KRX close for a stock", async () => {
 test("returns both authenticated KRX core indices", async () => {
   assert.deepEqual(krxIndexPointFromRows([
     { IDX_NM: "KOSPI 200", BAS_DD: "20260805", CLSPRC_IDX: "500.1" },
-    { IDX_NM: "KOSPI", BAS_DD: "20260805", CLSPRC_IDX: "3,210.5" },
-  ], "KOSPI"), { date: "2026-08-05", close: 3210.5 });
+    { IDX_NM: "KOSPI", BAS_DD: "20260805", CLSPRC_IDX: "3,210.5", ACC_TRDVOL: "123,456" },
+  ], "KOSPI"), { date: "2026-08-05", close: 3210.5, volume: 123456 });
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, options = {}) => {
@@ -932,7 +933,7 @@ test("uses Naver only when it is newer than a delayed KRX close", async () => {
     [['날짜', '시가', '고가', '저가', '종가', '거래량'],
     ["20260731", 78900, 80600, 75900, 80500, 106753],
     ["20260803", 73900, 74000, 61400, 61800, 403680]]
-  `), { date: "2026-08-03", close: 61800 });
+  `), { date: "2026-08-03", close: 61800, volume: 403680 });
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
@@ -956,7 +957,7 @@ test("uses Naver only when it is newer than a delayed KRX close", async () => {
     assert.equal(response.status, 200);
     assert.equal(payload.source, "NAVER_FALLBACK");
     assert.equal(payload.latestDate, "2026-08-03");
-    assert.deepEqual(payload.records, [{ date: "2026-08-03", close: 61800 }]);
+    assert.deepEqual(payload.records, [{ date: "2026-08-03", close: 61800, volume: 403680 }]);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1200,11 +1201,12 @@ test("reuses one compact KRX market snapshot for multiple stocks", async () => {
   const expectedDate = expectedLatestKoreanTradingDate(new Date());
   const rawDate = expectedDate.replaceAll("-", "");
   const rows = [
-    { ISU_CD: "005930", BAS_DD: rawDate, TDD_CLSPRC: "90,000" },
-    { ISU_CD: "383220", BAS_DD: rawDate, TDD_CLSPRC: "61,800" },
+    { ISU_CD: "005930", BAS_DD: rawDate, TDD_CLSPRC: "90,000", ACC_TRDVOL: "1,234" },
+    { ISU_CD: "383220", BAS_DD: rawDate, TDD_CLSPRC: "61,800", ACC_TRDVOL: "5,678" },
   ];
   const snapshot = krxMarketSnapshotFromRows(rows, "KS", expectedDate);
   assert.deepEqual(snapshot.prices, { "005930": 90000, "383220": 61800 });
+  assert.deepEqual(snapshot.volumes, { "005930": 1234, "383220": 5678 });
 
   const originalFetch = globalThis.fetch;
   const cache = memoryKv();

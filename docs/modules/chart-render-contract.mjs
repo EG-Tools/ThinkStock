@@ -1,6 +1,36 @@
 "use strict";
 
 const EVENT_MARKER_FONT_FAMILY = "Arial Black, Apple SD Gothic Neo, sans-serif";
+const MAIN_CHART_OVERLAY_KINDS = Object.freeze([
+  "price",
+  "eps",
+  "ai",
+  "ai-band",
+  "ai-scenario",
+  "ai-report",
+  "grouped-hover",
+  "crisis",
+  "timing-buy",
+  "timing-sell",
+  "insider",
+  "disclosure",
+]);
+const EVENT_MARKER_OVERLAY_KINDS = Object.freeze([
+  "crisis",
+  "timing-buy",
+  "timing-sell",
+  "insider",
+  "disclosure",
+]);
+const MAIN_CHART_OVERLAY_KIND_SET = new Set(MAIN_CHART_OVERLAY_KINDS);
+const SERIES_OVERLAY_KIND_SET = new Set([
+  "price",
+  "eps",
+  "ai",
+  "ai-band",
+  "ai-scenario",
+  "ai-report",
+]);
 
 function buildEventMarkerTextFont(color, size, fallbackSize = 13) {
   return {
@@ -23,7 +53,7 @@ function normalizeMainChartModel(value) {
   if (!value || typeof value !== "object") return null;
   const rows = Array.isArray(value.rows) ? value.rows : [];
   const seriesModels = Array.isArray(value.seriesModels) ? value.seriesModels : [];
-  if (!rows.length || !seriesModels.length) return null;
+  if (value.empty !== true && (!rows.length || !seriesModels.length)) return null;
   const validSeries = seriesModels.every((model) => {
     const xValues = Array.isArray(model?.xValues) ? model.xValues : [];
     const values = Array.isArray(model?.values) ? model.values : [];
@@ -96,11 +126,52 @@ function assertChartRenderPayload(traces, layout) {
   return true;
 }
 
+function chartTraceOverlayKind(trace) {
+  return String(trace?.meta?.overlayKind || "");
+}
+
+function mainChartTraceContractIssue(trace, index = 0) {
+  const kind = chartTraceOverlayKind(trace);
+  if (!kind) return `main chart trace ${index} must declare meta.overlayKind`;
+  if (!MAIN_CHART_OVERLAY_KIND_SET.has(kind)) {
+    return `main chart trace ${index} has unknown overlay kind ${kind}`;
+  }
+  if (SERIES_OVERLAY_KIND_SET.has(kind) && !String(trace?.meta?.seriesKey || "")) {
+    return `main chart trace ${index} ${kind} must declare meta.seriesKey`;
+  }
+  if (kind === "grouped-hover" && !String(trace?.meta?.hoverGroupTicker || "")) {
+    return `main chart trace ${index} grouped-hover must declare meta.hoverGroupTicker`;
+  }
+  return "";
+}
+
+function mainChartRenderPayloadIssue(traces, layout) {
+  const payloadIssue = chartRenderPayloadIssue(traces, layout);
+  if (payloadIssue) return payloadIssue;
+  for (let index = 0; index < traces.length; index += 1) {
+    const issue = mainChartTraceContractIssue(traces[index], index);
+    if (issue) return issue;
+  }
+  return "";
+}
+
+function assertMainChartRenderPayload(traces, layout) {
+  const issue = mainChartRenderPayloadIssue(traces, layout);
+  if (issue) throw new TypeError(issue);
+  return true;
+}
+
 export {
+  EVENT_MARKER_OVERLAY_KINDS,
   EVENT_MARKER_FONT_FAMILY,
+  MAIN_CHART_OVERLAY_KINDS,
   assertChartRenderPayload,
+  assertMainChartRenderPayload,
   buildEventMarkerTextFont,
   chartRenderPayloadIssue,
+  chartTraceOverlayKind,
+  mainChartRenderPayloadIssue,
+  mainChartTraceContractIssue,
   normalizeAuxiliaryChartModel,
   normalizeMainChartModel,
 };

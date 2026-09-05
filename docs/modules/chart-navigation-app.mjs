@@ -2,6 +2,7 @@
 
   const MESSAGE_FADE_DURATION_MS = 2000;
   const WHEEL_ZOOM_ANIMATION_MS = 96;
+  const MAX_WHEEL_RANGE_HISTORY = 32;
 
   function createChartNavigation(scope = globalThis, options = {}) {
     const viewport = options.viewport;
@@ -25,6 +26,8 @@
     };
 
     let historyPromise = null;
+    let pendingHistoryZoom = null;
+    let historyZoomPromise = null;
     let messageTimer = 0;
     let messageFadeTimer = 0;
     let animationFrame = 0;
@@ -33,7 +36,6 @@
     let rangeRenderPromise = Promise.resolve();
     let wheelRange = null;
     let wheelRangeHistory = [];
-    let wheelRangeTimer = 0;
     let wheelAnimationFrame = 0;
     let wheelAnimationFrom = null;
     let wheelAnimationCurrent = null;
@@ -52,9 +54,7 @@
     }
 
     function clearWheelRange() {
-      if (wheelRangeTimer) clearTimer?.(wheelRangeTimer);
       cancelWheelAnimation();
-      wheelRangeTimer = 0;
       wheelRange = null;
       wheelRangeHistory = [];
     }
@@ -68,29 +68,20 @@
 
     function rememberWheelRange(range, observedRange) {
       if (!wheelRange) wheelRangeHistory = [];
-      if (Array.isArray(observedRange)
-        && !wheelRangeHistory.some((item) => rangesMatch(item, observedRange))) {
-        wheelRangeHistory.push([...observedRange]);
-      }
+      rememberWheelRenderedRange(observedRange);
       wheelRange = Array.isArray(range) ? [...range] : null;
-      if (wheelRange && !wheelRangeHistory.some((item) => rangesMatch(item, wheelRange))) {
-        wheelRangeHistory.push([...wheelRange]);
-      }
-      if (wheelRangeHistory.length > 8) wheelRangeHistory = wheelRangeHistory.slice(-8);
-      if (wheelRangeTimer) clearTimer?.(wheelRangeTimer);
-      wheelRangeTimer = setTimer?.(() => {
-        wheelRangeTimer = 0;
-        wheelRange = null;
-        wheelRangeHistory = [];
-      }, 220) || 0;
+      rememberWheelRenderedRange(wheelRange);
     }
 
     function rememberWheelRenderedRange(range) {
       if (!Array.isArray(range) || range.length < 2) return;
       if (!wheelRangeHistory.some((item) => rangesMatch(item, range))) {
         wheelRangeHistory.push([...range]);
+        if (wheelRangeHistory.length > MAX_WHEEL_RANGE_HISTORY) {
+          // Preserve the gesture origin and only retain its newest requested ranges.
+          wheelRangeHistory.splice(1, wheelRangeHistory.length - MAX_WHEEL_RANGE_HISTORY);
+        }
       }
-      if (wheelRangeHistory.length > 16) wheelRangeHistory = wheelRangeHistory.slice(-16);
     }
 
     function applyWheelRange(range, observedRange, source) {
@@ -193,6 +184,37 @@
       return historyPromise;
     }
 
+    function canZoomOutWithLoadedData(zoomOptions = {}) {
+      const element = options.getElement();
+      const currentRange = options.getCurrentRange(element);
+      const dataRange = options.getDataRange(element);
+      if (!currentRange || !dataRange) return false;
+      return Boolean(viewport.centeredZoomRange(currentRange, dataRange, 1, {
+        ratio: 0.2,
+        minimumSpan,
+        anchorRatio: zoomOptions.anchorRatio,
+      }));
+    }
+
+    function queueHistoryZoom(direction, source, zoomOptions) {
+      pendingHistoryZoom = { direction, source, zoomOptions };
+      if (historyZoomPromise) return;
+      historyZoomPromise = ensureHistoryReady()
+        .then((loaded) => {
+          const request = pendingHistoryZoom;
+          pendingHistoryZoom = null;
+          if (!loaded || !request) return false;
+          const applied = applyCenteredZoom(request.direction, request.source, request.zoomOptions);
+          if (request.source === "wheel-zoom") clearWheelRange();
+          return applied;
+        })
+        .finally(() => { historyZoomPromise = null; });
+    }
+
+    function cancelPendingHistoryZoom() {
+      pendingHistoryZoom = null;
+    }
+
     function applyCenteredZoom(direction, source = "button-zoom", zoomOptions = {}) {
       const element = options.getElement();
       const observedCurrentRange = options.getCurrentRange(element);
@@ -239,10 +261,9 @@
     function zoom(direction, source = "button-zoom", zoomOptions = {}) {
       const zoomDirection = Math.sign(Number(direction));
       if (!zoomDirection) return true;
-      if (zoomDirection > 0 && !historyReady()) {
-        void ensureHistoryReady().then((loaded) => {
-          if (loaded) applyCenteredZoom(zoomDirection, source, zoomOptions);
-        });
+      if (zoomDirection < 0) cancelPendingHistoryZoom();
+      if (zoomDirection > 0 && !historyReady() && !canZoomOutWithLoadedData(zoomOptions)) {
+        queueHistoryZoom(zoomDirection, source, zoomOptions);
         return true;
       }
       applyCenteredZoom(zoomDirection, source, zoomOptions);
@@ -250,6 +271,7 @@
     }
 
     function cancelLatestAnimation() {
+      cancelPendingHistoryZoom();
       clearWheelRange();
       const wasActive = animationActive;
       animationToken += 1;
@@ -384,20 +406,20 @@
       cancelLatestAnimation();
       if (messageTimer) clearTimer?.(messageTimer);
       if (messageFadeTimer) clearTimer?.(messageFadeTimer);
-      if (wheelRangeTimer) clearTimer?.(wheelRangeTimer);
       cancelWheelAnimation();
       messageTimer = 0;
       messageFadeTimer = 0;
-      wheelRangeTimer = 0;
       wheelRange = null;
       wheelRangeHistory = [];
     }
 
     return Object.freeze({
       applyCenteredZoom,
+      cancelPendingHistoryZoom,
       cancelLatestAnimation,
       dispose,
       ensureHistoryReady,
+      finishWheelZoom: clearWheelRange,
       isAnimating: () => animationActive,
       whenRangeSettled: () => rangeRenderPromise,
       showLatestPeriod,

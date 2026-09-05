@@ -47,12 +47,16 @@ function createAppDataStore(initial = {}, options = {}) {
   });
 
   /** @param {AppDataKey[]} changed */
-  function emit(changed) {
+  function emit(changed, changedFieldsByKey = null) {
     if (!changed.length) return;
+    const fieldEntries = Object.entries(changedFieldsByKey || {})
+      .filter(([key, fields]) => changed.includes(key) && Array.isArray(fields) && fields.length)
+      .map(([key, fields]) => [key, Object.freeze([...new Set(fields.map(String).filter(Boolean))])]);
     const event = Object.freeze({
       changed: Object.freeze([...changed]),
       revision,
       revisions: Object.freeze(Object.fromEntries(changed.map((key) => [key, revisions[key]]))),
+      ...(fieldEntries.length ? { changedFieldsByKey: Object.freeze(Object.fromEntries(fieldEntries)) } : {}),
     });
     listeners.forEach((listener) => listener(event));
   }
@@ -72,7 +76,8 @@ function createAppDataStore(initial = {}, options = {}) {
   /** @param {AppDataKey} key */
   function set(key, value, options = {}) {
     if (!APP_DATA_KEYS.includes(key)) throw new Error(`Unknown app data key: ${key}`);
-    if (valuesMatch(key, values[key], value)) {
+    if (Object.is(values[key], value)
+      || (options.assumeChanged !== true && valuesMatch(key, values[key], value))) {
       skipped += 1;
       return false;
     }
@@ -80,7 +85,10 @@ function createAppDataStore(initial = {}, options = {}) {
     revision += 1;
     revisions[key] += 1;
     replacements += 1;
-    if (options.silent !== true) emit([key]);
+    if (options.silent !== true) emit(
+      [key],
+      Array.isArray(options.changedFields) ? { [key]: options.changedFields } : null,
+    );
     return true;
   }
 
@@ -100,7 +108,7 @@ function createAppDataStore(initial = {}, options = {}) {
       replacements += 1;
       changed.push(key);
     });
-    if (options.silent !== true) emit(changed);
+    if (options.silent !== true) emit(changed, options.changedFieldsByKey);
     return changed;
   }
 
@@ -114,7 +122,10 @@ function createAppDataStore(initial = {}, options = {}) {
     revision += 1;
     revisions[key] += 1;
     touches += 1;
-    if (options.silent !== true) emit([key]);
+    if (options.silent !== true) emit(
+      [key],
+      Array.isArray(options.changedFields) ? { [key]: options.changedFields } : null,
+    );
     return revisions[key];
   }
 
@@ -128,6 +139,7 @@ function createAppDataStore(initial = {}, options = {}) {
     keys: APP_DATA_KEYS,
     patch,
     revision: (key = "") => (key ? Number(revisions[key]) || 0 : revision),
+    set,
     snapshot,
     stats: () => Object.freeze({
       revision,

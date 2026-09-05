@@ -20,11 +20,13 @@ test("indexes only exact chart dates for disclosures and insider trades", () => 
       series: "005930.KS",
       xValues: ["2026-07-16", "2026-07-20"],
       values: [100, 110],
+      baseValues: [95, 105],
     },
   ], new Set(["005930.KS"]), Date.parse);
   assert.deepEqual(eventLayer.findPointOnDate("2026-07-20", "005930.KS", index), {
     date: "2026-07-20",
     y: 110,
+    baseY: 105,
   });
   assert.equal(eventLayer.findPointOnDate("2026-07-19", "005930.KS", index), null);
 });
@@ -50,7 +52,7 @@ test("finds only a disclosure marker inside its hit radius", () => {
   const trace = {
     x: [10, 50],
     y: [20, 60],
-    meta: { isDisclosureTrace: true },
+    meta: { overlayKind: "disclosure" },
   };
   const element = {
     data: [trace],
@@ -73,7 +75,7 @@ test("selects the vertically nearest disclosure when dates overlap", () => {
   const trace = {
     x: [50, 50],
     y: [20, 80],
-    meta: { isDisclosureTrace: true },
+    meta: { overlayKind: "disclosure" },
   };
   const reversedTextNodes = [
     { textContent: "diamond", getBoundingClientRect: () => ({ top: 275, height: 10 }) },
@@ -104,12 +106,12 @@ test("selects timing and disclosure markers through one interactive index", () =
   const disclosure = {
     x: [20],
     y: [30],
-    meta: { isDisclosureTrace: true },
+    meta: { overlayKind: "disclosure" },
   };
   const timing = {
     x: [20],
     y: [70],
-    meta: { isMarketTimingBuyTrace: true },
+    meta: { overlayKind: "timing-buy" },
   };
   const element = {
     data: [disclosure, timing],
@@ -121,7 +123,7 @@ test("selects timing and disclosure markers through one interactive index", () =
   };
   const options = {
     cacheKey: "interactive",
-    tracePredicate: (trace) => trace.meta?.isDisclosureTrace || trace.meta?.isMarketTimingBuyTrace,
+    tracePredicate: (trace) => ["disclosure", "timing-buy"].includes(trace.meta?.overlayKind),
     mouseRadius: 10,
     touchRadius: 16,
     isTouch: false,

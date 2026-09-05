@@ -32,3 +32,37 @@ test("shared payload parser repairs NaN and sorts disclosure rows", () => {
   assert.equal(rows[0].date, "2026-07-10");
   assert.equal(rows[0].ticker, "005930.KS");
 });
+
+test("seed bundle aligns the leading cycle to its publication month", () => {
+  const parseBundle = payloadUtils.createSeedBundleParser();
+  const parsed = parseBundle({
+    macroText: JSON.stringify({
+      dates: ["2026-07-01", "2026-09-01"],
+      series: ["leading_cycle", "news_sentiment"],
+      columns: {
+        leading_cycle: [104.2, null],
+        news_sentiment: [99, 101],
+      },
+    }),
+  });
+
+  assert.deepEqual(parsed.macroRows, [
+    { date: "2026-07-01", news_sentiment: 99 },
+    { date: "2026-09-01", news_sentiment: 101, leading_cycle: 104.2 },
+  ]);
+});
+
+test("seed bundle does not expose interpolated leading-cycle values before publication", () => {
+  const parseBundle = payloadUtils.createSeedBundleParser();
+  const parsed = parseBundle({
+    macroText: JSON.stringify({
+      dates: ["2026-07-01", "2026-07-15", "2026-07-31"],
+      series: ["leading_cycle"],
+      columns: { leading_cycle: [104.2, 104.3, 104.4] },
+    }),
+  });
+
+  assert.deepEqual(parsed.macroRows.filter((row) => Number.isFinite(row.leading_cycle)), [
+    { date: "2026-09-01", leading_cycle: 104.2 },
+  ]);
+});

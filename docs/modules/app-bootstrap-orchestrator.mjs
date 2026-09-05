@@ -48,7 +48,6 @@ export function createAppBootstrapOrchestrator(options = {}) {
         await runPhase("refresh", () => (
           options.refreshDuringStartup?.({ messageElement, restoredSnapshot })
         ));
-        await runPhase("fit", () => options.afterStartupRefresh?.(messageElement));
       } catch (error) {
         options.onRefreshError?.(messageElement, error);
       }
@@ -115,8 +114,25 @@ export function createApplicationLifecycleRuntime(options = {}) {
       await refresh.renderMain?.(true);
       if (refresh.shouldAutoFit?.()) await refresh.fitCurrentChart?.();
     }
-    for (const feature of optionalRefreshes) {
-      if (feature?.enabled?.()) await feature.run?.(messageElement, refreshOptions);
+    const jobs = optionalRefreshes
+      .filter((feature) => feature?.enabled?.())
+      .map((feature) => async () => {
+        try {
+          await feature.run?.(messageElement, refreshOptions);
+          return null;
+        } catch (error) {
+          return error;
+        }
+      });
+    const errors = typeof options.runOptionalRefreshes === "function"
+      ? await options.runOptionalRefreshes(jobs)
+      : await Promise.all(jobs.map((job) => job()));
+    const failure = errors.find((error) => error instanceof Error);
+    if (refreshOptions.reconcileViewport === true) {
+      await refresh.reconcileViewport?.();
+    }
+    if (failure) {
+      throw failure;
     }
   }
 
@@ -210,6 +226,21 @@ export function createApplicationFeatureLifecycleDescriptors(context = {}) {
       name: "insider",
       enabled: () => Boolean(state.showInsiderTrades && context.canUseInsider?.()),
       refresh: context.refreshInsider,
+    },
+    {
+      name: "ai",
+      enabled: () => Boolean(state.showAiForecast),
+      refresh: (_messageElement, refreshOptions = {}) => context.refreshAi?.({
+        forceNetwork: refreshOptions.forceNetwork === true,
+      }),
+    },
+    {
+      name: "eps",
+      enabled: () => Boolean(state.showEps),
+      refresh: (_messageElement, refreshOptions = {}) => context.refreshEps?.({
+        forceNetwork: refreshOptions.forceNetwork === true && !state.showAiForecast,
+        render: true,
+      }),
     },
   ]);
 }

@@ -354,7 +354,7 @@ test("manual refresh always clears the spinning state", async () => {
 
   await button.dispatch("click");
   assert.deepEqual(loadCalls, []);
-  assert.deepEqual(refreshCalls, [[{ forceNetwork: true }]]);
+  assert.deepEqual(refreshCalls, [[{ forceNetwork: true, reconcileViewport: true }]]);
   assert.deepEqual(order, ["runtime", "service-worker"]);
   assert.deepEqual(messages, []);
   assert.equal(button.classList.contains("spinning"), false);

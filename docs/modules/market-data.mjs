@@ -44,20 +44,6 @@ import sharedDataPayload from "./data-payload.mjs";
     }).filter((row) => row.date).sort((left, right) => left.date.localeCompare(right.date));
   }
 
-  function normalizeFearGreedRows(payload) {
-    const sourceRows = Array.isArray(payload?.rows) && payload.rows.length
-      ? payload.rows
-      : [{ date: payload?.updated, score: payload?.score }];
-    const byDate = new Map();
-    sourceRows.forEach((row) => {
-      const date = String(row?.date || row?.updated || "").slice(0, 10);
-      const score = toNum(row?.fear_greed ?? row?.score);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || score === null || score < 0 || score > 100) return;
-      byDate.set(date, { date, fear_greed: score });
-    });
-    return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
-  }
-
   function getSeriesColumns(rows) {
     const columns = new Set();
     (Array.isArray(rows) ? rows : []).forEach((row) => {
@@ -275,6 +261,7 @@ import sharedDataPayload from "./data-payload.mjs";
       return sorted;
     }
     const carryForwardAfterLast = options.carryForwardAfterLast === true;
+    const stepColumns = new Set(Array.isArray(options.stepColumns) ? options.stepColumns : []);
     const targets = targetDates.map((date) => ({ date, time: toUtcMs(date) }));
     const dense = targets.map(({ date }) => ({ date }));
 
@@ -297,9 +284,13 @@ import sharedDataPayload from "./data-payload.mjs";
           dense[index][column] = carryForwardAfterLast ? points.at(-1).value : null;
           return;
         }
-        while (pointer + 1 < points.length && points[pointer + 1].time < time) pointer += 1;
+        while (pointer + 1 < points.length && points[pointer + 1].time <= time) pointer += 1;
         const left = points[pointer];
         const right = points[pointer + 1];
+        if (stepColumns.has(column)) {
+          dense[index][column] = left.value;
+          return;
+        }
         if (!right || left.time === time || left.time === right.time) {
           dense[index][column] = left.value;
           return;
@@ -363,6 +354,49 @@ import sharedDataPayload from "./data-payload.mjs";
       const baseTime = toUtcMs(priceDate);
       if (!Number.isFinite(baseTime)) return null;
       return interpolate(baseTime);
+    };
+  }
+
+  function buildLeadingCycleDisplayInterpolator(macroRows) {
+    const points = (Array.isArray(macroRows) ? macroRows : [])
+      .map((row) => ({
+        date: String(row?.date || "").slice(0, 10),
+        time: toUtcMs(row?.date),
+        value: toNum(row?.leading_cycle),
+      }))
+      .filter((point) => point.date && Number.isFinite(point.time) && point.value !== null)
+      .sort((left, right) => left.time - right.time);
+    if (!points.length) return () => null;
+
+    // Runtime calculations keep publication-safe step values. The chart alone
+    // reconnects monthly release anchors so the visual series stays continuous.
+    const anchors = points.filter((point, index) => (
+      index === 0
+        || index === points.length - 1
+        || point.date.endsWith("-01")
+        || point.value !== points[index - 1].value
+    ));
+    const byTime = new Map(anchors.map((point) => [point.time, point.value]));
+    const firstTime = anchors[0].time;
+    const lastTime = anchors.at(-1).time;
+
+    return (date) => {
+      const targetTime = toUtcMs(date);
+      if (!Number.isFinite(targetTime) || targetTime < firstTime || targetTime > lastTime) return null;
+      if (byTime.has(targetTime)) return byTime.get(targetTime);
+
+      let low = 0;
+      let high = anchors.length - 1;
+      while (low <= high) {
+        const middle = (low + high) >> 1;
+        if (anchors[middle].time < targetTime) low = middle + 1;
+        else high = middle - 1;
+      }
+      const right = anchors[low];
+      const left = anchors[low - 1];
+      if (!left || !right || right.time <= left.time) return null;
+      const ratio = (targetTime - left.time) / (right.time - left.time);
+      return left.value + (right.value - left.value) * ratio;
     };
   }
 
@@ -442,6 +476,9 @@ import sharedDataPayload from "./data-payload.mjs";
     const creditAtPriceDate = buildCreditInterpolator(creditSeriesRows, creditCols);
     const liveCols = getSeriesColumns(priceRows);
     const macroCols = getSeriesColumns(macroRows).filter((key) => !creditCols.includes(key));
+    const leadingCycleAtDisplayDate = macroCols.includes("leading_cycle")
+      ? buildLeadingCycleDisplayInterpolator(macroRows)
+      : null;
     const sourceDates = new Set([
       ...priceMap.keys(),
       ...macroMap.keys(),
@@ -456,7 +493,11 @@ import sharedDataPayload from "./data-payload.mjs";
       const exactCredit = creditByDate.get(date) || null;
       const interpolatedCredit = creditAtPriceDate(date) || exactCredit;
       liveCols.forEach((key) => { row[key] = toNum(prices[key]); });
-      macroCols.forEach((key) => { row[key] = toNum(macro[key]); });
+      macroCols.forEach((key) => {
+        row[key] = key === "leading_cycle" && leadingCycleAtDisplayDate
+          ? leadingCycleAtDisplayDate(date)
+          : toNum(macro[key]);
+      });
       creditCols.forEach((key) => {
         row[key] = interpolatedCredit ? toCreditNum(interpolatedCredit[key]) : null;
       });
@@ -572,7 +613,6 @@ import sharedDataPayload from "./data-payload.mjs";
 
   const marketData = Object.freeze({
     getSeriesColumns,
-    normalizeFearGreedRows,
     copyDisplayNames,
     sanitizePricePayload,
     sanitizeKoreanEquityPricePayload,
@@ -610,7 +650,6 @@ export {
   mergeRowsPreferIncoming,
   mergeRowsPreservingExisting,
   mergeSources,
-  normalizeFearGreedRows,
   normalizeSeries,
   normalizeTickerPricePoints,
   priceDivergenceRatio,

@@ -10,7 +10,14 @@ function finitePositive(value) {
 function normalizePricePoints(points) {
   return (Array.isArray(points) ? points : [])
     .filter((point) => DATE_PATTERN.test(String(point?.date || "")) && finitePositive(point?.close))
-    .map((point) => ({ date: point.date, close: finitePositive(point.close) }))
+    .map((point) => {
+      const volume = finitePositive(point?.volume);
+      return {
+        date: point.date,
+        close: finitePositive(point.close),
+        ...(volume !== null ? { volume } : {}),
+      };
+    })
     .sort((left, right) => left.date.localeCompare(right.date));
 }
 
@@ -20,9 +27,14 @@ export function parseNaverPriceSeries(text) {
     const rawDate = match[1];
     const values = match[2].split(",").map(finitePositive);
     const close = values[3];
+    const volume = values[4];
     const date = `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`;
     if (!DATE_PATTERN.test(date) || close === null) continue;
-    byDate.set(date, { date, close });
+    byDate.set(date, {
+      date,
+      close,
+      ...(volume !== null ? { volume } : {}),
+    });
   }
   return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
 }

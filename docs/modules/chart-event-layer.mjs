@@ -96,7 +96,7 @@
     if (!element?._fullLayout || !Array.isArray(element.data)) return null;
     const tracePredicate = typeof options.tracePredicate === "function"
       ? options.tracePredicate
-      : (trace) => trace?.meta?.isDisclosureTrace;
+      : (trace) => trace?.meta?.overlayKind === "disclosure";
     const traceEntries = element.data
       .map((trace, traceIndex) => ({ trace, traceIndex }))
       .filter(({ trace }) => tracePredicate(trace) && trace.visible !== "legendonly");
@@ -231,8 +231,11 @@
       index[ticker] = Array.from({ length: pointCount }, (_, pointIndex) => {
         const date = String(model.xValues[pointIndex] || "").slice(0, 10);
         const y = model.values[pointIndex];
+        const baseY = Number(model.baseValues?.[pointIndex]);
         const milliseconds = toMilliseconds(date);
-        return date && Number.isFinite(y) && Number.isFinite(milliseconds) ? { date, y, milliseconds } : null;
+        return date && Number.isFinite(y) && Number.isFinite(milliseconds)
+          ? { date, y, baseY: Number.isFinite(baseY) ? baseY : y, milliseconds }
+          : null;
       }).filter(Boolean);
     });
     return index;
@@ -249,7 +252,13 @@
       else high = middle;
     }
     const point = points[low];
-    return point?.date === eventDate ? { date: point.date, y: point.y } : null;
+    return point?.date === eventDate
+      ? {
+        date: point.date,
+        y: point.y,
+        ...(Number.isFinite(point.baseY) ? { baseY: point.baseY } : {}),
+      }
+      : null;
   }
 
   function markerGap(seriesModels, start, end, options = {}) {

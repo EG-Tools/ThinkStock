@@ -23,11 +23,13 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw "Node.js is r
 if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { throw "GitHub CLI is required." }
 
 $ReleasePaths = @(
+  ".codex",
   ".gitattributes",
   "AGENTS.md",
   ".github",
   ".gitignore",
   "README.md",
+  "THINKSTOCK_BOOT_PIPELINE_SPEC.md",
   "deploy_pages.bat",
   "docs",
   "package.json",

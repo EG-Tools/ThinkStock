@@ -217,7 +217,6 @@ import { buildEventMarkerTextFont } from "./chart-render-contract.mjs";
       hovertemplate: undefined,
       meta: {
         overlayKind: "insider",
-        isInsiderTradeTrace: true,
         insiderTradeSide: side,
         pointTickers: matches.map((group) => group.ticker),
         hoverDetailTemplates,

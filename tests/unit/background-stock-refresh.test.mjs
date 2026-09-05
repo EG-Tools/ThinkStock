@@ -31,6 +31,7 @@ function fakeClock(inputPending = () => false) {
     },
   };
   return {
+    listeners: () => [...listeners.keys()],
     now: () => clock,
     pending: () => timers.size,
     dispatch(name) {
@@ -235,7 +236,12 @@ test("custom stock preload shares latest prices and yields between hidden ticker
   assert.deepEqual(loaded.map((item) => item.ticker), ["A.KS", "B.KQ"]);
   assert.deepEqual(loaded.map((item) => item.latestPoints[0].close), [10, 20]);
   assert.equal(checkpoints >= 5, true);
-  assert.deepEqual(result, { failedNames: [], processed: 2, scope: "hidden" });
+  assert.deepEqual(result, {
+    failedNames: [],
+    processed: 2,
+    scope: "hidden",
+    unconfirmedTickers: ["B.KQ"],
+  });
   assert.deepEqual(removed, []);
 });
 
@@ -281,8 +287,8 @@ test("background work waits until pointer activity has been quiet", async () => 
     interactionQuietMs: 250,
     retryDelayMs: 150,
   });
-  clock.dispatch("pointermove");
   scheduler.enqueue("work", async () => calls.push("done"));
+  clock.dispatch("pointermove");
 
   clock.runNext();
   clock.runNext();
@@ -295,6 +301,23 @@ test("background work waits until pointer activity has been quiet", async () => 
   await Promise.resolve();
   assert.deepEqual(calls, ["done"]);
   assert.equal(scheduler.stats().activityDeferrals, 2);
+});
+
+test("background task listeners exist only while scheduler work exists", async () => {
+  const clock = fakeClock();
+  const scheduler = createBackgroundTaskScheduler(clock.scope, { now: clock.now });
+
+  assert.deepEqual(clock.listeners(), []);
+  const task = scheduler.enqueue("work", async () => true);
+  assert.equal(scheduler.stats().lifecycleListenersAttached, true);
+  assert.ok(clock.listeners().includes("pointermove"));
+
+  clock.runNext();
+  clock.runNext();
+  await task;
+
+  assert.equal(scheduler.stats().lifecycleListenersAttached, false);
+  assert.deepEqual(clock.listeners(), []);
 });
 
 test("visible startup preload checks only the latest tail for existing series", async () => {

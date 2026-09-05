@@ -307,7 +307,7 @@ import { syncControl } from "./control-state-view.mjs";
         // The active in-memory view is refreshed first. Updating the static
         // service-worker cache afterwards prepares the next boot without
         // reparsing every seed bundle before the user sees current prices.
-        await options.refreshRuntimeData({ forceNetwork: true });
+        await options.refreshRuntimeData({ forceNetwork: true, reconcileViewport: true });
         if (options.hasServiceWorkerController()) {
           await options.requestServiceWorkerDataRefresh();
         }

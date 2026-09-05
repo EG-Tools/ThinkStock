@@ -3,11 +3,13 @@ import test from "node:test";
 
 import {
   EVENT_MARKER_FONT_FAMILY,
+  assertMainChartRenderPayload,
   assertChartRenderPayload,
   buildEventMarkerTextFont,
   chartRenderPayloadIssue,
   normalizeAuxiliaryChartModel,
   normalizeMainChartModel,
+  mainChartRenderPayloadIssue,
 } from "../../docs/modules/chart-render-contract.mjs";
 
 test("shares one event marker text style contract", () => {
@@ -53,6 +55,21 @@ test("accepts an explicit hidden trace slot without retained point arrays", () =
   }), null);
 });
 
+test("accepts an explicit empty model while visible prices are still loading", () => {
+  const model = normalizeMainChartModel({
+    empty: true,
+    rows: [],
+    allSeries: [],
+    selected: [],
+    seriesModels: [],
+  });
+
+  assert.equal(model.empty, true);
+  assert.deepEqual(model.rows, []);
+  assert.deepEqual(model.seriesModels, []);
+  assert.equal(normalizeMainChartModel({ rows: [{ date: "2026-08-24" }], seriesModels: [] }), null);
+});
+
 test("accepts aligned auxiliary series and rejects one mismatched pair", () => {
   const model = Object.fromEntries([
     ["adrKospi", 2], ["adrKosdaq", 2], ["fearGreed", 1],
@@ -70,5 +87,22 @@ test("shares one light trace and layout contract across chart renderers", () => 
   assert.throws(
     () => assertChartRenderPayload([{ x: [1, 2], y: [2] }], {}),
     /x\/y length mismatch/,
+  );
+});
+
+test("requires every main trace to declare one known overlay kind", () => {
+  const price = {
+    x: ["2026-08-20"],
+    y: [100],
+    meta: { overlayKind: "price", seriesKey: "005930.KS" },
+  };
+  assert.equal(mainChartRenderPayloadIssue([price], {}), "");
+  assert.equal(
+    mainChartRenderPayloadIssue([{ ...price, meta: { seriesKey: "005930.KS" } }], {}),
+    "main chart trace 0 must declare meta.overlayKind",
+  );
+  assert.throws(
+    () => assertMainChartRenderPayload([{ ...price, meta: { overlayKind: "unknown" } }], {}),
+    /unknown overlay kind/,
   );
 });

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { buildMacdOscillator } from "../docs/modules/macd-oscillator.mjs";
 import marketTiming from "../docs/modules/market-timing.mjs";
+import { rebaseSeriesRowsToAvailability } from "../shared/series-timeline-policy.mjs";
 
 const {
   alignAsOf,
@@ -69,8 +70,14 @@ const [adrPayload, macroPayload, creditPayload, crisisPayload] = await Promise.a
 const priceRows = readColumnar("prices.json");
 const adrRows = mergeRows(readColumnar("adr_data.json"), adrPayload.rows || []);
 const macroRows = mergeRows(
-  readColumnar("macro_data.json"),
-  macroPayload.leadingRows || [],
+  rebaseSeriesRowsToAvailability(
+    readColumnar("macro_data.json"),
+    "leading_cycle",
+    { observationCadence: "monthly" },
+  ),
+  rebaseSeriesRowsToAvailability(macroPayload.leadingRows || [], "leading_cycle", {
+    dateBasis: macroPayload.leadingDateBasis,
+  }),
   macroPayload.newsRows || [],
 );
 const creditRows = mergeRows(readColumnar("credit_data.json"), creditPayload.rows || []);

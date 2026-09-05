@@ -75,6 +75,27 @@ test("app data store can suppress semantically unchanged network rows", () => {
   });
 });
 
+test("validated live merges can skip a redundant full-series comparison", () => {
+  let comparisons = 0;
+  const store = createAppDataStore({
+    macroRows: [{ date: "2026-08-28", leading_cycle: 101 }],
+  }, {
+    equalsByKey: {
+      macroRows: () => {
+        comparisons += 1;
+        return false;
+      },
+    },
+  });
+
+  store.set("macroRows", [{ date: "2026-08-29", leading_cycle: 102 }], {
+    assumeChanged: true,
+  });
+
+  assert.equal(comparisons, 0);
+  assert.equal(store.revision("macroRows"), 1);
+});
+
 test("revision bridge maps one data replacement to one persisted component invalidation", () => {
   const store = createAppDataStore();
   const revisions = [];
@@ -93,4 +114,17 @@ test("revision bridge maps one data replacement to one persisted component inval
   assert.deepEqual(revisions, [["macro", "credit"]]);
   assert.equal(refreshes, 1);
   bridge.dispose();
+});
+
+test("app data changes can identify the exact series fields they replaced", () => {
+  const store = createAppDataStore();
+  let received = null;
+  store.subscribe((event) => { received = event; });
+
+  store.set("adrRows", [{ date: "2026-09-04", fear_greed: 32 }], {
+    changedFields: ["fear_greed"],
+  });
+
+  assert.deepEqual(received.changed, ["adrRows"]);
+  assert.deepEqual(received.changedFieldsByKey, { adrRows: ["fear_greed"] });
 });

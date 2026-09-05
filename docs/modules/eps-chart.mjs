@@ -630,7 +630,6 @@
         meta: {
           overlayKind: "eps",
           seriesKey: handleSeriesKey,
-          isEpsTrace: true,
           renderRevision: 4,
           renderFingerprint: `eps:${ticker}:${pointRevision}:${baseRevision}:${scale}:${offset}:${color}:${options.hoverShowPopup ? 1 : 0}`,
           handleLabel: `${labelName(ticker)} EPS`,

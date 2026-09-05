@@ -94,12 +94,15 @@ test("moves only one series marker positions during a live line transform", () =
       {
         x: ["2026-08-01", "2026-08-02"],
         y: [100, 110],
-        meta: { seriesKey: "005930.KS" },
+        meta: { overlayKind: "price", seriesKey: "005930.KS" },
       },
       {
         x: ["2026-08-01", "2026-08-02", "2026-08-02"],
         y: [105, 115, 210],
-        meta: { pointTickers: ["005930.KS", "005930.KS", "000660.KS"] },
+        meta: {
+          overlayKind: "disclosure",
+          pointTickers: ["005930.KS", "005930.KS", "000660.KS"],
+        },
       },
     ],
   };
@@ -131,12 +134,15 @@ test("reuses dated marker bindings instead of rebuilding the full source date ma
   const sourceTrace = {
     x: observedDates,
     y: sourceDates.map((_, index) => index),
-    meta: { seriesKey: "005930.KS" },
+    meta: { overlayKind: "price", seriesKey: "005930.KS" },
   };
   const markerTrace = {
     x: [sourceDates[100], sourceDates[6400]],
     y: [105, 6405],
-    meta: { pointTickers: ["005930.KS", "005930.KS"] },
+    meta: {
+      overlayKind: "disclosure",
+      pointTickers: ["005930.KS", "005930.KS"],
+    },
   };
   const element = { data: [sourceTrace, markerTrace] };
   const first = layout.collectSeriesYDeltaUpdates(element, {
@@ -158,6 +164,48 @@ test("reuses dated marker bindings instead of rebuilding the full source date ma
   assert.ok(sourceDateReads - firstPassReads <= 4);
 });
 
+test("shares one baked marker graph across viewport fitting and live series transforms", () => {
+  const element = {
+    data: [
+      {
+        x: ["2026-08-01", "2026-08-02"],
+        y: [100, 110],
+        meta: { overlayKind: "price", seriesKey: "005930.KS" },
+      },
+      {
+        x: ["2026-08-02"],
+        y: [114],
+        meta: {
+          overlayKind: "disclosure",
+          pointTickers: ["005930.KS"],
+          markerGapFactors: [1],
+        },
+      },
+    ],
+  };
+  const before = layout.markerBindingCacheStats();
+
+  layout.collectViewportAnchoredYUpdates(element, { viewportRange: [0, 200] });
+  const afterViewport = layout.markerBindingCacheStats();
+  layout.collectSeriesYDeltaUpdates(element, {
+    seriesKey: "005930.KS",
+    sourceTraceIndex: 0,
+    nextY: [120, 130],
+  });
+  const afterTransform = layout.markerBindingCacheStats();
+
+  assert.equal(afterViewport.misses, before.misses + 1);
+  assert.equal(afterTransform.hits, afterViewport.hits + 1);
+
+  layout.clearMarkerBindingCache(element);
+  layout.collectSeriesYDeltaUpdates(element, {
+    seriesKey: "005930.KS",
+    sourceTraceIndex: 0,
+    nextY: [120, 130],
+  });
+  assert.equal(layout.markerBindingCacheStats().misses, afterTransform.misses + 1);
+});
+
 test("attaches every event marker to its owning price point during viewport fitting", () => {
   const element = {
     data: [
@@ -170,7 +218,7 @@ test("attaches every event marker to its owning price point during viewport fitt
         x: ["2026-08-01"],
         y: [104],
         meta: {
-          isDisclosureTrace: true,
+          overlayKind: "disclosure",
           pointTickers: ["005930.KS"],
           markerGapFactors: [1],
         },
@@ -179,7 +227,7 @@ test("attaches every event marker to its owning price point during viewport fitt
         x: ["2026-08-02"],
         y: [111.2],
         meta: {
-          isMarketTimingBuyTrace: true,
+          overlayKind: "timing-buy",
           pointTickers: ["005930.KS"],
           markerGapFactors: [-1.1],
         },
@@ -228,7 +276,7 @@ test("reuses baked viewport marker indexes while transformed prices change", () 
     x: [sourceDates[4000]],
     y: [4004],
     meta: {
-      isDisclosureTrace: true,
+      overlayKind: "disclosure",
       pointTickers: ["005930.KS"],
       markerGapFactors: [1],
     },
@@ -248,4 +296,74 @@ test("reuses baked viewport marker indexes while transformed prices change", () 
   assert.deepEqual(result.traceIndexes, [1]);
   assert.deepEqual(result.yUpdates, [[4014]]);
   assert.ok(sourceDateReads - firstPassReads <= 4);
+});
+
+test("keeps an off-window marker anchored when its price point is not sampled", () => {
+  const element = {
+    data: [
+      {
+        x: ["2026-08-10", "2026-08-11"],
+        y: [120, 125],
+        meta: { overlayKind: "price", seriesKey: "005930.KS" },
+      },
+      {
+        x: ["2025-08-01"],
+        y: [96],
+        meta: {
+          overlayKind: "timing-buy",
+          pointTickers: ["005930.KS"],
+          markerGapFactors: [-1],
+          markerAnchorValues: [100],
+        },
+      },
+    ],
+  };
+
+  const result = layout.collectViewportAnchoredYUpdates(element, {
+    viewportRange: [0, 200],
+    gapRatio: 0.02,
+  });
+
+  assert.deepEqual(result.traceIndexes, []);
+  element.data[1].y = [90];
+  const corrected = layout.collectViewportAnchoredYUpdates(element, {
+    viewportRange: [0, 300],
+    gapRatio: 0.02,
+  });
+  assert.deepEqual(corrected.traceIndexes, [1]);
+  assert.deepEqual(corrected.yUpdates, [[94]]);
+});
+
+test("applies the owning price viewport transform to an off-window marker anchor", () => {
+  const element = {
+    data: [
+      {
+        x: ["2026-08-10", "2026-08-11"],
+        y: [90, 110],
+        meta: { overlayKind: "price", seriesKey: "005930.KS" },
+      },
+      {
+        x: ["2025-08-01"],
+        y: [90],
+        meta: {
+          overlayKind: "timing-buy",
+          pointTickers: ["005930.KS"],
+          markerGapFactors: [-1],
+          markerAnchorValues: [80],
+        },
+      },
+    ],
+  };
+
+  const result = layout.collectViewportAnchoredYUpdates(element, {
+    viewportRange: [0, 200],
+    gapRatio: 0.02,
+    seriesUpdates: [{
+      seriesKey: "005930.KS",
+      viewportTransform: { center: 90, viewportScale: 2, seriesScale: 1.5, offset: 4 },
+    }],
+  });
+
+  assert.deepEqual(result.traceIndexes, [1]);
+  assert.deepEqual(result.yUpdates, [[70]]);
 });

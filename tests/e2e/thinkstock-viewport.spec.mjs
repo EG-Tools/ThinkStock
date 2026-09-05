@@ -355,10 +355,10 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
   await expect(page.locator("#epsProgress")).toBeVisible({ timeout: 5000 });
 
   await expect.poll(() => page.locator("#chart").evaluate((element, entryRange) => {
-    const eps = (element.data || []).find((trace) => trace?.meta?.isEpsTrace);
+    const eps = (element.data || []).find((trace) => trace?.meta?.overlayKind === "eps");
     const price = (element.data || []).find((trace) => trace?.meta?.seriesKey === "218410.KQ");
     const grouped = (element.data || []).find((trace) => (
-      trace?.meta?.isGroupedHoverTrace && trace.meta.hoverGroupTicker === "218410.KQ"
+      trace?.meta?.overlayKind === "grouped-hover" && trace.meta.hoverGroupTicker === "218410.KQ"
     ));
     const groupedOwner = (element.data || []).find((trace) => (
       trace?.meta?.isGroupedHoverOwnerTrace
@@ -461,7 +461,7 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
     });
     const initialEpsHoverTarget = await page.locator("#chart").evaluate((element) => {
       const grouped = (element.data || []).find((trace) => (
-        trace?.meta?.isGroupedHoverTrace && trace.meta.hoverGroupTicker === "218410.KQ"
+        trace?.meta?.overlayKind === "grouped-hover" && trace.meta.hoverGroupTicker === "218410.KQ"
       ));
       const pointIndex = grouped?.x?.indexOf("2026-03-31") ?? -1;
       if (!grouped || pointIndex < 0) return null;
@@ -522,7 +522,7 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
 
     const priceHoverTarget = await page.locator("#chart").evaluate((element) => {
       const grouped = (element.data || []).find((trace) => (
-        trace?.meta?.isGroupedHoverTrace && trace.meta.hoverGroupTicker === "218410.KQ"
+        trace?.meta?.overlayKind === "grouped-hover" && trace.meta.hoverGroupTicker === "218410.KQ"
       ));
       const eps = (element.data || []).find((trace) => trace?.meta?.seriesKey === "eps:218410.KQ");
       const epsDates = new Set(eps?.x || []);
@@ -582,7 +582,7 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
     await waitForChartRenderIdle(page);
     const hoverTarget = await page.locator("#chart").evaluate((element) => {
       const grouped = (element.data || []).find((trace) => (
-        trace?.meta?.isGroupedHoverTrace && trace.meta.hoverGroupTicker === "218410.KQ"
+        trace?.meta?.overlayKind === "grouped-hover" && trace.meta.hoverGroupTicker === "218410.KQ"
       ));
       const pointIndex = grouped?.x?.indexOf("2026-06-30") ?? -1;
       if (!grouped || pointIndex < 0) return null;
@@ -625,7 +625,7 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
     await waitForChartRenderIdle(page);
     const historicalEpsHoverTarget = await page.locator("#chart").evaluate((element) => {
       const grouped = (element.data || []).find((trace) => (
-        trace?.meta?.isGroupedHoverTrace && trace.meta.hoverGroupTicker === "218410.KQ"
+        trace?.meta?.overlayKind === "grouped-hover" && trace.meta.hoverGroupTicker === "218410.KQ"
       ));
       const pointIndex = grouped?.x?.indexOf("2024-03-31") ?? -1;
       if (!grouped || pointIndex < 0) return null;
@@ -664,7 +664,7 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
     expect(epsPointerPerf.p95PointerMove).toBeLessThan(DESKTOP_PERF_BUDGET.maxP95PointerMove);
 
     const dragTarget = await page.locator("#chart").evaluate((element) => {
-      const trace = (element.data || []).find((candidate) => candidate?.meta?.isEpsTrace);
+      const trace = (element.data || []).find((candidate) => candidate?.meta?.overlayKind === "eps");
       const [rangeStart, rangeEnd] = (element._fullLayout?.xaxis?.range || []).map(Date.parse);
       const rangeMidpoint = (rangeStart + rangeEnd) / 2;
       const pointIndex = (trace?.x || []).reduce((bestIndex, date, index) => {
@@ -699,7 +699,7 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
     await page.mouse.move(dragTarget.x, dragTarget.y + 28, { steps: 4 });
     await page.mouse.up();
     await expect.poll(() => page.locator("#chart").evaluate((element, target) => {
-      const trace = (element.data || []).find((candidate) => candidate?.meta?.isEpsTrace);
+      const trace = (element.data || []).find((candidate) => candidate?.meta?.overlayKind === "eps");
       return Math.abs(Number(trace?.y?.[target.pointIndex]) - Number(target.before));
     }, dragTarget)).toBeGreaterThan(0.1);
     expect(await page.evaluate(() => window.ThinkStockE2E.getChartRenderGeneration()))
@@ -711,7 +711,7 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
       window.ThinkStockE2E.getSeriesTransforms()
     ))).toEqual({ offsets: {}, scales: {} });
     await expect.poll(() => page.locator("#chart").evaluate((element, target) => {
-      const trace = (element.data || []).find((candidate) => candidate?.meta?.isEpsTrace);
+      const trace = (element.data || []).find((candidate) => candidate?.meta?.overlayKind === "eps");
       return Math.abs(Number(trace?.y?.[target.pointIndex]) - Number(target.before));
     }, dragTarget)).toBeLessThan(0.1);
   }
@@ -719,14 +719,14 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
   await page.locator("#epsToggle").click();
   await expect(page.locator("#epsToggle")).not.toHaveClass(/is-active/);
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
-    (element.data || []).filter((trace) => trace?.meta?.isEpsTrace).length
+    (element.data || []).filter((trace) => trace?.meta?.overlayKind === "eps").length
   ))).toBe(0);
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const actualEnd = Date.parse(element._fullLayout.xaxis.range[1]);
     const observedEnd = Math.max(...(element.data || [])
       .filter((trace) => trace?.meta?.seriesKey === "218410.KQ"
-        && !trace?.meta?.isEpsTrace
-        && !trace?.meta?.isAiForecastTrace)
+        && trace?.meta?.overlayKind !== "eps"
+        && trace?.meta?.overlayKind !== "ai-scenario")
       .flatMap((trace) => trace.x || [])
       .map(Date.parse)
       .filter(Number.isFinite));
@@ -736,8 +736,8 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
   const quickPresetExpectation = await page.locator("#chart").evaluate((element) => {
     const observedEnd = Math.max(...(element.data || [])
       .filter((trace) => trace?.meta?.seriesKey === "218410.KQ"
-        && !trace?.meta?.isEpsTrace
-        && !trace?.meta?.isAiForecastTrace)
+        && trace?.meta?.overlayKind !== "eps"
+        && trace?.meta?.overlayKind !== "ai-scenario")
       .flatMap((trace) => trace.x || [])
       .map(Date.parse)
       .filter(Number.isFinite));
@@ -751,7 +751,7 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
   await expect.poll(() => page.locator("#chart").evaluate((element, expected) => {
     const range = element._fullLayout.xaxis.range.map(Date.parse);
     const epsEnd = Math.max(...(element.data || [])
-      .filter((trace) => trace?.meta?.isEpsTrace)
+      .filter((trace) => trace?.meta?.overlayKind === "eps")
       .flatMap((trace) => trace.x || [])
       .map(Date.parse)
       .filter(Number.isFinite));
@@ -780,10 +780,10 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
       .flatMap((trace) => (trace.x || []).map(Date.parse).filter(Number.isFinite)));
     return {
       range,
-      aiCount: (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length,
-      epsCount: (element.data || []).filter((trace) => trace?.meta?.isEpsTrace).length,
-      aiEnd: traceEnd((trace) => trace?.meta?.isAiForecastScenarioTrace),
-      epsEnd: traceEnd((trace) => trace?.meta?.isEpsTrace),
+      aiCount: (element.data || []).filter((trace) => trace?.meta?.overlayKind === "ai-scenario").length,
+      epsCount: (element.data || []).filter((trace) => trace?.meta?.overlayKind === "eps").length,
+      aiEnd: traceEnd((trace) => trace?.meta?.overlayKind === "ai-scenario"),
+      epsEnd: traceEnd((trace) => trace?.meta?.overlayKind === "eps"),
     };
   });
   const preservesHistoryAndFuture = (state, historyStart, futureEnd) => (
@@ -840,7 +840,7 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
   await page.evaluate((range) => window.ThinkStockE2E.setViewportRangeForTest(range), historicalRange);
   await page.locator("#epsToggle").click();
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
-    (element.data || []).filter((trace) => trace?.meta?.isEpsTrace).length
+    (element.data || []).filter((trace) => trace?.meta?.overlayKind === "eps").length
   )), { timeout: 30000 }).toBeGreaterThan(0);
   await expect.poll(() => page.locator("#chart").evaluate((element, expected) => {
     const actual = element._fullLayout.xaxis.range.map(Date.parse);
@@ -848,7 +848,7 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
   }, historicalRange)).toBeLessThanOrEqual(1000);
   await page.locator("#epsToggle").click();
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
-    (element.data || []).filter((trace) => trace?.meta?.isEpsTrace).length
+    (element.data || []).filter((trace) => trace?.meta?.overlayKind === "eps").length
   ))).toBe(0);
   await expect.poll(() => page.locator("#chart").evaluate((element, expected) => {
     const actual = element._fullLayout.xaxis.range.map(Date.parse);
@@ -858,7 +858,7 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(page.locator("#epsToggle")).not.toHaveClass(/is-active/);
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
-    (element.data || []).filter((trace) => trace?.meta?.isEpsTrace).length
+    (element.data || []).filter((trace) => trace?.meta?.overlayKind === "eps").length
   ))).toBe(0);
 });
 
@@ -870,7 +870,7 @@ test("main chart allows more than five visible stocks and indices", async ({ pag
   const visibleMainSeriesCount = () => page.locator("#chart").evaluate((element) => (
     (element.data || []).filter((trace) => (
       trace?.meta?.seriesKey
-      && !trace?.meta?.isAiForecastTrace
+      && trace?.meta?.overlayKind !== "ai-scenario"
       && trace.visible !== "legendonly"
     )).length
   ));
@@ -961,7 +961,7 @@ test("main information rows follow activation order and stack long macro values"
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
 
   const hoverState = () => page.locator("#chart").evaluate((element) => {
-    const grouped = (element.data || []).filter((trace) => trace?.meta?.isGroupedHoverTrace);
+    const grouped = (element.data || []).filter((trace) => trace?.meta?.overlayKind === "grouped-hover");
     return {
       order: grouped.map((trace) => trace.meta.hoverGroupTicker),
       text: Object.fromEntries(grouped.map((trace) => [
@@ -978,7 +978,7 @@ test("main information rows follow activation order and stack long macro values"
   await expect.poll(hoverState).toMatchObject({ order: ["^KS11", "leading_cycle"] });
   await expect(page.locator('[data-series="leading_cycle"]')).toHaveAttribute(
     "title",
-    "한국은행 선행지수 순환변동치\n2달 후행",
+    "한국은행 선행지수 순환변동치\n공개일 기준",
   );
   await expect(page.locator('[data-series="t10y1y"]')).toHaveAttribute(
     "title",
@@ -1009,6 +1009,109 @@ test("main information rows follow activation order and stack long macro values"
   await waitForChartRenderIdle(page);
   state = await hoverState();
   expect(state.order).toEqual(["leading_cycle", "^KS11"]);
+});
+
+test("main information popup follows the closest price line without reordering rows", async ({ page, isMobile }) => {
+  test.skip(isMobile, "desktop pointer hover regression");
+  await stubExternalRefreshes(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 12,
+      autoChartReset: true,
+      hoverShowPopup: true,
+      customStocks: [],
+      mainHoverSeriesOrder: ["^KS11", "t10y1y"],
+      hiddenSeries: [
+        "leading_cycle",
+        "us_credit_spread",
+        "^KQ11",
+        "customer_deposit",
+        "kospi_credit",
+        "kosdaq_credit",
+      ],
+    }));
+  });
+  await installDataRoutes(page, { includeMacroSpreads: true });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await waitForChartRenderIdle(page);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).filter((trace) => trace?.meta?.overlayKind === "grouped-hover")
+      .map((trace) => trace.meta.hoverGroupTicker)
+  ))).toEqual(["^KS11", "t10y1y"]);
+
+  const target = await page.locator("#chart").evaluate((element) => {
+    const traces = Object.fromEntries((element.data || [])
+      .filter((trace) => trace?.meta?.overlayKind === "price")
+      .map((trace) => [trace.meta.seriesKey, trace]));
+    const first = traces["^KS11"];
+    const second = traces.t10y1y;
+    const rect = element.getBoundingClientRect();
+    const xAxis = element._fullLayout.xaxis;
+    const yAxis = element._fullLayout.yaxis;
+    const secondByDate = new Map(second.x.map((date, index) => [String(date), index]));
+    return first.x.reduce((best, date, firstIndex) => {
+      const secondIndex = secondByDate.get(String(date));
+      if (!Number.isInteger(secondIndex)) return best;
+      const localX = Number(xAxis._offset) + Number(xAxis.d2p(date));
+      if (localX < Number(xAxis._offset) + 120
+        || localX > Number(xAxis._offset) + Number(xAxis._length) - 140) return best;
+      const firstLocalY = Number(yAxis._offset) + Number(yAxis.d2p(first.y[firstIndex]));
+      const secondLocalY = Number(yAxis._offset) + Number(yAxis.d2p(second.y[secondIndex]));
+      const separation = Math.abs(firstLocalY - secondLocalY);
+      return separation > Number(best?.separation || -1) ? {
+        clientX: rect.left + localX,
+        firstClientY: rect.top + firstLocalY,
+        secondClientY: rect.top + secondLocalY,
+        firstLocalY,
+        secondLocalY,
+        separation,
+      } : best;
+    }, null);
+  });
+  expect(target.separation).toBeGreaterThan(12);
+
+  const hoverAndMeasure = async (clientY) => {
+    await page.mouse.move(target.clientX - 3, clientY);
+    await page.mouse.move(target.clientX, clientY);
+    await expect(page.locator("#chart")).not.toHaveClass(/is-hover-waiting/);
+    const popup = page.locator(
+      "#chart .hoverlayer > g.legend, #chart .hoverlayer > g.hovertext",
+    ).first();
+    await expect(popup).toBeVisible({ timeout: 3000 });
+    return popup.evaluate((element) => {
+      const popupRect = element.getBoundingClientRect();
+      return {
+        anchorLocalY: Number(element.getAttribute("data-thinkstock-anchor-local-y")),
+        popupTop: popupRect.top,
+        text: element.textContent || "",
+      };
+    });
+  };
+
+  await expect.poll(() => page.evaluate((point) => (
+    window.ThinkStockE2E.getLineDragTargetAt(point.clientX, point.secondClientY)
+  ), target)).toMatchObject({ seriesKey: "t10y1y" });
+  const secondPopup = await hoverAndMeasure(target.secondClientY);
+  expect(Math.abs(secondPopup.anchorLocalY - target.secondLocalY)).toBeLessThan(3);
+  expect(Math.abs(secondPopup.popupTop - target.secondClientY))
+    .toBeLessThan(Math.abs(secondPopup.popupTop - target.firstClientY));
+  expect(secondPopup.text.indexOf("코스피")).toBeLessThan(
+    secondPopup.text.indexOf("미국채 10년/1년 금리차"),
+  );
+
+  const pointerOffset = Math.min(6, target.separation / 4);
+  const offsetPopup = await hoverAndMeasure(target.secondClientY + pointerOffset);
+  expect(Math.abs(
+    offsetPopup.anchorLocalY - (target.secondLocalY + pointerOffset),
+  )).toBeLessThan(3);
+
+  await expect.poll(() => page.evaluate((point) => (
+    window.ThinkStockE2E.getLineDragTargetAt(point.clientX, point.firstClientY)
+  ), target)).toMatchObject({ seriesKey: "^KS11" });
+  const firstPopup = await hoverAndMeasure(target.firstClientY);
+  expect(Math.abs(firstPopup.anchorLocalY - target.firstLocalY)).toBeLessThan(3);
+  expect(Math.abs(firstPopup.popupTop - target.firstClientY))
+    .toBeLessThan(Math.abs(firstPopup.popupTop - target.secondClientY));
 });
 
 test("auto scale fits every active macro line before and after a fifth series joins", async ({ page }) => {
@@ -1632,7 +1735,7 @@ test("ten visible stocks remain interactive and the eleventh starts disabled", a
     new Set((element.data || [])
       .filter((trace) => /^\d{6}\.(KS|KQ)$/.test(trace?.meta?.seriesKey || "")
         && trace.visible !== "legendonly"
-        && !trace?.meta?.isAiForecastTrace)
+        && trace?.meta?.overlayKind !== "ai-scenario")
       .map((trace) => trace.meta.seriesKey)).size
   ));
   await expect.poll(visibleStockCount, { timeout: 20000 }).toBe(10);
@@ -1675,6 +1778,9 @@ test("mobile stock remove control keeps a forgiving touch target", async ({ page
 
 test("re-enabling a recently hidden series reuses the chart model", async ({ page }) => {
   await installDataRoutes(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({ showRecessionSignals: false }));
+  });
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   const kosdaqToggle = page.locator('[data-series="^KQ11"]');
@@ -2195,7 +2301,7 @@ test("range presets end at the latest date and the latest control slides there",
       trace?.meta?.seriesKey
       && trace.visible !== "legendonly"
       && String(trace.mode || "").includes("lines")
-      && !trace?.meta?.isAiForecastTrace
+      && trace?.meta?.overlayKind !== "ai-scenario"
       && !String(trace?.meta?.seriesKey || "").startsWith("eps:")
     ));
     const counts = visibleLines.map((trace) => (trace.x || []).reduce((count, date, index) => {
@@ -2395,7 +2501,7 @@ test("chart dates stay synchronized while desktop drag and iPhone pinch zoom", a
     await expect.poll(() => page.locator("#chart").evaluate((element) => {
       const range = element._fullLayout.xaxis.range.map(Date.parse);
       const dates = (element.data || [])
-        .filter((trace) => trace?.meta?.seriesKey && !trace?.meta?.isAiForecastTrace)
+        .filter((trace) => trace?.meta?.seriesKey && trace?.meta?.overlayKind !== "ai-scenario")
         .flatMap((trace) => trace.x || [])
         .map(Date.parse)
         .filter(Number.isFinite);
@@ -2581,7 +2687,7 @@ test("chart dates stay synchronized while desktop drag and iPhone pinch zoom", a
     await expect.poll(() => page.locator("#chart").evaluate((element) => {
       const range = element._fullLayout.xaxis.range.map(Date.parse);
       const dates = (element.data || [])
-        .filter((trace) => trace?.meta?.seriesKey && !trace?.meta?.isAiForecastTrace)
+        .filter((trace) => trace?.meta?.seriesKey && trace?.meta?.overlayKind !== "ai-scenario")
         .flatMap((trace) => trace.x || [])
         .map(Date.parse)
         .filter(Number.isFinite);
@@ -2653,7 +2759,7 @@ test("chart dates stay synchronized while desktop drag and iPhone pinch zoom", a
     await expect.poll(() => page.locator("#chart").evaluate((element) => {
       const range = element._fullLayout.xaxis.range.map(Date.parse);
       const dates = (element.data || [])
-        .filter((trace) => trace?.meta?.seriesKey && !trace?.meta?.isAiForecastTrace)
+        .filter((trace) => trace?.meta?.seriesKey && trace?.meta?.overlayKind !== "ai-scenario")
         .flatMap((trace) => trace.x || [])
         .map(Date.parse)
         .filter(Number.isFinite);
@@ -2782,16 +2888,18 @@ test("desktop wheel anchors the latest edge and keeps pointer anchoring in histo
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const range = element._fullLayout.xaxis.range.map(Date.parse);
     const dates = (element.data || [])
-      .filter((trace) => trace?.meta?.seriesKey && !trace?.meta?.isAiForecastTrace)
+      .filter((trace) => trace?.meta?.seriesKey && trace?.meta?.overlayKind !== "ai-scenario")
       .flatMap((trace) => trace.x || [])
       .map(Date.parse)
       .filter(Number.isFinite);
     return Math.abs(range[1] - Math.max(...dates));
   })).toBeLessThanOrEqual(1000);
 
+  await page.evaluate(() => window.ThinkStockE2E.loadHistoricalDataForTest());
+  await waitForChartRenderIdle(page);
   const fullRange = await page.locator("#chart").evaluate((element) => {
     const traces = (element.data || [])
-      .filter((trace) => trace?.meta?.seriesKey && !trace?.meta?.isAiForecastTrace);
+      .filter((trace) => trace?.meta?.seriesKey && trace?.meta?.overlayKind !== "ai-scenario");
     const timestamps = traces.flatMap((trace) => trace.x || [])
       .map((value) => Date.parse(value)).filter(Number.isFinite);
     const starts = traces.map((trace) => Number(trace?.meta?.fullDataStartMs)).filter(Number.isFinite);
@@ -2821,7 +2929,7 @@ test("desktop wheel anchors the latest edge and keeps pointer anchoring in histo
 
   const historicalRange = await page.locator("#chart").evaluate((element, pointerRatio) => {
     const timestamps = (element.data || [])
-      .filter((trace) => trace?.meta?.seriesKey && !trace?.meta?.isAiForecastTrace)
+      .filter((trace) => trace?.meta?.seriesKey && trace?.meta?.overlayKind !== "ai-scenario")
       .flatMap((trace) => trace.x || [])
       .map(Date.parse)
       .filter(Number.isFinite);
@@ -2900,6 +3008,84 @@ test("one wheel input schedules one linked viewport target", async ({ page, isMo
   ));
 
   expect(after - before).toBe(1);
+});
+
+test("the first desktop zoom-out uses the loaded recent window before history finishes", async ({ page, isMobile }) => {
+  test.skip(isMobile, "Mouse wheel behavior is desktop-only.");
+  await installDataRoutes(page);
+  await page.route("**/data/*_history.json*", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    await route.fallback();
+  });
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 6,
+      showRecessionSignals: false,
+      hiddenSeries: [
+        "leading_cycle",
+        "t10y1y",
+        "us_credit_spread",
+        "^KQ11",
+        "customer_deposit",
+        "kospi_credit",
+        "kosdaq_credit",
+      ],
+    }));
+  });
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+
+  const chart = page.locator("#chart");
+  const initialSpan = await chart.evaluate((element) => {
+    const range = element._fullLayout.xaxis.range.map(Date.parse);
+    return range[1] - range[0];
+  });
+  const wheelPoint = await chart.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const axis = element._fullLayout.xaxis;
+    return rect.left + axis._offset + (axis._length * 0.5);
+  });
+
+  await chart.dispatchEvent("wheel", { deltaY: 120, clientX: wheelPoint });
+  await expect.poll(() => chart.evaluate((element) => {
+    const range = element._fullLayout.xaxis.range.map(Date.parse);
+    return range[1] - range[0];
+  }), { timeout: 1000 }).toBeGreaterThan(initialSpan * 1.1);
+});
+
+test("rapid wheel zoom-in keeps accumulating while chart updates are still pending", async ({ page, isMobile }) => {
+  test.skip(isMobile, "Mouse wheel behavior is desktop-only.");
+  await installDataRoutes(page);
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await waitForChartRenderIdle(page);
+
+  const initialSpan = await page.locator("#chart").evaluate((element) => {
+    const range = element._fullLayout.xaxis.range.map(Date.parse);
+    const rect = element.getBoundingClientRect();
+    const axis = element._fullLayout.xaxis;
+    const clientX = rect.left + axis._offset + (axis._length * 0.5);
+    const clientY = rect.top + element._fullLayout.yaxis._offset + 20;
+    for (let index = 0; index < 10; index += 1) {
+      element.dispatchEvent(new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        clientX,
+        clientY,
+        deltaY: -120,
+      }));
+    }
+    return range[1] - range[0];
+  });
+
+  await expect.poll(() => page.evaluate(() => {
+    const rangeSync = window.ThinkStockE2E.getChartWorkerStats().rangeSync;
+    return Boolean(rangeSync && !rangeSync.pending && !rangeSync.running);
+  })).toBe(true);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const range = element._fullLayout.xaxis.range.map(Date.parse);
+    return range[1] - range[0];
+  })).toBeLessThan(initialSpan * 0.2);
 });
 
 test("desktop main-chart drag commits the same range to auxiliary charts", async ({ page, isMobile }) => {
@@ -3173,11 +3359,8 @@ test("restored chart pans immediately without a toggle or zoom warm-up", async (
   };
 
   let previousStart = await dragEarlier(initial.view[0]);
-  await page.evaluate(() => window.ThinkStockE2E.loadHistoricalDataForTest());
-  await expect.poll(() => page.locator("#chart").evaluate((element) => {
-    const trace = (element.data || []).find((item) => item?.meta?.seriesKey === "^KS11");
-    return Math.min(...(trace?.x || []).map(Date.parse).filter(Number.isFinite));
-  })).toBeLessThan(initial.data[0]);
+  expect(await page.evaluate(() => window.ThinkStockE2E.loadHistoricalDataForTest())).toBe(true);
+  await waitForChartRenderIdle(page);
 
   // Cross the initially bundled range without requiring a zoom or visibility toggle.
   for (let index = 0; index < 7; index += 1) {

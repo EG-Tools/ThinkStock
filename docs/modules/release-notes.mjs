@@ -3,6 +3,16 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.33",
+      date: "2026.09.05",
+      items: Object.freeze([
+        "보조차트 OFF 상태의 계산·데이터 복사 제거",
+        "보조지표 최신 확인과 병합 절차 통일",
+        "병렬 갱신 중 서로 다른 최신값 보존",
+        "일반 실행의 불필요한 백그라운드 성능 측정 제거",
+      ]),
+    }),
+    Object.freeze({
       version: "3.32",
       date: "2026.09.01",
       items: Object.freeze([

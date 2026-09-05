@@ -12,7 +12,9 @@ test("release script includes shared rules and reproducible local launch helpers
   const source = await readFile(new URL("../../scripts/release_pages.ps1", import.meta.url), "utf8");
   assert.doesNotMatch(source, /"add", "-A"/);
   assert.match(source, /"\.gitattributes"/);
+  assert.match(source, /"\.codex"/);
   assert.match(source, /"AGENTS\.md"/);
+  assert.match(source, /"THINKSTOCK_BOOT_PIPELINE_SPEC\.md"/);
   assert.match(source, /"run_local_iphone13promax\.bat"/);
   assert.match(source, /"scripts"/);
   assert.doesNotMatch(source, /:\(exclude\)scripts\/resize_preview_window\.ps1/);
@@ -107,6 +109,6 @@ test("WebKit plan keeps full iPhone coverage without duplicating non-visual desk
   const packageJson = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
 
   assert.match(config, /name: "webkit",[\s\S]*testMatch: \/thinkstock-\.\*\\\.spec\\\.mjs\//);
-  assert.match(config, /name: "webkit-desktop",[\s\S]*testMatch: \/thinkstock-viewport\\\.spec\\\.mjs\//);
+  assert.match(config, /name: "webkit-desktop",[\s\S]*testMatch: \/thinkstock-\(\?:viewport\|ai-desktop\)\\\.spec\\\.mjs\//);
   assert.match(packageJson.scripts["test:webkit:built"], /--workers=1/);
 });

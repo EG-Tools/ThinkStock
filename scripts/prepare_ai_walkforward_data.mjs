@@ -21,6 +21,7 @@ import {
 } from "../shared/dart-financial-history.mjs";
 import { mergeDatedSeriesRows } from "../shared/series-integrity.mjs";
 import { isKoreanMarketPricePoint } from "../shared/market-calendar.mjs";
+import { rebaseSeriesRowsToAvailability } from "../shared/series-timeline-policy.mjs";
 import {
   buildCrisisSignalRows,
   fetchCrisisSignalSeries,
@@ -350,7 +351,9 @@ async function gatewayRows(endpoint, token) {
 
 function macroRowsFromPayload(payload) {
   return mergeRows(
-    payload?.leadingRows,
+    rebaseSeriesRowsToAvailability(payload?.leadingRows, "leading_cycle", {
+      dateBasis: payload?.leadingDateBasis,
+    }),
     payload?.newsRows,
     payload?.policyRateRows,
     payload?.tradeRows,
@@ -928,6 +931,7 @@ async function prepareContext(prices) {
     "thinkstock-ai-walkforward-context-v4",
     "thinkstock-ai-walkforward-context-v5",
     "thinkstock-ai-walkforward-context-v6",
+    "thinkstock-ai-walkforward-context-v7",
   ].includes(existing?.format)) {
     const missingAnalysisTickers = requiredAnalysisTickers.filter((ticker) => (
       !existing.analysisByTicker?.[ticker]?.snapshots?.length
@@ -955,8 +959,13 @@ async function prepareContext(prices) {
     );
     const payload = {
       ...existing,
-      format: "thinkstock-ai-walkforward-context-v6",
+      format: "thinkstock-ai-walkforward-context-v7",
       generatedAt: new Date().toISOString(),
+      macroRows: rebaseSeriesRowsToAvailability(existing.macroRows, "leading_cycle", {
+        dateBasis: existing.leadingDateBasis,
+        observationCadence: existing.leadingDateBasis ? undefined : "monthly",
+      }),
+      leadingDateBasis: "availability",
       crisisRows: mergeRows(existing.crisisRows, vkospiRows),
       analysisByTicker,
       disclosuresByTicker,
@@ -995,9 +1004,15 @@ async function prepareContext(prices) {
     env.DART_API_KEY,
   );
   const payload = {
-    format: "thinkstock-ai-walkforward-context-v6",
+    format: "thinkstock-ai-walkforward-context-v7",
     generatedAt: new Date().toISOString(),
-    macroRows: mergeRows(rowsFromColumnar(macroFile), macroRowsFromPayload(gatewayMacro)),
+    macroRows: mergeRows(
+      rebaseSeriesRowsToAvailability(rowsFromColumnar(macroFile), "leading_cycle", {
+        observationCadence: "monthly",
+      }),
+      macroRowsFromPayload(gatewayMacro),
+    ),
+    leadingDateBasis: "availability",
     creditRows: mergeRows(rowsFromColumnar(creditFile), gatewayCredit),
     auxiliaryRows: mergeRows(rowsFromColumnar(adrFile)),
     crisisRows: mergeRows(gatewayCrisisRows, directCrisisRows, vkospiRows),

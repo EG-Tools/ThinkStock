@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import macdOscillator from "../docs/modules/macd-oscillator.mjs";
 import marketTiming from "../docs/modules/market-timing.mjs";
+import { rebaseSeriesRowsToAvailability } from "../shared/series-timeline-policy.mjs";
 
 function columnarRows(filename) {
   const payload = JSON.parse(fs.readFileSync(new URL(`../docs/data/${filename}`, import.meta.url), "utf8"));
@@ -25,7 +26,11 @@ for (const indexKey of ["^KS11", "^KQ11"]) {
     prices: macd.prices,
     oscillator: macd.normalized,
     adrRows: columnarRows("adr_data.json"),
-    macroRows: columnarRows("macro_data.json"),
+    macroRows: rebaseSeriesRowsToAvailability(
+      columnarRows("macro_data.json"),
+      "leading_cycle",
+      { observationCadence: "monthly" },
+    ),
     creditRows: columnarRows("credit_data.json"),
   });
 

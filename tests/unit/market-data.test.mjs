@@ -2,24 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import marketData from "../../docs/modules/market-data.mjs";
 
-test("normalizes full fear-greed history and rejects invalid rows", () => {
-  assert.deepEqual(marketData.normalizeFearGreedRows({
-    rows: [
-      { date: "2026-08-12", score: 36 },
-      { date: "2026-08-11", score: "42" },
-      { date: "2026-08-10", score: 101 },
-    ],
-  }), [
-    { date: "2026-08-11", fear_greed: 42 },
-    { date: "2026-08-12", fear_greed: 36 },
-  ]);
-  assert.deepEqual(
-    marketData.normalizeFearGreedRows({ updated: "2026-08-13", score: 55 }),
-    [{ date: "2026-08-13", fear_greed: 55 }],
-  );
-});
-
-
 test("merges new dates and fills gaps without replacing cached values", () => {
   const merged = marketData.mergeRowsPreservingExisting(
     [{ date: "2026-01-01", AAA: 100, BBB: null }],
@@ -236,6 +218,44 @@ test("keeps the latest monthly macro value until the next release", () => {
       .map((row) => row.leading_cycle),
     [105.61290322580645, 105.7],
   );
+});
+
+test("keeps the last published leading-cycle value between release dates", () => {
+  const rows = marketData.buildDenseMacroRows([
+    { date: "2026-08-01", leading_cycle: 104.8 },
+    { date: "2026-09-01", leading_cycle: 104.2 },
+  ], ["2026-08-01", "2026-08-15", "2026-08-31", "2026-09-01"], {
+    stepColumns: ["leading_cycle"],
+  });
+
+  assert.deepEqual(rows.map((row) => row.leading_cycle), [104.8, 104.8, 104.8, 104.2]);
+});
+
+test("smooths publication-safe leading-cycle steps only in chart rows", () => {
+  const macroRows = [
+    { date: "2025-10-01", leading_cycle: 99.8 },
+    { date: "2025-10-16", leading_cycle: 99.8 },
+    { date: "2025-10-30", leading_cycle: 99.8 },
+    { date: "2025-11-01", leading_cycle: 99.7 },
+    { date: "2025-11-15", leading_cycle: 99.7 },
+    { date: "2025-12-01", leading_cycle: 99.6 },
+  ];
+  const result = marketData.mergeSources({
+    priceRows: macroRows.map(({ date }) => ({ date, AAA: 100 })),
+    macroRows,
+    start: "2025-10-01",
+    end: "2025-12-01",
+  });
+
+  assert.equal(result.rows[0].leading_cycle, 99.8);
+  assert.ok(result.rows[1].leading_cycle < 99.8);
+  assert.ok(result.rows[1].leading_cycle > 99.7);
+  assert.ok(result.rows[2].leading_cycle < result.rows[1].leading_cycle);
+  assert.equal(result.rows[3].leading_cycle, 99.7);
+  assert.ok(result.rows[4].leading_cycle < 99.7);
+  assert.ok(result.rows[4].leading_cycle > 99.6);
+  assert.equal(result.rows[5].leading_cycle, 99.6);
+  assert.deepEqual(macroRows.map((row) => row.leading_cycle), [99.8, 99.8, 99.8, 99.7, 99.7, 99.6]);
 });
 
 test("ends each macro series at its own latest observation by default", () => {

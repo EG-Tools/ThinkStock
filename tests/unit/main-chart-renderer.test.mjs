@@ -11,11 +11,11 @@ function trace(seriesKey, values = [1, 2]) {
     mode: "lines",
     x: ["2026-01-01", "2026-01-02"],
     y: values,
-    meta: { seriesKey },
+    meta: { overlayKind: "price", seriesKey },
   };
 }
 
-test("classifies chart overlays through one compatibility contract", () => {
+test("classifies chart overlays through one explicit metadata contract", () => {
   assert.deepEqual(renderer.chartOverlayDescriptor(trace("005930.KS")), {
     adjustable: true,
     event: false,
@@ -28,13 +28,13 @@ test("classifies chart overlays through one compatibility contract", () => {
   });
   const eps = {
     ...trace("eps:005930.KS"),
-    meta: { overlayKind: "eps", seriesKey: "eps:005930.KS", isEpsTrace: true },
+    meta: { overlayKind: "eps", seriesKey: "eps:005930.KS" },
   };
   assert.equal(renderer.chartOverlayDescriptor(eps).adjustable, true);
   assert.equal(renderer.chartOverlayDescriptor(eps).hoverPriority, 10);
   assert.equal(renderer.chartOverlayDescriptor(eps).rangeRole, "future");
   assert.equal(renderer.traceIdentity(eps), "series:eps:005930.KS");
-  const disclosure = { meta: { overlayKind: "disclosure", isDisclosureTrace: true } };
+  const disclosure = { meta: { overlayKind: "disclosure" } };
   assert.equal(renderer.chartOverlayDescriptor(disclosure).event, true);
   assert.equal(renderer.chartOverlayDescriptor(disclosure).hoverPriority, 20);
   assert.equal(renderer.chartOverlayDescriptor(disclosure).rangeRole, "none");
@@ -45,11 +45,11 @@ test("selects visible range-bearing traces through the overlay contract", () => 
   const price = trace("005930.KS");
   const eps = {
     ...trace("eps:005930.KS"),
-    meta: { overlayKind: "eps", seriesKey: "eps:005930.KS", isEpsTrace: true },
+    meta: { overlayKind: "eps", seriesKey: "eps:005930.KS" },
   };
   const disclosure = {
     visible: true,
-    meta: { overlayKind: "disclosure", isDisclosureTrace: true },
+    meta: { overlayKind: "disclosure" },
   };
   const hiddenPrice = { ...trace("000660.KS"), visible: "legendonly" };
 
@@ -68,7 +68,7 @@ test("builds one immediate visibility update for every trace owned by a series",
     trace("A"),
     { meta: { overlayKind: "eps", seriesKey: "eps:A" } },
     { meta: { overlayKind: "ai-scenario", seriesKey: "A" } },
-    { meta: { overlayKind: "disclosure", isDisclosureTrace: true } },
+    { meta: { overlayKind: "disclosure" } },
     trace("B"),
   ];
 
@@ -100,7 +100,6 @@ test("hides only one series inside shared event-marker traces", () => {
       x: ["2026-08-20", "2026-08-21", "2026-08-22"],
       meta: {
         overlayKind: "timing-buy",
-        isMarketTimingBuyTrace: true,
         pointTickers: ["A", "B", "A"],
       },
     },
@@ -108,7 +107,6 @@ test("hides only one series inside shared event-marker traces", () => {
       x: ["2026-08-23"],
       meta: {
         overlayKind: "disclosure",
-        isDisclosureTrace: true,
         pointTickers: ["B"],
       },
     },
@@ -245,7 +243,7 @@ test("main chart composition reuses prepared future overlays during viewport fra
 });
 
 test("main chart composition reuses prepared event traces during viewport frames", async () => {
-  const event = { meta: { overlayKind: "timing-buy", isMarketTimingBuyTrace: true } };
+  const event = { meta: { overlayKind: "timing-buy" } };
   let rebuiltEvents = 0;
   const result = await renderer.buildMainChartComposition({
     model: {
@@ -276,7 +274,7 @@ test("price-first composition reuses passive overlays without running their buil
   const calls = [];
   const eps = { meta: { overlayKind: "eps", seriesKey: "eps:TEST" } };
   const ai = { meta: { overlayKind: "ai-scenario", seriesKey: "TEST" } };
-  const event = { meta: { overlayKind: "timing-buy", isMarketTimingBuyTrace: true } };
+  const event = { meta: { overlayKind: "timing-buy" } };
   const result = await renderer.buildMainChartComposition({
     model: {
       rows: [{ date: "2026-08-24", TEST: 100 }],
@@ -344,7 +342,7 @@ test("groups price, EPS, disclosures, and signals by series in one hover entry",
     y: [160],
     text: ["2024년 1분기 EPS 850"],
     hovertemplate: "%{text}<extra>RFHIC EPS</extra>",
-    meta: { isEpsTrace: true, seriesKey: "eps:218410.KQ" },
+    meta: { overlayKind: "eps", seriesKey: "eps:218410.KQ" },
   };
   const timing = {
     type: "scatter",
@@ -354,7 +352,7 @@ test("groups price, EPS, disclosures, and signals by series in one hover entry",
     customdata: [["RFHIC", "과매도·반전"], ["SK하이닉스", "추세 눌림"]],
     hovertemplate: "<b>%{customdata[0]} 매수 신호</b><br>근거 · %{customdata[1]}<extra></extra>",
     meta: {
-      isMarketTimingBuyTrace: true,
+      overlayKind: "timing-buy",
       pointTickers: ["218410.KQ", "000660.KS"],
     },
   };
@@ -364,7 +362,7 @@ test("groups price, EPS, disclosures, and signals by series in one hover entry",
     x: ["2024-03-29"],
     y: [170],
     hovertemplate: ["<b>공시</b><br>분기보고서<extra></extra>"],
-    meta: { isDisclosureTrace: true, pointTickers: ["218410.KQ"] },
+    meta: { overlayKind: "disclosure", pointTickers: ["218410.KQ"] },
   };
   const traces = [rfhicPrice, hynixPrice, eps, timing, disclosure];
   const grouped = renderer.buildGroupedHoverTraces({
@@ -566,32 +564,32 @@ test("creates scale handles only for real series traces", () => {
   assert.equal(renderer.isSeriesHandleTrace(trace("005930.KS"), values), true);
   assert.equal(renderer.isSeriesHandleTrace({
     ...trace("eps:005930.KS"),
-    meta: { seriesKey: "eps:005930.KS", isEpsTrace: true },
+    meta: { overlayKind: "eps", seriesKey: "eps:005930.KS" },
   }, values), true);
   assert.equal(renderer.isSeriesHandleTrace({
     ...trace("005930.KS"),
-    meta: { seriesKey: "005930.KS", isAiForecastTrace: true },
+    meta: { overlayKind: "ai", seriesKey: "005930.KS" },
   }, values), false);
   assert.equal(renderer.isSeriesHandleTrace({
     ...trace("005930.KS"),
-    meta: { seriesKey: "005930.KS", isAiForecastBand: true },
+    meta: { overlayKind: "ai-band", seriesKey: "005930.KS", isAiForecastBand: true },
   }, values), false);
   assert.equal(renderer.isSeriesHandleTrace({
     ...trace("005930.KS"),
-    meta: { seriesKey: "005930.KS", isAiForecastScenarioTrace: true },
+    meta: { overlayKind: "ai-scenario", seriesKey: "005930.KS" },
   }, values), false);
   assert.equal(renderer.isSeriesHandleTrace({
     ...trace("005930.KS"),
-    meta: { seriesKey: "005930.KS", isAiReportMarkerTrace: true },
+    meta: { overlayKind: "ai-report", seriesKey: "005930.KS" },
   }, values), false);
   assert.equal(renderer.isSeriesHandleTrace({
     ...trace("005930.KS"),
-    meta: { seriesKey: "005930.KS", isGroupedHoverTrace: true },
+    meta: { overlayKind: "grouped-hover", hoverGroupTicker: "005930.KS" },
   }, values), false);
   assert.deepEqual(renderer.adjustableSeriesKeys([
     trace("005930.KS"),
-    { ...trace("eps:005930.KS"), meta: { seriesKey: "eps:005930.KS", isEpsTrace: true } },
-    { ...trace("005930.KS"), meta: { seriesKey: "005930.KS", isAiForecastTrace: true } },
+    { ...trace("eps:005930.KS"), meta: { overlayKind: "eps", seriesKey: "eps:005930.KS" } },
+    { ...trace("005930.KS"), meta: { overlayKind: "ai", seriesKey: "005930.KS" } },
   ], values), ["005930.KS", "eps:005930.KS", ""]);
 });
 
@@ -1059,7 +1057,7 @@ test("adds optional traces without rebuilding the full chart", async () => {
   const timing = {
     ...trace("timing"),
     mode: "markers",
-    meta: { isMarketTimingBuyTrace: true },
+    meta: { overlayKind: "timing-buy" },
   };
   const calls = [];
   const plotly = {
@@ -1088,7 +1086,7 @@ test("removes optional traces without rebuilding the full chart", async () => {
   const timing = {
     ...trace("timing"),
     mode: "markers",
-    meta: { isMarketTimingSellTrace: true },
+    meta: { overlayKind: "timing-sell" },
   };
   const element = {
     data: [trace("^KS11"), timing],
@@ -1154,13 +1152,13 @@ test("updates event markers and their grouped hover summaries for marker-only in
     x: ["2026-01-01", "2026-01-02"],
     y: [1, 2],
     text: ["old", "old"],
-    meta: { isGroupedHoverTrace: true, hoverGroupTicker: "005930.KS" },
+    meta: { overlayKind: "grouped-hover", hoverGroupTicker: "005930.KS" },
   };
   const nextGroupedHover = { ...groupedHover, text: ["new disclosure", "new insider"] };
   const disclosure = {
     ...trace("disclosure", [2, 2]),
     mode: "markers",
-    meta: { isDisclosureTrace: true },
+    meta: { overlayKind: "disclosure" },
   };
   const nextDisclosure = { ...disclosure, y: [3, 3] };
   const element = {
@@ -1221,12 +1219,12 @@ test("falls back to a full render after a compatible partial update fails", asyn
 test("keeps AI interval bands distinct and updates their fill styling", () => {
   const lower = {
     ...trace("005930.KS"),
-    meta: { seriesKey: "005930.KS", isAiForecastBand: true, aiTraceRole: "lower" },
+    meta: { overlayKind: "ai-band", seriesKey: "005930.KS", isAiForecastBand: true, aiTraceRole: "lower" },
     fill: "none",
   };
   const upper = {
     ...trace("005930.KS"),
-    meta: { seriesKey: "005930.KS", isAiForecastBand: true, aiTraceRole: "upper" },
+    meta: { overlayKind: "ai-band", seriesKey: "005930.KS", isAiForecastBand: true, aiTraceRole: "upper" },
     fill: "tonexty",
     fillcolor: "rgba(190, 190, 190, 0.10)",
   };
@@ -1238,7 +1236,7 @@ test("keeps AI interval bands distinct and updates their fill styling", () => {
 });
 
 test("keeps market timing buy markers distinct from recession warnings", () => {
-  assert.equal(renderer.traceIdentity({ meta: { isCrisisSignalTrace: true } }), "crisis-signal");
-  assert.equal(renderer.traceIdentity({ meta: { isMarketTimingBuyTrace: true } }), "market-timing-buy");
-  assert.equal(renderer.traceIdentity({ meta: { isMarketTimingSellTrace: true } }), "market-timing-sell");
+  assert.equal(renderer.traceIdentity({ meta: { overlayKind: "crisis" } }), "crisis-signal");
+  assert.equal(renderer.traceIdentity({ meta: { overlayKind: "timing-buy" } }), "market-timing-buy");
+  assert.equal(renderer.traceIdentity({ meta: { overlayKind: "timing-sell" } }), "market-timing-sell");
 });

@@ -8,18 +8,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 INDEX_HTML = ROOT / "docs" / "index.html"
 SW_JS = ROOT / "docs" / "sw.js"
-DATA_WORKER_MJS = ROOT / "docs" / "modules" / "data-worker.mjs"
-CHART_MODEL_WORKER_MJS = ROOT / "docs" / "modules" / "chart-model-worker.mjs"
-CHART_WORKER_MODULE_IMPORTS = (
-    "./auxiliary-chart-model.mjs",
-    "./main-chart-model.mjs",
-    "./chart-model-worker-runtime.mjs",
-)
-DATA_WORKER_MODULE_IMPORTS = (
-    "./data-payload.mjs",
-)
-
-
 def resolve_build_version() -> str:
     explicit = os.environ.get("PAGES_BUILD_VERSION", "").strip()
     if explicit:
@@ -62,15 +50,12 @@ def main() -> int:
     version = resolve_build_version()
     bundle_src = versioned("./assets/app.bundle.min.js", version)
     cache_policy_src = versioned("./modules/cache-refresh-policy.js", version)
-    data_payload_src = versioned("./modules/data-payload.mjs", version)
     market_data_src = versioned("./modules/market-data.mjs", version)
     chart_adjustments_src = versioned("./modules/chart-adjustments.mjs", version)
     auxiliary_contract_src = versioned("./modules/auxiliary-chart-contract.mjs", version)
-    auxiliary_model_src = versioned("./modules/auxiliary-chart-model.mjs", version)
     chart_display_sampler_src = versioned("./modules/chart-display-sampler.mjs", version)
-    data_worker_src = versioned("./modules/data-worker.mjs", version)
-    chart_worker_src = versioned("./modules/chart-model-worker.mjs", version)
-    chart_worker_runtime_src = versioned("./modules/chart-model-worker-runtime.mjs", version)
+    data_worker_bundle_src = versioned("./assets/data-worker.bundle.min.js", version)
+    chart_worker_bundle_src = versioned("./assets/chart-model-worker.bundle.min.js", version)
     plotly_src = versioned("./vendor/plotly-thinkstock-2.35.2.min.js", version)
 
     index = INDEX_HTML.read_text(encoding="utf-8")
@@ -98,15 +83,12 @@ def main() -> int:
     for asset, label in (
         (bundle_src, "app bundle"),
         (cache_policy_src, "cache policy"),
-        (data_payload_src, "data payload"),
         (market_data_src, "market data"),
         (chart_adjustments_src, "chart adjustments"),
         (auxiliary_contract_src, "auxiliary contract"),
-        (auxiliary_model_src, "auxiliary model"),
         (chart_display_sampler_src, "chart display sampler"),
-        (data_worker_src, "data worker"),
-        (chart_worker_src, "chart worker"),
-        (chart_worker_runtime_src, "chart worker runtime"),
+        (data_worker_bundle_src, "data worker bundle"),
+        (chart_worker_bundle_src, "chart worker bundle"),
         (plotly_src, "Plotly"),
     ):
         base = asset.split("?v=", 1)[0]
@@ -118,26 +100,6 @@ def main() -> int:
     for pattern, replacement, label in replacements:
         sw = replace_once(sw, pattern, replacement, label)
     SW_JS.write_text(sw, encoding="utf-8", newline="\n")
-
-    data_worker = DATA_WORKER_MJS.read_text(encoding="utf-8")
-    for module_path in DATA_WORKER_MODULE_IMPORTS:
-        data_worker = replace_once(
-            data_worker,
-            rf'"{re.escape(module_path)}(?:\?v=[^"]*)?"',
-            f'"{module_path}?v={version}"',
-            f"data worker import {module_path}",
-        )
-    DATA_WORKER_MJS.write_text(data_worker, encoding="utf-8", newline="\n")
-
-    chart_worker = CHART_MODEL_WORKER_MJS.read_text(encoding="utf-8")
-    for module_path in CHART_WORKER_MODULE_IMPORTS:
-        chart_worker = replace_once(
-            chart_worker,
-            rf'"{re.escape(module_path)}(?:\?v=[^"]*)?"',
-            f'"{module_path}?v={version}"',
-            f"chart worker import {module_path}",
-        )
-    CHART_MODEL_WORKER_MJS.write_text(chart_worker, encoding="utf-8", newline="\n")
 
     print(f"Stamped Pages assets with version {version}")
     return 0

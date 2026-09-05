@@ -2,7 +2,7 @@
 
 import stockResearchContract from "./stock-research-contract.js";
 
-const { CACHE_KEY, CACHE_VARIANTS_KEY, CACHE_BYPASS_KEY, BLOCKED_KEY } = stockResearchContract;
+const { CACHE_KEY, CACHE_VARIANTS_KEY, CACHE_BYPASS_KEY } = stockResearchContract;
 
 function createStockResearchApp(scope = globalThis, options = {}) {
   let controller = null;

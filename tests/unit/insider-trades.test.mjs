@@ -77,7 +77,7 @@ test("builds red upward buy markers and blue downward sell markers", () => {
   assert.equal(traces[0].y[0], traces[1].y[0]);
   assert.equal(traces[0].customdata[0][2], true);
   assert.equal(traces[1].customdata[0][2], true);
-  assert.equal(traces.every((trace) => trace.meta.isInsiderTradeTrace), true);
+  assert.equal(traces.every((trace) => trace.meta.overlayKind === "insider"), true);
   const buyDetail = traces[0].meta.hoverDetailTemplates[0];
   const sellDetail = traces[1].meta.hoverDetailTemplates[0];
   assert.match(buyDetail, /color:#b91c1c/);

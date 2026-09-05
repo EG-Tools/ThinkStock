@@ -321,7 +321,7 @@ test("render viewport plan includes future EPS without pretending AI is enabled"
     preserveZoom: false,
     showAiForecast: false,
     aiForecastTraces: [],
-    futureTraces: [{ x: ["2026-06-30", "2027-12-31"], meta: { isEpsTrace: true } }],
+    futureTraces: [{ x: ["2026-06-30", "2027-12-31"], meta: { overlayKind: "eps" } }],
     observedStart: "2026-02-01",
     observedEnd: "2026-08-24",
   });
@@ -333,7 +333,7 @@ test("render viewport plan includes future EPS without pretending AI is enabled"
 test("EPS reveal keeps one history year and appends its full three-year outlook", () => {
   const epsTrace = {
     x: ["2026-06-30", "2029-08-24"],
-    meta: { isEpsTrace: true },
+    meta: { overlayKind: "eps" },
   };
   const plan = viewport.buildRenderViewportPlan({
     preserveZoom: true,
@@ -359,7 +359,7 @@ test("EPS reveal keeps one history year and appends its full three-year outlook"
 test("future overlays never extend a historical viewport", () => {
   const epsTrace = {
     x: ["2026-06-30", "2029-08-24"],
-    meta: { isEpsTrace: true },
+    meta: { overlayKind: "eps" },
   };
   const aiTrace = { x: ["2026-08-24", "2027-02-24"] };
   const plan = viewport.buildRenderViewportPlan({
@@ -413,7 +413,7 @@ test("disabling EPS restores the shared future-overlay entry viewport", () => {
 test("disabling AI keeps the farther EPS outlook visible", () => {
   const epsTrace = {
     x: ["2026-06-30", "2029-08-24"],
-    meta: { isEpsTrace: true },
+    meta: { overlayKind: "eps" },
   };
   const plan = viewport.buildRenderViewportPlan({
     preserveZoom: true,
@@ -436,7 +436,7 @@ test("enabling EPS while AI is visible preserves history and extends only the fu
   const aiTrace = { x: ["2026-08-24", "2027-02-24"] };
   const epsTrace = {
     x: ["2026-06-30", "2029-08-24"],
-    meta: { isEpsTrace: true },
+    meta: { overlayKind: "eps" },
   };
   const plan = viewport.buildRenderViewportPlan({
     preserveZoom: true,

@@ -1,9 +1,82 @@
 import {
+  EVENT_MARKER_OVERLAY_KINDS,
   EVENT_MARKER_FONT_FAMILY,
   buildEventMarkerTextFont,
 } from "./chart-render-contract.mjs";
 
 const defaultScope = typeof self !== "undefined" ? self : globalThis;
+export const MINIMUM_TIMING_VOLUME_POINTS = 20;
+
+export function createMarketTimingInputGate(options = {}) {
+  const coreTickers = Array.isArray(options.coreTickers) ? options.coreTickers : ["^KS11", "^KQ11"];
+  const priceRuntime = options.priceRuntime || null;
+  const hasBaseInputs = () => {
+    if (typeof options.hasBaseInputs === "function") return options.hasBaseInputs() === true;
+    const data = options.getData?.() || {};
+    return Boolean(data.pricePayload?.records?.length
+      && data.macroRows?.length && data.creditRows?.length && data.adrRows?.length);
+  };
+  const hasVolumeHistory = (ticker) => (
+    options.hasVolumeHistory?.(ticker, MINIMUM_TIMING_VOLUME_POINTS)
+    ?? priceRuntime?.hasVolumeHistory?.(ticker, MINIMUM_TIMING_VOLUME_POINTS)
+  ) === true;
+  const isStockSeries = options.isStockSeries || ((ticker) => /^\d{6}\.(KS|KQ)$/.test(ticker));
+  const normalizeTickers = (targets = []) => [...new Set([
+    ...coreTickers,
+    ...(Array.isArray(targets) ? targets : []),
+  ].map((ticker) => String(ticker || "").trim().toUpperCase())
+    .filter((ticker) => options.isForecastSeries?.(ticker) !== false))];
+  const missingVolumes = (targets = []) => normalizeTickers(targets).filter((ticker) => (
+    !hasVolumeHistory(ticker)
+  ));
+
+  function ready(targets = []) {
+    return hasBaseInputs() && missingVolumes(targets).length === 0;
+  }
+
+  async function ensure({ targets = [] } = {}) {
+    if (ready(targets)) return true;
+    const missing = missingVolumes(targets);
+    const missingIndices = missing.filter((ticker) => coreTickers.includes(ticker));
+    const missingStocks = missing.filter(isStockSeries);
+    const tasks = [];
+    if (!hasBaseInputs()) tasks.push(options.loadBaseInputs?.());
+    if (missingIndices.length) tasks.push(options.loadIndexVolumes?.(missingIndices));
+    missingStocks.forEach((ticker) => tasks.push(
+      options.loadStockHistory?.(ticker)
+      ?? priceRuntime?.load?.(ticker, {
+        ...(options.getDisplayName ? { displayName: options.getDisplayName(ticker) || ticker } : {}),
+        requireFullHistory: true,
+      }),
+    ));
+    await Promise.allSettled(tasks.filter(Boolean));
+    return ready(targets);
+  }
+
+  return Object.freeze({ ensure, missingVolumes, ready });
+}
+
+function sortedVolumeEntries(volumeMaps, ticker) {
+  return [...(volumeMaps?.get?.(ticker)?.entries?.() || [])]
+    .filter(([date, volume]) => (
+      /^\d{4}-\d{2}-\d{2}$/.test(String(date || "").slice(0, 10))
+      && Number.isFinite(Number(volume))
+      && Number(volume) >= 0
+    ))
+    .sort((left, right) => String(left[0]).localeCompare(String(right[0])));
+}
+
+function volumeTimelineRevision(entries) {
+  if (!entries.length) return "0";
+  const first = entries[0];
+  const latest = entries.at(-1);
+  return [
+    entries.length,
+    String(first?.[0] || ""),
+    String(latest?.[0] || ""),
+    Number(latest?.[1]) || 0,
+  ].join(":");
+}
 
   const DAY_MS = 24 * 60 * 60 * 1000;
   const EVENT_MARKER_DESCRIPTORS = Object.freeze([
@@ -13,6 +86,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     Object.freeze({ id: "insider", kind: "insider", layer: "insider", key: "insiderTradeSide" }),
     Object.freeze({ id: "disclosure", kind: "disclosure", layer: "disclosure" }),
   ]);
+  const EVENT_MARKER_KIND_SET = new Set(EVENT_MARKER_OVERLAY_KINDS);
   const CHART_MARKER_DEFAULTS = Object.freeze({
     colors: Object.freeze({
       crisis: "#60a5fa",
@@ -39,12 +113,8 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
   });
 
   function eventMarkerKind(trace) {
-    if (trace?.meta?.isCrisisSignalTrace) return "crisis";
-    if (trace?.meta?.isMarketTimingBuyTrace) return "timing-buy";
-    if (trace?.meta?.isMarketTimingSellTrace) return "timing-sell";
-    if (trace?.meta?.isInsiderTradeTrace) return "insider";
-    if (trace?.meta?.isDisclosureTrace) return "disclosure";
-    return "";
+    const kind = String(trace?.meta?.overlayKind || "");
+    return EVENT_MARKER_KIND_SET.has(kind) ? kind : "";
   }
 
   function eventMarkerDescriptor(traceOrKind) {
@@ -142,7 +212,11 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     return Number.isFinite(eventMs)
       && Number.isFinite(pointMs)
       && pointMs - eventMs <= maxDays * DAY_MS
-      ? { date: point.date, y: point.y }
+      ? {
+        date: point.date,
+        y: point.y,
+        ...(Number.isFinite(point.baseY) ? { baseY: point.baseY } : {}),
+      }
       : null;
   }
 
@@ -200,7 +274,8 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     const meta = point?.data?.meta || {};
     const values = Array.isArray(point?.customdata) ? point.customdata : [];
     const date = String(point?.x || "").slice(0, 10);
-    if (meta.isMarketTimingBuyTrace) {
+    const kind = eventMarkerKind(point?.data);
+    if (kind === "timing-buy") {
       const title = values[10] || "매수 신호";
       return {
         name: values[0] || point.data.name || "타이밍",
@@ -214,7 +289,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         ],
       };
     }
-    if (meta.isMarketTimingSellTrace) {
+    if (kind === "timing-sell") {
       const title = values[9] || "매도 신호";
       return {
         name: values[0] || point.data.name || "타이밍",
@@ -228,7 +303,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         ],
       };
     }
-    if (meta.isCrisisSignalTrace) {
+    if (kind === "crisis") {
       return {
         name: values[0] || point.data.name || "타이밍",
         plotDate: date,
@@ -256,6 +331,8 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       chartSession,
       buildInsiderMarkerTraces,
       dataRevisionSignature,
+      areMarketTimingInputsReady,
+      ensureMarketTimingInputs,
       ensureMarketTimingFeature,
       escapeHtml,
       getAdrRows,
@@ -276,6 +353,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       netSameReporterInsiderTrades,
       recordPerfSample,
       recordRuntimeError,
+      onMarketTimingInputsPrepared,
       shouldPrepareMarketTimingModels = () => true,
       signalProgress,
       seriesColor,
@@ -302,6 +380,18 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     const pointIndexCache = new WeakMap();
     let lastTimingPreparationKey = "";
     let pendingTimingPreparation = null;
+    let timingInputRenderQueued = false;
+
+    function queueTimingInputRender() {
+      if (timingInputRenderQueued || typeof onMarketTimingInputsPrepared !== "function") return;
+      timingInputRenderQueued = true;
+      const run = () => {
+        timingInputRenderQueued = false;
+        onMarketTimingInputsPrepared();
+      };
+      if (typeof scope.setTimeout === "function") scope.setTimeout(run, 0);
+      else run();
+    }
 
     function markerRenderFingerprint(frame, kind, suffix = "") {
       return [
@@ -464,6 +554,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
             event,
             ticker,
             date: point.date,
+            anchorY: point.baseY ?? point.y,
             y: point.y + frame.markerGap * timingGapMultiplier,
           });
         });
@@ -497,9 +588,9 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
             : undefined,
           meta: {
             overlayKind: "crisis",
-            isCrisisSignalTrace: true,
             pointTickers: points.map((point) => point.ticker),
             markerGapFactors: points.map(() => timingGapMultiplier),
+            markerAnchorValues: points.map((point) => point.anchorY),
           },
           textposition: "middle center",
           textfont: buildEventMarkerTextFont(colors.crisis, eventMarkerTextSize),
@@ -530,6 +621,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
             }) || null,
             ticker,
             date: point.date,
+            anchorY: point.baseY ?? point.y,
             y: point.y + frame.markerGap * timingGapMultiplier * (sell ? 1 : -1),
           });
         });
@@ -603,9 +695,9 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         hovertemplate: chartSession.hoverShowPopup ? hovertemplate : undefined,
         meta: {
           overlayKind: sell ? "timing-sell" : "timing-buy",
-          [sell ? "isMarketTimingSellTrace" : "isMarketTimingBuyTrace"]: true,
           pointTickers: points.map((point) => point.ticker),
           markerGapFactors: points.map(() => timingGapMultiplier * (sell ? 1 : -1)),
+          markerAnchorValues: points.map((point) => point.anchorY),
         },
         textposition: "middle center",
         textfont: buildEventMarkerTextFont(
@@ -641,6 +733,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
           name: event.name || labelName(event.ticker),
           color: seriesColor(event.ticker),
           plotDate: point.date,
+          anchorY: point.baseY ?? point.y,
           y: point.y + frame.markerGap,
           events: [],
         };
@@ -681,9 +774,9 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
           }),
           meta: {
             overlayKind: "disclosure",
-            isDisclosureTrace: true,
             pointTickers: groups.map((group) => group.ticker),
             markerGapFactors: groups.map(() => 1),
+            markerAnchorValues: groups.map((group) => group.anchorY),
             // Keep each popup payload with the rendered trace. Async marker
             // refreshes may replace the shared lookup map before this trace is
             // replaced, but a visible marker must always remain clickable.
@@ -762,7 +855,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
           side,
           plotDate: point.date,
           y: point.y - frame.markerGap * insiderLineGapRatio,
-          anchorY: point.y,
+          anchorY: point.baseY ?? point.y,
           events: [],
         };
         group.events.push(event);
@@ -818,6 +911,9 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
                 if (!group || !(frame.markerGap > 0)) return -insiderLineGapRatio;
                 return (group.y - group.anchorY) / frame.markerGap;
               }),
+              markerAnchorValues: (trace.x || []).map((date, index) => (
+                groupsByPoint.get(`${side}|${pointTickers[index] || ""}|${date || ""}`)?.anchorY
+              )),
             };
             return stampMarkerTrace(
               trace,
@@ -923,6 +1019,61 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         if (progressStarted) signalProgress?.cancel?.(taskKey);
       };
 
+      if (areMarketTimingInputsReady?.(targets) === false) {
+        beginProgress();
+        signalProgress?.update?.(taskKey, 0.04, taskLabel);
+        try {
+          const ready = await ensureMarketTimingInputs?.({ targets: [...targets] });
+          if (ready === false || shouldPrepareMarketTimingModels() === false) {
+            cancelProgress();
+            return;
+          }
+          if (typeof onMarketTimingInputsPrepared === "function") {
+            queueTimingInputRender();
+            return;
+          }
+        } catch (error) {
+          cancelProgress();
+          recordRuntimeError("market-timing-inputs", error, { targets: targets.length });
+          return;
+        }
+      }
+
+      const pricePayload = getPricePayload?.();
+      const records = Array.isArray(pricePayload?.records)
+        ? pricePayload.records
+        : [];
+      if (!records.length) {
+        cancelProgress();
+        return;
+      }
+
+      const sourceTickers = [...new Set([
+        "^KS11",
+        "^KQ11",
+        ...targets,
+      ].filter(isForecastSeries))].sort();
+      const volumeMaps = getTickerVolumeSeriesByTicker?.() || new Map();
+      const volumeEntriesByTicker = new Map(sourceTickers.map((ticker) => [
+        ticker,
+        sortedVolumeEntries(volumeMaps, ticker),
+      ]));
+      const missingVolumeTargets = sourceTickers.filter((ticker) => (
+        (volumeEntriesByTicker.get(ticker)?.length || 0) < MINIMUM_TIMING_VOLUME_POINTS
+      ));
+      if (missingVolumeTargets.length) {
+        cancelProgress();
+        return;
+      }
+      const volatilityRows = getAdrRows?.() || [];
+      const macroRows = getMacroRows?.() || [];
+      const creditRows = getCreditRows?.() || [];
+      const crisisRows = getCrisisRows?.() || [];
+      if (!volatilityRows.length || !macroRows.length || !creditRows.length) {
+        cancelProgress();
+        return;
+      }
+
       if (!getMarketTimingService?.()) {
         beginProgress();
         signalProgress?.update?.(taskKey, 0.08, taskLabel);
@@ -938,26 +1089,16 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         cancelProgress();
         return;
       }
-      const pricePayload = getPricePayload?.();
-      const records = Array.isArray(pricePayload?.records)
-        ? pricePayload.records
-        : [];
-      if (!records.length) {
-        cancelProgress();
-        return;
-      }
-
-      const sourceTickers = [...new Set([
-        "^KS11",
-        "^KQ11",
-        ...targets,
-      ].filter(isForecastSeries))].sort();
       const sourceRevision = dataRevisionSignature("price", "macro", "credit", "adr", "crisis");
+      const volumeRevision = sourceTickers.map((ticker) => (
+        `${ticker}:${volumeTimelineRevision(volumeEntriesByTicker.get(ticker) || [])}`
+      )).join(",");
       const first = records[0] || {};
       const latest = records.at(-1) || {};
       const signature = [
-        "market-timing-v7",
+        "market-timing-v8",
         sourceRevision,
+        `volume:${volumeRevision}`,
         sourceTickers.join(","),
         first.date || "",
         latest.date || "",
@@ -975,27 +1116,24 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       signalProgress?.update?.(taskKey, 0.22, taskLabel);
       let sources;
       if (service.stats().signature !== signature) {
-        const volumeMaps = getTickerVolumeSeriesByTicker?.() || new Map();
         const dates = records.map((row) => String(row?.date || "").slice(0, 10));
         const pricesByTicker = Object.fromEntries(sourceTickers.map((ticker) => [
           ticker,
           records.map((row) => row?.[ticker] ?? null),
         ]));
         const volumesByTicker = Object.fromEntries(sourceTickers.flatMap((ticker) => {
-          const entries = [...(volumeMaps.get(ticker)?.entries() || [])]
-            .sort((left, right) => String(left[0]).localeCompare(String(right[0])));
+          const entries = volumeEntriesByTicker.get(ticker) || [];
           return entries.length ? [[ticker, entries]] : [];
         }));
-        const volatilityRows = getAdrRows?.() || [];
         sources = {
           dates,
           pricesByTicker,
           volumesByTicker,
           adrRows: volatilityRows,
           volatilityRows,
-          macroRows: getMacroRows?.() || [],
-          creditRows: getCreditRows?.() || [],
-          crisisRows: getCrisisRows?.() || [],
+          macroRows,
+          creditRows,
+          crisisRows,
         };
       }
       signalProgress?.update?.(taskKey, 0.42, taskLabel);
@@ -1044,6 +1182,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     CHART_MARKER_DEFAULTS,
     EVENT_MARKER_DESCRIPTORS,
     EVENT_MARKER_FONT_FAMILY,
+    MINIMUM_TIMING_VOLUME_POINTS,
     buildEventMarkerTextFont,
     buildEventMarkerPopoverGroup,
     collectCrisisSignalEntries,
@@ -1052,6 +1191,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     createEventMarkerRenderState,
     createEventMarkerSpecs,
     createChartMarkerRuntime,
+    createMarketTimingInputGate,
     eventMarkerDescriptor,
     eventMarkerIdentity,
     eventMarkerKind,
@@ -1063,26 +1203,35 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     materializeEventMarkerTraces,
   });
 
-// Marker payload layout belongs to the marker runtime.
-  const seriesMarkerBindingCache = new WeakMap();
-  const markerTraceEntryCache = new WeakMap();
-  const viewportMarkerBindingCache = new WeakMap();
+  // One baked graph owns every marker-to-price date binding for an element.
+  let markerBindingGraphCache = new WeakMap();
+  const markerBindingGraphCounters = { hits: 0, misses: 0 };
 
   function asTraceList(value) {
     if (Array.isArray(value)) return value.filter(Boolean);
     return value ? [value] : [];
   }
 
+  function markerValueMatches(left, right) {
+    if (left === right) return true;
+    if (left == null || right == null || typeof left !== typeof right) return false;
+    if (Array.isArray(left) || Array.isArray(right)) {
+      return Array.isArray(left) && Array.isArray(right) && markerArrayMatches(left, right);
+    }
+    if (typeof left !== "object") return false;
+    const leftKeys = Object.keys(left);
+    const rightKeys = Object.keys(right);
+    if (leftKeys.length !== rightKeys.length) return false;
+    return leftKeys.every((key) => (
+      Object.hasOwn(right, key) && markerValueMatches(left[key], right[key])
+    ));
+  }
+
   function markerArrayMatches(left, right) {
     if (left === right) return true;
     if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
     for (let index = 0; index < left.length; index += 1) {
-      const leftValue = left[index];
-      const rightValue = right[index];
-      if (leftValue === rightValue) continue;
-      if (leftValue == null || rightValue == null) return false;
-      if (typeof leftValue !== "object" || typeof rightValue !== "object") return false;
-      if (JSON.stringify(leftValue) !== JSON.stringify(rightValue)) return false;
+      if (!markerValueMatches(left[index], right[index])) return false;
     }
     return true;
   }
@@ -1090,7 +1239,10 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
   function markerPayloadMatches(current, next) {
     return ["x", "customdata", "text", "hovertext", "ids"].every((key) => (
       markerArrayMatches(current?.[key] ?? null, next?.[key] ?? null)
-    ));
+    )) && markerArrayMatches(
+      current?.meta?.markerAnchorValues ?? null,
+      next?.meta?.markerAnchorValues ?? null,
+    );
   }
 
   function collectYUpdates(element, specs = []) {
@@ -1132,31 +1284,37 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     return { traceIndexes, yUpdates, updated, structureChanged };
   }
 
-  function viewportMarkerBindingsMatch(cached, traces) {
+  function markerBindingGraphMatches(cached, traces) {
     if (!cached
       || cached.traceCount !== traces.length
       || !cached.traceRefs.every((trace, index) => trace === traces[index])) return false;
-    return cached.traceEntries.every((entry) => {
+    return cached.sourceEntries.every((entry) => {
+      const trace = traces[entry.traceIndex];
+      return trace === entry.trace
+        && trace?.x === entry.x
+        && trace?.meta?.seriesKey === entry.seriesKey
+        && trace?.x?.length === entry.pointCount
+        && trace?.x?.[0] === entry.firstX
+        && trace?.x?.[entry.pointCount - 1] === entry.lastX;
+    }) && cached.markerEntries.every((entry) => {
       const trace = traces[entry.traceIndex];
       return trace === entry.trace
         && trace?.x === entry.x
         && trace?.meta?.pointTickers === entry.pointTickers
-        && trace?.meta?.markerGapFactors === entry.gapFactors
-        && trace?.x?.length === entry.pointCount
-        && trace?.x?.[0] === entry.firstX
-        && trace?.x?.[entry.pointCount - 1] === entry.lastX;
-    }) && cached.sourceEntries.every((entry) => {
-      const trace = traces[entry.traceIndex];
-      return trace === entry.trace
-        && trace?.x === entry.x
+        && (Array.isArray(trace?.meta?.markerGapFactors)
+          ? trace.meta.markerGapFactors
+          : null) === entry.gapFactors
+        && (Array.isArray(trace?.meta?.markerAnchorValues)
+          ? trace.meta.markerAnchorValues
+          : null) === entry.anchorValues
         && trace?.x?.length === entry.pointCount
         && trace?.x?.[0] === entry.firstX
         && trace?.x?.[entry.pointCount - 1] === entry.lastX;
     });
   }
 
-  /** Bakes marker dates to owning-series indexes once per chart structure. */
-  function buildViewportMarkerBindings(traces) {
+  /** Bakes every event date to one owning price index per chart structure. */
+  function buildMarkerBindingGraph(traces) {
     const sourceBySeries = new Map();
     const sourceEntries = [];
     traces.forEach((trace, traceIndex) => {
@@ -1169,14 +1327,16 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         trace,
         traceIndex,
         x: trace.x,
+        seriesKey: trace.meta.seriesKey,
         pointCount: trace.x.length,
         firstX: trace.x[0],
         lastX: trace.x[trace.x.length - 1],
       });
     });
 
-    const traceEntries = [];
+    const markerEntries = [];
     const bindings = [];
+    const bindingsBySeries = new Map();
     traces.forEach((trace, markerTraceIndex) => {
       if (!isEventMarkerTrace(trace)) return;
       const pointTickers = Array.isArray(trace?.meta?.pointTickers)
@@ -1184,28 +1344,52 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         : [];
       const gapFactors = Array.isArray(trace?.meta?.markerGapFactors)
         ? trace.meta.markerGapFactors
-        : [];
+        : null;
+      const anchorValues = Array.isArray(trace?.meta?.markerAnchorValues)
+        ? trace.meta.markerAnchorValues
+        : null;
       const pointCount = Math.min(
         trace?.x?.length || 0,
         trace?.y?.length || 0,
         pointTickers.length,
-        gapFactors.length,
       );
       if (!pointCount) return;
       const points = [];
       for (let markerIndex = 0; markerIndex < pointCount; markerIndex += 1) {
-        const source = sourceBySeries.get(String(pointTickers[markerIndex] || ""));
+        const seriesKey = String(pointTickers[markerIndex] || "");
+        const source = sourceBySeries.get(seriesKey);
         const sourceIndex = source?.dateIndexes.get(String(trace.x[markerIndex] || ""));
-        const factor = Number(gapFactors[markerIndex]);
-        if (!Number.isInteger(sourceIndex) || !Number.isFinite(factor)) continue;
-        points.push({ factor, markerIndex, sourceIndex, sourceTraceIndex: source.traceIndex });
+        const factor = Number(gapFactors?.[markerIndex]);
+        const anchorY = Number(anchorValues?.[markerIndex]);
+        if (!Number.isInteger(sourceIndex) && !Number.isFinite(anchorY)) continue;
+        const point = {
+          anchorY: Number.isFinite(anchorY) ? anchorY : null,
+          factor: Number.isFinite(factor) ? factor : null,
+          markerIndex,
+          seriesKey,
+          sourceIndex: Number.isInteger(sourceIndex) ? sourceIndex : -1,
+          sourceTraceIndex: Number.isInteger(sourceIndex) ? source.traceIndex : -1,
+        };
+        points.push(point);
+        let seriesBindings = bindingsBySeries.get(seriesKey);
+        if (!seriesBindings) {
+          seriesBindings = new Map();
+          bindingsBySeries.set(seriesKey, seriesBindings);
+        }
+        let seriesBinding = seriesBindings.get(markerTraceIndex);
+        if (!seriesBinding) {
+          seriesBinding = { markerTraceIndex, points: [] };
+          seriesBindings.set(markerTraceIndex, seriesBinding);
+        }
+        seriesBinding.points.push(point);
       }
-      traceEntries.push({
+      markerEntries.push({
         trace,
         traceIndex: markerTraceIndex,
         x: trace.x,
         pointTickers,
         gapFactors,
+        anchorValues,
         pointCount,
         firstX: trace.x[0],
         lastX: trace.x[pointCount - 1],
@@ -1214,20 +1398,26 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     });
     return {
       bindings,
+      bindingsBySeries: new Map([...bindingsBySeries].map(([seriesKey, entries]) => (
+        [seriesKey, [...entries.values()]]
+      ))),
+      markerEntries,
       sourceEntries,
       traceCount: traces.length,
-      traceEntries,
       traceRefs: traces.slice(),
     };
   }
 
-  function viewportMarkerBindings(element, traces) {
-    let cached = viewportMarkerBindingCache.get(element);
-    if (!viewportMarkerBindingsMatch(cached, traces)) {
-      cached = buildViewportMarkerBindings(traces);
-      viewportMarkerBindingCache.set(element, cached);
+  function markerBindingGraph(element, traces) {
+    let cached = markerBindingGraphCache.get(element);
+    if (!markerBindingGraphMatches(cached, traces)) {
+      cached = buildMarkerBindingGraph(traces);
+      markerBindingGraphCache.set(element, cached);
+      markerBindingGraphCounters.misses += 1;
+    } else {
+      markerBindingGraphCounters.hits += 1;
     }
-    return cached.bindings;
+    return cached;
   }
 
   /** Keeps every dated event marker attached to its owning price trace during live fitting. */
@@ -1246,15 +1436,35 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     if (!(span > 1e-9) || !(gapRatio > 0)) return { traceIndexes: [], yUpdates: [] };
 
     const markerGap = span * gapRatio;
+    const transformBySeries = new Map((options.seriesUpdates || []).flatMap((update) => (
+      update?.seriesKey && update?.viewportTransform
+        ? [[String(update.seriesKey), update.viewportTransform]]
+        : []
+    )));
     const traceIndexes = [];
     const yUpdates = [];
-    viewportMarkerBindings(element, sourceTraces).forEach(({ markerTraceIndex, points }) => {
+    markerBindingGraph(element, sourceTraces).bindings.forEach(({ markerTraceIndex, points }) => {
       const trace = traces[markerTraceIndex];
       if (!trace || !Array.isArray(trace.y)) return;
       let changed = false;
       const nextY = trace.y.slice();
-      points.forEach(({ factor, markerIndex, sourceIndex, sourceTraceIndex }) => {
-        const sourceY = Number(traces[sourceTraceIndex]?.y?.[sourceIndex]);
+      points.forEach(({
+        anchorY,
+        factor,
+        markerIndex,
+        seriesKey,
+        sourceIndex,
+        sourceTraceIndex,
+      }) => {
+        if (!Number.isFinite(factor)) return;
+        const attachedY = Number(traces[sourceTraceIndex]?.y?.[sourceIndex]);
+        const transform = transformBySeries.get(seriesKey);
+        const transformedAnchor = transform && Number.isFinite(anchorY)
+          ? 100
+            + ((anchorY - transform.center) * transform.viewportScale * transform.seriesScale)
+            + transform.offset
+          : anchorY;
+        const sourceY = Number.isFinite(attachedY) ? attachedY : transformedAnchor;
         if (!Number.isFinite(sourceY)) return;
         const value = sourceY + markerGap * factor;
         if (Math.abs(value - Number(trace.y[markerIndex])) <= 1e-9) return;
@@ -1268,117 +1478,13 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     return { traceIndexes, yUpdates };
   }
 
-  function markerTraceEntries(element, traces) {
-    let markerCount = 0;
-    for (let index = 0; index < traces.length; index += 1) {
-      const trace = traces[index];
-      if (Array.isArray(trace?.meta?.pointTickers) && Array.isArray(trace.x) && Array.isArray(trace.y)) {
-        markerCount += 1;
-      }
-    }
-    const cached = markerTraceEntryCache.get(element);
-    const reusable = cached?.traceCount === traces.length
-      && cached.markerCount === markerCount
-      && cached.traceRefs.every((trace, index) => trace === traces[index])
-      && cached.entries.every((entry) => (
-        entry.xValues === entry.trace.x
-        && entry.pointTickers === entry.trace.meta?.pointTickers
-        && entry.pointCount === Math.min(entry.trace.x.length, entry.trace.y.length, entry.pointTickers.length)
-        && entry.firstX === entry.trace.x[0]
-        && entry.lastX === entry.trace.x[entry.trace.x.length - 1]
-      ));
-    if (reusable) return cached.entries;
-    const entries = traces.flatMap((trace, traceIndex) => {
-      const pointTickers = trace?.meta?.pointTickers;
-      if (!Array.isArray(pointTickers) || !Array.isArray(trace.x) || !Array.isArray(trace.y)) return [];
-      return [{
-        trace,
-        traceIndex,
-        xValues: trace.x,
-        pointTickers,
-        pointCount: Math.min(trace.x.length, trace.y.length, pointTickers.length),
-        firstX: trace.x[0],
-        lastX: trace.x[trace.x.length - 1],
-      }];
-    });
-    markerTraceEntryCache.set(element, {
-      traceCount: traces.length,
-      markerCount,
-      traceRefs: traces.slice(),
-      entries,
-    });
-    return entries;
+  function clearMarkerBindingCache(element = null) {
+    if (element) markerBindingGraphCache.delete(element);
+    else markerBindingGraphCache = new WeakMap();
   }
 
-  function markerBindingMatches(cached, traces, sourceTrace, markerEntries) {
-    if (!cached
-      || cached.traceCount !== traces.length
-      || cached.sourceTrace !== sourceTrace
-      || cached.sourceX !== sourceTrace.x
-      || cached.sourceCount !== sourceTrace.x.length
-      || cached.sourceFirstX !== sourceTrace.x[0]
-      || cached.sourceLastX !== sourceTrace.x[sourceTrace.x.length - 1]
-      || cached.markerEntries.length !== markerEntries.length) return false;
-    return markerEntries.every((entry, index) => {
-      const previous = cached.markerEntries[index];
-      return previous.trace === entry.trace
-        && previous.traceIndex === entry.traceIndex
-        && previous.xValues === entry.xValues
-        && previous.pointTickers === entry.pointTickers
-        && previous.pointCount === entry.pointCount
-        && previous.firstX === entry.firstX
-        && previous.lastX === entry.lastX;
-    });
-  }
-
-  function buildSeriesMarkerBindings(traces, sourceTrace, seriesKey, markerEntries) {
-    const sourceIndexByDate = new Map();
-    sourceTrace.x.forEach((date, index) => sourceIndexByDate.set(String(date || ""), index));
-    const bindings = markerEntries.flatMap((entry) => {
-      const markerIndexes = [];
-      const sourceIndexes = [];
-      for (let pointIndex = 0; pointIndex < entry.pointCount; pointIndex += 1) {
-        if (String(entry.pointTickers[pointIndex] || "") !== seriesKey) continue;
-        const sourceIndex = sourceIndexByDate.get(String(entry.xValues[pointIndex] || ""));
-        if (!Number.isInteger(sourceIndex)) continue;
-        markerIndexes.push(pointIndex);
-        sourceIndexes.push(sourceIndex);
-      }
-      return markerIndexes.length ? [{ ...entry, markerIndexes, sourceIndexes }] : [];
-    });
-    return {
-      traceCount: traces.length,
-      sourceTrace,
-      sourceX: sourceTrace.x,
-      sourceCount: sourceTrace.x.length,
-      sourceFirstX: sourceTrace.x[0],
-      sourceLastX: sourceTrace.x[sourceTrace.x.length - 1],
-      markerEntries,
-      bindings,
-    };
-  }
-
-  function seriesMarkerBindings(element, traces, sourceTrace, seriesKey) {
-    let cache = seriesMarkerBindingCache.get(element);
-    if (!cache) {
-      cache = new Map();
-      seriesMarkerBindingCache.set(element, cache);
-    }
-    const markerEntries = markerTraceEntries(element, traces);
-    let cached = cache.get(seriesKey);
-    if (!markerBindingMatches(cached, traces, sourceTrace, markerEntries)) {
-      cached = buildSeriesMarkerBindings(traces, sourceTrace, seriesKey, markerEntries);
-      cache.set(seriesKey, cached);
-    }
-    return cached.bindings;
-  }
-
-  function clearSeriesYDeltaCache(element = null) {
-    if (element) {
-      seriesMarkerBindingCache.delete(element);
-      markerTraceEntryCache.delete(element);
-      viewportMarkerBindingCache.delete(element);
-    }
+  function markerBindingCacheStats() {
+    return { ...markerBindingGraphCounters };
   }
 
   function collectSeriesYDeltaUpdates(element, options = {}) {
@@ -1394,37 +1500,36 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     const sourceCount = Math.min(sourceTrace.x.length, sourceTrace.y.length, nextSourceY.length);
     const traceIndexes = [];
     const yUpdates = [];
-    const bindings = seriesMarkerBindings(element, traces, sourceTrace, seriesKey);
+    const bindings = markerBindingGraph(element, traces).bindingsBySeries.get(seriesKey) || [];
     bindings.forEach((binding) => {
-      const trace = traces[binding.traceIndex];
+      const trace = traces[binding.markerTraceIndex];
       if (!trace || !Array.isArray(trace.y)) return;
       let y = null;
       let changed = false;
-      for (let pairIndex = 0; pairIndex < binding.markerIndexes.length; pairIndex += 1) {
-        const markerIndex = binding.markerIndexes[pairIndex];
-        const sourceIndex = binding.sourceIndexes[pairIndex];
-        if (sourceIndex >= sourceCount) continue;
+      binding.points.forEach(({ markerIndex, sourceIndex }) => {
+        if (sourceIndex < 0 || sourceIndex >= sourceCount) return;
         const currentSource = Number(sourceTrace.y[sourceIndex]);
         const nextSource = Number(nextSourceY[sourceIndex]);
         const currentMarker = Number(trace.y[markerIndex]);
         const delta = nextSource - currentSource;
-        if (!Number.isFinite(delta) || !Number.isFinite(currentMarker) || delta === 0) continue;
+        if (!Number.isFinite(delta) || !Number.isFinite(currentMarker) || delta === 0) return;
         if (!y) y = trace.y.slice();
         y[markerIndex] = currentMarker + delta;
         changed = true;
-      }
+      });
       if (!changed) return;
-      traceIndexes.push(binding.traceIndex);
+      traceIndexes.push(binding.markerTraceIndex);
       yUpdates.push(y);
     });
     return { traceIndexes, yUpdates };
   }
 
   export const chartMarkerLayout = Object.freeze({
-    clearSeriesYDeltaCache,
+    clearMarkerBindingCache,
     collectSeriesYDeltaUpdates,
     collectViewportAnchoredYUpdates,
     collectYUpdates,
+    markerBindingCacheStats,
     markerArrayMatches,
     markerPayloadMatches,
   });

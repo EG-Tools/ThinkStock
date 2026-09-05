@@ -277,10 +277,15 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
       ));
     }
 
+    function fullHistoryReady(ticker) {
+      const key = normalizeTickerKey(ticker);
+      return coverageByTicker.get(key) === HISTORY_COVERAGE_FULL
+        && (typeof options.hasSeries !== "function" || options.hasSeries(key))
+        && (typeof options.hasVolumeHistory !== "function" || options.hasVolumeHistory(key));
+    }
+
     function visibleReady(items, isHidden) {
-      return visibleItems(items, isHidden).every((item) => (
-        coverageByTicker.get(normalizeTickerKey(item.ticker)) === HISTORY_COVERAGE_FULL
-      ));
+      return visibleItems(items, isHidden).every((item) => fullHistoryReady(item.ticker));
     }
 
     async function load(ticker, loadOptions = {}) {
@@ -297,9 +302,7 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
         return result;
       };
       if (!requireFullHistory) return execute();
-      if (!refreshRequested
-        && coverageByTicker.get(key) === HISTORY_COVERAGE_FULL
-        && options.hasSeries?.(key)) {
+      if (!refreshRequested && fullHistoryReady(key)) {
         return {
           ready: true,
           cached: true,
@@ -323,7 +326,7 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
       })));
       return results.every((result, index) => (
         result.status === "fulfilled"
-        && coverageByTicker.get(normalizeTickerKey(visible[index].ticker)) === HISTORY_COVERAGE_FULL
+        && fullHistoryReady(visible[index].ticker)
       ));
     }
 
@@ -626,7 +629,27 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
     if (!incoming.length) return false;
     if (!existing.length) return true;
     const minimumCoverageRatio = Math.max(0.5, Math.min(1, Number(options.minimumCoverageRatio) || 0.8));
-    return incoming.length >= Math.floor(existing.length * minimumCoverageRatio);
+    if (incoming.length < Math.floor(existing.length * minimumCoverageRatio)) return false;
+
+    const dateBounds = (points) => {
+      let first = Infinity;
+      let last = -Infinity;
+      points.forEach((point) => {
+        const time = Date.parse(String(point?.date || "").slice(0, 10));
+        if (!Number.isFinite(time)) return;
+        first = Math.min(first, time);
+        last = Math.max(last, time);
+      });
+      return Number.isFinite(first) && Number.isFinite(last) ? { first, last } : null;
+    };
+    const existingBounds = dateBounds(existing);
+    const incomingBounds = dateBounds(incoming);
+    if (!existingBounds || !incomingBounds) return true;
+
+    const startToleranceDays = Math.max(0, Number(options.startToleranceDays) || 7);
+    const startToleranceMs = startToleranceDays * 86_400_000;
+    return incomingBounds.first <= existingBounds.first + startToleranceMs
+      && incomingBounds.last >= existingBounds.last;
   }
 
   function createPayloadController(options = {}) {
@@ -749,7 +772,21 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
         : [];
       throwIfAborted(signal);
       const hadExistingBeforeCache = options.hasSeries(key);
-      if (loadOptions.latestOnly === true && hadExistingBeforeCache) {
+      let cacheInfo = null;
+      let sharedCacheRead = false;
+      if (loadOptions.latestOnly === true
+        && hadExistingBeforeCache
+        && !options.hasVolumeHistory(key)) {
+        // The runtime snapshot restores price lines but intentionally omits the
+        // much larger volume history. Hydrate that local history before timing
+        // signals are allowed to use the cheap latest-only path.
+        cacheInfo = await options.applySharedCache(key, displayName);
+        sharedCacheRead = true;
+        throwIfAborted(signal);
+      }
+      if (loadOptions.latestOnly === true
+        && options.hasSeries(key)
+        && options.hasVolumeHistory(key)) {
         try {
           const rawLatestPoints = hasPrefetchedLatest
             ? prefetchedLatest
@@ -821,7 +858,8 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
           };
         }
       }
-      const cacheInfo = await options.applySharedCache(key, displayName);
+      if (!sharedCacheRead) cacheInfo = await options.applySharedCache(key, displayName);
+      cacheInfo ||= {};
       throwIfAborted(signal);
       const hasExisting = options.hasSeries(key);
       const historyCoverage = normalizeHistoryCoverage(cacheInfo.historyCoverage);

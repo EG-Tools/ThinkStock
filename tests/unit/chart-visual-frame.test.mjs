@@ -106,8 +106,8 @@ test("keeps dated markers constrained during live and committed series transform
   const element = {
     data: [
       { meta: { seriesKey: "005930.KS" }, y: [1, 2] },
-      { meta: { isDisclosureTrace: true }, y: [3] },
-      { meta: { isGroupedHoverTrace: true, hoverGroupTicker: "005930.KS" }, y: [1, 2] },
+      { meta: { overlayKind: "disclosure" }, y: [3] },
+      { meta: { overlayKind: "grouped-hover", hoverGroupTicker: "005930.KS" }, y: [1, 2] },
     ],
   };
   const apply = visualFrame.createSeriesFrameApplier({
@@ -286,7 +286,7 @@ test("rebuilds event markers for an axis-only visual frame", async () => {
   const restyles = [];
   let rebuilds = 0;
   const element = {
-    data: [{ meta: { isDisclosureTrace: true }, y: [3] }],
+    data: [{ meta: { overlayKind: "disclosure" }, y: [3] }],
   };
   const apply = visualFrame.createSeriesFrameApplier({
     getElement: () => element,

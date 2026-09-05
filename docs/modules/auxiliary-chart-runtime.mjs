@@ -17,12 +17,21 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
   const PLOTLY_CONFIG = chartLoader.PLOTLY_CONFIG;
   const CHART_HOVER_DATE_FORMAT = chartLoader.PLOTLY_THEME.hoverDateFormat;
 
+  function auxiliaryLegendDotSize(scope = defaultScope) {
+    const root = scope?.document?.documentElement;
+    const value = root && typeof scope?.getComputedStyle === "function"
+      ? scope.getComputedStyle(root).getPropertyValue("--auxiliary-legend-dot-size")
+      : "";
+    return Math.max(1, Number.parseFloat(value) || 7);
+  }
+
   function auxiliaryTraceStructureKey(trace) {
     const meta = trace?.meta || {};
     return [
-      String(meta.macdSeriesKey || meta.auxiliarySeriesKey || trace?.name || ""),
+      String(meta.macdSeriesKey || meta.macdLegendSeriesKey || meta.auxiliarySeriesKey || trace?.name || ""),
       String(meta.auxiliaryZoneGroup || ""),
       String(meta.auxiliaryZoneFill || ""),
+      meta.auxiliaryIsolatedMarker === true ? "isolated-marker" : "",
       meta.auxiliaryHoverProxy === true ? "hover-proxy" : "",
       String(trace?.type || "scatter"),
       String(trace?.mode || ""),
@@ -131,6 +140,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     let generation = 0;
     let latestRequest = 0;
     let lastSource = "none";
+    let workerDatasetKey = "";
     const pending = new Map();
     const counters = { hits: 0, misses: 0, coalesced: 0, worker: 0, fallbacks: 0, invalidations: 0 };
 
@@ -152,11 +162,17 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         let model = null;
         let source = "worker";
         try {
-          model = normalizeModel(await requestModel(payload));
+          const datasetKey = String(payload?.datasetKey || "inline");
+          const workerPayload = workerDatasetKey === datasetKey
+            ? { ...payload, sources: undefined }
+            : payload;
+          model = normalizeModel(await requestModel(workerPayload));
           if (!model) throw new Error("auxiliary chart worker returned an invalid model");
+          workerDatasetKey = datasetKey;
           counters.worker += 1;
         } catch (_) {
           source = "sync";
+          workerDatasetKey = "";
           model = normalizeModel(buildModel({
             ...payload,
             adrRows: payload?.sources?.adrRows || [],
@@ -195,6 +211,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         cached: Boolean(cached),
         pending: pending.size,
         source: lastSource,
+        workerDatasetCached: Boolean(workerDatasetKey),
       }),
     });
   }
@@ -255,6 +272,76 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     return { mode: "full", attemptedPartial };
   }
 
+  async function settleAuxiliaryRenderTasks(tasks) {
+    const results = await Promise.allSettled(Array.isArray(tasks) ? tasks : []);
+    const failures = results
+      .filter((result) => result.status === "rejected")
+      .map((result) => result.reason);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      const error = new Error(`${failures.length} auxiliary chart renders failed`);
+      error.causes = failures;
+      throw error;
+    }
+    return results.map((result) => result.value);
+  }
+
+function buildMacdSeriesTracePair(options = {}) {
+    const series = String(options.series || "");
+    const name = String(options.name || series);
+    const color = String(options.color || "#ffffff");
+    const legendgroup = `macd:${series}`;
+    return Object.freeze({
+      lineTrace: {
+        x: Array.isArray(options.dates) ? options.dates : [],
+        y: Array.isArray(options.values) ? options.values : [],
+        type: "scatter",
+        mode: "lines",
+        name,
+        legendgroup,
+        showlegend: false,
+        line: { color, width: 1 },
+        opacity: 1,
+        hoverinfo: options.showHover ? undefined : "skip",
+        hovertemplate: options.showHover
+          ? "오실레이터 %{y:.3f}%<extra>%{fullData.name}</extra>"
+          : undefined,
+        meta: { macdSeriesKey: series, macdSignal: options.signal },
+      },
+      legendTrace: {
+        x: [null],
+        y: [null],
+        type: "scatter",
+        mode: "markers",
+        name,
+        legendgroup,
+        showlegend: true,
+        marker: {
+          color,
+          size: Math.max(1, Number(options.legendDotSize) || 7),
+          symbol: "circle",
+        },
+        hoverinfo: "skip",
+        meta: { macdLegendSeriesKey: series },
+      },
+  });
+}
+
+function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
+  const source = (Array.isArray(values) ? values : []).map((value) => {
+    if (value === null || value === undefined || value === "") return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  });
+  const size = Math.max(1, Number(markerSize) || 5);
+  return source.map((value, index) => {
+    if (value === null) return 0;
+    const connectedLeft = index > 0 && source[index - 1] !== null;
+    const connectedRight = index + 1 < source.length && source[index + 1] !== null;
+    return connectedLeft || connectedRight ? 0 : size;
+  });
+}
+
   function createAuxiliaryChartRuntime(scope = defaultScope, options = {}) {
     const {
       ADR_BAND_COLOR,
@@ -283,6 +370,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       chartSession,
       clearHoverOnChart,
       commitViewportRange,
+      auxiliaryDataRevisionSignature,
       dataRevisionSignature,
       dataState,
       getAuxiliaryChartModel: externalGetAuxiliaryChartModel,
@@ -293,22 +381,29 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       labelName,
       persistState,
       recordPerfSample,
+      runPlotlyUpdate,
       setNewsSentimentMovingAverageDays,
       seriesColor,
       startPerfSample,
       syncHoverToChart,
       syncState,
       thinMacdPoints,
-      xRangeMatches,
     } = options;
     if (!scope.document
       || !dataState
       || !syncState
       || !chartDisplaySampler
       || typeof commitViewportRange !== "function"
+      || typeof runPlotlyUpdate !== "function"
       || typeof buildThresholdFillPolygons !== "function"
       || typeof fitRangeForTraces !== "function") {
       throw new Error("auxiliary chart runtime dependencies are incomplete");
+    }
+
+    function renderManagedAuxiliaryPlot(label, element, traces, layout) {
+      return runPlotlyUpdate(label, element, () => (
+        renderAuxiliaryPlot(scope.Plotly, element, traces, layout, PLOTLY_CONFIG)
+      ));
     }
 
     const auxiliaryModelResolver = typeof externalGetAuxiliaryChartModel === "function"
@@ -320,10 +415,11 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       });
     const getAuxiliaryChartModel = typeof externalGetAuxiliaryChartModel === "function"
       ? externalGetAuxiliaryChartModel
-      : (renderKey, startDate) => auxiliaryModelResolver.resolve(renderKey, {
-        datasetKey: dataRevisionSignature("adr", "macro"),
+      : (renderKey, startDate, seriesKeys, datasetKey) => auxiliaryModelResolver.resolve(renderKey, {
+        datasetKey,
         sources: { adrRows: dataState.adrRows, macroRows: dataState.macroRows },
         startDate,
+        seriesKeys,
         adrLowThreshold: ADR_LOW_THRESH,
         adrHighThreshold: ADR_HIGH_THRESH,
         newsLowThreshold: NEWS_SENTIMENT_LOW_THRESH,
@@ -449,7 +545,23 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         targets().forEach(clearHoverOnChart);
       });
     }
-    let adrHandlerSet = false;
+    const boundAuxiliaryInteractions = new WeakSet();
+    function bindAuxiliaryInteractions(element, source, targetIds) {
+      if (!element?.on || boundAuxiliaryInteractions.has(element)) return false;
+      element.on("plotly_relayout", (eventData) => {
+        if (syncState.chartSyncing) return;
+        const viewport = resolveRelayoutViewport(eventData, element);
+        if (syncState.cursorSyncing && !viewport.range && !viewport.autorange) return;
+        if (!viewport.range) return;
+        commitViewportRange(viewport.range, {
+          source,
+          liveFit: chartSession.autoChartReset,
+        });
+      });
+      bindAuxiliaryHoverHandlers(element, targetIds);
+      boundAuxiliaryInteractions.add(element);
+      return true;
+    }
     let lastAdrRenderKey = "";
     let auxiliaryChartRenderGeneration = 0;
     let pendingAdrRenderRequest = null;
@@ -458,10 +570,16 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     let lastMacdRenderKey = "";
     let lastMacdViewportWindows = [];
     let lastAdrViewportWindows = [];
-    let macdHandlerSet = false;
     let auxiliaryPartialRenderCount = 0;
     let auxiliaryFullRenderCount = 0;
     let auxiliarySkippedRenderCount = 0;
+
+    function recordAuxiliaryRenderResult(renderResult) {
+      if (renderResult?.mode === "partial") auxiliaryPartialRenderCount += 1;
+      else if (renderResult?.mode === "full") auxiliaryFullRenderCount += 1;
+      else auxiliarySkippedRenderCount += 1;
+      return renderResult;
+    }
 
     const viewportSliceOptions = Object.freeze({
       bufferRatio: 2,
@@ -577,11 +695,23 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       };
       const noHover = { hoverinfo: "skip", hovertemplate: undefined };
       const zoneGroup = String(options.zoneGroup || seriesKey || "");
-      const buildFill = (direction, threshold, fillcolor) => (
-        buildThresholdFillPolygons(dates, sourceValues, threshold, direction).map((polygon) => ({
+      const buildFill = (direction, threshold, fillcolor) => {
+        const polygons = buildThresholdFillPolygons(dates, sourceValues, threshold, direction);
+        if (!polygons.length) return [];
+        const x = [];
+        const y = [];
+        polygons.forEach((polygon, index) => {
+          if (index) {
+            x.push(null);
+            y.push(null);
+          }
+          x.push(...polygon.dates);
+          y.push(...polygon.values);
+        });
+        return [{
           ...base,
-          x: polygon.dates,
-          y: polygon.values,
+          x,
+          y,
           name: legendName,
           meta: {
             ...(seriesKey ? { auxiliarySeriesKey: seriesKey } : {}),
@@ -593,8 +723,8 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
           fill: "toself",
           fillcolor,
           ...noHover,
-        }))
-      );
+        }];
+      };
       return [
         ...(options.includeLow === false ? [] : buildFill(
           "low",
@@ -611,6 +741,14 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
 
     function buildAdrZoneTraces(dates, values, mainColor, legendName, seriesKey, options = {}) {
       const sourceValues = (Array.isArray(values) ? values : []).map(auxiliaryNumber);
+      const markerSizes = isolatedAuxiliaryMarkerSizes(sourceValues);
+      const isolatedDates = [];
+      const isolatedValues = [];
+      markerSizes.forEach((size, index) => {
+        if (!(size > 0) || !dates?.[index]) return;
+        isolatedDates.push(dates[index]);
+        isolatedValues.push(sourceValues[index]);
+      });
       const fillTraces = options.includeFill === false
         ? []
         : buildThresholdZoneFillTraces(dates, sourceValues, legendName, seriesKey, options);
@@ -630,6 +768,20 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
           hoverinfo: "skip",
           hovertemplate: undefined,
         },
+        ...(isolatedDates.length ? [{
+          x: isolatedDates,
+          y: isolatedValues,
+          type: "scatter",
+          mode: "markers",
+          connectgaps: false,
+          meta: { auxiliarySeriesKey: seriesKey, auxiliaryIsolatedMarker: true },
+          visible: chartSession.hiddenAuxiliarySeries.has(seriesKey) ? "legendonly" : true,
+          name: `${legendName} 최신점`,
+          showlegend: false,
+          marker: { color: mainColor, size: 5, symbol: "circle" },
+          hoverinfo: "skip",
+          hovertemplate: undefined,
+        }] : []),
       ];
     }
 
@@ -818,27 +970,17 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         dataRevisionSignature("price"),
         visibleSeries.join(","),
       ].join("::");
-      if (lastMacdRenderKey === renderKey && el.data?.length) {
-        if (Array.isArray(xRange)
-          && xRange.length === 2
-          && !xRangeMatches(el, xRange[0], xRange[1])) {
-          commitViewportRange(xRange, {
-            source: "macd-render-range",
-            fit: false,
-            liveFit: chartSession.autoChartReset,
-            userInitiated: false,
-          });
-        }
-        return;
-      }
+      if (lastMacdRenderKey === renderKey && el.data?.length) return;
     
       const totalPointBudget = isTouchDevice() ? 10000 : 18000;
       const pointBudget = Math.max(
         1800,
         Math.min(9000, Math.floor(totalPointBudget / Math.max(1, visibleSeries.length))),
       );
-      const traces = [];
+      const lineTraces = [];
+      const legendTraces = [];
       const allValues = [];
+      const legendDotSize = auxiliaryLegendDotSize(scope);
       const viewportWindows = [];
       visibleSeries.forEach((series) => {
         const model = getMacdModelForSeries(series);
@@ -860,30 +1002,26 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         const thinned = thinMacdPoints(displayDates, displayValues, pointBudget);
         const baseColor = seriesColor(series);
         allValues.push(...thinned.values.filter(Number.isFinite));
-        traces.push({
-          x: thinned.dates,
-          y: thinned.values,
-          type: "scatter",
-          mode: "lines",
+        const tracePair = buildMacdSeriesTracePair({
+          series,
           name: labelName(series),
-          line: {
-            color: baseColor,
-            width: 1,
-          },
-          opacity: 1,
-          hoverinfo: chartSession.hoverShowPopup ? undefined : "skip",
-          hovertemplate: chartSession.hoverShowPopup
-            ? "%{x|%Y.%-m.%-d}<br>오실레이터 %{y:.3f}%<extra>%{fullData.name}</extra>"
-            : undefined,
-          meta: { macdSeriesKey: series, macdSignal: model.signal },
+          color: baseColor,
+          dates: thinned.dates,
+          values: thinned.values,
+          signal: model.signal,
+          showHover: chartSession.hoverShowPopup,
+          legendDotSize,
         });
+        lineTraces.push(tracePair.lineTrace);
+        legendTraces.push(tracePair.legendTrace);
       });
-    
-      lastMacdTraceCount = traces.length;
+
+      const traces = [...lineTraces, ...legendTraces];
+      lastMacdTraceCount = lineTraces.length;
       const maxAbs = allValues.length
         ? Math.max(0.02, ...allValues.map((value) => Math.abs(value)))
         : 1;
-      const viewportYRange = buildMacdViewportYRange({ data: traces }, xRange);
+      const viewportYRange = buildMacdViewportYRange({ data: lineTraces }, xRange);
       const layout = {
         ...chartLoader.layoutStyle(),
         margin: { l: auxiliaryChartHorizontalMargin(), r: auxiliaryChartHorizontalMargin(), t: 34, b: 30 },
@@ -891,9 +1029,11 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
           chartSession.hoverShowPopup,
           chartSession.cursorLineMode,
         ),
-        showlegend: traces.length > 0,
+        showlegend: legendTraces.length > 0,
         legend: {
-          orientation: "h", x: 0.5, y: 1.18, xanchor: "center",
+          orientation: "h", x: 0.5, y: 1.22, xanchor: "center", yanchor: "middle",
+          groupclick: "togglegroup",
+          itemsizing: "trace",
           font: { color: "rgba(255,255,255,0.72)", size: 10 },
         },
         barmode: "overlay",
@@ -904,7 +1044,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
           line: referenceLineStyle("rgba(255,255,255,0.42)"),
         }],
         annotations: traces.length ? [{
-          xref: "paper", yref: "paper", x: 0, y: 1.18,
+          xref: "paper", yref: "paper", x: 0, y: 1.22,
           xanchor: "left", yanchor: "middle",
           text: "MACD",
           showarrow: false,
@@ -938,28 +1078,23 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       };
     
       stampAuxiliaryTraceRevisions(traces, renderKey);
-      const renderResult = await renderAuxiliaryPlot(scope.Plotly, el, traces, layout, PLOTLY_CONFIG);
-      if (renderResult.mode === "partial") auxiliaryPartialRenderCount += 1;
-      else if (renderResult.mode === "full") auxiliaryFullRenderCount += 1;
-      else auxiliarySkippedRenderCount += 1;
+      const renderResult = await renderManagedAuxiliaryPlot(
+        "auxiliary-macd-render",
+        el,
+        traces,
+        layout,
+      );
+      recordAuxiliaryRenderResult(renderResult);
       lastMacdRenderKey = renderKey;
       lastMacdViewportWindows = viewportWindows;
-      if (!macdHandlerSet) {
-        el.on("plotly_relayout", (eventData) => {
-          if (syncState.chartSyncing) return;
-          const viewport = resolveRelayoutViewport(eventData, el);
-          if (!viewport.range) return;
-          commitViewportRange(viewport.range, {
-            source: "macd-plotly-relayout",
-            liveFit: chartSession.autoChartReset,
-          });
-        });
-        bindAuxiliaryHoverHandlers(el, ["chart", "chart-adr"]);
-        macdHandlerSet = true;
-      }
+      bindAuxiliaryInteractions(
+        el,
+        "macd-plotly-relayout",
+        ["chart", "chart-adr"],
+      );
       recordPerfSample("renderMacdChart", perfStartedAt, {
-        traces: traces.length,
-        points: traces.reduce((sum, trace) => sum + (trace.x?.length || 0), 0),
+        traces: lineTraces.length,
+        points: lineTraces.reduce((sum, trace) => sum + (trace.x?.length || 0), 0),
         renderMode: renderResult.mode,
         updateScope: renderResult.updateScope || "",
       });
@@ -985,13 +1120,28 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         || [latestAdrDate, latestNewsDate, latestVkospiDate, latestVixDate]
           .filter(Boolean).sort().slice(-1)[0]
         || "";
-      const modelKey = [
-        startDate,
-        dataRevisionSignature("adr", "macro"),
-        chartSession.newsSentimentMovingAverageDays,
-      ].join("::");
       const panelOrder = normalizeAuxiliaryPanelOrder();
       const seriesOrder = normalizeAuxiliarySeriesOrder();
+      const activeModelSeriesKeys = [
+        ...(!chartSession.hiddenAuxiliaryPanels.has("adr")
+          ? [AUXILIARY_SERIES_KEYS.adrKospi, AUXILIARY_SERIES_KEYS.adrKosdaq] : []),
+        ...(!chartSession.hiddenAuxiliaryPanels.has("fearGreed")
+          ? [AUXILIARY_SERIES_KEYS.fearGreed] : []),
+        ...(!chartSession.hiddenAuxiliaryPanels.has("newsSentiment")
+          ? [AUXILIARY_SERIES_KEYS.newsSentiment] : []),
+        ...(!chartSession.hiddenAuxiliaryPanels.has("vkospi")
+          ? [AUXILIARY_SERIES_KEYS.vkospi, AUXILIARY_SERIES_KEYS.vix] : []),
+      ];
+      const sourceRevision = typeof auxiliaryDataRevisionSignature === "function"
+        ? auxiliaryDataRevisionSignature(...activeModelSeriesKeys)
+        : dataRevisionSignature("adr", "macro");
+      const sourceDatasetKey = dataRevisionSignature("adr", "macro");
+      const modelKey = [
+        startDate,
+        sourceRevision,
+        activeModelSeriesKeys.join(","),
+        chartSession.newsSentimentMovingAverageDays,
+      ].join("::");
       const renderKey = [
         modelKey,
         endDate,
@@ -1005,32 +1155,25 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       ].join("::");
       if (lastAdrRenderKey === renderKey
         && (el.data?.length || el.dataset.auxiliaryEmpty === "true")) {
-        if (el.data?.length
-          && Array.isArray(xRange)
-          && xRange.length === 2
-          && !xRangeMatches(el, xRange[0], xRange[1])) {
-          commitViewportRange(xRange, {
-            source: "auxiliary-render-range",
-            fit: false,
-            liveFit: chartSession.autoChartReset,
-            userInitiated: false,
-          });
-        }
         recordPerfSample("renderAdrChart", perfStartedAt, { rows: el.data[0]?.x?.length || 0, cacheHit: true });
         return;
       }
 
       const renderGeneration = ++auxiliaryChartRenderGeneration;
-      const model = await getAuxiliaryChartModel(modelKey, startDate);
+      const model = await getAuxiliaryChartModel(
+        modelKey,
+        startDate,
+        activeModelSeriesKeys,
+        sourceDatasetKey,
+      );
       if (!model
-        || renderGeneration !== auxiliaryChartRenderGeneration
-        || pendingAdrRenderRequest) return;
-      const adrKospiAvailable = hasFiniteValues(model.adrKospiValues);
-      const adrKosdaqAvailable = hasFiniteValues(model.adrKosdaqValues);
-      const fearGreedAvailable = hasFiniteValues(model.fearGreedValues);
-      const newsSentimentAvailable = hasFiniteValues(model.newsValues);
-      const vkospiAvailable = hasFiniteValues(model.vkospiValues);
-      const vixAvailable = hasFiniteValues(model.vixValues);
+        || renderGeneration !== auxiliaryChartRenderGeneration) return;
+      const adrKospiAvailable = model.availability?.adrKospi === true || hasFiniteValues(model.adrKospiValues);
+      const adrKosdaqAvailable = model.availability?.adrKosdaq === true || hasFiniteValues(model.adrKosdaqValues);
+      const fearGreedAvailable = model.availability?.fearGreed === true || hasFiniteValues(model.fearGreedValues);
+      const newsSentimentAvailable = model.availability?.newsSentiment === true || hasFiniteValues(model.newsValues);
+      const vkospiAvailable = model.availability?.vkospi === true || hasFiniteValues(model.vkospiValues);
+      const vixAvailable = model.availability?.vix === true || hasFiniteValues(model.vixValues);
       const panelLayout = buildAuxiliaryPanelLayout({
         adr: isAuxiliaryPanelVisible("adr") && (adrKospiAvailable || adrKosdaqAvailable),
         fearGreed: isAuxiliaryPanelVisible("fearGreed") && fearGreedAvailable,
@@ -1127,7 +1270,6 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         vkospiRowCount,
         vixRowCount,
       } = renderModel;
-      if (!adrRowCount && !newsRowCount && !vkospiRowCount && !vixRowCount) return;
       const viewportRanges = buildAuxiliaryViewportRanges(model, xRange, {
         adrLowThreshold: ADR_LOW_THRESH,
         adrHighThreshold: ADR_HIGH_THRESH,
@@ -1287,7 +1429,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         delete el[AUXILIARY_RENDER_STATE_PROPERTY];
         el.replaceChildren();
         el.dataset.auxiliaryEmpty = "true";
-        adrHandlerSet = false;
+        boundAuxiliaryInteractions.delete(el);
         syncAuxiliarySeparators(el, [], [], representativeControls);
         lastAdrRenderKey = renderKey;
         recordPerfSample("renderAdrChart", perfStartedAt, {
@@ -1660,11 +1802,15 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
           ? `${adrKospiVisible ? 1 : 0}:${adrKosdaqVisible ? 1 : 0}`
           : String(trace?.visible ?? true)
       ));
+      let renderResult;
       try {
-        const renderResult = await renderAuxiliaryPlot(scope.Plotly, el, traces, layout, PLOTLY_CONFIG);
-        if (renderResult.mode === "partial") auxiliaryPartialRenderCount += 1;
-        else if (renderResult.mode === "full") auxiliaryFullRenderCount += 1;
-        else auxiliarySkippedRenderCount += 1;
+        renderResult = await renderManagedAuxiliaryPlot(
+          "auxiliary-panels-render",
+          el,
+          traces,
+          layout,
+        );
+        recordAuxiliaryRenderResult(renderResult);
         lastAdrRenderKey = renderKey;
         lastAdrViewportWindows = viewportWindows;
         syncAuxiliarySeparators(
@@ -1678,19 +1824,11 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         throw error;
       }
     
-      if (!adrHandlerSet) {
-        el.on("plotly_relayout", (eventData) => {
-          const viewport = resolveRelayoutViewport(eventData, el);
-          if (syncState.chartSyncing) return;
-          if (syncState.cursorSyncing && !viewport.range && !viewport.autorange) return;
-          if (viewport.range) commitViewportRange(viewport.range, {
-            source: "auxiliary-plotly-relayout",
-            liveFit: chartSession.autoChartReset,
-          });
-        });
-        bindAuxiliaryHoverHandlers(el, ["chart", "chart-macd"]);
-        adrHandlerSet = true;
-      }
+      bindAuxiliaryInteractions(
+        el,
+        "auxiliary-plotly-relayout",
+        ["chart", "chart-macd"],
+      );
       recordPerfSample("renderAdrChart", perfStartedAt, {
         rows: adrRowCount,
         newsRows: newsRowCount,
@@ -1719,6 +1857,11 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
         }
       })().finally(() => {
         adrRenderPromise = null;
+        if (pendingAdrRenderRequest) {
+          Promise.resolve(renderAdrChart(pendingAdrRenderRequest.xRange)).catch((error) => {
+            scope.console?.error?.("auxiliary chart queued render failed", error);
+          });
+        }
       });
       return adrRenderPromise;
     }
@@ -1728,6 +1871,12 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       lastAdrViewportWindows = [];
       auxiliaryChartRenderGeneration += 1;
       auxiliaryModelResolver?.invalidate();
+      if (adrRenderPromise && !pendingAdrRenderRequest) {
+        const range = scope.document.getElementById("chart")?._fullLayout?.xaxis?.range;
+        pendingAdrRenderRequest = {
+          xRange: Array.isArray(range) && range.length === 2 ? range.slice(0, 2) : null,
+        };
+      }
     }
 
     function invalidateMacd() {
@@ -1744,7 +1893,7 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       const range = Array.isArray(xRange) && xRange.length === 2
         ? xRange.slice(0, 2)
         : null;
-      return Promise.allSettled([
+      return settleAuxiliaryRenderTasks([
         renderMacdChart(range ? [...range] : null),
         renderAdrChart(range ? [...range] : null),
       ]);
@@ -1761,6 +1910,9 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
       renderMacdChart,
       stats: () => ({
         adrRenderKey: lastAdrRenderKey,
+        adrRenderQueued: Boolean(pendingAdrRenderRequest),
+        adrRendering: Boolean(adrRenderPromise),
+        adrRenderGeneration: auxiliaryChartRenderGeneration,
         macdRenderKey: lastMacdRenderKey,
         macdTraces: lastMacdTraceCount,
         partialRenders: auxiliaryPartialRenderCount,
@@ -1778,9 +1930,12 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     auxiliaryRestylePayload,
     auxiliaryTraceFingerprint,
     auxiliaryTraceStructureKey,
+    buildMacdSeriesTracePair,
     canApplyAuxiliaryUpdate,
     createAuxiliaryChartModelResolver,
     createAuxiliaryChartRuntime,
     renderAuxiliaryPlot,
+    isolatedAuxiliaryMarkerSizes,
+    settleAuxiliaryRenderTasks,
     stampAuxiliaryTraceRevisions,
   });

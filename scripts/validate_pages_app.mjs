@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import { stylesheetSourceNames } from "./pages-stylesheet-config.mjs";
+import { runtimeBundleFingerprint } from "./runtime-bundle-fingerprint.mjs";
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -442,17 +443,13 @@ assert.ok(workerDartHandler.includes("DART_ELESTOCK_URL")
   "./index.html",
   "./styles.css",
   "./assets/app.bundle.min.js?v=dev",
-  "./modules/data-payload.mjs?v=dev",
   "./modules/market-data.mjs?v=dev",
   "./modules/chart-adjustments.mjs?v=dev",
   "./modules/auxiliary-chart-contract.mjs?v=dev",
   "./modules/chart-display-sampler.mjs?v=dev",
-  "./modules/main-chart-model.mjs?v=dev",
   "./modules/cache-refresh-policy.js?v=dev",
-  "./modules/auxiliary-chart-model.mjs?v=dev",
-  "./modules/data-worker.mjs?v=dev",
-  "./modules/chart-model-worker.mjs?v=dev",
-  "./modules/chart-model-worker-runtime.mjs?v=dev",
+  "./assets/data-worker.bundle.min.js?v=dev",
+  "./assets/chart-model-worker.bundle.min.js?v=dev",
   "./vendor/plotly-thinkstock-2.35.2.min.js?v=dev",
   "./data/prices_recent.json",
   "./data/macro_data_recent.json",
@@ -661,6 +658,11 @@ assert.ok(dataPayload.includes("rowsFromColumnarPayload"), "shared columnar payl
 assert.ok(dataWorker.includes('from "./data-payload.mjs?v=dev"')
   && dataPayload.includes("function attachDataWorker("),
 "module data worker does not reuse the shared payload parser");
+assert.ok(app.includes("./assets/data-worker.bundle.min.js")
+  && sw.includes('"/assets/data-worker.bundle.min.js"')
+  && buildPagesBundle.includes('output: "data-worker.bundle.min.js"')
+  && buildPagesBundle.includes('entry: path.join(root, "docs", "modules", "data-worker.mjs")'),
+"data worker must deploy as one self-contained module bundle");
 assert.ok(app.includes('import marketDataModule from "./modules/market-data.mjs"')
   && !app.includes("chart-core-modules.mjs"),
 "market data module is not wired into the app");
@@ -684,6 +686,11 @@ assert.ok(mainChartModel.includes("function buildMainChartRenderInputs(")
   && !app.includes("function buildMainChartRenderInputs("),
 "main chart render inputs and cache identity are not centralized");
 assert.ok(chartModelWorker.includes('import auxiliaryChartModel from "./auxiliary-chart-model.mjs?v=dev"'), "chart worker does not reuse the auxiliary chart model module");
+assert.ok(app.includes("./assets/chart-model-worker.bundle.min.js")
+  && sw.includes('"/assets/chart-model-worker.bundle.min.js"')
+  && buildPagesBundle.includes('output: "chart-model-worker.bundle.min.js"')
+  && buildPagesBundle.includes('format: "esm"'),
+"chart model worker must deploy as one self-contained module bundle");
 assert.ok(!app.includes("function mergeSources(") && !app.includes("function findTickerPriceRebaseSignal("), "market data logic still lives in app.js");
 assert.ok(app.includes('from "./modules/chart-interaction-math.mjs"'), "chart interaction math module is not wired into the app");
 assert.ok(chartInteractionMath.includes("axisPixelToXValue") && chartInteractionMath.includes("interpolateTraceYAtMs"),
@@ -864,6 +871,12 @@ assert.match(
   html,
   /\.\/assets\/app\.bundle\.min\.js\?v=dev&amp;build=\d+\.\d+&amp;asset=[a-f0-9]{12}/,
   "local app bundle content fingerprint is missing",
+);
+const stampedRuntimeFingerprint = html.match(/&amp;asset=([a-f0-9]{12})/)?.[1] || "";
+assert.equal(
+  stampedRuntimeFingerprint,
+  await runtimeBundleFingerprint(path.join(root, "docs", "assets")),
+  "local runtime fingerprint does not include every built feature bundle",
 );
 assert.equal([...html.matchAll(/<script\b/g)].length, 1, "runtime scripts are not bundled");
 assert.ok(appBundle.size <= packageJson.thinkstockBuild.appBundleMaxBytes,

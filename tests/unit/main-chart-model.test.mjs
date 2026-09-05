@@ -43,6 +43,63 @@ test("plans main chart dates and visible-series budget in the chart model", () =
   assert.deepEqual([...result.allowedSeries], ["^KS11", "customer_deposit", "005930.KS"]);
 });
 
+test("hidden series cannot move the visible main-chart date range", () => {
+  const result = model.buildMainChartRenderInputs({
+    activeMonths: 6,
+    boundRows: [[
+      { date: "2026-07-14", leading_cycle: 100 },
+      { date: "2026-09-01", leading_cycle: 101 },
+    ]],
+    coreSeries: ["^KS11", "leading_cycle"],
+    dateBounds: (groups, fallbackDate) => {
+      const dates = groups.flat().map((row) => row.date).filter(Boolean).sort();
+      return {
+        minDate: dates[0] || fallbackDate,
+        maxDate: dates.at(-1) || fallbackDate,
+      };
+    },
+    fallbackDate: "2026-09-05",
+    hiddenSeries: new Set(["leading_cycle"]),
+    priceRows: [
+      { date: "2025-07-14", "^KS11": 2800 },
+      { date: "2026-07-14", "^KS11": 3200 },
+    ],
+    shiftMonths: (date) => date,
+  });
+
+  assert.equal(result.dataEnd, "2026-07-14");
+  assert.equal(result.end, "2026-07-14");
+});
+
+test("an all-hidden chart retains the observed price range for its empty frame", () => {
+  const result = model.buildMainChartRenderInputs({
+    activeMonths: -12,
+    boundRows: [[
+      { date: "2026-09-01", leading_cycle: 101 },
+    ]],
+    coreSeries: ["^KS11", "leading_cycle"],
+    dateBounds: (groups, fallbackDate) => {
+      const dates = groups.flat().map((row) => row.date).filter(Boolean).sort();
+      return {
+        minDate: dates[0] || fallbackDate,
+        maxDate: dates.at(-1) || fallbackDate,
+      };
+    },
+    fallbackDate: "2026-09-05",
+    hiddenSeries: new Set(["^KS11", "leading_cycle"]),
+    priceRows: [
+      { date: "2025-07-14", "^KS11": 2800 },
+      { date: "2026-07-14", "^KS11": 3200 },
+    ],
+    shiftMonths: (date, months) => months === -12 ? "2025-07-14" : date,
+    supplementalSeries: ["leading_cycle"],
+  });
+
+  assert.equal(result.start, "2025-07-14");
+  assert.equal(result.end, "2026-07-14");
+  assert.equal(result.visibleSeriesCount, 0);
+});
+
 test("keeps main chart model cache-key construction deterministic", () => {
   const options = {
     dataStart: "2000-01-01",

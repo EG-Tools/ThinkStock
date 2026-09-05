@@ -1,6 +1,6 @@
 importScripts("./modules/cache-refresh-policy.js?v=dev");
 
-const CACHE_NAME = "thinkstock-dev-3.32";
+const CACHE_NAME = "thinkstock-dev-3.33";
 const NETWORK_FIRST_TIMEOUT_MS = 3500;
 const DATA_REFRESH_CONCURRENCY = 3;
 const DATA_MANIFEST_PATH = "./data/data_manifest.json";
@@ -12,17 +12,13 @@ const PRECACHE_ASSETS = [
   "./index.html",
   "./styles.css",
   "./assets/app.bundle.min.js?v=dev",
-  "./modules/data-payload.mjs?v=dev",
   "./modules/market-data.mjs?v=dev",
   "./modules/chart-adjustments.mjs?v=dev",
   "./modules/auxiliary-chart-contract.mjs?v=dev",
   "./modules/chart-display-sampler.mjs?v=dev",
-  "./modules/main-chart-model.mjs?v=dev",
   "./modules/cache-refresh-policy.js?v=dev",
-  "./modules/auxiliary-chart-model.mjs?v=dev",
-  "./modules/data-worker.mjs?v=dev",
-  "./modules/chart-model-worker.mjs?v=dev",
-  "./modules/chart-model-worker-runtime.mjs?v=dev",
+  "./assets/data-worker.bundle.min.js?v=dev",
+  "./assets/chart-model-worker.bundle.min.js?v=dev",
   "./vendor/plotly-thinkstock-2.35.2.min.js?v=dev",
   "./manifest.webmanifest",
   "./icon.svg",
@@ -61,17 +57,13 @@ const CORE_ASSET_PATHS = [
   "/assets/app.bundle.min.js",
   "/manifest.webmanifest",
   "/icon.svg",
-  "/modules/data-payload.mjs",
   "/modules/market-data.mjs",
   "/modules/chart-adjustments.mjs",
   "/modules/auxiliary-chart-contract.mjs",
   "/modules/chart-display-sampler.mjs",
-  "/modules/main-chart-model.mjs",
   "/modules/cache-refresh-policy.js",
-  "/modules/auxiliary-chart-model.mjs",
-  "/modules/data-worker.mjs",
-  "/modules/chart-model-worker.mjs",
-  "/modules/chart-model-worker-runtime.mjs",
+  "/assets/data-worker.bundle.min.js",
+  "/assets/chart-model-worker.bundle.min.js",
   "/assets/stock-research-worker.bundle.min.js",
   "/assets/market-timing-worker.bundle.min.js",
   "/modules/broker-report-worker.mjs",

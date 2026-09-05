@@ -235,6 +235,12 @@ function createChartSeriesTransformRuntime(options = {}) {
         seriesKey,
         traceIndex,
         nextY,
+        viewportTransform: Object.freeze({
+          center,
+          offset,
+          seriesScale,
+          viewportScale,
+        }),
         linkedUpdate: Object.freeze({
           traceIndexes: Object.freeze(linkedTraceIndexes),
           yUpdates: Object.freeze(linkedYUpdates),

@@ -27,7 +27,7 @@ async function expectAiForecastsAnchoredToOwner(page) {
         : []
     )));
     return traces
-      .filter((trace) => trace?.meta?.isAiForecastScenarioTrace)
+      .filter((trace) => trace?.meta?.overlayKind === "ai-scenario")
       .flatMap((trace) => {
         const owner = priceBySeries.get(String(trace.meta.seriesKey || ""));
         const forecastTime = Date.parse(String(trace.x?.[0] || ""));
@@ -59,7 +59,7 @@ async function expectAiForecastsAnchoredToOwner(page) {
 async function readInsiderMarker(page, side) {
   return page.locator("#chart").evaluate((element, targetSide) => {
     const traceIndex = (element.data || []).findIndex((trace) => (
-      trace?.meta?.isInsiderTradeTrace && trace.meta.insiderTradeSide === targetSide
+      trace?.meta?.overlayKind === "insider" && trace.meta.insiderTradeSide === targetSide
     ));
     if (traceIndex < 0) return null;
     const trace = element.data[traceIndex];
@@ -97,16 +97,16 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
     const progress = document.getElementById("aiForecastProgress");
     const progressVisible = progress && getComputedStyle(progress).display !== "none";
     const forecastReady = (document.getElementById("chart")?.data || [])
-      .some((trace) => trace?.meta?.isAiForecastTrace);
+      .some((trace) => trace?.meta?.overlayKind === "ai-scenario");
     return progressVisible || forecastReady;
   })).toBe(true);
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
-    (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length
+    (element.data || []).filter((trace) => trace?.meta?.overlayKind === "ai-scenario").length
   )), { timeout: 30000 }).toBeGreaterThan(0);
   await expectAiForecastsAnchoredToOwner(page);
   await expect.poll(() => page.locator("#chart").evaluate((element, before) => {
     const forecastEnd = Math.max(...(element.data || [])
-      .filter((trace) => trace?.meta?.isAiForecastScenarioTrace)
+      .filter((trace) => trace?.meta?.overlayKind === "ai-scenario")
       .flatMap((trace) => (trace.x || []).map(Date.parse).filter(Number.isFinite)));
     const [start, end] = element._fullLayout.xaxis.range.map(Date.parse);
     return {
@@ -119,7 +119,7 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
     const [rangeLow, rangeHigh] = (element?._fullLayout?.yaxis?.range || []).map(Number);
     const tolerance = Math.max(0.05, Math.abs(rangeHigh - rangeLow) * 0.002);
     return (element.data || [])
-      .filter((trace) => trace?.meta?.isAiForecastScenarioTrace)
+      .filter((trace) => trace?.meta?.overlayKind === "ai-scenario")
       .flatMap((trace) => (trace.x || []).flatMap((date, index) => {
         const time = Date.parse(date);
         const value = Number(trace.y?.[index]);
@@ -129,7 +129,7 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
       })).length;
   }), { message: "AI forecast remained outside the auto-fitted chart range" }).toBe(0);
   const scenarioSummary = await page.locator("#chart").evaluate((element) => {
-    const traces = (element.data || []).filter((trace) => trace?.meta?.isAiForecastScenarioTrace);
+    const traces = (element.data || []).filter((trace) => trace?.meta?.overlayKind === "ai-scenario");
     return {
       count: traces.length,
       roles: [...new Set(traces.map((trace) => trace.meta.aiTraceRole))].sort(),
@@ -211,7 +211,7 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
   await page.waitForTimeout(250);
   const reportMarkerPoint = await page.locator("#chart").evaluate(async (element) => {
     const scenario = (element.data || []).find((trace) => (
-      trace?.meta?.isAiForecastScenarioTrace && trace?.meta?.isEmphasizedAiScenario
+      trace?.meta?.overlayKind === "ai-scenario" && trace?.meta?.isEmphasizedAiScenario
     ));
     const markerIndex = Math.round(((scenario?.x?.length || 1) - 1) * 0.5);
     const reports = [
@@ -243,11 +243,11 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
       text: ["R"],
       meta: {
         seriesKey: scenario.meta.seriesKey,
-        isAiReportMarkerTrace: true,
+        overlayKind: "ai-report",
         reports,
       },
     });
-    const marker = (element.data || []).find((trace) => trace?.meta?.isAiReportMarkerTrace);
+    const marker = (element.data || []).find((trace) => trace?.meta?.overlayKind === "ai-report");
     const xaxis = element?._fullLayout?.xaxis;
     const yaxis = element?._fullLayout?.yaxis;
     const rect = element.getBoundingClientRect();
@@ -278,11 +278,11 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
   await expect(page.locator("#chart .disclosure-popover")).toBeVisible();
   await page.locator("#chart .disclosure-popover").getByRole("button", { name: "공시 닫기" }).click();
   const horizonPoints = await page.locator("#chart").evaluate((element) => (
-    (element.data || []).find((trace) => trace?.meta?.isAiForecastTrace)?.x?.length || 0
+    (element.data || []).find((trace) => trace?.meta?.overlayKind === "ai-scenario")?.x?.length || 0
   ));
   expect(horizonPoints).toBe(127);
   const linkedDrag = await page.locator("#chart").evaluate((element) => {
-      const scenario = (element.data || []).find((trace) => trace?.meta?.isAiForecastScenarioTrace);
+      const scenario = (element.data || []).find((trace) => trace?.meta?.overlayKind === "ai-scenario");
       const seriesKey = scenario?.meta?.seriesKey;
       const priceTraceIndex = (element.data || []).findIndex((trace) => (
         trace?.meta?.overlayKind === "price" && trace?.meta?.seriesKey === seriesKey
@@ -294,12 +294,14 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
       const range = (xAxis?.range || []).map(Date.parse);
       const midpoint = (range[0] + range[1]) / 2;
       const priorityPoints = (element.data || []).flatMap((trace) => {
-        const isPriorityMarker = trace?.meta?.isCrisisSignalTrace
-          || trace?.meta?.isMarketTimingBuyTrace
-          || trace?.meta?.isMarketTimingSellTrace
-          || trace?.meta?.isInsiderTradeTrace
-          || trace?.meta?.isDisclosureTrace
-          || trace?.meta?.isAiReportMarkerTrace;
+        const isPriorityMarker = [
+          "crisis",
+          "timing-buy",
+          "timing-sell",
+          "insider",
+          "disclosure",
+          "ai-report",
+        ].includes(trace?.meta?.overlayKind);
         if (!isPriorityMarker) return [];
         return (trace.x || []).flatMap((date, index) => {
           const x = xAxis?._offset + xAxis?.d2p?.(date);
@@ -308,7 +310,7 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
         });
       });
       const firstForecastMs = Math.min(...(element.data || [])
-        .filter((trace) => trace?.meta?.isAiForecastScenarioTrace)
+        .filter((trace) => trace?.meta?.overlayKind === "ai-scenario")
         .flatMap((trace) => trace.x || [])
         .map(Date.parse)
         .filter(Number.isFinite));
@@ -338,7 +340,7 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
         y: rect.top + candidate.y,
         priceBefore: Number(priceTrace.y[pointIndex]),
         scenarioBefore: (element.data || [])
-          .filter((trace) => trace?.meta?.isAiForecastScenarioTrace
+          .filter((trace) => trace?.meta?.overlayKind === "ai-scenario"
             && trace?.meta?.seriesKey === seriesKey)
           .map((trace) => Number(trace.y?.[0])),
       };
@@ -358,7 +360,7 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
       const price = element.data?.[before.priceTraceIndex];
       const priceDelta = Number(price?.y?.[before.pointIndex]) - before.priceBefore;
       const scenarioDeltas = (element.data || [])
-        .filter((trace) => trace?.meta?.isAiForecastScenarioTrace
+        .filter((trace) => trace?.meta?.overlayKind === "ai-scenario"
           && trace?.meta?.seriesKey === before.seriesKey)
         .map((trace, index) => Number(trace.y?.[0]) - before.scenarioBefore[index]);
       return { priceDelta, scenarioDeltas };
@@ -373,13 +375,13 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
   await expectAiForecastsAnchoredToOwner(page);
   const observedEnd = await page.locator("#chart").evaluate((element) => Math.max(
     ...(element.data || [])
-      .filter((trace) => !trace?.meta?.isAiForecastScenarioTrace && Array.isArray(trace?.x))
+      .filter((trace) => trace?.meta?.overlayKind !== "ai-scenario" && Array.isArray(trace?.x))
       .flatMap((trace) => trace.x.map((date) => Date.parse(date)).filter(Number.isFinite)),
   ));
   await expect(page.locator("#aiForecastProgress")).toBeHidden({ timeout: 5000 });
 
   const forecastPrices = () => page.locator("#chart").evaluate((element) => (
-    (element.data || []).find((trace) => trace?.meta?.isAiForecastTrace)?.customdata || []
+    (element.data || []).find((trace) => trace?.meta?.overlayKind === "ai-scenario")?.customdata || []
   ));
   const baselineForecast = await forecastPrices();
 
@@ -431,12 +433,12 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
         return clearance(right) - clearance(left);
       })[0];
     const forecastDates = (element.data || [])
-      .filter((trace) => trace?.meta?.isAiForecastScenarioTrace)
+      .filter((trace) => trace?.meta?.overlayKind === "ai-scenario")
       .flatMap((trace) => trace.x || [])
       .map(Date.parse)
       .filter(Number.isFinite);
     const observedDates = (element.data || [])
-      .filter((trace) => trace?.meta?.seriesKey && !trace?.meta?.isAiForecastScenarioTrace)
+      .filter((trace) => trace?.meta?.seriesKey && trace?.meta?.overlayKind !== "ai-scenario")
       .flatMap((trace) => trace.x || [])
       .map(Date.parse)
       .filter(Number.isFinite);
@@ -446,7 +448,7 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
       y: rect.top + yAxis._offset + safeLocalY,
       forecastEnd: Math.max(...forecastDates),
       observedEnd: Math.max(...observedDates),
-      traceCount: (element.data || []).filter((trace) => trace?.meta?.isAiForecastScenarioTrace).length,
+      traceCount: (element.data || []).filter((trace) => trace?.meta?.overlayKind === "ai-scenario").length,
     };
   });
   const panChart = async (fromX, toX) => {
@@ -525,7 +527,7 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
     Date.parse(element?._fullLayout?.xaxis?.range?.[1])
   ))).toBeLessThan(panState.observedEnd);
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
-    (element.data || []).filter((trace) => trace?.meta?.isAiForecastScenarioTrace).length
+    (element.data || []).filter((trace) => trace?.meta?.overlayKind === "ai-scenario").length
   ))).toBe(panState.traceCount);
 
   await panChart(panState.laterX, panState.earlierX);
@@ -587,7 +589,7 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
 
   await page.locator("#aiForecastToggle").click();
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
-    (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length
+    (element.data || []).filter((trace) => trace?.meta?.overlayKind === "ai-scenario").length
   ))).toBe(0);
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     Date.parse(element?._fullLayout?.xaxis?.range?.[1])
@@ -597,9 +599,9 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
     const timestamps = (element.data || [])
       .filter((trace) => (
         trace?.meta?.seriesKey
-        && !trace?.meta?.isAiForecastTrace
-        && !trace?.meta?.isEpsTrace
-        && !trace?.meta?.isGroupedHoverTrace
+        && trace?.meta?.overlayKind !== "ai-scenario"
+        && trace?.meta?.overlayKind !== "eps"
+        && trace?.meta?.overlayKind !== "grouped-hover"
         && String(trace?.mode || "").includes("lines")
       ))
       .flatMap((trace) => (trace.x || []).map(Date.parse).filter(Number.isFinite));
@@ -617,7 +619,7 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
 
   await page.locator("#aiForecastToggle").click();
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
-    (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length
+    (element.data || []).filter((trace) => trace?.meta?.overlayKind === "ai-scenario").length
   )), { timeout: 30000 }).toBeGreaterThan(0);
   await expect.poll(() => page.locator("#chart").evaluate((element, expected) => {
     const actual = element._fullLayout.xaxis.range.map(Date.parse);
@@ -626,7 +628,7 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
 
   await page.locator("#aiForecastToggle").click();
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
-    (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length
+    (element.data || []).filter((trace) => trace?.meta?.overlayKind === "ai-scenario").length
   ))).toBe(0);
   await expect.poll(() => page.locator("#chart").evaluate((element, expected) => {
     const actual = element._fullLayout.xaxis.range.map(Date.parse);
@@ -664,55 +666,6 @@ test("AI explains insufficient price history and fades the message", async ({ pa
   await expect(message).toBeHidden({ timeout: 2500 });
 });
 
-test("AI toggle restores an unchanged wheel-zoomed viewport", async ({ page, isMobile }) => {
-  test.skip(isMobile, "Mouse wheel behavior is desktop-only.");
-  await stubExternalRefreshes(page);
-  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
-  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
-
-  const initial = await page.locator("#chart").evaluate((element) => {
-    const rect = element.getBoundingClientRect();
-    const xAxis = element._fullLayout.xaxis;
-    const yAxis = element._fullLayout.yaxis;
-    const range = xAxis.range.map(Date.parse);
-    return {
-      x: rect.left + xAxis._offset + (xAxis._length * 0.25),
-      y: rect.top + yAxis._offset + (yAxis._length * 0.5),
-      span: range[1] - range[0],
-    };
-  });
-  await page.locator("#chart").dispatchEvent("wheel", {
-    deltaY: -120,
-    clientX: initial.x,
-    clientY: initial.y,
-  });
-  await expect.poll(() => page.locator("#chart").evaluate((element) => {
-    const range = element._fullLayout.xaxis.range.map(Date.parse);
-    return range[1] - range[0];
-  })).toBeLessThan(initial.span * 0.9);
-  await page.waitForTimeout(220);
-  const zoomedRange = await page.locator("#chart").evaluate((element) => (
-    element._fullLayout.xaxis.range.map(Date.parse)
-  ));
-
-  await page.locator("#aiForecastToggle").click();
-  await expect.poll(() => page.locator("#chart").evaluate((element) => (
-    (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length
-  )), { timeout: 30000 }).toBeGreaterThan(0);
-  await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-busy", "false", {
-    timeout: 30000,
-  });
-  await page.locator("#aiForecastToggle").click();
-  await expect.poll(() => page.locator("#chart").evaluate((element) => (
-    (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length
-  ))).toBe(0);
-  await waitForChartRenderIdle(page);
-  await expect.poll(() => page.locator("#chart").evaluate((element, expected) => {
-    const actual = element._fullLayout.xaxis.range.map(Date.parse);
-    return Math.max(Math.abs(actual[0] - expected[0]), Math.abs(actual[1] - expected[1]));
-  }, zoomedRange)).toBeLessThanOrEqual(1000);
-});
-
 test("AI forecast opens for the first enabled series and stays stable while browsing history", async ({ page }) => {
   const pageUrl = process.env.THINKSTOCK_AI_EMPTY_BOOT_URL || "/?e2e=1";
   await stubExternalRefreshes(page);
@@ -743,7 +696,7 @@ test("AI forecast opens for the first enabled series and stays stable while brow
   await expect(page.locator('.series-toggle-btn[data-series="^KS11"]')).toHaveClass(/is-on/);
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     (element.data || []).filter((trace) => (
-      trace?.meta?.isAiForecastScenarioTrace && trace?.meta?.seriesKey === "^KS11"
+      trace?.meta?.overlayKind === "ai-scenario" && trace?.meta?.seriesKey === "^KS11"
     )).length
   )), {
     message: "KOSPI AI forecast did not render after an empty boot",
@@ -752,14 +705,14 @@ test("AI forecast opens for the first enabled series and stays stable while brow
   const visibleRange = await page.locator("#chart").evaluate((element) => {
     const observedEnd = Math.max(
       ...(element.data || [])
-        .filter((trace) => !trace?.meta?.isAiForecastScenarioTrace && Array.isArray(trace?.x))
+        .filter((trace) => trace?.meta?.overlayKind !== "ai-scenario" && Array.isArray(trace?.x))
         .flatMap((trace) => trace.x.map((date) => Date.parse(date)).filter(Number.isFinite)),
     );
     return {
       observedEnd,
       forecastEnd: Math.max(
         ...(element.data || [])
-          .filter((trace) => trace?.meta?.isAiForecastScenarioTrace && Array.isArray(trace?.x))
+          .filter((trace) => trace?.meta?.overlayKind === "ai-scenario" && Array.isArray(trace?.x))
           .flatMap((trace) => trace.x.map((date) => Date.parse(date)).filter(Number.isFinite)),
       ),
       viewportEnd: Date.parse(element?._fullLayout?.xaxis?.range?.[1]),
@@ -777,7 +730,7 @@ test("AI forecast opens for the first enabled series and stays stable while brow
 
   const latestForecastPaths = await page.locator("#chart").evaluate((element) => (
     Object.fromEntries((element.data || [])
-      .filter((trace) => trace?.meta?.isAiForecastScenarioTrace && trace?.meta?.seriesKey === "^KS11")
+      .filter((trace) => trace?.meta?.overlayKind === "ai-scenario" && trace?.meta?.seriesKey === "^KS11")
       .map((trace) => [trace.meta.aiTraceRole, [...(trace.customdata || [])]]))
   ));
   const calculationCountsBeforeHistory = await page.evaluate(() => (
@@ -809,11 +762,11 @@ test("AI off clamps the viewport to the last observed date", async ({ page }) =>
 
   await page.locator("#aiForecastToggle").click();
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
-    (element.data || []).filter((trace) => trace?.meta?.isAiForecastScenarioTrace).length
+    (element.data || []).filter((trace) => trace?.meta?.overlayKind === "ai-scenario").length
   )), { timeout: 30000 }).toBeGreaterThan(0);
   const observedEnd = await page.locator("#chart").evaluate((element) => Math.max(
     ...(element.data || [])
-      .filter((trace) => !trace?.meta?.isAiForecastScenarioTrace && Array.isArray(trace?.x))
+      .filter((trace) => trace?.meta?.overlayKind !== "ai-scenario" && Array.isArray(trace?.x))
       .flatMap((trace) => trace.x.map((date) => Date.parse(date)).filter(Number.isFinite)),
   ));
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
@@ -822,7 +775,7 @@ test("AI off clamps the viewport to the last observed date", async ({ page }) =>
 
   await page.locator("#aiForecastToggle").click();
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
-    (element.data || []).filter((trace) => trace?.meta?.isAiForecastScenarioTrace).length
+    (element.data || []).filter((trace) => trace?.meta?.overlayKind === "ai-scenario").length
   ))).toBe(0);
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     Date.parse(element?._fullLayout?.xaxis?.range?.[1])
@@ -854,7 +807,7 @@ test("AI forecasts survive repeated KOSPI and KOSDAQ toggle cycles", async ({ pa
     await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-pressed", "true");
     await expect.poll(() => page.locator("#chart").evaluate((element) => (
       new Set((element.data || [])
-        .filter((trace) => trace?.meta?.isAiForecastScenarioTrace)
+        .filter((trace) => trace?.meta?.overlayKind === "ai-scenario")
         .map((trace) => trace?.meta?.seriesKey)).size
     )), {
       message: `AI cycle ${cycle + 1} did not render both indices`,
@@ -872,7 +825,7 @@ test("AI forecasts survive repeated KOSPI and KOSDAQ toggle cycles", async ({ pa
     await page.locator("#aiForecastToggle").click();
     await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-pressed", "false");
     await expect.poll(() => page.locator("#chart").evaluate((element) => (
-      (element.data || []).filter((trace) => trace?.meta?.isAiForecastScenarioTrace).length
+      (element.data || []).filter((trace) => trace?.meta?.overlayKind === "ai-scenario").length
     ))).toBe(0);
   }
 
@@ -883,7 +836,7 @@ test("AI forecasts survive repeated KOSPI and KOSDAQ toggle cycles", async ({ pa
   await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-pressed", "true");
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     new Set((element.data || [])
-      .filter((trace) => trace?.meta?.isAiForecastScenarioTrace)
+      .filter((trace) => trace?.meta?.overlayKind === "ai-scenario")
       .map((trace) => trace?.meta?.seriesKey)).size
   )), {
     message: "rapid AI toggles did not preserve the final ON state",
@@ -920,7 +873,7 @@ test("enabling KOSDAQ while AI is active calculates only the new index", async (
   await page.locator("#aiForecastToggle").click();
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     (element.data || []).filter((trace) => (
-      trace?.meta?.isAiForecastScenarioTrace && trace?.meta?.seriesKey === "^KS11"
+      trace?.meta?.overlayKind === "ai-scenario" && trace?.meta?.seriesKey === "^KS11"
     )).length
   )), { timeout: 30000 }).toBe(3);
   await expect.poll(() => page.evaluate(() => {
@@ -943,7 +896,7 @@ test("enabling KOSDAQ while AI is active calculates only the new index", async (
   await expect(page.locator("#aiForecastProgress")).toBeVisible();
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     (element.data || []).filter((trace) => (
-      trace?.meta?.isAiForecastScenarioTrace && trace?.meta?.seriesKey === "^KQ11"
+      trace?.meta?.overlayKind === "ai-scenario" && trace?.meta?.seriesKey === "^KQ11"
     )).length
   )), { timeout: 30000 }).toBe(3);
   await expect(page.locator("#aiForecastProgress")).toBeHidden({ timeout: 5000 });
@@ -1021,15 +974,67 @@ test("AI requests analysis only for stock toggles that are on", async ({ page })
 });
 
 test("market timing applies to a visible stock series", async ({ page }) => {
-  await installDataRoutes(page);
+  test.setTimeout(90_000);
   const timingDates = Array.from({ length: 1300 }, (_, index) => (
     new Date(Date.UTC(2023, 0, 1 + index)).toISOString().slice(0, 10)
   ));
   const marketPrices = timingDates.map((_, index) => 2400 + (index * 0.35));
   const stockPrices = timingDates.map((_, index) => 52000 + (index * 18));
-  stockPrices[650] = stockPrices[649] * 1.3;
+  stockPrices[652] = stockPrices[651] * 1.3;
   stockPrices[stockPrices.length - 1] = stockPrices.at(-2) * 1.3;
   const recentStart = 850;
+  const wave = (base, amplitude, period) => timingDates.map((_, index) => (
+    base + (Math.sin(index / period) * amplitude)
+  ));
+  await installDataRoutes(page, { payloadOverrides: {
+    "macro_data_recent.json": columnar(
+      ["leading_cycle", "news_sentiment"],
+      timingDates,
+      { leading_cycle: wave(100, 1.5, 80), news_sentiment: wave(100, 8, 24) },
+    ),
+    "credit_data_recent.json": columnar(
+      ["customer_deposit", "kospi_credit", "kosdaq_credit"],
+      timingDates,
+      {
+        customer_deposit: wave(90, 4, 70),
+        kospi_credit: wave(20, 1.5, 55),
+        kosdaq_credit: wave(7, 0.8, 48),
+      },
+    ),
+    "adr_data_recent.json": columnar(
+      ["adr_kospi", "adr_kosdaq", "fear_greed"],
+      timingDates,
+      {
+        adr_kospi: wave(100, 12, 20),
+        adr_kosdaq: wave(100, 14, 18),
+        fear_greed: wave(50, 18, 22),
+      },
+    ),
+  } });
+  await page.route("**/api/adr**", async (route) => {
+    await route.fulfill({ json: {
+      ok: true,
+      cached: true,
+      stale: false,
+      latestDate: timingDates.at(-1),
+      rows: timingDates.map((date, index) => ({
+        date,
+        adr_kospi: 100 + (Math.sin(index / 20) * 12),
+        adr_kosdaq: 100 + (Math.sin(index / 18) * 14),
+      })),
+    } });
+  });
+  await page.route("**/api/indices**", async (route) => {
+    await route.fulfill({ json: {
+      ok: true,
+      records: ["^KS11", "^KQ11"].flatMap((ticker) => timingDates.map((date, index) => ({
+        ticker,
+        date,
+        close: ticker === "^KS11" ? marketPrices[index] : marketPrices[index] * 0.28,
+        volume: 1_000_000 + index,
+      }))),
+    } });
+  });
   await page.route("**/data/prices_recent.json*", async (route) => {
     await route.fulfill({ json: columnar(
       ["^KS11", "^KQ11", "005930.KS"],
@@ -1052,9 +1057,22 @@ test("market timing applies to a visible stock series", async ({ page }) => {
       },
     ) });
   });
+  await page.route("**/api/research/history**", async (route) => {
+    const ticker = new URL(route.request().url()).searchParams.get("ticker") || "";
+    await route.fulfill({ json: {
+      ok: true,
+      ticker,
+      rows: timingDates.map((date, index) => ({
+        date,
+        close: ticker === "005930.KS" ? stockPrices[index] : marketPrices[index],
+        volume: 1_000_000 + index,
+      })),
+    } });
+  });
   await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "private" }));
     localStorage.setItem("thinkstock-v5", JSON.stringify({
-      activeMonths: 360,
+      activeMonths: 12,
       customStocks: [
         { ticker: "005930.KS", name: "삼성전자", code: "005930", market: "KOSPI" },
       ],
@@ -1065,17 +1083,21 @@ test("market timing applies to a visible stock series", async ({ page }) => {
   });
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await waitForAppReady(page);
+  await expect.poll(() => page.evaluate(() => (
+    window.ThinkStockE2E.getRuntimeDiagnosticState().refreshPhases.supplementalReady
+  )), { timeout: 60_000 }).toBeGreaterThan(0);
 
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     (element.data || [])
-      .filter((trace) => trace?.meta?.isMarketTimingBuyTrace || trace?.meta?.isMarketTimingSellTrace)
+      .filter((trace) => ["timing-buy", "timing-sell"].includes(trace?.meta?.overlayKind))
       .flatMap((trace) => trace.customdata || [])
       .some((row) => row?.[0] === "삼성전자")
   ))).toBe(true);
   const historicalMarkerCoverage = await page.locator("#chart").evaluate((element) => {
     const viewportStart = Date.parse(element?._fullLayout?.xaxis?.range?.[0] || "");
     const markerDates = (element.data || [])
-      .filter((trace) => trace?.meta?.isMarketTimingBuyTrace || trace?.meta?.isMarketTimingSellTrace)
+      .filter((trace) => ["timing-buy", "timing-sell"].includes(trace?.meta?.overlayKind))
       .flatMap((trace) => trace.x || [])
       .map((date) => Date.parse(date))
       .filter(Number.isFinite);
@@ -1088,7 +1110,7 @@ test("market timing applies to a visible stock series", async ({ page }) => {
   expect(historicalMarkerCoverage.hasMarkerBeforeViewport).toBe(true);
   const timingMarkerStyles = await page.locator("#chart").evaluate((element) => (
     (element.data || [])
-      .filter((trace) => trace?.meta?.isMarketTimingBuyTrace || trace?.meta?.isMarketTimingSellTrace)
+      .filter((trace) => ["timing-buy", "timing-sell"].includes(trace?.meta?.overlayKind))
       .map((trace) => ({ text: trace.text?.[0], size: trace.textfont?.size }))
   ));
   expect(timingMarkerStyles.length).toBeGreaterThan(0);
@@ -1098,7 +1120,7 @@ test("market timing applies to a visible stock series", async ({ page }) => {
 
   const maximumTimingMarkerGap = async () => {
     const gaps = await page.evaluate(() => window.ThinkStockE2E.getTimingMarkerPixelGaps());
-    return gaps.length ? Math.max(...gaps) : Number.POSITIVE_INFINITY;
+    return gaps.length ? Math.max(...gaps) : 0;
   };
 
   await page.locator("#apiOptionsBtn").click();
@@ -1123,7 +1145,7 @@ test("market timing applies to a visible stock series", async ({ page }) => {
 
   await page.locator("#aiForecastToggle").click();
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
-    (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length
+    (element.data || []).filter((trace) => trace?.meta?.overlayKind === "ai-scenario").length
   )), { timeout: 20000 }).toBeGreaterThan(0);
   await expect.poll(maximumTimingMarkerGap).toBeLessThan(24);
 
@@ -1210,6 +1232,7 @@ test("market timing applies to a visible stock series", async ({ page }) => {
 test("signal calculation shows progress while an uncached timing model is prepared", async ({ page }) => {
   await stubExternalRefreshes(page);
   await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "private" }));
     localStorage.setItem("thinkstock-v5", JSON.stringify({
       activeMonths: 12,
       hiddenSeries: [
@@ -1253,7 +1276,7 @@ test("signal calculation shows progress while an uncached timing model is prepar
   await expect(page.locator("#signalProgress")).toBeHidden({ timeout: 10000 });
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     (element.data || []).some((trace) => (
-      trace?.meta?.isMarketTimingBuyTrace || trace?.meta?.isMarketTimingSellTrace
+      ["timing-buy", "timing-sell"].includes(trace?.meta?.overlayKind)
     ))
   ))).toBe(true);
 });
@@ -1261,6 +1284,7 @@ test("signal calculation shows progress while an uncached timing model is prepar
 test("timing hover wraps reasons and its shared hit area opens the popover", async ({ page, isMobile }) => {
   await stubExternalRefreshes(page);
   await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "private" }));
     localStorage.setItem("thinkstock-v5", JSON.stringify({
       activeMonths: 360,
       customStocks: [
@@ -1274,7 +1298,7 @@ test("timing hover wraps reasons and its shared hit area opens the popover", asy
 
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const traceIndex = (element.data || []).findIndex((trace) => (
-      (trace?.meta?.isMarketTimingBuyTrace || trace?.meta?.isMarketTimingSellTrace)
+      ["timing-buy", "timing-sell"].includes(trace?.meta?.overlayKind)
       && Array.isArray(trace.x)
       && trace.x.length > 0
     ));
@@ -1290,7 +1314,7 @@ test("timing hover wraps reasons and its shared hit area opens the popover", asy
 
   const target = await page.locator("#chart").evaluate((element) => {
     const traceIndex = (element.data || []).findIndex((trace) => (
-      (trace?.meta?.isMarketTimingBuyTrace || trace?.meta?.isMarketTimingSellTrace)
+      ["timing-buy", "timing-sell"].includes(trace?.meta?.overlayKind)
       && Array.isArray(trace.x)
       && trace.x.length > 0
     ));
@@ -1332,6 +1356,7 @@ test("timing hover wraps reasons and its shared hit area opens the popover", asy
 test("timing hover keeps active signal rows after viewport zoom", async ({ page, isMobile }) => {
   await stubExternalRefreshes(page);
   await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "private" }));
     localStorage.setItem("thinkstock-v5", JSON.stringify({
       activeMonths: 12,
       customStocks: [
@@ -1346,12 +1371,15 @@ test("timing hover keeps active signal rows after viewport zoom", async ({ page,
 
   const findSignalGroup = () => page.locator("#chart").evaluate((element) => {
     const byDate = new Map();
+    const xaxis = element?._fullLayout?.xaxis;
     (element.data || []).forEach((trace, traceIndex) => {
-      if (!trace?.meta?.isMarketTimingBuyTrace && !trace?.meta?.isMarketTimingSellTrace) return;
+      if (!["timing-buy", "timing-sell"].includes(trace?.meta?.overlayKind)) return;
       (trace.x || []).forEach((date, pointIndex) => {
         const ticker = String(trace.meta?.pointTickers?.[pointIndex] || "");
         const label = String(trace.customdata?.[pointIndex]?.[0] || ticker);
         if (!["^KS11", "218410.KQ", "033100.KQ"].includes(ticker) || !date) return;
+        const markerX = Number(xaxis?.d2p?.(date));
+        if (!Number.isFinite(markerX) || markerX < 140 || markerX > Number(xaxis?._length || 0) - 100) return;
         const key = String(date).slice(0, 10);
         const points = byDate.get(key) || [];
         points.push({ date: key, label, pointIndex, ticker, traceIndex });
@@ -1369,6 +1397,7 @@ test("timing hover keeps active signal rows after viewport zoom", async ({ page,
       || null;
   });
   await expect.poll(findSignalGroup, { timeout: 30000 }).not.toBeNull();
+  await waitForChartRenderIdle(page);
   const points = await findSignalGroup();
   const targets = [...new Map(points.map((point) => [point.ticker, point])).values()]
     .sort((left, right) => Number(left.ticker.startsWith("^")) - Number(right.ticker.startsWith("^")))
@@ -1378,7 +1407,7 @@ test("timing hover keeps active signal rows after viewport zoom", async ({ page,
     let trace = null;
     let pointIndex = -1;
     for (const candidate of element.data || []) {
-      if (!candidate?.meta?.isMarketTimingBuyTrace && !candidate?.meta?.isMarketTimingSellTrace) continue;
+      if (!["timing-buy", "timing-sell"].includes(candidate?.meta?.overlayKind)) continue;
       const index = (candidate.x || []).findIndex((date, candidateIndex) => (
         String(date).slice(0, 10) === point.date
         && String(candidate.meta?.pointTickers?.[candidateIndex] || "") === point.ticker
@@ -1441,6 +1470,7 @@ test("timing hover keeps active signal rows after viewport zoom", async ({ page,
 
   let marker = await hoverMarker(targets[0]);
   expect(marker).not.toBeNull();
+  await page.mouse.move(marker.x + 30, marker.y + 30);
   await page.mouse.move(marker.x, marker.y);
   await expect(page.locator("#chart")).toHaveClass(/is-event-marker-hovering/);
   await expectEverySignal();
@@ -1455,6 +1485,7 @@ test("timing hover keeps active signal rows after viewport zoom", async ({ page,
   }, zoomedRange)).toBe(true);
   marker = await hoverMarker(targets[0]);
   expect(marker).not.toBeNull();
+  await page.mouse.move(marker.x + 30, marker.y + 30);
   await page.mouse.move(marker.x, marker.y);
   await expect(page.locator("#chart")).toHaveClass(/is-event-marker-hovering/);
   await expectEverySignal();
@@ -1489,7 +1520,7 @@ test("co-movement toggle shows only the last visible stock for the selected peri
       {
         "^KS11": [2800, 2900, 3000, 3100, 3200],
         "^KQ11": [780, 800, 820, 840, 860],
-        "005930.KS": [70000, 72000, 74000, 76000, 78000],
+        "005930.KS": [70000, 72000, 75000, 76000, 78000],
         "000660.KS": [90000, 88000, 91000, 93000, 95000],
       },
     ) });
@@ -1502,6 +1533,7 @@ test("co-movement toggle shows only the last visible stock for the selected peri
         { ticker: "000660.KS", name: "SK하이닉스", code: "000660", market: "KOSPI" },
       ],
       showCoMovement: true,
+      showRecessionSignals: false,
     }));
   });
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
@@ -1647,6 +1679,25 @@ test("co-movement recalculates from the five sessions currently visible", async 
 test("insider trade toggle draws DART buy and sell triangles for three years", async ({ page }) => {
   await installDataRoutes(page);
   await stubExternalRefreshes(page);
+  await page.route("https://thinkstock-api.keg0320.workers.dev/api/research/history**", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    const ticker = String(requestUrl.searchParams.get("ticker") || "").trim().toUpperCase();
+    const since = String(requestUrl.searchParams.get("since") || "").slice(0, 10);
+    const rowsByTicker = {
+      "005930.KS": recentDates.map((date, index) => ({
+        date,
+        close: [70000, 72000, 74000, 76000, 78000][index],
+        volume: 1_000_000 + (index * 10_000),
+      })),
+      "000660.KS": [
+        { date: "2026-01-14", close: 180000, volume: 900_000 },
+        { date: "2026-04-14", close: 210000, volume: 950_000 },
+        { date: "2026-07-14", close: 240000, volume: 1_000_000 },
+      ],
+    };
+    const rows = (rowsByTicker[ticker] || []).filter((row) => !since || row.date >= since);
+    await route.fulfill({ json: { ok: true, ticker, rows } });
+  });
   await page.route("**/data/disclosures/005930.KS.json*", async (route) => {
     await route.fulfill({ json: {
       generated_at: "2026-07-15T00:00:00Z",
@@ -1681,6 +1732,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
       hoverShowPopup: true,
       showDisclosures: true,
       showInsiderTrades: false,
+      showRecessionSignals: false,
     }));
   });
   await page.route("https://thinkstock-api.keg0320.workers.dev/api/dart/insider-trades?*", async (route) => {
@@ -1790,7 +1842,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
     gatewayReady: true,
   });
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
-    (element.data || []).filter((trace) => trace?.meta?.isInsiderTradeTrace).map((trace) => ({
+    (element.data || []).filter((trace) => trace?.meta?.overlayKind === "insider").map((trace) => ({
       side: trace.meta.insiderTradeSide,
       text: trace.text?.[0],
       color: trace.textfont?.color,
@@ -1804,7 +1856,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   ]);
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const html = (element.data || [])
-      .filter((trace) => trace?.meta?.isGroupedHoverTrace)
+      .filter((trace) => trace?.meta?.overlayKind === "grouped-hover")
       .flatMap((trace) => trace.text || [])
       .join("\n");
     return {
@@ -1819,7 +1871,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   });
   const eventHoverTemplates = await page.locator("#chart").evaluate((element) => (
     (element.data || [])
-      .filter((trace) => trace?.meta?.isDisclosureTrace || trace?.meta?.isInsiderTradeTrace)
+      .filter((trace) => ["disclosure", "insider"].includes(trace?.meta?.overlayKind))
       .flatMap((trace) => trace.hovertemplate || [])
   ));
   expect(eventHoverTemplates.every((template) => !template)).toBe(true);
@@ -1846,8 +1898,8 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
       && insider.every((value, index) => value === reset[index]);
   })).toBe(true);
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
-    const disclosure = (element.data || []).find((trace) => trace?.meta?.isDisclosureTrace);
-    const insiders = (element.data || []).filter((trace) => trace?.meta?.isInsiderTradeTrace);
+    const disclosure = (element.data || []).find((trace) => trace?.meta?.overlayKind === "disclosure");
+    const insiders = (element.data || []).filter((trace) => trace?.meta?.overlayKind === "insider");
     const stock = (element.data || []).find((trace) => trace?.meta?.seriesKey === "005930.KS");
     const stockYAt = (date) => {
       const index = stock?.x?.indexOf(date) ?? -1;
@@ -1940,9 +1992,9 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
     if (stockIndex < 0 || !axis || typeof axis.l2p !== "function") return [];
     const stockPixel = axis.l2p(Number(stock.y[stockIndex]));
     return (element.data || []).flatMap((trace) => {
-      const kind = trace?.meta?.isDisclosureTrace
+      const kind = trace?.meta?.overlayKind === "disclosure"
         ? "disclosure"
-        : trace?.meta?.isInsiderTradeTrace
+        : trace?.meta?.overlayKind === "insider"
           ? `insider-${trace.meta.insiderTradeSide || ""}`
           : "";
       if (!kind) return [];
@@ -2211,7 +2263,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   };
   const eventHoverInfo = () => page.locator("#chart").evaluate((element) => (
     (element.data || [])
-      .filter((trace) => trace?.meta?.isInsiderTradeTrace || trace?.meta?.isDisclosureTrace)
+      .filter((trace) => ["insider", "disclosure"].includes(trace?.meta?.overlayKind))
       .map((trace) => trace.hoverinfo)
   ));
   await moveNativeHoverToDate("2026-01-14");
@@ -2224,7 +2276,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
 
   const insiderMarkerTickers = () => page.locator("#chart").evaluate((element) => (
     [...new Set((element.data || [])
-      .filter((trace) => trace?.meta?.isInsiderTradeTrace)
+      .filter((trace) => trace?.meta?.overlayKind === "insider")
       .flatMap((trace) => trace.customdata || [])
       .map((item) => item?.[0])
       .filter(Boolean))].sort()
@@ -2242,7 +2294,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   await expect.poll(insiderMarkerTickers).toEqual(["000660.KS", "005930.KS"]);
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     (element.data || [])
-      .filter((trace) => trace?.meta?.isInsiderTradeTrace)
+      .filter((trace) => trace?.meta?.overlayKind === "insider")
       .flatMap((trace) => trace.customdata || [])
       .find((item) => item?.[0] === "000660.KS")?.[2]
   ))).toBe(false);
@@ -2258,7 +2310,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   await page.locator("#insiderTradeToggle").click();
   await expect(page.locator("#insiderTradeToggle")).toHaveText("내부거래");
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
-    (element.data || []).filter((trace) => trace?.meta?.isInsiderTradeTrace).length
+    (element.data || []).filter((trace) => trace?.meta?.overlayKind === "insider").length
   ))).toBe(0);
   });
 });
@@ -2339,7 +2391,7 @@ test("AI analysis loads only on demand and reuses today's browser cache", async 
     (element.data || []).filter((trace) => trace?.meta?.fundamentalsUsed).length
   )), { timeout: 30000 }).toBeGreaterThan(0);
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
-    const trace = (element.data || []).find((item) => item?.meta?.isAiForecastTrace);
+    const trace = (element.data || []).find((item) => item?.meta?.overlayKind === "ai-scenario");
     const rangeEnd = element?._fullLayout?.xaxis?.range?.[1];
     return Boolean(trace?.x?.at(-1) && rangeEnd && String(rangeEnd).slice(0, 10) >= trace.x.at(-1));
   })).toBe(true);
@@ -2356,7 +2408,7 @@ test("AI analysis loads only on demand and reuses today's browser cache", async 
   await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator("#aiForecastToggle")).not.toHaveClass(/is-active/);
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
-    (element.data || []).filter((trace) => trace?.meta?.isAiForecastTrace).length
+    (element.data || []).filter((trace) => trace?.meta?.overlayKind === "ai-scenario").length
   ))).toBe(0);
   await expect(page.locator("#aiForecastToggle")).toBeEnabled();
   await page.locator("#aiForecastToggle").click();

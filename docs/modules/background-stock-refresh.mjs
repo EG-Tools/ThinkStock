@@ -57,6 +57,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
     let runningKey = "";
     let runningEntry = null;
     let disposed = false;
+    let lifecycleListenersAttached = false;
     let lastActivityAt = Number.NEGATIVE_INFINITY;
     let lastCompletedAt = Number.NEGATIVE_INFINITY;
     const counters = {
@@ -85,9 +86,6 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
       ) return;
       lastActivityAt = currentTime;
     };
-    activityEvents.forEach((eventName) => {
-      activityTarget?.addEventListener?.(eventName, noteActivity, { capture: true, passive: true });
-    });
 
     const pageHidden = () => pauseWhenHidden && visibilityTarget?.visibilityState === "hidden";
     const onVisibilityChange = () => {
@@ -100,7 +98,22 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
       clearWakeup();
       schedulePump(retryDelayMs);
     };
-    visibilityTarget?.addEventListener?.("visibilitychange", onVisibilityChange);
+
+    function hasLifecycleWork() {
+      return Boolean(runningEntry || queue.size);
+    }
+
+    function syncLifecycleListeners() {
+      const shouldAttach = !disposed && hasLifecycleWork();
+      if (shouldAttach === lifecycleListenersAttached) return;
+      lifecycleListenersAttached = shouldAttach;
+      activityEvents.forEach((eventName) => {
+        const method = shouldAttach ? "addEventListener" : "removeEventListener";
+        activityTarget?.[method]?.(eventName, noteActivity, { capture: true, passive: true });
+      });
+      const visibilityMethod = shouldAttach ? "addEventListener" : "removeEventListener";
+      visibilityTarget?.[visibilityMethod]?.("visibilitychange", onVisibilityChange);
+    }
 
     function clearWakeup() {
       if (timerHandle) scope.clearTimeout?.(timerHandle);
@@ -246,11 +259,13 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
       if (entry.signal?.aborted || entry.shouldRun?.() === false) {
         counters.cancelled += 1;
         settle(entry, false);
+        syncLifecycleListeners();
         schedulePump();
         return;
       }
       runningKey = entry.key;
       runningEntry = entry;
+      syncLifecycleListeners();
       const taskStartedAt = now();
       const queueWaitMs = Math.max(0, taskStartedAt - entry.enqueuedAt);
       counters.totalQueueWaitMs += queueWaitMs;
@@ -273,6 +288,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
         runningKey = "";
         if (runningEntry === entry) runningEntry = null;
         lastCompletedAt = now();
+        syncLifecycleListeners();
         schedulePump(minimumTaskGapMs);
       }
     }
@@ -333,6 +349,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
       });
       externalSignal?.addEventListener?.("abort", forwardAbort, { once: true });
       counters.enqueued += 1;
+      syncLifecycleListeners();
       clearWakeup();
       schedulePump();
       return promise;
@@ -352,6 +369,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
       counters.cancelled += 1;
       abortEntry(entry);
       settle(entry, false);
+      syncLifecycleListeners();
       clearWakeup();
       schedulePump();
       return true;
@@ -370,10 +388,6 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
     function dispose() {
       disposed = true;
       clearWakeup();
-      activityEvents.forEach((eventName) => {
-        activityTarget?.removeEventListener?.(eventName, noteActivity, { capture: true });
-      });
-      visibilityTarget?.removeEventListener?.("visibilitychange", onVisibilityChange);
       if (runningEntry) {
         abortEntry(runningEntry);
         settle(runningEntry, false);
@@ -385,6 +399,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
       });
       counters.cancelled += queue.size;
       queue.clear();
+      syncLifecycleListeners();
     }
 
     return Object.freeze({
@@ -403,6 +418,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
         }, {})),
         runningGroup: runningEntry?.group || "",
         runningKey,
+        lifecycleListenersAttached,
       }),
     });
   }
@@ -488,15 +504,17 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
           if (isAbortError(error) || signal?.aborted) throw error;
           if (hadExisting) {
             options.setDisplayName?.(ticker, name);
-            return null;
+            return { ticker, name, retainedExisting: true };
           }
           return { ticker, name };
         }
       });
       throwIfAborted(signal);
-      const failedResults = results.filter(Boolean);
+      const unconfirmedResults = results.filter(Boolean);
+      const failedResults = unconfirmedResults.filter((item) => item.retainedExisting !== true);
       const failed = failedResults.map((item) => item.ticker);
       const failedNames = failedResults.map((item) => item.name);
+      const unconfirmedTickers = unconfirmedResults.map((item) => item.ticker);
       options.recordPerformance?.("preloadCustomStocks", perfStartedAt, {
         stocks: items.length,
         concurrency,
@@ -504,11 +522,17 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
         scope,
       });
 
+      const result = {
+        failedNames,
+        processed: items.length,
+        scope,
+        ...(unconfirmedTickers.length ? { unconfirmedTickers } : {}),
+      };
       if (!failed.length || runOptions.preserveFailed === true) {
-        return { failedNames, processed: items.length, scope };
+        return result;
       }
       options.removeFailed?.(failed);
-      return { failedNames, processed: items.length, scope };
+      return result;
     }
 
     return Object.freeze({ preload });

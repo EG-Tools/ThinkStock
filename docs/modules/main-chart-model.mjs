@@ -55,9 +55,27 @@ import marketData from "./market-data.mjs";
     const toUtcMs = typeof options.toUtcMs === "function"
       ? options.toUtcMs
       : (value) => Date.parse(String(value || ""));
-    const { minDate, maxDate } = dateBounds([
+    const allowedSeries = new Set([
+      ...(Array.isArray(options.coreSeries) ? options.coreSeries : []),
+      ...(Array.isArray(options.customSeries) ? options.customSeries : []),
+    ]);
+    const supplemental = new Set(options.supplementalSeries || []);
+    const hidden = options.hiddenSeries instanceof Set
+      ? options.hiddenSeries
+      : new Set(options.hiddenSeries || []);
+    const visibleDateSeries = [...allowedSeries]
+      .filter((key) => !supplemental.has(key) && !hidden.has(key));
+    const dateSeriesForBounds = visibleDateSeries.length
+      ? visibleDateSeries
+      : [...allowedSeries].filter((key) => !supplemental.has(key));
+    const dateBoundRows = [
       priceRows,
       ...(Array.isArray(options.boundRows) ? options.boundRows : []),
+    ].map((rows) => rows.filter((row) => (
+      dateSeriesForBounds.some((key) => toNum(row?.[key]) !== null)
+    )));
+    const { minDate, maxDate } = dateBounds([
+      ...dateBoundRows,
     ], fallbackDate);
     const end = maxDate;
     const requestedStart = shiftMonths(end, Number(options.activeMonths) || 0);
@@ -75,17 +93,7 @@ import marketData from "./market-data.mjs";
     const frameEnd = preservedFrameRange
       ? new Date(Math.min(toUtcMs(dataEnd), Number(preservedFrameRange[1]))).toISOString().slice(0, 10)
       : end;
-    const allowedSeries = new Set([
-      ...(Array.isArray(options.coreSeries) ? options.coreSeries : []),
-      ...(Array.isArray(options.customSeries) ? options.customSeries : []),
-    ]);
-    const supplemental = new Set(options.supplementalSeries || []);
-    const hidden = options.hiddenSeries instanceof Set
-      ? options.hiddenSeries
-      : new Set(options.hiddenSeries || []);
-    const visibleSeriesCount = [...allowedSeries]
-      .filter((key) => !supplemental.has(key) && !hidden.has(key))
-      .length;
+    const visibleSeriesCount = visibleDateSeries.length;
     return {
       allowedSeries,
       dataEnd,
@@ -339,6 +347,7 @@ import marketData from "./market-data.mjs";
     });
 
     return {
+      empty: selected.length === 0,
       rows,
       allSeries,
       selected,

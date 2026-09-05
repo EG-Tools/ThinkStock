@@ -242,14 +242,19 @@
       list.forEach((row) => {
         const date = normalizeKrxDate(row?.BAS_DD ?? row?.basDd ?? row?.BASDD);
         const close = parseLooseNumber(row?.CLSPRC_IDX ?? row?.TDD_CLSPRC ?? row?.CLSPRC ?? row?.closePrice);
+        const volume = parseLooseNumber(row?.ACC_TRDVOL ?? row?.ACC_TRDVOL_QTY ?? row?.volume);
         if (!date || !Number.isFinite(close)) return;
         const score = scoreKrxIndexName(
           row?.IDX_NM ?? row?.IDX_NM_KOR ?? row?.IDX_NM_ENG ?? row?.IDX_NM_EN ?? "",
           market,
         );
-        if (!best || score > best.score) best = { date, close, score };
+        if (!best || score > best.score) best = { date, close, volume, score };
       });
-      return best ? { date: best.date, close: best.close } : null;
+      return best ? {
+        date: best.date,
+        close: best.close,
+        ...(Number.isFinite(best.volume) && best.volume > 0 ? { volume: best.volume } : {}),
+      } : null;
     }
 
     async function fetchKrxIndexPoint(apiKey, market, baseDate, signal = null) {
@@ -293,7 +298,12 @@
           const point = await fetchKrxIndexPoint(key, target.market, baseDate, signal);
           if (!point) continue;
           if (!best || point.date > best.date) {
-            best = { ticker: target.ticker, date: point.date, close: point.close };
+            best = {
+              ticker: target.ticker,
+              date: point.date,
+              close: point.close,
+              ...(Number.isFinite(point.volume) ? { volume: point.volume } : {}),
+            };
           }
           if (best && normalizeKrxDate(baseDate) <= best.date) break;
         }

@@ -53,8 +53,8 @@ test("application feature lifecycle centralizes restored toggle predicates", () 
   lifecycle.optionalRefreshes.filter((entry) => entry.enabled()).forEach((entry) => entry.run());
 
   assert.deepEqual(lifecycle.restoredActivations.map((entry) => entry.name), ["timing", "dart"]);
-  assert.deepEqual(lifecycle.optionalRefreshes.map((entry) => entry.name), ["insider"]);
-  assert.deepEqual(calls, ["timing", "dart", "insider"]);
+  assert.deepEqual(lifecycle.optionalRefreshes.map((entry) => entry.name), ["insider", "ai", "eps"]);
+  assert.deepEqual(calls, ["timing", "dart", "insider", "refresh-ai", "eps"]);
 });
 
 test("runs application startup phases in one deterministic order", async () => {
@@ -89,7 +89,6 @@ test("runs application startup phases in one deterministic order", async () => {
     afterControls: () => calls.push("after-controls"),
     waitForFirstPaint: () => calls.push("paint"),
     refreshDuringStartup: ({ restoredSnapshot }) => calls.push(`refresh-${restoredSnapshot}`),
-    afterStartupRefresh: () => calls.push("after-refresh"),
     scheduleDiagnostics: () => calls.push("diagnostics"),
   });
 
@@ -123,9 +122,6 @@ test("runs application startup phases in one deterministic order", async () => {
     "perf-start",
     "refresh-snapshot",
     "phase-refresh-7",
-    "perf-start",
-    "after-refresh",
-    "phase-fit-7",
     "progress-100",
     "loader-hide",
     "perf-finish-7",
@@ -210,6 +206,66 @@ test("runtime refresh runs only enabled optional features in order", async () =>
 
   await runtime.refreshRuntime(null, { force: true });
   assert.deepEqual(calls, ["data", "render:true", "fit", "ai", "insider"]);
+});
+
+test("manual runtime refresh reconciles the viewport after optional features", async () => {
+  const calls = [];
+  const runtime = createApplicationLifecycleRuntime({
+    refresh: {
+      runData: () => calls.push("data"),
+      renderAfterData: false,
+      reconcileViewport: () => calls.push("reconcile"),
+    },
+    optionalRefreshes: [
+      { name: "eps", enabled: () => true, run: () => calls.push("eps") },
+    ],
+  });
+
+  await runtime.refreshRuntime(null, { reconcileViewport: true });
+  assert.deepEqual(calls, ["data", "eps", "reconcile"]);
+});
+
+test("runtime refresh can run independent optional features through a bounded lane", async () => {
+  const calls = [];
+  const releases = [];
+  const runtime = createApplicationLifecycleRuntime({
+    runOptionalRefreshes: async (jobs) => {
+      const results = [];
+      let nextIndex = 0;
+      await Promise.all(Array.from({ length: 2 }, async () => {
+        while (nextIndex < jobs.length) {
+          const index = nextIndex;
+          nextIndex += 1;
+          results[index] = await jobs[index]();
+        }
+      }));
+      return results;
+    },
+    refresh: { runData: () => calls.push("data"), renderAfterData: false },
+    optionalRefreshes: ["insider", "ai", "eps"].map((name) => ({
+      name,
+      enabled: () => true,
+      run: () => new Promise((resolve) => {
+        calls.push(`start:${name}`);
+        releases.push(() => {
+          calls.push(`end:${name}`);
+          resolve();
+        });
+      }),
+    })),
+  });
+
+  const refresh = runtime.refreshRuntime(null);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(calls, ["data", "start:insider", "start:ai"]);
+  releases.shift()();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.includes("start:eps"), true);
+  releases.splice(0).forEach((release) => release());
+  await Promise.resolve();
+  releases.splice(0).forEach((release) => release());
+  await refresh;
 });
 
 test("restored feature activation does not block the startup sequence", async () => {

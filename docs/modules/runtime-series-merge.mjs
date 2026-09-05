@@ -1,7 +1,11 @@
 import { finiteOrNull as toFinite } from "../../shared/runtime-foundation.mjs";
 import { mergeDatedSeriesRows } from "../../shared/series-integrity.mjs";
 import { DEFAULT_SERIES_POLICIES } from "./data-health.mjs";
-import { repairSeriesRows, validateSeriesRows } from "./runtime-data-transaction.mjs";
+import {
+  repairSeriesRows,
+  sameDatedRows,
+  validateSeriesRows,
+} from "./runtime-data-transaction.mjs";
 
   "use strict";
 
@@ -201,6 +205,31 @@ import { repairSeriesRows, validateSeriesRows } from "./runtime-data-transaction
     return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
   }
 
+  function rebaseOwnedSeriesRows(currentRows, stagedRows, ownedKeys) {
+    const keys = [...new Set((ownedKeys || []).map(String).filter(Boolean))];
+    if (!keys.length) return Array.isArray(stagedRows) ? stagedRows : [];
+    const byDate = new Map((Array.isArray(currentRows) ? currentRows : []).flatMap((row) => {
+      const date = dateOf(row);
+      if (!date) return [];
+      const next = { ...row, date };
+      keys.forEach((key) => { delete next[key]; });
+      return [[date, next]];
+    }));
+    for (const row of Array.isArray(stagedRows) ? stagedRows : []) {
+      const date = dateOf(row);
+      if (!date) continue;
+      const next = byDate.get(date) || { date };
+      keys.forEach((key) => {
+        if (Object.hasOwn(row, key)) next[key] = row[key];
+      });
+      byDate.set(date, next);
+    }
+    for (const [date, row] of byDate) {
+      if (!Object.keys(row).some((key) => key !== "date")) byDate.delete(date);
+    }
+    return sortedRows(byDate);
+  }
+
   function normalizeDatedRows(rows, keys, options = {}) {
     const valueKeys = Array.isArray(keys) ? keys.filter(Boolean) : [];
     const byDate = new Map();
@@ -286,9 +315,13 @@ import { repairSeriesRows, validateSeriesRows } from "./runtime-data-transaction
   function mergeLeadingCycle(options = {}) {
     const key = options.key || "leading_cycle";
     const latestDate = String(options.latestDate || "").slice(0, 10);
+    const replaceStartDate = String(options.replaceStartDate || "").slice(0, 10);
     const byDate = new Map((options.sourceRows || []).flatMap((row) => {
       const date = dateOf(row);
-      return date ? [[date, { ...row, date }]] : [];
+      if (!date) return [];
+      const next = { ...row, date };
+      if (replaceStartDate && date >= replaceStartDate) delete next[key];
+      return [[date, next]];
     }));
     for (const rawDate of options.priceDates || []) {
       const date = String(rawDate || "").slice(0, 10);
@@ -412,9 +445,9 @@ import { repairSeriesRows, validateSeriesRows } from "./runtime-data-transaction
       const rows = options.getRows?.(name);
       return Array.isArray(rows) ? rows : [];
     };
-    const commitRows = (name, rows) => {
-      options.setRows?.(name, rows);
-      options.markChanged?.(name);
+    const commitRows = (name, rows, changedKeys = []) => {
+      options.setRows?.(name, rows, changedKeys);
+      options.markChanged?.(name, changedKeys);
     };
     const policiesFor = (keys) => options.policiesFor?.(keys) || {};
     const validate = (label, currentRows, candidateRows, incomingRows, keys, validation = {}) => (
@@ -422,10 +455,53 @@ import { repairSeriesRows, validateSeriesRows } from "./runtime-data-transaction
       || { rows: candidateRows }
     );
 
+    function beginTransaction(name) {
+      const sourceName = String(name || "").trim();
+      let stagedRows = getRows(sourceName);
+      const ownedKeys = new Set();
+      let changed = false;
+      let committed = false;
+      return Object.freeze({
+        rows: () => stagedRows,
+        stage(result, keys, stageOptions = {}) {
+          if (committed) throw new Error(`${sourceName} transaction already committed`);
+          if (!result?.updated) {
+            return { updated: 0, latestDate: result?.latestDate || "" };
+          }
+          const accepted = validate(
+            stageOptions.label || sourceName,
+            stagedRows,
+            result.rows,
+            result.normalized,
+            keys,
+            stageOptions.validation,
+          );
+          stagedRows = accepted.rows || result.rows;
+          (Array.isArray(keys) ? keys : []).forEach((key) => ownedKeys.add(String(key)));
+          changed = true;
+          return { updated: result.updated, latestDate: result.latestDate };
+        },
+        commit() {
+          if (committed) return false;
+          committed = true;
+          if (!changed) return false;
+          // Network requests may finish in parallel. Rebase only this transaction's
+          // fields so a later commit cannot restore unrelated fields from its old snapshot.
+          commitRows(sourceName, rebaseOwnedSeriesRows(
+            getRows(sourceName),
+            stagedRows,
+            [...ownedKeys],
+          ), [...ownedKeys]);
+          return true;
+        },
+      });
+    }
+
     function buildLeadingCycleLiveRows(monthlyRows, sourceRows = getRows("macro")) {
-      const normalized = normalizeDatedRows(monthlyRows, ["leading_cycle"]);
+      const leadingKey = "leading_cycle";
+      const normalized = normalizeDatedRows(monthlyRows, [leadingKey]);
       const priceDates = (options.getPriceDates?.() || []).filter(Boolean);
-      if (!normalized.length || !priceDates.length) {
+      if (!normalized.length) {
         return {
           rows: sourceRows,
           normalized,
@@ -434,9 +510,19 @@ import { repairSeriesRows, validateSeriesRows } from "./runtime-data-transaction
         };
       }
       const latestDate = normalized.at(-1)?.date || "";
-      const denseRows = options.buildDenseMacroRows?.(normalized, priceDates) || normalized;
+      const publicationDates = normalized.map((row) => row.date).filter(Boolean);
+      const targetDates = [...new Set([...priceDates, ...publicationDates])].sort();
+      const denseRows = options.buildDenseMacroRows?.(normalized, targetDates, {
+        stepColumns: [leadingKey],
+      }) || normalized;
       return {
-        ...mergeLeadingCycle({ sourceRows, denseRows, priceDates, latestDate }),
+        ...mergeLeadingCycle({
+          sourceRows,
+          denseRows,
+          priceDates,
+          latestDate,
+          replaceStartDate: normalized[0]?.date || "",
+        }),
         normalized,
       };
     }
@@ -463,12 +549,19 @@ import { repairSeriesRows, validateSeriesRows } from "./runtime-data-transaction
         keys,
         commitOptions.validation,
       );
-      commitRows("macro", accepted.rows || result.rows);
+      commitRows("macro", accepted.rows || result.rows, keys);
       return { updated: result.updated, latestDate: result.latestDate };
     }
 
-    function buildCreditLiveRows(liveRows, sourceRows = getRows("credit"), keys = creditKeys) {
-      const normalized = normalizeCreditInputRows(liveRows, creditKeys);
+    function buildCreditLiveRows(
+      liveRows,
+      sourceRows = getRows("credit"),
+      keys = creditKeys,
+      buildOptions = {},
+    ) {
+      const normalized = buildOptions.normalized === true
+        ? (Array.isArray(liveRows) ? liveRows : [])
+        : normalizeCreditInputRows(liveRows, keys);
       if (!normalized.length) {
         return { rows: sourceRows, normalized, updated: 0, latestDate: "" };
       }
@@ -489,7 +582,7 @@ import { repairSeriesRows, validateSeriesRows } from "./runtime-data-transaction
         result.normalized,
         keys,
       );
-      commitRows("credit", accepted.rows || result.rows);
+      commitRows("credit", accepted.rows || result.rows, keys);
       return { updated: result.updated, latestDate: result.latestDate };
     }
 
@@ -497,7 +590,7 @@ import { repairSeriesRows, validateSeriesRows } from "./runtime-data-transaction
       const normalized = normalizeCrisisRows(liveRows);
       if (!normalized.length) return { updated: 0, latestDate: "" };
       const currentRows = getRows("crisis");
-      const changed = JSON.stringify(currentRows) !== JSON.stringify(normalized);
+      const changed = !sameDatedRows(currentRows, normalized);
       if (changed) {
         const accepted = validate(
           "recession signal",
@@ -506,34 +599,46 @@ import { repairSeriesRows, validateSeriesRows } from "./runtime-data-transaction
           normalized,
           ["score"],
         );
-        commitRows("crisis", accepted.rows || normalized);
+        commitRows("crisis", accepted.rows || normalized, ["score"]);
       }
       return { updated: changed ? 1 : 0, latestDate: normalized.at(-1)?.date || "" };
     }
 
-    function applyAuxiliarySeriesRows(liveRows, key, label, validationOptions = {}) {
+    function buildAuxiliarySeriesRows(liveRows, key, sourceRows = getRows("adr")) {
       const normalized = normalizeDatedRows(liveRows, [key], {
         positiveOnly: true,
         requireIsoDate: true,
       });
-      if (!normalized.length) return { updated: 0, latestDate: "" };
+      if (!normalized.length) {
+        return { rows: sourceRows, normalized, updated: 0, latestDate: "" };
+      }
+      return {
+        ...mergeDatedSeries({
+          sourceRows,
+          incomingRows: normalized,
+          keys: [key],
+          policies: policiesFor([key]),
+        }),
+        normalized,
+      };
+    }
+
+    function applyAuxiliarySeriesRows(liveRows, key, label, validationOptions = {}) {
       const currentRows = getRows("adr");
-      const result = mergeDatedSeries({
-        sourceRows: currentRows,
-        incomingRows: normalized,
-        keys: [key],
-        policies: policiesFor([key]),
-      });
+      const result = buildAuxiliarySeriesRows(liveRows, key, currentRows);
+      if (!result.normalized.length) return { updated: 0, latestDate: "" };
       if (result.updated) {
         const accepted = validate(
           label,
           currentRows,
           result.rows,
-          normalized,
+          result.normalized,
           [key],
-          validationOptions,
+          // Independently sourced auxiliary series may resume after a provider
+          // gap. Validate their values here; the chart owns visual gap breaks.
+          { gapPolicies: {}, ...validationOptions },
         );
-        commitRows("adr", accepted.rows || result.rows);
+        commitRows("adr", accepted.rows || result.rows, [key]);
       }
       return { updated: result.updated, latestDate: result.latestDate };
     }
@@ -552,6 +657,8 @@ import { repairSeriesRows, validateSeriesRows } from "./runtime-data-transaction
       applyAuxiliarySeriesRows,
       applyCreditLiveRows,
       applyCrisisSignalRows,
+      beginTransaction,
+      buildAuxiliarySeriesRows,
       applyNewsSentimentLiveRows: (rows) => commitMacroBuild(
         buildDatedLiveRows(rows, ["news_sentiment"]),
         ["news_sentiment"],

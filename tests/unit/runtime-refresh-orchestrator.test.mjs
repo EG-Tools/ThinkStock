@@ -5,6 +5,7 @@ const {
   createRuntimeRefreshChangeApplier,
   createRuntimeRefreshPolicy,
   createRuntimeRefreshOrchestrator,
+  planRuntimeRefreshSources,
   partitionRuntimeRefreshSources,
   planRuntimeRefreshRendering,
   runRefreshPhases,
@@ -97,6 +98,7 @@ function createRefreshPolicy(overrides = {}) {
       getSession: () => state.session,
       getSourceStates: () => state.sourceStates,
       getVisibleSeries: () => state.visible,
+      hasVolumeHistory: (ticker) => state.hasVolumeHistory?.(ticker) ?? true,
       isForecastSeries: (series) => series === "^KS11" || /\.K[QS]$/.test(series),
       isStockSeries: (series) => /\.K[QS]$/.test(series),
       latestDatesByTicker: () => ({}),
@@ -118,6 +120,41 @@ test("one refresh policy owns visible targets and benchmark dependencies", () =>
   const plan = policy.planCriticalRefresh();
   assert.deepEqual(plan.prices.requiredTickers, ["005930.KS"]);
   assert.deepEqual(plan.indices.requiredTickers, ["^KS11", "^KQ11"]);
+});
+
+test("critical startup adds missing index and visible-stock volume inputs", () => {
+  const ready = new Set();
+  const { policy } = createRefreshPolicy({
+    visible: ["005930.KS"],
+    hasVolumeHistory: (ticker) => ready.has(ticker),
+  });
+  const missing = policy.planCriticalRefresh();
+  assert.deepEqual(missing.indices.requiredTickers, ["^KS11", "^KQ11"]);
+  assert.equal(missing.indices.requireVolumeHistory, true);
+  assert.deepEqual(missing.prices.requiredTickers, ["005930.KS"]);
+
+  ready.add("^KS11");
+  ready.add("^KQ11");
+  ready.add("005930.KS");
+  const complete = policy.planCriticalRefresh();
+  assert.equal(complete.indices.requireVolumeHistory, false);
+  assert.deepEqual(complete.prices.requiredTickers, []);
+});
+
+test("stock latest prices are claimed once per app session until forced refresh", () => {
+  const { policy, state } = createRefreshPolicy({ visible: ["005930.KS"] });
+  assert.deepEqual(policy.planCriticalRefresh().prices.requiredTickers, ["005930.KS"]);
+  assert.deepEqual(policy.planCriticalRefresh().prices.requiredTickers, []);
+  assert.deepEqual(
+    policy.planCriticalRefresh({ forceNetwork: true }).prices.requiredTickers,
+    ["005930.KS"],
+  );
+
+  state.visible = [];
+  assert.deepEqual(policy.claimStockPriceRefresh(["000660.KS"]).requiredTickers, ["000660.KS"]);
+  assert.deepEqual(policy.claimStockPriceRefresh(["000660.KS"]).requiredTickers, []);
+  policy.forgetStockPriceRefresh("000660.KS");
+  assert.deepEqual(policy.claimStockPriceRefresh(["000660.KS"]).requiredTickers, ["000660.KS"]);
 });
 
 test("signal inputs stay dormant when no visible forecast target exists", () => {
@@ -148,6 +185,38 @@ test("shared source freshness skips ready data unless refresh is forced", () => 
   assert.equal(policy.shouldRefreshSource("macro"), true);
 });
 
+test("active timing confirms every analysis input once even when prior state is fresh", () => {
+  const fresh = { state: "ready", qualityState: "ready", lastSuccessAt: Date.now() };
+  const { policy } = createRefreshPolicy({
+    visible: ["005930.KS"],
+    sourceStates: Object.fromEntries(
+      ["adr", "crisis", "credit", "fearGreed", "macro"].map((source) => [source, fresh]),
+    ),
+  });
+
+  ["adr", "crisis", "credit", "fearGreed", "macro"].forEach((source) => {
+    assert.equal(policy.shouldRefreshSource(source), true, source);
+  });
+});
+
+test("auxiliary panels wake the source that actually owns their data", () => {
+  const { policy, state } = createRefreshPolicy();
+  state.session.showRecessionSignals = false;
+
+  state.session.hiddenAuxiliaryPanels.delete("vkospi");
+  assert.equal(policy.isSourceForeground("crisis"), true);
+  assert.equal(policy.isSourceForeground("adr"), false);
+  state.session.hiddenAuxiliaryPanels.add("vkospi");
+
+  state.session.hiddenAuxiliaryPanels.delete("newsSentiment");
+  assert.equal(policy.isSourceForeground("macro"), true);
+  assert.equal(policy.isSourceForeground("adr"), false);
+  state.session.hiddenAuxiliaryPanels.add("newsSentiment");
+
+  state.session.hiddenAuxiliaryPanels.delete("adr");
+  assert.equal(policy.isSourceForeground("adr"), true);
+});
+
 test("automatic refresh omits sources that are not needed by the active view", () => {
   const tasks = ["macro", "credit", "adr"].map((source) => ({ source, task: () => source }));
   const automatic = partitionRuntimeRefreshSources(tasks, {
@@ -164,10 +233,84 @@ test("automatic refresh omits sources that are not needed by the active view", (
   assert.deepEqual(explicit.deferred.map(({ source }) => source), ["credit", "adr"]);
 });
 
-test("hidden stock refresh stays out of automatic startup and runs on explicit refresh", () => {
+test("one source plan removes fresh and duplicate work before execution", () => {
+  const task = () => true;
+  const plan = planRuntimeRefreshSources([
+    { source: "macro", task },
+    { source: "macro", task },
+    { source: "credit", task },
+    { source: "adr", task },
+  ], {
+    includeDeferred: true,
+    isForeground: (source) => source !== "adr",
+    shouldRefresh: (source) => source !== "credit",
+  });
+
+  assert.deepEqual(plan.foreground.map(({ source }) => source), ["macro"]);
+  assert.deepEqual(plan.deferred.map(({ source }) => source), ["adr"]);
+  assert.deepEqual(plan.skipped.map(({ source, reason }) => [source, reason]), [
+    ["macro", "duplicate"],
+    ["credit", "fresh"],
+  ]);
+});
+
+test("hidden stock refresh only runs when explicitly requested", () => {
   assert.equal(shouldScheduleHiddenStockRefresh({}), false);
-  assert.equal(shouldScheduleHiddenStockRefresh({ forceNetwork: true }), true);
+  assert.equal(shouldScheduleHiddenStockRefresh({ forceNetwork: true }), false);
   assert.equal(shouldScheduleHiddenStockRefresh({ refreshHidden: true }), true);
+});
+
+test("a superseded source request does not create provider backoff", async () => {
+  let failures = 0;
+  const revisions = {
+    price: 1,
+    macro: 1,
+    credit: 1,
+    crisis: 1,
+    adr: 1,
+    disclosure: 1,
+  };
+  const abortError = new Error("superseded");
+  abortError.name = "AbortError";
+  const orchestrator = createRuntimeRefreshOrchestrator({
+    applyRuntimeRefreshChanges: async () => ({
+      revisionsAfter: revisions,
+      mainDataChanged: false,
+      priceDataChanged: false,
+      derivedInputChanged: false,
+      adrDataChanged: false,
+      disclosureDataChanged: false,
+    }),
+    canUseDartGateway: () => false,
+    cancelAdrFinalRetry: () => {},
+    chartSession: { showDisclosures: false },
+    getDataRevisions: () => revisions,
+    isAbortError: (error) => error?.name === "AbortError",
+    isSourceForeground: (source) => source === "macro",
+    planCriticalRefresh: () => ({
+      indices: { requiredTickers: [] },
+      prices: { requiredTickers: [] },
+    }),
+    recordPerfSample: () => {},
+    refreshEcosMacroFromGateway: async () => { throw abortError; },
+    refreshSourceWithRetry: (_source, task) => task(),
+    runRefreshPhases,
+    runtimeDataApp: {
+      canAttemptSource: () => ({ allowed: true }),
+      notePhase: () => {},
+      noteSourceFailure: () => { failures += 1; },
+    },
+    scheduleLastRuntimeSnapshotSave: () => {},
+    setMessage: () => {},
+    setRuntimeRefreshStatus: () => {},
+    shouldRefreshSource: () => true,
+    startPerfSample: () => 0,
+    state: { disclosureRows: [], lastDisclosureTraceStats: { markers: 0 } },
+    throwIfAborted: () => {},
+  });
+
+  await assert.rejects(() => orchestrator.run(null), { name: "AbortError" });
+  assert.equal(failures, 0);
 });
 
 test("an already current critical plan performs no index or stock request", async () => {
@@ -270,7 +413,7 @@ test("startup confirms visible prices before final signal inputs and timing", as
     runRefreshPhases,
     runtimeDataApp: {
       canAttemptSource: () => ({ allowed: true }),
-      notePhase: () => {},
+      notePhase: (phase) => events.push(`phase:${phase}`),
       noteSourceResult: () => {},
     },
     scheduleLastRuntimeSnapshotSave: () => {},
@@ -287,13 +430,16 @@ test("startup confirms visible prices before final signal inputs and timing", as
   assert.deepEqual(events, [
     "fetch:price",
     "render:price",
+    "phase:criticalReady",
     "fetch:macro",
+    "phase:supplementalReady",
     "render:timing",
   ]);
 });
 
 test("manual refresh checks hidden macro and auxiliary sources after the visible phase", async () => {
   const refreshed = [];
+  const fearGreedForceValues = [];
   const phases = [];
   const revisions = Object.freeze({
     price: 1,
@@ -330,7 +476,11 @@ test("manual refresh checks hidden macro and auxiliary sources after the visible
     refreshCreditFromGateway: async () => { refreshed.push("credit"); return { applied: [] }; },
     refreshCrisisSignalFromGateway: async () => { refreshed.push("crisis"); return { applied: [] }; },
     refreshEcosMacroFromGateway: async () => { refreshed.push("macro"); return { applied: [] }; },
-    refreshFearGreedFromWeb: async () => { refreshed.push("fearGreed"); return { added: 0 }; },
+    refreshFearGreedFromWeb: async (_signal, forceNetwork) => {
+      refreshed.push("fearGreed");
+      fearGreedForceValues.push(forceNetwork);
+      return { added: 0 };
+    },
     refreshSourceWithRetry: (_source, task) => task(),
     runRefreshPhases,
     runtimeDataApp: {
@@ -351,6 +501,7 @@ test("manual refresh checks hidden macro and auxiliary sources after the visible
   await orchestrator.run(null, { forceNetwork: true });
 
   assert.deepEqual(refreshed.sort(), ["adr", "credit", "crisis", "fearGreed", "macro"]);
+  assert.deepEqual(fearGreedForceValues, [true]);
   assert.deepEqual(phases, ["criticalReady", "supplementalReady", "deferredReady"]);
 });
 
@@ -426,6 +577,7 @@ test("unavailable live index and prices keep saved data and allow supplemental r
   const progress = [];
   const messages = [];
   const hiddenSchedules = [];
+  const forgottenPriceClaims = [];
   let snapshotSchedules = 0;
   const renderOptions = [];
   const revisions = Object.freeze({ price: 1, macro: 1, credit: 1, crisis: 1, adr: 1, disclosure: 1 });
@@ -454,6 +606,11 @@ test("unavailable live index and prices keep saved data and allow supplemental r
         prices: { ok: true, requested: 0, succeeded: 0, results: [] },
       };
     },
+    forgetStockPriceRefresh: (tickers) => forgottenPriceClaims.push(...tickers),
+    planCriticalRefresh: () => ({
+      indices: { requiredTickers: ["^KS11", "^KQ11"] },
+      prices: { requiredTickers: ["005930.KS"] },
+    }),
     preloadCustomStocks: async (options) => {
       preloadScopes.push(options.scope);
       preloadPayloads.push(options.priceBatchPayload || null);
@@ -509,9 +666,11 @@ test("unavailable live index and prices keep saved data and allow supplemental r
       pendingDerivedInputChanged: false,
       phase: "supplemental",
       finalizeDerived: true,
+      forceDerivedFinalize: true,
     },
   ]);
   assert.equal(progress.at(-1).percent, 96);
   assert.equal(messages.some((line) => line.includes("price HTTP 503")), true);
   assert.equal(messages.some((line) => line.includes("KRX 지수 갱신 오류: HTTP 503")), true);
+  assert.deepEqual(forgottenPriceClaims, ["005930.KS"]);
 });

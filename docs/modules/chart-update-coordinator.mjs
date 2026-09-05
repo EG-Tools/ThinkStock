@@ -129,10 +129,28 @@
       if (trace?.visible === false || trace?.visible === "legendonly") return false;
       const dates = Array.isArray(trace?.x) ? trace.x : [];
       const values = Array.isArray(trace?.y) ? trace.y : [];
-      return dates.some((date, index) => {
-        const timestamp = typeof date === "number" ? date : Date.parse(String(date || ""));
-        return timestamp >= start && timestamp <= end && Number.isFinite(Number(values[index]));
-      });
+      if (!dates.length || !values.length) return false;
+      const timestampAt = (index) => {
+        const date = dates[index];
+        return typeof date === "number" ? date : Date.parse(String(date || ""));
+      };
+      let low = 0;
+      let high = dates.length;
+      while (low < high) {
+        const middle = (low + high) >>> 1;
+        const timestamp = timestampAt(middle);
+        if (!Number.isFinite(timestamp) || timestamp < start) low = middle + 1;
+        else high = middle;
+      }
+      for (let index = low; index < dates.length; index += 1) {
+        const timestamp = timestampAt(index);
+        if (!Number.isFinite(timestamp)) continue;
+        if (timestamp > end) break;
+        const value = values[index];
+        if (value !== null && value !== undefined && value !== ""
+          && Number.isFinite(Number(value))) return true;
+      }
+      return false;
     });
   }
 
@@ -198,7 +216,11 @@
     if (liveFit.fittedYRange && typeof options.collectAnchoredYUpdates === "function") {
       const anchored = options.collectAnchoredYUpdates(
         mainElement,
-        { traces: stagedMain.traces, viewportRange: liveFit.fittedYRange },
+        {
+          traces: stagedMain.traces,
+          viewportRange: liveFit.fittedYRange,
+          seriesUpdates: requestedTraceUpdates.seriesUpdates,
+        },
       ) || { traceIndexes: [], yUpdates: [] };
       if (anchored.traceIndexes?.length) {
         stagedMain = stageTraceYUpdates(
@@ -456,16 +478,17 @@
     const mismatch = hasRange && !currentRange?.every((value, index) => (
       Math.abs(Number(value) - requestedRange[index]) <= tolerance
     ));
-    if (mismatch) {
+    const needsFinalLiveFit = hasRange && options.liveFit === true;
+    if (mismatch || needsFinalLiveFit) {
       options.rangeController?.schedule?.(requestedRange[0], requestedRange[1], {
-        source: `${options.reason || "viewport-settle"}-correction`,
+        source: `${options.reason || "viewport-settle"}-${mismatch ? "correction" : "fit"}`,
         fit: false,
-        liveFit: options.liveFit === true,
+        liveFit: needsFinalLiveFit,
         userInitiated: false,
         interactionRevision: ownerRevision,
       });
       await options.rangeController?.flush?.();
-      corrected = true;
+      corrected = mismatch;
     }
     if (!isCurrent()) return { rendered, corrected, stale: true };
     // The main window may have refreshed during the interaction already.  In
@@ -793,12 +816,7 @@
       : fittedRange;
     if (!yRange) return null;
 
-    options.beforeApply?.(yRange);
-    const layoutUpdate = {
-      "yaxis.range[0]": yRange[0],
-      "yaxis.range[1]": yRange[1],
-      "yaxis.autorange": false,
-    };
+    const yChanged = !numericRangeMatches(element._fullLayout.yaxis.range, yRange);
     const markerTraceIndexes = [];
     const markerYUpdates = [];
     const markerUpdate = options.syncMarkers !== false
@@ -808,6 +826,23 @@
         viewportRange: yRange,
       })
       : { structureChanged: false, disclosureUpdated: false };
+
+    if (!yChanged && !markerTraceIndexes.length && !markerUpdate.structureChanged) {
+      return Object.freeze({ mode: "unchanged", markerUpdate, yRange });
+    }
+
+    options.beforeApply?.(yRange, {
+      markerTraceIndexes: Object.freeze([...markerTraceIndexes]),
+      markerUpdate,
+      yChanged,
+    });
+    const layoutUpdate = yChanged
+      ? {
+          "yaxis.range[0]": yRange[0],
+          "yaxis.range[1]": yRange[1],
+          "yaxis.autorange": false,
+        }
+      : {};
 
     if (markerTraceIndexes.length && !markerUpdate.structureChanged) {
       await updateRuntime.update(
@@ -821,11 +856,17 @@
       return Object.freeze({ mode: "update", markerUpdate, yRange });
     }
 
-    await updateRuntime.relayout(element, layoutUpdate, {
-      label: options.relayoutLabel || "fit-main-range",
-    });
+    if (yChanged) {
+      await updateRuntime.relayout(element, layoutUpdate, {
+        label: options.relayoutLabel || "fit-main-range",
+      });
+    }
     if (markerUpdate.structureChanged) options.onMarkerStructureChange?.(markerUpdate);
-    return Object.freeze({ mode: "relayout", markerUpdate, yRange });
+    return Object.freeze({
+      mode: markerUpdate.structureChanged && !yChanged ? "structure" : "relayout",
+      markerUpdate,
+      yRange,
+    });
   }
 
   function finalizeMainChartFrameState(session, frame, options = {}) {
@@ -858,6 +899,27 @@
         : (frame.viewportPlan.savedXRange ? [...frame.viewportPlan.savedXRange] : null),
       needsDelayedFit,
     });
+  }
+
+  function createSettlementWaiters(isBusy) {
+    const waiters = new Set();
+
+    function release() {
+      waiters.forEach((resolve) => resolve());
+      waiters.clear();
+    }
+
+    function settleIfIdle() {
+      if (isBusy()) return;
+      release();
+    }
+
+    function whenSettled() {
+      if (!isBusy()) return Promise.resolve();
+      return new Promise((resolve) => waiters.add(resolve));
+    }
+
+    return Object.freeze({ release, settleIfIdle, whenSettled });
   }
 
   /**
@@ -1193,13 +1255,33 @@
       return aiApp?.requestRender ? aiApp.requestRender(render) : render();
     }
 
+    function fitCurrent(fitOptions = {}) {
+      return typeof options.fitCurrent === "function"
+        ? options.fitCurrent(fitOptions)
+        : false;
+    }
+
+    function settleViewport(settleOptions = {}) {
+      return typeof options.settleViewport === "function"
+        ? options.settleViewport(settleOptions)
+        : Promise.resolve({ rendered: false, corrected: false, stale: false });
+    }
+
+    function whenSettled() {
+      if (typeof options.whenSettled === "function") return options.whenSettled();
+      return getScheduler().whenSettled?.() || Promise.resolve();
+    }
+
     return Object.freeze({
+      fitCurrent,
       request,
       requestAiForecast,
       requestComposition,
       requestFutureOverlayComposition,
       run: (preserveZoom = true) => getScheduler().run(preserveZoom),
       runWhenIdleOrNow: (preserveZoom = true) => getScheduler().runWhenIdleOrNow(preserveZoom),
+      settleViewport,
+      whenSettled,
     });
   }
 
@@ -1228,17 +1310,10 @@
     let frameId = 0;
     let inFlight = null;
     let disposed = false;
-    const settleWaiters = new Set();
-
     function isBusy() {
       return Boolean(frameId || inFlight || pending.size);
     }
-
-    function settleWaitersIfIdle() {
-      if (isBusy()) return;
-      settleWaiters.forEach((resolve) => resolve());
-      settleWaiters.clear();
-    }
+    const settlement = createSettlementWaiters(isBusy);
 
     function requestRun() {
       if (disposed || frameId || inFlight || !pending.size) return;
@@ -1257,7 +1332,7 @@
         .finally(() => {
           inFlight = null;
           if (pending.size) requestRun();
-          else settleWaitersIfIdle();
+          else settlement.settleIfIdle();
         });
     }
 
@@ -1275,7 +1350,7 @@
       pending.clear();
       if (frameId && typeof cancelFrame === "function") cancelFrame(frameId);
       frameId = 0;
-      settleWaitersIfIdle();
+      settlement.settleIfIdle();
     }
 
     async function flush() {
@@ -1285,20 +1360,14 @@
       if (!inFlight && pending.size) runNext();
       if (inFlight) await inFlight;
       if (pending.size || frameId) return flush();
-      settleWaitersIfIdle();
+      settlement.settleIfIdle();
       return undefined;
-    }
-
-    function whenSettled() {
-      if (!isBusy()) return Promise.resolve();
-      return new Promise((resolve) => settleWaiters.add(resolve));
     }
 
     function dispose() {
       disposed = true;
       cancelPending();
-      settleWaiters.forEach((resolve) => resolve());
-      settleWaiters.clear();
+      settlement.release();
     }
 
     return Object.freeze({
@@ -1312,7 +1381,7 @@
         inFlight: Boolean(inFlight),
         pending: pending.size,
       }),
-      whenSettled,
+      whenSettled: settlement.whenSettled,
     });
   }
 
@@ -1345,19 +1414,12 @@
     let coalescedRequests = 0;
     let supersededTransactions = 0;
     let yieldedTransactions = 0;
-    const settleWaiters = new Set();
-
     function isBusy() {
       return Boolean(
         frameId || deferredTimer || inFlightPromise || renderAfterFlight || pendingReasons.size
       );
     }
-
-    function settleWaitersIfIdle() {
-      if (isBusy()) return;
-      settleWaiters.forEach((resolve) => resolve());
-      settleWaiters.clear();
-    }
+    const settlement = createSettlementWaiters(isBusy);
 
     function queueInvalidation(requestOptions = {}) {
       const reason = String(requestOptions.reason || "data");
@@ -1486,7 +1548,7 @@
             if (isInteractionBusy()) scheduleDeferred(retryPreserveZoom);
             else scheduleQueuedRender(retryPreserveZoom);
           }
-          settleWaitersIfIdle();
+          settlement.settleIfIdle();
         }
       })();
       return inFlightPromise;
@@ -1547,13 +1609,7 @@
       if (deferredTimer) clearTimer(deferredTimer);
       frameId = 0;
       deferredTimer = 0;
-      settleWaiters.forEach((resolve) => resolve());
-      settleWaiters.clear();
-    }
-
-    function whenSettled() {
-      if (!isBusy()) return Promise.resolve();
-      return new Promise((resolve) => settleWaiters.add(resolve));
+      settlement.release();
     }
 
     return Object.freeze({
@@ -1562,7 +1618,7 @@
       request,
       run,
       runWhenIdleOrNow,
-      whenSettled,
+      whenSettled: settlement.whenSettled,
       stats: () => ({
         framePending: Boolean(frameId),
         inFlight: Boolean(inFlightPromise),
@@ -1809,13 +1865,10 @@
       markerFrames: 0,
       handleFrames: 0,
     };
-    const settleWaiters = new Set();
-
-    function settleWaitersIfIdle() {
-      if (frameId || inFlightPromise || pendingSeries.size || pendingMarkers || pendingHandles) return;
-      settleWaiters.forEach((resolve) => resolve());
-      settleWaiters.clear();
+    function isBusy() {
+      return Boolean(frameId || inFlightPromise || pendingSeries.size || pendingMarkers || pendingHandles);
     }
+    const settlement = createSettlementWaiters(isBusy);
 
     function takePending() {
       if (!pendingSeries.size && !pendingMarkers && !pendingHandles && !pendingReasons.size) return null;
@@ -1843,7 +1896,7 @@
         frameId = 0;
         const frame = takePending();
         if (frame) apply(frame);
-        else settleWaitersIfIdle();
+        else settlement.settleIfIdle();
       });
     }
 
@@ -1857,11 +1910,11 @@
         result = applyFrame(frame);
       } catch (error) {
         options.onError?.(error);
-        settleWaitersIfIdle();
+        settlement.settleIfIdle();
         return;
       }
       if (!result || typeof result.then !== "function") {
-        settleWaitersIfIdle();
+        settlement.settleIfIdle();
         return;
       }
       inFlightPromise = Promise.resolve(result)
@@ -1872,7 +1925,7 @@
             renderAfterFlight = false;
             scheduleFrame();
           } else {
-            settleWaitersIfIdle();
+            settlement.settleIfIdle();
           }
         });
     }
@@ -1922,21 +1975,14 @@
       pendingHandles = false;
       pendingReasons = new Set();
       renderAfterFlight = false;
-      settleWaitersIfIdle();
-    }
-
-    function whenSettled() {
-      if (!frameId && !inFlightPromise && !pendingSeries.size && !pendingMarkers && !pendingHandles) {
-        return Promise.resolve();
-      }
-      return new Promise((resolve) => settleWaiters.add(resolve));
+      settlement.settleIfIdle();
     }
 
     return Object.freeze({
       schedule,
       flush,
       cancel,
-      whenSettled,
+      whenSettled: settlement.whenSettled,
       hasPending: () => Boolean(
         frameId || inFlightPromise || pendingSeries.size || pendingMarkers || pendingHandles || pendingReasons.size
       ),

@@ -2,7 +2,7 @@
 
   const normalizeTicker = (value) => String(value || "").trim().toUpperCase();
   const TIMING_CACHE_SCHEMA = 1;
-  const TIMING_CACHE_REVISION = "market-timing-cache-v3";
+  const TIMING_CACHE_REVISION = "market-timing-cache-v5";
 
   function normalizeTargets(targets) {
     return [...new Set((targets || []).map(normalizeTicker).filter(Boolean))].sort();
@@ -84,12 +84,19 @@
     return `${TIMING_CACHE_REVISION}:${state.toString(36)}`;
   }
 
-  function createTimingCacheRecord(ticker, sources, model, sharedFingerprint = "", now = Date.now()) {
+  function createTimingCacheRecord(
+    ticker,
+    sources,
+    model,
+    sharedFingerprint = "",
+    now = Date.now(),
+    inputFingerprint = "",
+  ) {
     const key = normalizeTicker(ticker);
     return {
       schema: TIMING_CACHE_SCHEMA,
       ticker: key,
-      fingerprint: timingInputFingerprint(sources, key, sharedFingerprint),
+      fingerprint: inputFingerprint || timingInputFingerprint(sources, key, sharedFingerprint),
       latestDate: String(sources?.dates?.at?.(-1) || "").slice(0, 10),
       savedAt: now,
       lastAccessed: now,
@@ -97,13 +104,15 @@
     };
   }
 
-  function validTimingCacheRecord(record, ticker, sources, sharedFingerprint = "") {
+  function validTimingCacheRecord(record, ticker, sources, sharedFingerprint = "", inputFingerprint = "") {
     const key = normalizeTicker(ticker);
     return Boolean(
       Number(record?.schema) === TIMING_CACHE_SCHEMA
       && normalizeTicker(record?.ticker) === key
       && record?.model
-      && record.fingerprint === timingInputFingerprint(sources, key, sharedFingerprint)
+      && record.fingerprint === (
+        inputFingerprint || timingInputFingerprint(sources, key, sharedFingerprint)
+      )
     );
   }
 
@@ -209,6 +218,7 @@
   function createMarketTimingService(scope = globalThis, options = {}) {
     const models = new Map();
     const modelFingerprints = new Map();
+    const inputFingerprints = new Map();
     const pendingRequests = new Map();
     const timeoutMs = Math.max(1000, Number(options.timeoutMs) || 20000);
     const cache = options.cache || null;
@@ -248,7 +258,21 @@
       persistentCacheHits: 0,
       persistentCacheWrites: 0,
       deferredCacheWrites: 0,
+      inputFingerprintCalculations: 0,
     };
+
+    function fingerprintFor(tickerValue) {
+      const ticker = normalizeTicker(tickerValue);
+      if (inputFingerprints.has(ticker)) return inputFingerprints.get(ticker);
+      const fingerprint = timingInputFingerprint(
+        currentSources,
+        ticker,
+        currentSharedFingerprint,
+      );
+      inputFingerprints.set(ticker, fingerprint);
+      counters.inputFingerprintCalculations += 1;
+      return fingerprint;
+    }
 
     function rejectPending(error) {
       pendingRequests.forEach((request) => {
@@ -367,7 +391,13 @@
       if (!(records instanceof Map)) return;
       targets.forEach((ticker) => {
         const record = records.get(ticker);
-        if (!validTimingCacheRecord(record, ticker, currentSources, currentSharedFingerprint)) return;
+        if (!validTimingCacheRecord(
+          record,
+          ticker,
+          currentSources,
+          currentSharedFingerprint,
+          fingerprintFor(ticker),
+        )) return;
         models.set(ticker, enrichCachedModel(ticker, record.model));
         modelFingerprints.set(ticker, record.fingerprint);
         counters.persistentCacheHits += 1;
@@ -383,6 +413,8 @@
           currentSources,
           model,
           currentSharedFingerprint,
+          Date.now(),
+          fingerprintFor(ticker),
         )]] : [];
       });
       if (!entries.length) return;
@@ -415,18 +447,12 @@
       Object.entries(calculated || {}).forEach(([ticker, model]) => {
         const key = normalizeTicker(ticker);
         models.set(key, model ?? null);
-        modelFingerprints.set(
-          key,
-          timingInputFingerprint(currentSources, key, currentSharedFingerprint),
-        );
+        modelFingerprints.set(key, fingerprintFor(key));
       });
       targets.forEach((ticker) => {
         if (!models.has(ticker)) {
           models.set(ticker, null);
-          modelFingerprints.set(
-            ticker,
-            timingInputFingerprint(currentSources, ticker, currentSharedFingerprint),
-          );
+          modelFingerprints.set(ticker, fingerprintFor(ticker));
         }
       });
       // Signal rendering must not wait for IndexedDB. The application scheduler
@@ -445,15 +471,16 @@
         const nextSources = input.sources || currentSources;
         if (!nextSources) throw new Error("market timing sources are unavailable");
         const nextSharedFingerprint = sharedTimingFingerprint(nextSources);
+        currentSources = nextSources;
+        currentSharedFingerprint = nextSharedFingerprint;
+        inputFingerprints.clear();
         models.forEach((_model, ticker) => {
-          const nextFingerprint = timingInputFingerprint(nextSources, ticker, nextSharedFingerprint);
+          const nextFingerprint = fingerprintFor(ticker);
           if (modelFingerprints.get(ticker) === nextFingerprint) return;
           models.delete(ticker);
           modelFingerprints.delete(ticker);
         });
         currentSignature = signature;
-        currentSources = nextSources;
-        currentSharedFingerprint = nextSharedFingerprint;
       } else if (input.sources) {
         currentSources = input.sources;
       }
@@ -482,6 +509,7 @@
       currentSharedFingerprint = "";
       models.clear();
       modelFingerprints.clear();
+      inputFingerprints.clear();
       discardWorker();
     }
 

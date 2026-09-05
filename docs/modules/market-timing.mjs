@@ -1144,8 +1144,8 @@
       adr: alignedSource(dates, adrRows, adrKey, 7),
       fearGreed: alignedSource(dates, adrRows, "fear_greed", 7),
       news: alignAsOf(dates, smoothedNewsRows, 10),
-      // ECOS observations arrive about two months later; shift availability to prevent look-ahead.
-      leading: alignedSource(dates, macroRows, "leading_cycle", 75, 60),
+      // Leading-cycle rows already use their publication date at the data boundary.
+      leading: alignedSource(dates, macroRows, "leading_cycle", 75),
       // The normalized runtime rows already carry the app's publication-date policy.
       // A provider-specific lag can still be supplied explicitly without double-shifting it.
       credit: alignedSource(

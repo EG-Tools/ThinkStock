@@ -104,3 +104,20 @@ test("manual chart edits only expand the current viewport when a trace would be 
   assert.deepEqual(adjustments.expandRangeToContain(null, [75, 125]), [75, 125]);
   assert.equal(adjustments.expandRangeToContain([60, 140], null), null);
 });
+
+test("detects only traces that would be clipped by the visible Y range", () => {
+  const traces = [{
+    x: ["2026-01-01", "2026-02-01", "2026-03-01"],
+    y: [90, 100, 110],
+  }];
+  assert.equal(adjustments.tracesExceedVisibleYRange(
+    traces,
+    ["2026-01-01", "2026-03-01"],
+    [85, 115],
+  ), false);
+  assert.equal(adjustments.tracesExceedVisibleYRange(
+    traces,
+    ["2026-01-01", "2026-03-01"],
+    [95, 105],
+  ), true);
+});

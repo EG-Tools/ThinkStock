@@ -414,6 +414,10 @@ import { finiteRangeBetween } from "./chart-adjustments.mjs";
   function buildAuxiliaryChartModel(payload = {}) {
     const adrRows = Array.isArray(payload.adrRows) ? payload.adrRows : [];
     const macroRows = Array.isArray(payload.macroRows) ? payload.macroRows : [];
+    const hasSeriesFilter = Array.isArray(payload.seriesKeys);
+    const requestedSeries = new Set(hasSeriesFilter ? payload.seriesKeys : []);
+    const allSeriesRequested = !hasSeriesFilter;
+    const requested = (key) => allSeriesRequested || requestedSeries.has(key);
     const startDate = String(payload.startDate || "");
     const adrLowThreshold = Number(payload.adrLowThreshold) || 80;
     const adrHighThreshold = Number(payload.adrHighThreshold) || 120;
@@ -421,19 +425,62 @@ import { finiteRangeBetween } from "./chart-adjustments.mjs";
     const newsHighThreshold = Number(payload.newsHighThreshold) || 110;
     const newsMovingAverageDays = normalizeNewsMovingAverageDays(payload.newsMovingAverageDays);
 
-    const filteredAuxiliary = adrRows.filter((row) => !startDate || row?.date >= startDate);
-    const filteredAdr = filteredAuxiliary.filter((row) => (
+    const auxiliarySeriesRequested = [
+      "adr_kospi",
+      "adr_kosdaq",
+      "fear_greed",
+      "vkospi",
+      "vix",
+    ].some(requested);
+    const availability = {
+      adrKospi: false,
+      adrKosdaq: false,
+      fearGreed: false,
+      newsSentiment: false,
+      vkospi: false,
+      vix: false,
+    };
+    for (const row of adrRows) {
+      if (!availability.adrKospi && toNumber(row?.adr_kospi) !== null) availability.adrKospi = true;
+      if (!availability.adrKosdaq && toNumber(row?.adr_kosdaq) !== null) availability.adrKosdaq = true;
+      if (!availability.fearGreed && toNumber(row?.fear_greed) !== null) availability.fearGreed = true;
+      if (!availability.vkospi && toNumber(row?.vkospi) !== null) availability.vkospi = true;
+      if (!availability.vix && toNumber(row?.vix) !== null) availability.vix = true;
+      if (availability.adrKospi
+        && availability.adrKosdaq
+        && availability.fearGreed
+        && availability.vkospi
+        && availability.vix) break;
+    }
+    for (const row of macroRows) {
+      if (toNumber(row?.news_sentiment) === null) continue;
+      availability.newsSentiment = true;
+      break;
+    }
+
+    const filteredAuxiliary = auxiliarySeriesRequested
+      ? adrRows.filter((row) => !startDate || row?.date >= startDate)
+      : [];
+    const filteredAdr = requested("adr_kospi") || requested("adr_kosdaq")
+      ? filteredAuxiliary.filter((row) => (
       toNumber(row?.adr_kospi) !== null || toNumber(row?.adr_kosdaq) !== null
-    ));
-    const filteredNews = macroRows.filter((row) => (
+      ))
+      : [];
+    const filteredNews = requested("news_sentiment") ? macroRows.filter((row) => (
       (!startDate || row?.date >= startDate)
       && toNumber(row?.news_sentiment) !== null
-    ));
-    const adrKospi = insertDatedGapBreaks(filteredAuxiliary, "adr_kospi");
-    const adrKosdaq = insertDatedGapBreaks(filteredAuxiliary, "adr_kosdaq");
-    const fearGreed = insertDatedGapBreaks(filteredAuxiliary, "fear_greed");
-    const vkospi = insertDatedGapBreaks(filteredAuxiliary, "vkospi");
-    const vix = insertDatedGapBreaks(filteredAuxiliary, "vix");
+    )) : [];
+    const emptySeries = { dates: [], values: [] };
+    const adrKospi = requested("adr_kospi")
+      ? insertDatedGapBreaks(filteredAuxiliary, "adr_kospi") : emptySeries;
+    const adrKosdaq = requested("adr_kosdaq")
+      ? insertDatedGapBreaks(filteredAuxiliary, "adr_kosdaq") : emptySeries;
+    const fearGreed = requested("fear_greed")
+      ? insertDatedGapBreaks(filteredAuxiliary, "fear_greed") : emptySeries;
+    const vkospi = requested("vkospi")
+      ? insertDatedGapBreaks(filteredAuxiliary, "vkospi") : emptySeries;
+    const vix = requested("vix")
+      ? insertDatedGapBreaks(filteredAuxiliary, "vix") : emptySeries;
     const dates = filteredAdr.map((row) => row.date);
     const kospiValues = filteredAdr.map((row) => toNumber(row.adr_kospi));
     const kosdaqValues = filteredAdr.map((row) => toNumber(row.adr_kosdaq));
@@ -448,6 +495,7 @@ import { finiteRangeBetween } from "./chart-adjustments.mjs";
     const newsNumbers = newsValues.filter(Number.isFinite);
 
     return {
+      availability,
       dates,
       kospiValues,
       kosdaqValues,
@@ -465,14 +513,17 @@ import { finiteRangeBetween } from "./chart-adjustments.mjs";
       vkospiValues: vkospi.values,
       vixDates: vix.dates,
       vixValues: vix.values,
-      kospiZones: buildThresholdZones(adrKospi.values, adrLowThreshold, adrHighThreshold),
-      kosdaqZones: buildThresholdZones(adrKosdaq.values, adrLowThreshold, adrHighThreshold),
-      fearGreedZones: buildThresholdZones(
+      kospiZones: requested("adr_kospi")
+        ? buildThresholdZones(adrKospi.values, adrLowThreshold, adrHighThreshold) : [],
+      kosdaqZones: requested("adr_kosdaq")
+        ? buildThresholdZones(adrKosdaq.values, adrLowThreshold, adrHighThreshold) : [],
+      fearGreedZones: requested("fear_greed") ? buildThresholdZones(
         fearGreedValues,
         AUXILIARY_CHART_CONFIG.fearGreedLowThreshold,
         AUXILIARY_CHART_CONFIG.fearGreedHighThreshold,
-      ),
-      newsSentimentZones: buildThresholdZones(newsValues, newsLowThreshold, newsHighThreshold),
+      ) : [],
+      newsSentimentZones: requested("news_sentiment")
+        ? buildThresholdZones(newsValues, newsLowThreshold, newsHighThreshold) : [],
       adrYMin: Math.min(adrRawMin, adrLowThreshold) - 2.5,
       adrYMax: Math.max(adrRawMax, adrHighThreshold) + 1.2,
       newsYMin: Math.min(...newsNumbers, newsLowThreshold) - 2,

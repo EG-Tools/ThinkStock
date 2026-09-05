@@ -68,6 +68,72 @@ test("runtime refresh shares one in-flight request until a forced refresh supers
   assert.deepEqual(await forced, { ok: true });
 });
 
+test("signal input confirmation replans an in-flight refresh without forcing every source", async () => {
+  const pending = [];
+  const app = createRuntimeDataApp(createScope(), {
+    runRefresh: (_element, options) => new Promise((resolve) => pending.push({ options, resolve })),
+  });
+
+  const startup = app.refresh(null);
+  const signalConfirmation = app.refresh(null, { requireDerivedInputs: true });
+
+  assert.notEqual(signalConfirmation, startup);
+  assert.equal(pending[0].options.signal.aborted, true);
+  assert.equal(pending[1].options.forceNetwork, undefined);
+  assert.equal(pending[1].options.requireDerivedInputs, true);
+  pending[0].resolve({ cancelled: true });
+  pending[1].resolve({ ok: true });
+  await Promise.all([startup, signalConfirmation]);
+});
+
+test("signal and AI share an in-flight derived-input refresh", async () => {
+  const pending = [];
+  const app = createRuntimeDataApp(createScope(), {
+    runRefresh: (_element, options) => new Promise((resolve) => pending.push({ options, resolve })),
+  });
+
+  const signalConfirmation = app.refresh(null, { requireDerivedInputs: true });
+  const aiConfirmation = app.refresh(null, { requireDerivedInputs: true });
+
+  assert.equal(aiConfirmation, signalConfirmation);
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].options.signal.aborted, false);
+  pending[0].resolve({ ok: true });
+  assert.deepEqual(await aiConfirmation, { ok: true });
+});
+
+test("derived inputs become ready only after the current refresh supplemental phase", async () => {
+  const pending = [];
+  const app = createRuntimeDataApp(createScope(), {
+    runRefresh: (_element, options) => new Promise((resolve) => pending.push({ options, resolve })),
+  });
+
+  const first = app.refresh(null);
+  const firstGeneration = pending[0].options.generation;
+  assert.deepEqual(app.getDerivedInputState(), {
+    generation: firstGeneration,
+    phase: "refreshing",
+    ready: false,
+  });
+  app.notePhase("criticalReady", firstGeneration);
+  assert.equal(app.isDerivedInputReady(), false);
+
+  const forced = app.refresh(null, { forceNetwork: true });
+  const forcedGeneration = pending[1].options.generation;
+  assert.equal(app.notePhase("supplementalReady", firstGeneration), false);
+  assert.equal(app.isDerivedInputReady(), false);
+  assert.equal(app.notePhase("supplementalReady", forcedGeneration), true);
+  assert.deepEqual(app.getDerivedInputState(), {
+    generation: forcedGeneration,
+    phase: "supplemental",
+    ready: true,
+  });
+
+  pending[0].resolve({ cancelled: true });
+  pending[1].resolve({ ok: true });
+  await Promise.all([first, forced]);
+});
+
 test("runtime app aborts its active refresh when disposed", async () => {
   let activeSignal = null;
   const app = createRuntimeDataApp(createScope(), {
@@ -126,7 +192,7 @@ test("runtime startup releases the loader at the critical phase", async () => {
   assert.equal(mergedSeed, false);
 });
 
-test("runtime startup settles a fast supplemental refresh before releasing completion", async () => {
+test("runtime startup never holds completion behind a supplemental refresh", async () => {
   let releaseSupplemental = null;
   const supplemental = new Promise((resolve) => { releaseSupplemental = resolve; });
   const app = createRuntimeDataApp(globalThis, {
@@ -137,38 +203,8 @@ test("runtime startup settles a fast supplemental refresh before releasing compl
     },
   });
 
-  const startup = app.refreshDuringStartup(null, { settleAfterCriticalMs: 100 });
-  releaseSupplemental();
-
-  assert.deepEqual(await startup, {
+  assert.deepEqual(await app.refreshDuringStartup(null), {
     critical: { ok: true },
-    settled: true,
-  });
-});
-
-test("runtime startup does not hold completion behind a slow supplemental refresh", async () => {
-  let releaseSupplemental = null;
-  let settleTimer = null;
-  const supplemental = new Promise((resolve) => { releaseSupplemental = resolve; });
-  const scope = {
-    setTimeout(callback) { settleTimer = callback; return 1; },
-    clearTimeout() {},
-  };
-  const app = createRuntimeDataApp(scope, {
-    runRefresh: async (_element, options) => {
-      options.onCriticalReady();
-      await supplemental;
-      return { ok: true };
-    },
-  });
-
-  const startup = app.refreshDuringStartup(null, { settleAfterCriticalMs: 100 });
-  await Promise.resolve();
-  settleTimer();
-
-  assert.deepEqual(await startup, {
-    critical: { ok: true },
-    settled: false,
   });
   releaseSupplemental();
 });

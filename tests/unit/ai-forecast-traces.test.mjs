@@ -100,7 +100,7 @@ test("extracts one safe representative report only from a thickest AI scenario",
     broker: "Hana Securities",
   };
   const thickTrace = { line: { width: 1 }, meta: {
-      isAiForecastScenarioTrace: true,
+      overlayKind: "ai-scenario",
       isEmphasizedAiScenario: true,
       thickestAiScenarioLineWidth: 1,
       representativeReport: report,
@@ -113,14 +113,14 @@ test("extracts one safe representative report only from a thickest AI scenario",
   assert.equal(selected.report.publishedDate, "2026-07-23");
   assert.equal(isThickestAiScenarioTrace(thickTrace), true);
   assert.equal(representativeReportFromForecastClick({
-    points: [{ data: { line: { width: 1 }, meta: { isAiForecastScenarioTrace: true, isEmphasizedAiScenario: true, thickestAiScenarioLineWidth: 1, representativeReport: {
+    points: [{ data: { line: { width: 1 }, meta: { overlayKind: "ai-scenario", isEmphasizedAiScenario: true, thickestAiScenarioLineWidth: 1, representativeReport: {
       ...report,
       sourceUrl: "https://example.com/report.pdf",
     } } } }],
   }), null);
   assert.equal(representativeReportFromForecastClick({
     points: [{ data: { line: { width: 1 }, meta: {
-      isAiForecastScenarioTrace: true,
+      overlayKind: "ai-scenario",
       isEmphasizedAiScenario: false,
       thickestAiScenarioLineWidth: 1,
       representativeReport: report,
@@ -147,7 +147,7 @@ test("extracts up to three safe latest reports from the dedicated R marker", () 
     },
   ];
   const selected = representativeReportFromForecastClick({
-    points: [{ data: { meta: { isAiReportMarkerTrace: true, reports } } }],
+    points: [{ data: { meta: { overlayKind: "ai-report", reports } } }],
   });
   assert.equal(selected.reports.length, 3);
   assert.equal(selected.reports[0].title, "Newest report");
@@ -166,7 +166,7 @@ test("allows every AI scenario tied for the thickest rendered line", () => {
   const trace = (width) => ({
     line: { width },
     meta: {
-      isAiForecastScenarioTrace: true,
+      overlayKind: "ai-scenario",
       isEmphasizedAiScenario: width === 1,
       thickestAiScenarioLineWidth: 1,
     },

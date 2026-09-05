@@ -3,6 +3,8 @@ import fs from "node:fs";
 import test from "node:test";
 import macdOscillator from "../../docs/modules/macd-oscillator.mjs";
 import marketTiming from "../../docs/modules/market-timing.mjs";
+import { normalizeMacroPayload } from "../../shared/runtime-data-contract.mjs";
+import { rebaseSeriesRowsToAvailability } from "../../shared/series-timeline-policy.mjs";
 
 const {
   DEFAULT_KOREAN_VOLATILITY_POLICY,
@@ -77,6 +79,24 @@ test("provider-specific availability lag is explicit and never reads ahead", () 
     7,
     2,
   ), [null, null, 42, 42]);
+});
+
+test("signal timing sees a leading-cycle release only from its publication date", () => {
+  const payload = normalizeMacroPayload({
+    ok: true,
+    leadingRows: [{
+      date: "2026-07-01",
+      available_date: "2026-09-01",
+      leading_cycle: 104.2,
+    }],
+  });
+
+  assert.deepEqual(alignedSource(
+    ["2026-08-31", "2026-09-01", "2026-09-02"],
+    payload.leadingRows,
+    "leading_cycle",
+    75,
+  ), [null, 104.2, 104.2]);
 });
 
 test("timing regimes and evidence grades remain descriptive rather than probabilistic", () => {
@@ -1152,7 +1172,11 @@ test("recovers major historical KOSPI turning points without future-dated marker
       prices: macd.prices,
       oscillator: macd.normalized,
       adrRows: columnarRows("adr_data.json"),
-      macroRows: columnarRows("macro_data.json"),
+      macroRows: rebaseSeriesRowsToAvailability(
+        columnarRows("macro_data.json"),
+        "leading_cycle",
+        { observationCadence: "monthly" },
+      ),
       creditRows: columnarRows("credit_data.json"),
     });
   };

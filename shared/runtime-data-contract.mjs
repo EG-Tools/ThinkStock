@@ -1,9 +1,12 @@
 import { finiteOrNull } from "./runtime-foundation.mjs";
+import { rebaseSeriesRowsToAvailability } from "./series-timeline-policy.mjs";
 
 /** @typedef {{date?: string} & Record<string, unknown>} RuntimeDataRow */
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const CREDIT_KEYS = Object.freeze(["customer_deposit", "kospi_credit", "kosdaq_credit"]);
+const ADR_KEYS = Object.freeze(["adr_kospi", "adr_kosdaq"]);
+const LEADING_DATE_BASIS = "availability";
 
 const finiteNumber = finiteOrNull;
 
@@ -80,9 +83,55 @@ export function normalizeCreditPayload(payload) {
   return { ...source, rows, componentLatestDates: latestSeriesDates(rows, CREDIT_KEYS) };
 }
 
+export function normalizeAdrPayload(payload) {
+  const source = requireSuccess(payload, "ADR");
+  const rows = normalizeRows(source.rows, ADR_KEYS, { positiveOnly: true });
+  requireUsableRows(source.rows, rows, "ADR");
+  return {
+    ...source,
+    latestDate: [
+      DATE_PATTERN.test(String(source.latestDate || "").slice(0, 10))
+        ? String(source.latestDate).slice(0, 10)
+        : "",
+      rows.at(-1)?.date || "",
+    ].filter(Boolean).sort().at(-1) || "",
+    rows,
+    componentLatestDates: latestSeriesDates(rows, ADR_KEYS),
+  };
+}
+
+export function normalizeFearGreedPayload(payload) {
+  if (!payload || typeof payload !== "object" || payload.ok === false) {
+    throw new Error(payload?.error || "Fear-greed response is invalid");
+  }
+  const sourceRows = Array.isArray(payload.rows) && payload.rows.length
+    ? payload.rows
+    : [{ date: payload.updated, score: payload.score }];
+  const rows = normalizeRows(
+    sourceRows.map((row) => ({
+      date: row?.date || row?.updated,
+      fear_greed: row?.fear_greed ?? row?.score,
+    })),
+    ["fear_greed"],
+  ).filter((row) => row.fear_greed >= 0 && row.fear_greed <= 100);
+  requireUsableRows(sourceRows, rows, "Fear-greed");
+  return {
+    ...payload,
+    latestDate: rows.at(-1)?.date || "",
+    rows,
+    componentLatestDates: latestSeriesDates(rows, ["fear_greed"]),
+  };
+}
+
 export function normalizeMacroPayload(payload) {
   const source = requireSuccess(payload, "Macro");
-  let leadingRows = normalizeRows(source.leadingRows, ["leading_cycle"], { positiveOnly: true });
+  let leadingRows = normalizeRows(
+    rebaseSeriesRowsToAvailability(source.leadingRows, "leading_cycle", {
+      dateBasis: source.leadingDateBasis,
+    }),
+    ["leading_cycle"],
+    { positiveOnly: true },
+  );
   const newsRows = normalizeRows(source.newsRows, ["news_sentiment"], { positiveOnly: true });
   const policyRateRows = normalizeRows(source.policyRateRows, ["policy_rate"], { positiveOnly: true });
   const tradeRows = normalizeRows(source.tradeRows, ["export_value", "import_value"], { positiveOnly: true });
@@ -101,6 +150,7 @@ export function normalizeMacroPayload(payload) {
   }
   return {
     ...source,
+    leadingDateBasis: LEADING_DATE_BASIS,
     leadingRows,
     newsRows,
     policyRateRows,
@@ -117,7 +167,8 @@ export function normalizeMacroPayload(payload) {
 
 export function normalizePricePayload(payload) {
   const source = requireSuccess(payload, "Price");
-  const records = normalizeRows(source.records, ["close"], { positiveOnly: true });
+  const records = normalizeRows(source.records, ["close", "volume"], { positiveOnly: true })
+    .filter((row) => finiteNumber(row.close) !== null);
   requireUsableRows(source.records, records, "Price");
   return {
     ...source,
@@ -169,6 +220,7 @@ export function mergeIndexRecords(...groups) {
     const ticker = String(row?.ticker || "").trim().toUpperCase();
     const date = String(row?.date || "").slice(0, 10);
     const close = finiteNumber(row?.close);
+    const volume = finiteNumber(row?.volume);
     if (!["^KS11", "^KQ11"].includes(ticker)
       || !DATE_PATTERN.test(date)
       || close === null
@@ -177,6 +229,7 @@ export function mergeIndexRecords(...groups) {
       ticker,
       date,
       close,
+      ...(volume !== null && volume > 0 ? { volume } : {}),
       ...(row?.source ? { source: String(row.source) } : {}),
     });
   });
@@ -341,6 +394,8 @@ export function normalizeCrisisSignalPayload(payload) {
 }
 
 export function normalizeRuntimePayload(kind, payload) {
+  if (kind === "adr") return normalizeAdrPayload(payload);
+  if (kind === "fear-greed") return normalizeFearGreedPayload(payload);
   if (kind === "credit") return normalizeCreditPayload(payload);
   if (kind === "macro") return normalizeMacroPayload(payload);
   if (kind === "price") return normalizePricePayload(payload);
@@ -354,6 +409,8 @@ export function normalizeRuntimePayload(kind, payload) {
 const api = Object.freeze({
   mergeIndexRecords,
   latestSeriesDates,
+  normalizeAdrPayload,
+  normalizeFearGreedPayload,
   normalizeCreditPayload,
   normalizeMacroPayload,
   normalizeBootstrapPayload,

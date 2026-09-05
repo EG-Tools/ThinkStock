@@ -12,8 +12,8 @@ test("parses decimal indices and integer stock closes from Naver", () => {
     ["20260807", 1, 2, 3, 6258.77, 10],
     ["20260810", 1, 2, 3, 6318.05, 20]
   ]`), [
-    { date: "2026-08-07", close: 6258.77 },
-    { date: "2026-08-10", close: 6318.05 },
+    { date: "2026-08-07", close: 6258.77, volume: 10 },
+    { date: "2026-08-10", close: 6318.05, volume: 20 },
   ]);
 });
 
