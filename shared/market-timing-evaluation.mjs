@@ -35,6 +35,12 @@ export function rounded(value, digits = 4) {
 
 export function summarizeTimingRows(rows, type) {
   const directionSign = type === "buy" ? 1 : -1;
+  const directional5 = rows.map((row) => (
+    Number.isFinite(row.directional5) ? row.directional5 : row.return5 * directionSign
+  ));
+  const directional10 = rows.map((row) => (
+    Number.isFinite(row.directional10) ? row.directional10 : row.return10 * directionSign
+  ));
   const directional20 = rows.map((row) => (
     Number.isFinite(row.directional20) ? row.directional20 : row.return20 * directionSign
   ));
@@ -51,9 +57,14 @@ export function summarizeTimingRows(rows, type) {
   const meanReturn63 = average(rows.map((row) => row.return63));
   return {
     samples: rows.length,
+    direction5: rounded(ratio(rows, (row) => row.direction5)),
+    direction10: rounded(ratio(rows, (row) => row.direction10)),
     direction20: rounded(ratio(rows, (row) => row.direction20)),
     direction63: rounded(ratio(rows, (row) => row.direction63)),
+    excursion10: rounded(ratio(rows, (row) => row.excursion10Hit)),
     excursion20: rounded(ratio(rows, (row) => row.excursionHit)),
+    meanReturn5: rounded(average(directional5)),
+    meanReturn10: rounded(average(directional10)),
     meanReturn20: rounded(meanReturn20 === null ? null : meanReturn20 * directionSign),
     meanReturn63: rounded(meanReturn63 === null ? null : meanReturn63 * directionSign),
     medianReturn20: rounded(quantile(directional20, 0.5)),
@@ -714,6 +725,7 @@ export function summarizeTimingTickerPerformance(candidateRows, baselineRows, ti
 export function compactTimingSignalOutcome(row) {
   return {
     ticker: row.ticker,
+    type: row.type,
     market: row.market,
     date: row.date,
     actionDate: row.actionDate,

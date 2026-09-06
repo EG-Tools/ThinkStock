@@ -6,8 +6,14 @@ function createTaskProgress(scope = globalThis, options = {}) {
   const getBar = options.getBar || (() => null);
   const setTimer = options.setTimer || scope.setTimeout?.bind(scope);
   const clearTimer = options.clearTimer || scope.clearTimeout?.bind(scope);
-  const revealDelayMs = Math.max(0, Number(options.revealDelayMs) || 180);
-  const hideDelayMs = Math.max(0, Number(options.hideDelayMs) || 650);
+  const requestedRevealDelay = Number(options.revealDelayMs);
+  const requestedHideDelay = Number(options.hideDelayMs);
+  const revealDelayMs = Number.isFinite(requestedRevealDelay)
+    ? Math.max(0, requestedRevealDelay)
+    : 180;
+  const hideDelayMs = Number.isFinite(requestedHideDelay)
+    ? Math.max(0, requestedHideDelay)
+    : 650;
   const defaultLabel = String(options.defaultLabel || "진행");
   const resolveTaskAnchor = typeof options.resolveAnchor === "function"
     ? options.resolveAnchor
@@ -65,6 +71,10 @@ function createTaskProgress(scope = globalThis, options = {}) {
 
   function scheduleReveal() {
     if (revealTimer || !activeTasks().length) return;
+    if (revealDelayMs === 0) {
+      reveal();
+      return;
+    }
     revealTimer = setTimer?.(reveal, revealDelayMs) || 0;
   }
 

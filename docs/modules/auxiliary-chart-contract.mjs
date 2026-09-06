@@ -3,6 +3,10 @@
   const NEWS_MOVING_AVERAGE_DAYS = 1;
   const NEWS_MOVING_AVERAGE_MIN_DAYS = 1;
   const NEWS_MOVING_AVERAGE_MAX_DAYS = 20;
+  const MACD_DISPARITY_DAYS = 60;
+  const MACD_DISPARITY_STEPS = Object.freeze([5, 10, 20, 30, 60]);
+  const MACD_DISPARITY_MIN_DAYS = MACD_DISPARITY_STEPS[0];
+  const MACD_DISPARITY_MAX_DAYS = MACD_DISPARITY_STEPS.at(-1);
   const AUXILIARY_PANEL_KEYS = Object.freeze([
     "adr",
     "vkospi",
@@ -42,20 +46,37 @@
     );
   }
 
+  function normalizeMacdDisparityDays(value, fallback = MACD_DISPARITY_DAYS) {
+    const numeric = Math.round(Number(value));
+    if (MACD_DISPARITY_STEPS.includes(numeric)) return numeric;
+    const fallbackValue = Math.round(Number(fallback));
+    return MACD_DISPARITY_STEPS.includes(fallbackValue) ? fallbackValue : MACD_DISPARITY_DAYS;
+  }
+
   const contract = Object.freeze({
     AUXILIARY_CHART_CONFIG,
     AUXILIARY_PANEL_KEYS,
+    MACD_DISPARITY_DAYS,
+    MACD_DISPARITY_MAX_DAYS,
+    MACD_DISPARITY_MIN_DAYS,
+    MACD_DISPARITY_STEPS,
     NEWS_MOVING_AVERAGE_DAYS,
     NEWS_MOVING_AVERAGE_MAX_DAYS,
     NEWS_MOVING_AVERAGE_MIN_DAYS,
+    normalizeMacdDisparityDays,
     normalizeNewsMovingAverageDays,
   });
 export {
   AUXILIARY_CHART_CONFIG,
   AUXILIARY_PANEL_KEYS,
+  MACD_DISPARITY_DAYS,
+  MACD_DISPARITY_MAX_DAYS,
+  MACD_DISPARITY_MIN_DAYS,
+  MACD_DISPARITY_STEPS,
   NEWS_MOVING_AVERAGE_DAYS,
   NEWS_MOVING_AVERAGE_MAX_DAYS,
   NEWS_MOVING_AVERAGE_MIN_DAYS,
+  normalizeMacdDisparityDays,
   normalizeNewsMovingAverageDays,
 };
 export default contract;

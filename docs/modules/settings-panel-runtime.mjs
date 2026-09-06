@@ -1,12 +1,11 @@
 import { createScrollAffordance } from "./control-state-view.mjs";
+import { MACD_DISPARITY_STEPS } from "./auxiliary-chart-contract.mjs";
 
 function createSettingsPanelRuntime(scope = globalThis, options = {}) {
     const {
       ADMIN_ACCESS_MASK,
       APP_BUILD_VERSION,
       APP_VERSION,
-      NEWS_MOVING_AVERAGE_MIN_DAYS = 1,
-      NEWS_MOVING_AVERAGE_MAX_DAYS = 20,
       CHART_RIGHT_PADDING_MIN_DAYS = 0,
       CHART_RIGHT_PADDING_MAX_DAYS = 30,
       STOCK_RESEARCH_UNIVERSE_MIN = 100,
@@ -26,6 +25,7 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
       getBlockedStockCount,
       getCursorLineMode,
       getChartRightPaddingDays,
+      getMacdDisparityDays,
       getNewsSentimentMovingAverageDays,
       getStockResearchUniverseSize,
       getDartGatewayAccessToken,
@@ -34,9 +34,12 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
       setMessage,
       setCursorLineMode,
       setChartRightPaddingDays,
+      setMacdDisparityDays,
       setNewsSentimentMovingAverageDays,
       setStockResearchUniverseSize,
       syncApiOptionsButton,
+      syncMacdDisparityControls,
+      syncNewsSentimentMovingAverageControls,
       validateDartGatewayAccessToken,
     } = options;
     if (!scope.document || !apiPeriodsModule || !releaseNotesModule || !controlStateView
@@ -135,9 +138,10 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
       const chartRightPaddingDecrease = document.getElementById("chartRightPaddingDecrease");
       const chartRightPaddingIncrease = document.getElementById("chartRightPaddingIncrease");
       const chartRightPaddingValue = document.getElementById("chartRightPaddingValue");
+      const macdDisparityDecrease = document.getElementById("macdDisparityDecrease");
+      const macdDisparityIncrease = document.getElementById("macdDisparityIncrease");
       const newsMovingAverageDecrease = document.getElementById("newsSentimentMovingAverageDecrease");
       const newsMovingAverageIncrease = document.getElementById("newsSentimentMovingAverageIncrease");
-      const newsMovingAverageValue = document.getElementById("newsSentimentMovingAverageValue");
       const stockResearchUniverseDecrease = document.getElementById("stockResearchUniverseDecrease");
       const stockResearchUniverseIncrease = document.getElementById("stockResearchUniverseIncrease");
       const stockResearchUniverseValue = document.getElementById("stockResearchUniverseValue");
@@ -212,24 +216,42 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
           chartRightPaddingIncrease.disabled = days >= CHART_RIGHT_PADDING_MAX_DAYS;
         }
       };
-      const syncNewsMovingAverageUi = () => {
-        const days = Math.min(
-          NEWS_MOVING_AVERAGE_MAX_DAYS,
-          Math.max(
-            NEWS_MOVING_AVERAGE_MIN_DAYS,
-            Math.round(Number(getNewsSentimentMovingAverageDays?.()) || NEWS_MOVING_AVERAGE_MIN_DAYS),
-          ),
-        );
-        if (newsMovingAverageValue) {
-          newsMovingAverageValue.value = String(days);
-          newsMovingAverageValue.textContent = String(days);
-        }
-        if (newsMovingAverageDecrease) {
-          newsMovingAverageDecrease.disabled = days <= NEWS_MOVING_AVERAGE_MIN_DAYS;
-        }
-        if (newsMovingAverageIncrease) {
-          newsMovingAverageIncrease.disabled = days >= NEWS_MOVING_AVERAGE_MAX_DAYS;
-        }
+      const movingAverageSteppers = [
+        {
+          decrease: macdDisparityDecrease,
+          increase: macdDisparityIncrease,
+          getValue: getMacdDisparityDays,
+          setValue: setMacdDisparityDays,
+          sync: syncMacdDisparityControls,
+          values: MACD_DISPARITY_STEPS,
+        },
+        {
+          decrease: newsMovingAverageDecrease,
+          increase: newsMovingAverageIncrease,
+          getValue: getNewsSentimentMovingAverageDays,
+          setValue: setNewsSentimentMovingAverageDays,
+          sync: syncNewsSentimentMovingAverageControls,
+        },
+      ];
+      const syncMovingAverageUi = () => movingAverageSteppers.forEach((stepper) => {
+        stepper.sync?.();
+      });
+      const bindMovingAverageStepper = (stepper) => {
+        const change = (delta) => {
+          if (typeof stepper.setValue !== "function") return;
+          const current = Number(stepper.getValue?.());
+          const values = Array.isArray(stepper.values) ? stepper.values : [];
+          if (!values.length) {
+            stepper.setValue(current + delta);
+            return;
+          }
+          const next = delta > 0
+            ? values.find((value) => value > current) ?? values.at(-1)
+            : values.findLast((value) => value < current) ?? values[0];
+          stepper.setValue(next);
+        };
+        stepper.decrease?.addEventListener("click", () => change(-1));
+        stepper.increase?.addEventListener("click", () => change(1));
       };
       const syncStockResearchUniverseUi = () => {
         const size = Math.min(
@@ -390,7 +412,7 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
         syncAdminAccessUi();
         syncChartRightPaddingUi();
         syncCursorLineModeUi();
-        syncNewsMovingAverageUi();
+        syncMovingAverageUi();
         syncStockResearchUniverseUi();
         renderReleaseNotes(releaseNotesNavigator.reset());
         modal.hidden = false;
@@ -423,16 +445,7 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
         setChartRightPaddingDays(Number(getChartRightPaddingDays?.()) + 1);
         syncChartRightPaddingUi();
       });
-      newsMovingAverageDecrease?.addEventListener("click", () => {
-        if (typeof setNewsSentimentMovingAverageDays !== "function") return;
-        setNewsSentimentMovingAverageDays(Number(getNewsSentimentMovingAverageDays?.()) - 1);
-        syncNewsMovingAverageUi();
-      });
-      newsMovingAverageIncrease?.addEventListener("click", () => {
-        if (typeof setNewsSentimentMovingAverageDays !== "function") return;
-        setNewsSentimentMovingAverageDays(Number(getNewsSentimentMovingAverageDays?.()) + 1);
-        syncNewsMovingAverageUi();
-      });
+      movingAverageSteppers.forEach(bindMovingAverageStepper);
       stockResearchUniverseDecrease?.addEventListener("click", () => {
         if (typeof setStockResearchUniverseSize !== "function") return;
         setStockResearchUniverseSize(
@@ -644,7 +657,7 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
       syncApiOptionsButton();
       syncAdminAccessUi();
       syncCursorLineModeUi();
-      syncNewsMovingAverageUi();
+      syncMovingAverageUi();
       syncStockResearchUniverseUi();
     }
 

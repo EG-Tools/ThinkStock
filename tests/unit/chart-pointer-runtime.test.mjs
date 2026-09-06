@@ -172,3 +172,18 @@ test("destroy cancels the active wheel settlement before removing listeners", as
       < destroyBlock.indexOf("while (boundListeners.length)"),
   );
 });
+
+test("full-lifetime toggle settles automatic fit and anchored markers in one viewport path", async () => {
+  const source = await readFile(
+    new URL("../../docs/modules/chart-pointer-runtime.mjs", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("const performFullVisibleLifetimeToggle = async () => {");
+  const end = source.indexOf("\n      const toggleFullVisibleLifetime", start);
+  const block = source.slice(start, end);
+
+  assert.ok(start >= 0 && end > start);
+  assert.match(block, /source: "full-lifetime"[\s\S]*liveFit: chartSession\.autoChartReset/);
+  assert.match(block, /source: "full-lifetime-restore"[\s\S]*liveFit: chartSession\.autoChartReset/);
+  assert.ok(block.indexOf("getChartRangeSyncController().flush()") < block.indexOf("requestViewportRender?.()"));
+});

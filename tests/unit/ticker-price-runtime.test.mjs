@@ -239,6 +239,59 @@ test("backfills partial or legacy five-year caches before using incremental upda
   }), "2026-08-12");
 });
 
+test("recognizes whether cached prices cover the requested visible window", () => {
+  const points = [
+    { date: "2026-01-02", close: 70000 },
+    { date: "2026-08-31", close: 71000 },
+  ];
+  assert.equal(runtime.hasHistoryCoverageFromDate(points, "2026-03-01"), true);
+  assert.equal(runtime.hasHistoryCoverageFromDate(points, "2025-03-01"), false);
+  assert.equal(runtime.hasHistoryCoverageFromDate(points, ""), true);
+});
+
+test("loads a visible price window as partial history before full backfill", async () => {
+  let currentPoints = [];
+  let requestedSince = "";
+  let writtenCoverage = "";
+  const loader = runtime.createSeriesLoader({
+    applySharedCache: async () => ({ applied: false, historyCoverage: "unknown" }),
+    assessPriceUpdate: () => ({ invalidateDerived: false, fullHistoryRequired: false }),
+    clearSeries: () => { currentPoints = []; },
+    fetchHistory: async (_ticker, options) => {
+      requestedSince = options.sinceDate || "";
+      return [
+        { date: "2026-01-02", close: 70000, volume: 100 },
+        { date: "2026-08-31", close: 71000, volume: 120 },
+      ];
+    },
+    fetchLatest: async () => [],
+    getPoints: () => currentPoints,
+    hasSeries: () => currentPoints.length > 0,
+    hasVolumeHistory: () => currentPoints.some((point) => point.volume > 0),
+    invalidateCache: async () => {},
+    isCacheFresh: () => false,
+    latestDate: () => currentPoints.at(-1)?.date || "",
+    mergePoints: (_ticker, points) => {
+      currentPoints = [...points];
+      return true;
+    },
+    normalizePoints: (points) => points,
+    setStatus: () => {},
+    writeCache: async (_ticker, _points, _name, options) => {
+      writtenCoverage = options.historyCoverage;
+    },
+  });
+
+  const result = await loader.load("005930.KS", {
+    visibleSinceDate: "2026-01-01",
+  });
+
+  assert.equal(requestedSince, "2026-01-01");
+  assert.equal(writtenCoverage, runtime.HISTORY_COVERAGE_PARTIAL);
+  assert.equal(result.historyCoverage, runtime.HISTORY_COVERAGE_PARTIAL);
+  assert.equal(result.deferredRefresh, true);
+});
+
 test("coalesces full-history requests and requires every visible ticker to be complete", async () => {
   let loadCount = 0;
   let releaseLoad;
@@ -322,6 +375,25 @@ test("full price coverage is not signal-ready until volume history is present", 
   await coordinator.load("005930.KS", { requireFullHistory: true });
   assert.equal(loadCount, 2);
   assert.equal(coordinator.visibleReady([{ ticker: "005930.KS" }]), true);
+});
+
+test("latest-only confirmation does not downgrade complete history coverage", async () => {
+  let loadCount = 0;
+  const coordinator = runtime.createHistoryCoverageCoordinator({
+    loadSeries: async () => ({
+      ready: true,
+      historyCoverage: loadCount++ === 0
+        ? runtime.HISTORY_COVERAGE_FULL
+        : runtime.HISTORY_COVERAGE_UNKNOWN,
+    }),
+    hasSeries: () => true,
+    hasVolumeHistory: () => true,
+  });
+
+  await coordinator.load("005930.KS", { requireFullHistory: true });
+  await coordinator.load("005930.KS", { latestOnly: true });
+
+  assert.equal(coordinator.fullHistoryReady("005930.KS"), true);
 });
 
 test("touches ticker cache metadata at most once per interval", () => {

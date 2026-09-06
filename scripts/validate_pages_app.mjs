@@ -98,6 +98,10 @@ const taskProgressRuntime = await readFile(
   path.join(root, "docs", "modules", "task-progress-runtime.mjs"),
   "utf8",
 );
+const mainSeriesActivation = await readFile(
+  path.join(root, "docs", "modules", "main-series-activation.mjs"),
+  "utf8",
+);
 const stockResearchWorkerRuntime = await readFile(
   path.join(root, "docs", "modules", "stock-research-worker-runtime.mjs"),
   "utf8",
@@ -520,10 +524,11 @@ assert.ok(runtimeRefreshOrchestrator.includes("planCriticalRefresh({")
 assert.ok(runtimeRefreshOrchestrator.includes("supplementalTasks: foregroundSourceTasks.map")
   && runtimeRefreshOrchestrator.includes("shouldScheduleHiddenStockRefresh(options)")
   && !runtimeRefreshOrchestrator.includes("hiddenPriceTask,")
-  && app.includes("initialLoad = await ensureCustomTickerSeriesLoaded(key, {")
-  && app.includes("latestOnly: hasPriceData,")
-  && app.includes("requireFullHistory: !hasPriceData,")
-  && app.includes("returnAfterCache: !pricePlan.shouldRefresh,"),
+  && app.includes("if (activateRequested) {")
+  && app.includes("setMainChartSeriesVisible(stockCandidate.ticker, false")
+  && app.includes("await activateMainSeries(stockCandidate.ticker, {")
+  && mainSeriesActivation.includes("visibleSinceDate: context.visibleSinceDate")
+  && mainSeriesActivation.includes("return effects.scheduleHistory?.("),
 "hidden stock prices are not deferred until the stock becomes visible");
 assert.ok(runtimeRefreshOrchestrator.includes('reportCriticalProgress("chart", 96)')
   && runtimeDataApp.includes("onCriticalProgress: flow.onCriticalProgress"),
@@ -575,6 +580,12 @@ assert.ok(!pagesEntry.includes('import "../docs/modules/market-timing-service.mj
   && marketTimingFeatureEntry.includes('import service from "../../docs/modules/market-timing-service.mjs"')
   && marketTimingWorker.includes('../../docs/modules/market-timing.mjs')
   && marketTimingWorker.includes('../../docs/modules/market-timing-evaluation.mjs')
+  && !marketTimingFeatureEntry.includes("market-timing-challenger.mjs")
+  && !marketTimingFeatureEntry.includes("market-timing-discovery.mjs")
+  && !marketTimingWorker.includes("market-timing-challenger.mjs")
+  && !marketTimingWorker.includes("market-timing-discovery.mjs")
+  && !marketTimingService.includes("buildMarketTimingChallengerSignals")
+  && !marketTimingService.includes("buildMarketTimingDiscoverySignals")
   && !marketTimingService.includes("ThinkStockMarketTiming")
   && !marketTiming.includes("globalThis.ThinkStockMarketTiming")
   && !marketTimingEvaluation.includes("globalThis.ThinkStockMarketTimingEvaluation")

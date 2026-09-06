@@ -346,6 +346,29 @@ test("visible startup preload checks only the latest tail for existing series", 
   assert.equal(loaded[1].options.requireFullHistory, true);
 });
 
+test("visible startup preload fetches only the current window before background history", async () => {
+  const loaded = [];
+  const preloader = createCustomStockPreloader({
+    getItems: () => [{ ticker: "B.KQ", name: "B" }],
+    hasExisting: () => false,
+    loadSeries: async (ticker, options) => {
+      loaded.push({ ticker, options });
+      return { ready: true, deferredRefresh: true };
+    },
+  });
+
+  const result = await preloader.preload({
+    latestOnly: true,
+    scope: "visible",
+    visibleSinceDate: "2026-02-01",
+  });
+
+  assert.equal(loaded[0].options.latestOnly, false);
+  assert.equal(loaded[0].options.requireFullHistory, false);
+  assert.equal(loaded[0].options.visibleSinceDate, "2026-02-01");
+  assert.deepEqual(result.deferredTickers, ["B.KQ"]);
+});
+
 test("non-deferring startup work continues while pointer input is active", async () => {
   const calls = [];
   let pendingInput = true;

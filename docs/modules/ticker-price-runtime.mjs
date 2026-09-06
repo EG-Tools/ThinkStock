@@ -41,6 +41,17 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
     return canExtendTail ? latestDate : "";
   }
 
+  function hasHistoryCoverageFromDate(points, sinceDate) {
+    const since = String(sinceDate || "").slice(0, 10);
+    if (!ISO_DATE_PATTERN.test(since)) return true;
+    const earliest = (Array.isArray(points) ? points : [])
+      .map((point) => String(point?.date || "").slice(0, 10))
+      .filter((date) => ISO_DATE_PATTERN.test(date))
+      .sort()
+      .at(0) || "";
+    return Boolean(earliest && earliest <= since);
+  }
+
   function filterLatestTailPoints(existingPoints, latestPoints) {
     const existingDates = (Array.isArray(existingPoints) ? existingPoints : [])
       .map((point) => String(point?.date || "").slice(0, 10))
@@ -266,7 +277,11 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
     function note(ticker, value) {
       const key = normalizeTickerKey(ticker);
       if (!key) return HISTORY_COVERAGE_UNKNOWN;
-      const coverage = normalizeHistoryCoverage(value);
+      const incoming = normalizeHistoryCoverage(value);
+      const previous = coverageByTicker.get(key) || HISTORY_COVERAGE_UNKNOWN;
+      const coverage = incoming === HISTORY_COVERAGE_UNKNOWN
+        ? previous
+        : incoming;
       coverageByTicker.set(key, coverage);
       return coverage;
     }
@@ -330,7 +345,7 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
       ));
     }
 
-    return Object.freeze({ ensureVisible, load, note, visibleReady });
+    return Object.freeze({ ensureVisible, fullHistoryReady, load, note, visibleReady });
   }
 
   function clearSeries(payload, ticker) {
@@ -764,6 +779,9 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
     async function load(ticker, loadOptions = {}) {
       const key = normalizeTicker(ticker);
       const forceRefresh = loadOptions.forceRefresh === true;
+      const visibleSinceDate = ISO_DATE_PATTERN.test(String(loadOptions.visibleSinceDate || "").slice(0, 10))
+        ? String(loadOptions.visibleSinceDate).slice(0, 10)
+        : "";
       const displayName = String(loadOptions.displayName || options.displayName?.(key) || "").trim();
       const signal = loadOptions.signal || null;
       const hasPrefetchedLatest = Object.prototype.hasOwnProperty.call(loadOptions, "latestPoints");
@@ -786,7 +804,8 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
       }
       if (loadOptions.latestOnly === true
         && options.hasSeries(key)
-        && options.hasVolumeHistory(key)) {
+        && options.hasVolumeHistory(key)
+        && hasHistoryCoverageFromDate(options.getPoints(key), visibleSinceDate)) {
         try {
           const rawLatestPoints = hasPrefetchedLatest
             ? prefetchedLatest
@@ -883,7 +902,14 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
           );
         }
       }
-      if (hasExisting && loadOptions.returnAfterCache === true && !latestBoundaryAssessment) {
+      const visibleWindowCovered = hasHistoryCoverageFromDate(
+        options.getPoints(key),
+        visibleSinceDate,
+      );
+      if (hasExisting
+        && visibleWindowCovered
+        && loadOptions.returnAfterCache === true
+        && !latestBoundaryAssessment) {
         return {
           ready: true,
           cached: true,
@@ -926,6 +952,7 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
           && !latestTailIncomplete
           && options.isCacheFresh(latestExisting, key)
           && options.hasVolumeHistory(key)
+          && visibleWindowCovered
           && historyCoverage === HISTORY_COVERAGE_FULL) {
           return {
             ready: true,
@@ -945,9 +972,13 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
           historyCoverage,
           latestDate: options.latestDate(key),
         });
-        const sinceDate = incrementalSinceDate && typeof options.resolveHistorySinceDate === "function"
-          ? String(options.resolveHistorySinceDate(incrementalSinceDate, key) || incrementalSinceDate).slice(0, 10)
-          : incrementalSinceDate;
+        const visibleWindowSinceDate = visibleSinceDate && !visibleWindowCovered
+          ? visibleSinceDate
+          : "";
+        const requestedSinceDate = visibleWindowSinceDate || incrementalSinceDate;
+        const sinceDate = requestedSinceDate && typeof options.resolveHistorySinceDate === "function"
+          ? String(options.resolveHistorySinceDate(requestedSinceDate, key) || requestedSinceDate).slice(0, 10)
+          : requestedSinceDate;
         let points = await options.fetchHistory(key, {
           forceNetwork: forceRefresh,
           sinceDate,
@@ -995,14 +1026,17 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
         }
         throwIfAborted(signal);
         options.mergePoints(key, points, { replace: replaceFullHistory });
+        const resultingCoverage = fetchedFullHistory || historyCoverage === HISTORY_COVERAGE_FULL
+          ? HISTORY_COVERAGE_FULL
+          : HISTORY_COVERAGE_PARTIAL;
         await options.writeCache(key, options.getPoints(key), displayName, {
-          historyCoverage: HISTORY_COVERAGE_FULL,
+          historyCoverage: resultingCoverage,
         });
         return {
           ready: true,
           cached: false,
-          deferredRefresh: false,
-          historyCoverage: HISTORY_COVERAGE_FULL,
+          deferredRefresh: resultingCoverage !== HISTORY_COVERAGE_FULL,
+          historyCoverage: resultingCoverage,
           latestDate: options.latestDate(key),
         };
       } catch (error) {
@@ -1021,7 +1055,7 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
             ready: true,
             cached: true,
             stale: true,
-            deferredRefresh: false,
+            deferredRefresh: historyCoverage !== HISTORY_COVERAGE_FULL,
             historyCoverage,
             latestDate: latestExisting,
           };
@@ -1055,6 +1089,7 @@ const tickerPriceRuntime = /* @__PURE__ */ Object.freeze({
     inspectPriceHistoryIntegrity,
     inspectPricePayloadIntegrity,
     normalizeHistoryCoverage,
+    hasHistoryCoverageFromDate,
     trustedHistoryCoverage,
     normalizeResearchHistoryCache,
     priceCacheToResearchHistory,
@@ -1085,6 +1120,7 @@ export {
   latestSeriesDate,
   mergeSeries,
   normalizeHistoryCoverage,
+  hasHistoryCoverageFromDate,
   normalizeResearchHistoryCache,
   priceCacheToResearchHistory,
   resolveHistoryFetchSinceDate,

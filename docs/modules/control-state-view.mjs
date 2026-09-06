@@ -309,10 +309,10 @@ import {
         });
     }
 
-    function publish() {
+    function publish(change) {
       options.persist?.();
       sync();
-      options.onChange?.();
+      options.onChange?.(change);
     }
 
     function toggleSeries(key) {
@@ -326,7 +326,7 @@ import {
         seriesKey,
         visible,
       );
-      publish();
+      publish({ key: seriesKey, type: "series", visible });
     }
 
     function togglePanel(panelKey) {
@@ -340,7 +340,7 @@ import {
       } else {
         state.hiddenAuxiliaryPanels.add(panelKey);
       }
-      publish();
+      publish({ key: panelKey, type: "panel", visible: !state.hiddenAuxiliaryPanels.has(panelKey) });
     }
 
     function bindToggle(button, action) {

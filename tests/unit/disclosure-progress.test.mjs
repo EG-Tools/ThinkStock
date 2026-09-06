@@ -1,7 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { createDisclosureProgress } = await import("../../docs/modules/task-progress-runtime.mjs");
+const { createDisclosureProgress, createTaskProgress } = await import("../../docs/modules/task-progress-runtime.mjs");
+
+test("zero-delay progress becomes visible in the same turn", () => {
+  const root = { hidden: true };
+  const progress = createTaskProgress(globalThis, {
+    getRoot: () => root,
+    getText: () => ({ textContent: "" }),
+    getBar: () => ({ style: {} }),
+    revealDelayMs: 0,
+  });
+
+  progress.begin("signal:005930.KS", "삼성전자 신호 로딩중");
+
+  assert.equal(root.hidden, false);
+});
 
 test("disclosure progress aggregates real per-ticker completion and avoids instant flashes", () => {
   const root = { hidden: true };

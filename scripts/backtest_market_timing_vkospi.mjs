@@ -150,9 +150,20 @@ const indexPayload = readJson(path.join(ROOT, "docs", "data", "prices.json"));
 const krxUniverse = readJson(path.join(ROOT, "docs", "data", "krx_universe.json"));
 const tickerNames = Object.fromEntries((krxUniverse.records || []).map((row) => [row.ticker, row.name]));
 const koreanVolatilityRows = buildKoreanVolatilityTimingRows(context.crisisRows || []);
+const latestSeries = (primary, fallback) => {
+  const primaryDate = String(primary?.dates?.at?.(-1) || "");
+  const fallbackDate = String(fallback?.dates?.at?.(-1) || "");
+  return primaryDate >= fallbackDate && Array.isArray(primary?.prices) ? primary : fallback;
+};
 const indexSeries = {
-  "^KS11": columnarSeries(indexPayload, "^KS11"),
-  "^KQ11": columnarSeries(indexPayload, "^KQ11"),
+  "^KS11": latestSeries(
+    priceUniverse.series?.["^KS11"],
+    columnarSeries(indexPayload, "^KS11"),
+  ),
+  "^KQ11": latestSeries(
+    priceUniverse.series?.["^KQ11"],
+    columnarSeries(indexPayload, "^KQ11"),
+  ),
 };
 const benchmarkMaps = Object.fromEntries(Object.entries(indexSeries).map(([ticker, series]) => [
   ticker,
@@ -254,6 +265,10 @@ function calculate(policy = null, timingBuilder = buildMarketTimingSignals, prog
       oscillator: series.oscillator,
       benchmarkPrices: series.benchmarkPrices,
       volumes: series.volumes,
+      marketPricesByTicker: Object.fromEntries(Object.entries(benchmarkMaps).map(([ticker, map]) => [
+        ticker,
+        series.dates.map((date) => map.get(date) ?? null),
+      ])),
       adrRows: context.auxiliaryRows || [],
       macroRows: context.macroRows || [],
       creditRows: context.creditRows || [],

@@ -2110,6 +2110,10 @@ test("bundled recent data boots through the chart worker", async ({ page }, test
   await page.locator("#newsSentimentMovingAverageDecrease").click();
   await expect(page.locator("#newsSentimentMovingAverageValue")).toHaveText("1");
   await expect(page.locator("#newsSentimentMovingAverageDecrease")).toBeDisabled();
+  await page.locator("#newsSentimentMovingAverageIncrease").evaluate((button) => {
+    for (let index = 0; index < 4; index += 1) button.click();
+  });
+  await expect(page.locator("#newsSentimentMovingAverageValue")).toHaveText("5");
   await expect(page.locator("#stockResearchUniverseValue")).toHaveText("400");
   await page.locator("#stockResearchUniverseIncrease").click();
   await page.locator("#stockResearchUniverseIncrease").click();
@@ -2120,24 +2124,7 @@ test("bundled recent data boots through the chart worker", async ({ page }, test
   await page.evaluate(() => window.ThinkStockE2E.applyNewsSentimentForTest([
     { date: "2026-07-14", news_sentiment: 101 },
   ]));
-  const oneDayNewsAverage = page.locator('[data-news-sentiment-average-days="1"]');
-  await expect(oneDayNewsAverage).toHaveAttribute("aria-pressed", "true");
-  await expect.poll(() => oneDayNewsAverage.evaluate((button) => {
-    const hitArea = button.getBoundingClientRect();
-    const circle = button.querySelector("span")?.getBoundingClientRect();
-    return {
-      hitAreaReady: hitArea.width >= 28,
-      circleReady: (circle?.width || 0) > 0,
-      circleInsideHitArea: (circle?.width || 0) < hitArea.width,
-    };
-  })).toEqual({
-    hitAreaReady: true,
-    circleReady: true,
-    circleInsideHitArea: true,
-  });
-  await page.locator('[data-news-sentiment-average-days="5"]').click();
-  await expect(page.locator('[data-news-sentiment-average-days="5"]'))
-    .toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".auxiliary-period-toggle")).toHaveCount(0);
   await page.locator("#apiOptionsBtn").click();
   await expect(page.locator("#chartRightPaddingValue")).toHaveText("30");
   await expect(page.locator("#newsSentimentMovingAverageValue")).toHaveText("5");

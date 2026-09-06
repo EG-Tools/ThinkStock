@@ -19,6 +19,7 @@ function state() {
     hoverShowPopup: true,
     cursorLineMode: "vertical",
     chartRightPaddingDays: 0,
+    macdDisparityDays: 60,
     newsSentimentMovingAverageDays: 1,
     showDisclosures: true,
     showEps: true,
@@ -170,6 +171,7 @@ test("loads legacy auxiliary visibility and keeps AI and EPS disabled at boot", 
         creditOffset: -4,
         cursorLineMode: "cross",
         chartRightPaddingDays: 12,
+        macdDisparityDays: 20,
         newsSentimentMovingAverageDays: 5,
         showChartTools: false,
         showEps: true,
@@ -181,6 +183,7 @@ test("loads legacy auxiliary visibility and keeps AI and EPS disabled at boot", 
     seriesKeys,
     normalizeCursorLineMode: (value) => value,
     normalizeChartRightPaddingDays: (value) => Math.max(0, Math.min(30, Number(value) || 0)),
+    normalizeMacdDisparityDays: (value) => [5, 20, 60].includes(Number(value)) ? Number(value) : 60,
     normalizeNewsMovingAverageDays: (value) => Number(value) || 1,
     getCustomStocks: () => customStocks,
     setCustomStocks: (value) => { customStocks = value; },
@@ -195,6 +198,7 @@ test("loads legacy auxiliary visibility and keeps AI and EPS disabled at boot", 
   assert.equal(chartState.showChartTools, false);
   assert.equal(chartState.showEps, false);
   assert.equal(chartState.chartRightPaddingDays, 12);
+  assert.equal(chartState.macdDisparityDays, 20);
   assert.deepEqual([...chartState.hiddenAuxiliaryPanels].sort(), ["adr", "fearGreed"]);
   assert.deepEqual([...chartState.hiddenAuxiliarySeries], []);
   assert.deepEqual(chartState.seriesOffsets, { A: 3 });
@@ -221,6 +225,7 @@ test("saves one normalized application state record", () => {
   assert.equal(saved.showChartTools, true);
   assert.equal(saved.showEps, undefined);
   assert.equal(saved.chartRightPaddingDays, 0);
+  assert.equal(saved.macdDisparityDays, 60);
   assert.deepEqual(saved.mainHoverSeriesOrder, []);
   assert.deepEqual(saved.auxiliarySeriesOrder, ["adr_kospi", "adr_kosdaq", "vkospi", "vix"]);
   assert.deepEqual(saved.customStocks, [{ ticker: "005930.KS", name: "삼성전자" }]);

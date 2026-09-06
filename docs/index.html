@@ -10,7 +10,7 @@
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" href="./icon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./styles.css">
-  <script defer src="./assets/app.bundle.min.js?v=dev&amp;build=3.33&amp;asset=c2cb1753891b"></script>
+  <script defer src="./assets/app.bundle.min.js?v=dev&amp;build=3.34&amp;asset=80dc16d372dd"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -115,7 +115,7 @@
           This product uses the FRED&reg; API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.
         </p>
         <p id="mainAppMeta" class="app-company-line app-company-line-main">
-              <span>Version : <span data-app-version-copy>3.33</span></span>
+              <span>Version : <span data-app-version-copy>3.34</span></span>
           <span>회사 : Life User</span>
           <span>이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a></span>
         </p>
@@ -195,6 +195,14 @@
               <button class="cursor-line-mode-btn" type="button" data-chart-cursor-mode="vertical" aria-label="세로 차트선 방식" aria-pressed="true"><span class="cursor-line-glyph" aria-hidden="true"></span></button>
               <button class="cursor-line-mode-btn" type="button" data-chart-cursor-mode="horizontal" aria-label="가로 차트선 방식" aria-pressed="false"><span class="cursor-line-glyph" aria-hidden="true"></span></button>
               <button class="cursor-line-mode-btn" type="button" data-chart-cursor-mode="cross" aria-label="십자 차트선 방식" aria-pressed="false"><span class="cursor-line-glyph" aria-hidden="true"></span></button>
+            </div>
+          </div>
+          <div class="cursor-line-setting disparity-moving-average-setting" title="보조차트 표시만 변경하며 신호·AI 계산에는 영향을 주지 않습니다.">
+            <span class="cursor-line-setting-label">이격도 이동평균선</span>
+            <div class="settings-number-stepper" role="group" aria-label="이격도 이동평균 기간">
+              <button id="macdDisparityDecrease" class="settings-stepper-btn" type="button" aria-label="이격도 이동평균 기간 줄이기">-</button>
+              <output id="macdDisparityValue" class="settings-stepper-value" aria-live="polite">60</output>
+              <button id="macdDisparityIncrease" class="settings-stepper-btn" type="button" aria-label="이격도 이동평균 기간 늘리기">+</button>
             </div>
           </div>
           <div class="cursor-line-setting news-moving-average-setting" title="보조차트 표시만 변경하며 신호·AI 계산에는 영향을 주지 않습니다.">
@@ -281,7 +289,7 @@
           <p id="appCacheEmpty" class="app-cache-empty" hidden>저장된 캐시가 없습니다.</p>
         </section>
         <p id="settingsAppMeta" class="app-company-line">
-        <span class="api-settings-version">Version : <span id="appVersionText">3.33</span></span>
+        <span class="api-settings-version">Version : <span id="appVersionText">3.34</span></span>
           <span>회사 : Life User</span>
           <span>이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a></span>
         </p>

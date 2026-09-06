@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import macdOscillator from "../../docs/modules/macd-oscillator.mjs";
 
-const { buildMacdOscillator, thinMacdPoints } = macdOscillator;
+const {
+  buildMacdOscillator,
+  buildMovingAverageDisparity,
+  thinMacdPoints,
+} = macdOscillator;
 
 test("builds a standard 12-26-9 MACD oscillator without changing source alignment", () => {
   const dates = Array.from({ length: 80 }, (_, index) => `2026-01-${String(index + 1).padStart(2, "0")}`);
@@ -14,6 +18,23 @@ test("builds a standard 12-26-9 MACD oscillator without changing source alignmen
   assert.equal(model.oscillator.findIndex(Number.isFinite), 33);
   assert.ok(model.normalized.at(-1) > 0);
   assert.ok(model.signal > 0);
+});
+
+test("centers moving-average disparity on the MACD zero baseline", () => {
+  const disparity = buildMovingAverageDisparity([100, 100, 100, 110], 3);
+
+  assert.deepEqual(disparity.slice(0, 2), [null, null]);
+  assert.equal(disparity[2], 0);
+  assert.ok(Math.abs(disparity[3] - 6.4516129032258) < 1e-9);
+
+  const dates = Array.from({ length: 80 }, (_, index) => String(index));
+  const model = buildMacdOscillator({
+    dates,
+    prices: dates.map((_, index) => 100 + index),
+    disparityPeriod: 20,
+  });
+  assert.equal(model.disparityPeriod, 20);
+  assert.equal(model.disparity.findIndex(Number.isFinite), 19);
 });
 
 test("returns no oscillator when MACD warm-up history is insufficient", () => {

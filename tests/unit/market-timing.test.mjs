@@ -122,7 +122,7 @@ test("timing regimes and evidence grades remain descriptive rather than probabil
     triggerReasons: ["MACD 반전"],
   });
   assert.equal(signal.evidenceCount, 3);
-  assert.equal(signal.signalGrade, "보통");
+  assert.equal(signal.signalGrade, "중");
   assert.equal(signal.signalRole, "predictive");
   assert.equal(decorateTimingSignal({ entryMode: "extreme-daily" }).signalRole, "warning");
   assert.equal(decorateTimingSignal({ entryMode: "same-day-climax" }).signalRole, "warning");
@@ -440,7 +440,7 @@ test("adaptive behavior policy annotates exceptional stock signals", () => {
     behaviorPolicy: { enabled: true },
   });
 
-  assert.equal(model.strategy, "adaptive-behavior-v19");
+  assert.equal(model.strategy, "adaptive-behavior-v20");
   assert.equal(model.sellSignals.at(-1).signalFamily, "blowoff-exhaustion");
   assert.notEqual(model.sellSignals.at(-1).behaviorProfile.dominant, "insufficient-history");
 });
@@ -465,8 +465,8 @@ test("adaptive behavior policy can promote buy and sell paths independently", ()
     behaviorPolicy: { enabled: true, buyEnabled: false, sellEnabled: true },
   });
 
-  assert.equal(buyOnly.strategy, "adaptive-behavior-v19-buy");
-  assert.equal(sellOnly.strategy, "adaptive-behavior-v19-sell");
+  assert.equal(buyOnly.strategy, "adaptive-behavior-v20-buy");
+  assert.equal(sellOnly.strategy, "adaptive-behavior-v20-sell");
   assert.equal(buyOnly.behaviorPolicy.sellEnabled, false);
   assert.equal(sellOnly.behaviorPolicy.buyEnabled, false);
   assert.equal(buyOnly.calibration.sellAbstained, 0);
@@ -490,7 +490,7 @@ test("sell calibration can be evaluated without discovering new behavior sell fa
     },
   });
 
-  assert.equal(model.strategy, "adaptive-behavior-v19-sell-calibration");
+  assert.equal(model.strategy, "adaptive-behavior-v20-sell-calibration");
   assert.equal(model.behaviorPolicy.sellEnabled, true);
   assert.equal(model.behaviorPolicy.sellDiscoveryEnabled, false);
 });
@@ -498,7 +498,7 @@ test("sell calibration can be evaluated without discovering new behavior sell fa
 test("emits one high-confidence buy signal after an oversold reversal", () => {
   const model = buildMarketTimingSignals({ indexKey: "^KS11", ...timingFixture() });
 
-  assert.equal(model.strategy, "episode-extreme-v13");
+  assert.equal(model.strategy, "episode-extreme-v14");
   assert.equal(model.signals.length, 1);
   assert.ok(model.signals[0].setupReasons.length > 0);
   assert.ok(model.signals[0].stabilizationReasons.length > 0);

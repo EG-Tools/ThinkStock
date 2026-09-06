@@ -370,6 +370,7 @@ test("an already current critical plan performs no index or stock request", asyn
 
 test("startup confirms visible prices before final signal inputs and timing", async () => {
   const events = [];
+  const preloadOptions = [];
   let revisions = {
     price: 1,
     macro: 1,
@@ -398,10 +399,12 @@ test("startup confirms visible prices before final signal inputs and timing", as
       indices: { requiredTickers: [] },
       prices: { requiredTickers: ["005930.KS"] },
     }),
-    preloadCustomStocks: async () => {
+    getVisibleSinceDate: () => "2026-01-01",
+    preloadCustomStocks: async (options) => {
+      preloadOptions.push(options);
       events.push("fetch:price");
       revisions = { ...revisions, price: 2 };
-      return { failedNames: [] };
+      return { failedNames: [], deferredTickers: ["005930.KS"] };
     },
     recordPerfSample: () => {},
     refreshEcosMacroFromGateway: async () => {
@@ -416,6 +419,7 @@ test("startup confirms visible prices before final signal inputs and timing", as
       notePhase: (phase) => events.push(`phase:${phase}`),
       noteSourceResult: () => {},
     },
+    scheduleVisibleStockHistoryRefresh: (ticker) => events.push(`history:${ticker}`),
     scheduleLastRuntimeSnapshotSave: () => {},
     setMessage: () => {},
     setRuntimeRefreshStatus: () => {},
@@ -431,10 +435,12 @@ test("startup confirms visible prices before final signal inputs and timing", as
     "fetch:price",
     "render:price",
     "phase:criticalReady",
+    "history:005930.KS",
     "fetch:macro",
     "phase:supplementalReady",
     "render:timing",
   ]);
+  assert.equal(preloadOptions[0].visibleSinceDate, "2026-01-01");
 });
 
 test("manual refresh checks hidden macro and auxiliary sources after the visible phase", async () => {

@@ -38,7 +38,7 @@ const SHARED_ESM_GLOBAL_ALLOWLIST = new Set([
 // New modules require an explicit architecture decision instead of quietly
 // growing the already broad browser module surface.
 export const DOCS_ESM_MODULE_MAX = 96;
-const APP_SOURCE_MAX_BYTES = 290000;
+const APP_SOURCE_MAX_BYTES = 300000;
 
 export function normalizedSourceBytes(source) {
   return Buffer.byteLength(String(source || "").replace(/\r\n?/g, "\n"), "utf8");

@@ -248,6 +248,7 @@
     const panelKeys = [...(options.panelKeys || [])];
     const seriesKeys = options.seriesKeys || {};
     const normalizeCursorLineMode = options.normalizeCursorLineMode || ((value) => value);
+    const normalizeMacdDisparityDays = options.normalizeMacdDisparityDays || ((value) => value);
     const normalizeNewsMovingAverageDays = options.normalizeNewsMovingAverageDays || ((value) => value);
     const normalizeChartRightPaddingDays = options.normalizeChartRightPaddingDays || ((value) => (
       Math.max(0, Math.min(30, Math.round(Number(value) || 0)))
@@ -270,6 +271,7 @@
           hoverShowPopup: state.hoverShowPopup,
           cursorLineMode: state.cursorLineMode,
           chartRightPaddingDays: state.chartRightPaddingDays,
+          macdDisparityDays: state.macdDisparityDays,
           newsSentimentMovingAverageDays: state.newsSentimentMovingAverageDays,
           showDisclosures: state.showDisclosures,
           showInsiderTrades: state.showInsiderTrades,
@@ -333,6 +335,7 @@
         if (typeof persisted.hoverShowPopup === "boolean") state.hoverShowPopup = persisted.hoverShowPopup;
         state.cursorLineMode = normalizeCursorLineMode(persisted.cursorLineMode);
         state.chartRightPaddingDays = normalizeChartRightPaddingDays(persisted.chartRightPaddingDays);
+        state.macdDisparityDays = normalizeMacdDisparityDays(persisted.macdDisparityDays);
         state.newsSentimentMovingAverageDays = normalizeNewsMovingAverageDays(
           persisted.newsSentimentMovingAverageDays,
         );

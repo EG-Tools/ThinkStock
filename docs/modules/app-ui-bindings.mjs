@@ -131,25 +131,47 @@ import { syncControl } from "./control-state-view.mjs";
       return mode;
     }
 
-    function syncNewsMovingAverage() {
-      const days = options.normalizeNewsMovingAverageDays?.(state.newsSentimentMovingAverageDays)
-        || Number(state.newsSentimentMovingAverageDays)
-        || 1;
-      const value = element("newsSentimentMovingAverageValue");
+    function syncNumberStepper(config = {}) {
+      const normalized = config.normalize?.(config.value);
+      const numeric = Number.isFinite(Number(normalized))
+        ? Number(normalized)
+        : Number(config.fallback);
+      const value = element(config.valueId);
       if (value) {
-        value.value = String(days);
-        value.textContent = String(days);
+        value.value = String(numeric);
+        value.textContent = String(numeric);
       }
-      const decrease = element("newsSentimentMovingAverageDecrease");
-      const increase = element("newsSentimentMovingAverageIncrease");
-      if (decrease) decrease.disabled = days <= (Number(options.newsMovingAverageMinDays) || 1);
-      if (increase) increase.disabled = days >= (Number(options.newsMovingAverageMaxDays) || 20);
-      view.syncChoiceControls(
-        document.querySelectorAll("[data-news-sentiment-average-days]"),
-        days,
-        { readValue: (button) => Number(button.dataset.newsSentimentAverageDays) },
-      );
-      return days;
+      const decrease = element(config.decreaseId);
+      const increase = element(config.increaseId);
+      if (decrease) decrease.disabled = numeric <= Number(config.min);
+      if (increase) increase.disabled = numeric >= Number(config.max);
+      return numeric;
+    }
+
+    function syncMacdDisparity() {
+      return syncNumberStepper({
+        value: state.macdDisparityDays,
+        normalize: options.normalizeMacdDisparityDays,
+        fallback: 60,
+        min: Number(options.macdDisparityMinDays) || 5,
+        max: Number(options.macdDisparityMaxDays) || 60,
+        valueId: "macdDisparityValue",
+        decreaseId: "macdDisparityDecrease",
+        increaseId: "macdDisparityIncrease",
+      });
+    }
+
+    function syncNewsMovingAverage() {
+      return syncNumberStepper({
+        value: state.newsSentimentMovingAverageDays,
+        normalize: options.normalizeNewsMovingAverageDays,
+        fallback: 1,
+        min: Number(options.newsMovingAverageMinDays) || 1,
+        max: Number(options.newsMovingAverageMaxDays) || 20,
+        valueId: "newsSentimentMovingAverageValue",
+        decreaseId: "newsSentimentMovingAverageDecrease",
+        increaseId: "newsSentimentMovingAverageIncrease",
+      });
     }
 
     function syncHandles() {
@@ -191,6 +213,7 @@ import { syncControl } from "./control-state-view.mjs";
       syncCoMovement,
       syncCursorLine,
       syncHandles,
+      syncMacdDisparity,
       syncNewsMovingAverage,
       syncScale,
       syncSignal,
@@ -252,6 +275,7 @@ import { syncControl } from "./control-state-view.mjs";
       if (hasAsyncWork) syncControl(button, { busy: true });
       try {
         if (nextEnabled) {
+          options.onPreparing?.();
           await options.prepare?.();
           await options.beforeEnable?.();
         }

@@ -23,6 +23,7 @@ import {
   createChartApplicationControlConfig,
   isForecastSeries,
   isMarketPriceSeries,
+  mainSeriesActivationProfile,
   normalizeChartRightPaddingDays,
   resolveMainChartDisplayPointBudget,
   resolveAppBuildVersion,
@@ -104,6 +105,16 @@ test("cancels signal progress when timing signals are disabled", () => {
   assert.deepEqual(context.calls, ["cancel-signal-progress"]);
 });
 
+test("starts signal progress before the prepared toggle loads its feature", () => {
+  const context = createContext();
+  context.startSignalProgress = () => context.calls.push("start-signal-progress");
+  const config = createChartApplicationControlConfig(context);
+
+  config.signal.onPreparing();
+
+  assert.deepEqual(context.calls, ["start-signal-progress"]);
+});
+
 test("confirming signal inputs reuses the shared runtime refresh", async () => {
   const context = createContext();
   context.refreshRuntimeData = async (options) => context.calls.push([
@@ -146,6 +157,7 @@ test("waits for AI inputs before requesting the final composition", async () => 
 test("owns stable runtime keys and chart control limits outside app.js", () => {
   assert.equal(APP_RUNTIME_KEYS.chartSession, "chart-session");
   assert.equal(APP_RUNTIME_KEYS.progressiveChartComposition, "progressive-chart-composition");
+  assert.equal(APP_RUNTIME_KEYS.mainSeriesActivation, "main-series-activation");
   assert.equal(APP_RUNTIME_KEYS.visibleStockHistoryRefresh, "visible-stock-history-refresh");
   assert.equal(Object.isFrozen(APP_RUNTIME_KEYS), true);
   assert.deepEqual(CURSOR_LINE_MODES, ["vertical", "horizontal", "cross"]);
@@ -222,6 +234,23 @@ test("owns stable runtime keys and chart control limits outside app.js", () => {
   assert.equal(isForecastSeries("^KQ11"), true);
   assert.equal(isForecastSeries("leading_cycle"), false);
   assert.equal(STOCK_TICKER_PATTERN.test("218410.KQ"), true);
+});
+
+test("main-series activation profiles skip volume for value-only macro series", () => {
+  assert.deepEqual(mainSeriesActivationProfile("005930.ks"), {
+    key: "005930.KS",
+    kind: "stock",
+    requiresPrice: true,
+    requiresVolume: true,
+    backgroundHistory: true,
+    supportsCompanyMarkers: true,
+    supportsTiming: true,
+  });
+  assert.equal(mainSeriesActivationProfile("^KS11").requiresVolume, true);
+  assert.equal(mainSeriesActivationProfile("leading_cycle").requiresVolume, false);
+  assert.equal(mainSeriesActivationProfile("leading_cycle").kind, "macro");
+  assert.equal(mainSeriesActivationProfile("leading_cycle").key, "leading_cycle");
+  assert.equal(mainSeriesActivationProfile("us_credit_spread").backgroundHistory, false);
 });
 
 test("resolves the stamped build version outside the application composition root", () => {

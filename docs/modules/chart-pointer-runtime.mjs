@@ -679,7 +679,10 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
           );
           fullLifetimeRestoreRange = null;
           if (!restored) return false;
-          applySyncedXRangeMs(restored[0], restored[1], { source: "full-lifetime-restore" });
+          applySyncedXRangeMs(restored[0], restored[1], {
+            source: "full-lifetime-restore",
+            liveFit: chartSession.autoChartReset,
+          });
         } else {
           const dataSpan = Math.max(1, dataRange[1] - dataRange[0]);
           const tolerance = Math.max(DAY_MS, dataSpan * 0.001);
@@ -687,9 +690,13 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
             && Math.abs(currentRange[0] - dataRange[0]) <= tolerance
             && Math.abs(currentRange[1] - dataRange[1]) <= tolerance;
           if (currentRange && !isFullLifetime) fullLifetimeRestoreRange = [...currentRange];
-          applySyncedXRangeMs(dataRange[0], dataRange[1], { source: "full-lifetime" });
+          applySyncedXRangeMs(dataRange[0], dataRange[1], {
+            source: "full-lifetime",
+            liveFit: chartSession.autoChartReset,
+          });
         }
         await getChartRangeSyncController().flush();
+        await requestViewportRender?.();
         return true;
       };
 

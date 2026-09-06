@@ -288,6 +288,7 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
       cancelAdrFinalRetry,
       chartSession,
       getDataRevisions,
+      getVisibleSinceDate,
       isAbortError,
       isSourceForeground,
       isRetryableAdrRefreshError,
@@ -308,6 +309,7 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
       runtimeDataApp,
       scheduleAdrFinalRetry,
       scheduleHiddenStockRefresh,
+      scheduleVisibleStockHistoryRefresh,
       scheduleLastRuntimeSnapshotSave,
       setMessage,
       setRuntimeRefreshStatus,
@@ -334,6 +336,7 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
       let pendingDerivedInputChanged = false;
       let adrDataChanged = false;
       let disclosureDataChanged = false;
+      let deferredVisibleStockTickers = [];
       const forceNetwork = Boolean(options?.forceNetwork);
       const signal = options?.signal || null;
       const refreshNow = options?.now instanceof Date
@@ -507,6 +510,9 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
             latestOnly: true,
             signal,
             scope: "visible",
+            ...(typeof getVisibleSinceDate === "function"
+              ? { visibleSinceDate: getVisibleSinceDate() }
+              : {}),
             ...(plannedPriceTickers ? { tickers: plannedPriceTickers } : {}),
             ...(bootstrap?.prices?.ok === true ? { priceBatchPayload: bootstrap.prices } : {}),
           }),
@@ -516,6 +522,9 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
           ? (plannedPriceTickers || [])
           : (result.unconfirmedTickers || []);
         if (unconfirmedTickers.length) forgetStockPriceRefresh?.(unconfirmedTickers);
+        deferredVisibleStockTickers = Array.isArray(result.deferredTickers)
+          ? [...result.deferredTickers]
+          : [];
         return {
           info: [],
           warnings: result.failedNames.length
@@ -686,6 +695,9 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
             ], false);
             await options.onCriticalReady({ changes, info: [...infoLines], warnings: [...warnLines] });
           }
+          deferredVisibleStockTickers.forEach((ticker) => {
+            scheduleVisibleStockHistoryRefresh?.(ticker, "", { forceRefresh: forceNetwork });
+          });
         },
         onSupplemental: async (results) => {
           throwIfAborted(signal);

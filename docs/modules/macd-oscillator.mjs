@@ -25,6 +25,31 @@ function alignedEma(values, period) {
   return output;
 }
 
+function alignedSimpleMovingAverage(values, period) {
+  const size = Math.max(1, Math.floor(Number(period) || 1));
+  const output = Array(values.length).fill(null);
+  const window = [];
+  let sum = 0;
+  values.forEach((rawValue, index) => {
+    const value = toNumber(rawValue);
+    if (value === null) return;
+    window.push(value);
+    sum += value;
+    if (window.length > size) sum -= window.shift();
+    if (window.length === size) output[index] = sum / size;
+  });
+  return output;
+}
+
+function buildMovingAverageDisparity(prices, period = 60) {
+  const averages = alignedSimpleMovingAverage(prices, period);
+  return prices.map((price, index) => (
+    Number.isFinite(price) && Number.isFinite(averages[index]) && averages[index] !== 0
+      ? ((price / averages[index]) - 1) * 100
+      : null
+  ));
+}
+
 function standardDeviation(values) {
   if (values.length < 2) return 0;
   const average = values.reduce((sum, value) => sum + value, 0) / values.length;
@@ -83,6 +108,8 @@ function buildMacdOscillator(options = {}) {
   const normalized = oscillator.map((value, index) => (
     Number.isFinite(value) ? (value / prices[index]) * 100 : null
   ));
+  const disparityPeriod = Math.max(1, Math.floor(Number(options.disparityPeriod) || 60));
+  const disparity = buildMovingAverageDisparity(prices, disparityPeriod);
 
   return {
     dates: points.map((point) => point.date),
@@ -91,6 +118,8 @@ function buildMacdOscillator(options = {}) {
     signalLine,
     oscillator,
     normalized,
+    disparity,
+    disparityPeriod,
     signal: calculateSignal(normalized),
     periods: { fast: fastPeriod, slow: slowPeriod, signal: signalPeriod },
   };
@@ -127,9 +156,17 @@ function thinMacdPoints(dates, values, budget = 1400) {
 
 const macdOscillator = Object.freeze({
   alignedEma,
+  alignedSimpleMovingAverage,
+  buildMovingAverageDisparity,
   buildMacdOscillator,
   thinMacdPoints,
 });
 
-export { alignedEma, buildMacdOscillator, thinMacdPoints };
+export {
+  alignedEma,
+  alignedSimpleMovingAverage,
+  buildMacdOscillator,
+  buildMovingAverageDisparity,
+  thinMacdPoints,
+};
 export default macdOscillator;

@@ -6,6 +6,19 @@ import {
 
 const defaultScope = typeof self !== "undefined" ? self : globalThis;
 export const MINIMUM_TIMING_VOLUME_POINTS = 20;
+const TIMING_PAYLOAD = Object.freeze({
+  NAME: 0,
+  REASONS: 1,
+  METRIC_A: 2,
+  METRIC_B: 3,
+  METRIC_C: 4,
+  GRADE: 5,
+  REGIME: 6,
+  EVIDENCE: 7,
+  FAMILY: 8,
+  BEHAVIOR: 9,
+  STAGE: 10,
+});
 
 export function createMarketTimingInputGate(options = {}) {
   const coreTickers = Array.isArray(options.coreTickers) ? options.coreTickers : ["^KS11", "^KQ11"];
@@ -20,6 +33,10 @@ export function createMarketTimingInputGate(options = {}) {
     options.hasVolumeHistory?.(ticker, MINIMUM_TIMING_VOLUME_POINTS)
     ?? priceRuntime?.hasVolumeHistory?.(ticker, MINIMUM_TIMING_VOLUME_POINTS)
   ) === true;
+  const hasFullHistory = (ticker) => (
+    options.hasFullHistory?.(ticker)
+    ?? priceRuntime?.fullHistoryReady?.(ticker)
+  ) !== false;
   const isStockSeries = options.isStockSeries || ((ticker) => /^\d{6}\.(KS|KQ)$/.test(ticker));
   const normalizeTickers = (targets = []) => [...new Set([
     ...coreTickers,
@@ -29,16 +46,24 @@ export function createMarketTimingInputGate(options = {}) {
   const missingVolumes = (targets = []) => normalizeTickers(targets).filter((ticker) => (
     !hasVolumeHistory(ticker)
   ));
+  const missingHistories = (targets = []) => normalizeTickers(targets).filter((ticker) => (
+    isStockSeries(ticker) && !hasFullHistory(ticker)
+  ));
 
   function ready(targets = []) {
-    return hasBaseInputs() && missingVolumes(targets).length === 0;
+    return hasBaseInputs()
+      && missingVolumes(targets).length === 0
+      && missingHistories(targets).length === 0;
   }
 
   async function ensure({ targets = [] } = {}) {
     if (ready(targets)) return true;
     const missing = missingVolumes(targets);
     const missingIndices = missing.filter((ticker) => coreTickers.includes(ticker));
-    const missingStocks = missing.filter(isStockSeries);
+    const missingStocks = [...new Set([
+      ...missing.filter(isStockSeries),
+      ...missingHistories(targets),
+    ])];
     const tasks = [];
     if (!hasBaseInputs()) tasks.push(options.loadBaseInputs?.());
     if (missingIndices.length) tasks.push(options.loadIndexVolumes?.(missingIndices));
@@ -53,7 +78,7 @@ export function createMarketTimingInputGate(options = {}) {
     return ready(targets);
   }
 
-  return Object.freeze({ ensure, missingVolumes, ready });
+  return Object.freeze({ ensure, missingHistories, missingVolumes, ready });
 }
 
 function sortedVolumeEntries(volumeMaps, ticker) {
@@ -76,6 +101,21 @@ function volumeTimelineRevision(entries) {
     String(latest?.[0] || ""),
     Number(latest?.[1]) || 0,
   ].join(":");
+}
+
+export function marketTimingProgressDescriptor(targets, resolveLabel = (value) => value) {
+  const normalizedTargets = [...new Set((targets || [])
+    .map((value) => String(value || "").trim().toUpperCase())
+    .filter(Boolean))];
+  if (!normalizedTargets.length) return null;
+  const firstLabel = String(resolveLabel(normalizedTargets[0]) || normalizedTargets[0] || "종목");
+  return Object.freeze({
+    key: `signal:${normalizedTargets.join(",")}`,
+    label: normalizedTargets.length > 1
+      ? `${firstLabel} 외 ${normalizedTargets.length - 1}종 신호 로딩중`
+      : `${firstLabel} 신호 로딩중`,
+    targets: Object.freeze(normalizedTargets),
+  });
 }
 
   const DAY_MS = 24 * 60 * 60 * 1000;
@@ -238,6 +278,7 @@ function volumeTimelineRevision(entries) {
       slowdown: "둔화",
       stress: "위험",
       recovery: "회복",
+      overheat: "과열",
       range: "횡보",
     })[String(value || "")] || "혼조";
   }
@@ -245,6 +286,7 @@ function volumeTimelineRevision(entries) {
   function timingFamilyLabel(value) {
     return ({
       "shock-reversal": "급락 과매도 경고",
+      "systemic-capitulation": "시장 투매 감속",
       "capitulation-reversal": "투매 반전",
       "range-floor-reversal": "박스권 하단",
       "trend-pullback": "추세 눌림",
@@ -260,6 +302,47 @@ function volumeTimelineRevision(entries) {
     })[String(value || "")] || "복합 판정";
   }
 
+  function timingGradeLabel(value, evidenceCount = 0, warning = false) {
+    const explicit = ({
+      강: "강",
+      중: "중",
+      약: "약",
+      이례: "강",
+      보통: "중",
+    })[String(value || "").trim()];
+    if (explicit) return explicit;
+    const evidence = Number(evidenceCount) || 0;
+    if (warning || evidence >= 6) return "강";
+    return evidence >= 3 ? "중" : "약";
+  }
+
+  function normalizedTimingGrade(signal) {
+    return timingGradeLabel(
+      signal?.signalGrade,
+      signal?.evidenceCount,
+      signal?.signalRole === "warning",
+    );
+  }
+
+  function timingSignalStage(signal, side, signalLifecycle) {
+    const sideLabel = side === "sell" ? "매도" : "매수";
+    let stage = signalLifecycle?.realtime
+      ? `실시간 ${sideLabel} 신호`
+      : String(signal?.signalStage || "").trim();
+    if (!stage) {
+      const triggerReasons = side === "sell"
+        ? signal?.sellTriggerReasons
+        : signal?.triggerReasons;
+      if (signal?.signalRole === "warning") stage = `${sideLabel} 선행 경고`;
+      else if (Array.isArray(triggerReasons) && triggerReasons.length) {
+        stage = side === "sell" ? "매도 하락 확인" : "매수 반전 확인";
+      } else {
+        stage = side === "sell" ? "분배 가능 구간" : "매집 가능 구간";
+      }
+    }
+    return stage;
+  }
+
   function timingReasonEvents(value, fallback) {
     const reasons = String(value || fallback)
       .split(/<br\s*\/?\s*>\s*·?\s*|\s+·\s+/i)
@@ -271,35 +354,40 @@ function volumeTimelineRevision(entries) {
   }
 
   function buildTimingSignalPopoverGroup(point) {
-    const meta = point?.data?.meta || {};
     const values = Array.isArray(point?.customdata) ? point.customdata : [];
     const date = String(point?.x || "").slice(0, 10);
     const kind = eventMarkerKind(point?.data);
     if (kind === "timing-buy") {
-      const title = values[10] || "매수 신호";
+      const title = values[TIMING_PAYLOAD.STAGE] || "매수 신호";
       return {
-        name: values[0] || point.data.name || "타이밍",
+        name: values[TIMING_PAYLOAD.NAME] || point.data.name || "타이밍",
         plotDate: date,
         events: [
-          { title: `${title} · ${values[5] || "보통"}` },
-          ...timingReasonEvents(values[1], "과매도·반전"),
-          { title: `ADR ${values[2] ?? "-"} · 공포 ${values[3] ?? "-"} · MACD ${values[4] ?? "-"}` },
-          { title: `시장 ${timingRegimeLabel(values[6])} · 근거 ${values[7] ?? "-"}개` },
-          { title: `${timingFamilyLabel(values[8])} · ${values[9] || "혼합형"}` },
+          { title: `${title} · ${timingGradeLabel(
+            values[TIMING_PAYLOAD.GRADE],
+            values[TIMING_PAYLOAD.EVIDENCE],
+          )}` },
+          ...timingReasonEvents(values[TIMING_PAYLOAD.REASONS], "과매도·반전"),
+          { title: `ADR ${values[TIMING_PAYLOAD.METRIC_A] ?? "-"} · 공포 ${values[TIMING_PAYLOAD.METRIC_B] ?? "-"} · MACD ${values[TIMING_PAYLOAD.METRIC_C] ?? "-"}` },
+          { title: `시장 ${timingRegimeLabel(values[TIMING_PAYLOAD.REGIME])} · 근거 ${values[TIMING_PAYLOAD.EVIDENCE] ?? "-"}개` },
+          { title: `${timingFamilyLabel(values[TIMING_PAYLOAD.FAMILY])} · ${values[TIMING_PAYLOAD.BEHAVIOR] || "혼합형"}` },
         ],
       };
     }
     if (kind === "timing-sell") {
-      const title = values[9] || "매도 신호";
+      const title = values[TIMING_PAYLOAD.STAGE] || "매도 신호";
       return {
-        name: values[0] || point.data.name || "타이밍",
+        name: values[TIMING_PAYLOAD.NAME] || point.data.name || "타이밍",
         plotDate: date,
         events: [
-          { title: `${title} · ${values[4] || "보통"}` },
-          ...timingReasonEvents(values[1], "과열·추세 둔화"),
-          { title: `신용20일 ${values[2] ?? "-"}% · 고점대비 ${values[3] ?? "-"}%` },
-          { title: `시장 ${timingRegimeLabel(values[5])} · 근거 ${values[6] ?? "-"}개` },
-          { title: `${timingFamilyLabel(values[7])} · ${values[8] || "혼합형"}` },
+          { title: `${title} · ${timingGradeLabel(
+            values[TIMING_PAYLOAD.GRADE],
+            values[TIMING_PAYLOAD.EVIDENCE],
+          )}` },
+          ...timingReasonEvents(values[TIMING_PAYLOAD.REASONS], "과열·추세 둔화"),
+          { title: `신용20일 ${values[TIMING_PAYLOAD.METRIC_A] ?? "-"}% · 고점대비 ${values[TIMING_PAYLOAD.METRIC_B] ?? "-"}%` },
+          { title: `시장 ${timingRegimeLabel(values[TIMING_PAYLOAD.REGIME])} · 근거 ${values[TIMING_PAYLOAD.EVIDENCE] ?? "-"}개` },
+          { title: `${timingFamilyLabel(values[TIMING_PAYLOAD.FAMILY])} · ${values[TIMING_PAYLOAD.BEHAVIOR] || "혼합형"}` },
         ],
       };
     }
@@ -380,7 +468,45 @@ function volumeTimelineRevision(entries) {
     const pointIndexCache = new WeakMap();
     let lastTimingPreparationKey = "";
     let pendingTimingPreparation = null;
+    let timingPreparationGeneration = 0;
     let timingInputRenderQueued = false;
+    const timingProgressTasks = new Map();
+
+    function normalizeTimingTarget(value) {
+      return String(value || "").trim().toUpperCase();
+    }
+
+    function cancelMarketTimingPreparation(seriesKey = "") {
+      const target = normalizeTimingTarget(seriesKey);
+      const taskKeys = [...timingProgressTasks.entries()]
+        .filter(([, task]) => !target || task.targets.has(target))
+        .map(([taskKey]) => taskKey);
+      const pendingMatches = pendingTimingPreparation
+        && (!target || pendingTimingPreparation.targets.has(target));
+      if (!taskKeys.length && !pendingMatches) return false;
+
+      timingPreparationGeneration += 1;
+      taskKeys.forEach((taskKey) => {
+        timingProgressTasks.delete(taskKey);
+        signalProgress?.cancel?.(taskKey);
+      });
+      if (pendingMatches) pendingTimingPreparation = null;
+      return true;
+    }
+
+    function beginMarketTimingProgress(targets) {
+      const descriptor = marketTimingProgressDescriptor(targets, labelName);
+      if (!descriptor) return false;
+      const token = {};
+      const started = signalProgress?.begin?.(descriptor.key, descriptor.label) === true;
+      if (started) {
+        timingProgressTasks.set(descriptor.key, {
+          targets: new Set(descriptor.targets),
+          token,
+        });
+      }
+      return started;
+    }
 
     function queueTimingInputRender() {
       if (timingInputRenderQueued || typeof onMarketTimingInputsPrepared !== "function") return;
@@ -603,6 +729,7 @@ function volumeTimelineRevision(entries) {
         return { trace: null, count: 0 };
       }
       const sell = side === "sell";
+      const overlayKind = `timing-${sell ? "sell" : "buy"}`;
       const points = [];
       frame.timingSeries.forEach((ticker) => {
         const model = getMarketTimingModel(ticker);
@@ -643,14 +770,13 @@ function volumeTimelineRevision(entries) {
           ], "과열·추세 둔화"),
           Number.isFinite(signal.creditChange) ? signal.creditChange.toFixed(1) : "-",
           Number.isFinite(signal.priceDrawdown60) ? signal.priceDrawdown60.toFixed(1) : "-",
-          signal.signalGrade || "보통",
+          "-",
+          normalizedTimingGrade(signal),
           signal.marketRegime || "range",
           Number.isFinite(signal.evidenceCount) ? signal.evidenceCount : "-",
           signal.signalFamily || "overheat-rollover",
           signal.behaviorProfile?.label || "혼합형",
-          signalLifecycle?.realtime
-            ? "실시간 매도 신호"
-            : (signal.signalRole === "warning" ? "과매수 경고" : "매도 신호"),
+          timingSignalStage(signal, "sell", signalLifecycle),
         ])
         : points.map(({ signal, signalLifecycle, ticker }) => [
           labelName(ticker),
@@ -663,38 +789,45 @@ function volumeTimelineRevision(entries) {
           printable(signal.adrMin),
           printable(signal.fearMin),
           printable(signal.oscillator, 3),
-          signal.signalGrade || "보통",
+          normalizedTimingGrade(signal),
           signal.marketRegime || "range",
           Number.isFinite(signal.evidenceCount) ? signal.evidenceCount : "-",
           signal.signalFamily || "correction-reversal",
           signal.behaviorProfile?.label || "혼합형",
-          signalLifecycle?.realtime
-            ? "실시간 매수 신호"
-            : (signal.signalRole === "warning" ? "과매도 경고" : "매수 신호"),
+          timingSignalStage(signal, "buy", signalLifecycle),
         ]);
-      const hovertemplate = customdata.map((values) => {
-        const reasons = String(escapeHtml?.(values[1]) ?? values[1]).replace(" · ", "<br>· ");
+      const hoverHeadlineTemplates = customdata.map(() => (
+        "<b>%{customdata[10]} · %{customdata[5]}</b>"
+      ));
+      const hoverDetailTemplates = customdata.map((values) => {
+        const reasons = String(escapeHtml?.(values[TIMING_PAYLOAD.REASONS])
+          ?? values[TIMING_PAYLOAD.REASONS]).replace(" · ", "<br>· ");
         return sell
-          ? `<b>%{customdata[0]} %{customdata[9]}</b><br>근거: ${reasons}`
+          ? `근거: ${reasons}`
             + "<br>신용20일 %{customdata[2]}% · 고점대비 %{customdata[3]}%<extra></extra>"
-          : `<b>%{customdata[0]} %{customdata[10]}</b><br>근거: ${reasons}`
+          : `근거: ${reasons}`
             + "<br>ADR %{customdata[2]} · 공포 %{customdata[3]} · MACD %{customdata[4]}<extra></extra>";
+      });
+      const hovertemplate = customdata.map((_values, pointIndex) => {
+        return `${hoverHeadlineTemplates[pointIndex]}<br><b>%{customdata[0]}</b><br>${hoverDetailTemplates[pointIndex]}`;
       });
       const trace = stampMarkerTrace({
         x: points.map((point) => point.date),
         y: points.map((point) => point.y),
         customdata,
-        text: points.map(() => sell ? eventMarkerDownText : eventMarkerUpText),
+        text: points.map(() => (sell ? eventMarkerDownText : eventMarkerUpText)),
         type: "scatter",
         mode: "text",
-        name: sell ? "타이밍 매도신호" : "타이밍 매수신호",
+        name: `타이밍 ${sell ? "매도" : "매수"}신호`,
         showlegend: false,
         cliponaxis: false,
         yaxis: "y",
         hoverinfo: chartSession.hoverShowPopup ? undefined : "none",
         hovertemplate: chartSession.hoverShowPopup ? hovertemplate : undefined,
         meta: {
-          overlayKind: sell ? "timing-sell" : "timing-buy",
+          overlayKind,
+          hoverHeadlineTemplates,
+          hoverDetailTemplates,
           pointTickers: points.map((point) => point.ticker),
           markerGapFactors: points.map(() => timingGapMultiplier * (sell ? 1 : -1)),
           markerAnchorValues: points.map((point) => point.anchorY),
@@ -704,7 +837,7 @@ function volumeTimelineRevision(entries) {
           sell ? colors.timingSell : colors.timingBuy,
           eventMarkerTextSize,
         ),
-      }, frame, sell ? "timing-sell" : "timing-buy", (
+      }, frame, overlayKind, (
         `${points.length}:${points.filter((point) => point.signalLifecycle?.realtime).length}`
       ));
       return { trace, count: points.length };
@@ -804,18 +937,18 @@ function volumeTimelineRevision(entries) {
       frame.timingSeries.forEach((ticker) => {
         const model = getMarketTimingModel(ticker);
         (model?.signals || []).forEach((signal) => {
-          if (signal.date <= frame.end) add(
-            ticker,
-            findPointOnOrAfterDate(signal.date, ticker, frame.pointIndex, 4),
-            -frame.markerGap * timingGapMultiplier,
-          );
+            if (signal.date <= frame.end) add(
+              ticker,
+              findPointOnOrAfterDate(signal.date, ticker, frame.pointIndex, 4),
+              -frame.markerGap * timingGapMultiplier,
+            );
         });
         (model?.sellSignals || []).forEach((signal) => {
-          if (signal.date <= frame.end) add(
-            ticker,
-            findPointOnOrAfterDate(signal.date, ticker, frame.pointIndex, 4),
-            frame.markerGap * timingGapMultiplier,
-          );
+            if (signal.date <= frame.end) add(
+              ticker,
+              findPointOnOrAfterDate(signal.date, ticker, frame.pointIndex, 4),
+              frame.markerGap * timingGapMultiplier,
+            );
         });
       });
       ["^KS11", "^KQ11"].filter((ticker) => (
@@ -1005,18 +1138,37 @@ function volumeTimelineRevision(entries) {
       if (!chartSession.showRecessionSignals
         || !targets.length
         || shouldPrepareMarketTimingModels() === false) return;
-      const taskKey = `signal:${targets.join(",")}`;
-      const firstTargetLabel = String(labelName?.(targets[0]) || targets[0] || "종목");
-      const taskLabel = targets.length > 1
-        ? `${firstTargetLabel} 외 ${targets.length - 1}종 신호 로딩중`
-        : `${firstTargetLabel} 신호 로딩중`;
+      const preparationGeneration = timingPreparationGeneration;
+      const progressDescriptor = marketTimingProgressDescriptor(targets, labelName);
+      const taskKey = progressDescriptor.key;
+      const taskLabel = progressDescriptor.label;
       let progressStarted = false;
+      const progressToken = {};
+      const ownsProgress = () => (
+        timingProgressTasks.get(taskKey)?.token === progressToken
+      );
+      const isCurrentPreparation = () => (
+        preparationGeneration === timingPreparationGeneration
+      );
       const beginProgress = () => {
         if (progressStarted) return;
         progressStarted = signalProgress?.begin?.(taskKey, taskLabel) === true;
+        if (progressStarted) {
+          timingProgressTasks.set(taskKey, {
+            targets: new Set(targets.map(normalizeTimingTarget)),
+            token: progressToken,
+          });
+        }
       };
       const cancelProgress = () => {
-        if (progressStarted) signalProgress?.cancel?.(taskKey);
+        if (!progressStarted || !ownsProgress()) return;
+        timingProgressTasks.delete(taskKey);
+        signalProgress?.cancel?.(taskKey);
+      };
+      const completeProgress = () => {
+        if (!progressStarted || !ownsProgress()) return;
+        timingProgressTasks.delete(taskKey);
+        signalProgress?.complete?.(taskKey, taskLabel);
       };
 
       if (areMarketTimingInputsReady?.(targets) === false) {
@@ -1024,7 +1176,9 @@ function volumeTimelineRevision(entries) {
         signalProgress?.update?.(taskKey, 0.04, taskLabel);
         try {
           const ready = await ensureMarketTimingInputs?.({ targets: [...targets] });
-          if (ready === false || shouldPrepareMarketTimingModels() === false) {
+          if (!isCurrentPreparation()
+            || ready === false
+            || shouldPrepareMarketTimingModels() === false) {
             cancelProgress();
             return;
           }
@@ -1079,6 +1233,10 @@ function volumeTimelineRevision(entries) {
         signalProgress?.update?.(taskKey, 0.08, taskLabel);
         try {
           await ensureMarketTimingFeature();
+          if (!isCurrentPreparation()) {
+            cancelProgress();
+            return;
+          }
         } catch (error) {
           cancelProgress();
           throw error;
@@ -1096,7 +1254,7 @@ function volumeTimelineRevision(entries) {
       const first = records[0] || {};
       const latest = records.at(-1) || {};
       const signature = [
-        "market-timing-v8",
+        "market-timing-v9",
         sourceRevision,
         `volume:${volumeRevision}`,
         sourceTickers.join(","),
@@ -1109,7 +1267,8 @@ function volumeTimelineRevision(entries) {
         cancelProgress();
         return;
       }
-      if (pendingTimingPreparation?.key === preparationKey) {
+      if (pendingTimingPreparation?.key === preparationKey
+        && pendingTimingPreparation.generation === preparationGeneration) {
         return pendingTimingPreparation.promise;
       }
       beginProgress();
@@ -1144,17 +1303,28 @@ function volumeTimelineRevision(entries) {
           targets,
           ...(sources ? { sources } : {}),
         });
+        if (!isCurrentPreparation()) return false;
         signalProgress?.update?.(taskKey, 0.92, taskLabel);
         lastTimingPreparationKey = preparationKey;
         recordPerfSample("prepareMarketTimingModels", startedAt, {
           targets: targets.length,
           models: service.stats().modelCount,
         });
+        return true;
       })();
-      pendingTimingPreparation = { key: preparationKey, promise: preparation };
+      pendingTimingPreparation = {
+        generation: preparationGeneration,
+        key: preparationKey,
+        promise: preparation,
+        targets: new Set(targets.map(normalizeTimingTarget)),
+      };
       try {
-        await preparation;
-        signalProgress?.complete?.(taskKey, taskLabel);
+        const completed = await preparation;
+        if (!completed || !isCurrentPreparation()) {
+          cancelProgress();
+          return;
+        }
+        completeProgress();
       } catch (error) {
         cancelProgress();
         recordRuntimeError("market-timing-worker", error, { targets: targets.length });
@@ -1169,6 +1339,8 @@ function volumeTimelineRevision(entries) {
       buildInsider,
       buildTimingBuy: (frame) => buildTiming(frame, "buy"),
       buildTimingSell: (frame) => buildTiming(frame, "sell"),
+      beginMarketTimingProgress,
+      cancelMarketTimingPreparation,
       collectCrisisSignalEntries,
       createFrame,
       createSpecs,
@@ -1201,6 +1373,7 @@ function volumeTimelineRevision(entries) {
     isEventMarkerTrace,
     isTimingSignalTrace,
     materializeEventMarkerTraces,
+    marketTimingProgressDescriptor,
   });
 
   // One baked graph owns every marker-to-price date binding for an element.

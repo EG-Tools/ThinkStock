@@ -94,15 +94,15 @@ test("timing signal popovers reuse the compact marker payload", () => {
   const group = markerModule.buildTimingSignalPopoverGroup({
     x: "2026-08-21",
     customdata: [
-      "삼성전자", "신용 과열<br>· MACD 반전", "8.2", "-1.3", "강", "slowdown", 5,
-      "trend-exhaustion", "추세형",
+      "삼성전자", "신용 과열<br>· MACD 반전", "8.2", "-1.3", "-", "강", "slowdown", 5,
+      "trend-exhaustion", "추세형", "매도 하락 확인",
     ],
     data: { name: "타이밍 매도신호", meta: { overlayKind: "timing-sell" } },
   });
   assert.equal(group.name, "삼성전자");
   assert.equal(group.plotDate, "2026-08-21");
   assert.deepEqual(group.events.map((event) => event.title), [
-    "매도 신호 · 강",
+    "매도 하락 확인 · 강",
     "근거: 신용 과열",
     "· MACD 반전",
     "신용20일 8.2% · 고점대비 -1.3%",
@@ -120,7 +120,7 @@ test("exceptional timing moves are labeled as warnings instead of predictions", 
     ],
     data: { meta: { overlayKind: "timing-buy" } },
   });
-  assert.equal(buy.events[0].title, "과매도 경고 · 이례");
+  assert.equal(buy.events[0].title, "과매도 경고 · 강");
 });
 
 function createRuntime(overrides = {}) {
@@ -265,6 +265,10 @@ test("one marker frame shares its date index and spacing across every marker lay
   assert.match(sell.trace.hovertemplate[0], /근거: 과열<br>· 전일대비 27% 상승/);
   assert.equal(buy.trace.mode, "text");
   assert.equal(buy.trace.text[0], "▲");
+  assert.match(
+    buy.trace.hovertemplate[0],
+    /^<b>%\{customdata\[10\]\} · %\{customdata\[5\]\}<\/b>/,
+  );
   assert.equal(sell.trace.mode, "text");
   assert.equal(sell.trace.text[0], "▼");
   assert.equal(disclosure.stats.markers, 1);
@@ -292,7 +296,7 @@ test("latest intraday timing markers are labeled as realtime signals", () => {
     end: "2026-08-08",
   });
   const sell = runtime.buildTimingSell(frame);
-  assert.equal(sell.trace.customdata[0][9], "실시간 매도 신호");
+  assert.equal(sell.trace.customdata[0][10], "실시간 매도 신호");
 });
 
 test("reuses marker point indexes while the chart model identity is unchanged", () => {
@@ -487,6 +491,28 @@ test("one timing input gate prepares index and visible-stock volume before signa
   assert.deepEqual(loaded, ["^KS11", "^KQ11", "005930.KS"]);
 });
 
+test("timing waits for complete stock history even when visible-window volume is ready", async () => {
+  let complete = false;
+  let loadCount = 0;
+  const gate = markerModule.createMarketTimingInputGate({
+    coreTickers: ["^KS11", "^KQ11"],
+    isForecastSeries: () => true,
+    isStockSeries: (ticker) => ticker.endsWith(".KS"),
+    hasBaseInputs: () => true,
+    hasVolumeHistory: () => true,
+    hasFullHistory: (ticker) => !ticker.endsWith(".KS") || complete,
+    loadStockHistory: async () => {
+      loadCount += 1;
+      complete = true;
+    },
+  });
+
+  assert.equal(gate.ready(["005930.KS"]), false);
+  assert.deepEqual(gate.missingHistories(["005930.KS"]), ["005930.KS"]);
+  assert.equal(await gate.ensure({ targets: ["005930.KS"] }), true);
+  assert.equal(loadCount, 1);
+});
+
 test("timing preparation excludes inactive custom stocks and reuses relevant fingerprints", async () => {
   let prepared = null;
   const progressEvents = [];
@@ -534,6 +560,52 @@ test("timing preparation excludes inactive custom stocks and reuses relevant fin
     "complete",
   ]);
   assert.equal(progressEvents[0][2], "삼성전자 신호 로딩중");
+});
+
+test("turning off a series cancels signal progress and stale work cannot finish a new session", async () => {
+  let releaseFirst;
+  let prepareCount = 0;
+  const progressEvents = [];
+  const firstPreparation = new Promise((resolve) => { releaseFirst = resolve; });
+  const service = {
+    has: () => false,
+    stats: () => ({ signature: "", modelCount: 0 }),
+    prepare: async () => {
+      prepareCount += 1;
+      if (prepareCount === 1) await firstPreparation;
+    },
+  };
+  const { runtime } = createRuntime({
+    getMarketTimingService: () => service,
+    getPricePayload: () => ({
+      records: [
+        { date: "2026-08-11", "^KS11": 3200, "^KQ11": 800, "005930.KS": 70000 },
+        { date: "2026-08-12", "^KS11": 3210, "^KQ11": 805, "005930.KS": 71000 },
+      ],
+    }),
+    isForecastSeries: (ticker) => ticker.startsWith("^") || ticker.endsWith(".KS"),
+    signalProgress: {
+      begin: (key) => { progressEvents.push(["begin", key]); return true; },
+      update: (key) => progressEvents.push(["update", key]),
+      complete: (key) => progressEvents.push(["complete", key]),
+      cancel: (key) => progressEvents.push(["cancel", key]),
+    },
+  });
+  const selected = ["005930.KS"];
+  const models = [{ series: "005930.KS" }];
+
+  const stale = runtime.prepareMarketTimingModels(selected, models);
+  await Promise.resolve();
+  assert.equal(prepareCount, 1);
+  assert.equal(runtime.cancelMarketTimingPreparation("005930.KS"), true);
+  await runtime.prepareMarketTimingModels(selected, models);
+  releaseFirst();
+  await stale;
+
+  assert.equal(prepareCount, 2);
+  assert.equal(progressEvents.filter(([type]) => type === "cancel").length, 1);
+  assert.equal(progressEvents.filter(([type]) => type === "complete").length, 1);
+  assert.equal(progressEvents.at(-1)[0], "complete");
 });
 
 test("skips repeated timing preparation until a data revision changes", async () => {

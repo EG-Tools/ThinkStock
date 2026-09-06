@@ -349,11 +349,25 @@ test("groups price, EPS, disclosures, and signals by series in one hover entry",
     mode: "markers",
     x: ["2024-03-29", "2024-03-29"],
     y: [165, 88],
-    customdata: [["RFHIC", "과매도·반전"], ["SK하이닉스", "추세 눌림"]],
-    hovertemplate: "<b>%{customdata[0]} 매수 신호</b><br>근거 · %{customdata[1]}<extra></extra>",
+    customdata: [
+      ["RFHIC", "과매도·반전", "-", "-", "-", "강", "recovery", 5, "correction-reversal", "추세형", "매수 반전 확인"],
+      ["SK하이닉스", "추세 눌림", "-", "-", "-", "중", "range", 4, "trend-pullback", "추세형", "매집 가능 구간"],
+    ],
+    hovertemplate: [
+      "<b>%{customdata[10]} · %{customdata[5]}</b><br><b>%{customdata[0]}</b><br>근거 · %{customdata[1]}<extra></extra>",
+      "<b>%{customdata[10]} · %{customdata[5]}</b><br><b>%{customdata[0]}</b><br>근거 · %{customdata[1]}<extra></extra>",
+    ],
     meta: {
       overlayKind: "timing-buy",
       pointTickers: ["218410.KQ", "000660.KS"],
+      hoverHeadlineTemplates: [
+        "<b>%{customdata[10]} · %{customdata[5]}</b>",
+        "<b>%{customdata[10]} · %{customdata[5]}</b>",
+      ],
+      hoverDetailTemplates: [
+        "근거 · %{customdata[1]}<extra></extra>",
+        "근거 · %{customdata[1]}<extra></extra>",
+      ],
     },
   };
   const disclosure = {
@@ -392,10 +406,13 @@ test("groups price, EPS, disclosures, and signals by series in one hover entry",
   assert.notEqual(reusedGrouped[0], grouped[0]);
   assert.equal(reusedGrouped[0].text, grouped[0].text);
   assert.match(rebuiltGrouped[0].text[0], /가격 32,100/);
-  assert.match(rebuiltGrouped[0].text[0], /<br>매수 신호/);
+  assert.match(rebuiltGrouped[0].text[0], /^매수 반전 확인 · 강<br>/);
   assert.match(rebuiltGrouped[0].text[0], /<br>공시/);
   assert.equal(rebuiltGrouped[0].meta.hoverGroupHasDetails[0], true);
-  assert.equal(timing.meta.hoverDetailTemplates, "<b>%{customdata[0]} 매수 신호</b><br>근거 · %{customdata[1]}<extra></extra>");
+  assert.deepEqual(timing.meta.hoverDetailTemplates, [
+    "근거 · %{customdata[1]}<extra></extra>",
+    "근거 · %{customdata[1]}<extra></extra>",
+  ]);
   assert.deepEqual(disclosure.meta.hoverDetailTemplates, ["<b>공시</b><br>분기보고서<extra></extra>"]);
   assert.equal(grouped.every((item) => item.type === "scattergl"), true);
   const epsHoverIndex = grouped[0].x.indexOf("2024-03-31");
@@ -415,13 +432,13 @@ test("groups price, EPS, disclosures, and signals by series in one hover entry",
   );
   assert.equal(renderer.buildLayout().xaxis.hoverformat, "%Y.%-m.%-d");
   assert.match(grouped[0].text[0], /<br>공시/);
-  assert.match(grouped[0].text[0], /<br>매수 신호/);
+  assert.match(grouped[0].text[0], /^매수 반전 확인 · 강<br>/);
   assert.match(grouped[0].text[0], /RFHIC[\s\S]*SK하이닉스/);
-  assert.equal((grouped[0].text[0].match(/매수 신호/g) || []).length, 2);
+  assert.equal((grouped[0].text[0].match(/매수 반전 확인/g) || []).length, 1);
   assert.equal(grouped[0].meta.isGroupedHoverOwnerTrace, true);
   assert.equal(grouped[0].meta.hoverGroupHasDetails[0], true);
   assert.equal(grouped[1].hoverinfo, "skip");
-  assert.ok(grouped[0].text[0].indexOf("가격 32,000") < grouped[0].text[0].indexOf("매수 신호"));
+  assert.ok(grouped[0].text[0].indexOf("매수 반전 확인") < grouped[0].text[0].indexOf("가격 32,000"));
   assert.equal(grouped[0].text[0].match(/RFHIC/g)?.length, 1);
   assert.doesNotMatch(grouped[0].text[0], /2024\.3\.29/);
   assert.match(

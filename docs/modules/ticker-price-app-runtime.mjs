@@ -430,6 +430,7 @@ export function createTickerPriceAppRuntime(options = {}) {
     applySharedCache,
     clearSeries,
     ensureVisible: (stocks, isHidden) => getHistoryCoordinator().ensureVisible(stocks, isHidden),
+    fullHistoryReady: (ticker) => getHistoryCoordinator().fullHistoryReady(ticker),
     hasVolumeHistory,
     latestDate,
     load: (ticker, loadOptions = {}) => getHistoryCoordinator().load(ticker, loadOptions),

@@ -99,6 +99,7 @@ export function buildTimingSignalOutcome({
     behavior: String(signal?.behaviorProfile?.dominant || "unclassified"),
     marketRegime: String(signal?.marketRegime || "unclassified"),
     signalFamily: String(signal?.signalFamily || "legacy"),
+    entryMode: String(signal?.entryMode || ""),
     signalRole: String(signal?.signalRole || "predictive"),
     calibrationObjective: String(signal?.calibration?.objective || "terminal"),
     calibration: signal?.calibration ? {

@@ -4,6 +4,7 @@
   const OVERSOLD_MEMORY_DAYS = 20;
   const BUY_SETUP_WINDOW_DAYS = 40;
   const SELL_SIGNAL_COOLDOWN_DAYS = 10;
+  const SYSTEMIC_CAPITULATION_COOLDOWN_DAYS = 12;
   const VOLATILITY_MAX_HISTORY_DAYS = 15 * 252;
   const VOLATILITY_RECENT_DAYS = 252;
   const VOLATILITY_REFERENCE_PERCENT = 35;
@@ -72,8 +73,10 @@
 
   const EXCEPTIONAL_TIMING_ENTRY_MODES = new Set([
     "extreme-daily",
+    "systemic-capitulation",
     "overheat-continuation",
     "same-day-climax",
+    "same-day-rebound",
   ]);
 
   function isExceptionalTimingSignal(signal) {
@@ -83,11 +86,27 @@
   function decorateTimingSignal(signal) {
     const reasons = uniqueSignalReasons(signal);
     const exceptional = isExceptionalTimingSignal(signal);
+    const sell = [
+      signal?.sellSetupReasons,
+      signal?.sellDeteriorationReasons,
+      signal?.sellTriggerReasons,
+    ].some((group) => Array.isArray(group) && group.length > 0);
+    const triggerReasons = sell ? signal?.sellTriggerReasons : signal?.triggerReasons;
+    const explicitStage = String(signal?.signalStage || "").trim();
+    const signalStage = explicitStage || (exceptional
+      ? `${sell ? "매도" : "매수"} 선행 경고`
+      : (Array.isArray(triggerReasons) && triggerReasons.length
+        ? `${sell ? "매도 하락" : "매수 반전"} 확인`
+        : (sell ? "분배 가능 구간" : "매집 가능 구간")));
+    const signalGrade = exceptional || reasons.length >= 6
+      ? "강"
+      : (reasons.length >= 3 ? "중" : "약");
     return {
       ...signal,
       evidenceCount: reasons.length,
       signalRole: exceptional ? "warning" : "predictive",
-      signalGrade: exceptional ? "이례" : (reasons.length >= 5 ? "강" : "보통"),
+      signalGrade,
+      signalStage,
     };
   }
 
@@ -523,6 +542,135 @@
       output[index] = count ? sum / count : null;
     });
     return output;
+  }
+
+  function rollingPriorZScores(values, lookback = 252, minimum = 40) {
+    const output = Array(values.length).fill(null);
+    const queue = [];
+    let sum = 0;
+    let squareSum = 0;
+    let count = 0;
+    values.forEach((rawValue, index) => {
+      const value = toNumber(rawValue);
+      if (value !== null && count >= minimum) {
+        const average = sum / count;
+        const variance = Math.max(
+          0,
+          (squareSum - ((sum ** 2) / count)) / Math.max(1, count - 1),
+        );
+        const deviation = Math.sqrt(variance);
+        output[index] = deviation > 1e-9 ? (value - average) / deviation : 0;
+      }
+      queue.push(value);
+      if (value !== null) {
+        sum += value;
+        squareSum += value ** 2;
+        count += 1;
+      }
+      if (queue.length > lookback) {
+        const removed = queue.shift();
+        if (removed !== null) {
+          sum -= removed;
+          squareSum -= removed ** 2;
+          count -= 1;
+        }
+      }
+    });
+    return output;
+  }
+
+  function buildBroadShockCounts(marketPricesByTicker, count) {
+    const output = Array(count).fill(0);
+    ["^KS11", "^KQ11"].forEach((ticker) => {
+      const prices = Array.isArray(marketPricesByTicker?.[ticker])
+        ? marketPricesByTicker[ticker].slice(0, count).map(toNumber)
+        : [];
+      if (!prices.length) return;
+      const returns = Array.from({ length: count }, (_, index) => changeRate(prices, index, 1));
+      const zScores = rollingPriorZScores(returns, 60, 30);
+      for (let index = 0; index < count; index += 1) {
+        if ((returns[index] ?? Infinity) <= -2.2 || (zScores[index] ?? Infinity) <= -2.2) {
+          output[index] += 1;
+        }
+      }
+    });
+    return output;
+  }
+
+  function createSystemicCapitulationTracker() {
+    let lastSignalIndex = -Infinity;
+    let lastDepth = 0;
+    let quietDays = 0;
+    return {
+      inspect(point, previousPoint, index, stockScale, stressSupport) {
+        if ((point.broadShockCount ?? 0) === 0 && (point.return1 ?? 0) >= 0) {
+          quietDays += 1;
+          if (quietDays >= 3) {
+            lastSignalIndex = -Infinity;
+            lastDepth = 0;
+          }
+        } else {
+          quietDays = 0;
+        }
+        const recentBroadShock = (point.broadShockCount ?? 0) >= 2
+          || (previousPoint?.broadShockCount ?? 0) >= 2;
+        const cumulativeShockLimit = point.isStock ? -12 * stockScale : -8 * stockScale;
+        const cumulativeShock = Math.min(point.return3 ?? 0, point.return5 ?? 0)
+          <= cumulativeShockLimit;
+        const lossDecelerating = (point.return1 ?? 0) < 0
+          && (previousPoint?.return1 ?? 0) < 0
+          && Math.abs(point.return1) <= Math.abs(previousPoint.return1) * 0.9;
+        const deeplyDislocated = (point.drawdown60 ?? 0) <= -12 * stockScale
+          && (point.disparity20 ?? 0) <= -8 * stockScale;
+        const active = recentBroadShock
+          && cumulativeShock
+          && lossDecelerating
+          && deeplyDislocated
+          && stressSupport;
+        const depth = Math.max(0, -Math.min(point.return3 ?? 0, point.return5 ?? 0));
+        const materiallyDeeperWave = depth >= lastDepth + 4;
+        const ready = active
+          && index - lastSignalIndex >= 3
+          && (index - lastSignalIndex >= SYSTEMIC_CAPITULATION_COOLDOWN_DAYS
+            || materiallyDeeperWave);
+        if (ready) {
+          lastSignalIndex = index;
+          lastDepth = depth;
+        }
+        return { point, index, stockScale, ready };
+      },
+    };
+  }
+
+  function buildSystemicCapitulationWarning(event, result, indexKey) {
+    const { point, index, stockScale } = event;
+    return decorateTimingSignal({
+      ...result,
+      date: point.date,
+      setupDate: point.date,
+      confirmationDate: point.date,
+      index,
+      indexKey,
+      score: Math.max(82, Number(result?.score) || 0),
+      entryMode: "systemic-capitulation",
+      signalFamily: "systemic-capitulation",
+      signalStage: "매집 가능 구간",
+      setupReasons: [
+        "시장 동반 연속 급락",
+        (point.drawdown60 ?? 0) <= -10 * stockScale ? "중기 고점 대비 조정" : "",
+        (point.adr ?? 100) < 85 ? "시장폭 위축" : "",
+        "급락 속도 둔화",
+        (point.spreadChange20 ?? 0) < 0 ? "신용스프레드 축소" : "",
+      ].filter(Boolean),
+      stabilizationReasons: (point.adrChange5 ?? 0) > 0 || (point.spreadChange20 ?? 0) < 0
+        ? ["시장·신용 환경 안정"]
+        : [],
+      triggerReasons: [
+        (point.oscillatorSlope3 ?? 0) > 0 ? "MACD 반전" : "",
+        (point.disparity20Slope3 ?? 0) > 0 ? "이격도 반등" : "",
+        "투매 감속 확인",
+      ].filter(Boolean),
+    });
   }
 
   function shiftDate(date, days) {
@@ -1138,6 +1286,9 @@
     const newsSource = normalizeValueRows(macroRows, "news_sentiment");
     const newsSmoothed = trailingAverage(newsSource.map((row) => row.value), 20);
     const smoothedNewsRows = newsSource.map((row, index) => ({ date: row.date, value: newsSmoothed[index] }));
+    const primarySpread = alignedSource(dates, crisisRows, "us_credit_spread", 14, 1);
+    const fallbackSpread = alignedSource(dates, crisisRows, "creditSpread", 14, 1);
+    const spread = primarySpread.some(Number.isFinite) ? primarySpread : fallbackSpread;
     const aligned = {
       prices: prices.slice(0, count),
       oscillator: oscillator.slice(0, count),
@@ -1178,8 +1329,25 @@
       },
       benchmarkPrices: dates.map((_, index) => benchmarkPrices[index] ?? null),
       volumes: dates.map((_, index) => volumes[index] ?? null),
+      spread,
       volatilityProfile: buildVolatilityProfile(prices.slice(0, count)),
     };
+    const movingAverage20 = trailingAverage(aligned.prices, 20);
+    aligned.disparity20 = aligned.prices.map((price, index) => (
+      price !== null && Number.isFinite(movingAverage20[index]) && movingAverage20[index] > 0
+        ? ((price / movingAverage20[index]) - 1) * 100
+        : null
+    ));
+    aligned.adrChange5 = aligned.adr.map((value, index) => {
+      const previous = toNumber(aligned.adr[index - 5]);
+      return value !== null && previous !== null ? value - previous : null;
+    });
+    aligned.spreadChange20 = aligned.spread.map((value, index) => {
+      const previous = toNumber(aligned.spread[index - 20]);
+      return value !== null && previous !== null ? value - previous : null;
+    });
+    aligned.spreadZ = rollingPriorZScores(aligned.spread, 252, 40);
+    aligned.broadShockCount = buildBroadShockCounts(options.marketPricesByTicker, count);
     aligned.creditGrowth = aligned.credit.map((_, index) => changeRate(aligned.credit, index, 20));
     aligned.creditPercentile = aligned.creditGrowth.map((_, index) => (
       rollingPercentile(aligned.creditGrowth, index)
@@ -1211,6 +1379,8 @@
     let lastHistoricalSellSignalIndex = -Infinity;
     let lastSellSignalIndex = -Infinity;
     let lastOverheatContinuationExtremeIndex = -Infinity;
+    const systemicCapitulationTracker = createSystemicCapitulationTracker();
+    let previousSystemicPoint = null;
 
     function saveEpisodeSignal(list, episode, signal) {
       const decorated = decorateTimingSignal(signal);
@@ -1218,7 +1388,7 @@
       if (sameDateIndex >= 0) {
         episode.signalSlot = sameDateIndex;
         const existingMode = list[sameDateIndex]?.entryMode;
-        if (!["extreme-daily", "overheat-continuation"].includes(existingMode)) {
+        if (!["extreme-daily", "systemic-capitulation", "overheat-continuation"].includes(existingMode)) {
           list[sameDateIndex] = decorated;
         }
         return;
@@ -1246,6 +1416,53 @@
       const stockVolatilityScale = isIndividualStock
         ? Math.max(0.65, Math.min(1.6, result.volatilityScale || 1))
         : 1;
+      const systemicScale = isIndividualStock
+        ? Math.max(0.7, Math.min(1.6, result.volatilityScale || 1))
+        : Math.max(0.7, Math.min(1.6, result.volatilityScale || 1) * 0.72);
+      const systemicPoint = {
+        date: dates[index],
+        isStock: isIndividualStock,
+        return1: result.price1d,
+        return3: changeRate(aligned.prices, index, 3),
+        return5: result.price5d,
+        drawdown60: result.priceDrawdown60,
+        disparity20: aligned.disparity20[index],
+        disparity20Slope3: Number.isFinite(aligned.disparity20[index])
+          && Number.isFinite(aligned.disparity20[index - 3])
+          ? aligned.disparity20[index] - aligned.disparity20[index - 3]
+          : null,
+        oscillatorSlope3: Number.isFinite(aligned.oscillator[index])
+          && Number.isFinite(aligned.oscillator[index - 3])
+          ? aligned.oscillator[index] - aligned.oscillator[index - 3]
+          : null,
+        adr: result.adr,
+        adrChange5: aligned.adrChange5[index],
+        spreadChange20: aligned.spreadChange20[index],
+        spreadZ: aligned.spreadZ[index],
+        broadShockCount: aligned.broadShockCount[index],
+      };
+      if (index >= 120) {
+        const stressSupport = (systemicPoint.adr ?? Infinity) <= 90
+          || (result.fearGreed ?? Infinity) <= 35
+          || (systemicPoint.spreadZ ?? -Infinity) >= 0.8;
+        const systemicEvent = systemicCapitulationTracker.inspect(
+          systemicPoint,
+          previousSystemicPoint,
+          index,
+          systemicScale,
+          stressSupport,
+        );
+        if (systemicEvent.ready) {
+          saveEpisodeSignal(
+            signals,
+            { signalSlot: null },
+            buildSystemicCapitulationWarning(systemicEvent, result, indexKey),
+          );
+          scores[index] = Math.max(82, Number(scores[index]) || 0);
+          buyEpisode = null;
+        }
+      }
+      previousSystemicPoint = systemicPoint;
       const lowVolatilityStock = isIndividualStock && stockVolatilityScale <= 0.9;
       const validStockDailyMove = result.price1d !== null && Math.abs(result.price1d) <= 31.5;
       const validIndexDailyMove = result.price1d !== null && Math.abs(result.price1d) <= 20;
@@ -2111,35 +2328,50 @@
         objectiveAware: behaviorPolicy.objectiveAware,
       })
       : { signals, abstained: 0 };
-      const sellCalibration = behaviorPolicy.sellEnabled
-        ? calibrateTimingSignals(sellSignals, "sell", dates, prices, {
+    const sellCalibration = behaviorPolicy.sellEnabled
+      ? calibrateTimingSignals(sellSignals, "sell", dates, prices, {
         horizon: behaviorPolicy.calibrationHorizon,
         minimumSamples: behaviorPolicy.calibrationMinimumSamples,
         maxSamples: behaviorPolicy.calibrationMaxSamples,
         rejectHitRate: behaviorPolicy.rejectHitRate,
         reboundMinimumPercent: behaviorPolicy.reboundMinimumPercent,
-          reboundAdverseRatio: behaviorPolicy.reboundAdverseRatio,
-          objectiveAware: behaviorPolicy.objectiveAware,
-        })
+        reboundAdverseRatio: behaviorPolicy.reboundAdverseRatio,
+        objectiveAware: behaviorPolicy.objectiveAware,
+      })
       : { signals: sellSignals, abstained: 0 };
+    const dateIndexes = new Map(dates.map((date, index) => [date, index]));
+    const sellDates = new Set(sellCalibration.signals.map((signal) => signal.date));
+    const finalBuySignals = buyCalibration.signals.filter((signal) => {
+      if (sellDates.has(signal.date)) return false;
+      if (!isIndividualStock || signal.signalRole === "warning") return true;
+      const index = dateIndexes.get(signal.date);
+      if (!Number.isInteger(index)) return true;
+      const recentBroadShock = [index - 1, index - 2].some((cursor) => (
+        (aligned.broadShockCount[cursor] ?? 0) >= 2
+      ));
+      const correlation = Number(signal.marketCorrelation60);
+      const scale = Math.max(0.75, Math.min(1.25, Number(signal.volatilityScale) || 1));
+      const sharpRebound = Number(signal.price1d) >= 4 * scale;
+      return !(recentBroadShock && correlation >= 0.55 && sharpRebound);
+    });
     return {
-      signals: buyCalibration.signals,
+      signals: finalBuySignals,
       sellSignals: sellCalibration.signals,
       scores,
       coverage: covered / count,
       strategy: behaviorPolicy.enabled
         ? (behaviorPolicy.buyEnabled && behaviorPolicy.sellEnabled
           ? (behaviorPolicy.sellDiscoveryEnabled
-            ? "adaptive-behavior-v19"
-            : "adaptive-behavior-v19-buy-sell-calibration")
+            ? "adaptive-behavior-v20"
+            : "adaptive-behavior-v20-buy-sell-calibration")
           : (behaviorPolicy.buyEnabled
-            ? "adaptive-behavior-v19-buy"
+            ? "adaptive-behavior-v20-buy"
             : (behaviorPolicy.sellDiscoveryEnabled
-              ? "adaptive-behavior-v19-sell"
-              : "adaptive-behavior-v19-sell-calibration")))
+              ? "adaptive-behavior-v20-sell"
+              : "adaptive-behavior-v20-sell-calibration")))
         : (koreanVolatilityPolicy.enabled || externalVolatilityPolicy.enabled
-          ? "episode-extreme-v16-regime-confirmed"
-          : "episode-extreme-v13"),
+          ? "episode-extreme-v17-regime-confirmed"
+          : "episode-extreme-v14"),
       behaviorPolicy: behaviorPolicy.enabled ? { ...behaviorPolicy } : null,
       calibration: behaviorPolicy.enabled ? {
         pointInTime: true,

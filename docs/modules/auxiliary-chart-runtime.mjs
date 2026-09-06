@@ -16,19 +16,17 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
   }
   const PLOTLY_CONFIG = chartLoader.PLOTLY_CONFIG;
   const CHART_HOVER_DATE_FORMAT = chartLoader.PLOTLY_THEME.hoverDateFormat;
-
-  function auxiliaryLegendDotSize(scope = defaultScope) {
-    const root = scope?.document?.documentElement;
-    const value = root && typeof scope?.getComputedStyle === "function"
-      ? scope.getComputedStyle(root).getPropertyValue("--auxiliary-legend-dot-size")
-      : "";
-    return Math.max(1, Number.parseFloat(value) || 7);
-  }
+  const MACD_DISPARITY_COLOR = "#c5c9cf";
+  const MACD_LINE_KEYS = Object.freeze({
+    disparity: "macd_disparity",
+    oscillator: "macd_oscillator",
+  });
 
   function auxiliaryTraceStructureKey(trace) {
     const meta = trace?.meta || {};
     return [
-      String(meta.macdSeriesKey || meta.macdLegendSeriesKey || meta.auxiliarySeriesKey || trace?.name || ""),
+      String(meta.macdSeriesKey || meta.auxiliarySeriesKey || trace?.name || ""),
+      String(meta.macdLineKind || ""),
       String(meta.auxiliaryZoneGroup || ""),
       String(meta.auxiliaryZoneFill || ""),
       meta.auxiliaryIsolatedMarker === true ? "isolated-marker" : "",
@@ -290,6 +288,8 @@ function buildMacdSeriesTracePair(options = {}) {
     const series = String(options.series || "");
     const name = String(options.name || series);
     const color = String(options.color || "#ffffff");
+    const disparityColor = String(options.disparityColor || MACD_DISPARITY_COLOR);
+    const disparityDays = Math.max(1, Math.round(Number(options.disparityDays) || 60));
     const legendgroup = `macd:${series}`;
     return Object.freeze({
       lineTrace: {
@@ -300,29 +300,35 @@ function buildMacdSeriesTracePair(options = {}) {
         name,
         legendgroup,
         showlegend: false,
+        yaxis: "y",
         line: { color, width: 1 },
         opacity: 1,
         hoverinfo: options.showHover ? undefined : "skip",
         hovertemplate: options.showHover
           ? "오실레이터 %{y:.3f}%<extra>%{fullData.name}</extra>"
           : undefined,
-        meta: { macdSeriesKey: series, macdSignal: options.signal },
+        meta: { macdSeriesKey: series, macdLineKind: "oscillator", macdSignal: options.signal },
       },
-      legendTrace: {
-        x: [null],
-        y: [null],
+      disparityTrace: {
+        x: Array.isArray(options.disparityDates) ? options.disparityDates : [],
+        y: Array.isArray(options.disparityValues) ? options.disparityValues : [],
         type: "scatter",
-        mode: "markers",
+        mode: "lines",
         name,
         legendgroup,
-        showlegend: true,
-        marker: {
-          color,
-          size: Math.max(1, Number(options.legendDotSize) || 7),
-          symbol: "circle",
+        showlegend: false,
+        yaxis: "y2",
+        line: { color: disparityColor, width: 1 },
+        opacity: 1,
+        hoverinfo: options.showHover ? undefined : "skip",
+        hovertemplate: options.showHover
+          ? `이격도(${disparityDays}) %{y:.2f}%<extra>%{fullData.name}</extra>`
+          : undefined,
+        meta: {
+          macdSeriesKey: series,
+          macdLineKind: "disparity",
+          macdDisparityDays: disparityDays,
         },
-        hoverinfo: "skip",
-        meta: { macdLegendSeriesKey: series },
       },
   });
 }
@@ -376,13 +382,13 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       getAuxiliaryChartModel: externalGetAuxiliaryChartModel,
       getAuxiliaryChartModelSource: externalGetAuxiliaryChartModelSource,
       getMacdModelForSeries,
+      getPreferredStockSeries,
       fitRangeForTraces,
       isTouchDevice,
       labelName,
       persistState,
       recordPerfSample,
       runPlotlyUpdate,
-      setNewsSentimentMovingAverageDays,
       seriesColor,
       startPerfSample,
       syncHoverToChart,
@@ -438,16 +444,38 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       return pair.length === 2 && pair.every((value) => value != null) ? pair : null;
     }
 
-    function buildMacdViewportYRange(element, xRange) {
+    function buildMacdViewportYRanges(element, xRange) {
       if (!element?.data || !Array.isArray(xRange)) return null;
-      const fitted = fitRangeForTraces(
-        element.data.filter((trace) => trace?.meta?.macdSeriesKey),
-        xRange,
-        { paddingRatio: 0.08, minimumPadding: 0.02 },
-      );
-      if (!fitted) return null;
-      const maxAbs = Math.max(0.02, Math.abs(fitted[0]), Math.abs(fitted[1]));
-      return [-maxAbs, maxAbs];
+      const fitKind = (kind) => {
+        const fitted = fitRangeForTraces(
+          element.data.filter((trace) => trace?.meta?.macdLineKind === kind),
+          xRange,
+          { paddingRatio: 0.08, minimumPadding: 0.02 },
+        );
+        if (!fitted) return null;
+        const maxAbs = Math.max(0.02, Math.abs(fitted[0]), Math.abs(fitted[1]));
+        return [-maxAbs, maxAbs];
+      };
+      const ranges = {
+        oscillator: fitKind("oscillator"),
+        disparity: fitKind("disparity"),
+      };
+      return ranges.oscillator || ranges.disparity ? ranges : null;
+    }
+
+    function macdViewportRelayout(ranges) {
+      if (!ranges) return null;
+      const primary = ranges.oscillator || ranges.disparity;
+      const secondary = ranges.disparity || ranges.oscillator;
+      if (!primary || !secondary) return null;
+      return {
+        "yaxis.range[0]": primary[0],
+        "yaxis.range[1]": primary[1],
+        "yaxis.autorange": false,
+        "yaxis2.range[0]": secondary[0],
+        "yaxis2.range[1]": secondary[1],
+        "yaxis2.autorange": false,
+      };
     }
 
     function buildAuxiliaryViewportRelayout(model, xRange, targetElement) {
@@ -484,18 +512,14 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
     }
 
     function addViewportYRangeToRelayout(targetElement, payload) {
-      if (!chartSession.autoChartReset || !targetElement || !payload) return payload;
+      if (!targetElement || !payload) return payload;
       const xRange = viewportRangeFromRelayout(payload);
       if (!xRange) return payload;
       if (targetElement.id === "chart-macd") {
-        const range = buildMacdViewportYRange(targetElement, xRange);
-        return range ? {
-          ...payload,
-          "yaxis.range[0]": range[0],
-          "yaxis.range[1]": range[1],
-          "yaxis.autorange": false,
-        } : payload;
+        const yPayload = macdViewportRelayout(buildMacdViewportYRanges(targetElement, xRange));
+        return yPayload ? { ...payload, ...yPayload } : payload;
       }
+      if (!chartSession.autoChartReset) return payload;
       if (targetElement.id === "chart-adr") {
         const yPayload = buildAuxiliaryViewportRelayout(
           auxiliaryModelResolver?.cachedModel?.(),
@@ -546,6 +570,27 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       });
     }
     const boundAuxiliaryInteractions = new WeakSet();
+    let pendingMacdViewportFit = null;
+    let macdViewportFitFrame = 0;
+
+    function scheduleMacdViewportFit(element, xRange) {
+      pendingMacdViewportFit = { element, xRange: [...xRange] };
+      if (macdViewportFitFrame) return;
+      macdViewportFitFrame = scope.requestAnimationFrame(() => {
+        macdViewportFitFrame = 0;
+        const request = pendingMacdViewportFit;
+        pendingMacdViewportFit = null;
+        if (!request?.element?.data) return;
+        const relayout = macdViewportRelayout(
+          buildMacdViewportYRanges(request.element, request.xRange),
+        );
+        if (!relayout) return;
+        void runPlotlyUpdate("macd-viewport-auto-fit", request.element, () => (
+          scope.Plotly.relayout(request.element, relayout)
+        ));
+      });
+    }
+
     function bindAuxiliaryInteractions(element, source, targetIds) {
       if (!element?.on || boundAuxiliaryInteractions.has(element)) return false;
       element.on("plotly_relayout", (eventData) => {
@@ -553,6 +598,7 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
         const viewport = resolveRelayoutViewport(eventData, element);
         if (syncState.cursorSyncing && !viewport.range && !viewport.autorange) return;
         if (!viewport.range) return;
+        if (element.id === "chart-macd") scheduleMacdViewportFit(element, viewport.range);
         commitViewportRange(viewport.range, {
           source,
           liveFit: chartSession.autoChartReset,
@@ -639,21 +685,23 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       color: panel.color || "",
       controls: controlsSignature(panel.controls),
       key: panel.key || "",
-      presets: (panel.presets || []).map((preset) => ({
-        active: preset.active === true,
-        days: Number(preset.days) || 0,
-      })),
       text: panel.text || "",
     })));
     const panelControlView = createAuxiliaryPanelControlView(scope, {
       state: chartSession,
       panelKeys: AUXILIARY_PANEL_KEYS,
-      seriesKeys: Object.values(AUXILIARY_SERIES_KEYS),
+      seriesKeys: [
+        ...Object.values(AUXILIARY_SERIES_KEYS),
+        ...Object.values(MACD_LINE_KEYS),
+      ],
       controlsSignature,
       persist: persistState,
-      onChange: () => {
+      onChange: (change) => {
         const mainRange = document.getElementById("chart")?._fullLayout?.xaxis?.range?.slice() || null;
-        Promise.resolve(renderAdrChart(mainRange)).catch((error) => {
+        const render = Object.values(MACD_LINE_KEYS).includes(change?.key)
+          ? renderMacdChart
+          : renderAdrChart;
+        Promise.resolve(render(mainRange)).catch((error) => {
           scope.console?.error?.("auxiliary chart visibility update failed", error);
         });
       },
@@ -665,6 +713,19 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
     const syncAuxiliaryRepresentativeToggles = panelControlView.syncRepresentativeToggles;
     const toggleAuxiliaryPanel = panelControlView.togglePanel;
     const toggleAuxiliarySeries = panelControlView.toggleSeries;
+    function createAuxiliarySeriesToggle(control = {}) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "auxiliary-series-toggle";
+      button.dataset.auxiliarySeries = String(control.key || "");
+      syncControl(button, { active: control.active, pressed: control.active });
+      button.setAttribute("aria-label", `${control.text} 선 ${control.active ? "숨기기" : "표시"}`);
+      button.disabled = control.available === false;
+      button.style.setProperty("--auxiliary-series-color", control.color || "#ffffff");
+      button.textContent = String(control.text || "");
+      bindAuxiliaryToggle(button, () => toggleAuxiliarySeries(control.key));
+      return button;
+    }
     const auxiliaryNumber = (value) => (
       value != null && Number.isFinite(Number(value)) ? Number(value) : null
     );
@@ -863,7 +924,6 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
               `:scope > .auxiliary-panel-heading[data-panel-key="${visiblePanelTitles[index].key}"]`,
             );
             if (heading) {
-              heading.style.left = `${Number(plotSize?.l) || 0}px`;
               heading.style.top = `${lineTop + 3}px`;
             }
             return;
@@ -871,7 +931,6 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
           const heading = document.createElement("div");
           heading.className = "auxiliary-panel-heading";
           heading.dataset.panelKey = visiblePanelTitles[index].key;
-          heading.style.left = `${Number(plotSize?.l) || 0}px`;
           heading.style.top = `${lineTop + 3}px`;
           const title = document.createElement("button");
           title.type = "button";
@@ -889,43 +948,8 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
             () => toggleAuxiliaryPanel(visiblePanelTitles[index].key),
           );
           heading.append(title);
-          const presets = visiblePanelTitles[index].presets || [];
-          if (presets.length) {
-            const presetGroup = document.createElement("div");
-            presetGroup.className = "auxiliary-average-presets";
-            presetGroup.setAttribute("role", "group");
-            presetGroup.setAttribute("aria-label", "뉴스심리 이동평균 빠른 선택");
-            presets.forEach((preset) => {
-              const button = document.createElement("button");
-              button.type = "button";
-              button.className = "auxiliary-average-preset";
-              button.dataset.newsSentimentAverageDays = String(preset.days);
-              syncControl(button, { active: preset.active, pressed: preset.active });
-              button.setAttribute("aria-label", `뉴스심리 ${preset.days}일 이동평균`);
-              const label = document.createElement("span");
-              label.textContent = String(preset.days);
-              button.append(label);
-              bindAuxiliaryToggle(button, () => {
-                if (typeof setNewsSentimentMovingAverageDays === "function") {
-                  setNewsSentimentMovingAverageDays(preset.days);
-                }
-              });
-              presetGroup.append(button);
-            });
-            heading.append(presetGroup);
-          }
           (visiblePanelTitles[index].controls || []).forEach((control) => {
-            const button = document.createElement("button");
-            button.type = "button";
-            button.className = "auxiliary-series-toggle";
-            button.dataset.auxiliarySeries = control.key;
-            syncControl(button, { active: control.active, pressed: control.active });
-            button.setAttribute("aria-label", `${control.text} 선 ${control.active ? "숨기기" : "표시"}`);
-            button.disabled = control.available === false;
-            button.style.setProperty("--auxiliary-series-color", control.color || "#ffffff");
-            button.textContent = control.text;
-            bindAuxiliaryToggle(button, () => toggleAuxiliarySeries(control.key));
-            heading.append(button);
+            heading.append(createAuxiliarySeriesToggle(control));
           });
           headingFragment.append(heading);
         }
@@ -940,6 +964,46 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       }
     }
 
+    function syncMacdHeading(el, options = {}) {
+      if (!el) return;
+      let heading = el.querySelector(":scope > .auxiliary-macd-heading");
+      if (!heading) {
+        heading = document.createElement("div");
+        heading.className = "auxiliary-panel-heading auxiliary-macd-heading";
+        el.append(heading);
+      }
+      const plotSize = el._fullLayout?._size;
+      heading.style.top = `${Math.max(0, (Number(plotSize?.t) || 34) - 27)}px`;
+      const controls = document.createElement("div");
+      controls.className = "auxiliary-macd-controls";
+      const title = document.createElement("span");
+      title.className = "auxiliary-chart-label";
+      title.textContent = "보조차트";
+      controls.append(
+        title,
+        createAuxiliarySeriesToggle({
+          active: options.oscillatorActive,
+          available: options.oscillatorAvailable,
+          color: options.targetColor,
+          key: MACD_LINE_KEYS.oscillator,
+          text: "MACD",
+        }),
+        createAuxiliarySeriesToggle({
+          active: options.disparityActive,
+          available: options.disparityAvailable,
+          color: options.disparityColor,
+          key: MACD_LINE_KEYS.disparity,
+          text: "이격도",
+        }),
+      );
+      const target = document.createElement("span");
+      target.className = "auxiliary-series-toggle auxiliary-macd-target";
+      target.style.setProperty("--auxiliary-series-color", options.targetColor || "#ffffff");
+      target.textContent = String(options.targetName || options.target || "");
+      heading.dataset.macdTarget = String(options.target || "");
+      heading.replaceChildren(controls, target);
+    }
+
     async function renderMacdChart(xRange) {
       const perfStartedAt = startPerfSample();
       const el = document.getElementById("chart-macd");
@@ -947,10 +1011,15 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       const renderedSeries = (chartSession.currentMainChartModel?.seriesModels || [])
         .map((model) => String(model?.series || "").toUpperCase())
         .filter((series) => series && !chartSession.hiddenSeries.has(series));
-      const visibleSeries = orderItemsByActivation(
+      const orderedVisibleSeries = orderItemsByActivation(
         renderedSeries.filter((series) => MACD_STOCK_PATTERN.test(series)),
         chartSession.mainHoverSeriesOrder,
       );
+      const requestedTarget = String(getPreferredStockSeries?.() || "").toUpperCase();
+      const targetSeries = orderedVisibleSeries.includes(requestedTarget)
+        ? requestedTarget
+        : orderedVisibleSeries.at(-1) || "";
+      const visibleSeries = targetSeries ? [targetSeries] : [];
       if (!visibleSeries.length) {
         el.hidden = true;
         lastMacdTraceCount = 0;
@@ -961,6 +1030,24 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       el.hidden = false;
       const dataStart = chartSession.currentDataStart || String(dataState.pricePayload?.records?.[0]?.date || "").slice(0, 10);
       const dataEnd = chartSession.currentDataEnd || String(dataState.pricePayload?.records?.at(-1)?.date || "").slice(0, 10);
+      const disparityDays = Number(chartSession.macdDisparityDays) || 60;
+      const disparityColor = MACD_DISPARITY_COLOR;
+      const oscillatorActive = !chartSession.hiddenAuxiliarySeries.has(MACD_LINE_KEYS.oscillator);
+      const disparityActive = !chartSession.hiddenAuxiliarySeries.has(MACD_LINE_KEYS.disparity);
+      const targetModel = getMacdModelForSeries(targetSeries);
+      const oscillatorAvailable = Boolean(targetModel?.normalized?.some(Number.isFinite));
+      const disparityAvailable = Boolean(targetModel?.disparity?.some(Number.isFinite));
+      const targetColor = seriesColor(targetSeries);
+      const headingOptions = {
+        target: targetSeries,
+        targetName: labelName(targetSeries),
+        targetColor,
+        disparityColor,
+        oscillatorActive,
+        oscillatorAvailable,
+        disparityActive,
+        disparityAvailable,
+      };
       const renderKey = [
         dataStart,
         dataEnd,
@@ -969,8 +1056,15 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
         chartSession.cursorLineMode,
         dataRevisionSignature("price"),
         visibleSeries.join(","),
+        disparityDays,
+        disparityColor,
+        oscillatorActive ? 1 : 0,
+        disparityActive ? 1 : 0,
       ].join("::");
-      if (lastMacdRenderKey === renderKey && el.data?.length) return;
+      if (lastMacdRenderKey === renderKey && el.data?.length) {
+        syncMacdHeading(el, headingOptions);
+        return;
+      }
     
       const totalPointBudget = isTouchDevice() ? 10000 : 18000;
       const pointBudget = Math.max(
@@ -978,50 +1072,80 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
         Math.min(9000, Math.floor(totalPointBudget / Math.max(1, visibleSeries.length))),
       );
       const lineTraces = [];
-      const legendTraces = [];
-      const allValues = [];
-      const legendDotSize = auxiliaryLegendDotSize(scope);
+      const oscillatorValues = [];
+      const disparityValues = [];
       const viewportWindows = [];
       visibleSeries.forEach((series) => {
-        const model = getMacdModelForSeries(series);
+        const model = series === targetSeries ? targetModel : getMacdModelForSeries(series);
         if (!model) return;
-        const viewportSeries = sliceViewport(model.dates, [model.normalized], xRange);
+        const viewportSeries = sliceViewport(model.dates, [model.normalized, model.disparity], xRange);
         if (viewportSeries.window) viewportWindows.push(viewportSeries.window);
         const viewportDates = viewportSeries.dates;
-        const viewportValues = viewportSeries.arrays[0] || [];
-        const displayDates = [];
-        const displayValues = [];
+        const viewportMacdValues = viewportSeries.arrays[0] || [];
+        const viewportDisparityValues = viewportSeries.arrays[1] || [];
+        const displayMacdDates = [];
+        const displayMacdValues = [];
+        const displayDisparityDates = [];
+        const displayDisparityValues = [];
         viewportDates.forEach((date, index) => {
           if ((dataStart && date < dataStart) || (dataEnd && date > dataEnd)) return;
-          const value = viewportValues[index];
-          if (!Number.isFinite(value)) return;
-          displayDates.push(date);
-          displayValues.push(value);
+          const macdValue = viewportMacdValues[index];
+          if (Number.isFinite(macdValue)) {
+            displayMacdDates.push(date);
+            displayMacdValues.push(macdValue);
+          }
+          const disparityValue = viewportDisparityValues[index];
+          if (Number.isFinite(disparityValue)) {
+            displayDisparityDates.push(date);
+            displayDisparityValues.push(disparityValue);
+          }
         });
-        if (!displayValues.length) return;
-        const thinned = thinMacdPoints(displayDates, displayValues, pointBudget);
+        if (!displayMacdValues.length && !displayDisparityValues.length) return;
+        const thinnedMacd = thinMacdPoints(displayMacdDates, displayMacdValues, pointBudget);
+        const thinnedDisparity = thinMacdPoints(
+          displayDisparityDates,
+          displayDisparityValues,
+          pointBudget,
+        );
         const baseColor = seriesColor(series);
-        allValues.push(...thinned.values.filter(Number.isFinite));
+        if (oscillatorActive) oscillatorValues.push(...thinnedMacd.values.filter(Number.isFinite));
+        if (disparityActive) {
+          disparityValues.push(...thinnedDisparity.values.filter(Number.isFinite));
+        }
         const tracePair = buildMacdSeriesTracePair({
           series,
           name: labelName(series),
           color: baseColor,
-          dates: thinned.dates,
-          values: thinned.values,
+          dates: thinnedMacd.dates,
+          values: thinnedMacd.values,
+          disparityColor,
+          disparityDates: thinnedDisparity.dates,
+          disparityValues: thinnedDisparity.values,
+          disparityDays,
           signal: model.signal,
           showHover: chartSession.hoverShowPopup,
-          legendDotSize,
         });
-        lineTraces.push(tracePair.lineTrace);
-        legendTraces.push(tracePair.legendTrace);
+        if (oscillatorActive && tracePair.lineTrace.y.length) lineTraces.push(tracePair.lineTrace);
+        if (disparityActive && tracePair.disparityTrace.y.length) {
+          lineTraces.push(tracePair.disparityTrace);
+        }
       });
 
-      const traces = [...lineTraces, ...legendTraces];
+      const traces = lineTraces;
       lastMacdTraceCount = lineTraces.length;
-      const maxAbs = allValues.length
-        ? Math.max(0.02, ...allValues.map((value) => Math.abs(value)))
-        : 1;
-      const viewportYRange = buildMacdViewportYRange({ data: lineTraces }, xRange);
+      const symmetricRange = (values) => {
+        const maxAbs = values.length
+          ? Math.max(0.02, ...values.map((value) => Math.abs(value)))
+          : 1;
+        return [-maxAbs * 1.08, maxAbs * 1.08];
+      };
+      const viewportYRanges = buildMacdViewportYRanges({ data: lineTraces }, xRange);
+      const primaryRange = viewportYRanges?.oscillator
+        || viewportYRanges?.disparity
+        || symmetricRange(oscillatorValues.length ? oscillatorValues : disparityValues);
+      const secondaryRange = viewportYRanges?.disparity
+        || viewportYRanges?.oscillator
+        || symmetricRange(disparityValues.length ? disparityValues : oscillatorValues);
       const layout = {
         ...chartLoader.layoutStyle(),
         margin: { l: auxiliaryChartHorizontalMargin(), r: auxiliaryChartHorizontalMargin(), t: 34, b: 30 },
@@ -1029,29 +1153,19 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
           chartSession.hoverShowPopup,
           chartSession.cursorLineMode,
         ),
-        showlegend: legendTraces.length > 0,
-        legend: {
-          orientation: "h", x: 0.5, y: 1.22, xanchor: "center", yanchor: "middle",
-          groupclick: "togglegroup",
-          itemsizing: "trace",
-          font: { color: "rgba(255,255,255,0.72)", size: 10 },
-        },
+        showlegend: false,
         barmode: "overlay",
         bargap: 0,
         shapes: [{
-          type: "line", xref: "paper", yref: "y",
-          x0: 0, x1: 1, y0: 0, y1: 0,
+          type: "line", xref: "paper", yref: "paper",
+          x0: 0, x1: 1, y0: 0.5, y1: 0.5,
           line: referenceLineStyle("rgba(255,255,255,0.42)"),
         }],
-        annotations: traces.length ? [{
-          xref: "paper", yref: "paper", x: 0, y: 1.22,
-          xanchor: "left", yanchor: "middle",
-          text: "MACD",
-          showarrow: false,
-          font: { color: "rgba(255,255,255,0.72)", size: 11 },
-        }] : [{
+        annotations: traces.length ? [] : [{
           xref: "paper", yref: "paper", x: 0.5, y: 0.5,
-          text: "표시 중인 종목의 MACD 이력이 부족합니다.",
+          text: oscillatorActive || disparityActive
+            ? "표시 중인 종목의 보조차트 이력이 부족합니다."
+            : "MACD와 이격도가 꺼져 있습니다.",
           showarrow: false,
           font: { color: "rgba(255,255,255,0.55)", size: 11 },
         }],
@@ -1071,7 +1185,15 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
           ticksuffix: "%",
           tickformat: ".2f", fixedrange: true,
           ...buildCursorLineAxisLayout(chartSession.cursorLineMode, "y"),
-          range: viewportYRange || [-maxAbs * 1.08, maxAbs * 1.08],
+          range: primaryRange,
+        },
+        yaxis2: {
+          ...chartLoader.axisStyle({ showGrid: false, axisColor: "rgba(0,0,0,0)" }),
+          overlaying: "y",
+          side: "right",
+          visible: false,
+          fixedrange: true,
+          range: secondaryRange,
         },
         hoverlabel: plotlyHoverLabel(11),
         dragmode: false,
@@ -1085,6 +1207,7 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
         layout,
       );
       recordAuxiliaryRenderResult(renderResult);
+      syncMacdHeading(el, headingOptions);
       lastMacdRenderKey = renderKey;
       lastMacdViewportWindows = viewportWindows;
       bindAuxiliaryInteractions(
@@ -1384,12 +1507,6 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
         key,
         text: titleByPanel[key],
         color: colorByPanel[key],
-        presets: key === "newsSentiment"
-          ? [1, 5, 20].map((days) => ({
-            days,
-            active: Number(chartSession.newsSentimentMovingAverageDays) === days,
-          }))
-          : [],
         controls: key === "adr" ? [
           {
             key: AUXILIARY_SERIES_KEYS.adrKospi,
@@ -1884,6 +2001,14 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       lastMacdViewportWindows = [];
     }
 
+    function refreshMacd() {
+      invalidateMacd();
+      const range = scope.document.getElementById("chart")?._fullLayout?.xaxis?.range;
+      return renderMacdChart(Array.isArray(range) && range.length === 2
+        ? range.slice(0, 2)
+        : null);
+    }
+
     function needsViewportRefresh(xRange) {
       return viewportWindowsNeedRefresh(lastMacdViewportWindows, xRange)
         || viewportWindowsNeedRefresh(lastAdrViewportWindows, xRange);
@@ -1908,6 +2033,7 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       renderAll,
       renderAdrChart,
       renderMacdChart,
+      refreshMacd,
       stats: () => ({
         adrRenderKey: lastAdrRenderKey,
         adrRenderQueued: Boolean(pendingAdrRenderRequest),

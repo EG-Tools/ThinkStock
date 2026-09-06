@@ -207,6 +207,47 @@ test("main chart control view renders shared button state from the chart session
   assert.match(elements.get("coMovementToggle").title, /삼성전자/);
 });
 
+test("moving-average settings share one bounded number-stepper view", () => {
+  const ids = [
+    "macdDisparityValue",
+    "macdDisparityDecrease",
+    "macdDisparityIncrease",
+    "newsSentimentMovingAverageValue",
+    "newsSentimentMovingAverageDecrease",
+    "newsSentimentMovingAverageIncrease",
+  ];
+  const elements = new Map(ids.map((id) => [id, fakeElement()]));
+  const state = {
+    macdDisparityDays: 60,
+    newsSentimentMovingAverageDays: 1,
+  };
+  const view = bindings.createMainChartControlView({
+    document: {
+      getElementById: (id) => elements.get(id) || null,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+    },
+  }, {
+    state,
+    controlStateView: { syncControl: () => null, syncChoiceControls: () => 0 },
+    normalizeMacdDisparityDays: (value) => Math.max(5, Math.min(60, Number(value) || 60)),
+    normalizeNewsMovingAverageDays: (value) => Math.max(1, Math.min(20, Number(value) || 1)),
+    macdDisparityMinDays: 5,
+    macdDisparityMaxDays: 60,
+    newsMovingAverageMinDays: 1,
+    newsMovingAverageMaxDays: 20,
+  });
+
+  assert.equal(view.syncMacdDisparity(), 60);
+  assert.equal(elements.get("macdDisparityValue").textContent, "60");
+  assert.equal(elements.get("macdDisparityDecrease").disabled, false);
+  assert.equal(elements.get("macdDisparityIncrease").disabled, true);
+  assert.equal(view.syncNewsMovingAverage(), 1);
+  assert.equal(elements.get("newsSentimentMovingAverageValue").textContent, "1");
+  assert.equal(elements.get("newsSentimentMovingAverageDecrease").disabled, true);
+  assert.equal(elements.get("newsSentimentMovingAverageIncrease").disabled, false);
+});
+
 
 test("disclosure toggle applies its fast path before rendering", () => {
   const button = fakeElement();
@@ -293,6 +334,28 @@ test("prepared toggle coalesces clicks and commits state after preparation", asy
     ["sync", true],
     ["changed", true],
   ]);
+});
+
+test("prepared toggle announces work before awaiting feature preparation", async () => {
+  const button = fakeElement();
+  let enabled = false;
+  let releasePreparation;
+  const calls = [];
+  const preparation = new Promise((resolve) => { releasePreparation = resolve; });
+  bindings.bindPreparedToggle({
+    button,
+    getEnabled: () => enabled,
+    setEnabled: (value) => { enabled = value; },
+    onPreparing: () => calls.push("progress"),
+    prepare: () => { calls.push("prepare"); return preparation; },
+  });
+
+  const click = button.dispatch("click");
+  assert.deepEqual(calls, ["progress", "prepare"]);
+  assert.equal(enabled, false);
+  releasePreparation();
+  await click;
+  assert.equal(enabled, true);
 });
 
 

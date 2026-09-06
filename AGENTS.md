@@ -19,6 +19,19 @@
 - Run unit validation and Safari/iPhone WebKit coverage before release.
 - Before implementing any behavior, identify existing contracts, reusable modules, and every related UI, data, input, cache, local/deployed, and desktop/mobile path that can share it. If the commonization boundary changes behavior or performance, stop and confirm that boundary with the user before editing.
 
+## Change Completion
+- End every feature, fix, or optimization with a bounded closeout pass before reporting completion.
+- The closeout pass MUST inspect the resulting diff, re-check affected shared contracts and call order, remove superseded temporary or duplicate paths, run focused source and behavior tests, and verify that shared local/deployed and desktop/mobile paths remain aligned.
+- Keep this pass proportional to the change. Do not turn it into an unrelated architectural rewrite; record larger cleanup candidates for a separate optimization phase after behavior is stable.
+- A periodic deep optimization pass complements this closeout step but never replaces it.
+
+## Independent Analysis Engines
+- Reuse factual inputs, date alignment, generic indicator math, cache transport, evaluation utilities, and rendering contracts where their semantics are identical.
+- An engine requested as independent MUST NOT import, invoke, clone, post-process, or use as a fallback another engine's decisions, scores, thresholds, policies, signal families, or emitted markers.
+- Keep champion/challenger comparison outside both engines. Tests must prove the candidate output is unchanged when champion output is injected, removed, or altered.
+- Freeze candidate rules and parameters before evaluating unseen dates or audit tickers. A named target date may be inspected only after the frozen evaluation and MUST NOT be used to tune that candidate.
+- Do not promote or delete the current runtime until the independent candidate passes the predeclared quality, stability, signal-density, and point-in-time gates. A failed candidate remains research-only.
+
 ## Chart And Interaction Invariants
 - The main viewport is the authoritative owner of the visible time range. Linked auxiliary charts consume the same committed range and MUST NOT maintain an independent equivalent range.
 - Apply a viewport action's X range, automatic Y fit, handles, overlays, dated markers, and linked-chart ranges through one coordinated update path.

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import auxiliaryChartModel from "../../docs/modules/auxiliary-chart-model.mjs";
+import auxiliaryChartContract from "../../docs/modules/auxiliary-chart-contract.mjs";
 
 
 await import("../../docs/modules/chart-loader.mjs");
@@ -28,24 +29,31 @@ test("auxiliary render settlement returns values after every panel finishes", as
   assert.deepEqual(values, ["macd", "panels"]);
 });
 
-test("MACD line and legend marker share the stock color without repeating the date", () => {
+test("MACD and disparity lines share one stock contract without repeating the date", () => {
   const pair = auxiliaryRuntime.buildMacdSeriesTracePair({
     series: "218410.KQ",
     name: "RFHIC",
     color: "#9acd32",
     dates: ["2026-08-31", "2026-09-01"],
     values: [0.2, 0.4],
+    disparityColor: "#22d3ee",
+    disparityDates: ["2026-08-31", "2026-09-01"],
+    disparityValues: [-1.2, 2.4],
+    disparityDays: 60,
     signal: 0.3,
     showHover: true,
   });
 
   assert.equal(pair.lineTrace.line.color, "#9acd32");
+  assert.equal(pair.lineTrace.yaxis, "y");
   assert.equal(pair.lineTrace.showlegend, false);
   assert.equal(pair.lineTrace.hovertemplate.includes("%{x"), false);
-  assert.equal(pair.legendTrace.marker.color, "#9acd32");
-  assert.equal(pair.legendTrace.marker.size, 7);
-  assert.equal(pair.legendTrace.showlegend, true);
-  assert.equal(pair.legendTrace.legendgroup, pair.lineTrace.legendgroup);
+  assert.equal(pair.disparityTrace.line.color, "#22d3ee");
+  assert.equal(pair.disparityTrace.yaxis, "y2");
+  assert.equal(pair.disparityTrace.meta.macdLineKind, "disparity");
+  assert.equal(pair.disparityTrace.meta.macdDisparityDays, 60);
+  assert.equal(pair.disparityTrace.hovertemplate.includes("이격도(60)"), true);
+  assert.deepEqual(Object.keys(pair).sort(), ["disparityTrace", "lineTrace"]);
 });
 
 test("a disconnected auxiliary latest point receives one visible marker", () => {
@@ -657,6 +665,15 @@ test("viewport ranges do not inspect data for hidden auxiliary panels", () => {
   assert.deepEqual(ranges.adr, [77.5, 121.2]);
   assert.deepEqual(ranges.news, [88, 112]);
   assert.deepEqual(ranges.vkospi, [7.6, 42.4]);
+});
+
+test("auxiliary moving-average periods use their bounded settings contracts", () => {
+  assert.deepEqual(auxiliaryChartContract.MACD_DISPARITY_STEPS, [5, 10, 20, 30, 60]);
+  assert.equal(auxiliaryChartContract.normalizeMacdDisparityDays(20), 20);
+  assert.equal(auxiliaryChartContract.normalizeMacdDisparityDays(12), 60);
+  assert.equal(auxiliaryChartContract.normalizeMacdDisparityDays(1), 60);
+  assert.equal(auxiliaryChartContract.normalizeMacdDisparityDays(100), 60);
+  assert.equal(auxiliaryChartContract.normalizeMacdDisparityDays("invalid"), 60);
 });
 
 test("auxiliary model skips calculations for panels that are off", () => {

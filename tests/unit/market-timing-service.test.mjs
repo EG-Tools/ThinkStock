@@ -130,17 +130,22 @@ test("invalidates one in-memory timing model without clearing its peers", async 
 });
 
 test("falls back to the local calculator when Worker is unavailable", async () => {
+  let receivedInput = null;
   const service = createMarketTimingService({}, {
     buildMacdOscillator: ({ dates, prices }) => ({
       dates,
       prices,
       normalized: prices.map(() => 0),
     }),
-    buildMarketTimingSignals: ({ indexKey, benchmarkPrices, volumes }) => ({
-      indexKey,
-      benchmarkPrices,
-      volumes,
-    }),
+    buildMarketTimingSignals: (input) => {
+      receivedInput = input;
+      return {
+        indexKey: input.indexKey,
+        benchmarkPrices: input.benchmarkPrices,
+        volumes: input.volumes,
+        marketPricesByTicker: input.marketPricesByTicker,
+      };
+    },
   });
   const sources = {
     dates: ["2026-01-02", "2026-01-05"],
@@ -155,6 +160,12 @@ test("falls back to the local calculator when Worker is unavailable", async () =
 
   assert.deepEqual(service.get("005930.KS").benchmarkPrices, [100, 101]);
   assert.deepEqual(service.get("005930.KS").volumes, [null, 900]);
+  assert.deepEqual(service.get("005930.KS").marketPricesByTicker, {
+    "^KS11": [100, 101],
+    "^KQ11": [null, null],
+  });
+  assert.deepEqual(receivedInput.benchmarkPrices, [100, 101]);
+  assert.deepEqual(receivedInput.volumes, [null, 900]);
   assert.equal(service.stats().workerFallbacks, 1);
 });
 

@@ -39,6 +39,7 @@ export const APP_RUNTIME_KEYS = Object.freeze({
   futureOverlay: "future-overlay",
   mainChartEvents: "main-chart-events",
   mainChartScheduler: "main-chart-scheduler",
+  mainSeriesActivation: "main-series-activation",
   progressiveChartComposition: "progressive-chart-composition",
   mainSeries: "main-series",
   mainViewportWindow: "main-viewport-window",
@@ -235,6 +236,26 @@ export function isMarketPriceSeries(value) {
   return marketIndexSeries.has(ticker) || STOCK_TICKER_PATTERN.test(ticker);
 }
 
+/** Data prerequisites shared by every main-chart activation path. */
+export function mainSeriesActivationProfile(value) {
+  const rawKey = String(value || "").trim();
+  const tickerKey = rawKey.toUpperCase();
+  const macroKey = rawKey.toLowerCase();
+  const stock = STOCK_TICKER_PATTERN.test(tickerKey);
+  const marketIndex = marketIndexSeries.has(tickerKey);
+  const macro = mainMacroSeries.has(macroKey);
+  const key = macro ? macroKey : tickerKey;
+  return Object.freeze({
+    key,
+    kind: stock ? "stock" : (marketIndex ? "market-index" : (macro ? "macro" : "unknown")),
+    requiresPrice: stock || marketIndex || macro,
+    requiresVolume: stock || marketIndex,
+    backgroundHistory: stock,
+    supportsCompanyMarkers: stock,
+    supportsTiming: stock || marketIndex,
+  });
+}
+
 /** One target policy for features drawn over the main chart. */
 export function seriesSupportsFeature(value, feature) {
   const ticker = String(value || "").trim().toUpperCase();
@@ -309,9 +330,13 @@ export function createChartApplicationControlConfig(context) {
       canToggle: c.isAdminAccessGranted,
       getEnabled: () => session.showRecessionSignals,
       setEnabled: (value) => { session.showRecessionSignals = value; },
+      onPreparing: c.startSignalProgress,
       prepare: c.ensureMarketTimingFeature,
       syncButton: c.syncRecessionToggleButton,
-      onError: (error) => c.setMessage(`타이밍 준비 오류: ${error.message}`, true),
+      onError: (error) => {
+        c.cancelSignalProgress?.();
+        c.setMessage(`타이밍 준비 오류: ${error.message}`, true);
+      },
       onEnabled: () => c.refreshRuntimeData({ requireDerivedInputs: true }),
       onDisabled: c.cancelSignalProgress,
       onChanged: c.requestChartCompositionUpdate,

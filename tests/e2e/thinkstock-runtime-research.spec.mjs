@@ -1123,11 +1123,11 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
     return { justifyContent: style.justifyContent, fontSize: style.fontSize };
   })).toEqual({ justifyContent: "flex-start", fontSize: "11px" });
   await expect(page.locator(".settings-control-group")).toHaveCount(1);
-  await expect(page.locator(".settings-control-group > .cursor-line-setting")).toHaveCount(4);
+  await expect(page.locator(".settings-control-group > .cursor-line-setting")).toHaveCount(5);
   expect(await page.locator(".settings-control-group").evaluate((group) => ({
     outerBorder: getComputedStyle(group).borderTopWidth,
     rowSideBorders: [...group.children].map((row) => getComputedStyle(row).borderLeftWidth),
-  }))).toEqual({ outerBorder: "1px", rowSideBorders: ["0px", "0px", "0px", "0px"] });
+  }))).toEqual({ outerBorder: "1px", rowSideBorders: ["0px", "0px", "0px", "0px", "0px"] });
   await expect(page.locator("#apiOptionsBtn")).toHaveAttribute("aria-label", "설정");
   const settingsActions = await page.locator(".api-settings-actions").evaluate((element) => {
     const releaseNotes = document.getElementById("releaseNotesBtn").getBoundingClientRect();
@@ -1512,9 +1512,8 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
     )];
     const panelTitleNames = panelTitles.map((item) => item.textContent?.trim());
     const chartRect = element.getBoundingClientRect();
-    const plotLeft = chartRect.left + (Number(element._fullLayout?._size?.l) || 0);
     const panelTitlesAligned = panelTitles.every((title) => (
-      Math.abs(title.getBoundingClientRect().left - plotLeft) <= 1
+      Math.abs(title.getBoundingClientRect().left - (chartRect.left + 2)) <= 1
     ));
     const panelTitlesBelowSeparators = panelTitles.every((title) => {
       const separator = element.querySelector(

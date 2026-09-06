@@ -3,6 +3,17 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.34",
+      date: "2026.09.06",
+      items: Object.freeze([
+        "MACD·이격도 보조차트와 선택 종목 연동 통일",
+        "이격도·뉴스심리 이동평균 설정 공통화",
+        "신규 신호 엔진의 투매 감속·단계·강도 판정",
+        "차트 가격 우선 표시와 후속 데이터 단계 로딩",
+        "신호 로딩 시작·취소 생명주기 통일",
+      ]),
+    }),
+    Object.freeze({
       version: "3.33",
       date: "2026.09.05",
       items: Object.freeze([

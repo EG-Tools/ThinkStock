@@ -2,7 +2,7 @@
 
   const normalizeTicker = (value) => String(value || "").trim().toUpperCase();
   const TIMING_CACHE_SCHEMA = 1;
-  const TIMING_CACHE_REVISION = "market-timing-cache-v5";
+  const TIMING_CACHE_REVISION = "market-timing-cache-v11";
 
   function normalizeTargets(targets) {
     return [...new Set((targets || []).map(normalizeTicker).filter(Boolean))].sort();
@@ -129,7 +129,8 @@
     const buildStructuralStockProfile = options.buildStructuralStockProfile;
     const behaviorPolicy = options.behaviorPolicy
       || { enabled: true, buyEnabled: true, sellEnabled: false };
-    if (typeof buildMacdOscillator !== "function" || typeof buildMarketTimingSignals !== "function") {
+    if (typeof buildMacdOscillator !== "function"
+      || typeof buildMarketTimingSignals !== "function") {
       throw new Error("market timing calculation dependencies are unavailable");
     }
 
@@ -176,19 +177,26 @@
           asOfDate: macd.dates.at(-1),
         })
         : null;
-      const model = buildMarketTimingSignals({
+      const timingInputs = {
         indexKey: ticker,
         dates: macd.dates,
         prices: macd.prices,
         oscillator: macd.normalized,
         benchmarkPrices: macd.dates.map((date) => benchmarkPrices[dateIndexes.get(date)]),
         volumes: macd.dates.map((date) => volumeByDate.get(date) ?? null),
+        marketPricesByTicker: Object.fromEntries(["^KS11", "^KQ11"].map((marketTicker) => [
+          marketTicker,
+          macd.dates.map((date) => pricesByTicker[marketTicker]?.[dateIndexes.get(date)] ?? null),
+        ])),
         adrRows: Array.isArray(sources.adrRows) ? sources.adrRows : [],
         macroRows: Array.isArray(sources.macroRows) ? sources.macroRows : [],
         creditRows: Array.isArray(sources.creditRows) ? sources.creditRows : [],
         crisisRows,
         koreanVolatilityRows,
         externalVolatilityRows,
+      };
+      const model = buildMarketTimingSignals({
+        ...timingInputs,
         koreanVolatilityPolicy: { enabled: true },
         externalVolatilityPolicy: { enabled: true },
         behaviorPolicy,

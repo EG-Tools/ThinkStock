@@ -443,6 +443,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
     async function preload(runOptions = {}) {
       const forceRefresh = runOptions.forceRefresh === true;
       const latestOnly = runOptions.latestOnly === true;
+      const visibleSinceDate = String(runOptions.visibleSinceDate || "").slice(0, 10);
       const signal = runOptions.signal || null;
       const taskContext = runOptions.taskContext || null;
       throwIfAborted(signal);
@@ -485,12 +486,13 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
         const hadExisting = options.hasExisting?.(ticker) === true;
         const prefetchedLatest = latestPointsByTicker?.get(ticker);
         try {
-          await loadSeries(ticker, {
+          const loadResult = await loadSeries(ticker, {
             forceRefresh,
             displayName: name,
             latestOnly: latestOnly && hadExisting,
-            requireFullHistory: !latestOnly || !hadExisting,
+            requireFullHistory: !latestOnly || (!hadExisting && !visibleSinceDate),
             signal,
+            ...(visibleSinceDate ? { visibleSinceDate } : {}),
             // An empty/missing batch result is not a successful latest-price check.
             // Omitting the field lets the ticker loader retry its individual source.
             ...(Array.isArray(prefetchedLatest) && prefetchedLatest.length
@@ -499,7 +501,11 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
           });
           options.setDisplayName?.(ticker, name);
           await taskContext?.checkpoint?.();
-          return null;
+          return {
+            ticker,
+            success: true,
+            deferredRefresh: loadResult?.deferredRefresh === true,
+          };
         } catch (error) {
           if (isAbortError(error) || signal?.aborted) throw error;
           if (hadExisting) {
@@ -510,11 +516,15 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
         }
       });
       throwIfAborted(signal);
-      const unconfirmedResults = results.filter(Boolean);
+      const successfulResults = results.filter((item) => item?.success === true);
+      const unconfirmedResults = results.filter((item) => item?.success !== true);
       const failedResults = unconfirmedResults.filter((item) => item.retainedExisting !== true);
       const failed = failedResults.map((item) => item.ticker);
       const failedNames = failedResults.map((item) => item.name);
       const unconfirmedTickers = unconfirmedResults.map((item) => item.ticker);
+      const deferredTickers = successfulResults
+        .filter((item) => item.deferredRefresh === true)
+        .map((item) => item.ticker);
       options.recordPerformance?.("preloadCustomStocks", perfStartedAt, {
         stocks: items.length,
         concurrency,
@@ -526,6 +536,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
         failedNames,
         processed: items.length,
         scope,
+        ...(deferredTickers.length ? { deferredTickers } : {}),
         ...(unconfirmedTickers.length ? { unconfirmedTickers } : {}),
       };
       if (!failed.length || runOptions.preserveFailed === true) {
@@ -658,7 +669,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
       return scheduler.cancel(taskKey(ticker));
     }
 
-    function schedule(tickerValue, displayName = "") {
+    function schedule(tickerValue, displayName = "", runOptions = {}) {
       const ticker = normalizeTicker(tickerValue);
       if (!ticker) return Promise.resolve(false);
       const generation = (generations.get(ticker) || 0) + 1;
@@ -671,6 +682,8 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
           preserveFailed: true,
           signal: taskContext.signal,
           taskContext,
+          forceRefresh: runOptions.forceRefresh === true,
+          latestOnly: runOptions.latestOnly === true,
         });
         if (shouldRun(ticker)) onUpdated(ticker);
         return true;

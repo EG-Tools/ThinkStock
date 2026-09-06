@@ -257,7 +257,7 @@ test("late disclosure and insider data reconcile without toggling the stock", as
   await expect(page.locator("#disclosureToggle")).toHaveAttribute("aria-pressed", "true");
   await expect.poll(() => disclosureRequests).toBe(1);
   await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getDisclosureProgressState()))
-    .toMatchObject({ enabled: true, active: 2, total: 2 });
+    .toMatchObject({ enabled: true, active: 1, total: 1 });
   await expect(page.locator("#disclosureProgress")).toBeVisible();
   await expect(page.locator("#disclosureProgressText")).toContainText(/공시|내부거래/);
   await expect.poll(() => page.locator("#disclosureProgressBar").evaluate((element) => (

@@ -46,6 +46,7 @@ import {
   createSeriesColorResolver,
   customStockColorRandom as randomCustomStockColor,
   isForecastSeries,
+  mainSeriesActivationProfile,
   normalizeChartRightPaddingDays,
   resolveMainChartDisplayPointBudget,
   resolveAppBuildVersion,
@@ -176,6 +177,7 @@ import {
   createPreferredTickerHistoryFetcher,
   createTickerPriceAppRuntime,
 } from "./modules/ticker-price-app-runtime.mjs";
+import { createMainSeriesActivationApp } from "./modules/main-series-activation.mjs";
 import { createTickerCacheInvalidationContract } from "./modules/ticker-cache-invalidation.mjs";
 import tickerPriceRuntimeModule from "./modules/ticker-price-runtime.mjs";
 import { createTaskProgress } from "./modules/task-progress-runtime.mjs";
@@ -219,6 +221,7 @@ const signalProgress = createTaskProgress(globalThis, {
   getText: () => document.getElementById("signalProgressText"),
   getBar: () => document.getElementById("signalProgressBar"),
   anchor: "signal",
+  revealDelayMs: 0,
 });
 const serviceWorkerClient = createServiceWorkerClient(globalThis);
 const requestServiceWorkerDataRefresh = serviceWorkerClient.requestDataRefresh;
@@ -284,9 +287,9 @@ const {
 const {
   AUXILIARY_PANEL_KEYS,
   AUXILIARY_CHART_CONFIG,
+  MACD_DISPARITY_DAYS,
   NEWS_MOVING_AVERAGE_DAYS,
-  NEWS_MOVING_AVERAGE_MIN_DAYS,
-  NEWS_MOVING_AVERAGE_MAX_DAYS,
+  normalizeMacdDisparityDays,
   normalizeNewsMovingAverageDays,
 } = auxiliaryChartContract;
 const {
@@ -400,7 +403,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = tickerPriceRuntimeModule.CORPORATE_ACTION_RATIO_THRESHOLD;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = tickerPriceRuntimeModule.CORPORATE_ACTION_MAX_BOUNDARY_DAYS;
-const APP_VERSION = "3.33";
+const APP_VERSION = "3.34";
 const APP_BUILD_VERSION = resolveAppBuildVersion(globalThis);
 const cacheMigrator = cacheMaintenanceRuntimeModule.createCacheMigrator(globalThis, {
   markerKey: "thinkstock-cache-migrations-v1",
@@ -967,6 +970,7 @@ const chartSession = chartSessionControllerModule.createChartSessionState({
   hoverShowPopup: true,
   cursorLineMode: "vertical",
   chartRightPaddingDays: 0,
+  macdDisparityDays: MACD_DISPARITY_DAYS,
   newsSentimentMovingAverageDays: NEWS_MOVING_AVERAGE_DAYS,
   showDisclosures: false,
   showEps: false,
@@ -988,10 +992,9 @@ const mainChartControlView = appUiBindingsModule.createMainChartControlView(glob
   state: chartSession,
   controlStateView,
   cursorLineLabels: CURSOR_LINE_LABELS,
+  normalizeMacdDisparityDays,
   normalizeCursorLineMode,
   normalizeNewsMovingAverageDays,
-  newsMovingAverageMinDays: NEWS_MOVING_AVERAGE_MIN_DAYS,
-  newsMovingAverageMaxDays: NEWS_MOVING_AVERAGE_MAX_DAYS,
   applyHandlesContainer: chartViewportControllerModule.applyContainer,
   getSignalCounts: () => ({
     buy: lastMarketTimingBuyCount,
@@ -1389,6 +1392,7 @@ function getAppStateController() {
       maxCustomStocks: MAX_CUSTOM_STOCKS,
       normalizeCursorLineMode,
       normalizeChartRightPaddingDays,
+      normalizeMacdDisparityDays,
       normalizeNewsMovingAverageDays,
       getCustomStocks: () => customStocks,
       setCustomStocks: (value) => {
@@ -1413,6 +1417,7 @@ function loadState() {
   const controller = getAppStateController();
   customStockColorsChangedOnLoad = false;
   const loaded = controller.load({ allowActiveMonths: IS_E2E_RUNTIME });
+  if (loaded) lastVisibleStockSeriesKey = visibleStockSeriesKeys().at(-1) || "";
   if (loaded && customStockColorsChangedOnLoad) controller.save();
   return loaded;
 }
@@ -2127,8 +2132,6 @@ function ensureSettingsPanelRuntime() {
       ADMIN_ACCESS_MASK,
       APP_BUILD_VERSION,
       APP_VERSION,
-      NEWS_MOVING_AVERAGE_MIN_DAYS,
-      NEWS_MOVING_AVERAGE_MAX_DAYS,
       CHART_RIGHT_PADDING_MIN_DAYS,
       CHART_RIGHT_PADDING_MAX_DAYS,
       STOCK_RESEARCH_UNIVERSE_MIN: stockResearchContract.UNIVERSE_SIZE_LOW,
@@ -2149,6 +2152,7 @@ function ensureSettingsPanelRuntime() {
         ?.getBlockedCount?.() ?? storedBlockedStockCount(),
       getCursorLineMode: () => chartSession.cursorLineMode,
       getChartRightPaddingDays: () => chartSession.chartRightPaddingDays,
+      getMacdDisparityDays: () => chartSession.macdDisparityDays,
       getNewsSentimentMovingAverageDays: () => chartSession.newsSentimentMovingAverageDays,
       getStockResearchUniverseSize: () => appRuntimeRegistry.peek(APP_RUNTIME_KEYS.stockResearch)
         ?.getUniverseSize?.()
@@ -2159,11 +2163,14 @@ function ensureSettingsPanelRuntime() {
       setMessage,
       setCursorLineMode,
       setChartRightPaddingDays,
+      setMacdDisparityDays,
       setNewsSentimentMovingAverageDays,
       setStockResearchUniverseSize: (value) => appRuntimeRegistry.peek(APP_RUNTIME_KEYS.stockResearch)
         ?.setUniverseSize?.(value)
         ?? setStoredStockResearchUniverseSize(value),
       syncApiOptionsButton,
+      syncMacdDisparityControls: mainChartControlView.syncMacdDisparity,
+      syncNewsSentimentMovingAverageControls,
       validateDartGatewayAccessToken,
     });
   });
@@ -2877,9 +2884,11 @@ function applyMainSeriesVisibilityFast(seriesKey, visible) {
 
 function changeMainSeriesVisibility(seriesKey, visible) {
   const key = String(seriesKey || "").trim();
+  if (!key) return false;
+  if (!visible) getMainSeriesActivationApp().cancel(key);
   const hadVisibleSeries = visibleMainChartSeriesKeys().length > 0;
   const compositionViewport = captureCurrentCompositionViewport();
-  if (!key || !setMainChartSeriesVisible(key, visible)) return false;
+  if (!setMainChartSeriesVisible(key, visible)) return false;
   const revivesEmptyChart = visible && !hadVisibleSeries;
   if (revivesEmptyChart) {
     chartSession.activeMonths = getDefaultActiveMonths();
@@ -2932,6 +2941,14 @@ function resolveCoMovementTarget() {
   return lastCoMovementSeriesKey;
 }
 
+function resolveMacdTarget() {
+  lastVisibleStockSeriesKey = getMainSeriesController().resolveVisibleStock(
+    lastVisibleStockSeriesKey,
+    (key) => STOCK_TICKER_PATTERN.test(String(key).toUpperCase()),
+  );
+  return lastVisibleStockSeriesKey;
+}
+
 function noteStockVisibilityChange(seriesKey) {
   const key = String(seriesKey || "").toUpperCase();
   const hidden = chartSession.hiddenSeries.has(key);
@@ -2945,14 +2962,26 @@ function noteStockVisibilityChange(seriesKey) {
   }
 }
 
-function selectCoMovementTarget(seriesKey) {
+function selectChartSeriesTarget(seriesKey) {
   const key = String(seriesKey || "").toUpperCase();
-  if (!chartSession.showCoMovement
-    || !seriesSupportsFeature(key, "co-movement")
-    || chartSession.hiddenSeries.has(key)) return;
-  if (lastCoMovementSeriesKey === key) return;
-  lastCoMovementSeriesKey = key;
-  renderCoMovementPanel();
+  if (!key || chartSession.hiddenSeries.has(key)) return;
+  const coMovementChanged = seriesSupportsFeature(key, "co-movement")
+    && lastCoMovementSeriesKey !== key;
+  const macdChanged = STOCK_TICKER_PATTERN.test(key)
+    && lastVisibleStockSeriesKey !== key;
+  if (!coMovementChanged && !macdChanged) return;
+  if (coMovementChanged) lastCoMovementSeriesKey = key;
+  if (macdChanged) lastVisibleStockSeriesKey = key;
+  if (coMovementChanged && chartSession.showCoMovement) renderCoMovementPanel();
+  if (macdChanged) {
+    const runtime = appRuntimeRegistry.peek(APP_RUNTIME_KEYS.auxiliaryChart);
+    if (!runtime) return;
+    runtime.invalidateMacd?.();
+    const xRange = document.getElementById("chart")?._fullLayout?.xaxis?.range?.slice(0, 2) || null;
+    Promise.resolve(runtime.renderMacdChart?.(xRange)).catch((error) => {
+      recordRuntimeError("macd-target-selection", error, { ticker: key });
+    });
+  }
 }
 
 function syncChartResetToggleButton() {
@@ -3018,6 +3047,16 @@ function setChartRightPaddingDays(value, options = {}) {
 function cycleCursorLineMode() {
   const current = CURSOR_LINE_MODES.indexOf(normalizeCursorLineMode(chartSession.cursorLineMode));
   return setCursorLineMode(CURSOR_LINE_MODES[(current + 1) % CURSOR_LINE_MODES.length]);
+}
+
+function setMacdDisparityDays(value) {
+  const days = normalizeMacdDisparityDays(value);
+  if (chartSession.macdDisparityDays === days) return days;
+  chartSession.macdDisparityDays = days;
+  mainChartControlView.syncMacdDisparity();
+  saveState();
+  appRuntimeRegistry.peek(APP_RUNTIME_KEYS.auxiliaryChart)?.refreshMacd?.();
+  return days;
 }
 
 function syncNewsSentimentMovingAverageControls() {
@@ -3173,7 +3212,7 @@ function beginLineOffsetDrag(el, target, startClientY, pointerId) {
   suppressPlotlyClickUntil = Date.now() + 500;
   // Selecting a visible line is independent from whether the pointer later
   // becomes a click or a drag. Commit the shared target at pointer-down time.
-  selectCoMovementTarget(target.seriesKey);
+  selectChartSeriesTarget(target.seriesKey);
   return getSeriesTransformGestureRuntime().startOffset({
     pointerId,
     startClientY,
@@ -3310,45 +3349,24 @@ function bindSeriesToggleBoard() {
     const key = btn.dataset.series;
     if (!key) return;
     const becomingVisible = chartSession.hiddenSeries.has(key);
-    if (becomingVisible && STOCK_TICKER_PATTERN.test(String(key).toUpperCase())) {
-      const stock = customStocks.find((item) => item.ticker === key);
-      const displayName = stock?.name || DISPLAY_NAMES[key] || key;
-      const hasPriceData = getTickerPricePointsFromPayload(key).length > 0;
-      const pricePlan = claimStockPriceRefresh([key]);
-      let initialLoad = null;
-      if (!hasPriceData || pricePlan.shouldRefresh) {
-        btn.dataset.loading = "1";
-        btn.setAttribute("aria-busy", "true");
-        try {
-          initialLoad = await ensureCustomTickerSeriesLoaded(key, {
-            displayName,
-            latestOnly: hasPriceData,
-            requireFullHistory: !hasPriceData,
-            returnAfterCache: !pricePlan.shouldRefresh,
-          });
-        } catch (error) {
-          forgetStockPriceRefresh(key);
-          recordRuntimeError("series-price-activation", error, { key });
-          showChartNavigationMessage(`${displayName} 가격을 불러오지 못했습니다.`, 5000);
-          return;
-        } finally {
-          delete btn.dataset.loading;
-          btn.removeAttribute("aria-busy");
-        }
-      }
-      if (!changeMainSeriesVisibility(key, true)) return;
-      scheduleVisibleSeriesSupplementalHydration(key, null, {
-        trackAiProgress: chartSession.showAiForecast,
-      });
-      if (initialLoad?.deferredRefresh) scheduleVisibleStockHistoryRefresh(key, displayName);
+    if (!becomingVisible) {
+      changeMainSeriesVisibility(key, false);
       return;
     }
-    if (!changeMainSeriesVisibility(key, becomingVisible)) return;
-    if (becomingVisible
-      && !STOCK_TICKER_PATTERN.test(String(key).toUpperCase())
-      && chartSession.showAiForecast
-      && isForecastSeries(String(key).toUpperCase())) {
-      startAiForecastProgress();
+    const profile = mainSeriesActivationProfile(key);
+    const stock = profile.kind === "stock"
+      ? customStocks.find((item) => item.ticker === profile.key)
+      : null;
+    const displayName = stock?.name || DISPLAY_NAMES[profile.key] || profile.key;
+    try {
+      await activateMainSeries(profile.key, {
+        button: btn,
+        displayName,
+        trackAiProgress: profile.kind === "stock" && chartSession.showAiForecast,
+      });
+    } catch (error) {
+      recordRuntimeError("series-price-activation", error, { key: profile.key });
+      showChartNavigationMessage(`${displayName} 가격을 불러오지 못했습니다.`, 5000);
     }
   });
 }
@@ -3643,24 +3661,19 @@ async function addCustomStock(candidate, msgEl, options = {}) {
   const trackAiProgress = activateRequested
     && chartSession.showAiForecast
     && visibleMainChartSeriesKeys().length < MAX_VISIBLE_MAIN_SERIES;
-  if (trackAiProgress) {
-    aiContextPendingTickers.add(stockCandidate.ticker);
-    startAiForecastProgress();
-    setAiForecastProgress(5, `${stockCandidate.name} 가격 준비`);
-    syncAiForecastToggleButton();
-  }
   try {
     DISPLAY_NAMES[stockCandidate.ticker] = stockCandidate.name;
-    if (activateRequested) claimStockPriceRefresh([stockCandidate.ticker], { forceNetwork: forcePriceRefresh });
-    const initialLoad = activateRequested
-      ? await ensureCustomTickerSeriesLoaded(stockCandidate.ticker, {
-          displayName: stockCandidate.name,
-          forceRefresh: forcePriceRefresh,
-          returnAfterCache: !forcePriceRefresh,
-        })
-      : null;
-    if (trackAiProgress && chartSession.showAiForecast) {
-      setAiForecastProgress(14, `${stockCandidate.name} 분석 자료 준비`);
+    const visibleSinceDate = currentMainSeriesActivationSinceDate();
+    const pricePlan = activateRequested
+      ? claimStockPriceRefresh([stockCandidate.ticker], { forceNetwork: forcePriceRefresh })
+      : { shouldRefresh: false };
+    if (activateRequested) {
+      await ensureCustomTickerSeriesLoaded(stockCandidate.ticker, {
+        displayName: stockCandidate.name,
+        forceRefresh: forcePriceRefresh,
+        returnAfterCache: !forcePriceRefresh,
+        visibleSinceDate,
+      });
     }
 
     const activateOnAdd = activateRequested
@@ -3669,27 +3682,24 @@ async function addCustomStock(candidate, msgEl, options = {}) {
     if (!committedStock) throw new Error("종목 목록 갱신이 중단되었습니다.");
     epsRefreshOnNextAdd.add(stockCandidate.ticker);
 
-    if (activateOnAdd) {
-      setMainChartSeriesVisible(stockCandidate.ticker, true, { notify: false });
-      clearAutoResetSeriesTransforms(stockCandidate.ticker);
-    } else {
-      setMainChartSeriesVisible(stockCandidate.ticker, false, { notify: false });
-    }
-    setAiForecastTargetVisibility(stockCandidate.ticker, activateOnAdd);
-    noteStockVisibilityChange(stockCandidate.ticker);
+    setMainChartSeriesVisible(stockCandidate.ticker, false, { notify: false });
+    setAiForecastTargetVisibility(stockCandidate.ticker, false);
     renderCustomStockButtons();
+    // Persist admission before activation yields so the visible list and saved state agree.
     saveState();
     if (activateOnAdd) {
-      requestSeriesCompositionUpdate("series-add");
-      scheduleVisibleSeriesSupplementalHydration(stockCandidate.ticker, msgEl, { trackAiProgress });
+      await activateMainSeries(stockCandidate.ticker, {
+        displayName: stockCandidate.name,
+        forceRefresh: forcePriceRefresh,
+        msgEl,
+        pricePlan,
+        trackAiProgress,
+        visibleSinceDate,
+      });
     } else {
-      aiContextPendingTickers.delete(stockCandidate.ticker);
-      syncAiForecastToggleButton();
-      if (trackAiProgress && !aiContextPendingTickers.size) stopAiForecastProgress();
+      noteStockVisibilityChange(stockCandidate.ticker);
     }
-    if (initialLoad?.deferredRefresh) {
-      scheduleVisibleStockHistoryRefresh(stockCandidate.ticker, stockCandidate.name);
-    }
+    saveState();
     if (activateRequested && !activateOnAdd) {
       showChartNavigationMessage(MAX_VISIBLE_MAIN_SERIES_MESSAGE, 3000);
     }
@@ -3765,8 +3775,8 @@ function cancelVisibleStockHistoryRefresh(ticker) {
   return getVisibleStockHistoryRefresh().cancel(ticker);
 }
 
-function scheduleVisibleStockHistoryRefresh(ticker, displayName = "") {
-  return getVisibleStockHistoryRefresh().schedule(ticker, displayName);
+function scheduleVisibleStockHistoryRefresh(ticker, displayName = "", options = {}) {
+  return getVisibleStockHistoryRefresh().schedule(ticker, displayName, options);
 }
 
 function getVisibleStockHistoryRefresh() {
@@ -3811,6 +3821,65 @@ const {
   planCriticalRefresh: planCriticalRuntimeRefresh,
   shouldRefreshSource: shouldRefreshRuntimeSource,
 } = runtimeRefreshPolicy;
+
+function getMainSeriesActivationApp() {
+  return appRuntimeRegistry.get(APP_RUNTIME_KEYS.mainSeriesActivation, () => (
+    createMainSeriesActivationApp({
+      dayMs: DAY_MS,
+      state: {
+        activeMonths: () => chartSession.activeMonths,
+        currentRange: () => getCurrentXRangeMs(document.getElementById("chart")),
+        dataRows: () => [appData.macroRows, appData.creditRows, appData.crisisRows],
+        defaultActiveMonths: getDefaultActiveMonths,
+        isHidden: (key) => chartSession.hiddenSeries.has(key),
+        pinnedRange: () => chartSession.pinnedXRange,
+        showAi: () => chartSession.showAiForecast,
+        toNumber: toNum,
+        visibleCount: () => visibleMainChartSeriesKeys().length,
+      },
+      prices: {
+        claimRefresh: claimStockPriceRefresh,
+        displayName: (key) => DISPLAY_NAMES[key] || key,
+        forgetRefresh: forgetStockPriceRefresh,
+        fullHistoryReady: (key) => tickerPriceAppRuntime.fullHistoryReady(key),
+        hasVolume: (key) => tickerPriceAppRuntime.hasVolumeHistory(key),
+        load: ensureCustomTickerSeriesLoaded,
+        points: getTickerPricePointsFromPayload,
+        refreshIndex: refreshCoreIndexSeries,
+      },
+      effects: {
+        cancelStock: (key) => {
+          cancelVisibleStockHistoryRefresh(key);
+          visibleSeriesSupplementalHydrator?.cancel(key);
+          cancelTickerDartRequests(key);
+          aiContextPendingTickers.delete(key);
+          syncAiForecastToggleButton();
+          if (!aiContextPendingTickers.size) stopAiForecastProgress();
+        },
+        cancelTiming: (key) => {
+          appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartMarker)
+            ?.cancelMarketTimingPreparation?.(key);
+        },
+        recordError: (key, error) => {
+          recordRuntimeError(`main-series-activation:${key}`, error);
+        },
+        requestComposition: requestSeriesCompositionUpdate,
+        reveal: (key) => changeMainSeriesVisibility(key, true),
+        scheduleFeatures: scheduleVisibleSeriesSupplementalHydration,
+        scheduleHistory: scheduleVisibleStockHistoryRefresh,
+        startAi: startAiForecastProgress,
+      },
+    })
+  ));
+}
+
+function currentMainSeriesActivationSinceDate() {
+  return getMainSeriesActivationApp().visibleSinceDate();
+}
+
+function activateMainSeries(seriesKey, options = {}) {
+  return getMainSeriesActivationApp().activate(seriesKey, options);
+}
 
 function dataRevisionSignature(...names) {
   return runtimeSnapshotRevisionTracker.signature(...names);
@@ -4347,10 +4416,10 @@ function setupOffsetDrag(handle) {
       axis: ya,
       pairedHandle,
       pairedPixelY,
-      clickTogglesVisibility,
     } = state;
     event.preventDefault();
     event.stopPropagation();
+    selectChartSeriesTarget(seriesKey);
     const startClientY = event.clientY;
     getSeriesTransformGestureRuntime().startOffset({
       pointerId: event.pointerId,
@@ -4366,15 +4435,8 @@ function setupOffsetDrag(handle) {
       },
       onClick: ({ startValue }) => {
         chartSession.seriesOffsets[seriesKey] = startValue;
-        if (clickTogglesVisibility === false) {
-          restyleLive(traceIndex, seriesKey, { commit: true });
-          scheduleHandleUpdate(0);
-          return;
-        }
-        const becomingVisible = chartSession.hiddenSeries.has(seriesKey);
-        if (!setMainChartSeriesVisible(seriesKey, becomingVisible)) return;
-        noteStockVisibilityChange(seriesKey);
-        requestChartCompositionUpdate();
+        restyleLive(traceIndex, seriesKey, { commit: true });
+        scheduleHandleUpdate(0);
       },
       onCommit: () => finishTraceYEdit(seriesKey, { preserveTransform: true }),
     });
@@ -4394,6 +4456,7 @@ function setupScaleDrag(handle) {
     } = state;
     event.preventDefault();
     event.stopPropagation();
+    selectChartSeriesTarget(seriesKey);
     const startClientY = event.clientY;
     const element = document.getElementById("chart");
     const trace = element?.data?.[traceIndex];
@@ -4584,6 +4647,20 @@ function collectCrisisSignalEntries(rows) {
 
 async function prepareMarketTimingModels(selected, seriesModels) {
   return getChartMarkerRuntime().prepareMarketTimingModels(selected, seriesModels);
+}
+
+function startVisibleSignalProgress() {
+  const targets = visibleMainChartSeriesKeys()
+    .filter((key) => seriesSupportsFeature(key, "signal"));
+  return getChartMarkerRuntime().beginMarketTimingProgress(targets);
+}
+
+function cancelSignalPreparationProgress(seriesKey = "") {
+  const runtime = appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartMarker);
+  if (runtime?.cancelMarketTimingPreparation) {
+    if (runtime.cancelMarketTimingPreparation(seriesKey) || seriesKey) return;
+  }
+  signalProgress.cancel();
 }
 
 function updateCurrentMainChartSeriesTransform(seriesKey) {
@@ -6698,11 +6775,15 @@ function getMacdModelForSeries(series, buildMacdOscillator) {
   const sourceFingerprint = seriesIntegrityModule.fingerprintDatedSeries(
       records,
       [ticker],
-      { tail: 520, logicVersion: "macd-v2" },
+      {
+        tail: 520,
+        logicVersion: `macd-v3-disparity-${chartSession.macdDisparityDays}`,
+      },
     );
   return macdModelCache.resolve(ticker, sourceFingerprint, () => buildMacdOscillator({
     dates: records.map((row) => row?.date),
     prices: records.map((row) => row?.[ticker]),
+    disparityPeriod: chartSession.macdDisparityDays,
   }));
 }
 
@@ -6767,13 +6848,13 @@ async function getAuxiliaryChartRuntime() {
         series,
         macdModule.buildMacdOscillator,
       ),
+      getPreferredStockSeries: resolveMacdTarget,
       fitRangeForTraces,
       isTouchDevice,
       labelName,
       persistState: saveState,
       recordPerfSample,
       runPlotlyUpdate: plotlyUpdateRuntime.runElement,
-      setNewsSentimentMovingAverageDays,
       seriesColor,
       startPerfSample,
       syncHoverToChart,
@@ -7170,6 +7251,7 @@ function getRuntimeRefreshOrchestrator() {
       cancelAdrFinalRetry,
       chartSession,
       getDataRevisions,
+      getVisibleSinceDate: currentMainSeriesActivationSinceDate,
       hasVolumeHistory: (ticker) => tickerPriceAppRuntime.hasVolumeHistory(ticker),
       isAbortError,
       isRetryableAdrRefreshError,
@@ -7192,6 +7274,7 @@ function getRuntimeRefreshOrchestrator() {
       runtimeDataApp,
       scheduleAdrFinalRetry,
       scheduleHiddenStockRefresh: (refreshOptions) => getBackgroundStockRefresh().schedule(refreshOptions),
+      scheduleVisibleStockHistoryRefresh,
       scheduleLastRuntimeSnapshotSave,
       setMessage,
       setRuntimeRefreshStatus,
@@ -7231,7 +7314,8 @@ function bindApplicationControls(messageElement) {
     recordRuntimeError,
     ensureMarketTimingFeature,
     syncRecessionToggleButton,
-    cancelSignalProgress: () => signalProgress.cancel(),
+    startSignalProgress: startVisibleSignalProgress,
+    cancelSignalProgress: cancelSignalPreparationProgress,
     setMessage: (message, isError) => setMessage(messageElement, message, isError),
     requestChartCompositionUpdate,
     onAiToggleRevision: () => { aiForecastToggleRevision += 1; },
@@ -7317,6 +7401,7 @@ const applicationLifecycle = createApplicationLifecycleRuntime({
     () => syncChartResetToggleButton(),
     () => syncChartHandlesToggleButton(),
     () => syncCursorLineModeControls(),
+    () => mainChartControlView.syncMacdDisparity(),
     () => syncNewsSentimentMovingAverageControls(),
     () => syncRecessionToggleButton(),
     () => syncCoMovementToggleButton(),

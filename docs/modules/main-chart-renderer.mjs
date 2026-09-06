@@ -270,13 +270,15 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
       .replaceAll("'", "&#39;");
   }
 
-  function hoverTemplateAt(trace, index) {
-    const template = trace?.meta?.hoverDetailTemplates ?? trace?.hovertemplate;
+  function hoverTemplateAt(trace, index, source = undefined) {
+    const template = source === undefined
+      ? (trace?.meta?.hoverDetailTemplates ?? trace?.hovertemplate)
+      : source;
     return Array.isArray(template) ? template[index] : template;
   }
 
-  function expandedHoverTemplate(trace, index, label) {
-    const template = String(hoverTemplateAt(trace, index) || "");
+  function expandedHoverTemplate(trace, index, label, source = undefined) {
+    const template = String(hoverTemplateAt(trace, index, source) || "");
     if (!template) return "";
     const customdata = Array.isArray(trace?.customdata?.[index]) ? trace.customdata[index] : [];
     const text = trace?.text?.[index] ?? "";
@@ -352,7 +354,9 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
     const x = Array.isArray(trace?.x) ? trace.x : [];
     const y = Array.isArray(trace?.y) ? trace.y : [];
     const text = Array.isArray(trace?.text) ? trace.text : [];
-    const middle = Math.floor(Math.max(x.length, y.length, text.length) / 2);
+    const customdata = Array.isArray(trace?.customdata) ? trace.customdata : [];
+    const hoverHeadlines = trace?.meta?.hoverHeadlineTemplates;
+    const middle = Math.floor(Math.max(x.length, y.length, text.length, customdata.length) / 2);
     return [
       traceIdentity(trace),
       x.length,
@@ -367,6 +371,11 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
       sampledTraceValue(text, 0),
       sampledTraceValue(text, middle),
       sampledTraceValue(text, text.length - 1),
+      customdata.length,
+      sampledTraceValue(customdata, 0),
+      sampledTraceValue(customdata, middle),
+      sampledTraceValue(customdata, customdata.length - 1),
+      sampledTraceValue(Array.isArray(hoverHeadlines) ? hoverHeadlines : [hoverHeadlines], middle),
     ].join(":");
   }
 
@@ -513,6 +522,7 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
         date,
         y: Number(y),
         price: "",
+        headlines: [],
         details: [],
         hoverSize: 1,
         anchorKind: "price",
@@ -565,6 +575,13 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
         const row = ensureRow(series, String(date || ""), trace.y?.[index]);
         const html = expandedHoverTemplate(trace, index, hoverLabelName(series));
         if (row && html) {
+          const headlineSource = trace?.meta?.hoverHeadlineTemplates;
+          const headline = headlineSource
+            ? expandedHoverTemplate(trace, index, hoverLabelName(series), headlineSource)
+            : "";
+          if (headline && !row.headlines.some((item) => item.html === headline)) {
+            row.headlines.push({ priority: hoverDetailPriority(trace), html: headline });
+          }
           row.details.push({ priority: hoverDetailPriority(trace), html });
           coveredPoints += 1;
         }
@@ -592,6 +609,10 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
         ? GROUPED_HOVER_SEPARATOR_HTML
         : "";
       const hoverText = rows.map((row) => {
+        const headlineLines = [...row.headlines]
+          .sort((left, right) => left.priority - right.priority)
+          .map((headline) => headline.html)
+          .join("<br>");
         const detailLines = [...row.details]
           .sort((left, right) => left.priority - right.priority)
           .map((detail) => `<br>${detail.html}`)
@@ -602,7 +623,7 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
               ? `${labelHtml}<br>가격 ${escapeHoverHtml(row.price)}`
               : `${labelHtml} · 가격 ${escapeHoverHtml(row.price)}`)
           : labelHtml;
-        return `${price}${detailLines}${separator}`;
+        return `${headlineLines ? `${headlineLines}<br>` : ""}${price}${detailLines}${separator}`;
       });
       return [{
         x: rows.map((row) => row.date),
@@ -975,7 +996,6 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
         axis: options.axis,
         pairedHandle: rightHandle,
         pairedPixelY: item.rightY,
-        clickTogglesVisibility: !item.isEps,
       };
       rightHandle._thinkstockHandleState = {
         traceIndex: item.traceIndex,
