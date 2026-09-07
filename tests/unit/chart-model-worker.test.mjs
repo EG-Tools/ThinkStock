@@ -126,7 +126,7 @@ test("chart worker applies credit offset only as a horizontal date shift", () =>
     displayBudget: 100,
   };
   const zeroOffset = runWorker({ ...payload, creditOffsetDays: 0 });
-  const twoDayOffset = runWorker({ ...payload, creditOffsetDays: 2 });
+  const twoDayOffset = runWorker({ ...payload, creditOffsetDays: -2 });
   const zeroCredit = zeroOffset.result.seriesModels.find((item) => item.series === "kospi_credit");
   const shiftedCredit = twoDayOffset.result.seriesModels.find((item) => item.series === "kospi_credit");
   const zeroPrice = zeroOffset.result.seriesModels.find((item) => item.series === "AAA");

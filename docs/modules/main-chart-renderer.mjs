@@ -1583,7 +1583,7 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
     } = options;
     return {
       ...chartLoader.layoutStyle(),
-      margin: { l: horizontalMargin, r: horizontalMargin, t: 28, b: 32 },
+      margin: { l: horizontalMargin, r: horizontalMargin, t: 10, b: 32 },
       hovermode: buildCursorHoverMode(hoverShowPopup, cursorLineMode),
       showlegend: false,
       legend: { orientation: "h", x: 0, y: 1.08, font: { color: "rgba(255,255,255,0.7)", size: 11 } },

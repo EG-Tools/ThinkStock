@@ -3,7 +3,6 @@ export const APP_RUNTIME_KEYS = Object.freeze({
   appCacheManager: "app-cache-manager",
   auxiliaryChart: "auxiliary-chart",
   auxiliaryChartRender: "auxiliary-chart-render",
-  backgroundStockRefresh: "background-stock-refresh",
   appState: "app-state",
   brokerResearch: "broker-research",
   brokerResearchFeature: "broker-research-feature",
@@ -66,6 +65,9 @@ export const CURSOR_LINE_LABELS = Object.freeze({
 });
 export const CHART_RIGHT_PADDING_MIN_DAYS = 0;
 export const CHART_RIGHT_PADDING_MAX_DAYS = 30;
+export const CREDIT_OFFSET_DEFAULT_DAYS = -2;
+export const CREDIT_OFFSET_MIN_DAYS = -10;
+export const CREDIT_OFFSET_MAX_DAYS = 0;
 
 export const STOCK_TICKER_PATTERN = /^\d{6}\.(KS|KQ)$/;
 export const MARKET_INDEX_SERIES = Object.freeze(["^KS11", "^KQ11"]);
@@ -155,6 +157,7 @@ const SERIES_KIND_POLICIES = Object.freeze({
  */
 export const APP_FEATURE_POLICIES = Object.freeze({
   scale: Object.freeze({ seriesKinds: Object.freeze(["stock", "market-index", "macro", "unknown"]) }),
+  technical: Object.freeze({ seriesKinds: Object.freeze(["stock", "market-index"]) }),
   disclosure: Object.freeze({
     seriesKinds: Object.freeze(["stock"]),
     stateAny: Object.freeze(["showDisclosures"]),
@@ -401,6 +404,16 @@ export function resolveAppBuildVersion(scope = globalThis, assetName = "app.bund
   }
 }
 
+export function normalizeCreditOffsetDays(value, fallback = CREDIT_OFFSET_DEFAULT_DAYS) {
+  const numeric = Math.round(Number(value));
+  const fallbackValue = Number.isFinite(Number(fallback))
+    ? Math.round(Number(fallback))
+    : CREDIT_OFFSET_DEFAULT_DAYS;
+  const days = Number.isFinite(numeric) ? numeric : fallbackValue;
+  const signedDays = days > 0 ? -days : days;
+  return Math.max(CREDIT_OFFSET_MIN_DAYS, Math.min(CREDIT_OFFSET_MAX_DAYS, signedDays));
+}
+
 /**
  * Builds the UI binding contract without owning application state. Keeping this
  * wiring here prevents the startup function from growing for every new toggle.
@@ -542,12 +555,6 @@ export function createChartApplicationControlConfig(context) {
         reason: "insider-toggle",
         updateClass: "markers",
       }),
-    },
-    creditOffset: {
-      getOffsetDays: c.getCreditOffsetDays,
-      setOffsetDays: c.setCreditOffsetDays,
-      saveState: c.saveState,
-      requestChartRender: c.requestChartRender,
     },
     refresh: {
       setMessage: c.setMessage,

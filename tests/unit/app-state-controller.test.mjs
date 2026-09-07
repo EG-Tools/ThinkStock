@@ -19,6 +19,7 @@ function state() {
     hoverShowPopup: true,
     cursorLineMode: "vertical",
     chartRightPaddingDays: 0,
+    creditOffsetDays: -2,
     macdDisparityDays: 60,
     newsSentimentMovingAverageDays: 1,
     showDisclosures: true,
@@ -156,7 +157,6 @@ test("custom stock lifecycle removes failed batches without recoloring survivors
 test("loads legacy auxiliary visibility and keeps AI and EPS disabled at boot", () => {
   const chartState = state();
   let customStocks = [];
-  let creditOffset = 2;
   const controller = module.createAppStateController({
     state: chartState,
     store: {
@@ -182,13 +182,12 @@ test("loads legacy auxiliary visibility and keeps AI and EPS disabled at boot", 
     panelKeys: ["adr", "fearGreed", "newsSentiment", "vkospi"],
     seriesKeys,
     normalizeCursorLineMode: (value) => value,
+    normalizeCreditOffsetDays: (value) => Math.max(-10, Math.min(0, Number(value) || 0)),
     normalizeChartRightPaddingDays: (value) => Math.max(0, Math.min(30, Number(value) || 0)),
     normalizeMacdDisparityDays: (value) => [5, 20, 60].includes(Number(value)) ? Number(value) : 60,
     normalizeNewsMovingAverageDays: (value) => Number(value) || 1,
     getCustomStocks: () => customStocks,
     setCustomStocks: (value) => { customStocks = value; },
-    getCreditOffset: () => creditOffset,
-    setCreditOffset: (value) => { creditOffset = value; },
   });
 
   assert.equal(controller.load({ allowActiveMonths: true }), true);
@@ -202,7 +201,7 @@ test("loads legacy auxiliary visibility and keeps AI and EPS disabled at boot", 
   assert.deepEqual([...chartState.hiddenAuxiliaryPanels].sort(), ["adr", "fearGreed"]);
   assert.deepEqual([...chartState.hiddenAuxiliarySeries], []);
   assert.deepEqual(chartState.seriesOffsets, { A: 3 });
-  assert.equal(creditOffset, 4);
+  assert.equal(chartState.creditOffsetDays, -4);
   assert.equal(customStocks[0].ticker, "005930.KS");
 });
 
@@ -216,7 +215,7 @@ test("saves one normalized application state record", () => {
     panelKeys: ["adr", "fearGreed", "newsSentiment", "vkospi"],
     seriesKeys,
     getCustomStocks: () => [{ ticker: "005930.KS", name: "삼성전자" }],
-    getCreditOffset: () => 2,
+    normalizeCreditOffsetDays: (value) => Math.max(-10, Math.min(0, Number(value) || 0)),
   });
 
   assert.equal(controller.save(), true);

@@ -8,6 +8,7 @@ import { finiteRangeBetween } from "./chart-adjustments.mjs";
     NEWS_MOVING_AVERAGE_MAX_DAYS,
     AUXILIARY_PANEL_KEYS,
     AUXILIARY_CHART_CONFIG,
+    AUXILIARY_LAYOUT_METRICS,
     normalizeNewsMovingAverageDays,
   } = contract;
 
@@ -288,22 +289,21 @@ import { finiteRangeBetween } from "./chart-adjustments.mjs";
   }
 
   function buildAuxiliaryPanelLayout(visibility = {}, options = {}) {
-    const panelSpecByKey = {
-      adr: { key: "adr", pixels: 180 },
-      fearGreed: { key: "fearGreed", pixels: 85 },
-      newsSentiment: { key: "newsSentiment", pixels: 85 },
-      vkospi: { key: "vkospi", pixels: 85 },
-    };
+    const panelSpecByKey = Object.fromEntries(AUXILIARY_PANEL_KEYS.map((key) => [
+      key,
+      { key, pixels: AUXILIARY_LAYOUT_METRICS.panelHeights[key] },
+    ]));
     const requestedOrder = Array.isArray(options.panelOrder) ? options.panelOrder : [];
     const orderedKeys = [...new Set([...requestedOrder, ...AUXILIARY_PANEL_KEYS])]
       .filter((key) => AUXILIARY_PANEL_KEYS.includes(key));
     const panelSpecs = orderedKeys.map((key) => panelSpecByKey[key]);
     const activePanels = panelSpecs.filter((panel) => visibility[panel.key] !== false);
-    const gapPixels = 18;
-    // Plotly sizes its SVG from the border box, then removes the 52/36px
-    // margins. Keeping this value exact prevents panel heights from drifting.
-    const fixedChromePixels = 88;
-    const controlsOnlyPixels = 42;
+    const gapPixels = AUXILIARY_LAYOUT_METRICS.panelGap;
+    // Plotly removes these exact margins from the border box. Keeping the
+    // height contract shared prevents every panel from drifting by a few px.
+    const fixedChromePixels = AUXILIARY_LAYOUT_METRICS.topMargin
+      + AUXILIARY_LAYOUT_METRICS.bottomMargin;
+    const controlsOnlyPixels = AUXILIARY_LAYOUT_METRICS.controlsOnlyHeight;
     const panelPixels = activePanels.reduce((sum, panel) => sum + panel.pixels, 0);
     const totalGapPixels = Math.max(0, activePanels.length - 1) * gapPixels;
     const paperPixels = Math.max(1, panelPixels + totalGapPixels);

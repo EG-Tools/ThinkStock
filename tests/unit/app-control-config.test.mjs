@@ -9,6 +9,9 @@ import {
   BASE_HOVER_NAMES,
   BASE_SERIES_HELP_NAMES,
   CHART_RIGHT_PADDING_MAX_DAYS,
+  CREDIT_OFFSET_DEFAULT_DAYS,
+  CREDIT_OFFSET_MAX_DAYS,
+  CREDIT_OFFSET_MIN_DAYS,
   CURSOR_LINE_LABELS,
   CURSOR_LINE_MODES,
   DEFAULT_HIDDEN_MAIN_SERIES,
@@ -27,6 +30,7 @@ import {
   isMarketPriceSeries,
   mainSeriesActivationProfile,
   normalizeChartRightPaddingDays,
+  normalizeCreditOffsetDays,
   resolveMainChartDisplayPointBudget,
   resolveAppBuildVersion,
   resolveSeriesFeatureActivationPlan,
@@ -63,7 +67,6 @@ function createContext() {
     finishFutureOverlayDisable: (kind) => calls.push(`disable-${kind}`),
     disclosureMarkerCount: () => 0,
     insiderMarkerCount: () => 0,
-    getCreditOffsetDays: () => -2,
   }, {
     get(target, property) {
       if (property in target) return target[property];
@@ -170,6 +173,14 @@ test("owns stable runtime keys and chart control limits outside app.js", () => {
   assert.equal(normalizeChartRightPaddingDays(-3), 0);
   assert.equal(normalizeChartRightPaddingDays(12.6), 13);
   assert.equal(normalizeChartRightPaddingDays(99), 30);
+  assert.equal(CREDIT_OFFSET_DEFAULT_DAYS, -2);
+  assert.equal(CREDIT_OFFSET_MIN_DAYS, -10);
+  assert.equal(CREDIT_OFFSET_MAX_DAYS, 0);
+  assert.equal(normalizeCreditOffsetDays(-4), -4);
+  assert.equal(normalizeCreditOffsetDays(4), -4);
+  assert.equal(normalizeCreditOffsetDays(-30), -10);
+  assert.equal(normalizeCreditOffsetDays(3, -2), -3);
+  assert.equal(normalizeCreditOffsetDays("invalid"), -2);
   assert.equal(MAX_CUSTOM_STOCKS, 20);
   assert.equal(MAX_VISIBLE_MAIN_SERIES, 10);
   assert.equal(OPTIMIZED_VISIBLE_MAIN_SERIES, 5);
@@ -227,6 +238,12 @@ test("owns stable runtime keys and chart control limits outside app.js", () => {
   assert.equal(isMarketPriceSeries("^KS11"), true);
   assert.equal(seriesSupportsFeature("005930.KS", "co-movement"), true);
   assert.equal(seriesSupportsFeature("^KS11", "co-movement"), true);
+  assert.equal(seriesSupportsFeature("005930.KS", "technical"), true);
+  assert.equal(seriesSupportsFeature("^KS11", "technical"), true);
+  assert.equal(seriesSupportsFeature("^KQ11", "technical"), true);
+  MAIN_MACRO_SERIES.forEach((series) => {
+    assert.equal(seriesSupportsFeature(series, "technical"), false);
+  });
   assert.equal(seriesSupportsFeature("^KQ11", "signal"), true);
   assert.equal(seriesSupportsFeature("005930.KS", "disclosure"), true);
   assert.equal(seriesSupportsFeature("^KS11", "disclosure"), false);
@@ -261,6 +278,7 @@ test("one feature policy owns series support and application activation", () => 
   assert.equal(Object.isFrozen(APP_FEATURE_POLICIES), true);
   assert.equal(APP_FEATURE_POLICIES.signal.seriesKinds.includes("stock"), true);
   assert.equal(APP_FEATURE_POLICIES.signal.seriesKinds.includes("macro"), false);
+  assert.deepEqual(APP_FEATURE_POLICIES.technical.seriesKinds, ["stock", "market-index"]);
   assert.equal(isApplicationFeatureRequested({ showRecessionSignals: true }, "signal"), true);
   assert.equal(isApplicationFeatureRequested({ showAiForecast: true }, "dart"), true);
   assert.equal(isApplicationFeatureRequested({ showEps: false }, "eps"), false);

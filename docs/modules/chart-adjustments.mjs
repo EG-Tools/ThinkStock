@@ -236,6 +236,18 @@
   function fitRangeForTraces(traces, xRange = null, options = {}) {
     const paddingRatio = Number.isFinite(options.paddingRatio) ? options.paddingRatio : 0.08;
     const minimumPadding = Number.isFinite(options.minimumPadding) ? options.minimumPadding : 0.6;
+    const lowerPaddingRatio = Number.isFinite(options.lowerPaddingRatio)
+      ? Math.max(0, options.lowerPaddingRatio)
+      : Math.max(0, paddingRatio);
+    const upperPaddingRatio = Number.isFinite(options.upperPaddingRatio)
+      ? Math.max(0, options.upperPaddingRatio)
+      : Math.max(0, paddingRatio);
+    const minimumLowerPadding = Number.isFinite(options.minimumLowerPadding)
+      ? Math.max(0, options.minimumLowerPadding)
+      : Math.max(0, minimumPadding);
+    const minimumUpperPadding = Number.isFinite(options.minimumUpperPadding)
+      ? Math.max(0, options.minimumUpperPadding)
+      : Math.max(0, minimumPadding);
     let minimum = Number.POSITIVE_INFINITY;
     let maximum = Number.NEGATIVE_INFINITY;
 
@@ -248,20 +260,22 @@
     });
     if (!Number.isFinite(minimum) || !Number.isFinite(maximum)) return null;
     const span = maximum - minimum;
-    const padding = Math.max(
-      minimumPadding,
-      span > 1e-9 ? span * Math.max(0, paddingRatio) : Math.abs(maximum || 100) * 0.02,
+    const fallbackPadding = Math.abs(maximum || 100) * 0.02;
+    const lowerPadding = Math.max(
+      minimumLowerPadding,
+      span > 1e-9 ? span * lowerPaddingRatio : fallbackPadding,
     );
-    return [minimum - padding, maximum + padding];
+    const upperPadding = Math.max(
+      minimumUpperPadding,
+      span > 1e-9 ? span * upperPaddingRatio : fallbackPadding,
+    );
+    return [minimum - lowerPadding, maximum + upperPadding];
   }
 
   function tracesExceedVisibleYRange(traces, xRange, yRange, options = {}) {
     const current = Array.isArray(yRange) ? yRange.slice(0, 2).map(Number) : [];
     if (current.length < 2 || !current.every(Number.isFinite)) return false;
-    const required = fitRangeForTraces(traces, xRange, {
-      paddingRatio: Number.isFinite(options.paddingRatio) ? options.paddingRatio : 0.08,
-      minimumPadding: Number.isFinite(options.minimumPadding) ? options.minimumPadding : 0.6,
-    });
+    const required = fitRangeForTraces(traces, xRange, options);
     if (!required) return false;
     const low = Math.min(...current);
     const high = Math.max(...current);

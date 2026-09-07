@@ -16,6 +16,9 @@ import {
   BASE_SERIES_HELP_NAMES,
   CHART_RIGHT_PADDING_MAX_DAYS,
   CHART_RIGHT_PADDING_MIN_DAYS,
+  CREDIT_OFFSET_DEFAULT_DAYS,
+  CREDIT_OFFSET_MAX_DAYS,
+  CREDIT_OFFSET_MIN_DAYS,
   CO_MOVEMENT_COMPARISONS,
   CORE_SERIES,
   CUSTOM_COLOR_MIN_FIXED_DISTANCE,
@@ -49,6 +52,7 @@ import {
   isForecastSeries,
   mainSeriesActivationProfile,
   normalizeChartRightPaddingDays,
+  normalizeCreditOffsetDays,
   resolveAppBuildVersion,
   resolveMainChartDisplayPointBudget,
   resolveSeriesFeatureActivationPlan,
@@ -263,6 +267,7 @@ const {
   fitRangeForTraces,
   expandRangeToContain,
 } = chartAdjustmentsModule;
+const { MAIN_CHART_Y_FIT_OPTIONS } = chartRenderContractModule;
 const {
   AUXILIARY_PANEL_KEYS,
   AUXILIARY_CHART_CONFIG,
@@ -375,7 +380,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = tickerPriceRuntimeModule.CORPORATE_ACTION_RATIO_THRESHOLD;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = tickerPriceRuntimeModule.CORPORATE_ACTION_MAX_BOUNDARY_DAYS;
-const APP_VERSION = "3.36";
+const APP_VERSION = "3.37";
 const APP_BUILD_VERSION = resolveAppBuildVersion(globalThis);
 const cacheMigrator = cacheMaintenanceRuntimeModule.createCacheMigrator(globalThis, {
   markerKey: "thinkstock-cache-migrations-v1",
@@ -952,6 +957,7 @@ const chartSession = chartSessionControllerModule.createChartSessionState({
   hoverShowPopup: true,
   cursorLineMode: "vertical",
   chartRightPaddingDays: 0,
+  creditOffsetDays: CREDIT_OFFSET_DEFAULT_DAYS,
   macdDisparityDays: MACD_DISPARITY_DAYS,
   newsSentimentMovingAverageDays: NEWS_MOVING_AVERAGE_DAYS,
   showDisclosures: false,
@@ -974,9 +980,7 @@ const mainChartControlView = appUiBindingsModule.createMainChartControlView(glob
   state: chartSession,
   controlStateView,
   cursorLineLabels: CURSOR_LINE_LABELS,
-  normalizeMacdDisparityDays,
   normalizeCursorLineMode,
-  normalizeNewsMovingAverageDays,
   applyHandlesContainer: chartViewportControllerModule.applyContainer,
   getSignalCounts: () => ({
     buy: lastMarketTimingBuyCount,
@@ -1035,6 +1039,7 @@ let hoveredLineTraceIndex = null;
 let activeLineTraceIndex = null;
 let appliedLineHighlightTraceIndex = null;
 let lastVisibleStockSeriesKey = "";
+let lastTechnicalSeriesKey = "";
 let lastCoMovementSeriesKey = "";
 let isViewportDragging = false;
 let isWheelZooming = false;
@@ -1247,7 +1252,9 @@ const initE2eDebugAccess = __THINKSTOCK_E2E_DIAGNOSTICS__
       async loadHistoricalDataForTest() {
         const visibleRange = getCurrentXRangeMs(document.getElementById("chart"));
         await ensureHistoricalDataLoaded(false);
-        if (visibleRange) chartSession.pinnedXRange = visibleRange.map((value) => new Date(value).toISOString());
+        if (visibleRange) getChartSessionController().pinViewport(
+          visibleRange.map((value) => new Date(value).toISOString()),
+        );
         await runMainChartRender(true);
         return historicalDataLoaded;
       },
@@ -1265,10 +1272,7 @@ const initE2eDebugAccess = __THINKSTOCK_E2E_DIAGNOSTICS__
         if (applied) {
           await settleChartViewport();
         } else {
-          chartSession.activeMonths = months;
-          chartSession.pinnedXRange = null;
-          chartSession.pendingCompositionViewport = null;
-          chartSession.userViewportPinned = false;
+          getChartSessionController().clearViewport({ activeMonths: months });
           await runMainChartRender(false);
         }
         return chartSession.activeMonths;
@@ -1378,6 +1382,7 @@ function getAppStateController() {
       seriesKeys: AUXILIARY_SERIES_KEYS,
       maxCustomStocks: MAX_CUSTOM_STOCKS,
       normalizeCursorLineMode,
+      normalizeCreditOffsetDays,
       normalizeChartRightPaddingDays,
       normalizeMacdDisparityDays,
       normalizeNewsMovingAverageDays,
@@ -1390,8 +1395,6 @@ function getAppStateController() {
         ));
       },
       applyCustomStockDisplayNames,
-      getCreditOffset: () => CREDIT_OFFSET_DAYS,
-      setCreditOffset: (value) => { CREDIT_OFFSET_DAYS = value; },
     })
   ));
 }
@@ -2063,6 +2066,8 @@ function ensureSettingsPanelRuntime() {
       APP_VERSION,
       CHART_RIGHT_PADDING_MIN_DAYS,
       CHART_RIGHT_PADDING_MAX_DAYS,
+      CREDIT_OFFSET_MIN_DAYS,
+      CREDIT_OFFSET_MAX_DAYS,
       STOCK_RESEARCH_UNIVERSE_MIN: stockResearchContract.UNIVERSE_SIZE_LOW,
       STOCK_RESEARCH_UNIVERSE_MAX: stockResearchContract.UNIVERSE_SIZE_HIGH,
       STOCK_RESEARCH_UNIVERSE_STEP: stockResearchContract.UNIVERSE_SIZE_STEP,
@@ -2081,6 +2086,7 @@ function ensureSettingsPanelRuntime() {
         ?.getBlockedCount?.() ?? storedBlockedStockCount(),
       getCursorLineMode: () => chartSession.cursorLineMode,
       getChartRightPaddingDays: () => chartSession.chartRightPaddingDays,
+      getCreditOffsetDays: () => chartSession.creditOffsetDays,
       getMacdDisparityDays: () => chartSession.macdDisparityDays,
       getNewsSentimentMovingAverageDays: () => chartSession.newsSentimentMovingAverageDays,
       getStockResearchUniverseSize: () => appRuntimeRegistry.peek(APP_RUNTIME_KEYS.stockResearch)
@@ -2092,14 +2098,13 @@ function ensureSettingsPanelRuntime() {
       setMessage,
       setCursorLineMode,
       setChartRightPaddingDays,
+      setCreditOffsetDays,
       setMacdDisparityDays,
       setNewsSentimentMovingAverageDays,
       setStockResearchUniverseSize: (value) => appRuntimeRegistry.peek(APP_RUNTIME_KEYS.stockResearch)
         ?.setUniverseSize?.(value)
         ?? setStoredStockResearchUniverseSize(value),
       syncApiOptionsButton,
-      syncMacdDisparityControls: mainChartControlView.syncMacdDisparity,
-      syncNewsSentimentMovingAverageControls,
       validateDartGatewayAccessToken,
     });
   });
@@ -2258,7 +2263,9 @@ function getChartNavigationController() {
     isHistoryReady: allVisibleHistoryInputsReady,
     loadHistory: () => ensureAllVisibleHistoryInputsReady(),
     afterHistoryLoaded: async (visibleRange) => {
-      if (visibleRange) chartSession.pinnedXRange = visibleRange.map((value) => new Date(value).toISOString());
+      if (visibleRange) getChartSessionController().pinViewport(
+        visibleRange.map((value) => new Date(value).toISOString()),
+      );
       await runMainChartRender(Boolean(visibleRange));
       await settleChartViewport();
     },
@@ -2269,10 +2276,9 @@ function getChartNavigationController() {
     getRightPaddingMs: chartRightPaddingMs,
     isInteractionBusy: () => isHandleDragging || isViewportDragging,
     setViewportDragging: (value) => { isViewportDragging = Boolean(value); },
-    setViewportPinned: (value) => { chartSession.userViewportPinned = Boolean(value); },
+    setViewportPinned: (value) => getChartSessionController().setViewportPinned(value),
     updateActiveMonths: (months) => {
-      chartSession.activeMonths = months;
-      chartSession.pendingCompositionViewport = null;
+      getChartSessionController().setActiveMonths(months, { clearComposition: true });
       saveState();
     },
     requestRender: (requestOptions = {}) => requestSettledViewportRender({
@@ -2288,9 +2294,11 @@ function getChartNavigationController() {
 async function settleAllChartWork() {
   return chartUpdateCoordinatorModule.settleChartWorkTransaction({
     navigation: appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartNavigation),
+    visualFrame: chartVisualFrameCoordinator,
     rangeController: appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartRangeSync),
     mainScheduler: appRuntimeRegistry.peek(APP_RUNTIME_KEYS.mainChartScheduler),
     auxiliaryQueue: appRuntimeRegistry.peek(APP_RUNTIME_KEYS.auxiliaryChartRender),
+    plotlyRuntime: plotlyUpdateRuntime,
     afterSettled: flushLoadedCoMovementPanel,
   });
 }
@@ -2371,10 +2379,10 @@ function clampChartViewportToObservedData(options = {}) {
   if (options.alignLatest !== true && viewRange[1] <= observedRange[1]) return false;
   const latest = chartViewportControllerModule.latestRange(viewRange, observedRange);
   if (!latest) return false;
-  chartSession.pinnedXRange = [
+  getChartSessionController().pinViewport([
     new Date(latest[0]).toISOString(),
     new Date(latest[1]).toISOString(),
-  ];
+  ]);
   return true;
 }
 
@@ -2447,7 +2455,7 @@ function getChartRangeSyncController() {
       isAutoScale: () => chartSession.autoChartReset,
       rangeBearingTraces: mainChartRenderer.rangeBearingTraces,
       fitRangeForTraces,
-      fitOptions: { paddingRatio: 0.08, minimumPadding: 0.6 },
+      fitOptions: MAIN_CHART_Y_FIT_OPTIONS,
       collectAnchoredYUpdates: chartMarkerLayoutModule.collectViewportAnchoredYUpdates,
       forceCompanionUpdate: (element, meta) => (
         Boolean(meta?.forceCompanionElementId)
@@ -2493,10 +2501,13 @@ function applySyncedXRangeMs(startMs, endMs, meta = {}) {
     && meta.source !== "latest-slide") {
     cancelLatestViewportAnimation();
   }
-  chartSession.pinnedXRange = [new Date(startMs).toISOString(), new Date(endMs).toISOString()];
+  getChartSessionController().pinViewport([
+    new Date(startMs).toISOString(),
+    new Date(endMs).toISOString(),
+  ]);
   if (meta.beginsInteraction === true || meta.userInitiated !== false) {
     chartViewportInteractionRevision += 1;
-    chartSession.userViewportPinned = true;
+    getChartSessionController().setViewportPinned(true);
   }
   const requestMeta = {
     ...meta,
@@ -2528,7 +2539,9 @@ async function performSettledViewportRender({
     mainElement: document.getElementById("chart"),
     rangeBearingTraces: mainChartRenderer.rangeBearingTraces,
     setPinnedRange: (nextRange) => {
-      chartSession.pinnedXRange = nextRange.map((value) => new Date(value).toISOString());
+      getChartSessionController().pinViewport(
+        nextRange.map((value) => new Date(value).toISOString()),
+      );
     },
     requestRender: (request) => requestChartRender(request.preserveZoom, {
       deferDuringInteraction: false,
@@ -2825,14 +2838,11 @@ function changeMainSeriesVisibility(seriesKey, visible) {
   if (!setMainChartSeriesVisible(key, visible)) return false;
   const revivesEmptyChart = visible && !hadVisibleSeries;
   if (revivesEmptyChart) {
-    chartSession.activeMonths = getDefaultActiveMonths();
-    chartSession.pinnedXRange = null;
-    chartSession.userViewportPinned = false;
-    chartSession.pendingCompositionViewport = null;
+    getChartSessionController().clearViewport({ activeMonths: getDefaultActiveMonths() });
   }
   if (visible) clearAutoResetSeriesTransforms(key);
   else if (STOCK_TICKER_PATTERN.test(key.toUpperCase())) cancelVisibleStockHistoryRefresh(key);
-  noteStockVisibilityChange(key);
+  noteSeriesTargetVisibilityChange(key);
   setAiForecastTargetVisibility(key, visible);
   syncSeriesToggleBoard(chartSession.currentMainChartModel?.allSeries || getSeriesPriorityOrder());
 
@@ -2876,14 +2886,14 @@ function resolveCoMovementTarget() {
 }
 
 function resolveMacdTarget() {
-  lastVisibleStockSeriesKey = getMainSeriesController().resolveVisibleStock(
-    lastVisibleStockSeriesKey,
-    (key) => STOCK_TICKER_PATTERN.test(String(key).toUpperCase()),
+  lastTechnicalSeriesKey = getMainSeriesController().resolveVisibleTarget(
+    lastTechnicalSeriesKey,
+    (key) => seriesSupportsFeature(key, "technical"),
   );
-  return lastVisibleStockSeriesKey;
+  return lastTechnicalSeriesKey;
 }
 
-function noteStockVisibilityChange(seriesKey) {
+function noteSeriesTargetVisibilityChange(seriesKey) {
   const key = String(seriesKey || "").toUpperCase();
   const hidden = chartSession.hiddenSeries.has(key);
   if (seriesSupportsFeature(key, "co-movement")) {
@@ -2894,6 +2904,10 @@ function noteStockVisibilityChange(seriesKey) {
     if (hidden && lastVisibleStockSeriesKey === key) lastVisibleStockSeriesKey = "";
     else if (!hidden) lastVisibleStockSeriesKey = key;
   }
+  if (seriesSupportsFeature(key, "technical")) {
+    if (hidden && lastTechnicalSeriesKey === key) lastTechnicalSeriesKey = "";
+    else if (!hidden) lastTechnicalSeriesKey = key;
+  }
 }
 
 function selectChartSeriesTarget(seriesKey) {
@@ -2901,11 +2915,11 @@ function selectChartSeriesTarget(seriesKey) {
   if (!key || chartSession.hiddenSeries.has(key)) return;
   const coMovementChanged = seriesSupportsFeature(key, "co-movement")
     && lastCoMovementSeriesKey !== key;
-  const macdChanged = STOCK_TICKER_PATTERN.test(key)
-    && lastVisibleStockSeriesKey !== key;
+  const macdChanged = seriesSupportsFeature(key, "technical")
+    && lastTechnicalSeriesKey !== key;
   if (!coMovementChanged && !macdChanged) return;
   if (coMovementChanged) lastCoMovementSeriesKey = key;
-  if (macdChanged) lastVisibleStockSeriesKey = key;
+  if (macdChanged) lastTechnicalSeriesKey = key;
   if (coMovementChanged && chartSession.showCoMovement) renderCoMovementPanel();
   if (macdChanged) {
     const runtime = appRuntimeRegistry.peek(APP_RUNTIME_KEYS.auxiliaryChart);
@@ -2951,9 +2965,7 @@ function setChartRightPaddingDays(value, options = {}) {
   chartSession.chartRightPaddingDays = days;
   if (!changed) return days;
   if (wasLatest) {
-    chartSession.userViewportPinned = false;
-    chartSession.pinnedXRange = null;
-    chartSession.pendingCompositionViewport = null;
+    getChartSessionController().clearViewport();
   }
   saveState();
   if (options.render === false || !wasLatest) return days;
@@ -2976,6 +2988,21 @@ function setChartRightPaddingDays(value, options = {}) {
   return days;
 }
 
+function setCreditOffsetDays(value, options = {}) {
+  const days = normalizeCreditOffsetDays(value);
+  if (chartSession.creditOffsetDays === days) return days;
+  chartSession.creditOffsetDays = days;
+  saveState();
+  if (options.render !== false) {
+    requestChartRender(true, {
+      deferDuringInteraction: false,
+      reason: "credit-offset",
+      updateClass: "timing",
+    });
+  }
+  return days;
+}
+
 function cycleCursorLineMode() {
   const current = CURSOR_LINE_MODES.indexOf(normalizeCursorLineMode(chartSession.cursorLineMode));
   return setCursorLineMode(CURSOR_LINE_MODES[(current + 1) % CURSOR_LINE_MODES.length]);
@@ -2985,7 +3012,6 @@ function setMacdDisparityDays(value) {
   const days = normalizeMacdDisparityDays(value);
   if (chartSession.macdDisparityDays === days) return days;
   chartSession.macdDisparityDays = days;
-  mainChartControlView.syncMacdDisparity();
   saveState();
   const runtime = appRuntimeRegistry.peek(APP_RUNTIME_KEYS.auxiliaryChart);
   if (runtime) {
@@ -2996,15 +3022,10 @@ function setMacdDisparityDays(value) {
   return days;
 }
 
-function syncNewsSentimentMovingAverageControls() {
-  return mainChartControlView.syncNewsMovingAverage();
-}
-
 function setNewsSentimentMovingAverageDays(value, options = {}) {
   const days = normalizeNewsMovingAverageDays(value);
   const changed = chartSession.newsSentimentMovingAverageDays !== days;
   chartSession.newsSentimentMovingAverageDays = days;
-  syncNewsSentimentMovingAverageControls();
   if (!changed) return days;
   invalidateAdrChartRender();
   saveState();
@@ -3136,7 +3157,7 @@ function endSeriesTransformInteraction({ element, handle, lineTarget, lockedXRan
     setActiveLineTarget(null);
   }
   isHandleDragging = false;
-  if (lockedXRange) chartSession.pinnedXRange = [...lockedXRange];
+  if (lockedXRange) getChartSessionController().pinViewport(lockedXRange);
 }
 
 function beginLineOffsetDrag(el, target, startClientY, pointerId) {
@@ -3332,6 +3353,7 @@ function removeCustomStock(ticker) {
   cancelTickerDartRequests(ticker);
   epsRefreshOnNextAdd.add(String(ticker || "").trim().toUpperCase());
   if (lastVisibleStockSeriesKey === ticker) lastVisibleStockSeriesKey = "";
+  if (lastTechnicalSeriesKey === ticker) lastTechnicalSeriesKey = "";
   if (lastCoMovementSeriesKey === ticker) lastCoMovementSeriesKey = "";
   getMainSeriesController().forget(ticker);
   clearRemovedSeriesTransforms(ticker);
@@ -3635,7 +3657,7 @@ async function addCustomStock(candidate, msgEl, options = {}) {
         visibleSinceDate,
       });
     } else {
-      noteStockVisibilityChange(stockCandidate.ticker);
+      noteSeriesTargetVisibilityChange(stockCandidate.ticker);
     }
     saveState();
     if (activateRequested && !activateOnAdd) {
@@ -3689,6 +3711,7 @@ function getCustomStockPreloader() {
       failed.forEach((ticker) => {
         forgetStockPriceRefresh(ticker);
         if (lastVisibleStockSeriesKey === ticker) lastVisibleStockSeriesKey = "";
+        if (lastTechnicalSeriesKey === ticker) lastTechnicalSeriesKey = "";
         if (lastCoMovementSeriesKey === ticker) lastCoMovementSeriesKey = "";
         getMainSeriesController().forget(ticker);
         clearRemovedSeriesTransforms(ticker);
@@ -3734,7 +3757,6 @@ function getVisibleStockHistoryRefresh() {
     })
   ));
 }
-let CREDIT_OFFSET_DAYS = 2;  // Fund-data publication-lag alignment in days (UI uses negative sign for display)
 const CREDIT_COLS = ["customer_deposit", "kospi_credit", "kosdaq_credit"];
 const runtimeRefreshPolicy = createRuntimeRefreshPolicy({
   getCreditSeries: () => CREDIT_COLS,
@@ -4037,7 +4059,7 @@ async function getMainChartModel(
     activeMonths: chartSession.activeMonths,
     allowedSeries,
     creditCols: CREDIT_COLS,
-    creditOffsetDays: CREDIT_OFFSET_DAYS,
+    creditOffsetDays: chartSession.creditOffsetDays,
     customStocksSignature: customStocks
       .map((item) => `${item.ticker}:${item.color || ""}`)
       .join(","),
@@ -4219,7 +4241,7 @@ const applyChartVisualFrame = chartUpdateCoordinatorModule.createSeriesFrameAppl
     const requiredRange = fitRangeForTraces(
       mainChartRenderer.rangeBearingTraces(stagedTraces),
       element?._fullLayout?.xaxis?.range,
-      { paddingRatio: 0.08, minimumPadding: 0.6 },
+      MAIN_CHART_Y_FIT_OPTIONS,
     );
     return expandRangeToContain(currentRange, requiredRange);
   },
@@ -4450,10 +4472,12 @@ function captureCurrentCompositionViewport(forceFitFull = false) {
 
 function queueAutoCompositionViewport(forceFitFull = false, options = {}) {
   if (chartSession.autoChartReset) {
-    chartSession.pendingAutoChartFit = true;
+    getChartSessionController().setAutoFitPending(true);
   }
   if (options.preserveFutureOverlayViewport) {
-    chartSession.pendingCompositionViewport = null;
+    getChartSessionController().stageCompositionViewport(null, {
+      preserveFutureOverlayViewport: true,
+    });
     return;
   }
   const hasPreparedViewport = Object.prototype.hasOwnProperty.call(options, "compositionViewport");
@@ -4461,14 +4485,10 @@ function queueAutoCompositionViewport(forceFitFull = false, options = {}) {
   const capturedViewport = hasPreparedViewport
     ? options.compositionViewport
     : captureCurrentCompositionViewport(forceFitFull);
-  chartSession.pendingCompositionViewport = capturedViewport;
-  if (capturedViewport?.viewRange?.length === 2) {
-    // Plotly can briefly expose no settled range while a price-first composition
-    // is replacing traces. Keep the captured span authoritative until the next
-    // visible data range reconciles it to the newest series edge.
-    chartSession.pinnedXRange = capturedViewport.viewRange
-      .map((value) => new Date(value).toISOString());
-  }
+  // Plotly can briefly expose no settled range while a price-first composition
+  // is replacing traces. The session owner keeps that span authoritative until
+  // the next visible data range reconciles it to the newest series edge.
+  getChartSessionController().stageCompositionViewport(capturedViewport);
 }
 
 function requestChartCompositionUpdate(options = {}) {
@@ -4493,13 +4513,14 @@ async function applyCurrentChartFit(options = {}) {
     updateRuntime: plotlyUpdateRuntime,
     xRange,
     fitRangeForTraces,
+    fitOptions: MAIN_CHART_Y_FIT_OPTIONS,
     expandRangeToContain,
     expandOnly: options.expandOnly,
     syncMarkers: options.syncMarkers,
     hasEventMarkers,
     appendEventMarkerYUpdates,
     beforeApply: (_yRange, fitPlan) => {
-      if (xRange) chartSession.pinnedXRange = [...xRange];
+      if (xRange) getChartSessionController().pinViewport(xRange);
       useViewportEventMarkerGap = true;
       invalidateChartInteractionCaches(el, {
         lines: false,
@@ -5273,7 +5294,7 @@ function getEpsDataController() {
     onPrepared: (loadedCount, options, result = {}) => {
       const changedCount = Math.max(0, Number(result.changedCount) || 0);
       if (chartSession.showEps && changedCount && chartSession.autoChartReset) {
-        chartSession.pendingAutoChartFit = true;
+        getChartSessionController().setAutoFitPending(true);
       }
       if (chartSession.showEps && changedCount && options.render !== false) {
         requestFutureOverlayCompositionUpdate();
@@ -6209,7 +6230,7 @@ function getMainChartRenderScheduler() {
           // Price-first composition is only an interim frame. Keep the fit
           // pending until every active line has joined the final frame.
           if (invalidation?.progressiveComposition === true) return;
-          chartSession.pendingAutoChartFit = false;
+          getChartSessionController().setAutoFitPending(false);
           if (chartSession.autoChartReset) return fitCurrentChartRatio();
         },
         afterSettled: flushQueuedEventMarkerRefresh,
@@ -6397,12 +6418,18 @@ async function applyEventMarkerOnlyRender(el, invalidation, eventMarkerRevisions
   const staticTraces = el.data.filter((trace) => !mainChartRenderer.isEventMarkerTrace(trace));
   if (!staticTraces.length) return false;
   const markerArguments = currentEventMarkerArguments(model);
-  const traces = [
+  let traces = [
     ...staticTraces.filter((trace) => (
       chartRenderContractModule.chartTraceOverlayKind(trace) !== "grouped-hover"
     )),
     ...buildCurrentEventMarkerTraces(markerArguments),
   ];
+  const anchoredFrame = chartUpdateCoordinatorModule.prepareAnchoredMarkerFrame({
+    traces,
+    viewportRange: el?._fullLayout?.yaxis?.range,
+    collectAnchoredYUpdates: chartMarkerLayoutModule.collectViewportAnchoredYUpdates,
+  });
+  traces = anchoredFrame.traces;
   prependGroupedHoverTraces(traces, model.selected, eventMarkerRevisionsAtStart);
   if (invalidation.shouldAbort?.()) return true;
   const renderMode = await applyMainChartRender(el, traces, el.layout || {}, invalidation);
@@ -6491,9 +6518,10 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
         ? pinnedRange
         : getCurrentXRangeMs(el);
       if (!range) return;
-      chartSession.pinnedXRange = range.map((value) => new Date(value).toISOString());
-      chartSession.pendingCompositionViewport = null;
-      chartSession.userViewportPinned = true;
+      getChartSessionController().pinViewport(
+        range.map((value) => new Date(value).toISOString()),
+        { clearComposition: true, userPinned: true },
+      );
       chartViewportInteractionRevision += 1;
     },
     requestViewportRender: () => requestChartRender(true, {
@@ -6623,6 +6651,7 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
       ),
       toMilliseconds: toMsSafe,
       fitRangeForTraces,
+      fitOptions: MAIN_CHART_Y_FIT_OPTIONS,
       collectTraceYUpdates: collectMainViewportTraceYUpdates,
       collectAnchoredYUpdates: chartMarkerLayoutModule.collectViewportAnchoredYUpdates,
       dayMs: DAY_MS,
@@ -6657,8 +6686,7 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
     renderGuard, el, viewportPlan, xRangeMatches,
   );
   if (renderGuard.queueCurrentViewportRender()) return;
-  chartUpdateCoordinatorModule.applyMainChartViewportPlan(
-    chartSession,
+  getChartSessionController().applyViewportPlan(
     viewportPlan,
     (plan) => getFutureOverlayController().applyPlan(plan),
   );
@@ -6670,6 +6698,7 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
     {
       renderedRange: renderedFrameRange,
       tracesExceedVisibleYRange: chartAdjustmentsModule.tracesExceedVisibleYRange,
+      fitOptions: MAIN_CHART_Y_FIT_OPTIONS,
       xRange: el?._fullLayout?.xaxis?.range,
       yRange: el?._fullLayout?.yaxis?.range,
     },
@@ -6745,7 +6774,7 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
 
 function getMacdModelForSeries(series, buildMacdOscillator) {
   const ticker = String(series || "").toUpperCase();
-  if (!STOCK_TICKER_PATTERN.test(ticker)
+  if (!seriesSupportsFeature(ticker, "technical")
     || typeof buildMacdOscillator !== "function") return null;
   const records = Array.isArray(appData.pricePayload?.records) ? appData.pricePayload.records : [];
   const sourceFingerprint = seriesIntegrityModule.fingerprintDatedSeries(
@@ -6796,7 +6825,6 @@ async function getAuxiliaryChartRuntime() {
       AUXILIARY_SERIES_KEYS,
       FEAR_GREED_HIGH_THRESH,
       FEAR_GREED_LOW_THRESH,
-      MACD_STOCK_PATTERN: STOCK_TICKER_PATTERN,
       NEWS_SENTIMENT_HIGH_THRESH,
       NEWS_SENTIMENT_LOW_THRESH,
       SERIES_COLORS,
@@ -6825,7 +6853,8 @@ async function getAuxiliaryChartRuntime() {
         series,
         macdModule.buildMacdOscillator,
       ),
-      getPreferredStockSeries: resolveMacdTarget,
+      getPreferredTechnicalSeries: resolveMacdTarget,
+      supportsTechnicalSeries: (series) => seriesSupportsFeature(series, "technical"),
       fitRangeForTraces,
       isTouchDevice,
       labelName,
@@ -7010,6 +7039,7 @@ function getRuntimeMarketRefresh() {
 const refreshEcosMacroFromGateway = (...args) => getRuntimeMarketRefresh().refreshMacro(...args);
 const refreshCreditFromGateway = (...args) => getRuntimeMarketRefresh().refreshCredit(...args);
 const refreshCrisisSignalFromGateway = (...args) => getRuntimeMarketRefresh().refreshCrisis(...args);
+const refreshAdrFromWeb = (...args) => getRuntimeMarketRefresh().refreshAdr(...args);
 const refreshAdrFromWebWithRetry = (...args) => getRuntimeMarketRefresh().refreshAdrWithRetry(...args);
 const refreshFearGreedFromWeb = (...args) => getRuntimeMarketRefresh().refreshFearGreed(...args);
 function refreshSourceWithRetry(kind, task, signal = null) {
@@ -7052,15 +7082,23 @@ function scheduleAdrFinalRetry(forceNetwork = false) {
   void (async () => {
     try {
       await waitForDelay(ADR_FINAL_RETRY_DELAY_MS, controller.signal);
-      const revisionsBefore = getDataRevisions();
-      const { changed, latestDate } = await getRuntimeMarketRefresh().refreshAdr(controller.signal, forceNetwork);
+      const { result } = await getRuntimeRefreshOrchestrator().runSource("adr", {
+        forceAttempt: true,
+        forceNetwork,
+        phase: "adr-final-retry",
+        signal: controller.signal,
+        singleAttempt: true,
+      });
       if (adrFinalRetryController !== controller || controller.signal.aborted) return;
-      await applyRuntimeRefreshChanges(revisionsBefore, { awaitMainRender: false });
       renderDataFreshness();
-      scheduleLastRuntimeSnapshotSave(1200);
+      const warning = Array.isArray(result.warnings) && result.warnings.length > 0;
       setRuntimeRefreshStatus(
         "ready",
-        changed > 0 ? `ADR ${changed}건 백그라운드 반영(~ ${latestDate})` : "ADR 최신값 확인 완료",
+        warning
+          ? "ADR 연결 지연 · 저장된 값 유지"
+          : result.changed > 0
+          ? `ADR ${result.changed}건 백그라운드 반영(~ ${result.latestDate})`
+          : "ADR 최신값 확인 완료",
       );
     } catch (error) {
       if (adrFinalRetryController !== controller || isAbortError(error) || controller.signal.aborted) return;
@@ -7184,7 +7222,9 @@ function prepareHistoricalDataForAiForecast() {
     .catch(() => false)
     .finally(() => {
       // Loading AI training history must not replace a viewport the user explicitly locked.
-      if (!chartSession.autoChartReset && lockedViewportRange) chartSession.pinnedXRange = [...lockedViewportRange];
+      if (!chartSession.autoChartReset && lockedViewportRange) {
+        getChartSessionController().pinViewport(lockedViewportRange);
+      }
       if (chartSession.showAiForecast) {
         requestChartRender(!chartSession.autoChartReset, {
           deferDuringInteraction: false,
@@ -7201,7 +7241,7 @@ const applyRuntimeRefreshChanges = createRuntimeRefreshChangeApplier({
     isAutoScale: () => chartSession.autoChartReset,
     isTimingVisible: () => chartSession.showRecessionSignals,
     prepareTiming: prepareVisibleMarketTimingModels,
-    markPendingAutoFit: () => { chartSession.pendingAutoChartFit = true; },
+    markPendingAutoFit: () => getChartSessionController().setAutoFitPending(true),
     requestAuxiliaryRender: () => scheduleAuxiliaryChartRender(
       document.getElementById("chart")?._fullLayout?.xaxis?.range?.slice() || null,
     ),
@@ -7213,25 +7253,6 @@ const applyRuntimeRefreshChanges = createRuntimeRefreshChangeApplier({
     ),
     waitForMainRender: () => getMainChartRenderScheduler().whenSettled(),
   });
-
-function getBackgroundStockRefresh() {
-  return appRuntimeRegistry.get(APP_RUNTIME_KEYS.backgroundStockRefresh, () => (
-    backgroundStockRefreshModule.createBackgroundStockRefresh(globalThis, {
-      scheduler: backgroundTaskScheduler,
-      targetBatchSize: 6,
-      getTargets: () => getCustomStockLifecycle().select(
-        "hidden",
-        (ticker) => chartSession.hiddenSeries.has(ticker),
-      ).map((item) => item.ticker),
-      hasHidden: () => getCustomStockLifecycle().select(
-        "hidden",
-        (ticker) => chartSession.hiddenSeries.has(ticker),
-      ).length > 0,
-      refresh: preloadCustomStocks,
-      onError: (error) => recordRuntimeError("hidden-stock-refresh", error),
-    })
-  ));
-}
 
 function getRuntimeRefreshOrchestrator() {
   return appRuntimeRegistry.get(APP_RUNTIME_KEYS.runtimeRefresh, () => {
@@ -7253,6 +7274,7 @@ function getRuntimeRefreshOrchestrator() {
       planCriticalRefresh: planCriticalRuntimeRefresh,
       preloadCustomStocks,
       recordPerfSample,
+      refreshAdrFromWeb,
       refreshAdrFromWebWithRetry,
       refreshCoreIndexSeries,
       refreshCreditFromGateway,
@@ -7267,7 +7289,6 @@ function getRuntimeRefreshOrchestrator() {
       runRefreshPhases,
       runtimeDataApp,
       scheduleAdrFinalRetry,
-      scheduleHiddenStockRefresh: (refreshOptions) => getBackgroundStockRefresh().schedule(refreshOptions),
       scheduleVisibleStockHistoryRefresh,
       scheduleLastRuntimeSnapshotSave,
       setMessage,
@@ -7342,8 +7363,6 @@ function bindApplicationControls(messageElement) {
     insiderMarkerCount: () => eventMarkerRenderState.insiderStats.markers,
     syncInsiderTradeToggleButton,
     refreshInsiderTradesForVisibleSeries,
-    getCreditOffsetDays: () => CREDIT_OFFSET_DAYS,
-    setCreditOffsetDays: (value) => { CREDIT_OFFSET_DAYS = value; },
     hasServiceWorkerController: () => Boolean(navigator.serviceWorker.controller),
     requestServiceWorkerDataRefresh,
     hasRuntimeDataLoaded,
@@ -7399,8 +7418,6 @@ const applicationLifecycle = createApplicationLifecycleRuntime({
     () => syncChartResetToggleButton(),
     () => syncChartHandlesToggleButton(),
     () => syncCursorLineModeControls(),
-    () => mainChartControlView.syncMacdDisparity(),
-    () => syncNewsSentimentMovingAverageControls(),
     () => syncRecessionToggleButton(),
     () => syncCoMovementToggleButton(),
     () => syncAiForecastToggleButton(),
@@ -7421,7 +7438,7 @@ const applicationLifecycle = createApplicationLifecycleRuntime({
     needsHistorical: () => chartSession.activeMonths > RECENT_DATA_MONTHS && !historicalDataLoaded,
     loadHistorical: () => ensureHistoricalDataLoaded(true),
     onHistoricalError: (messageElement) => {
-      chartSession.activeMonths = getDefaultActiveMonths();
+      getChartSessionController().setActiveMonths(getDefaultActiveMonths());
       setMessage(
         messageElement,
         [`과거 데이터 로딩에 실패해 최신 ${chartSession.activeMonths}개월 범위로 시작합니다.`],
@@ -7433,16 +7450,12 @@ const applicationLifecycle = createApplicationLifecycleRuntime({
       || chartSession.showAiForecast
       || chartSession.showEps,
     renderMain: runMainChartRender,
-    shouldAutoFit: () => chartSession.autoChartReset,
-    fitCurrentChart: fitCurrentChartRatio,
     setProgress: startupLoader.setProgress,
   },
   refresh: {
     runData: (messageElement, options) => runtimeDataApp.refresh(messageElement, options),
     renderAfterData: false,
     renderMain: runMainChartRender,
-    shouldAutoFit: () => chartSession.autoChartReset,
-    fitCurrentChart: fitCurrentChartRatio,
     reconcileViewport: async () => {
       await settleAllChartWork();
       if (chartSession.autoChartReset) await fitCurrentChartRatio();

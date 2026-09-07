@@ -137,7 +137,13 @@ test("service worker registers and precaches the offline shell", async ({ contex
   }, { obsoleteShell, obsoleteStaging });
 
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.evaluate(() => navigator.serviceWorker.ready.then(() => true));
+  await page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.register("./sw.js", {
+      updateViaCache: "none",
+    });
+    await registration.update();
+    await navigator.serviceWorker.ready;
+  });
   if (!(await page.evaluate(() => Boolean(navigator.serviceWorker.controller)))) {
     await page.reload({ waitUntil: "domcontentloaded" });
   }

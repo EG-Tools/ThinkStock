@@ -334,7 +334,7 @@ import marketData from "./market-data.mjs";
         offsets[series] || 0,
       );
       const xValues = creditCols.includes(series) && creditOffsetDays
-        ? baseXValues.map((date) => shiftIsoDateByDays(date, -creditOffsetDays))
+        ? baseXValues.map((date) => shiftIsoDateByDays(date, creditOffsetDays))
         : baseXValues;
       return {
         series,

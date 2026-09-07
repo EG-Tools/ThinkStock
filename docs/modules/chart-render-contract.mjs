@@ -1,6 +1,13 @@
 "use strict";
 
 const EVENT_MARKER_FONT_FAMILY = "Arial Black, Apple SD Gothic Neo, sans-serif";
+const MAIN_CHART_Y_FIT_OPTIONS = Object.freeze({
+  // Reserve the lower edge for the co-movement summary while keeping the
+  // unused top gap compact. The combined padding remains the former 16%.
+  lowerPaddingRatio: 0.12,
+  upperPaddingRatio: 0.04,
+  minimumPadding: 0.6,
+});
 const MAIN_CHART_OVERLAY_KINDS = Object.freeze([
   "price",
   "eps",
@@ -165,6 +172,7 @@ export {
   EVENT_MARKER_OVERLAY_KINDS,
   EVENT_MARKER_FONT_FAMILY,
   MAIN_CHART_OVERLAY_KINDS,
+  MAIN_CHART_Y_FIT_OPTIONS,
   assertChartRenderPayload,
   assertMainChartRenderPayload,
   buildEventMarkerTextFont,

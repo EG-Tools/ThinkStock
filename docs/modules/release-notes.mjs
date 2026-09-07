@@ -3,6 +3,16 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.37",
+      date: "2026.09.08",
+      items: Object.freeze([
+        "마커 위치를 가격선·날짜 기준 공통 앵커로 통합",
+        "다중 차트 자동 스케일의 중복 보정 제거",
+        "비활성 종목의 불필요한 백그라운드 갱신 제거",
+        "차트 설정과 보조지표 갱신 구조 정리",
+      ]),
+    }),
+    Object.freeze({
       version: "3.36",
       date: "2026.09.07",
       items: Object.freeze([

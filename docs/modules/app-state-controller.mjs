@@ -248,6 +248,7 @@
     const panelKeys = [...(options.panelKeys || [])];
     const seriesKeys = options.seriesKeys || {};
     const normalizeCursorLineMode = options.normalizeCursorLineMode || ((value) => value);
+    const normalizeCreditOffsetDays = options.normalizeCreditOffsetDays || ((value) => value);
     const normalizeMacdDisparityDays = options.normalizeMacdDisparityDays || ((value) => value);
     const normalizeNewsMovingAverageDays = options.normalizeNewsMovingAverageDays || ((value) => value);
     const normalizeChartRightPaddingDays = options.normalizeChartRightPaddingDays || ((value) => (
@@ -267,7 +268,7 @@
           customStocks: options.getCustomStocks?.() || [],
           seriesOffsets: state.seriesOffsets,
           seriesScales: state.seriesScales,
-          creditOffset: -Math.abs(Number(options.getCreditOffset?.()) || 0),
+          creditOffset: normalizeCreditOffsetDays(state.creditOffsetDays),
           hoverShowPopup: state.hoverShowPopup,
           cursorLineMode: state.cursorLineMode,
           chartRightPaddingDays: state.chartRightPaddingDays,
@@ -330,7 +331,7 @@
           }
         }
         if (typeof persisted.creditOffset === "number") {
-          options.setCreditOffset?.(Math.abs(persisted.creditOffset));
+          state.creditOffsetDays = normalizeCreditOffsetDays(persisted.creditOffset);
         }
         if (typeof persisted.hoverShowPopup === "boolean") state.hoverShowPopup = persisted.hoverShowPopup;
         state.cursorLineMode = normalizeCursorLineMode(persisted.cursorLineMode);

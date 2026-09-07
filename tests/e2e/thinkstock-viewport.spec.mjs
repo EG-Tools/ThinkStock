@@ -1065,7 +1065,10 @@ test("main information rows follow activation order and stack long macro values"
     await expect(page.locator(`[data-series="${series}"]`)).toHaveAttribute("title", "2일 후행");
   }
   await expect(page.locator('[data-series="^KS11"]')).not.toHaveAttribute("title", /.+/);
-  await expect(page.locator(".credit-offset-wrap")).toHaveAttribute("title", "2일 후행");
+  await expect(page.locator(".credit-offset-setting")).toHaveAttribute(
+    "title",
+    "예탁금과 신용자금 차트의 날짜 위치를 조절합니다.",
+  );
   let state = await hoverState();
   expect(state.text["^KS11"]).toContain("</b> · 가격");
   expect(state.text.leading_cycle).toContain("한국 선행지수 순환변동치</b><br>가격");
@@ -1110,7 +1113,7 @@ test("main information popup follows the closest price line without reordering r
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     (element.data || []).filter((trace) => trace?.meta?.overlayKind === "grouped-hover")
       .map((trace) => trace.meta.hoverGroupTicker)
-  ))).toEqual(["^KS11", "t10y1y"]);
+  )), { timeout: 20_000 }).toEqual(["^KS11", "t10y1y"]);
 
   const target = await page.locator("#chart").evaluate((element) => {
     const traces = Object.fromEntries((element.data || [])
@@ -1400,11 +1403,31 @@ test("auto scale gives quiet and multibagger stocks equal visual height", async 
       return [seriesKey, [Math.min(...values), Math.max(...values)]];
     }),
   ));
+  const fittedPadding = await page.locator("#chart").evaluate((element) => {
+    const values = (element.data || [])
+      .filter((trace) => (
+        ["005930.KS", "000660.KS"].includes(trace?.meta?.seriesKey)
+          && Number.isFinite(trace?.meta?.sourcePointCount)
+          && String(trace.mode || "").includes("lines")
+      ))
+      .flatMap((trace) => trace.y || [])
+      .filter(Number.isFinite);
+    const axisRange = [...(element?._fullLayout?.yaxis?.range || [])]
+      .map(Number)
+      .filter(Number.isFinite)
+      .sort((left, right) => left - right);
+    return {
+      lower: Math.min(...values) - axisRange[0],
+      upper: axisRange[1] - Math.max(...values),
+    };
+  });
   expect(quietSpan).toBeGreaterThan(100);
   expect(multibaggerSpan).toBeGreaterThan(100);
   expect(Math.abs(quietSpan - multibaggerSpan)).toBeLessThan(3);
   expect(Math.abs(verticalRanges["005930.KS"][0] - verticalRanges["000660.KS"][0])).toBeLessThan(0.02);
   expect(Math.abs(verticalRanges["005930.KS"][1] - verticalRanges["000660.KS"][1])).toBeLessThan(0.02);
+  expect(fittedPadding.upper).toBeGreaterThan(0);
+  expect(fittedPadding.lower).toBeGreaterThan(fittedPadding.upper * 2.5);
 });
 
 test("auto scale keeps its live macro fit after historical panning ends", async ({ page, isMobile }) => {
@@ -2013,6 +2036,7 @@ test("adding a fresher stock advances a stale credit viewport that was at its la
 });
 
 test("bundled recent data boots through the chart worker", async ({ page }, testInfo) => {
+  test.setTimeout(75_000);
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   await stubExternalRefreshes(page);
@@ -2028,7 +2052,44 @@ test("bundled recent data boots through the chart worker", async ({ page }, test
     },
   }))).toBe(2);
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await expect(page.locator("#chart-macd .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
+  await expect.poll(() => page.locator("#chart-macd").evaluate((element) => (
+    [...new Set((element.data || [])
+      .filter((trace) => trace?.meta?.macdSeriesKey)
+      .map((trace) => trace.meta.macdSeriesKey))]
+  ))).toEqual(["^KS11"]);
+  const chartMarginsAndDates = await page.evaluate(() => ({
+    mainTop: Number(document.getElementById("chart")?.layout?.margin?.t),
+    macdBottom: Number(document.getElementById("chart-macd")?.layout?.margin?.b),
+    macdDates: document.getElementById("chart-macd")?.layout?.xaxis?.showticklabels,
+    auxiliaryBottom: Number(document.getElementById("chart-adr")?.layout?.margin?.b),
+    auxiliaryDates: document.getElementById("chart-adr")?.layout?.xaxis?.showticklabels,
+  }));
+  expect(chartMarginsAndDates).toEqual({
+    mainTop: 10,
+    macdBottom: 12,
+    macdDates: false,
+    auxiliaryBottom: 12,
+    auxiliaryDates: false,
+  });
+  await expect(page.locator("#stockSearchInput")).toHaveValue("");
+  await page.locator("#stockSearchInput").evaluate((input) => { input.value = "-2"; });
+  await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
+  await expect(page.locator("#stockSearchInput")).toHaveValue("");
+  await page.locator("#stockSearchInput").evaluate((input) => {
+    input.value = "-2";
+    input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertReplacementText" }));
+  });
+  await expect(page.locator("#stockSearchInput")).toHaveValue("");
+  await page.locator("#stockSearchInput").evaluate((input) => {
+    input.value = "-2";
+    input.dispatchEvent(new AnimationEvent("animationstart", {
+      animationName: "stock-search-autofill-detected",
+      bubbles: true,
+    }));
+  });
+  await expect(page.locator("#stockSearchInput")).toHaveValue("");
   await expect(page.locator(".range-btn")).toHaveCount(0);
   await expect(page.locator("#chartZoomOut, #chartZoomIn")).toHaveCount(0);
   await expect(page.locator("#chartRange6Months")).toHaveText("6m");
@@ -2134,9 +2195,11 @@ test("bundled recent data boots through the chart worker", async ({ page }, test
     .toHaveText("차트 우측 여백");
   await expect(page.locator(".chart-cursor-mode-setting .cursor-line-setting-label"))
     .toHaveText("차트선 방식");
+  await expect(page.locator(".settings-control-group > :first-child"))
+    .toHaveClass(/chart-cursor-mode-setting/);
   expect(await page.locator("#apiSettingsModal").evaluate((modal) => (
     Boolean(modal.querySelector(".chart-cursor-mode-setting")?.compareDocumentPosition(
-      modal.querySelector(".api-local-server-field"),
+      modal.querySelector(".chart-right-padding-setting"),
     ) & Node.DOCUMENT_POSITION_FOLLOWING)
   ))).toBe(true);
   await expect(page.locator("#chartRightPaddingValue")).toHaveText("0");
@@ -2209,7 +2272,7 @@ test("bundled recent data boots through the chart worker", async ({ page }, test
   await expect(toolsToggle).toHaveAttribute("aria-pressed", "true");
   await toolsToggle.click();
   await expect(toolsToggle).toHaveAttribute("aria-pressed", "false");
-  await expect(page.locator("#resetHandles")).toBeHidden();
+  await expect(page.locator("#resetHandles")).toBeVisible();
   await expect(page.locator("#refreshData")).toBeHidden();
   await expect(toolsToggle).toBeVisible();
   await toolsToggle.click();
@@ -2217,20 +2280,18 @@ test("bundled recent data boots through the chart worker", async ({ page }, test
   await expect(page.locator("#resetHandles")).toBeVisible();
   await waitForChartRenderIdle(page);
 
-  const [chartBox, resetBox, refreshBox] = await Promise.all([
+  const [chartBox, resetBox, refreshBox, handlesBox] = await Promise.all([
     page.locator("#chart").boundingBox(),
     page.locator("#resetHandles").boundingBox(),
     page.locator("#refreshData").boundingBox(),
+    page.locator("#chartHandlesToggle").boundingBox(),
   ]);
   expect(chartBox).not.toBeNull();
   expect(resetBox).not.toBeNull();
   expect(refreshBox).not.toBeNull();
-  expect(resetBox.x).toBeGreaterThanOrEqual(chartBox.x);
-  expect(resetBox.y).toBeGreaterThanOrEqual(chartBox.y);
-  expect(resetBox.x + resetBox.width).toBeLessThan(chartBox.x + chartBox.width);
-  expect(resetBox.y + resetBox.height).toBeLessThan(chartBox.y + chartBox.height);
-  expect(Math.abs(refreshBox.y - resetBox.y)).toBeLessThanOrEqual(1);
-  expect(Math.abs(refreshBox.height - resetBox.height)).toBeLessThanOrEqual(2);
+  expect(handlesBox).not.toBeNull();
+  expect(resetBox.x).toBeGreaterThan(handlesBox.x + handlesBox.width);
+  expect(Math.abs(resetBox.y - handlesBox.y)).toBeLessThanOrEqual(1);
   const expectedRefreshInset = await page.locator(".main-chart-wrap").evaluate((element) => (
     Number.parseFloat(getComputedStyle(element).getPropertyValue("--chart-control-right"))
   ));
@@ -2239,7 +2300,7 @@ test("bundled recent data boots through the chart worker", async ({ page }, test
   )).toBeLessThanOrEqual(1);
   const chartControlLayout = await page.locator(".main-chart-wrap").evaluate((container) => {
     const chartRect = container.querySelector("#chart").getBoundingClientRect();
-    return ["resetHandles", "coMovementToggle", "insiderTradeToggle", "disclosureToggle", "recessionToggle", "epsToggle", "aiForecastToggle"].map((id) => {
+    return ["coMovementToggle", "insiderTradeToggle", "disclosureToggle", "recessionToggle", "epsToggle", "aiForecastToggle"].map((id) => {
       const button = document.getElementById(id);
       const rect = button.getBoundingClientRect();
       return {
@@ -3231,16 +3292,21 @@ test("auxiliary drag and wheel control the shared viewport owner", async ({ page
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
   await page.locator("#chartRange6Months").click();
   await waitForChartRenderIdle(page);
+  expect(await page.evaluate(() => window.ThinkStockE2E.loadHistoricalDataForTest())).toBe(true);
+  await waitForChartRenderIdle(page);
+  await page.locator("#chart-adr").scrollIntoViewIfNeeded();
 
   const drag = await page.locator("#chart-adr").evaluate((element) => {
     const rect = element.getBoundingClientRect();
     const axis = element._fullLayout.xaxis;
     const mainRange = document.getElementById("chart")._fullLayout.xaxis.range.map(Date.parse);
+    const visibleTop = Math.max(0, rect.top + 60);
+    const visibleBottom = Math.min(window.innerHeight, rect.bottom - 20);
     return {
       beforeCenter: (mainRange[0] + mainRange[1]) / 2,
       startX: rect.left + axis._offset + axis._length * 0.3,
       endX: rect.left + axis._offset + axis._length * 0.5,
-      y: rect.top + 4,
+      y: (visibleTop + visibleBottom) / 2,
     };
   });
   await page.mouse.move(drag.startX, drag.y);

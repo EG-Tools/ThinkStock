@@ -426,7 +426,9 @@ test("groups price, EPS, disclosures, and signals by series in one hover entry",
     grouped[0].meta.pointHoverTemplate,
     "%{x|%Y.%-m.%-d}<br>%{customdata}<extra></extra>",
   );
-  assert.equal(renderer.buildLayout().xaxis.hoverformat, "%Y.%-m.%-d");
+  const layout = renderer.buildLayout();
+  assert.equal(layout.xaxis.hoverformat, "%Y.%-m.%-d");
+  assert.equal(layout.margin.t, 10);
   assert.match(grouped[0].text[0], /<br>공시/);
   assert.match(grouped[0].text[0], /^매수 반전 확인 · 강<br>/);
   assert.match(grouped[0].text[0], /RFHIC[\s\S]*SK하이닉스/);

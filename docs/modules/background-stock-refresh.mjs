@@ -549,99 +549,6 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
     return Object.freeze({ preload });
   }
 
-  function createBackgroundStockRefresh(scope = globalThis, options = {}) {
-    const refresh = options.refresh;
-    const hasHidden = typeof options.hasHidden === "function" ? options.hasHidden : () => false;
-    const getTargets = typeof options.getTargets === "function" ? options.getTargets : null;
-    const onError = typeof options.onError === "function" ? options.onError : () => {};
-    const delayMs = Math.max(1000, Number(options.delayMs) || 3500);
-    const betweenTargetsMs = Math.max(100, Number(options.betweenTargetsMs) || 700);
-    const targetBatchSize = Math.max(1, Number(options.targetBatchSize) || 1);
-    const scheduler = options.scheduler || createBackgroundTaskScheduler(scope);
-    const ownsScheduler = !options.scheduler;
-    let running = null;
-    let runningController = null;
-    let pendingTargets = [];
-    let generation = 0;
-
-    function cancelPending() {
-      generation += 1;
-      pendingTargets = [];
-      scheduler.cancel("hidden-stock-refresh");
-      runningController?.abort?.();
-    }
-
-    function normalizedTargets() {
-      if (!getTargets) return [];
-      return [...new Set((getTargets() || []).map((value) => String(value || "").trim()).filter(Boolean))];
-    }
-
-    function nextTargetBatch() {
-      return pendingTargets.splice(0, targetBatchSize);
-    }
-
-    function enqueueRefresh(runOptions, targetGeneration, targets = [], waitMs = delayMs) {
-      scheduler.enqueue("hidden-stock-refresh", async (taskContext) => {
-        if (targetGeneration !== generation) return false;
-        const controller = new AbortController();
-        const externalSignal = runOptions.signal || null;
-        const forwardAbort = () => controller.abort(externalSignal?.reason);
-        if (externalSignal?.aborted) forwardAbort();
-        else externalSignal?.addEventListener?.("abort", forwardAbort, { once: true });
-        runningController = controller;
-        running = Promise.resolve(refresh({
-          forceRefresh: runOptions.forceRefresh === true,
-          preserveFailed: true,
-          scope: "hidden",
-          signal: controller.signal,
-          taskContext,
-          ...(targets.length ? { tickers: targets } : {}),
-        }));
-        try {
-          await running;
-        } finally {
-          externalSignal?.removeEventListener?.("abort", forwardAbort);
-          if (runningController === controller) runningController = null;
-          running = null;
-        }
-        return true;
-      }, {
-        group: "ticker-history",
-        delayMs: waitMs,
-        priority: -20,
-        shouldRun: () => targetGeneration === generation && hasHidden(),
-        signal: runOptions.signal || null,
-      }).then(() => {
-        if (targetGeneration !== generation || !pendingTargets.length) return;
-        enqueueRefresh(runOptions, targetGeneration, nextTargetBatch(), betweenTargetsMs);
-      }).catch((error) => {
-        if (targetGeneration === generation && !runOptions.signal?.aborted && error?.name !== "AbortError") {
-          onError(error);
-        }
-      });
-    }
-
-    function schedule(runOptions = {}) {
-      cancelPending();
-      if (typeof refresh !== "function" || !hasHidden()) return false;
-      const signal = runOptions.signal || null;
-      const targetGeneration = generation;
-      pendingTargets = normalizedTargets();
-      enqueueRefresh(runOptions, targetGeneration, nextTargetBatch(), delayMs);
-      return true;
-    }
-
-    return Object.freeze({
-      cancelPending,
-      dispose: () => {
-        cancelPending();
-        if (ownsScheduler) scheduler.dispose();
-      },
-      isRunning: () => Boolean(running),
-      schedule,
-    });
-  }
-
   function createVisibleStockHistoryRefresh(options = {}) {
     const scheduler = options.scheduler;
     const preload = options.preload;
@@ -812,7 +719,6 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
   }
 
 export {
-  createBackgroundStockRefresh,
   createBackgroundTaskScheduler,
   createCustomStockPreloader,
   createVisibleSeriesSupplementalHydrator,

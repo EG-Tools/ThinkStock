@@ -105,6 +105,18 @@ test("manual chart edits only expand the current viewport when a trace would be 
   assert.equal(adjustments.expandRangeToContain([60, 140], null), null);
 });
 
+test("supports asymmetric padding so the main chart can reserve more room below", () => {
+  const trace = {
+    x: ["2026-01-01", "2026-02-01"],
+    y: [90, 110],
+  };
+  assert.deepEqual(adjustments.fitRangeForTraces([trace], null, {
+    lowerPaddingRatio: 0.12,
+    upperPaddingRatio: 0.04,
+    minimumPadding: 0,
+  }), [87.6, 110.8]);
+});
+
 test("detects only traces that would be clipped by the visible Y range", () => {
   const traces = [{
     x: ["2026-01-01", "2026-02-01", "2026-03-01"],

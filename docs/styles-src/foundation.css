@@ -174,37 +174,6 @@ body {
 
 .insider-trade-toggle-btn[aria-busy="true"] { opacity: 0.72; }
 
-.credit-offset-wrap {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  cursor: default;
-}
-
-.credit-offset-label {
-  font-size: var(--ui-font-compact);
-  color: var(--muted);
-  white-space: nowrap;
-}
-
-.credit-offset-input {
-  width: 52px;
-  padding: 4px 6px;
-  border: 1px solid var(--border);
-  border-radius: var(--ui-radius-control);
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--ink);
-  font-size: var(--ui-font-body);
-  font-weight: 600;
-  text-align: center;
-  -moz-appearance: textfield;
-}
-
-.credit-offset-input::-webkit-outer-spin-button,
-.credit-offset-input::-webkit-inner-spin-button { -webkit-appearance: none; }
-
-.credit-offset-input:focus { outline: none; border-color: rgba(255, 255, 255, 0.2); }
-
 .reset-btn {
   flex-shrink: 0;
   padding: 6px 14px;
@@ -266,20 +235,6 @@ body {
   box-shadow: 0 0 12px rgba(255, 255, 255, 0.4);
 }
 
-.chart-reset-btn {
-  position: absolute;
-  z-index: 120;
-  left: var(--chart-control-left);
-  min-width: 48px;
-  padding: 5px 11px;
-  background: rgba(18, 18, 18, 0.78);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-}
-
-.chart-reset-btn { top: 14px; }
-
-.main-chart-wrap.tools-hidden #resetHandles,
 .main-chart-wrap.tools-hidden #coMovementToggle,
 .main-chart-wrap.tools-hidden #insiderTradeToggle,
 .main-chart-wrap.tools-hidden #disclosureToggle,
@@ -305,7 +260,7 @@ body {
 .chart-recession-btn {
   position: absolute;
   z-index: 120;
-  top: 150px;
+  top: 116px;
   left: var(--chart-control-left);
   min-width: 48px;
   padding: 5px 11px;
@@ -544,11 +499,11 @@ body {
   -webkit-backdrop-filter: blur(8px);
 }
 
-.chart-ai-btn { top: 218px; }
+.chart-ai-btn { top: 184px; }
 
-.ai-forecast-progress { top: 219px; }
-.eps-progress { top: 185px; }
-.signal-progress { top: 151px; }
+.ai-forecast-progress { top: 185px; }
+.eps-progress { top: 151px; }
+.signal-progress { top: 117px; }
 
 .ui-progress-track {
   display: block;

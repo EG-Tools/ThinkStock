@@ -669,7 +669,9 @@ test("options reset UI state without deleting access credentials or caches", asy
   await expect(page.locator("#insiderTradeToggle")).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator("#epsToggle")).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-pressed", "false");
-  await expect(page.locator("#creditOffset")).toHaveValue("-2");
+  await page.locator("#apiOptionsBtn").click();
+  await expect(page.locator("#creditOffsetValue")).toHaveText("-2");
+  await page.locator("#apiSettingsCloseBtn").click();
   await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getActiveMonths())).toBe(6);
   await expect(page.locator('[data-series="^KS11"]')).toHaveClass(/\bis-on\b/);
   for (const key of [
@@ -979,9 +981,11 @@ test("credit offset moves dates without changing the credit curve", async ({ pag
     };
   });
   const zeroOffset = await readCurves();
-  const input = page.locator("#creditOffset");
-  await input.fill("-2");
-  await input.dispatchEvent("change");
+  await page.locator("#apiOptionsBtn").click();
+  await page.locator("#creditOffsetDecrease").click();
+  await page.locator("#creditOffsetDecrease").click();
+  await expect(page.locator("#creditOffsetValue")).toHaveText("-2");
+  await page.locator("#apiSettingsCloseBtn").click();
   await expect.poll(async () => (await readCurves()).creditX[0])
     .not.toBe(zeroOffset.creditX[0]);
   const shifted = await readCurves();
@@ -1123,11 +1127,14 @@ test("chart, disclosure popover, and lazy history remain interactive", async ({ 
     return { justifyContent: style.justifyContent, fontSize: style.fontSize };
   })).toEqual({ justifyContent: "flex-start", fontSize: "11px" });
   await expect(page.locator(".settings-control-group")).toHaveCount(1);
-  await expect(page.locator(".settings-control-group > .cursor-line-setting")).toHaveCount(5);
+  await expect(page.locator(".settings-control-group > .cursor-line-setting")).toHaveCount(6);
   expect(await page.locator(".settings-control-group").evaluate((group) => ({
     outerBorder: getComputedStyle(group).borderTopWidth,
     rowSideBorders: [...group.children].map((row) => getComputedStyle(row).borderLeftWidth),
-  }))).toEqual({ outerBorder: "1px", rowSideBorders: ["0px", "0px", "0px", "0px", "0px"] });
+  }))).toEqual({
+    outerBorder: "1px",
+    rowSideBorders: ["0px", "0px", "0px", "0px", "0px", "0px"],
+  });
   await expect(page.locator("#apiOptionsBtn")).toHaveAttribute("aria-label", "설정");
   const settingsActions = await page.locator(".api-settings-actions").evaluate((element) => {
     const releaseNotes = document.getElementById("releaseNotesBtn").getBoundingClientRect();

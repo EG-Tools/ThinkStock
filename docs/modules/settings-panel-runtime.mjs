@@ -1,5 +1,57 @@
 import { createScrollAffordance } from "./control-state-view.mjs";
-import { MACD_DISPARITY_STEPS } from "./auxiliary-chart-contract.mjs";
+import {
+  MACD_DISPARITY_STEPS,
+  NEWS_MOVING_AVERAGE_MAX_DAYS,
+  NEWS_MOVING_AVERAGE_MIN_DAYS,
+} from "./auxiliary-chart-contract.mjs";
+
+function createNumberStepperController(options = {}) {
+  const values = Array.isArray(options.values)
+    ? [...new Set(options.values.map(Number).filter(Number.isFinite))].sort((left, right) => left - right)
+    : [];
+  const minimum = values.length ? values[0] : Number(options.min);
+  const maximum = values.length ? values.at(-1) : Number(options.max);
+  const configuredStep = Number(options.step);
+  const step = Number.isFinite(configuredStep) && configuredStep > 0 ? configuredStep : 1;
+
+  function currentValue() {
+    const rawValue = Number(options.getValue?.());
+    return Number.isFinite(rawValue)
+      ? Math.max(minimum, Math.min(maximum, rawValue))
+      : minimum;
+  }
+
+  function sync() {
+    const value = currentValue();
+    if (options.output) {
+      options.output.value = String(value);
+      options.output.textContent = String(value);
+    }
+    if (options.decrease) options.decrease.disabled = value <= minimum;
+    if (options.increase) options.increase.disabled = value >= maximum;
+    return value;
+  }
+
+  function change(delta) {
+    if (typeof options.setValue !== "function") return sync();
+    const current = currentValue();
+    const next = values.length
+      ? (delta > 0
+        ? values.find((value) => value > current) ?? maximum
+        : values.findLast((value) => value < current) ?? minimum)
+      : Math.max(minimum, Math.min(maximum, current + (delta > 0 ? step : -step)));
+    options.setValue(next);
+    return sync();
+  }
+
+  function bind() {
+    options.decrease?.addEventListener("click", () => change(-1));
+    options.increase?.addEventListener("click", () => change(1));
+    return sync();
+  }
+
+  return Object.freeze({ bind, change, sync });
+}
 
 function createSettingsPanelRuntime(scope = globalThis, options = {}) {
     const {
@@ -8,6 +60,8 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
       APP_VERSION,
       CHART_RIGHT_PADDING_MIN_DAYS = 0,
       CHART_RIGHT_PADDING_MAX_DAYS = 30,
+      CREDIT_OFFSET_MIN_DAYS = -10,
+      CREDIT_OFFSET_MAX_DAYS = 0,
       STOCK_RESEARCH_UNIVERSE_MIN = 100,
       STOCK_RESEARCH_UNIVERSE_MAX = 1000,
       STOCK_RESEARCH_UNIVERSE_STEP = 100,
@@ -25,6 +79,7 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
       getBlockedStockCount,
       getCursorLineMode,
       getChartRightPaddingDays,
+      getCreditOffsetDays,
       getMacdDisparityDays,
       getNewsSentimentMovingAverageDays,
       getStockResearchUniverseSize,
@@ -34,12 +89,11 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
       setMessage,
       setCursorLineMode,
       setChartRightPaddingDays,
+      setCreditOffsetDays,
       setMacdDisparityDays,
       setNewsSentimentMovingAverageDays,
       setStockResearchUniverseSize,
       syncApiOptionsButton,
-      syncMacdDisparityControls,
-      syncNewsSentimentMovingAverageControls,
       validateDartGatewayAccessToken,
     } = options;
     if (!scope.document || !apiPeriodsModule || !releaseNotesModule || !controlStateView
@@ -138,10 +192,15 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
       const chartRightPaddingDecrease = document.getElementById("chartRightPaddingDecrease");
       const chartRightPaddingIncrease = document.getElementById("chartRightPaddingIncrease");
       const chartRightPaddingValue = document.getElementById("chartRightPaddingValue");
+      const creditOffsetDecrease = document.getElementById("creditOffsetDecrease");
+      const creditOffsetIncrease = document.getElementById("creditOffsetIncrease");
+      const creditOffsetValue = document.getElementById("creditOffsetValue");
       const macdDisparityDecrease = document.getElementById("macdDisparityDecrease");
       const macdDisparityIncrease = document.getElementById("macdDisparityIncrease");
+      const macdDisparityValue = document.getElementById("macdDisparityValue");
       const newsMovingAverageDecrease = document.getElementById("newsSentimentMovingAverageDecrease");
       const newsMovingAverageIncrease = document.getElementById("newsSentimentMovingAverageIncrease");
+      const newsMovingAverageValue = document.getElementById("newsSentimentMovingAverageValue");
       const stockResearchUniverseDecrease = document.getElementById("stockResearchUniverseDecrease");
       const stockResearchUniverseIncrease = document.getElementById("stockResearchUniverseIncrease");
       const stockResearchUniverseValue = document.getElementById("stockResearchUniverseValue");
@@ -197,81 +256,54 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
           readValue: (button) => button.dataset.chartCursorMode,
         });
       };
-      const syncChartRightPaddingUi = () => {
-        const days = Math.min(
-          CHART_RIGHT_PADDING_MAX_DAYS,
-          Math.max(
-            CHART_RIGHT_PADDING_MIN_DAYS,
-            Math.round(Number(getChartRightPaddingDays?.()) || 0),
-          ),
-        );
-        if (chartRightPaddingValue) {
-          chartRightPaddingValue.value = String(days);
-          chartRightPaddingValue.textContent = String(days);
-        }
-        if (chartRightPaddingDecrease) {
-          chartRightPaddingDecrease.disabled = days <= CHART_RIGHT_PADDING_MIN_DAYS;
-        }
-        if (chartRightPaddingIncrease) {
-          chartRightPaddingIncrease.disabled = days >= CHART_RIGHT_PADDING_MAX_DAYS;
-        }
-      };
-      const movingAverageSteppers = [
+      const numberSteppers = [
+        {
+          decrease: chartRightPaddingDecrease,
+          increase: chartRightPaddingIncrease,
+          output: chartRightPaddingValue,
+          getValue: getChartRightPaddingDays,
+          setValue: setChartRightPaddingDays,
+          min: CHART_RIGHT_PADDING_MIN_DAYS,
+          max: CHART_RIGHT_PADDING_MAX_DAYS,
+        },
+        {
+          decrease: creditOffsetDecrease,
+          increase: creditOffsetIncrease,
+          output: creditOffsetValue,
+          getValue: getCreditOffsetDays,
+          setValue: setCreditOffsetDays,
+          min: CREDIT_OFFSET_MIN_DAYS,
+          max: CREDIT_OFFSET_MAX_DAYS,
+        },
         {
           decrease: macdDisparityDecrease,
           increase: macdDisparityIncrease,
+          output: macdDisparityValue,
           getValue: getMacdDisparityDays,
           setValue: setMacdDisparityDays,
-          sync: syncMacdDisparityControls,
           values: MACD_DISPARITY_STEPS,
         },
         {
           decrease: newsMovingAverageDecrease,
           increase: newsMovingAverageIncrease,
+          output: newsMovingAverageValue,
           getValue: getNewsSentimentMovingAverageDays,
           setValue: setNewsSentimentMovingAverageDays,
-          sync: syncNewsSentimentMovingAverageControls,
+          min: NEWS_MOVING_AVERAGE_MIN_DAYS,
+          max: NEWS_MOVING_AVERAGE_MAX_DAYS,
         },
-      ];
-      const syncMovingAverageUi = () => movingAverageSteppers.forEach((stepper) => {
-        stepper.sync?.();
-      });
-      const bindMovingAverageStepper = (stepper) => {
-        const change = (delta) => {
-          if (typeof stepper.setValue !== "function") return;
-          const current = Number(stepper.getValue?.());
-          const values = Array.isArray(stepper.values) ? stepper.values : [];
-          if (!values.length) {
-            stepper.setValue(current + delta);
-            return;
-          }
-          const next = delta > 0
-            ? values.find((value) => value > current) ?? values.at(-1)
-            : values.findLast((value) => value < current) ?? values[0];
-          stepper.setValue(next);
-        };
-        stepper.decrease?.addEventListener("click", () => change(-1));
-        stepper.increase?.addEventListener("click", () => change(1));
-      };
-      const syncStockResearchUniverseUi = () => {
-        const size = Math.min(
-          STOCK_RESEARCH_UNIVERSE_MAX,
-          Math.max(
-            STOCK_RESEARCH_UNIVERSE_MIN,
-            Math.round(Number(getStockResearchUniverseSize?.()) || STOCK_RESEARCH_UNIVERSE_MIN),
-          ),
-        );
-        if (stockResearchUniverseValue) {
-          stockResearchUniverseValue.value = String(size);
-          stockResearchUniverseValue.textContent = String(size);
-        }
-        if (stockResearchUniverseDecrease) {
-          stockResearchUniverseDecrease.disabled = size <= STOCK_RESEARCH_UNIVERSE_MIN;
-        }
-        if (stockResearchUniverseIncrease) {
-          stockResearchUniverseIncrease.disabled = size >= STOCK_RESEARCH_UNIVERSE_MAX;
-        }
-      };
+        {
+          decrease: stockResearchUniverseDecrease,
+          increase: stockResearchUniverseIncrease,
+          output: stockResearchUniverseValue,
+          getValue: getStockResearchUniverseSize,
+          setValue: setStockResearchUniverseSize,
+          min: STOCK_RESEARCH_UNIVERSE_MIN,
+          max: STOCK_RESEARCH_UNIVERSE_MAX,
+          step: STOCK_RESEARCH_UNIVERSE_STEP,
+        },
+      ].map(createNumberStepperController);
+      const syncNumberSteppers = () => numberSteppers.forEach((stepper) => stepper.sync());
     
       let cacheMeasureSequence = 0;
       let latestAppCacheSummary = null;
@@ -410,10 +442,8 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
         setAccessStatus(dartGatewayTokenStatus);
         if (adminAccessCodeInput) adminAccessCodeInput.value = "";
         syncAdminAccessUi();
-        syncChartRightPaddingUi();
         syncCursorLineModeUi();
-        syncMovingAverageUi();
-        syncStockResearchUniverseUi();
+        syncNumberSteppers();
         renderReleaseNotes(releaseNotesNavigator.reset());
         modal.hidden = false;
         settingsScrollAffordance.schedule();
@@ -435,31 +465,7 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
           syncCursorLineModeUi();
         });
       });
-      chartRightPaddingDecrease?.addEventListener("click", () => {
-        if (typeof setChartRightPaddingDays !== "function") return;
-        setChartRightPaddingDays(Number(getChartRightPaddingDays?.()) - 1);
-        syncChartRightPaddingUi();
-      });
-      chartRightPaddingIncrease?.addEventListener("click", () => {
-        if (typeof setChartRightPaddingDays !== "function") return;
-        setChartRightPaddingDays(Number(getChartRightPaddingDays?.()) + 1);
-        syncChartRightPaddingUi();
-      });
-      movingAverageSteppers.forEach(bindMovingAverageStepper);
-      stockResearchUniverseDecrease?.addEventListener("click", () => {
-        if (typeof setStockResearchUniverseSize !== "function") return;
-        setStockResearchUniverseSize(
-          Number(getStockResearchUniverseSize?.()) - STOCK_RESEARCH_UNIVERSE_STEP,
-        );
-        syncStockResearchUniverseUi();
-      });
-      stockResearchUniverseIncrease?.addEventListener("click", () => {
-        if (typeof setStockResearchUniverseSize !== "function") return;
-        setStockResearchUniverseSize(
-          Number(getStockResearchUniverseSize?.()) + STOCK_RESEARCH_UNIVERSE_STEP,
-        );
-        syncStockResearchUniverseUi();
-      });
+      numberSteppers.forEach((stepper) => stepper.bind());
       closeBtn?.addEventListener("click", close);
       modal.querySelectorAll("[data-api-close='1']").forEach((node) => {
         node.addEventListener("click", close);
@@ -657,8 +663,7 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
       syncApiOptionsButton();
       syncAdminAccessUi();
       syncCursorLineModeUi();
-      syncMovingAverageUi();
-      syncStockResearchUniverseUi();
+      syncNumberSteppers();
     }
 
     return Object.freeze({
@@ -667,4 +672,4 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
     });
   }
 
-export { createSettingsPanelRuntime };
+export { createNumberStepperController, createSettingsPanelRuntime };

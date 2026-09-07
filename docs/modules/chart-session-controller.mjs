@@ -69,14 +69,79 @@
 
     let disposed = false;
 
+    function copyRange(range) {
+      return Array.isArray(range) && range.length >= 2
+        ? range.slice(0, 2)
+        : null;
+    }
+
+    function pinViewport(range, transitionOptions = {}) {
+      state.pinnedXRange = copyRange(range);
+      if (transitionOptions.clearComposition === true) {
+        state.pendingCompositionViewport = null;
+      }
+      if (transitionOptions.userPinned !== undefined) {
+        state.userViewportPinned = Boolean(
+          transitionOptions.userPinned && state.pinnedXRange,
+        );
+      }
+      return state.pinnedXRange ? [...state.pinnedXRange] : null;
+    }
+
+    function clearViewport(transitionOptions = {}) {
+      if (transitionOptions.activeMonths !== undefined) {
+        state.activeMonths = transitionOptions.activeMonths;
+      }
+      state.pinnedXRange = null;
+      state.pendingCompositionViewport = null;
+      state.userViewportPinned = false;
+      return null;
+    }
+
+    function setActiveMonths(value, transitionOptions = {}) {
+      state.activeMonths = value;
+      if (transitionOptions.clearComposition === true) {
+        state.pendingCompositionViewport = null;
+      }
+      return state.activeMonths;
+    }
+
+    function setAutoFitPending(value = true) {
+      state.pendingAutoChartFit = Boolean(value);
+      return state.pendingAutoChartFit;
+    }
+
+    function stageCompositionViewport(viewport, transitionOptions = {}) {
+      if (transitionOptions.preserveFutureOverlayViewport === true) {
+        state.pendingCompositionViewport = null;
+        return null;
+      }
+      state.pendingCompositionViewport = viewport || null;
+      if (viewport?.viewRange?.length === 2) {
+        pinViewport(viewport.viewRange.map((value) => new Date(value).toISOString()));
+      }
+      return state.pendingCompositionViewport;
+    }
+
+    function applyViewportPlan(plan, afterApply) {
+      if (!plan || typeof plan !== "object") {
+        throw new Error("chart viewport plan is required");
+      }
+      state.pinnedXRange = copyRange(plan.pinnedXRange);
+      state.userViewportPinned = Boolean(plan.userViewportPinned);
+      state.pendingCompositionViewport = plan.pendingCompositionViewport || null;
+      afterApply?.(plan);
+      return plan;
+    }
+
     function applyResetPolicy(change) {
       if (disposed) return false;
       const kind = String(change || "");
       if (kind === "manual") {
-        state.pendingAutoChartFit = false;
+        setAutoFitPending(false);
         if (!state.autoChartReset) return false;
         options.clearTransforms?.();
-        state.pendingAutoChartFit = true;
+        setAutoFitPending(true);
         return true;
       }
 
@@ -86,7 +151,7 @@
       }
 
       if (kind === "composition") {
-        state.pendingAutoChartFit = true;
+        setAutoFitPending(true);
         return true;
       }
       return false;
@@ -98,18 +163,18 @@
       const visibleRange = nextEnabled ? options.getVisibleRange?.() : null;
 
       state.autoChartReset = nextEnabled;
-      state.pendingAutoChartFit = false;
+      setAutoFitPending(false);
       state.pendingCompositionViewport = null;
 
       if (nextEnabled) {
-        state.pinnedXRange = Array.isArray(visibleRange) && visibleRange.length === 2
+        pinViewport(Array.isArray(visibleRange) && visibleRange.length === 2
           ? visibleRange.map((value) => new Date(value).toISOString())
-          : null;
+          : null);
         if (!state.pinnedXRange) state.userViewportPinned = false;
         options.clearTransforms?.();
         state.lockedChartFrame = null;
         state.lockedHistoryYRange = null;
-        state.pendingAutoChartFit = true;
+        setAutoFitPending(true);
       } else {
         options.captureLockedRange?.();
       }
@@ -125,10 +190,23 @@
     }
 
     return Object.freeze({
+      applyViewportPlan,
       applyResetPolicy,
+      clearViewport,
       dispose,
+      pinViewport,
+      setActiveMonths,
+      setAutoFitPending,
       setAutoScale,
-      stats: () => ({ autoFitPending: false, disposed }),
+      setViewportPinned: (value) => {
+        state.userViewportPinned = Boolean(value);
+        return state.userViewportPinned;
+      },
+      stageCompositionViewport,
+      stats: () => ({
+        autoFitPending: Boolean(state.pendingAutoChartFit),
+        disposed,
+      }),
     });
   }
 
@@ -288,16 +366,16 @@
       return key;
     }
 
-    function resolveVisibleStock(currentKey, isStockSeries) {
-      const stocks = visibleKeys().filter((key) => isStockSeries?.(key));
-      return stocks.includes(currentKey) ? currentKey : stocks.at(-1) || "";
+    function resolveVisibleTarget(currentKey, isEligibleSeries) {
+      const candidates = visibleKeys().filter((key) => isEligibleSeries?.(key));
+      return candidates.includes(currentKey) ? currentKey : candidates.at(-1) || "";
     }
 
     return Object.freeze({
       activationOrder,
       enforceLimit,
       forget,
-      resolveVisibleStock,
+      resolveVisibleTarget,
       setVisible,
       visibleKeys,
     });

@@ -23,10 +23,6 @@ import { APP_DATA_COMPONENT_GROUPS } from "./app-data-store.mjs";
     });
   }
 
-  function shouldScheduleHiddenStockRefresh(options = {}) {
-    return options.refreshHidden === true;
-  }
-
   function partitionRuntimeRefreshSources(sourceTasks = [], options = {}) {
     const isForeground = typeof options.isForeground === "function"
       ? options.isForeground
@@ -120,6 +116,67 @@ import { APP_DATA_COMPONENT_GROUPS } from "./app-data-store.mjs";
     }
 
     return Object.freeze({ source, run });
+  }
+
+  /** Shares source admission, deduplication, health, and telemetry across refresh entry points. */
+  function createRuntimeSourceExecution(options = {}) {
+    const forceNetwork = options.forceNetwork === true;
+    const forceAttempt = options.forceAttempt === true || forceNetwork;
+    const signal = options.signal || null;
+    const sourceAttemptDecisions = new Map();
+    const sourceRefreshPromises = new Map();
+
+    function sourceAttempt(source) {
+      if (!sourceAttemptDecisions.has(source)) {
+        sourceAttemptDecisions.set(source, options.runtimeDataApp?.canAttemptSource?.(source, {
+          force: forceAttempt,
+        }) || { allowed: true, waitMs: 0 });
+      }
+      return sourceAttemptDecisions.get(source);
+    }
+
+    function trackSource(source, task, skippedResult = {}) {
+      if (sourceRefreshPromises.has(source)) return sourceRefreshPromises.get(source);
+      const sourceStartedAt = options.startPerfSample?.() || 0;
+      const attempt = sourceAttempt(source);
+      if (attempt.allowed === false) {
+        options.recordPerfSample?.(`runtimeSource:${source}`, sourceStartedAt, {
+          ok: true,
+          skipped: true,
+          waitMs: attempt.waitMs,
+        });
+        const skippedPromise = Promise.resolve({ ...skippedResult, skipped: true });
+        sourceRefreshPromises.set(source, skippedPromise);
+        return skippedPromise;
+      }
+      const refreshPromise = Promise.resolve()
+        .then(task)
+        .then((result) => {
+          if (typeof options.runtimeDataApp?.noteSourceResult === "function") {
+            options.runtimeDataApp.noteSourceResult(source, result);
+          } else {
+            options.runtimeDataApp?.noteSourceSuccess?.(source, {
+              latestDate: result?.latestDate || result?.sourceLatestDate || "",
+              detail: (result?.applied || result?.info || []).join?.(" · ") || "",
+            });
+          }
+          options.recordPerfSample?.(`runtimeSource:${source}`, sourceStartedAt, { ok: true });
+          return result;
+        }, (error) => {
+          const cancelled = options.isAbortError?.(error) === true || signal?.aborted;
+          if (!cancelled) options.runtimeDataApp?.noteSourceFailure?.(source, error);
+          options.recordPerfSample?.(`runtimeSource:${source}`, sourceStartedAt, {
+            ok: false,
+            cancelled,
+            error: String(error?.message || error || "unknown").slice(0, 120),
+          });
+          throw error;
+        });
+      sourceRefreshPromises.set(source, refreshPromise);
+      return refreshPromise;
+    }
+
+    return Object.freeze({ sourceAttempt, trackSource });
   }
 
   function createRuntimeRefreshPolicy(options = {}) {
@@ -361,6 +418,7 @@ import { APP_DATA_COMPONENT_GROUPS } from "./app-data-store.mjs";
       planCriticalRefresh,
       preloadCustomStocks,
       recordPerfSample,
+      refreshAdrFromWeb,
       refreshAdrFromWebWithRetry,
       refreshCoreIndexSeries,
       refreshCreditFromGateway,
@@ -374,7 +432,6 @@ import { APP_DATA_COMPONENT_GROUPS } from "./app-data-store.mjs";
       runRefreshPhases,
       runtimeDataApp,
       scheduleAdrFinalRetry,
-      scheduleHiddenStockRefresh,
       scheduleVisibleStockHistoryRefresh,
       scheduleLastRuntimeSnapshotSave,
       setMessage,
@@ -431,13 +488,19 @@ import { APP_DATA_COMPONENT_GROUPS } from "./app-data-store.mjs";
         source: "adr",
         retry: false,
         skippedResult: { changed: 0, latestDate: "" },
-        load: ({ signal, forceNetwork }) => refreshAdrFromWebWithRetry(signal, forceNetwork),
+        load: ({ signal, forceNetwork, singleAttempt }) => (
+          singleAttempt === true && typeof refreshAdrFromWeb === "function"
+            ? refreshAdrFromWeb(signal, forceNetwork)
+            : refreshAdrFromWebWithRetry(signal, forceNetwork)
+        ),
         mapResult: ({ changed, latestDate }) => ({
+          changed: Number(changed) || 0,
+          latestDate: String(latestDate || ""),
           info: changed > 0 ? [`ADR ${changed}건 최신값 반영(~ ${latestDate})`] : [],
           warnings: [],
         }),
         onError: (error, context) => {
-          if (isRetryableAdrRefreshError(error)) {
+          if (isRetryableAdrRefreshError(error) && context.allowBackgroundRetry !== false) {
             scheduleAdrFinalRetry(context.forceNetwork);
             return { info: ["ADR 백그라운드 재확인 예약"], warnings: [] };
           }
@@ -459,6 +522,56 @@ import { APP_DATA_COMPONENT_GROUPS } from "./app-data-store.mjs";
         mapResult: (result) => ({ info: result.applied || [], warnings: result.warnings || [] }),
       }),
     ]);
+    const supplementalSourceAdapterByKey = new Map(
+      supplementalSourceAdapters.map((adapter) => [adapter.source, adapter]),
+    );
+
+    async function runSource(source, requestOptions = {}) {
+      const key = String(source || "").trim();
+      const adapter = supplementalSourceAdapterByKey.get(key);
+      if (!adapter) throw new Error(`Unknown runtime refresh source: ${key}`);
+      const forceNetwork = requestOptions.forceNetwork === true;
+      const signal = requestOptions.signal || null;
+      const revisionsBefore = getDataRevisions();
+      const execution = createRuntimeSourceExecution({
+        forceAttempt: requestOptions.forceAttempt === true,
+        forceNetwork,
+        isAbortError,
+        recordPerfSample,
+        runtimeDataApp,
+        signal,
+        startPerfSample,
+      });
+      const sourceFailure = (error, label, fallback = {}) => {
+        if (isAbortError(error) || signal?.aborted) throw error;
+        return {
+          info: [],
+          warnings: [`${label}: ${error?.message || error}`],
+          ...fallback,
+        };
+      };
+      const result = await adapter.run({
+        allowBackgroundRetry: false,
+        forceNetwork,
+        isAbortError,
+        refreshSourceWithRetry,
+        signal,
+        singleAttempt: requestOptions.singleAttempt === true,
+        sourceFailure,
+        trackSource: execution.trackSource,
+      });
+      throwIfAborted(signal);
+      const changes = await applyRuntimeRefreshChanges(revisionsBefore, {
+        awaitAuxiliaryRender: requestOptions.awaitAuxiliaryRender === true,
+        awaitMainRender: requestOptions.awaitMainRender === true,
+        finalizeDerived: true,
+        phase: requestOptions.phase || "source",
+      });
+      if (changes.mainDataChanged || changes.adrDataChanged || changes.disclosureDataChanged) {
+        scheduleLastRuntimeSnapshotSave(1800);
+      }
+      return Object.freeze({ changes, result });
+    }
 
     async function run(msgEl, options = {}) {
       cancelAdrFinalRetry();
@@ -494,57 +607,17 @@ import { APP_DATA_COMPONENT_GROUPS } from "./app-data-store.mjs";
         criticalPlan?.indices?.requireVolumeHistory
         || plannedIndexTickers?.some((ticker) => options.hasVolumeHistory?.(ticker) === false),
       );
-      const sourceAttemptDecisions = new Map();
-      const sourceRefreshPromises = new Map();
-      const sourceAttempt = (source) => {
-        if (!sourceAttemptDecisions.has(source)) {
-          sourceAttemptDecisions.set(source, runtimeDataApp.canAttemptSource?.(source, {
-            force: forceNetwork,
-          }) || { allowed: true, waitMs: 0 });
-        }
-        return sourceAttemptDecisions.get(source);
-      };
+      const sourceExecution = createRuntimeSourceExecution({
+        forceNetwork,
+        isAbortError,
+        recordPerfSample,
+        runtimeDataApp,
+        signal,
+        startPerfSample,
+      });
+      const sourceAttempt = sourceExecution.sourceAttempt;
+      const trackSource = sourceExecution.trackSource;
       setRuntimeRefreshStatus("loading", "가격·지수 최신분 확인 중");
-      const trackSource = (source, task, skippedResult = {}) => {
-        if (sourceRefreshPromises.has(source)) return sourceRefreshPromises.get(source);
-        const sourceStartedAt = startPerfSample();
-        const attempt = sourceAttempt(source);
-        if (attempt.allowed === false) {
-          recordPerfSample(`runtimeSource:${source}`, sourceStartedAt, {
-            ok: true,
-            skipped: true,
-            waitMs: attempt.waitMs,
-          });
-          const skippedPromise = Promise.resolve({ ...skippedResult, skipped: true });
-          sourceRefreshPromises.set(source, skippedPromise);
-          return skippedPromise;
-        }
-        const refreshPromise = Promise.resolve()
-          .then(task)
-          .then((result) => {
-            if (typeof runtimeDataApp.noteSourceResult === "function") {
-              runtimeDataApp.noteSourceResult(source, result);
-            } else {
-              runtimeDataApp.noteSourceSuccess?.(source, {
-                latestDate: result?.latestDate || result?.sourceLatestDate || "",
-                detail: (result?.applied || result?.info || []).join?.(" · ") || "",
-              });
-            }
-            recordPerfSample(`runtimeSource:${source}`, sourceStartedAt, { ok: true });
-            return result;
-          }, (error) => {
-            const cancelled = isAbortError(error) || signal?.aborted;
-            if (!cancelled) runtimeDataApp.noteSourceFailure?.(source, error);
-            recordPerfSample(`runtimeSource:${source}`, sourceStartedAt, {
-              ok: false,
-              cancelled,
-              error: String(error?.message || error || "unknown").slice(0, 120),
-            });
-            throw error;
-          });
-        sourceRefreshPromises.set(source, refreshPromise);
-        return refreshPromise;
-      };
 
       let criticalStarted = 0;
       let criticalCompleted = 0;
@@ -705,6 +778,7 @@ import { APP_DATA_COMPONENT_GROUPS } from "./app-data-store.mjs";
       };
 
       const sourceContext = Object.freeze({
+        allowBackgroundRetry: true,
         forceNetwork,
         isAbortError,
         refreshSourceWithRetry,
@@ -800,11 +874,6 @@ import { APP_DATA_COMPONENT_GROUPS } from "./app-data-store.mjs";
         },
       });
 
-      // Hidden tickers stay untouched unless a caller explicitly requests them.
-      if (shouldScheduleHiddenStockRefresh(options)) {
-        scheduleHiddenStockRefresh?.({ forceRefresh: forceNetwork, signal });
-      }
-    
       if (refreshedDart) {
         if (state.lastDisclosureTraceStats.markers > 0) {
           infoLines.push(`현재 차트에 공시 마커 ${state.lastDisclosureTraceStats.markers}개 표시됨`);
@@ -835,7 +904,7 @@ import { APP_DATA_COMPONENT_GROUPS } from "./app-data-store.mjs";
       );
     }
 
-    return Object.freeze({ run });
+    return Object.freeze({ run, runSource });
   }
 
 // Retry and phase helpers belong to runtime refresh orchestration.
@@ -972,6 +1041,7 @@ export {
   createRuntimeRefreshChangeApplier,
   createRuntimeRefreshSourceAdapter,
   createRuntimeRefreshPolicy,
+  createRuntimeSourceExecution,
   createRuntimeRefreshOrchestrator,
   isRetryableRuntimeError,
   planRuntimeRefreshSources,
@@ -982,6 +1052,5 @@ export {
   retryWithDelays,
   runRefreshPhases,
   runTaskFactoriesWithConcurrency,
-  shouldScheduleHiddenStockRefresh,
   waitForRetryDelay,
 };

@@ -59,6 +59,50 @@ test("disabling auto scale captures a stable manual vertical range", () => {
   assert.equal(state.pendingCompositionViewport, null);
 });
 
+test("one session owner commits, stages, and clears viewport state", () => {
+  const state = session({
+    activeMonths: 12,
+    pinnedXRange: null,
+    pendingCompositionViewport: null,
+    userViewportPinned: false,
+  });
+  const controller = createChartSessionController(globalThis, { state });
+  controller.setAutoFitPending(true);
+  assert.deepEqual(controller.stats(), {
+    autoFitPending: true,
+    disposed: false,
+  });
+  const staged = {
+    viewRange: [Date.parse("2026-01-01"), Date.parse("2026-07-01")],
+  };
+
+  controller.stageCompositionViewport(staged);
+  assert.equal(state.pendingCompositionViewport, staged);
+  assert.deepEqual(state.pinnedXRange, [
+    "2026-01-01T00:00:00.000Z",
+    "2026-07-01T00:00:00.000Z",
+  ]);
+
+  const plan = {
+    pinnedXRange: ["2025-01-01", "2025-12-31"],
+    userViewportPinned: true,
+    pendingCompositionViewport: null,
+  };
+  const applied = [];
+  controller.applyViewportPlan(plan, (value) => applied.push(value));
+  assert.deepEqual(state.pinnedXRange, plan.pinnedXRange);
+  assert.equal(state.userViewportPinned, true);
+  assert.deepEqual(applied, [plan]);
+
+  controller.clearViewport({ activeMonths: 6 });
+  assert.equal(state.activeMonths, 6);
+  assert.equal(state.pinnedXRange, null);
+  assert.equal(state.pendingCompositionViewport, null);
+  assert.equal(state.userViewportPinned, false);
+  controller.setAutoFitPending(false);
+  assert.equal(controller.stats().autoFitPending, false);
+});
+
 test("one session contract captures the manual scale frame", () => {
   const state = session({
     lockedChartFrame: { normBases: { A: 10 }, autoScales: { A: 2 } },

@@ -273,6 +273,8 @@
   font-variant-numeric: tabular-nums;
 }
 
+.credit-offset-value { min-width: 24px; }
+
 .stock-research-universe-value { min-width: 34px; }
 
 .release-notes-open-btn { margin-right: 0; }

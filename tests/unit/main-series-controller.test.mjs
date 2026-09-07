@@ -20,13 +20,13 @@ test("enforces one visible-series limit for indices, macro data, and stocks", ()
   assert.deepEqual(controller.visibleKeys(), ["A", "C"]);
 });
 
-test("resolves the latest visible stock without duplicating app-level selection logic", () => {
+test("resolves the latest eligible visible target without app-level selection logic", () => {
   const controller = createMainSeriesController({
     hiddenSeries: new Set(["A"]),
     maximumVisible: 3,
     getSeriesKeys: () => ["A", "005930.KS", "035420.KS"],
   });
-  assert.equal(controller.resolveVisibleStock("", (key) => key.endsWith(".KS")), "035420.KS");
+  assert.equal(controller.resolveVisibleTarget("", (key) => key.endsWith(".KS")), "035420.KS");
 });
 
 test("stale render projections cannot rewrite the latest activation order", () => {

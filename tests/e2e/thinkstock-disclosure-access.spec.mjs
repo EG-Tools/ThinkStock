@@ -149,6 +149,26 @@ test("new stock loads its own Cloudflare DART disclosures", async ({ page }) => 
     const markerColors = disclosureTrace?.textfont?.color;
     return Array.isArray(markerColors) && markerColors.includes(stockTrace?.line?.color);
   })).toBe(true);
+  await expect.poll(() => page.locator("#chart").evaluate((element) => {
+    const stockTrace = (element.data || []).find((trace) => (
+      trace?.meta?.overlayKind === "price" && trace?.meta?.seriesKey === "000660.KS"
+    ));
+    const disclosureTrace = (element.data || []).find((trace) => trace?.meta?.overlayKind === "disclosure");
+    const markerDate = String(disclosureTrace?.x?.[0] || "");
+    const priceIndex = (stockTrace?.x || []).findIndex((date) => String(date || "") === markerDate);
+    const priceY = Number(stockTrace?.y?.[priceIndex]);
+    const markerY = Number(disclosureTrace?.y?.[0]);
+    const yAxis = element?._fullLayout?.yaxis;
+    if (!Number.isFinite(priceY) || !Number.isFinite(markerY)
+      || typeof yAxis?.d2p !== "function" || !Number.isFinite(yAxis?._length)) {
+      return false;
+    }
+    const pixelGap = Math.abs(yAxis.d2p(markerY) - yAxis.d2p(priceY));
+    const expectedGap = yAxis._length * 0.02;
+    return Math.abs(pixelGap - expectedGap) <= 0.5;
+  }), {
+    message: "Marker-only disclosure rendering detached from its owning price point",
+  }).toBe(true);
   await page.locator("#disclosureToggle").click();
   await page.locator("#disclosureToggle").click();
   await expect.poll(() => newStockDisclosureRequests).toBe(1);

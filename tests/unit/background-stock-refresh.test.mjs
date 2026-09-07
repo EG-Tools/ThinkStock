@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  createBackgroundStockRefresh,
   createBackgroundTaskScheduler,
   createCustomStockPreloader,
   createVisibleSeriesSupplementalHydrator,
@@ -145,62 +144,6 @@ test("named background work can share an already running task", async () => {
   assert.equal(await second, "ready");
   assert.equal(scheduler.stats().coalesced, 1);
   assert.equal(scheduler.stats().queued, 0);
-});
-
-test("hidden ticker refresh waits for idle time and preserves failed list entries", async () => {
-  const calls = [];
-  const clock = fakeClock();
-  const taskScheduler = createBackgroundTaskScheduler(clock.scope, { now: clock.now });
-  const scheduler = createBackgroundStockRefresh(clock.scope, {
-    scheduler: taskScheduler,
-    hasHidden: () => true,
-    refresh: async (options) => calls.push(options),
-  });
-
-  assert.equal(scheduler.schedule({ forceRefresh: true }), true);
-  assert.equal(calls.length, 0);
-  clock.runNext();
-  clock.runNext();
-  await Promise.resolve();
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].scope, "hidden");
-  assert.equal(calls[0].preserveFailed, true);
-  assert.equal(calls[0].forceRefresh, true);
-  assert.equal(typeof calls[0].taskContext?.checkpoint, "function");
-});
-
-test("rescheduling hidden refresh aborts the request already in flight", async () => {
-  const clock = fakeClock();
-  const taskScheduler = createBackgroundTaskScheduler(clock.scope, { now: clock.now });
-  let runningSignal = null;
-  let started = null;
-  const startedPromise = new Promise((resolve) => { started = resolve; });
-  const scheduler = createBackgroundStockRefresh(clock.scope, {
-    scheduler: taskScheduler,
-    hasHidden: () => true,
-    refresh: ({ signal }) => {
-      runningSignal = signal;
-      started();
-      return new Promise((_resolve, reject) => {
-        signal.addEventListener("abort", () => {
-          const error = new Error("cancelled");
-          error.name = "AbortError";
-          reject(error);
-        }, { once: true });
-      });
-    },
-  });
-
-  scheduler.schedule();
-  clock.runNext();
-  clock.runNext();
-  await startedPromise;
-  assert.equal(runningSignal.aborted, false);
-
-  scheduler.schedule();
-  assert.equal(runningSignal.aborted, true);
-  scheduler.dispose();
-  await Promise.resolve();
 });
 
 test("custom stock preload shares latest prices and yields between hidden tickers", async () => {
@@ -427,56 +370,6 @@ test("background work pauses while its document is hidden", async () => {
   await Promise.resolve();
   assert.deepEqual(calls, ["done"]);
   scheduler.dispose();
-});
-
-test("hidden tickers are prepared one at a time", async () => {
-  const calls = [];
-  const clock = fakeClock();
-  const taskScheduler = createBackgroundTaskScheduler(clock.scope, { now: clock.now });
-  const scheduler = createBackgroundStockRefresh(clock.scope, {
-    scheduler: taskScheduler,
-    getTargets: () => ["A", "B"],
-    hasHidden: () => true,
-    refresh: async (options) => calls.push(options.tickers),
-  });
-
-  scheduler.schedule();
-  clock.runNext();
-  clock.runNext();
-  await Promise.resolve();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(calls, [["A"]]);
-  assert.ok(clock.pending() > 0);
-
-  clock.runNext();
-  clock.runNext();
-  await Promise.resolve();
-  assert.deepEqual(calls, [["A"], ["B"]]);
-});
-
-test("hidden ticker refresh batches latest-price preparation while keeping idle boundaries", async () => {
-  const calls = [];
-  const clock = fakeClock();
-  const taskScheduler = createBackgroundTaskScheduler(clock.scope, { now: clock.now });
-  const scheduler = createBackgroundStockRefresh(clock.scope, {
-    scheduler: taskScheduler,
-    targetBatchSize: 2,
-    getTargets: () => ["A", "B", "C"],
-    hasHidden: () => true,
-    refresh: async (options) => calls.push(options.tickers),
-  });
-
-  scheduler.schedule();
-  clock.runNext();
-  clock.runNext();
-  await Promise.resolve();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(calls, [["A", "B"]]);
-
-  clock.runNext();
-  clock.runNext();
-  await Promise.resolve();
-  assert.deepEqual(calls, [["A", "B"], ["C"]]);
 });
 
 test("background tasks yield between consecutive jobs", async () => {

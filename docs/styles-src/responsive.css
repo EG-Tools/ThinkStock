@@ -37,14 +37,6 @@
   .data-attribution { margin-inline: 10px; }
   .data-source-links { gap: 5px; }
   .data-source-links a { min-height: 29px; padding-inline: 8px; }
-  .credit-offset-wrap {
-    background: rgba(255,255,255,0.06);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    padding: 4px 8px;
-    gap: 5px;
-  }
-  .credit-offset-input { width: 40px; font-size: 11px; padding: 3px 4px; }
   .series-toggle-btn {
     font-size: 11px;
     padding: 8px 6px;
@@ -55,7 +47,6 @@
   .stock-remove-btn { width: 16px; height: 16px; font-size: 11px; right: 7px; }
   .chart-frame { border-radius: 22px; min-height: 350px; }
   #chart.chart-frame { min-height: 366px; }
-  .chart-reset-btn,
   .chart-side-btn,
   .chart-recession-btn,
   .chart-ai-btn {

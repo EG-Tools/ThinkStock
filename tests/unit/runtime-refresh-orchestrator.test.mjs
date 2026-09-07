@@ -10,7 +10,6 @@ const {
   partitionRuntimeRefreshSources,
   planRuntimeRefreshRendering,
   runRefreshPhases,
-  shouldScheduleHiddenStockRefresh,
 } = await import("../../docs/modules/runtime-refresh-orchestrator.mjs");
 
 test("supplemental sources share retry, request tracking, and result normalization", async () => {
@@ -337,12 +336,6 @@ test("one source plan removes fresh and duplicate work before execution", () => 
   ]);
 });
 
-test("hidden stock refresh only runs when explicitly requested", () => {
-  assert.equal(shouldScheduleHiddenStockRefresh({}), false);
-  assert.equal(shouldScheduleHiddenStockRefresh({ forceNetwork: true }), false);
-  assert.equal(shouldScheduleHiddenStockRefresh({ refreshHidden: true }), true);
-});
-
 test("a superseded source request does not create provider backoff", async () => {
   let failures = 0;
   const revisions = {
@@ -596,6 +589,72 @@ test("manual refresh checks hidden macro and auxiliary sources after the visible
   assert.deepEqual(phases, ["criticalReady", "supplementalReady", "deferredReady"]);
 });
 
+test("a background ADR retry uses the shared source and change-application contract", async () => {
+  const calls = [];
+  let revisions = Object.freeze({
+    price: 1,
+    macro: 1,
+    credit: 1,
+    crisis: 1,
+    adr: 1,
+    disclosure: 1,
+  });
+  const orchestrator = createRuntimeRefreshOrchestrator({
+    applyRuntimeRefreshChanges: async (before, options) => {
+      calls.push(["apply", before.adr, options.phase]);
+      return {
+        revisionsAfter: revisions,
+        mainDataChanged: false,
+        priceDataChanged: false,
+        derivedInputChanged: true,
+        adrDataChanged: true,
+        disclosureDataChanged: false,
+      };
+    },
+    chartSession: {},
+    getDataRevisions: () => revisions,
+    isAbortError: () => false,
+    isRetryableAdrRefreshError: () => false,
+    recordPerfSample: () => {},
+    refreshAdrFromWeb: async (_signal, forceNetwork) => {
+      calls.push(["load", forceNetwork]);
+      revisions = Object.freeze({ ...revisions, adr: 2 });
+      return { changed: 3, latestDate: "2026-09-08" };
+    },
+    refreshAdrFromWebWithRetry: async () => {
+      throw new Error("the final retry must be a single attempt");
+    },
+    runtimeDataApp: {
+      canAttemptSource: (_source, options) => {
+        calls.push(["admission", options.force]);
+        return { allowed: true };
+      },
+      noteSourceResult: (source) => calls.push(["health", source]),
+    },
+    scheduleLastRuntimeSnapshotSave: (delay) => calls.push(["snapshot", delay]),
+    startPerfSample: () => 0,
+    state: {},
+    throwIfAborted: () => {},
+  });
+
+  const outcome = await orchestrator.runSource("adr", {
+    forceAttempt: true,
+    forceNetwork: false,
+    phase: "adr-final-retry",
+    singleAttempt: true,
+  });
+
+  assert.equal(outcome.result.changed, 3);
+  assert.equal(outcome.result.latestDate, "2026-09-08");
+  assert.deepEqual(calls, [
+    ["admission", true],
+    ["load", false],
+    ["health", "adr"],
+    ["apply", 1, "adr-final-retry"],
+    ["snapshot", 1800],
+  ]);
+});
+
 test("supplemental refresh can wait for the visible startup boundary", async () => {
   const calls = [];
   let releaseSupplemental = null;
@@ -667,7 +726,6 @@ test("unavailable live index and prices keep saved data and allow supplemental r
   let bootstrapCalls = 0;
   const progress = [];
   const messages = [];
-  const hiddenSchedules = [];
   const forgottenPriceClaims = [];
   let snapshotSchedules = 0;
   const renderOptions = [];
@@ -722,7 +780,6 @@ test("unavailable live index and prices keep saved data and allow supplemental r
     runRefreshPhases,
     runtimeDataApp: { notePhase: (name) => phases.push(name) },
     scheduleAdrFinalRetry: () => {},
-    scheduleHiddenStockRefresh: (options) => hiddenSchedules.push(options),
     scheduleLastRuntimeSnapshotSave: () => { snapshotSchedules += 1; },
     setMessage: (_element, lines) => messages.push(...lines),
     setRuntimeRefreshStatus: () => {},
@@ -740,7 +797,6 @@ test("unavailable live index and prices keep saved data and allow supplemental r
   assert.equal(bootstrapCalls, 1);
   assert.deepEqual(preloadScopes, ["visible"]);
   assert.equal(preloadPayloads[0]?.ok, true);
-  assert.equal(hiddenSchedules.length, 0);
   assert.equal(snapshotSchedules, 0);
   assert.equal(indexPayloads[0]?.ok, true);
   assert.deepEqual(renderOptions, [

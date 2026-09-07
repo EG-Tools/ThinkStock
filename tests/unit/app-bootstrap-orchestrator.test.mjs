@@ -205,7 +205,7 @@ test("application setup and cleanup are each committed once", () => {
   assert.deepEqual(calls, ["setup-a:message", "setup-b", "cleanup-a", "cleanup-b"]);
 });
 
-test("initial data preserves the active viewport before applying automatic scale", async () => {
+test("initial data delegates viewport and scale ownership to one main render", async () => {
   const calls = [];
   const runtime = createApplicationLifecycleRuntime({
     initialData: {
@@ -220,13 +220,11 @@ test("initial data preserves the active viewport before applying automatic scale
       needsHistorical: () => true,
       shouldPreserveViewport: () => true,
       renderMain: (preserve) => calls.push(`render:${preserve}`),
-      shouldAutoFit: () => true,
-      fitCurrentChart: () => calls.push("fit"),
     },
   });
 
   assert.equal(await runtime.prepareInitialData({}), "snapshot");
-  assert.deepEqual(calls, ["prepare", "render:true", "fit"]);
+  assert.deepEqual(calls, ["prepare", "render:true"]);
 });
 
 test("runtime refresh runs only enabled optional features in order", async () => {
@@ -235,8 +233,6 @@ test("runtime refresh runs only enabled optional features in order", async () =>
     refresh: {
       runData: () => calls.push("data"),
       renderMain: (preserve) => calls.push(`render:${preserve}`),
-      shouldAutoFit: () => true,
-      fitCurrentChart: () => calls.push("fit"),
     },
     optionalRefreshes: [
       { name: "ai", enabled: () => true, run: () => calls.push("ai") },
@@ -246,7 +242,7 @@ test("runtime refresh runs only enabled optional features in order", async () =>
   });
 
   await runtime.refreshRuntime(null, { force: true });
-  assert.deepEqual(calls, ["data", "render:true", "fit", "ai", "insider"]);
+  assert.deepEqual(calls, ["data", "render:true", "ai", "insider"]);
 });
 
 test("manual runtime refresh reconciles the viewport after optional features", async () => {

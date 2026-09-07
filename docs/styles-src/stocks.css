@@ -94,17 +94,17 @@
 .stock-research-btn:hover { background: rgba(244, 211, 94, 0.13); }
 .stock-research-btn.is-admin-locked { opacity: 0.3; cursor: not-allowed; }
 
-.chart-co-movement-btn { top: 48px; }
-.chart-insider-btn { top: 82px; }
-.chart-disclosure-btn { top: 116px; }
-.chart-eps-btn { top: 184px; }
+.chart-co-movement-btn { top: 14px; }
+.chart-insider-btn { top: 48px; }
+.chart-disclosure-btn { top: 82px; }
+.chart-eps-btn { top: 150px; }
 
 .disclosure-progress {
-  top: 117px;
+  top: 83px;
 }
 
 .disclosure-progress[data-anchor="insider"] {
-  top: 83px;
+  top: 49px;
 }
 
 .stock-research-modal {
@@ -489,10 +489,31 @@
   border: 0;
   outline: none;
   font-size: 13px;
+  appearance: none;
+  -webkit-appearance: none;
 }
 
 .stock-search-input::placeholder {
   color: rgba(210, 216, 228, 0.55);
+}
+
+.stock-search-input::-webkit-search-cancel-button {
+  display: none;
+  -webkit-appearance: none;
+}
+
+@keyframes stock-search-autofill-detected {
+  from { opacity: 0.999; }
+  to { opacity: 1; }
+}
+
+.stock-search-input:-webkit-autofill,
+.stock-search-input:-webkit-autofill:hover,
+.stock-search-input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--ink);
+  -webkit-box-shadow: 0 0 0 1000px #151515 inset;
+  caret-color: var(--ink);
+  animation: stock-search-autofill-detected 1ms;
 }
 
 .startup-loader {

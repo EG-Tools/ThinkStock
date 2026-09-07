@@ -99,6 +99,29 @@ test("serializes async visual frames instead of racing Plotly updates", async ()
   assert.deepEqual(applied, [1, 2]);
 });
 
+test("does not enqueue an empty follow-up while an async frame is in flight", async () => {
+  const callbacks = [];
+  const applied = [];
+  let releaseFrame;
+  const coordinator = visualFrame.createCoordinator({}, {
+    requestFrame: (callback) => { callbacks.push(callback); return callbacks.length; },
+    cancelFrame: () => {},
+    applyFrame: async (frame) => {
+      applied.push(frame.transactionId);
+      await new Promise((resolve) => { releaseFrame = resolve; });
+    },
+  });
+
+  coordinator.schedule({ seriesKey: "A", reason: "drag" });
+  callbacks.shift()();
+  coordinator.flush();
+  releaseFrame();
+  await coordinator.whenSettled();
+
+  assert.deepEqual(applied, [1]);
+  assert.equal(callbacks.length, 0);
+});
+
 test("keeps dated markers constrained during live and committed series transforms", async () => {
   const restyles = [];
   const commits = [];

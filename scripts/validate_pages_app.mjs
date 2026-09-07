@@ -308,10 +308,11 @@ for (let index = 0; index < vkospiData.records.length; index += 1) {
   assert.ok(gapDays <= 20, `VKOSPI history has an unexpected ${gapDays}-day gap after ${previousDate}`);
 }
 assert.ok(
-  html.includes('class="main-chart-wrap"')
+  html.includes('class="top-controls"')
+    && html.includes('id="chartHandlesToggle"')
     && html.includes('id="resetHandles"')
-    && html.includes("chart-reset-btn"),
-  "chart reset button is not positioned in the main chart",
+    && html.includes("top-chart-scale-btn"),
+  "chart scale button is not positioned beside the handle control",
 );
 assert.ok(
   html.includes('class="refresh-btn chart-refresh-btn"'),
@@ -352,6 +353,9 @@ const requiredIds = [
   "dataFreshness",
   "resetHandles",
   "chartHandlesToggle",
+  "creditOffsetDecrease",
+  "creditOffsetValue",
+  "creditOffsetIncrease",
   "recessionToggle",
   "signalProgress",
   "signalProgressText",
@@ -406,7 +410,7 @@ assert.ok(!html.includes("chartRangeStepper")
   "hoverToggle",
   "chartToolsToggle",
   "chartHandlesToggle",
-  "creditOffset",
+  "resetHandles",
   "stockResearchBtn",
   "apiOptionsBtn",
 ].reduce((previousIndex, id) => {
@@ -416,7 +420,6 @@ assert.ok(!html.includes("chartRangeStepper")
 }, -1);
 
 [
-  "resetHandles",
   "coMovementToggle",
   "insiderTradeToggle",
   "disclosureToggle",
@@ -528,7 +531,8 @@ assert.ok(runtimeRefreshOrchestrator.includes("planCriticalRefresh({")
   && runtimeRefreshOrchestrator.includes("startSupplementalAfterCritical: true"),
 "critical startup refresh is not planned before supplemental inputs");
 assert.ok(runtimeRefreshOrchestrator.includes("supplementalTasks: foregroundSourceTasks.map")
-  && runtimeRefreshOrchestrator.includes("shouldScheduleHiddenStockRefresh(options)")
+  && !runtimeRefreshOrchestrator.includes("scheduleHiddenStockRefresh")
+  && !app.includes("getBackgroundStockRefresh")
   && !runtimeRefreshOrchestrator.includes("hiddenPriceTask,")
   && app.includes("if (activateRequested) {")
   && app.includes("setMainChartSeriesVisible(stockCandidate.ticker, false")
@@ -698,7 +702,7 @@ assert.ok(chartModelWorker.includes('import mainChartModel from "./main-chart-mo
 assert.ok(
   marketData.includes("shiftIsoDateByDays")
     && mainChartModel.includes("creditCols.includes(series)")
-    && mainChartModel.includes("shiftIsoDateByDays(date, -creditOffsetDays)"),
+    && mainChartModel.includes("shiftIsoDateByDays(date, creditOffsetDays)"),
   "credit offset must shift only the credit trace dates",
 );
 assert.ok(!chartModelWorkerRuntime.includes("function buildMainChartModel(")
@@ -724,6 +728,14 @@ assert.ok(app.includes('from "./modules/chart-session-controller.mjs"')
   && chartSessionController.includes("setAutoScale")
   && !app.includes("CHART_WORKER_STALE_CANCEL_MS"),
 "chart state transitions are not centralized or stale worker cancellation remains");
+assert.ok(
+  !/chartSession\.(?:pinnedXRange|userViewportPinned|pendingCompositionViewport|activeMonths|pendingAutoChartFit)\s*=/.test(app)
+    && chartSessionController.includes("function pinViewport")
+    && chartSessionController.includes("function clearViewport")
+    && chartSessionController.includes("function stageCompositionViewport")
+    && chartSessionController.includes("function applyViewportPlan"),
+  "main viewport state bypasses the chart session owner",
+);
 assert.ok(app.includes('from "./modules/chart-model-worker-client.mjs"')
   && chartModelWorkerClient.includes("active.superseded")
   && chartModelWorkerClient.includes("dispatchNext"),
@@ -1163,14 +1175,14 @@ assert.ok(app.includes("createApplicationLifecycleRuntime")
   && applicationLifecycleRuntime.includes("values.forEach((entry)"),
 "application runtime resources are not released on final page exit");
 assert.ok(app.includes("chartUpdateCoordinatorModule.buildMainChartRenderFrame")
-  && app.includes("chartUpdateCoordinatorModule.applyMainChartViewportPlan")
+  && app.includes("getChartSessionController().applyViewportPlan")
   && app.includes("chartUpdateCoordinatorModule.finalizeMainChartFrameState")
   && app.includes('from "./modules/chart-viewport-controller.mjs"')
   && !pagesEntry.includes("chart-viewport-controller")
   && chartViewportController.includes("function buildRenderViewportPlan")
   && chartViewportController.includes("createFutureOverlayController")
   && chartUpdateCoordinator.includes("viewport.controller.buildRenderViewportPlan")
-  && chartUpdateCoordinator.includes("function applyMainChartViewportPlan")
+  && chartSessionController.includes("function applyViewportPlan")
   && chartUpdateCoordinator.includes("function finalizeMainChartFrameState")
   && app.includes("getFutureOverlayController"),
 "main chart viewport planning is not separated from renderChart");

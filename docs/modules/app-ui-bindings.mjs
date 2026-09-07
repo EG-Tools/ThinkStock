@@ -131,49 +131,6 @@ import { syncControl } from "./control-state-view.mjs";
       return mode;
     }
 
-    function syncNumberStepper(config = {}) {
-      const normalized = config.normalize?.(config.value);
-      const numeric = Number.isFinite(Number(normalized))
-        ? Number(normalized)
-        : Number(config.fallback);
-      const value = element(config.valueId);
-      if (value) {
-        value.value = String(numeric);
-        value.textContent = String(numeric);
-      }
-      const decrease = element(config.decreaseId);
-      const increase = element(config.increaseId);
-      if (decrease) decrease.disabled = numeric <= Number(config.min);
-      if (increase) increase.disabled = numeric >= Number(config.max);
-      return numeric;
-    }
-
-    function syncMacdDisparity() {
-      return syncNumberStepper({
-        value: state.macdDisparityDays,
-        normalize: options.normalizeMacdDisparityDays,
-        fallback: 60,
-        min: Number(options.macdDisparityMinDays) || 5,
-        max: Number(options.macdDisparityMaxDays) || 60,
-        valueId: "macdDisparityValue",
-        decreaseId: "macdDisparityDecrease",
-        increaseId: "macdDisparityIncrease",
-      });
-    }
-
-    function syncNewsMovingAverage() {
-      return syncNumberStepper({
-        value: state.newsSentimentMovingAverageDays,
-        normalize: options.normalizeNewsMovingAverageDays,
-        fallback: 1,
-        min: Number(options.newsMovingAverageMinDays) || 1,
-        max: Number(options.newsMovingAverageMaxDays) || 20,
-        valueId: "newsSentimentMovingAverageValue",
-        decreaseId: "newsSentimentMovingAverageDecrease",
-        increaseId: "newsSentimentMovingAverageIncrease",
-      });
-    }
-
     function syncHandles() {
       const result = view.syncControl(element("chartHandlesToggle"), {
         active: state.showChartHandles,
@@ -213,8 +170,6 @@ import { syncControl } from "./control-state-view.mjs";
       syncCoMovement,
       syncCursorLine,
       syncHandles,
-      syncMacdDisparity,
-      syncNewsMovingAverage,
       syncScale,
       syncSignal,
     });
@@ -303,19 +258,6 @@ import { syncControl } from "./control-state-view.mjs";
     return true;
   }
 
-  function bindCreditOffsetInput(options) {
-    const input = options.input;
-    if (!input) return;
-    input.value = -options.getOffsetDays();
-    input.addEventListener("change", () => {
-      const value = parseInt(input.value, 10);
-      if (!Number.isFinite(value)) return;
-      options.setOffsetDays(Math.abs(value));
-      options.saveState();
-      options.requestChartRender();
-    });
-  }
-
   function bindManualRefresh(options) {
     const button = options.button;
     if (!button) return;
@@ -392,9 +334,6 @@ import { syncControl } from "./control-state-view.mjs";
     }
     if (options.insider) {
       bindPreparedToggle({ ...options.insider, button: element("insiderTradeToggle") });
-    }
-    if (options.creditOffset) {
-      bindCreditOffsetInput({ ...options.creditOffset, input: element("creditOffset") });
     }
     if (options.refresh) {
       bindManualRefresh({ ...options.refresh, button: element("refreshData") });
@@ -533,6 +472,29 @@ import { syncControl } from "./control-state-view.mjs";
     if (!input || !suggestionList || !view || input.dataset?.bound === "1") return null;
     if (input.dataset) input.dataset.bound = "1";
 
+    const legacyOffsetPattern = /^-(?:10|[0-9])$/;
+    const clearSearchValue = () => {
+      input.value = "";
+      input.defaultValue = "";
+      input.setAttribute?.("value", "");
+    };
+
+    // Search text is transient. Clear browser-restored form state so a removed
+    // setting input cannot reappear here after an update or history restore.
+    const resetTransientSearch = () => {
+      clearSearchValue();
+      view.hideSuggestions();
+    };
+    const clearRestoredOffset = () => {
+      if (!legacyOffsetPattern.test(String(input.value || "").trim())) return false;
+      clearSearchValue();
+      view.hideSuggestions();
+      return true;
+    };
+    resetTransientSearch();
+    scope.addEventListener?.("pageshow", resetTransientSearch);
+    scope.addEventListener?.("load", clearRestoredOffset, { once: true });
+
     let searchSequence = 0;
 
     async function refreshSuggestions() {
@@ -567,11 +529,20 @@ import { syncControl } from "./control-state-view.mjs";
     }
 
     view.setSuggestionHandler((item) => { submitSuggestion(item); });
-    input.addEventListener("input", () => { refreshSuggestions(); });
+    input.addEventListener("input", () => {
+      if (clearRestoredOffset()) return;
+      refreshSuggestions();
+    });
+    input.addEventListener("change", clearRestoredOffset);
+    input.addEventListener("animationstart", (event) => {
+      if (event?.animationName === "stock-search-autofill-detected") clearRestoredOffset();
+    });
     input.addEventListener("focus", () => {
+      if (clearRestoredOffset()) return;
       if (String(input.value || "").trim()) refreshSuggestions();
     });
     input.addEventListener("click", () => {
+      if (clearRestoredOffset()) return;
       if (String(input.value || "").trim() && suggestionList.hidden) refreshSuggestions();
     });
     input.addEventListener("keydown", (event) => {
@@ -595,14 +566,13 @@ import { syncControl } from "./control-state-view.mjs";
       view.hideSuggestions();
     });
 
-    return Object.freeze({ refreshSuggestions, submitSuggestion });
+    return Object.freeze({ clearRestoredOffset, refreshSuggestions, resetTransientSearch, submitSuggestion });
   }
 
 export {
   bindChartApplicationControls,
   bindChartRangeControls,
   bindChartToolsToggle,
-  bindCreditOffsetInput,
   bindDisclosureToggle,
   bindHoverToggle,
   bindMainChartToolActions,

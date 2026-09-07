@@ -185,6 +185,27 @@
     });
   }
 
+  /** Anchors a newly composed marker layer to the price traces in that same frame. */
+  function prepareAnchoredMarkerFrame(options = {}) {
+    const traces = Array.isArray(options.traces) ? options.traces : [];
+    const viewportRange = Array.isArray(options.viewportRange)
+      ? options.viewportRange.slice(0, 2).map(Number)
+      : [];
+    if (!traces.length
+      || viewportRange.length !== 2
+      || !viewportRange.every(Number.isFinite)
+      || typeof options.collectAnchoredYUpdates !== "function") {
+      return Object.freeze({ traces, traceIndexes: Object.freeze([]), yUpdates: Object.freeze([]) });
+    }
+    const frameElement = { data: traces };
+    const anchored = options.collectAnchoredYUpdates(frameElement, {
+      traces,
+      viewportRange,
+      seriesUpdates: options.seriesUpdates,
+    }) || { traceIndexes: [], yUpdates: [] };
+    return stageTraceYUpdates(traces, anchored.traceIndexes, anchored.yUpdates);
+  }
+
   function traceYValuesMatch(left, right) {
     if (left === right) return true;
     if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
@@ -548,30 +569,47 @@
   /** Drains every owner that can extend one committed chart frame. */
   async function settleChartWorkTransaction(options = {}) {
     const navigation = options.navigation;
+    const visualFrame = options.visualFrame;
     const rangeController = options.rangeController;
     const mainScheduler = options.mainScheduler;
     const auxiliaryQueue = options.auxiliaryQueue;
+    const plotlyRuntime = options.plotlyRuntime;
 
     await navigation?.whenRangeSettled?.();
+    visualFrame?.flush?.();
+    await visualFrame?.whenSettled?.();
     await rangeController?.flush?.();
     await mainScheduler?.whenSettled?.();
     await auxiliaryQueue?.whenSettled?.();
+    await plotlyRuntime?.whenSettled?.();
 
-    // Main and companion rendering can enqueue one final linked-range frame.
-    // Drain that frame here so callers never repeat this ordering themselves.
-    await rangeController?.flush?.();
-    if (mainScheduler?.isRendering?.() || auxiliaryQueue?.isBusy?.()) {
-      await mainScheduler?.whenSettled?.();
-      await auxiliaryQueue?.whenSettled?.();
-      await rangeController?.flush?.();
+    // A completed owner can enqueue a newer owner's work. Drain only owners
+    // that actually became busy instead of replaying an unconditional final fit.
+    for (let pass = 0; pass < 4; pass += 1) {
+      const visualBusy = visualFrame?.hasPending?.() === true;
+      const rangeBusy = rangeController?.isBusy?.() === true;
+      const mainBusy = mainScheduler?.isRendering?.() === true;
+      const auxiliaryBusy = auxiliaryQueue?.isBusy?.() === true;
+      const plotlyBusy = plotlyRuntime?.isBusy?.() === true;
+      if (!visualBusy && !rangeBusy && !mainBusy && !auxiliaryBusy && !plotlyBusy) break;
+      if (visualBusy) {
+        visualFrame.flush?.();
+        await visualFrame.whenSettled?.();
+      }
+      if (rangeController?.isBusy?.()) await rangeController.flush?.();
+      if (mainScheduler?.isRendering?.()) await mainScheduler.whenSettled?.();
+      if (auxiliaryQueue?.isBusy?.()) await auxiliaryQueue.whenSettled?.();
+      if (plotlyRuntime?.isBusy?.()) await plotlyRuntime.whenSettled?.();
     }
     await options.afterSettled?.();
 
     return Object.freeze({
       settled: !(
-        rangeController?.isBusy?.()
+        visualFrame?.hasPending?.()
+        || rangeController?.isBusy?.()
         || mainScheduler?.isRendering?.()
         || auxiliaryQueue?.isBusy?.()
+        || plotlyRuntime?.isBusy?.()
       ),
     });
   }
@@ -822,7 +860,7 @@
           collectAnchoredYUpdates: viewport.collectAnchoredYUpdates,
           rangeBearingTraces: renderer.rangeBearingTraces,
           fitRangeForTraces: viewport.fitRangeForTraces,
-          fitOptions: { paddingRatio: 0.08, minimumPadding: 0.6 },
+          fitOptions: viewport.fitOptions,
         })
       : { fittedYRange: null, traces: composition.traces, traceIndexes: [] };
     const frameTraces = preparedViewportFrame.traces;
@@ -835,12 +873,12 @@
         requested.has(trace) && frameTraces[index] ? [frameTraces[index]] : []
       ));
     };
-    const fittedDefaultYRange = viewportPlan.savedYRange
+    const fittedDefaultYRange = !viewport.autoChartReset && viewportPlan.savedYRange
       ? null
       : (preparedViewportFrame.fittedYRange || viewport.fitRangeForTraces(
           frameTraces.filter((trace) => Number.isFinite(trace?.meta?.sourcePointCount)),
           fittedViewportRange,
-          { paddingRatio: 0.08, minimumPadding: 0.6 },
+          viewport.fitOptions,
         ));
     const longRangeTicks = renderer.buildLongRangeTicks({
       start: viewport.observedStart,
@@ -856,7 +894,9 @@
       hoverlabel: viewport.hoverlabel,
       xRange: viewportPlan.savedXRange,
       defaultXRange: viewportPlan.defaultXRange,
-      yRange: viewportPlan.savedYRange,
+      // Auto scale belongs to this composed frame. Reusing the previous Y range
+      // here would require a second post-render fit and produce a visible jump.
+      yRange: viewport.autoChartReset ? null : viewportPlan.savedYRange,
       fittedYRange: fittedDefaultYRange,
       longRangeTicks,
     });
@@ -873,17 +913,6 @@
     });
   }
 
-  function applyMainChartViewportPlan(session, viewportPlan, applyFuturePlan) {
-    if (!session || !viewportPlan) {
-      throw new Error("main chart viewport commit requires state and plan");
-    }
-    session.pinnedXRange = viewportPlan.pinnedXRange;
-    session.userViewportPinned = viewportPlan.userViewportPinned;
-    session.pendingCompositionViewport = viewportPlan.pendingCompositionViewport;
-    applyFuturePlan?.(viewportPlan);
-    return viewportPlan;
-  }
-
   async function fitMainChartToViewport(options = {}) {
     const element = options.element;
     const renderer = options.renderer;
@@ -894,10 +923,14 @@
       || !updateRuntime) return null;
 
     const primaryTraces = renderer.rangeBearingTraces(element.data);
-    const fittedRange = options.fitRangeForTraces(primaryTraces, options.xRange, {
-      paddingRatio: options.paddingRatio ?? 0.08,
-      minimumPadding: options.minimumPadding ?? 0.6,
-    });
+    const fittedRange = options.fitRangeForTraces(
+      primaryTraces,
+      options.xRange,
+      options.fitOptions || {
+        paddingRatio: options.paddingRatio ?? 0.08,
+        minimumPadding: options.minimumPadding ?? 0.6,
+      },
+    );
     const yRange = options.expandOnly && typeof options.expandRangeToContain === "function"
       ? options.expandRangeToContain(element._fullLayout.yaxis.range, fittedRange)
       : fittedRange;
@@ -975,9 +1008,12 @@
         delayedScaleTraces,
         options.xRange,
         options.yRange,
+        options.fitOptions,
       ) === true;
-    if (needsDelayedFit) {
-      session.pendingAutoChartFit = true;
+    if (session.autoChartReset === true) {
+      // The composed frame already owns its fitted Y range. Keep a follow-up fit
+      // only when a late future overlay genuinely escaped that committed range.
+      session.pendingAutoChartFit = needsDelayedFit;
     }
     return Object.freeze({
       delayedScaleTraceCount: delayedScaleTraces.length,
@@ -1026,6 +1062,7 @@
       updateCalls: 0,
       failedCalls: 0,
     };
+    const settlement = createSettlementWaiters(() => activeOperations > 0);
 
     function plotly() {
       return options.getPlotly?.() || scope.Plotly || null;
@@ -1039,6 +1076,7 @@
     function finish() {
       activeOperations = Math.max(0, activeOperations - 1);
       if (!activeOperations) options.onBusyChange?.(false);
+      settlement.settleIfIdle();
     }
 
     function payloadSignature(payload) {
@@ -1164,6 +1202,7 @@
       runElement,
       stats: () => Object.freeze({ ...stats, activeOperations }),
       update,
+      whenSettled: settlement.whenSettled,
     });
   }
 
@@ -2022,7 +2061,11 @@
       if (frameId && typeof cancelFrame === "function") cancelFrame(frameId);
       frameId = 0;
       if (inFlightPromise) {
-        renderAfterFlight = true;
+        renderAfterFlight = renderAfterFlight
+          || pendingSeries.size > 0
+          || pendingMarkers
+          || pendingHandles
+          || pendingReasons.size > 0;
         return null;
       }
       const frame = takePending();
@@ -2087,12 +2130,12 @@
 
 export {
   acceptPlannedViewportRender,
-  applyMainChartViewportPlan,
   canReuseEventMarkerTraces,
   canReuseFutureOverlayTraces,
   buildMainChartRenderFrame,
   buildLiveViewportRangePayload,
   buildLinkedViewportRangePlan,
+  prepareAnchoredMarkerFrame,
   prepareViewportTraceFrame,
   createLinkedViewportFrameRuntime,
   hasVisibleDatedDataInRange,

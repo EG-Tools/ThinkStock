@@ -10,7 +10,7 @@
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" href="./icon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./styles.css">
-  <script defer src="./assets/app.bundle.min.js?v=dev&amp;build=3.36&amp;asset=aeb2c1aac379"></script>
+  <script defer src="./assets/app.bundle.min.js?v=dev&amp;build=3.37&amp;asset=aa8bbe970b84"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -19,7 +19,7 @@
           <h1>Think Stock</h1>
           <div class="stock-add-panel stock-add-panel-inline" id="stockAddPanel">
             <div class="stock-search-wrap">
-              <input id="stockSearchInput" class="stock-search-input" type="text" autocomplete="off" spellcheck="false" placeholder="종목추가">
+              <input id="stockSearchInput" class="stock-search-input" type="search" inputmode="search" role="searchbox" name="thinkstock-symbol-search" value="" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="search" aria-label="종목 검색 및 추가" placeholder="종목추가">
               <div id="stockSuggestList" class="stock-suggest-list" hidden></div>
             </div>
           </div>
@@ -28,10 +28,7 @@
           <button id="hoverToggle" class="chart-toggle hover-toggle-btn top-control-toggle top-info-btn" title="정보창 ON/OFF">정보창</button>
           <button id="chartToolsToggle" class="chart-toggle reset-btn top-control-toggle top-chart-tools-btn is-active" type="button" title="메인차트 도구를 숨깁니다." aria-pressed="true">도구</button>
           <button id="chartHandlesToggle" class="chart-toggle reset-btn top-control-toggle top-chart-handles-btn is-active" type="button" title="차트 좌우 조절 핸들 ON/OFF" aria-pressed="true">핸들</button>
-          <label class="credit-offset-wrap" title="2일 후행">
-            <span class="credit-offset-label">자금옵셋</span>
-            <input id="creditOffset" class="credit-offset-input" type="number" value="-2" step="1" min="-30" max="30">
-          </label>
+          <button id="resetHandles" class="chart-toggle reset-btn top-control-toggle top-chart-scale-btn is-active" type="button" title="차트 변경 시 자동으로 세로 범위를 맞춥니다." aria-pressed="true">스케일</button>
           <button id="stockResearchBtn" class="stock-research-btn" type="button" title="시총 상위 종목의 연속 매수·반전 후보 탐구" aria-disabled="true" disabled>종목탐구</button>
           <button id="apiOptionsBtn" class="icon-btn" title="설정" aria-label="설정">⚙</button>
         </div>
@@ -53,7 +50,6 @@
       </header>
       <div class="main-chart-wrap">
         <div id="chart" class="chart-frame"></div>
-        <button id="resetHandles" class="chart-toggle reset-btn chart-reset-btn is-active" type="button" title="차트 변경 시 자동으로 세로 범위를 맞춥니다." aria-pressed="true">스케일</button>
         <button id="coMovementToggle" class="chart-toggle reset-btn chart-side-btn chart-co-movement-btn" type="button" title="마지막 표시 종목 동행율" aria-pressed="false" aria-disabled="true" disabled>동행율</button>
         <button id="insiderTradeToggle" class="chart-toggle hover-toggle-btn insider-trade-toggle-btn chart-side-btn chart-insider-btn" title="DART 내부거래 ON/OFF" aria-pressed="false" aria-disabled="true" disabled>내부거래</button>
         <button id="disclosureToggle" class="chart-toggle hover-toggle-btn disclosure-toggle-btn chart-side-btn chart-disclosure-btn" title="공시 마커 ON/OFF" aria-disabled="true" disabled>공시</button>
@@ -115,7 +111,7 @@
           This product uses the FRED&reg; API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.
         </p>
         <p id="mainAppMeta" class="app-company-line app-company-line-main">
-              <span>Version : <span data-app-version-copy>3.36</span></span>
+              <span>Version : <span data-app-version-copy>3.37</span></span>
           <span>회사 : Life User</span>
           <span>이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a></span>
         </p>
@@ -181,6 +177,14 @@
           <button id="apiSettingsCloseBtn" class="ui-circle-button api-close-btn" type="button" aria-label="닫기">×</button>
         </header>
         <div class="settings-control-group">
+          <div class="cursor-line-setting chart-cursor-mode-setting">
+            <span class="cursor-line-setting-label">차트선 방식</span>
+            <div class="cursor-line-mode-options" role="group" aria-label="차트선 방식">
+              <button class="cursor-line-mode-btn" type="button" data-chart-cursor-mode="vertical" aria-label="세로 차트선 방식" aria-pressed="true"><span class="cursor-line-glyph" aria-hidden="true"></span></button>
+              <button class="cursor-line-mode-btn" type="button" data-chart-cursor-mode="horizontal" aria-label="가로 차트선 방식" aria-pressed="false"><span class="cursor-line-glyph" aria-hidden="true"></span></button>
+              <button class="cursor-line-mode-btn" type="button" data-chart-cursor-mode="cross" aria-label="십자 차트선 방식" aria-pressed="false"><span class="cursor-line-glyph" aria-hidden="true"></span></button>
+            </div>
+          </div>
           <div class="cursor-line-setting chart-right-padding-setting" title="최신 차트선 오른쪽에 표시할 빈 날짜 영역입니다.">
             <span class="cursor-line-setting-label">차트 우측 여백</span>
             <div class="settings-number-stepper" role="group" aria-label="차트 우측 여백 일수">
@@ -189,12 +193,12 @@
               <button id="chartRightPaddingIncrease" class="settings-stepper-btn" type="button" aria-label="차트 우측 여백 늘리기">+</button>
             </div>
           </div>
-          <div class="cursor-line-setting chart-cursor-mode-setting">
-            <span class="cursor-line-setting-label">차트선 방식</span>
-            <div class="cursor-line-mode-options" role="group" aria-label="차트선 방식">
-              <button class="cursor-line-mode-btn" type="button" data-chart-cursor-mode="vertical" aria-label="세로 차트선 방식" aria-pressed="true"><span class="cursor-line-glyph" aria-hidden="true"></span></button>
-              <button class="cursor-line-mode-btn" type="button" data-chart-cursor-mode="horizontal" aria-label="가로 차트선 방식" aria-pressed="false"><span class="cursor-line-glyph" aria-hidden="true"></span></button>
-              <button class="cursor-line-mode-btn" type="button" data-chart-cursor-mode="cross" aria-label="십자 차트선 방식" aria-pressed="false"><span class="cursor-line-glyph" aria-hidden="true"></span></button>
+          <div class="cursor-line-setting credit-offset-setting" title="예탁금과 신용자금 차트의 날짜 위치를 조절합니다.">
+            <span class="cursor-line-setting-label">예탁금 신용자금 옵셋</span>
+            <div class="settings-number-stepper" role="group" aria-label="예탁금 신용자금 옵셋">
+              <button id="creditOffsetDecrease" class="settings-stepper-btn" type="button" aria-label="예탁금 신용자금 옵셋 줄이기">-</button>
+              <output id="creditOffsetValue" class="settings-stepper-value credit-offset-value" aria-live="polite">-2</output>
+              <button id="creditOffsetIncrease" class="settings-stepper-btn" type="button" aria-label="예탁금 신용자금 옵셋 늘리기">+</button>
             </div>
           </div>
           <div class="cursor-line-setting disparity-moving-average-setting" title="보조차트 표시만 변경하며 신호·AI 계산에는 영향을 주지 않습니다.">
@@ -289,7 +293,7 @@
           <p id="appCacheEmpty" class="app-cache-empty" hidden>저장된 캐시가 없습니다.</p>
         </section>
         <p id="settingsAppMeta" class="app-company-line">
-        <span class="api-settings-version">Version : <span id="appVersionText">3.36</span></span>
+        <span class="api-settings-version">Version : <span id="appVersionText">3.37</span></span>
           <span>회사 : Life User</span>
           <span>이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a></span>
         </p>

@@ -13,6 +13,18 @@
     "fearGreed",
     "newsSentiment",
   ]);
+  const AUXILIARY_LAYOUT_METRICS = Object.freeze({
+    topMargin: 52,
+    bottomMargin: 12,
+    panelGap: 18,
+    controlsOnlyHeight: 42,
+    panelHeights: Object.freeze({
+      adr: 180,
+      fearGreed: 85,
+      newsSentiment: 85,
+      vkospi: 85,
+    }),
+  });
   const AUXILIARY_CHART_CONFIG = Object.freeze({
     adrBandColor: "rgba(100,100,100,0.06)",
     adrHighThreshold: 120,
@@ -55,6 +67,7 @@
 
   const contract = Object.freeze({
     AUXILIARY_CHART_CONFIG,
+    AUXILIARY_LAYOUT_METRICS,
     AUXILIARY_PANEL_KEYS,
     MACD_DISPARITY_DAYS,
     MACD_DISPARITY_MAX_DAYS,
@@ -68,6 +81,7 @@
   });
 export {
   AUXILIARY_CHART_CONFIG,
+  AUXILIARY_LAYOUT_METRICS,
   AUXILIARY_PANEL_KEYS,
   MACD_DISPARITY_DAYS,
   MACD_DISPARITY_MAX_DAYS,

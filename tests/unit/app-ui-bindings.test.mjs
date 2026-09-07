@@ -207,48 +207,6 @@ test("main chart control view renders shared button state from the chart session
   assert.match(elements.get("coMovementToggle").title, /삼성전자/);
 });
 
-test("moving-average settings share one bounded number-stepper view", () => {
-  const ids = [
-    "macdDisparityValue",
-    "macdDisparityDecrease",
-    "macdDisparityIncrease",
-    "newsSentimentMovingAverageValue",
-    "newsSentimentMovingAverageDecrease",
-    "newsSentimentMovingAverageIncrease",
-  ];
-  const elements = new Map(ids.map((id) => [id, fakeElement()]));
-  const state = {
-    macdDisparityDays: 60,
-    newsSentimentMovingAverageDays: 1,
-  };
-  const view = bindings.createMainChartControlView({
-    document: {
-      getElementById: (id) => elements.get(id) || null,
-      querySelector: () => null,
-      querySelectorAll: () => [],
-    },
-  }, {
-    state,
-    controlStateView: { syncControl: () => null, syncChoiceControls: () => 0 },
-    normalizeMacdDisparityDays: (value) => Math.max(5, Math.min(60, Number(value) || 60)),
-    normalizeNewsMovingAverageDays: (value) => Math.max(1, Math.min(20, Number(value) || 1)),
-    macdDisparityMinDays: 5,
-    macdDisparityMaxDays: 60,
-    newsMovingAverageMinDays: 1,
-    newsMovingAverageMaxDays: 20,
-  });
-
-  assert.equal(view.syncMacdDisparity(), 60);
-  assert.equal(elements.get("macdDisparityValue").textContent, "60");
-  assert.equal(elements.get("macdDisparityDecrease").disabled, false);
-  assert.equal(elements.get("macdDisparityIncrease").disabled, true);
-  assert.equal(view.syncNewsMovingAverage(), 1);
-  assert.equal(elements.get("newsSentimentMovingAverageValue").textContent, "1");
-  assert.equal(elements.get("newsSentimentMovingAverageDecrease").disabled, true);
-  assert.equal(elements.get("newsSentimentMovingAverageIncrease").disabled, false);
-});
-
-
 test("disclosure toggle applies its fast path before rendering", () => {
   const button = fakeElement();
   let enabled = true;
@@ -527,14 +485,19 @@ test("stock selection view keeps suggestion state and delegated actions in one b
 test("stock search panel owns search, keyboard, and submission wiring", async () => {
   const input = fakeElement();
   const suggestionList = fakeElement();
-  input.value = "삼성";
+  input.value = "-2";
   suggestionList.hidden = true;
   const documentListeners = new Map();
+  const scopeListeners = new Map();
   const document = {
     addEventListener: (name, listener) => documentListeners.set(name, listener),
     getElementById(id) {
       return id === "stockSearchInput" ? input : suggestionList;
     },
+  };
+  const scope = {
+    document,
+    addEventListener: (name, listener) => scopeListeners.set(name, listener),
   };
   const rendered = [];
   const submitted = [];
@@ -550,7 +513,7 @@ test("stock search panel owns search, keyboard, and submission wiring", async ()
     setSuggestionHandler: (handler) => { view.select = handler; },
     suggestionCount: () => 1,
   };
-  const controller = bindings.bindStockSearchPanel({ document }, {
+  const controller = bindings.bindStockSearchPanel(scope, {
     view,
     loadUniverse: async () => {},
     filterUniverse: (keyword) => keyword === "삼성" ? [item] : [],
@@ -558,6 +521,22 @@ test("stock search panel owns search, keyboard, and submission wiring", async ()
   });
 
   assert.ok(controller);
+  assert.equal(input.value, "");
+  assert.equal(hidden, 1);
+  input.value = "-2";
+  scopeListeners.get("pageshow")();
+  assert.equal(input.value, "");
+  assert.equal(hidden, 2);
+  input.value = "-5";
+  input.dispatch("input");
+  assert.equal(input.value, "");
+  assert.deepEqual(rendered, []);
+  assert.equal(hidden, 3);
+  input.value = "-2";
+  input.dispatch("animationstart", { animationName: "stock-search-autofill-detected" });
+  assert.equal(input.value, "");
+  assert.equal(hidden, 4);
+  input.value = "삼성";
   assert.equal(await controller.refreshSuggestions(), 1);
   assert.deepEqual(rendered, [[item]]);
   input.dispatch("keydown", { key: "ArrowDown", preventDefault() {} });
@@ -565,9 +544,9 @@ test("stock search panel owns search, keyboard, and submission wiring", async ()
   await controller.submitSuggestion(item);
   assert.deepEqual(submitted, ["005930.KS"]);
   assert.equal(input.value, "");
-  assert.equal(hidden, 1);
+  assert.equal(hidden, 5);
 
   documentListeners.get("click")({ target: {} });
-  assert.equal(hidden, 2);
-  assert.equal(bindings.bindStockSearchPanel({ document }, { view }), null);
+  assert.equal(hidden, 6);
+  assert.equal(bindings.bindStockSearchPanel(scope, { view }), null);
 });

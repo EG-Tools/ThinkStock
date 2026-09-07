@@ -1,5 +1,6 @@
 import { chartLoader } from "./chart-loader.mjs";
 import { assertChartRenderPayload } from "./chart-render-contract.mjs";
+import { AUXILIARY_LAYOUT_METRICS } from "./auxiliary-chart-contract.mjs";
 import {
   createAuxiliaryPanelControlView,
   syncControl,
@@ -361,7 +362,6 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       AUXILIARY_SERIES_KEYS,
       FEAR_GREED_HIGH_THRESH,
       FEAR_GREED_LOW_THRESH,
-      MACD_STOCK_PATTERN,
       NEWS_SENTIMENT_HIGH_THRESH,
       NEWS_SENTIMENT_LOW_THRESH,
       SERIES_COLORS,
@@ -382,7 +382,7 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       getAuxiliaryChartModel: externalGetAuxiliaryChartModel,
       getAuxiliaryChartModelSource: externalGetAuxiliaryChartModelSource,
       getMacdModelForSeries,
-      getPreferredStockSeries,
+      getPreferredTechnicalSeries,
       fitRangeForTraces,
       isTouchDevice,
       labelName,
@@ -391,6 +391,7 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       runPlotlyUpdate,
       seriesColor,
       startPerfSample,
+      supportsTechnicalSeries = () => false,
       syncHoverToChart,
       syncState,
       thinMacdPoints,
@@ -590,8 +591,6 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
     }
     let lastAdrRenderKey = "";
     let auxiliaryChartRenderGeneration = 0;
-    let pendingAdrRenderRequest = null;
-    let adrRenderPromise = null;
     let lastMacdTraceCount = 0;
     let lastMacdRenderKey = "";
     let lastMacdViewportWindows = [];
@@ -997,10 +996,10 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
         .map((model) => String(model?.series || "").toUpperCase())
         .filter((series) => series && !chartSession.hiddenSeries.has(series));
       const orderedVisibleSeries = orderItemsByActivation(
-        renderedSeries.filter((series) => MACD_STOCK_PATTERN.test(series)),
+        renderedSeries.filter((series) => supportsTechnicalSeries(series)),
         chartSession.mainHoverSeriesOrder,
       );
-      const requestedTarget = String(getPreferredStockSeries?.() || "").toUpperCase();
+      const requestedTarget = String(getPreferredTechnicalSeries?.() || "").toUpperCase();
       const targetSeries = orderedVisibleSeries.includes(requestedTarget)
         ? requestedTarget
         : orderedVisibleSeries.at(-1) || "";
@@ -1133,7 +1132,12 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
         || symmetricRange(disparityValues.length ? disparityValues : oscillatorValues);
       const layout = {
         ...chartLoader.layoutStyle(),
-        margin: { l: auxiliaryChartHorizontalMargin(), r: auxiliaryChartHorizontalMargin(), t: 34, b: 30 },
+        margin: {
+          l: auxiliaryChartHorizontalMargin(),
+          r: auxiliaryChartHorizontalMargin(),
+          t: 34,
+          b: AUXILIARY_LAYOUT_METRICS.bottomMargin,
+        },
         hovermode: buildCursorHoverMode(
           chartSession.hoverShowPopup,
           chartSession.cursorLineMode,
@@ -1156,6 +1160,7 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
         }],
         xaxis: {
           ...chartLoader.axisStyle({ tickFontSize: 9 }),
+          showticklabels: false,
           fixedrange: false,
           ...buildCursorLineAxisLayout(chartSession.cursorLineMode, "x"),
           hoverformat: CHART_HOVER_DATE_FORMAT,
@@ -1389,7 +1394,12 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       const [newsYMin, newsYMax] = viewportRanges.news;
       const [vkospiYMin, vkospiYMax] = viewportRanges.vkospi;
       const horizontalMargin = auxiliaryChartHorizontalMargin();
-      const chartMargin = { l: horizontalMargin, r: horizontalMargin, t: 52, b: 36 };
+      const chartMargin = {
+        l: horizontalMargin,
+        r: horizontalMargin,
+        t: AUXILIARY_LAYOUT_METRICS.topMargin,
+        b: AUXILIARY_LAYOUT_METRICS.bottomMargin,
+      };
       const hiddenAuxiliary = chartSession.hiddenAuxiliarySeries;
       const adrKospiEnabled = !hiddenAuxiliary.has(AUXILIARY_SERIES_KEYS.adrKospi)
         && adrKospiAvailable;
@@ -1887,6 +1897,7 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
           ...chartLoader.axisStyle({ tickFontSize: 9 }),
           fixedrange: false,
           visible: panelLayout.activeKeys.length > 0,
+          showticklabels: false,
           anchor: "free",
           position: 0,
           ...buildCursorLineAxisLayout(chartSession.cursorLineMode, "x"),
@@ -1943,29 +1954,10 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
     }
 
     function renderAdrChart(xRange) {
-      pendingAdrRenderRequest = {
-        xRange: Array.isArray(xRange) && xRange.length === 2 ? xRange.slice(0, 2) : null,
-      };
-      if (adrRenderPromise) return adrRenderPromise;
-      adrRenderPromise = (async () => {
-        while (pendingAdrRenderRequest) {
-          const request = pendingAdrRenderRequest;
-          pendingAdrRenderRequest = null;
-          try {
-            await renderAdrChartNow(request.xRange);
-          } catch (error) {
-            if (!pendingAdrRenderRequest) throw error;
-          }
-        }
-      })().finally(() => {
-        adrRenderPromise = null;
-        if (pendingAdrRenderRequest) {
-          Promise.resolve(renderAdrChart(pendingAdrRenderRequest.xRange)).catch((error) => {
-            scope.console?.error?.("auxiliary chart queued render failed", error);
-          });
-        }
-      });
-      return adrRenderPromise;
+      const range = Array.isArray(xRange) && xRange.length === 2
+        ? xRange.slice(0, 2)
+        : null;
+      return renderAdrChartNow(range);
     }
 
     function invalidateAdr() {
@@ -1973,12 +1965,6 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       lastAdrViewportWindows = [];
       auxiliaryChartRenderGeneration += 1;
       auxiliaryModelResolver?.invalidate();
-      if (adrRenderPromise && !pendingAdrRenderRequest) {
-        const range = scope.document.getElementById("chart")?._fullLayout?.xaxis?.range;
-        pendingAdrRenderRequest = {
-          xRange: Array.isArray(range) && range.length === 2 ? range.slice(0, 2) : null,
-        };
-      }
     }
 
     function invalidateMacd() {
@@ -2023,8 +2009,6 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       renderMacdChart,
       stats: () => ({
         adrRenderKey: lastAdrRenderKey,
-        adrRenderQueued: Boolean(pendingAdrRenderRequest),
-        adrRendering: Boolean(adrRenderPromise),
         adrRenderGeneration: auxiliaryChartRenderGeneration,
         macdRenderKey: lastMacdRenderKey,
         macdTraces: lastMacdTraceCount,

@@ -308,7 +308,7 @@ test("auxiliary panels collapse without leaving an empty axis domain", () => {
     vkospi: false,
   });
 
-  assert.equal(full.chartHeight, 577);
+  assert.equal(full.chartHeight, 553);
   assert.equal(full.separators.length, 3);
   assert.equal(full.bottomAxis, "y4");
   assert.deepEqual(full.axes, {
@@ -318,7 +318,7 @@ test("auxiliary panels collapse without leaving an empty axis domain", () => {
     newsSentiment: "y4",
   });
   assert.deepEqual(collapsed.activeKeys, ["adr", "newsSentiment"]);
-  assert.equal(collapsed.chartHeight, 371);
+  assert.equal(collapsed.chartHeight, 347);
   assert.equal(collapsed.separators.length, 1);
   assert.equal(collapsed.bottomAxis, "y2");
   assert.deepEqual(collapsed.axes, { adr: "y", newsSentiment: "y2" });
@@ -340,7 +340,7 @@ test("all auxiliary panel combinations keep fixed pixel heights and compact clea
     const activeKeys = keys.filter((key) => visibility[key]);
     assert.deepEqual(layout.activeKeys, activeKeys);
     assert.equal(layout.chartHeight, activeKeys.length
-      ? 88 + activeKeys.reduce((sum, key) => sum + targetPixels[key], 0)
+      ? 64 + activeKeys.reduce((sum, key) => sum + targetPixels[key], 0)
         + Math.max(0, activeKeys.length - 1) * 18
       : 42);
     assert.deepEqual(layout.axes, Object.fromEntries(activeKeys.map((key, index) => [

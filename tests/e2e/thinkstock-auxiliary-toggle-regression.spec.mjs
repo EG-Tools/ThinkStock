@@ -139,7 +139,7 @@ test("auxiliary panels remain painted across toggle combinations", async ({ page
       PANELS[key].pixels,
     ]));
     const expectedChartHeight = activeKeys.length
-      ? 88 + Object.values(expectedPanelHeights).reduce((sum, value) => sum + value, 0)
+      ? 64 + Object.values(expectedPanelHeights).reduce((sum, value) => sum + value, 0)
         + Math.max(0, activeKeys.length - 1) * 18
       : 42;
     await expect.poll(() => chart.evaluate((element, expected) => {

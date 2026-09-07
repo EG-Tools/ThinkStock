@@ -139,6 +139,41 @@ test("selects timing and disclosure markers through one interactive index", () =
   });
 });
 
+test("uses the rendered marker center when text glyphs are offset from their data anchors", () => {
+  const traces = [
+    { uid: "marker-0", x: [50], y: [20], mode: "text", meta: { overlayKind: "timing-buy" } },
+    { uid: "marker-1", x: [50], y: [30], mode: "text", meta: { overlayKind: "timing-sell" } },
+  ];
+  const markerNodes = [
+    { getBoundingClientRect: () => ({ left: 145, right: 155, top: 218, bottom: 228 }) },
+    { getBoundingClientRect: () => ({ left: 145, right: 155, top: 230, bottom: 240 }) },
+  ];
+  const groups = markerNodes.map((node, index) => ({
+    classList: { contains: (name) => name === `tracemarker-${index}` },
+    querySelectorAll: (selector) => (selector === ".textpoint text" ? [node] : []),
+  }));
+  const element = {
+    data: traces,
+    _fullData: traces,
+    _fullLayout: {
+      xaxis: { _offset: 0, _length: 100, range: [0, 100], d2p: (value) => value },
+      yaxis: { _offset: 0, _length: 100, range: [0, 100], d2p: (value) => value },
+    },
+    getBoundingClientRect: () => ({ left: 100, top: 200 }),
+    querySelectorAll: () => groups,
+  };
+
+  assert.deepEqual(eventLayer.findMarkerAtClientPoint(element, 150, 235, {
+    cacheKey: "rendered-centers",
+    tracePredicate: () => true,
+    mouseRadius: 20,
+    isTouch: false,
+  }), {
+    traceIndex: 1,
+    pointIndex: 0,
+  });
+});
+
 test("highlights a marker through its trace node without reading every marker rectangle", () => {
   const attributes = new Map();
   const point = {

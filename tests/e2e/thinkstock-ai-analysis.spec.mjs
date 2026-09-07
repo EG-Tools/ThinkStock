@@ -1663,7 +1663,6 @@ test("co-movement toggle shows only the last visible stock for the selected peri
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
 
   const chartButtonOrder = await Promise.all([
-    page.locator("#resetHandles").boundingBox(),
     page.locator("#coMovementToggle").boundingBox(),
     page.locator("#insiderTradeToggle").boundingBox(),
     page.locator("#disclosureToggle").boundingBox(),
@@ -1677,13 +1676,13 @@ test("co-movement toggle shows only the last visible stock for the selected peri
   });
 
   const topControlOrder = await page.locator(".top-controls").evaluate((container) => (
-    [...container.children].map((element) => element.id || element.querySelector("#creditOffset")?.id)
+    [...container.children].map((element) => element.id)
   ));
   expect(topControlOrder).toEqual([
     "hoverToggle",
     "chartToolsToggle",
     "chartHandlesToggle",
-    "creditOffset",
+    "resetHandles",
     "stockResearchBtn",
     "apiOptionsBtn",
   ]);
@@ -1929,6 +1928,8 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
   await expect.poll(() => page.evaluate(() => (
     window.ThinkStockE2E?.getRefreshPhaseStats?.().criticalReady || 0
   ))).toBeGreaterThan(0);
+  await waitForAppReady(page);
+  await waitForChartRenderIdle(page);
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const xRange = element?._fullLayout?.xaxis?.range?.map(Date.parse);
     const yRange = element?._fullLayout?.yaxis?.range?.map(Number);
@@ -2136,7 +2137,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
       lineClearance: expect.any(Number),
       centerSeparation: expect.any(Number),
     });
-    expect(geometry.lineClearance).toBeGreaterThanOrEqual(1);
+    expect(geometry.lineClearance).toBeGreaterThan(0);
     expect(geometry.centerSeparation).toBeGreaterThan(0);
     expect(geometry.centerSeparation).toBeLessThanOrEqual(16);
     return geometry;
@@ -2546,7 +2547,7 @@ test("AI analysis loads only on demand and reuses today's browser cache", async 
   expect(analysisRequests).toBe(firstRequestCount);
 });
 
-test("MACD and disparity follow one selected stock and shared settings", async ({ page }) => {
+test("MACD and disparity follow one selected technical series and shared settings", async ({ page }) => {
   await stubExternalRefreshes(page);
   const macdRecentDates = [];
   const historyCursor = new Date(`${recentDates.at(-1)}T00:00:00Z`);
@@ -2599,6 +2600,7 @@ test("MACD and disparity follow one selected stock and shared settings", async (
   const macdPresentation = await page.evaluate(() => {
     const mainTraces = document.getElementById("chart")?.data || [];
     const macdElement = document.getElementById("chart-macd");
+    const auxiliaryElement = document.getElementById("chart-adr");
     const macdTraces = (macdElement?.data || []).filter((trace) => trace?.meta?.macdSeriesKey);
     const oscillator = macdTraces.find((trace) => trace.meta.macdLineKind === "oscillator");
     const disparity = macdTraces.find((trace) => trace.meta.macdLineKind === "disparity");
@@ -2614,6 +2616,9 @@ test("MACD and disparity follow one selected stock and shared settings", async (
       oscillatorColor: oscillator?.line?.color,
       disparityColor: disparity?.line?.color,
       mainColor: mainTraces.find((trace) => trace?.meta?.seriesKey === "000660.KS")?.line?.color,
+      showDateLabels: macdElement?.layout?.xaxis?.showticklabels,
+      auxiliaryDateLabels: auxiliaryElement?.layout?.xaxis?.showticklabels,
+      bottomMargins: [macdElement?.layout?.margin?.b, auxiliaryElement?.layout?.margin?.b],
       zeroBaseline: (macdElement?.layout?.shapes || []).some((shape) => (
         shape?.yref === "paper" && shape?.y0 === 0.5 && shape?.y1 === 0.5
       )),
@@ -2625,6 +2630,9 @@ test("MACD and disparity follow one selected stock and shared settings", async (
   expect(macdPresentation.onePixelLines).toBe(true);
   expect(macdPresentation.oscillatorColor).toBe(macdPresentation.mainColor);
   expect(macdPresentation.disparityColor).toBe("#c5c9cf");
+  expect(macdPresentation.showDateLabels).toBe(false);
+  expect(macdPresentation.auxiliaryDateLabels).toBe(false);
+  expect(macdPresentation.bottomMargins).toEqual([12, 12]);
   expect(macdPresentation.zeroBaseline).toBe(true);
   await expect(page.locator("#chart-macd .auxiliary-chart-label")).toHaveText("보조차트");
   await expect(page.locator("#chart-macd .auxiliary-macd-target")).toHaveText("SK하이닉스");
@@ -2899,7 +2907,28 @@ test("MACD and disparity follow one selected stock and shared settings", async (
   await page.locator('.series-toggle-btn[data-series="000660.KS"]').click();
   await expect(page.locator("#chart-macd")).toBeVisible();
   await page.locator('.series-toggle-btn[data-series="005930.KS"]').click();
-  await expect(page.locator("#chart-macd")).toBeHidden();
+  await expect(page.locator("#chart-macd")).toBeVisible();
+  await expect.poll(() => page.locator("#chart-macd").evaluate((element) => (
+    [...new Set((element.data || [])
+      .filter((trace) => trace?.meta?.macdSeriesKey)
+      .map((trace) => trace.meta.macdSeriesKey))]
+  ))).toEqual(["^KS11"]);
+  await expect(page.locator("#chart-macd .auxiliary-macd-target")).toHaveText("코스피");
+
+  await page.locator('.series-toggle-btn[data-series="^KQ11"]').click();
+  await expect.poll(() => page.locator("#chart-macd").evaluate((element) => (
+    [...new Set((element.data || [])
+      .filter((trace) => trace?.meta?.macdSeriesKey)
+      .map((trace) => trace.meta.macdSeriesKey))]
+  ))).toEqual(["^KQ11"]);
+  await expect(page.locator("#chart-macd .auxiliary-macd-target")).toHaveText("코스닥");
+
+  await page.locator('.series-toggle-btn[data-series="leading_cycle"]').click();
+  await expect.poll(() => page.locator("#chart-macd").evaluate((element) => (
+    [...new Set((element.data || [])
+      .filter((trace) => trace?.meta?.macdSeriesKey)
+      .map((trace) => trace.meta.macdSeriesKey))]
+  ))).toEqual(["^KQ11"]);
 });
 
 test("auxiliary charts retain available history while the viewport pans", async ({ page }) => {

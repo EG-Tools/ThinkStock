@@ -3,7 +3,6 @@ import test from "node:test";
 
 import {
   acceptPlannedViewportRender,
-  applyMainChartViewportPlan,
   buildLinkedViewportRangePlan,
   buildLiveViewportRangePayload,
   buildMainChartRenderFrame,
@@ -22,6 +21,7 @@ import {
   hasVisibleDatedDataInRange,
   hydrateMainChartSession,
   normalizeChartInvalidation,
+  prepareAnchoredMarkerFrame,
   prepareViewportTraceFrame,
   reconcileBaseValuesBySeries,
   shouldHydrateChartData,
@@ -29,6 +29,7 @@ import {
   settleChartWorkTransaction,
   settleViewportRenderTransaction,
 } from "../../docs/modules/chart-update-coordinator.mjs";
+import { chartMarkerLayout } from "../../docs/modules/chart-marker-runtime.mjs";
 
 test("visible range checks find sparse values without scanning the full history", () => {
   const dates = Array.from({ length: 5000 }, (_, index) => (
@@ -416,10 +417,45 @@ test("prepares a composed frame with transformed series before reanchoring reuse
   assert.deepEqual(traces[1].y, [108]);
 });
 
+test("anchors a marker-only frame to the rendered price trace before hover composition", () => {
+  const traces = [
+    {
+      x: ["2026-01-01", "2026-01-02"],
+      y: [95, 105],
+      meta: { overlayKind: "price", seriesKey: "A" },
+    },
+    {
+      x: ["2026-01-02"],
+      y: [4200],
+      meta: {
+        markerGapFactors: [1],
+        overlayKind: "disclosure",
+        pointTickers: ["A"],
+      },
+    },
+  ];
+
+  const prepared = prepareAnchoredMarkerFrame({
+    traces,
+    viewportRange: [90, 110],
+    collectAnchoredYUpdates: chartMarkerLayout.collectViewportAnchoredYUpdates,
+  });
+
+  assert.deepEqual(prepared.traceIndexes, [1]);
+  assert.deepEqual(prepared.traces[0].y, [95, 105]);
+  assert.deepEqual(prepared.traces[1].y, [105.4]);
+  assert.deepEqual(traces[1].y, [4200]);
+});
+
 test("one chart work transaction owns the complete settlement order", async () => {
   const calls = [];
   const result = await settleChartWorkTransaction({
     navigation: { whenRangeSettled: async () => calls.push("navigation") },
+    visualFrame: {
+      flush: () => calls.push("visual-flush"),
+      whenSettled: async () => calls.push("visual"),
+      hasPending: () => false,
+    },
     rangeController: {
       flush: async () => calls.push("range"),
       isBusy: () => false,
@@ -432,48 +468,74 @@ test("one chart work transaction owns the complete settlement order", async () =
       whenSettled: async () => calls.push("auxiliary"),
       isBusy: () => false,
     },
+    plotlyRuntime: {
+      whenSettled: async () => calls.push("plotly"),
+      isBusy: () => false,
+    },
     afterSettled: async () => calls.push("after"),
   });
 
-  assert.deepEqual(calls, ["navigation", "range", "main", "auxiliary", "range", "after"]);
+  assert.deepEqual(calls, [
+    "navigation",
+    "visual-flush",
+    "visual",
+    "range",
+    "main",
+    "auxiliary",
+    "plotly",
+    "after",
+  ]);
   assert.deepEqual(result, { settled: true });
   assert.equal(Object.isFrozen(result), true);
 });
 
 test("chart settlement drains work queued by its final linked-range frame", async () => {
   const calls = [];
-  let rangePass = 0;
+  let rangeBusy = false;
   let mainBusy = false;
+  let auxiliaryBusy = false;
+  let rangePass = 0;
+  let mainPass = 0;
+  let auxiliaryPass = 0;
   const result = await settleChartWorkTransaction({
     rangeController: {
       flush: async () => {
         rangePass += 1;
         calls.push(`range-${rangePass}`);
-        if (rangePass === 2) mainBusy = true;
+        rangeBusy = false;
+        if (rangePass > 1) mainBusy = true;
       },
-      isBusy: () => false,
+      isBusy: () => rangeBusy,
     },
     mainScheduler: {
       whenSettled: async () => {
-        calls.push("main");
-        mainBusy = false;
+        mainPass += 1;
+        calls.push(`main-${mainPass}`);
+        if (mainBusy) {
+          mainBusy = false;
+          auxiliaryBusy = true;
+        }
       },
       isRendering: () => mainBusy,
     },
     auxiliaryQueue: {
-      whenSettled: async () => calls.push("auxiliary"),
-      isBusy: () => false,
+      whenSettled: async () => {
+        auxiliaryPass += 1;
+        calls.push(`auxiliary-${auxiliaryPass}`);
+        if (auxiliaryBusy) auxiliaryBusy = false;
+        else rangeBusy = true;
+      },
+      isBusy: () => auxiliaryBusy,
     },
   });
 
   assert.deepEqual(calls, [
     "range-1",
-    "main",
-    "auxiliary",
+    "main-1",
+    "auxiliary-1",
     "range-2",
-    "main",
-    "auxiliary",
-    "range-3",
+    "main-2",
+    "auxiliary-2",
   ]);
   assert.equal(result.settled, true);
 });
@@ -1080,12 +1142,13 @@ test("builds composition, viewport, and layout through one render frame boundary
             defaultXRange: ["2026-07-01", "2026-07-31"],
             forecastEnd: "2026-01-31",
             savedXRange: ["2026-01-01", "2026-01-31"],
-            savedYRange: null,
+            savedYRange: [4, 16],
           };
         },
       },
       observedStart: "2026-01-01",
       observedEnd: "2026-01-31",
+      autoChartReset: true,
       showAiForecast: false,
       showEps: false,
       futurePlanState: {},
@@ -1101,7 +1164,8 @@ test("builds composition, viewport, and layout through one render frame boundary
     },
   });
 
-  assert.deepEqual(frame.viewportPlan.savedYRange, null);
+  assert.deepEqual(frame.viewportPlan.savedYRange, [4, 16]);
+  assert.equal(frame.layout.options.yRange, null);
   assert.deepEqual(frame.layout.options.fittedYRange, [0, 20]);
   assert.deepEqual(fittedRanges, [["2026-01-01", "2026-01-31"]]);
   assert.deepEqual(viewportCalls[0].nextVisibleDataRange, [1, 2]);
@@ -1111,14 +1175,12 @@ test("builds composition, viewport, and layout through one render frame boundary
 
 test("commits viewport and delayed overlay state through one render boundary", () => {
   const session = { autoChartReset: true };
-  const applied = [];
   const viewportPlan = {
     pinnedXRange: ["2026-01-01", "2026-06-30"],
     savedXRange: ["2026-01-01", "2026-06-30"],
     userViewportPinned: true,
     pendingCompositionViewport: null,
   };
-  applyMainChartViewportPlan(session, viewportPlan, (plan) => applied.push(plan));
   const result = finalizeMainChartFrameState(session, {
     viewportPlan,
     aiForecastTraces: [{ y: [120] }],
@@ -1130,13 +1192,36 @@ test("commits viewport and delayed overlay state through one render boundary", (
     tracesExceedVisibleYRange: () => true,
   });
 
-  assert.deepEqual(applied, [viewportPlan]);
   assert.equal(session.currentStart, "2026-01-01");
   assert.equal(session.currentEnd, "2026-06-30");
   assert.equal(session.pendingAutoChartFit, true);
   assert.deepEqual(result.mainRange, ["2026-01-01", "2026-06-30"]);
   assert.equal(result.delayedScaleTraceCount, 2);
   assert.equal(result.needsDelayedFit, true);
+});
+
+test("clears a queued auto fit after the composed frame already contains its overlays", () => {
+  const session = { autoChartReset: true, pendingAutoChartFit: true };
+  const viewportPlan = {
+    pinnedXRange: ["2026-01-01", "2026-06-30"],
+    savedXRange: ["2026-01-01", "2026-06-30"],
+    userViewportPinned: true,
+    pendingCompositionViewport: null,
+  };
+
+  const result = finalizeMainChartFrameState(session, {
+    viewportPlan,
+    aiForecastTraces: [{ y: [105] }],
+    epsTraces: [{ y: [108] }],
+  }, {
+    renderedRange: [Date.parse("2026-01-01"), Date.parse("2026-06-30")],
+    xRange: ["2026-01-01", "2026-06-30"],
+    yRange: [80, 110],
+    tracesExceedVisibleYRange: () => false,
+  });
+
+  assert.equal(result.needsDelayedFit, false);
+  assert.equal(session.pendingAutoChartFit, false);
 });
 
 test("composition updates prepare state once with the request policy before rendering", () => {
@@ -1350,11 +1435,15 @@ test("plotly update runtime reuses an identical relayout already in flight", asy
 
   const first = runtime.relayout(element, payload);
   const second = runtime.relayout(element, { ...payload });
+  let settled = false;
+  const settlement = runtime.whenSettled().then(() => { settled = true; });
   await Promise.resolve();
   assert.equal(calls, 1);
   assert.equal(runtime.stats().coalescedRelayoutCalls, 1);
+  assert.equal(settled, false);
   release(true);
-  await Promise.all([first, second]);
+  await Promise.all([first, second, settlement]);
+  assert.equal(settled, true);
   assert.equal(runtime.isBusy(), false);
 });
 

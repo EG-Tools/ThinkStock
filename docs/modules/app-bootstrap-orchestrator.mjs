@@ -99,10 +99,7 @@ export function createApplicationLifecycleRuntime(options = {}) {
       loadHistorical: initial.loadHistorical,
       onHistoricalError: () => initial.onHistoricalError?.(messageElement),
       plotlyReady: plotlyReadyTask,
-      renderMain: async () => {
-        await initial.renderMain?.(Boolean(initial.shouldPreserveViewport?.()));
-        if (initial.shouldAutoFit?.()) await initial.fitCurrentChart?.();
-      },
+      renderMain: () => initial.renderMain?.(Boolean(initial.shouldPreserveViewport?.())),
       setProgress: initial.setProgress,
     });
   }
@@ -112,7 +109,6 @@ export function createApplicationLifecycleRuntime(options = {}) {
     if (refresh.renderAfterData !== false) {
       // Legacy refresh providers may not own chart rendering themselves.
       await refresh.renderMain?.(true);
-      if (refresh.shouldAutoFit?.()) await refresh.fitCurrentChart?.();
     }
     const jobs = optionalRefreshes
       .filter((feature) => feature?.enabled?.())

@@ -134,7 +134,7 @@ test("builds identical worker and synchronous main-chart requests", () => {
     activeMonths: -12,
     allowedSeries: ["AAA", "leading_cycle"],
     creditCols: ["customer_deposit"],
-    creditOffsetDays: 2,
+    creditOffsetDays: -2,
     customStocksSignature: "AAA:#fff",
     dataStart: "2025-08-22",
     dataEnd: "2026-08-22",

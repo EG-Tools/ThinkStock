@@ -31,10 +31,10 @@
     const group = (uid ? groups.find((node) => node.classList?.contains?.(`trace${uid}`)) : null)
       || groups[traceIndex]
       || null;
-    const markerNodes = group ? [...group.querySelectorAll(".points path.point")] : [];
+    const markerNodes = group ? [...(group.querySelectorAll?.(".points path.point") || [])] : [];
     const nodes = markerNodes.length
       ? markerNodes
-      : (group ? [...group.querySelectorAll(".textpoint text")] : []);
+      : (group ? [...(group.querySelectorAll?.(".textpoint text") || [])] : []);
     if (!cache) {
       cache = new Map();
       markerNodeCache.set(element, cache);
@@ -46,6 +46,19 @@
   function markerStyleAt(value, pointIndex, fallback = "") {
     if (Array.isArray(value)) return value[pointIndex] ?? fallback;
     return value ?? fallback;
+  }
+
+  function markerVisualCenter(node, elementRect) {
+    const rect = node?.getBoundingClientRect?.();
+    const left = Number(rect?.left);
+    const top = Number(rect?.top);
+    const right = Number(rect?.right);
+    const bottom = Number(rect?.bottom);
+    if (!elementRect || ![left, top, right, bottom].every(Number.isFinite)) return null;
+    return {
+      x: ((left + right) / 2) - Number(elementRect.left || 0),
+      y: ((top + bottom) / 2) - Number(elementRect.top || 0),
+    };
   }
 
   function setMarkerHighlighted(element, traceIndex, pointIndex, highlighted, options = {}) {
@@ -99,7 +112,11 @@
       : (trace) => trace?.meta?.overlayKind === "disclosure";
     const traceEntries = element.data
       .map((trace, traceIndex) => ({ trace, traceIndex }))
-      .filter(({ trace }) => tracePredicate(trace) && trace.visible !== "legendonly");
+      .filter(({ trace }) => tracePredicate(trace) && trace.visible !== "legendonly")
+      .map((entry) => ({
+        ...entry,
+        markerNodes: traceMarkerNodes(element, entry.traceIndex),
+      }));
     const xAxis = element._fullLayout.xaxis;
     if (!traceEntries.length || !xAxis || typeof xAxis.d2p !== "function") return null;
 
@@ -121,34 +138,43 @@
     let cacheByKey = markerPixelCache.get(element);
     const cached = cacheByKey?.get(cacheKey);
     const tracesUnchanged = cached?.traceEntries?.length === traceEntries.length
-      && traceEntries.every(({ trace, traceIndex }, index) => (
+      && traceEntries.every(({ trace, traceIndex, markerNodes }, index) => (
         cached.traceEntries[index]?.trace === trace
         && cached.traceEntries[index]?.traceIndex === traceIndex
         && cached.traceEntries[index]?.xValues === trace.x
         && cached.traceEntries[index]?.yValues === trace.y
+        && cached.traceEntries[index]?.markerNodes?.length === markerNodes.length
+        && markerNodes.every((node, nodeIndex) => (
+          cached.traceEntries[index]?.markerNodes?.[nodeIndex] === node
+        ))
       ));
     if (tracesUnchanged && cached.axisKey === axisKey) {
       return cached;
     }
 
     const points = [];
-    traceEntries.forEach(({ trace, traceIndex }) => {
+    const elementRect = element.getBoundingClientRect?.() || null;
+    traceEntries.forEach(({ trace, traceIndex, markerNodes }) => {
       const yAxis = trace?.yaxis === "y2" ? element._fullLayout.yaxis2 : element._fullLayout.yaxis;
       if (!yAxis || typeof yAxis.d2p !== "function") return;
       const pointCount = Math.min(Array.isArray(trace.x) ? trace.x.length : 0, Array.isArray(trace.y) ? trace.y.length : 0);
       for (let pointIndex = 0; pointIndex < pointCount; pointIndex += 1) {
-        const x = Number(xAxis._offset || 0) + xAxis.d2p(trace.x[pointIndex]);
-        const y = Number(yAxis._offset || 0) + yAxis.d2p(trace.y[pointIndex]);
+        const visualCenter = markerVisualCenter(markerNodes[pointIndex], elementRect);
+        const x = visualCenter?.x
+          ?? (Number(xAxis._offset || 0) + xAxis.d2p(trace.x[pointIndex]));
+        const y = visualCenter?.y
+          ?? (Number(yAxis._offset || 0) + yAxis.d2p(trace.y[pointIndex]));
         if (Number.isFinite(x) && Number.isFinite(y)) points.push({ x, y, traceIndex, pointIndex });
       }
     });
     points.sort((left, right) => left.x - right.x);
     const index = {
-      traceEntries: traceEntries.map(({ trace, traceIndex }) => ({
+      traceEntries: traceEntries.map(({ trace, traceIndex, markerNodes }) => ({
         trace,
         traceIndex,
         xValues: trace.x,
         yValues: trace.y,
+        markerNodes,
       })),
       axisKey,
       points,
