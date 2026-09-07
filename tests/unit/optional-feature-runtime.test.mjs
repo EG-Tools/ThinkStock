@@ -118,7 +118,7 @@ test("loads each optional feature only once and creates one timing service", asy
           : name === "auxiliary-chart"
             ? { auxiliaryChartFeature }
           : name === "eps-chart"
-          ? { epsChart }
+          ? { epsFeature: epsChart }
           : name === "market-timing"
             ? { marketTimingFeature }
           : name === "stock-research"

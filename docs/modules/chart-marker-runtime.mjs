@@ -3,6 +3,7 @@ import {
   EVENT_MARKER_FONT_FAMILY,
   buildEventMarkerTextFont,
 } from "./chart-render-contract.mjs";
+import { APP_DATA_COMPONENT_GROUPS } from "./app-data-store.mjs";
 
 const defaultScope = typeof self !== "undefined" ? self : globalThis;
 export const MINIMUM_TIMING_VOLUME_POINTS = 20;
@@ -441,7 +442,6 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
       netSameReporterInsiderTrades,
       recordPerfSample,
       recordRuntimeError,
-      onMarketTimingInputsPrepared,
       shouldPrepareMarketTimingModels = () => true,
       signalProgress,
       seriesColor,
@@ -469,11 +469,38 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
     let lastTimingPreparationKey = "";
     let pendingTimingPreparation = null;
     let timingPreparationGeneration = 0;
-    let timingInputRenderQueued = false;
+    const timingPreparationTargetGenerations = new Map();
     const timingProgressTasks = new Map();
 
     function normalizeTimingTarget(value) {
       return String(value || "").trim().toUpperCase();
+    }
+
+    function timingTargetGeneration(target) {
+      return timingPreparationTargetGenerations.get(normalizeTimingTarget(target)) || 0;
+    }
+
+    function captureTimingPreparationGeneration(targets) {
+      return Object.freeze({
+        global: timingPreparationGeneration,
+        targets: Object.freeze((targets || []).map((target) => (
+          Object.freeze([normalizeTimingTarget(target), timingTargetGeneration(target)])
+        ))),
+      });
+    }
+
+    function isTimingPreparationGenerationCurrent(snapshot) {
+      return snapshot?.global === timingPreparationGeneration
+        && snapshot.targets.every(([target, generation]) => (
+          timingTargetGeneration(target) === generation
+        ));
+    }
+
+    function timingPreparationGenerationKey(snapshot) {
+      return [
+        snapshot?.global || 0,
+        ...(snapshot?.targets || []).map(([target, generation]) => `${target}:${generation}`),
+      ].join("|");
     }
 
     function cancelMarketTimingPreparation(seriesKey = "") {
@@ -485,7 +512,11 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
         && (!target || pendingTimingPreparation.targets.has(target));
       if (!taskKeys.length && !pendingMatches) return false;
 
-      timingPreparationGeneration += 1;
+      if (target) {
+        timingPreparationTargetGenerations.set(target, timingTargetGeneration(target) + 1);
+      } else {
+        timingPreparationGeneration += 1;
+      }
       taskKeys.forEach((taskKey) => {
         timingProgressTasks.delete(taskKey);
         signalProgress?.cancel?.(taskKey);
@@ -497,6 +528,9 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
     function beginMarketTimingProgress(targets) {
       const descriptor = marketTimingProgressDescriptor(targets, labelName);
       if (!descriptor) return false;
+      // A prepared toggle can expose progress before the calculation starts.
+      // Reuse that session so another entry point cannot steal completion.
+      if (timingProgressTasks.has(descriptor.key)) return true;
       const token = {};
       const started = signalProgress?.begin?.(descriptor.key, descriptor.label) === true;
       if (started) {
@@ -506,17 +540,6 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
         });
       }
       return started;
-    }
-
-    function queueTimingInputRender() {
-      if (timingInputRenderQueued || typeof onMarketTimingInputsPrepared !== "function") return;
-      timingInputRenderQueued = true;
-      const run = () => {
-        timingInputRenderQueued = false;
-        onMarketTimingInputsPrepared();
-      };
-      if (typeof scope.setTimeout === "function") scope.setTimeout(run, 0);
-      else run();
     }
 
     function markerRenderFingerprint(frame, kind, suffix = "") {
@@ -1133,25 +1156,34 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
       });
     }
 
-    async function prepareMarketTimingModels(selected, seriesModels) {
+    async function prepareMarketTimingModels(selected, seriesModels, preparationOptions = {}) {
       const targets = visibleTimingSeries(selected, seriesModels);
       if (!chartSession.showRecessionSignals
-        || !targets.length
-        || shouldPrepareMarketTimingModels() === false) return;
-      const preparationGeneration = timingPreparationGeneration;
+        || !targets.length) return;
+      const preparationGeneration = captureTimingPreparationGeneration(targets);
+      const preparationGenerationKey = timingPreparationGenerationKey(preparationGeneration);
       const progressDescriptor = marketTimingProgressDescriptor(targets, labelName);
       const taskKey = progressDescriptor.key;
       const taskLabel = progressDescriptor.label;
       let progressStarted = false;
-      const progressToken = {};
+      let progressToken = null;
       const ownsProgress = () => (
         timingProgressTasks.get(taskKey)?.token === progressToken
       );
+      const adoptProgress = () => {
+        const task = timingProgressTasks.get(taskKey);
+        if (!task) return false;
+        progressToken = task.token;
+        progressStarted = true;
+        return true;
+      };
       const isCurrentPreparation = () => (
-        preparationGeneration === timingPreparationGeneration
+        isTimingPreparationGenerationCurrent(preparationGeneration)
       );
       const beginProgress = () => {
         if (progressStarted) return;
+        if (adoptProgress()) return;
+        progressToken = {};
         progressStarted = signalProgress?.begin?.(taskKey, taskLabel) === true;
         if (progressStarted) {
           timingProgressTasks.set(taskKey, {
@@ -1171,6 +1203,14 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
         signalProgress?.complete?.(taskKey, taskLabel);
       };
 
+      // Adopt progress exposed by the toggle before checking prerequisites, so
+      // every early exit can also close that same visible task.
+      adoptProgress();
+      if (shouldPrepareMarketTimingModels() === false) {
+        cancelProgress();
+        return;
+      }
+
       if (areMarketTimingInputsReady?.(targets) === false) {
         beginProgress();
         signalProgress?.update?.(taskKey, 0.04, taskLabel);
@@ -1180,10 +1220,6 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
             || ready === false
             || shouldPrepareMarketTimingModels() === false) {
             cancelProgress();
-            return;
-          }
-          if (typeof onMarketTimingInputsPrepared === "function") {
-            queueTimingInputRender();
             return;
           }
         } catch (error) {
@@ -1202,9 +1238,16 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
         return;
       }
 
+      const sourceSeries = visibleTimingSeries(
+        Array.isArray(preparationOptions.sourceSeries)
+          ? preparationOptions.sourceSeries
+          : selected,
+        seriesModels,
+      );
       const sourceTickers = [...new Set([
         "^KS11",
         "^KQ11",
+        ...sourceSeries,
         ...targets,
       ].filter(isForecastSeries))].sort();
       const volumeMaps = getTickerVolumeSeriesByTicker?.() || new Map();
@@ -1247,7 +1290,7 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
         cancelProgress();
         return;
       }
-      const sourceRevision = dataRevisionSignature("price", "macro", "credit", "adr", "crisis");
+      const sourceRevision = dataRevisionSignature(...APP_DATA_COMPONENT_GROUPS.analysis);
       const volumeRevision = sourceTickers.map((ticker) => (
         `${ticker}:${volumeTimelineRevision(volumeEntriesByTicker.get(ticker) || [])}`
       )).join(",");
@@ -1268,7 +1311,7 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
         return;
       }
       if (pendingTimingPreparation?.key === preparationKey
-        && pendingTimingPreparation.generation === preparationGeneration) {
+        && pendingTimingPreparation.generationKey === preparationGenerationKey) {
         return pendingTimingPreparation.promise;
       }
       beginProgress();
@@ -1313,7 +1356,7 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
         return true;
       })();
       pendingTimingPreparation = {
-        generation: preparationGeneration,
+        generationKey: preparationGenerationKey,
         key: preparationKey,
         promise: preparation,
         targets: new Set(targets.map(normalizeTimingTarget)),

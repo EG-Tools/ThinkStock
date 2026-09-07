@@ -101,6 +101,76 @@ test("keeps unaffected ticker models when only one ticker input changes", async 
   assert.equal(service.stats().inputFingerprintCalculations, 4);
 });
 
+test("coalesces concurrent requests for the same timing target", async () => {
+  let releaseWorker;
+  let workerCalls = 0;
+  const worker = {
+    onmessage: null,
+    onerror: null,
+    postMessage(message) {
+      workerCalls += 1;
+      new Promise((resolve) => { releaseWorker = resolve; }).then(() => {
+        this.onmessage?.({
+          data: {
+            id: message.id,
+            models: { "^KS11": { indexKey: "^KS11" } },
+          },
+        });
+      });
+    },
+    terminate() {},
+  };
+  const service = createMarketTimingService({}, { createWorker: () => worker });
+  const sources = {
+    dates: ["2026-01-02"],
+    pricesByTicker: { "^KS11": [100], "^KQ11": [200] },
+    volumesByTicker: {},
+  };
+
+  const first = service.prepare({ signature: "same", targets: ["^KS11"], sources });
+  const second = service.prepare({ signature: "same", targets: ["^KS11"], sources });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(workerCalls, 1);
+  assert.equal(service.stats().pendingTargets, 1);
+  releaseWorker();
+  await Promise.all([first, second]);
+  assert.equal(service.stats().coalescedTargets, 1);
+  assert.equal(service.stats().pendingTargets, 0);
+});
+
+test("does not serialize independent targets that share one source signature", async () => {
+  const releases = new Map();
+  const worker = {
+    onmessage: null,
+    onerror: null,
+    postMessage(message) {
+      releases.set(message.targets[0], () => this.onmessage?.({
+        data: {
+          id: message.id,
+          models: Object.fromEntries(message.targets.map((ticker) => [ticker, { indexKey: ticker }])),
+        },
+      }));
+    },
+    terminate() {},
+  };
+  const service = createMarketTimingService({}, { createWorker: () => worker });
+  const sources = {
+    dates: ["2026-01-02"],
+    pricesByTicker: { "^KS11": [100], "^KQ11": [200] },
+    volumesByTicker: {},
+  };
+
+  const kospi = service.prepare({ signature: "shared", targets: ["^KS11"], sources });
+  const kosdaq = service.prepare({ signature: "shared", targets: ["^KQ11"], sources });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual([...releases.keys()].sort(), ["^KQ11", "^KS11"]);
+  releases.forEach((release) => release());
+  await Promise.all([kospi, kosdaq]);
+  assert.equal(service.stats().modelCalculations, 2);
+});
+
 test("invalidates one in-memory timing model without clearing its peers", async () => {
   const worker = new FakeWorker();
   const service = createMarketTimingService({}, {

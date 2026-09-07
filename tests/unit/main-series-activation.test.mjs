@@ -85,7 +85,7 @@ test("macro activation reveals available observations without stock-style range 
     state: {
       currentRange: () => ["2023-01-01", "2026-09-01"],
       dataRows: () => [[{ date: "2025-01-01", customer_deposit: 50 }]],
-      isHidden: () => true,
+      isHidden: () => false,
       toNumber: Number,
       visibleCount: () => 1,
     },
@@ -130,5 +130,113 @@ test("cancelling a timing-capable series shares timing and stock cleanup", () =>
     ["timing", "005930.KS"],
     ["stock", "005930.KS"],
     ["timing", "^KS11"],
+  ]);
+});
+
+test("activation prepares signal work only when the signal feature is on", async () => {
+  const calls = [];
+  const activation = createMainSeriesActivationApp({
+    state: {
+      currentRange: () => ["2026-01-01", "2026-09-01"],
+      featurePlan: () => ({ signal: true, supplemental: false, requested: true }),
+      isHidden: () => false,
+      visibleCount: () => 1,
+    },
+    prices: {
+      points: () => [
+        { date: "2025-12-01", close: 90, volume: 900 },
+        { date: "2026-08-31", close: 100, volume: 1000 },
+      ],
+      fullHistoryReady: () => true,
+      hasVolume: () => true,
+    },
+    effects: {
+      prepareTiming: (key) => calls.push(["timing", key]),
+      requestComposition: (reason) => calls.push(["composition", reason]),
+      reveal: (key) => calls.push(["reveal", key]),
+      scheduleFeatures: (key) => calls.push(["supplemental", key]),
+    },
+  });
+
+  const result = await activation.activate("005930.KS");
+  assert.equal(await result.completion, true);
+  assert.deepEqual(calls, [
+    ["reveal", "005930.KS"],
+    ["timing", "005930.KS"],
+    ["composition", "series-features-ready"],
+  ]);
+});
+
+test("activation schedules no marker preparation when every feature is off", async () => {
+  const calls = [];
+  const activation = createMainSeriesActivationApp({
+    state: {
+      currentRange: () => ["2026-01-01", "2026-09-01"],
+      featurePlan: () => ({ signal: false, supplemental: false, requested: false }),
+      isHidden: () => false,
+      visibleCount: () => 1,
+    },
+    prices: {
+      points: () => [
+        { date: "2025-12-01", close: 90, volume: 900 },
+        { date: "2026-08-31", close: 100, volume: 1000 },
+      ],
+      fullHistoryReady: () => true,
+      hasVolume: () => true,
+    },
+    effects: {
+      prepareTiming: () => calls.push("timing"),
+      requestComposition: () => calls.push("composition"),
+      reveal: () => calls.push("reveal"),
+      scheduleFeatures: () => calls.push("supplemental"),
+    },
+  });
+
+  const result = await activation.activate("005930.KS");
+  assert.equal(await result.completion, true);
+  assert.deepEqual(calls, ["reveal"]);
+});
+
+test("activation sends disclosure and insider work through one supplemental path", async () => {
+  const calls = [];
+  const featurePlan = {
+    signal: false,
+    disclosure: true,
+    insider: true,
+    supplemental: true,
+    requested: true,
+  };
+  const activation = createMainSeriesActivationApp({
+    state: {
+      currentRange: () => ["2026-01-01", "2026-09-01"],
+      featurePlan: () => featurePlan,
+      isHidden: () => false,
+      visibleCount: () => 1,
+    },
+    prices: {
+      points: () => [
+        { date: "2025-12-01", close: 90, volume: 900 },
+        { date: "2026-08-31", close: 100, volume: 1000 },
+      ],
+      fullHistoryReady: () => true,
+      hasVolume: () => true,
+    },
+    effects: {
+      prepareTiming: () => calls.push("timing"),
+      requestComposition: (reason) => calls.push(["composition", reason]),
+      reveal: () => calls.push("reveal"),
+      scheduleFeatures: (_key, _message, options) => calls.push([
+        "supplemental",
+        options.featurePlan,
+      ]),
+    },
+  });
+
+  const result = await activation.activate("005930.KS");
+  assert.equal(await result.completion, true);
+  assert.deepEqual(calls, [
+    "reveal",
+    ["supplemental", featurePlan],
+    ["composition", "series-features-ready"],
   ]);
 });

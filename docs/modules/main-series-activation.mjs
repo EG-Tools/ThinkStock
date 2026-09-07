@@ -2,6 +2,7 @@ import {
   MARKET_INDEX_SERIES,
   STOCK_TICKER_PATTERN,
   mainSeriesActivationProfile,
+  resolveSeriesFeatureActivationPlan,
 } from "./app-control-config.mjs";
 import tickerPriceRuntime from "./ticker-price-runtime.mjs";
 
@@ -74,7 +75,7 @@ export function createMainSeriesActivationCoordinator(options = {}) {
         });
       }
       if (!isStillActive(key, generation)) return false;
-      await options.prepareFeatures?.(key, profile, {
+      const featureResult = await options.prepareFeatures?.(key, profile, {
         ...context,
         completionResult,
         visibleResult,
@@ -83,6 +84,7 @@ export function createMainSeriesActivationCoordinator(options = {}) {
       options.onCompleted?.(key, profile, {
         ...context,
         completionResult,
+        featureResult,
         visibleResult,
       });
       return true;
@@ -220,19 +222,31 @@ export function createMainSeriesActivationApp(options = {}) {
           })
         : null;
     },
-    prepareFeatures: (key, profile, context) => {
-      if (profile.kind === "stock") {
-        return effects.scheduleFeatures?.(key, context.msgEl, {
+    prepareFeatures: async (key, profile, context) => {
+      const featurePlan = state.featurePlan?.(key, profile)
+        || resolveSeriesFeatureActivationPlan(key, state.featureState?.() || {});
+      const tasks = [];
+      if (profile.kind === "stock" && featurePlan.supplemental) {
+        tasks.push(Promise.resolve(effects.scheduleFeatures?.(key, context.msgEl, {
+          featurePlan,
           trackAiProgress: context.trackAiProgress === true,
-        });
+        })));
       }
-      if (profile.kind === "market-index" && state.showAi?.()) effects.startAi?.();
-      return null;
+      if (featurePlan.signal) {
+        tasks.push(Promise.resolve(effects.prepareTiming?.(key, context)));
+      }
+      if (profile.kind === "market-index" && featurePlan.ai) effects.startAi?.();
+      const results = await Promise.allSettled(tasks);
+      results.forEach((result) => {
+        if (result.status === "rejected") effects.recordError?.(key, result.reason);
+      });
+      return Object.freeze({ featurePlan, requested: featurePlan.requested, results });
     },
     onCompleted: (_key, profile, context) => {
-      if (profile.kind === "market-index" && context.completionResult) {
-        effects.requestComposition?.("series-index-inputs-ready");
-      }
+      if (!context.completionResult && context.featureResult?.requested !== true) return;
+      effects.requestComposition?.(profile.kind === "market-index"
+        ? "series-index-inputs-ready"
+        : "series-features-ready");
     },
     cancelBackground: (key) => {
       const profile = mainSeriesActivationProfile(key);

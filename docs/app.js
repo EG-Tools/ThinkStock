@@ -45,15 +45,20 @@ import {
   createChartApplicationControlConfig,
   createSeriesColorResolver,
   customStockColorRandom as randomCustomStockColor,
+  isApplicationFeatureRequested,
   isForecastSeries,
   mainSeriesActivationProfile,
   normalizeChartRightPaddingDays,
-  resolveMainChartDisplayPointBudget,
   resolveAppBuildVersion,
+  resolveMainChartDisplayPointBudget,
+  resolveSeriesFeatureActivationPlan,
+  resolveTickerDartPreloadPlan,
   seriesSupportsFeature,
 } from "./modules/app-control-config.mjs";
 import * as appStateControllerModule from "./modules/app-state-controller.mjs";
 import {
+  APP_DATA_COMPONENT_DEFINITIONS,
+  APP_DATA_SNAPSHOT_COMPONENT_KEYS,
   createAppDataRevisionBridge,
   createAppDataStore,
 } from "./modules/app-data-store.mjs";
@@ -113,7 +118,6 @@ import {
   createDeferredDiagnosticsFacade,
   createOptionalFeatureLoader,
   createOptionalFeatureRuntime,
-  resolveTickerDartPreloadPlan,
 } from "./modules/optional-feature-runtime.mjs";
 import {
   createPerformanceMonitor,
@@ -153,13 +157,10 @@ import {
   validateSnapshotComponent,
 } from "./modules/runtime-series-merge.mjs";
 import {
-  buildCompactSnapshot,
-  buildSignature as buildRuntimeSnapshotSignature,
   createRevisionTracker,
+  createRuntimeSnapshotDataManager,
   createRuntimeSnapshotController,
-  createSnapshotComponentContract,
   hasCoreHistoricalCoverage,
-  isSnapshotUsable,
 } from "./modules/runtime-snapshot-controller.mjs";
 import {
   createRuntimeSourceHealth,
@@ -180,7 +181,6 @@ import {
 import { createMainSeriesActivationApp } from "./modules/main-series-activation.mjs";
 import { createTickerCacheInvalidationContract } from "./modules/ticker-cache-invalidation.mjs";
 import tickerPriceRuntimeModule from "./modules/ticker-price-runtime.mjs";
-import { createTaskProgress } from "./modules/task-progress-runtime.mjs";
 import {
   createChartTargetRuntime,
   findPriorityChartTarget,
@@ -196,33 +196,11 @@ import * as seriesIntegrityModule from "../shared/series-integrity.mjs";
 import * as seriesTimelinePolicyModule from "../shared/series-timeline-policy.mjs";
 
 
-const disclosureProgress = createTaskProgress(globalThis, {
-  defaultLabel: "공시",
-  getRoot: () => document.getElementById("disclosureProgress"),
-  getText: () => document.getElementById("disclosureProgressText"),
-  getBar: () => document.getElementById("disclosureProgressBar"),
-  resolveAnchor: (key, label) => {
-    const taskKey = String(key || "").trim().toLowerCase();
-    if (taskKey.startsWith("insider:")) return "insider";
-    if (taskKey.startsWith("disclosure:")) return "disclosure";
-    return String(label || "").includes("내부거래") ? "insider" : "disclosure";
-  },
-});
-const epsProgress = createTaskProgress(globalThis, {
-  defaultLabel: "EPS",
-  getRoot: () => document.getElementById("epsProgress"),
-  getText: () => document.getElementById("epsProgressText"),
-  getBar: () => document.getElementById("epsProgressBar"),
-  anchor: "eps",
-});
-const signalProgress = createTaskProgress(globalThis, {
-  defaultLabel: "신호 계산중",
-  getRoot: () => document.getElementById("signalProgress"),
-  getText: () => document.getElementById("signalProgressText"),
-  getBar: () => document.getElementById("signalProgressBar"),
-  anchor: "signal",
-  revealDelayMs: 0,
-});
+const {
+  disclosure: disclosureProgress,
+  eps: epsProgress,
+  signal: signalProgress,
+} = controlStateView.createApplicationProgressRuntime(globalThis);
 const serviceWorkerClient = createServiceWorkerClient(globalThis);
 const requestServiceWorkerDataRefresh = serviceWorkerClient.requestDataRefresh;
 const scheduleServiceWorkerRegistration = serviceWorkerClient.scheduleRegistration;
@@ -235,6 +213,7 @@ const {
   isKoreanMarketPricePoint,
   isKoreanTradingDate,
   koreanDateText,
+  latestAllowedKoreanPriceDate,
   millisecondsUntilKoreanMarketClose,
   resolveKoreanSignalLifecycle,
 } = marketCalendarModule;
@@ -376,14 +355,7 @@ const DATA_CACHE_LOCAL_KEY = runtimeStorageContract.localSnapshotKey;
 const DATA_CACHE_SCHEMA_VERSION = 13;
 const DATA_CACHE_MAX_AGE_DAYS = 7;
 const RUNTIME_SNAPSHOT_FORMAT = "component-v1";
-const RUNTIME_SNAPSHOT_COMPONENT_KEYS = Object.freeze({
-  price: "component:price",
-  macro: "component:macro",
-  credit: "component:credit",
-  adr: "component:adr",
-  crisis: "component:crisis",
-  disclosure: "component:disclosure",
-});
+const RUNTIME_SNAPSHOT_COMPONENT_KEYS = APP_DATA_SNAPSHOT_COMPONENT_KEYS;
 const LOCAL_SNAPSHOT_MAX_ROWS = 900;
 const LOCAL_SNAPSHOT_MAX_DISCLOSURES = 80;
 const TICKER_PRICE_CACHE_STORE_NAME = runtimeStorageContract.stores.tickerPrices;
@@ -403,7 +375,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = tickerPriceRuntimeModule.CORPORATE_ACTION_RATIO_THRESHOLD;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = tickerPriceRuntimeModule.CORPORATE_ACTION_MAX_BOUNDARY_DAYS;
-const APP_VERSION = "3.34";
+const APP_VERSION = "3.36";
 const APP_BUILD_VERSION = resolveAppBuildVersion(globalThis);
 const cacheMigrator = cacheMaintenanceRuntimeModule.createCacheMigrator(globalThis, {
   markerKey: "thinkstock-cache-migrations-v1",
@@ -724,6 +696,8 @@ const requireLoadedBrokerResearchFeature = appFeatures.requireBrokerResearch;
 const ensureDartFeatureModules = appFeatures.ensureDart;
 const getLoadedDartFeature = appFeatures.getDart;
 const requireLoadedDartFeature = appFeatures.requireDart;
+const getLoadedCompanyAnalysisModule = appFeatures.getCompanyAnalysis;
+const requireLoadedCompanyAnalysisModule = appFeatures.requireCompanyAnalysis;
 const getDartRequestRuntime = appFeatures.getDartRequests;
 const normalizeDartTicker = appFeatures.normalizeDartTicker;
 const resolveDartCompanyContext = appFeatures.resolveDartCompanyContext;
@@ -757,6 +731,7 @@ const browserMarketClient = createBrowserMarketClient({
   dayMs: DAY_MS,
   fetchLatestPrice: fetchLatestKrxTickerSeries,
   fetchPreferredHistory: fetchPreferredTickerHistory,
+  latestAllowedPriceDate: latestAllowedKoreanPriceDate,
   filterLatestTailPoints: tickerPriceRuntimeModule.filterLatestTailPoints,
   inspectHistoryIntegrity: (points) => tickerPriceRuntimeModule.inspectPriceHistoryIntegrity(points),
   validateHistory: (points, requestOptions = {}) => {
@@ -766,9 +741,9 @@ const browserMarketClient = createBrowserMarketClient({
       beforeDate: shiftDays(latestDate, -(365 * 5)),
     }).dense;
   },
-  isValidPricePoint: ({ ticker, date, volume }) => {
+  isValidPricePoint: ({ ticker, date, volume, maximumDate }) => {
     const isKoreanEquity = /^\d{6}\.(KS|KQ)$/.test(String(ticker || "").toUpperCase());
-    return !isKoreanEquity || isKoreanMarketPricePoint(date, volume);
+    return !isKoreanEquity || isKoreanMarketPricePoint(date, volume, { maximumDate });
   },
 });
 const {
@@ -931,23 +906,30 @@ let aiForecastCalculationCounts = new Map();
 let aiForecastUnavailableMessageKeys = new Set();
 const macdModelCache = chartModelCacheModule.createSeriesDerivedCache({ maxEntries: 40 });
 const tickerDerivedMemoryCaches = chartModelCacheModule.createSeriesDerivedCacheRegistry();
-tickerDerivedMemoryCaches.register("ai-analysis", {
+const registerTickerDerivedMemoryCache = (name, adapter) => (
+  tickerDerivedMemoryCaches.register(
+    name,
+    adapter,
+    tickerCacheInvalidationModule.dependenciesFor(name),
+  )
+);
+registerTickerDerivedMemoryCache("ai-analysis", {
   invalidate: (ticker) => aiAnalysisByTicker.delete(ticker),
-}, { stores: [TICKER_AI_ANALYSIS_CACHE_STORE_NAME] });
-tickerDerivedMemoryCaches.register("ai-forecast", {
+});
+registerTickerDerivedMemoryCache("ai-forecast", {
   invalidate: (ticker) => invalidateAiForecastCache(ticker),
-}, { stores: [TICKER_AI_FORECAST_CACHE_STORE_NAME] });
-tickerDerivedMemoryCaches.register("market-timing", {
+});
+registerTickerDerivedMemoryCache("market-timing", {
   invalidate: (ticker) => (
     appRuntimeRegistry.peek(APP_RUNTIME_KEYS.marketTiming)?.invalidate?.(ticker) ?? false
   ),
-}, { stores: [TICKER_TIMING_MODEL_STORE_NAME] });
-tickerDerivedMemoryCaches.register("ai-quality", {
+});
+registerTickerDerivedMemoryCache("ai-quality", {
   invalidate: (ticker) => (
     appRuntimeRegistry.peek(APP_RUNTIME_KEYS.aiForecastQuality)?.invalidateTicker?.(ticker) ?? false
   ),
-}, { sources: ["price"] });
-tickerDerivedMemoryCaches.register("macd", macdModelCache, { sources: ["price"] });
+});
+registerTickerDerivedMemoryCache("macd", macdModelCache);
 let chartRenderFacade = null;
 let isHandleDragging = false;
 const chartSession = chartSessionControllerModule.createChartSessionState({
@@ -1036,6 +1018,7 @@ function getChartTargetRuntime() {
 
 function invalidateChartInteractionCaches(element, options = {}) {
   getChartTargetRuntime().invalidate(element, options);
+  appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartPointer)?.invalidate?.(element);
 }
 const chartDataRangeCache = chartViewportControllerModule.createDataRangeCache({
   toMilliseconds: toMsSafe,
@@ -1153,6 +1136,10 @@ const initE2eDebugAccess = __THINKSTOCK_E2E_DIAGNOSTICS__
           enabled: chartSession.showRecessionSignals,
           ...signalProgress.snapshot(),
         };
+      },
+      hasMarketTimingModel(ticker) {
+        return appRuntimeRegistry.peek(APP_RUNTIME_KEYS.marketTiming)
+          ?.has?.(String(ticker || "").trim().toUpperCase()) === true;
       },
       getAiForecastState() {
         return {
@@ -1447,150 +1434,92 @@ async function ensureDartCorpCodeMapLoaded(stockCode = "", forceNetwork = false)
   return dartCorpCodeRegistry.ensure(stockCode, forceNetwork);
 }
 
-function getDataRevisions() {
-  return runtimeSnapshotRevisionTracker.getRevisions();
-}
-
-function applySnapshotRevisions(revisions, loadedNames) {
-  runtimeSnapshotRevisionTracker.applyRevisions(revisions, loadedNames);
-}
-
 function sanitizeRuntimePricePayload(raw) {
   return sanitizeKoreanEquityPricePayload(raw, {
     isTradingDate: (date) => isKoreanTradingDate(date),
+    maximumDate: latestAllowedKoreanPriceDate(new Date()),
   });
 }
 
-const runtimeSnapshotComponentContract = createSnapshotComponentContract({
-  price: {
-    snapshotKey: "pricePayload",
-    dataKey: "pricePayload",
-    required: true,
-    normalize: sanitizeRuntimePricePayload,
-    validate: (value) => Boolean(value?.records?.length)
-      && tickerPriceRuntimeModule.inspectPricePayloadIntegrity(value).clean
-      && validateSnapshotComponent("price", value).ok,
-  },
-  macro: {
-    snapshotKey: "macroRows",
-    dataKey: "macroRows",
-    isIncluded: Array.isArray,
-    normalize: normalizePayloadRecords,
-    validate: (value) => validateSnapshotComponent("macro", value).ok,
-  },
-  credit: {
-    snapshotKey: "creditRows",
-    dataKey: "creditRows",
-    isIncluded: Array.isArray,
-    normalize: normalizeCreditRows,
-    validate: (value) => validateSnapshotComponent("credit", value).ok,
-  },
-  adr: {
-    snapshotKey: "adrRows",
-    dataKey: "adrRows",
-    isIncluded: Array.isArray,
-    normalize: normalizePayloadRecords,
-    validate: (value) => validateSnapshotComponent("adr", value).ok,
-  },
-  crisis: {
-    snapshotKey: "crisisRows",
-    dataKey: "crisisRows",
-    isIncluded: Array.isArray,
-    normalize: normalizeCrisisSignalRows,
-    validate: (value) => validateSnapshotComponent("crisis", value).ok,
-  },
-  disclosure: {
-    snapshotKey: "disclosureRows",
-    dataKey: "disclosureRows",
-    isIncluded: Array.isArray,
-    normalize: sanitizeDisclosureRows,
-  },
-});
-
-function getSnapshotComponent(name) {
-  return runtimeSnapshotRevisionTracker.getComponent(
-    name,
-    () => runtimeSnapshotComponentContract.normalizeCurrent(name, appData),
-  );
-}
-
-async function buildRuntimeDataSnapshot(taskContext = null) {
-  if (!hasRuntimeDataLoaded() && !appData.disclosureRows.length) return null;
-  const revisions = getDataRevisions();
-  const persistedRevisions = getRuntimeSnapshotController().persistedRevisions();
-  const components = {};
-  for (const name of Object.keys(RUNTIME_SNAPSHOT_COMPONENT_KEYS)) {
-    if (Number(persistedRevisions[name]) === Number(revisions[name])) continue;
-    components[name] = getSnapshotComponent(name);
-    await taskContext?.checkpoint?.();
-  }
-  return {
-    manifest: {
-      version: DATA_CACHE_SCHEMA_VERSION,
-      format: RUNTIME_SNAPSHOT_FORMAT,
-      app_version: APP_VERSION,
-      build_version: APP_BUILD_VERSION,
-      saved_at: new Date().toISOString(),
-      historical_data_loaded: historicalDataLoaded,
-      revisions,
+const runtimeSnapshotDataManager = createRuntimeSnapshotDataManager({
+  componentKeys: RUNTIME_SNAPSHOT_COMPONENT_KEYS,
+  revisionTracker: runtimeSnapshotRevisionTracker,
+  componentDefinitions: {
+    price: {
+      ...APP_DATA_COMPONENT_DEFINITIONS.price,
+      required: true,
+      normalize: sanitizeRuntimePricePayload,
+      validate: (value) => Boolean(value?.records?.length)
+        && tickerPriceRuntimeModule.inspectPricePayloadIntegrity(value).clean
+        && validateSnapshotComponent("price", value).ok,
     },
-    components,
-  };
-}
-
-function buildCompactLocalSnapshot() {
-  return buildCompactSnapshot({
-    metadata: {
-      version: DATA_CACHE_SCHEMA_VERSION,
-      format: "compact-v1",
-      app_version: APP_VERSION,
-      build_version: APP_BUILD_VERSION,
-      saved_at: new Date().toISOString(),
+    macro: {
+      ...APP_DATA_COMPONENT_DEFINITIONS.macro,
+      isIncluded: Array.isArray,
+      normalize: normalizePayloadRecords,
+      validate: (value) => validateSnapshotComponent("macro", value).ok,
     },
-    revisions: getDataRevisions(),
-    maxRows: LOCAL_SNAPSHOT_MAX_ROWS,
-    maxDisclosures: LOCAL_SNAPSHOT_MAX_DISCLOSURES,
-    components: Object.fromEntries(
-      Object.keys(RUNTIME_SNAPSHOT_COMPONENT_KEYS).map((name) => [name, getSnapshotComponent(name)]),
-    ),
-  });
-}
-
-function getRuntimeDataSignature() {
-  return buildRuntimeSnapshotSignature(
-    historicalDataLoaded,
-    Object.keys(RUNTIME_SNAPSHOT_COMPONENT_KEYS),
-    getDataRevisions(),
-  );
-}
-
-function isRuntimeSnapshotUsable(snapshot) {
-  return isSnapshotUsable(snapshot, {
+    credit: {
+      ...APP_DATA_COMPONENT_DEFINITIONS.credit,
+      isIncluded: Array.isArray,
+      normalize: normalizeCreditRows,
+      validate: (value) => validateSnapshotComponent("credit", value).ok,
+    },
+    adr: {
+      ...APP_DATA_COMPONENT_DEFINITIONS.adr,
+      isIncluded: Array.isArray,
+      normalize: normalizePayloadRecords,
+      validate: (value) => validateSnapshotComponent("adr", value).ok,
+    },
+    crisis: {
+      ...APP_DATA_COMPONENT_DEFINITIONS.crisis,
+      isIncluded: Array.isArray,
+      normalize: normalizeCrisisSignalRows,
+      validate: (value) => validateSnapshotComponent("crisis", value).ok,
+    },
+    disclosure: {
+      ...APP_DATA_COMPONENT_DEFINITIONS.disclosure,
+      isIncluded: Array.isArray,
+      normalize: sanitizeDisclosureRows,
+    },
+  },
+  getSource: () => appData,
+  hasData: () => hasRuntimeDataLoaded() || appData.disclosureRows.length > 0,
+  getHistoricalDataLoaded: () => historicalDataLoaded,
+  getPersistedRevisions: () => getRuntimeSnapshotController().persistedRevisions(),
+  manifestMetadata: () => ({
+    version: DATA_CACHE_SCHEMA_VERSION,
+    format: RUNTIME_SNAPSHOT_FORMAT,
+    app_version: APP_VERSION,
+    build_version: APP_BUILD_VERSION,
+  }),
+  fallbackMetadata: () => ({
+    version: DATA_CACHE_SCHEMA_VERSION,
+    format: "compact-v1",
+    app_version: APP_VERSION,
+    build_version: APP_BUILD_VERSION,
+  }),
+  maxRows: LOCAL_SNAPSHOT_MAX_ROWS,
+  maxDisclosures: LOCAL_SNAPSHOT_MAX_DISCLOSURES,
+  usability: {
     schemaVersion: DATA_CACHE_SCHEMA_VERSION,
     futureToleranceMs: DAY_MS,
     maxAgeMs: DATA_CACHE_MAX_AGE_DAYS * DAY_MS,
-  });
-}
-
-function applyRuntimeDataSnapshot(snapshot) {
-  if (!isRuntimeSnapshotUsable(snapshot)) return false;
-  const restored = runtimeSnapshotComponentContract.prepareRestore(snapshot);
-  if (!restored.ok) return false;
-
-  Object.assign(DISPLAY_NAMES, restored.values.price?.display_names || {});
-  appData.patch(restored.patch, { silent: true });
-  const loadedNames = [...restored.loadedNames];
-  applySnapshotRevisions(snapshot.revisions, loadedNames);
-  loadedNames.forEach((name) => {
-    runtimeSnapshotRevisionTracker.seedComponent(name, restored.values[name]);
-  });
-  historicalDataLoaded = hasHistoricalDataCoverage();
-  getRuntimeSnapshotController().markRestored(
-    getRuntimeDataSignature(),
-    snapshot._persistedRevisions || {},
-  );
-  return true;
-}
+  },
+  beforeApply: (restored) => {
+    Object.assign(DISPLAY_NAMES, restored.values.price?.display_names || {});
+  },
+  applyPatch: (patch) => appData.patch(patch, { silent: true }),
+  afterApply: () => { historicalDataLoaded = hasHistoricalDataCoverage(); },
+  onRestored: (signature, revisions) => {
+    getRuntimeSnapshotController().markRestored(signature, revisions);
+  },
+});
+const getDataRevisions = runtimeSnapshotDataManager.getRevisions;
+const getRuntimeDataSignature = runtimeSnapshotDataManager.signature;
+const buildRuntimeDataSnapshot = runtimeSnapshotDataManager.buildSnapshot;
+const buildCompactLocalSnapshot = runtimeSnapshotDataManager.buildFallbackSnapshot;
+const applyRuntimeDataSnapshot = runtimeSnapshotDataManager.applySnapshot;
 
 function hasRuntimeDataLoaded() {
   return Boolean(
@@ -2357,12 +2286,13 @@ function getChartNavigationController() {
 }
 
 async function settleAllChartWork() {
-  await appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartNavigation)?.whenRangeSettled?.();
-  await appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartRangeSync)?.flush?.();
-  await appRuntimeRegistry.peek(APP_RUNTIME_KEYS.mainChartScheduler)?.whenSettled?.();
-  await appRuntimeRegistry.peek(APP_RUNTIME_KEYS.auxiliaryChartRender)?.whenSettled?.();
-  await appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartRangeSync)?.flush?.();
-  await flushLoadedCoMovementPanel();
+  return chartUpdateCoordinatorModule.settleChartWorkTransaction({
+    navigation: appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartNavigation),
+    rangeController: appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartRangeSync),
+    mainScheduler: appRuntimeRegistry.peek(APP_RUNTIME_KEYS.mainChartScheduler),
+    auxiliaryQueue: appRuntimeRegistry.peek(APP_RUNTIME_KEYS.auxiliaryChartRender),
+    afterSettled: flushLoadedCoMovementPanel,
+  });
 }
 
 function settleChartViewport() {
@@ -2519,6 +2449,10 @@ function getChartRangeSyncController() {
       fitRangeForTraces,
       fitOptions: { paddingRatio: 0.08, minimumPadding: 0.6 },
       collectAnchoredYUpdates: chartMarkerLayoutModule.collectViewportAnchoredYUpdates,
+      forceCompanionUpdate: (element, meta) => (
+        Boolean(meta?.forceCompanionElementId)
+        && element?.id === meta.forceCompanionElementId
+      ),
       buildCompanionPayload: (element, payload) => addViewportYRangeToRelayout(element, payload),
       requestMainDataRefresh: () => requestChartRender(true, {
         deferDuringInteraction: false,
@@ -2978,9 +2912,7 @@ function selectChartSeriesTarget(seriesKey) {
     if (!runtime) return;
     runtime.invalidateMacd?.();
     const xRange = document.getElementById("chart")?._fullLayout?.xaxis?.range?.slice(0, 2) || null;
-    Promise.resolve(runtime.renderMacdChart?.(xRange)).catch((error) => {
-      recordRuntimeError("macd-target-selection", error, { ticker: key });
-    });
+    scheduleAuxiliaryChartRender(xRange, { targets: ["macd"] });
   }
 }
 
@@ -3055,7 +2987,12 @@ function setMacdDisparityDays(value) {
   chartSession.macdDisparityDays = days;
   mainChartControlView.syncMacdDisparity();
   saveState();
-  appRuntimeRegistry.peek(APP_RUNTIME_KEYS.auxiliaryChart)?.refreshMacd?.();
+  const runtime = appRuntimeRegistry.peek(APP_RUNTIME_KEYS.auxiliaryChart);
+  if (runtime) {
+    runtime.invalidateMacd?.();
+    const xRange = document.getElementById("chart")?._fullLayout?.xaxis?.range?.slice(0, 2) || null;
+    scheduleAuxiliaryChartRender(xRange, { targets: ["macd"] });
+  }
   return days;
 }
 
@@ -3073,9 +3010,7 @@ function setNewsSentimentMovingAverageDays(value, options = {}) {
   saveState();
   if (options.render !== false) {
     const xRange = document.getElementById("chart")?._fullLayout?.xaxis?.range?.slice() || null;
-    Promise.resolve(renderAdrChart(xRange)).catch((error) => {
-      recordRuntimeError("news-sentiment-moving-average", error, { days });
-    });
+    scheduleAuxiliaryChartRender(xRange, { targets: ["auxiliary"] });
   }
   return days;
 }
@@ -3460,6 +3395,7 @@ const tickerPriceAppRuntime = createTickerPriceAppRuntime({
   sameNumber: sameNullableNumber,
   normalizePricePoints: normalizeTickerPricePoints,
   isMarketPricePoint: isKoreanMarketPricePoint,
+  latestAllowedPriceDate: latestAllowedKoreanPriceDate,
   expectedLatestTradingDate: expectedLatestKoreanTradingDate,
   isTradingDate: isKoreanTradingDate,
   historyOverlapDays: 21,
@@ -3596,10 +3532,12 @@ function getVisibleSeriesSupplementalHydrator() {
       isActive: (ticker) => (
         getCustomStockLifecycle().has(ticker) && !chartSession.hiddenSeries.has(ticker)
       ),
-      isEpsEnabled: () => chartSession.showEps,
-      isAiEnabled: () => chartSession.showAiForecast,
-      isDartEnabled: () => resolveTickerDartPreloadPlan(chartSession).required,
-      prepareDisclosure: (ticker, context) => preloadTickerDartData(ticker, context.msgEl),
+      resolveFeaturePlan: (ticker) => resolveSeriesFeatureActivationPlan(ticker, chartSession),
+      prepareDisclosure: (ticker, context) => preloadTickerDartData(
+        ticker,
+        context.msgEl,
+        context.featurePlan,
+      ),
       prepareEps: (ticker) => ensureEpsFeatureModules()
         .then(() => prepareVisibleEpsData({ tickers: [ticker] })),
       prepareAi: (ticker) => Promise.all([
@@ -3805,6 +3743,7 @@ const runtimeRefreshPolicy = createRuntimeRefreshPolicy({
   getSourceStates: () => runtimeDataApp.getSourceStates?.() || {},
   getVisibleSeries: visibleMainChartSeriesKeys,
   isForecastSeries,
+  isFeatureRequested: isApplicationFeatureRequested,
   isStockSeries: (series) => STOCK_TICKER_PATTERN.test(series),
   hasVolumeHistory: (ticker) => tickerPriceAppRuntime.hasVolumeHistory(ticker),
   latestDatesByTicker,
@@ -3831,6 +3770,7 @@ function getMainSeriesActivationApp() {
         currentRange: () => getCurrentXRangeMs(document.getElementById("chart")),
         dataRows: () => [appData.macroRows, appData.creditRows, appData.crisisRows],
         defaultActiveMonths: getDefaultActiveMonths,
+        featurePlan: (key) => resolveSeriesFeatureActivationPlan(key, chartSession),
         isHidden: (key) => chartSession.hiddenSeries.has(key),
         pinnedRange: () => chartSession.pinnedXRange,
         showAi: () => chartSession.showAiForecast,
@@ -3863,6 +3803,7 @@ function getMainSeriesActivationApp() {
         recordError: (key, error) => {
           recordRuntimeError(`main-series-activation:${key}`, error);
         },
+        prepareTiming: (key) => prepareMarketTimingModelsForSeries([key]),
         requestComposition: requestSeriesCompositionUpdate,
         reveal: (key) => changeMainSeriesVisibility(key, true),
         scheduleFeatures: scheduleVisibleSeriesSupplementalHydration,
@@ -4619,10 +4560,7 @@ function getChartMarkerRuntime() {
     netSameReporterInsiderTrades,
     recordPerfSample,
     recordRuntimeError,
-    onMarketTimingInputsPrepared: () => requestSeriesCompositionUpdate("signal-inputs"),
-    shouldPrepareMarketTimingModels: () => (
-      startupTaskRuntime.isReleased() && runtimeDataApp.isDerivedInputReady()
-    ),
+    shouldPrepareMarketTimingModels: () => startupTaskRuntime.isReleased(),
     onCrisisCount: (count) => { lastRecessionSignalCount = Number(count) || 0; },
     onDisclosureStats: (stats) => { eventMarkerRenderState.disclosureStats = stats; },
     onInsiderStats: (stats) => { eventMarkerRenderState.insiderStats = stats; },
@@ -4645,8 +4583,31 @@ function collectCrisisSignalEntries(rows) {
   return chartMarkerRuntimeModule.collectCrisisSignalEntries(rows);
 }
 
-async function prepareMarketTimingModels(selected, seriesModels) {
-  return getChartMarkerRuntime().prepareMarketTimingModels(selected, seriesModels);
+async function prepareMarketTimingModelsForSeries(seriesKeys) {
+  if (!chartSession.showRecessionSignals || !startupTaskRuntime.isReleased()) return false;
+  const visibleSeries = visibleMainChartSeriesKeys()
+    .filter((key) => seriesSupportsFeature(key, "signal"));
+  const visible = new Set(visibleSeries);
+  const targets = [...new Set((seriesKeys || [])
+    .map((key) => String(key || "").trim().toUpperCase())
+    .filter((key) => visible.has(key)))];
+  if (!targets.length) return false;
+  try {
+    await getChartMarkerRuntime().prepareMarketTimingModels(
+      targets,
+      visibleSeries.map((series) => ({ series })),
+      { sourceSeries: visibleSeries },
+    );
+    const service = appRuntimeRegistry.peek(APP_RUNTIME_KEYS.marketTiming);
+    return targets.every((ticker) => service?.has?.(ticker));
+  } catch (error) {
+    recordRuntimeError("market-timing-prepare", error, { targets: targets.length });
+    return false;
+  }
+}
+
+async function prepareVisibleMarketTimingModels() {
+  return prepareMarketTimingModelsForSeries(visibleMainChartSeriesKeys());
 }
 
 function startVisibleSignalProgress() {
@@ -5106,17 +5067,17 @@ function runAiForecast(options) {
 
 async function readAiAnalysisCacheForTicker(ticker) {
   try {
-    await ensureAiFeatureModules();
-    const feature = requireLoadedAiFeature();
+    const analysisModule = getLoadedCompanyAnalysisModule();
+    if (!analysisModule) return null;
     const stored = await readLifecycleCacheRecord(TICKER_AI_ANALYSIS_CACHE_STORE_NAME, ticker);
     if (!stored) return null;
-    const normalized = feature.analysis.normalizeAnalysisRecord(ticker, stored, null, Date.now());
+    const normalized = analysisModule.normalizeAnalysisRecord(ticker, stored, null, Date.now());
     const issue = cacheRecordHealthModule.granularRecordIssue(stored, {
-      schema: feature.analysis.SCHEMA_VERSION,
+      schema: analysisModule.SCHEMA_VERSION,
       key: ticker,
       requireContent: false,
       source: "ai-analysis",
-      revision: feature.analysis.COMPANY_ANALYSIS_CACHE_REVISION,
+      revision: analysisModule.COMPANY_ANALYSIS_CACHE_REVISION,
       contentFingerprint: normalized?.contentFingerprint || "",
     });
     if (issue || !normalized) {
@@ -5140,7 +5101,7 @@ async function saveAiAnalysisCacheForTicker(ticker, analysis) {
 }
 
 function aiAnalysisIsFresh(analysis) {
-  const analysisModule = getLoadedAiFeature()?.analysis;
+  const analysisModule = getLoadedCompanyAnalysisModule();
   if (!analysisModule?.isAnalysisFresh) return false;
   const savedAt = Number(analysis?.savedAt);
   return analysisModule.isAnalysisFresh(analysis, TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS * DAY_MS)
@@ -5151,7 +5112,7 @@ function aiAnalysisHasEps(analysis) {
     && analysis.financials.some((record) => Number.isFinite(Number(record?.eps)));
 }
 const aiAnalysisHasCurrentEpsCoverage = (analysis) => (
-  getLoadedAiFeature()?.analysis?.isFinancialSummaryFresh?.(analysis, DAY_MS) === true
+  getLoadedCompanyAnalysisModule()?.isFinancialSummaryFresh?.(analysis, DAY_MS) === true
   && koreanDateText(new Date(analysis?.financialSummarySavedAt)) === koreanDateText()
 );
 function getBrokerResearchApp() {
@@ -5211,8 +5172,12 @@ async function requestBrokerResearchForTicker(ticker, options = {}) {
 }
 
 async function requestAiAnalysisForTicker(ticker, options = {}) {
-  await ensureAiFeatureModules();
-  const feature = requireLoadedAiFeature();
+  if (options.requireEps === true && !chartSession.showAiForecast) {
+    await ensureEpsFeatureModules();
+  } else {
+    await ensureAiFeatureModules();
+  }
+  const analysisModule = requireLoadedCompanyAnalysisModule();
   const target = String(ticker || "").trim().toUpperCase();
   const forceNetwork = Boolean(options.forceNetwork);
   const requireEps = options.requireEps === true;
@@ -5252,9 +5217,9 @@ async function requestAiAnalysisForTicker(ticker, options = {}) {
     const payload = await response.json().catch(() => null);
     if (!response.ok || payload?.ok === false) return null;
     if (Number(payload?.analysisContractVersion)
-      < Number(feature.analysis.COMPANY_ANALYSIS_CONTRACT_VERSION)) return cached;
-    if (!feature.analysis.hasCurrentFinancialSummary(payload)) return cached;
-    const analysis = feature.analysis.normalizeAnalysisRecord(target, payload, cached, Date.now());
+      < Number(analysisModule.COMPANY_ANALYSIS_CONTRACT_VERSION)) return cached;
+    if (!analysisModule.hasCurrentFinancialSummary(payload)) return cached;
+    const analysis = analysisModule.normalizeAnalysisRecord(target, payload, cached, Date.now());
     if (!analysis) return cached;
     aiAnalysisByTicker.set(target, analysis);
     if (chartSession.showAiForecast) setAiForecastProgress(33, `${labelName(target)} 분석 자료 저장`);
@@ -5291,7 +5256,7 @@ function getEpsDataController() {
     getVisibleTickers: visibleEpsTickers,
     hasEps: aiAnalysisHasEps,
     hasHistoryCoverage: (analysis, range, version) => (
-      getLoadedAiFeature()?.analysis?.hasDartEpsHistoryCoverage?.(analysis, range, version) === true
+      getLoadedCompanyAnalysisModule()?.hasDartEpsHistoryCoverage?.(analysis, range, version) === true
     ),
     isAbortError,
     isEnabled: () => chartSession.showEps,
@@ -5302,7 +5267,7 @@ function getEpsDataController() {
     needsCurrent: (ticker) => !aiAnalysisIsFresh(aiAnalysisByTicker.get(ticker))
       || !aiAnalysisHasCurrentEpsCoverage(aiAnalysisByTicker.get(ticker)),
     normalizeAnalysis: (ticker, payload, previous) => (
-      requireLoadedAiFeature().analysis.normalizeAnalysisRecord(ticker, payload, previous, Date.now())
+      requireLoadedCompanyAnalysisModule().normalizeAnalysisRecord(ticker, payload, previous, Date.now())
     ),
     onError: recordRuntimeError,
     onPrepared: (loadedCount, options, result = {}) => {
@@ -5311,7 +5276,7 @@ function getEpsDataController() {
         chartSession.pendingAutoChartFit = true;
       }
       if (chartSession.showEps && changedCount && options.render !== false) {
-        requestChartCompositionUpdate();
+        requestFutureOverlayCompositionUpdate();
       }
     },
     progress: epsProgress,
@@ -6112,10 +6077,16 @@ function flushQueuedEventMarkerRefresh() {
   return getChartUpdateCoordinator().flush();
 }
 
-function preloadTickerDartData(ticker, msgEl) {
+function preloadTickerDartData(ticker, msgEl, featurePlan = null) {
   const target = normalizeDartTicker(ticker);
   if (!target) return Promise.resolve();
-  const plan = resolveTickerDartPreloadPlan(chartSession);
+  const plan = featurePlan && typeof featurePlan === "object"
+    ? {
+        disclosures: featurePlan.disclosureData === true,
+        insiders: featurePlan.insider === true,
+        required: featurePlan.dart === true,
+      }
+    : resolveTickerDartPreloadPlan(chartSession);
   if (!plan.required) return Promise.resolve({ skipped: true });
   const disclosureTask = plan.disclosures
     ? requestDartDisclosureRefreshForTicker(target, msgEl)
@@ -6181,13 +6152,13 @@ function getProgressiveChartCompositionQueue() {
   return appRuntimeRegistry.get(APP_RUNTIME_KEYS.progressiveChartComposition, () => (
     chartUpdateCoordinatorModule.createLatestKeyedFrameQueue(globalThis, {
       apply: async () => {
-        await renderCoMovementPanel({ immediate: true });
         requestChartRender(true, {
           deferDuringInteraction: false,
           progressiveComposition: false,
-          reason: "progressive-overlays",
+          reason: "progressive-composition-complete",
           updateClass: "composition",
         });
+        await renderCoMovementPanel({ immediate: true });
       },
       onError: (error) => recordRuntimeError("progressive-chart-composition", error),
     })
@@ -6623,7 +6594,6 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
       stackedPriceSeries: STACKED_HOVER_PRICE_SERIES,
       buildEpsTraceModel,
       buildAiForecastTraces,
-      prepareEventModels: shouldHydrateChartData ? prepareMarketTimingModels : null,
       buildEventArguments: currentEventMarkerArguments,
       buildEventTraces: buildCurrentEventMarkerTraces,
       eventRevisions: eventMarkerRevisionsAtStart,
@@ -6668,12 +6638,14 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
   }
   const {
     displayPointCount,
+    forceTraceRefresh,
     layout,
     traces,
     viewportPlan,
   } = frame;
   resetMainChartInteractionRenderState(el);
   if (renderGuard.abortPreparedFrame(invalidation)) return;
+  if (forceTraceRefresh) mainChartRenderer.invalidateRenderFingerprint(el);
   let renderMode;
   try {
     renderMode = await applyMainChartRender(el, traces, layout, invalidation);
@@ -6745,7 +6717,11 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
   // no-op must not suppress an auxiliary-only data or viewport-buffer update.
   if (!invalidation.shouldAbort?.()
     && chartUpdateCoordinatorModule.shouldUpdateAuxiliary(invalidation)) {
-    scheduleAuxiliaryChartRender(mainRangeForAdr);
+    scheduleAuxiliaryChartRender(mainRangeForAdr, {
+      refreshOnly: invalidation.updateClasses?.length > 0
+        && invalidation.updateClasses.every((updateClass) => updateClass === "viewport-range"),
+      targets: invalidation.plan?.auxiliaryTargets,
+    });
   }
   bindCursorMoveSync();
   scheduleHandleUpdate(0);
@@ -6842,6 +6818,7 @@ async function getAuxiliaryChartRuntime() {
         payload,
         "buildAuxiliaryChartModel",
       ),
+      requestRender: ({ targets, xRange }) => scheduleAuxiliaryChartRender(xRange, { targets }),
       buildAuxiliaryChartModel: auxiliaryChartModelModule.buildAuxiliaryChartModel,
       normalizeAuxiliaryChartModel: chartRenderContractModule.normalizeAuxiliaryChartModel,
       getMacdModelForSeries: (series) => getMacdModelForSeries(
@@ -6871,28 +6848,43 @@ function invalidateAdrChartRender() {
 const ADR_SOURCE_URL = "http://www.adrinfo.kr/chart";
 const CORS_PROXY     = "https://corsproxy.io/?url=";
 
-function renderAdrChart(xRange) {
-  return getAuxiliaryChartRuntime().then((runtime) => runtime.renderAdrChart(xRange));
-}
-
 function getAuxiliaryChartRenderQueue() {
   return appRuntimeRegistry.get(APP_RUNTIME_KEYS.auxiliaryChartRender, () => (
     chartUpdateCoordinatorModule.createLatestKeyedFrameQueue(globalThis, {
       apply: async (requests) => {
-        const latest = requests.at(-1);
+        const latest = requests.reduce((selected, request) => (
+          !selected || Number(request?.revision) > Number(selected?.revision) ? request : selected
+        ), null);
         const xRange = Array.isArray(latest?.xRange) ? latest.xRange.slice(0, 2) : null;
         const runtime = await getAuxiliaryChartRuntime();
-        await runtime.renderAll(xRange);
+        let targets = [...new Set(requests.map((request) => String(request?.target || ""))
+          .filter(Boolean))];
+        if (requests.every((request) => request?.refreshOnly === true)) {
+          const refreshTargets = new Set(runtime.viewportRefreshTargets?.(xRange) || []);
+          targets = targets.filter((target) => refreshTargets.has(target));
+        }
+        if (targets.length) await runtime.renderAll(xRange, { targets });
       },
       onError: (error) => recordRuntimeError("auxiliary-chart-render", error),
     })
   ));
 }
 
-function scheduleAuxiliaryChartRender(xRange = null) {
-  return getAuxiliaryChartRenderQueue().schedule("companions", {
-    xRange: Array.isArray(xRange) ? xRange.slice(0, 2) : null,
-  });
+let auxiliaryChartRenderRevision = 0;
+
+function scheduleAuxiliaryChartRender(xRange = null, options = {}) {
+  const targets = Array.isArray(options.targets) && options.targets.length
+    ? [...new Set(options.targets.map(String).filter(Boolean))]
+    : ["macd", "auxiliary"];
+  const revision = auxiliaryChartRenderRevision += 1;
+  const range = Array.isArray(xRange) ? xRange.slice(0, 2) : null;
+  targets.forEach((target) => getAuxiliaryChartRenderQueue().schedule(target, {
+    refreshOnly: options.refreshOnly === true,
+    revision,
+    target,
+    xRange: range,
+  }));
+  return targets.length > 0;
 }
 
 async function refreshLoadedAuxiliaryViewport() {
@@ -6902,8 +6894,9 @@ async function refreshLoadedAuxiliaryViewport() {
     ? chartSession.pinnedXRange.slice(0, 2)
     : mainElement?._fullLayout?.xaxis?.range?.slice(0, 2);
   if (!runtime || xRange?.length !== 2) return;
-  if (runtime.needsViewportRefresh?.(xRange) === false) return;
-  scheduleAuxiliaryChartRender(xRange);
+  const targets = runtime.viewportRefreshTargets?.(xRange) || [];
+  if (!targets.length) return;
+  scheduleAuxiliaryChartRender(xRange, { targets, refreshOnly: true });
   await getAuxiliaryChartRenderQueue().whenSettled();
 }
 
@@ -7207,6 +7200,7 @@ const applyRuntimeRefreshChanges = createRuntimeRefreshChangeApplier({
     invalidateAuxiliary: invalidateAdrChartRender,
     isAutoScale: () => chartSession.autoChartReset,
     isTimingVisible: () => chartSession.showRecessionSignals,
+    prepareTiming: prepareVisibleMarketTimingModels,
     markPendingAutoFit: () => { chartSession.pendingAutoChartFit = true; },
     requestAuxiliaryRender: () => scheduleAuxiliaryChartRender(
       document.getElementById("chart")?._fullLayout?.xaxis?.range?.slice() || null,
@@ -7363,11 +7357,15 @@ function bindApplicationControls(messageElement) {
 
 const applicationFeatureLifecycle = createApplicationFeatureLifecycleDescriptors({
   state: chartSession,
-  restoreTiming: () => requestChartRender(true, {
-    deferDuringInteraction: false,
-    reason: "restored-timing",
-    updateClass: "data",
-  }),
+  isFeatureRequested: isApplicationFeatureRequested,
+  restoreTiming: async () => {
+    await prepareVisibleMarketTimingModels();
+    requestChartRender(true, {
+      deferDuringInteraction: false,
+      reason: "restored-timing",
+      updateClass: "timing",
+    });
+  },
   restoreDart: restoreVisibleDartLayers,
   canUseInsider: canUseDartGateway,
   refreshInsider: () => refreshInsiderTradesForVisibleSeries({ forceNetwork: true }),

@@ -5,6 +5,7 @@ import {
   historyDates,
   DESKTOP_PERF_BUDGET,
   setChartRangeMonths,
+  waitForAppReady,
   waitForBoundingBox,
   waitForChartRenderIdle,
   visibleTracePixelSpan,
@@ -16,6 +17,61 @@ import {
   COMPANY_ANALYSIS_CONTRACT_VERSION,
   FINANCIAL_SUMMARY_VERSION,
 } from "../../shared/company-analysis-contract.mjs";
+
+test("adding a stock while signal is enabled prepares its timing model", async ({ page }) => {
+  await installDataRoutes(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "private" }));
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 12,
+      hiddenSeries: [
+        "leading_cycle", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit",
+      ],
+      showRecessionSignals: false,
+    }));
+    const NativeWorker = window.Worker;
+    window.Worker = class DelayedTimingWorker extends NativeWorker {
+      constructor(url, options) {
+        super(url, options);
+        this.isTimingWorker = String(url || "").includes("market-timing-worker");
+      }
+
+      postMessage(message, transfer) {
+        if (!this.isTimingWorker) {
+          if (transfer === undefined) return super.postMessage(message);
+          return super.postMessage(message, transfer);
+        }
+        setTimeout(() => {
+          if (transfer === undefined) NativeWorker.prototype.postMessage.call(this, message);
+          else NativeWorker.prototype.postMessage.call(this, message, transfer);
+        }, 450);
+        return undefined;
+      }
+    };
+  });
+
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await waitForAppReady(page);
+  await page.locator("#recessionToggle").click();
+  await expect(page.locator("#signalProgress")).toBeHidden({ timeout: 10000 });
+  await expect.poll(() => page.evaluate(() => (
+    window.ThinkStockE2E.hasMarketTimingModel("^KS11")
+  ))).toBe(true);
+
+  await page.locator("#stockSearchInput").fill("SK하이닉스");
+  await page.locator(".stock-suggest-item").filter({ hasText: "SK하이닉스" }).click();
+
+  await expect(page.locator("#signalProgress")).toBeVisible();
+  await expect(page.locator("#signalProgressText")).toContainText("신호 로딩중");
+  await expect(page.locator("#signalProgress")).toBeHidden({ timeout: 10000 });
+  await expect.poll(() => page.evaluate(() => (
+    window.ThinkStockE2E.hasMarketTimingModel("000660.KS")
+  ))).toBe(true);
+  await expect.poll(() => page.evaluate(() => (
+    window.ThinkStockE2E.hasMarketTimingModel("^KS11")
+  ))).toBe(true);
+});
 
 async function expectMainAuxiliaryRangesLinked(page, toleranceMs = 86400000) {
   await expect.poll(() => page.evaluate(() => {
@@ -250,7 +306,7 @@ test("a hidden research stock revives an empty chart at the latest device range"
 });
 
 test("RFHIC EPS prioritizes quarterly values and rises through annual estimates", async ({ page, isMobile }) => {
-  test.setTimeout(90000);
+  test.setTimeout(120_000);
   const ticker = "218410.KQ";
   const researchMilestones = new Map([
     ["2025-12-31", 18500],
@@ -335,6 +391,8 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
   });
 
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await waitForAppReady(page);
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await page.locator("#stockSearchInput").fill("RFHIC");
   await page.locator(".stock-suggest-item").filter({ hasText: "RFHIC" }).click();
   await expect(page.locator('[data-series="218410.KQ"]')).toHaveClass(/is-on/);
@@ -426,6 +484,7 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
   });
   await expect(page.locator('#y-handles [data-series-key="eps:218410.KQ"]')).toHaveCount(2);
   await expect(page.locator("#epsProgress")).toBeHidden({ timeout: 5000 });
+  await waitForChartRenderIdle(page);
   const epsHandle = page.locator('#y-handles .y-handle-right[data-series-key="eps:218410.KQ"]');
   await expect(epsHandle).toBeVisible();
   await expect(epsHandle).toHaveClass(/y-handle-eps/);
@@ -474,32 +533,36 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
       };
     });
     expect(initialEpsHoverTarget).not.toBeNull();
+    await page.mouse.move(0, 0);
     await page.mouse.move(initialEpsHoverTarget.x, initialEpsHoverTarget.y);
-    await expect(page.locator("#chart .hoverlayer")).toContainText("EPS", { timeout: 3000 });
-    const initialEpsHoverLines = await page.locator("#chart .hoverlayer text.nums > tspan.line")
+    const initialEpsPointHover = page.locator("#chart .hoverlayer > g.hovertext:visible")
+      .filter({ hasText: "EPS" });
+    await expect(initialEpsPointHover).toContainText("RFHIC", { timeout: 3000 });
+    const initialEpsHoverLines = await initialEpsPointHover.locator("text.nums > tspan.line")
       .allTextContents();
     expect(initialEpsHoverLines[0]).toBe("2026.3.31");
-    expect(initialEpsHoverLines[1]?.trim()).toContain("RFHIC");
-    expect(initialEpsHoverLines[2]?.trim()).toContain("EPS");
-    await expect.poll(async () => {
-      const offsets = await page.locator("#chart .hoverlayer text.nums > tspan.line")
-        .evaluateAll((lines) => lines.slice(0, 3).flatMap((line) => {
-          const matrix = line.getScreenCTM();
-          if (!line.textContent?.length || !matrix) return [];
-          return [line.getStartPositionOfChar(0).matrixTransform(matrix).x];
-        }));
-      return offsets.length === 3
-        ? offsets.slice(1).map((left) => Math.round(left - offsets[0]))
-        : [];
-    }).toEqual([38, 38]);
-    const initialEpsHoverOffsets = await page.locator("#chart .hoverlayer text.nums > tspan.line")
-      .evaluateAll((lines) => lines.slice(0, 3).map((line) => (
+    const kospiLineIndex = initialEpsHoverLines.findIndex((line) => line.includes("코스피"));
+    const rfhicLineIndex = initialEpsHoverLines.findIndex((line) => line.includes("RFHIC"));
+    const epsLineIndex = initialEpsHoverLines.findIndex((line) => line.includes("EPS"));
+    expect(kospiLineIndex).toBeGreaterThan(0);
+    expect(rfhicLineIndex).toBeGreaterThan(kospiLineIndex);
+    expect(epsLineIndex).toBe(rfhicLineIndex + 1);
+    await expect.poll(readHoverSummary).toMatchObject({
+      contentIndented: true,
+      date: "2026.3.31",
+      hasEps: true,
+      hasTicker: true,
+    });
+    const initialEpsHoverOffsets = await initialEpsPointHover.locator("text.nums > tspan.line")
+      .evaluateAll((lines) => lines.map((line) => (
         line.getStartPositionOfChar(0).matrixTransform(line.getScreenCTM()).x
       )));
-    expect(Math.abs(initialEpsHoverOffsets[1] - initialEpsHoverOffsets[0] - 38)).toBeLessThanOrEqual(1);
-    expect(Math.abs(initialEpsHoverOffsets[2] - initialEpsHoverOffsets[0] - 38)).toBeLessThanOrEqual(1);
-    const initialEpsDetailHtml = await page.locator("#chart .hoverlayer text.nums > tspan.line")
-      .nth(2)
+    expect(initialEpsHoverOffsets.slice(1).every((left) => (
+      Math.abs(left - initialEpsHoverOffsets[0] - 38) <= 1
+    ))).toBe(true);
+    const initialEpsDetailHtml = await initialEpsPointHover.locator("text.nums > tspan.line")
+      .filter({ hasText: "EPS" })
+      .first()
       .evaluate((line) => line.innerHTML);
     expect(initialEpsDetailHtml).not.toContain("font-weight:bold");
     const pointHoverAppearance = await page.locator("#chart .hoverlayer > g.hovertext").evaluate((group) => {
@@ -556,16 +619,23 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
     const priceHoverText = await page.locator("#chart .hoverlayer").textContent();
     expect(priceHoverText?.match(new RegExp(priceDateLabel.replaceAll(".", "\\."), "g"))?.length || 0)
       .toBe(1);
-    await expect.poll(async () => page.locator("#chart .hoverlayer").evaluate((hoverLayer) => {
-      const date = hoverLayer.querySelector("text.legendtitletext");
-      const content = hoverLayer.querySelector("text.legendtext");
-      if (!date || !content) return null;
-      const startX = (node) => node.getStartPositionOfChar(0).matrixTransform(node.getScreenCTM()).x;
-      return Math.round(startX(content) - startX(date));
-    })).toBe(38);
-    const unifiedHoverAppearance = await page.locator("#chart .hoverlayer > g.legend").evaluate((group) => {
-      const background = group.querySelector(":scope > rect.bg");
-      const text = group.querySelector("text.legendtitletext");
+    await expect.poll(readHoverSummary).toMatchObject({
+      contentIndented: true,
+      date: priceDateLabel,
+      hasTicker: true,
+    });
+    const visiblePriceHover = page.locator(
+      "#chart .hoverlayer > g.hovertext:visible, #chart .hoverlayer > g.legend:visible",
+    ).filter({ hasText: priceDateLabel });
+    await expect(visiblePriceHover).toBeVisible();
+    const priceHoverAppearance = await visiblePriceHover.evaluate((group) => {
+      const unified = group.classList.contains("legend");
+      const background = unified
+        ? group.querySelector(":scope > rect.bg")
+        : group.querySelector(":scope > path");
+      const text = unified
+        ? group.querySelector("text.legendtitletext")
+        : group.querySelector("text.nums");
       const backgroundStyle = getComputedStyle(background);
       const textStyle = getComputedStyle(text);
       return {
@@ -578,7 +648,7 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
         textColor: textStyle.fill,
       };
     });
-    expect(unifiedHoverAppearance).toEqual(pointHoverAppearance);
+    expect(priceHoverAppearance).toEqual(pointHoverAppearance);
     await waitForChartRenderIdle(page);
     const hoverTarget = await page.locator("#chart").evaluate((element) => {
       const grouped = (element.data || []).find((trace) => (
@@ -662,6 +732,7 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
     const epsPointerPerf = await page.evaluate(() => window.ThinkStockE2E.getPerformanceApi().summary());
     expect(epsPointerPerf.pointerMoves).toBeGreaterThanOrEqual(DESKTOP_PERF_BUDGET.minPointerMoves);
     expect(epsPointerPerf.p95PointerMove).toBeLessThan(DESKTOP_PERF_BUDGET.maxP95PointerMove);
+    await waitForChartRenderIdle(page);
 
     const dragTarget = await page.locator("#chart").evaluate((element) => {
       const trace = (element.data || []).find((candidate) => candidate?.meta?.overlayKind === "eps");

@@ -102,6 +102,7 @@ test("owns ticker payload state behind one app runtime boundary", () => {
       .filter((point) => Number.isFinite(Number(point?.close)))
       .sort((left, right) => left.date.localeCompare(right.date)),
     isMarketPricePoint: () => true,
+    latestAllowedPriceDate: () => "2026-08-26",
     expectedLatestTradingDate: () => "2026-08-26",
     getDisplayName: () => "삼성전자",
     setDisplayName() {},
@@ -116,6 +117,7 @@ test("owns ticker payload state behind one app runtime boundary", () => {
   assert.equal(runtime.mergeSeries("005930.ks", [
     { date: "2026-08-25", close: 73_000, volume: 10 },
     { date: "2026-08-26", close: 74_000, volume: 20 },
+    { date: "2026-08-27", close: 75_000, volume: 30 },
   ]), true);
   assert.equal(runtime.latestDate("005930.KS"), "2026-08-26");
   assert.deepEqual(runtime.points("005930.KS"), [

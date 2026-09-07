@@ -123,7 +123,6 @@ test("hides only one series inside shared event-marker traces", () => {
 });
 
 test("main chart composition builds line, EPS, AI, and event layers in one pipeline", async () => {
-  let prepared = 0;
   const model = {
     rows: [
       { date: "2026-08-24", TEST: 100 },
@@ -149,12 +148,10 @@ test("main chart composition builds line, EPS, AI, and event layers in one pipel
       baseValuesBySeries: { "eps:TEST": [1, 2] },
     }),
     buildAiForecastTraces: async () => [{ meta: { overlayKind: "ai-scenario", seriesKey: "TEST" } }],
-    prepareEventModels: async () => { prepared += 1; },
     buildEventArguments: () => ({ ready: true }),
     buildEventTraces: ({ ready }) => ready ? [{ meta: { overlayKind: "timing-buy" } }] : [],
   });
 
-  assert.equal(prepared, 1);
   assert.deepEqual(result.traces.map((item) => item.meta?.overlayKind), [
     "price",
     "eps",
@@ -294,7 +291,6 @@ test("price-first composition reuses passive overlays without running their buil
     prebuiltEventTraces: [event],
     buildEpsTraceModel: () => { calls.push("eps"); return { traces: [] }; },
     buildAiForecastTraces: () => { calls.push("ai"); return []; },
-    prepareEventModels: () => { calls.push("events"); },
     buildEventTraces: () => { calls.push("event-traces"); return []; },
   });
 

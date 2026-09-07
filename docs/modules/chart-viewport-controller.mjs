@@ -95,6 +95,8 @@
     let pending = null;
     let frameId = 0;
     let running = null;
+    let lastCompletion = null;
+    let nextSequence = 1;
     let disposed = false;
     const stats = { scheduled: 0, applied: 0, coalesced: 0 };
 
@@ -110,8 +112,16 @@
       pending = null;
       stats.applied += 1;
       running = Promise.resolve()
-        .then(() => applyRange(next))
-        .catch((error) => onError(error, next))
+        .then(() => applyRange(next.request))
+        .then((result) => {
+          lastCompletion = Object.freeze({
+            request: next.request,
+            result,
+            sequence: next.sequence,
+          });
+          return result;
+        })
+        .catch((error) => onError(error, next.request))
         .finally(() => {
           running = null;
           requestRun();
@@ -124,7 +134,11 @@
       if (disposed || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) return false;
       stats.scheduled += 1;
       if (pending) stats.coalesced += 1;
-      pending = Object.freeze({ startMs: start, endMs: end, meta });
+      pending = Object.freeze({
+        request: Object.freeze({ startMs: start, endMs: end, meta }),
+        sequence: nextSequence,
+      });
+      nextSequence += 1;
       requestRun();
       return true;
     }
@@ -153,12 +167,14 @@
       cancel,
       dispose,
       flush,
+      lastCompletion: () => lastCompletion,
       schedule,
       isBusy: () => Boolean(frameId || running || pending),
       stats: () => ({
         ...stats,
         pending: Boolean(pending),
         running: Boolean(running),
+        lastCompletedSequence: Number(lastCompletion?.sequence) || 0,
         ...(typeof options.extraStats === "function"
           ? { frame: options.extraStats() }
           : {}),

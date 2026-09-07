@@ -71,7 +71,7 @@
   flex: 0 0 var(--ui-circle-button-size, 30px);
   padding: 0;
   border: var(--ui-circle-button-border, 1px solid var(--border));
-  border-radius: 50%;
+  border-radius: var(--ui-radius-round);
   background: var(--ui-circle-button-background, rgba(255, 255, 255, 0.06));
   color: var(--ui-circle-button-color, var(--ink));
   line-height: 1;
@@ -91,7 +91,7 @@
 .ui-compact-control {
   min-height: 29px;
   border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 999px;
+  border-radius: var(--ui-radius-pill);
   background: rgba(255, 255, 255, 0.045);
   color: var(--muted);
   cursor: pointer;

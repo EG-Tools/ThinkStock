@@ -33,6 +33,9 @@
       return weekday !== 0 && weekday !== 6;
     })()
   );
+  const latestAllowedPriceDate = () => (
+    String(marketCalendar?.latestAllowedKoreanPriceDate?.(new Date()) || "").slice(0, 10)
+  );
 
   function expectedTradingDatesAfter(anchorDate, targetDate) {
     const anchorTime = Date.parse(`${String(anchorDate || "").slice(0, 10)}T00:00:00Z`);
@@ -49,13 +52,14 @@
 
   function normalizeResearchHistoryRows(rows) {
     const byDate = new Map();
+    const maximumDate = latestAllowedPriceDate();
     (Array.isArray(rows) ? rows : []).forEach((row) => {
       const date = String(row?.date || "").slice(0, 10);
       const close = Number(row?.close);
       const volume = Number(row?.volume);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(close) || close <= 0) return;
       if (row?.volume != null && Number.isFinite(volume) && volume <= 0) return;
-      if (!isKoreanMarketPricePoint(date, row?.volume)) return;
+      if (!isKoreanMarketPricePoint(date, row?.volume, { maximumDate })) return;
       byDate.set(date, {
         date,
         close,
@@ -160,6 +164,9 @@
     const close = Number(item?.close);
     const volume = Number(item?.volume);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(close) || close <= 0) return null;
+    if (!isKoreanMarketPricePoint(date, item?.volume, {
+      maximumDate: latestAllowedPriceDate(),
+    })) return null;
     const latest = record.rows.at(-1);
     if (!latest) return null;
     if (date < latest.date) return { changed: false, record };

@@ -401,6 +401,110 @@
     });
   }
 
+  function createRuntimeSnapshotDataManager(options = {}) {
+    const componentKeys = options.componentKeys && typeof options.componentKeys === "object"
+      ? options.componentKeys
+      : {};
+    const componentNames = Object.freeze(Object.keys(componentKeys));
+    const revisionTracker = options.revisionTracker || createRevisionTracker(componentNames);
+    const componentContract = createSnapshotComponentContract(options.componentDefinitions);
+
+    function savedAtText() {
+      const value = typeof options.now === "function" ? options.now() : new Date();
+      const date = value instanceof Date ? value : new Date(value);
+      return date.toISOString();
+    }
+
+    function getRevisions() {
+      return revisionTracker.getRevisions();
+    }
+
+    function getComponent(name) {
+      return revisionTracker.getComponent(
+        name,
+        () => componentContract.normalizeCurrent(name, options.getSource?.()),
+      );
+    }
+
+    function signature() {
+      return buildSignature(
+        options.getHistoricalDataLoaded?.() === true,
+        componentNames,
+        getRevisions(),
+      );
+    }
+
+    async function buildSnapshot(taskContext = null) {
+      if (options.hasData?.() === false) return null;
+      const revisions = getRevisions();
+      const persistedRevisions = options.getPersistedRevisions?.() || {};
+      const components = {};
+      for (const name of componentNames) {
+        if (Number(persistedRevisions[name]) === Number(revisions[name])) continue;
+        components[name] = getComponent(name);
+        await taskContext?.checkpoint?.();
+      }
+      return {
+        manifest: {
+          ...(typeof options.manifestMetadata === "function"
+            ? options.manifestMetadata()
+            : options.manifestMetadata || {}),
+          saved_at: savedAtText(),
+          historical_data_loaded: options.getHistoricalDataLoaded?.() === true,
+          revisions,
+        },
+        components,
+      };
+    }
+
+    function buildFallbackSnapshot() {
+      return buildCompactSnapshot({
+        metadata: {
+          ...(typeof options.fallbackMetadata === "function"
+            ? options.fallbackMetadata()
+            : options.fallbackMetadata || {}),
+          saved_at: savedAtText(),
+        },
+        revisions: getRevisions(),
+        maxRows: options.maxRows,
+        maxDisclosures: options.maxDisclosures,
+        components: Object.fromEntries(
+          componentNames.map((name) => [name, getComponent(name)]),
+        ),
+      });
+    }
+
+    function applySnapshot(snapshot) {
+      const usable = typeof options.isUsable === "function"
+        ? options.isUsable(snapshot)
+        : isSnapshotUsable(snapshot, options.usability);
+      if (usable !== true) return false;
+      const restored = componentContract.prepareRestore(snapshot);
+      if (!restored.ok) return false;
+      options.beforeApply?.(restored, snapshot);
+      options.applyPatch?.(restored.patch, restored, snapshot);
+      revisionTracker.applyRevisions(snapshot.revisions, restored.loadedNames);
+      restored.loadedNames.forEach((name) => {
+        revisionTracker.seedComponent(name, restored.values[name]);
+      });
+      options.afterApply?.(restored, snapshot);
+      options.onRestored?.(signature(), snapshot._persistedRevisions || {}, restored);
+      return true;
+    }
+
+    return Object.freeze({
+      applySnapshot,
+      buildFallbackSnapshot,
+      buildSnapshot,
+      componentNames,
+      getComponent,
+      getRevisions,
+      markChanged: (names) => revisionTracker.markChanged(names),
+      signature,
+      stats: () => revisionTracker.stats(),
+    });
+  }
+
   function buildSignature(historicalDataLoaded, componentNames, revisions) {
     const source = revisions && typeof revisions === "object" ? revisions : {};
     return [
@@ -480,6 +584,7 @@ export {
   buildCompactSnapshot,
   buildSignature,
   createRevisionTracker,
+  createRuntimeSnapshotDataManager,
   createRuntimeSnapshotController,
   createSnapshotComponentContract,
   hasCoreHistoricalCoverage,

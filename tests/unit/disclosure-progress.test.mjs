@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { createDisclosureProgress, createTaskProgress } = await import("../../docs/modules/task-progress-runtime.mjs");
+const {
+  createApplicationProgressRuntime,
+  createDisclosureProgress,
+  createTaskProgress,
+} = await import("../../docs/modules/control-state-view.mjs");
 
 test("zero-delay progress becomes visible in the same turn", () => {
   const root = { hidden: true };
@@ -15,6 +19,36 @@ test("zero-delay progress becomes visible in the same turn", () => {
   progress.begin("signal:005930.KS", "삼성전자 신호 로딩중");
 
   assert.equal(root.hidden, false);
+});
+
+test("application progress runtime owns the shared feature progress configuration", () => {
+  const elements = new Map([
+    ["disclosureProgress", { hidden: true, dataset: {} }],
+    ["disclosureProgressText", { textContent: "" }],
+    ["disclosureProgressBar", { style: {} }],
+    ["epsProgress", { hidden: true, dataset: {} }],
+    ["epsProgressText", { textContent: "" }],
+    ["epsProgressBar", { style: {} }],
+    ["signalProgress", { hidden: true, dataset: {} }],
+    ["signalProgressText", { textContent: "" }],
+    ["signalProgressBar", { style: {} }],
+  ]);
+  const scope = {
+    document: { getElementById: (id) => elements.get(id) || null },
+    setTimeout,
+    clearTimeout,
+  };
+  const progress = createApplicationProgressRuntime(scope);
+
+  progress.signal.begin("signal:005930.KS", "삼성전자 신호 로딩중");
+  progress.disclosure.begin("insider:005930.KS", "삼성전자 내부거래");
+
+  assert.equal(elements.get("signalProgress").hidden, false);
+  assert.equal(elements.get("signalProgress").dataset.anchor, "signal");
+  assert.equal(elements.get("disclosureProgress").dataset.anchor, "insider");
+  progress.signal.dispose();
+  progress.disclosure.dispose();
+  progress.eps.dispose();
 });
 
 test("disclosure progress aggregates real per-ticker completion and avoids instant flashes", () => {

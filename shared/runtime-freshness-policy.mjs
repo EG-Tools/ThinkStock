@@ -1,11 +1,9 @@
-import {
-  isKoreanCurrentPriceWindow,
-  koreanDateText,
-} from "./market-calendar.mjs";
+import { koreanDateText } from "./market-calendar.mjs";
 import {
   classifyProviderError,
   providerRetryDelayMs,
 } from "./runtime-provider-resilience.mjs";
+import { runtimeSourcePolicyFamily } from "./runtime-source-contract.mjs";
 
 const SECOND_MS = 1000;
 const MINUTE_MS = 60 * SECOND_MS;
@@ -83,14 +81,8 @@ export const RUNTIME_SOURCE_POLICIES = Object.freeze({
   }),
 });
 
-function normalizedKind(kind) {
-  const value = String(kind || "").trim();
-  if (value === "prices" || value === "prices-hidden") return "price";
-  return value;
-}
-
 export function sourcePolicy(kind) {
-  return RUNTIME_SOURCE_POLICIES[normalizedKind(kind)] || DEFAULT_POLICY;
+  return RUNTIME_SOURCE_POLICIES[runtimeSourcePolicyFamily(kind)] || DEFAULT_POLICY;
 }
 
 export function cacheTtlSeconds(kind, options = {}) {
@@ -186,9 +178,6 @@ export function shouldConfirmRuntimeSource(kind, options = {}) {
   const ageMs = now.getTime() - checkedAt;
   const policy = sourcePolicy(kind);
   if (!checkedAt || ageMs < 0) return true;
-  if (["price", "indices"].includes(kind) && isKoreanCurrentPriceWindow(now)) {
-    return ageMs >= policy.liveConfirmMs;
-  }
   return ageMs >= policy.liveConfirmMs;
 }
 

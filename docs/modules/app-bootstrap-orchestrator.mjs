@@ -211,34 +211,44 @@ export function createFeatureLifecycleDescriptors(features = []) {
 /** Keeps restored-feature predicates in one application lifecycle policy. */
 export function createApplicationFeatureLifecycleDescriptors(context = {}) {
   const state = context.state || {};
+  const isRequested = (feature, fallback) => (
+    typeof context.isFeatureRequested === "function"
+      ? context.isFeatureRequested(state, feature)
+      : fallback()
+  );
+  const requested = (feature, fallback) => () => isRequested(feature, fallback);
   return createFeatureLifecycleDescriptors([
     {
       name: "timing",
-      enabled: () => Boolean(state.showRecessionSignals),
+      enabled: requested("signal", () => Boolean(state.showRecessionSignals)),
       restore: context.restoreTiming,
     },
     {
       name: "dart",
-      enabled: () => Boolean(state.showDisclosures || state.showInsiderTrades),
+      enabled: requested("dart", () => Boolean(
+        state.showDisclosures || state.showInsiderTrades || state.showAiForecast
+      )),
       restore: context.restoreDart,
     },
     {
       name: "insider",
-      enabled: () => Boolean(state.showInsiderTrades && context.canUseInsider?.()),
+      enabled: () => isRequested("insider", () => Boolean(state.showInsiderTrades))
+        && Boolean(context.canUseInsider?.()),
       refresh: context.refreshInsider,
     },
     {
       name: "ai",
-      enabled: () => Boolean(state.showAiForecast),
+      enabled: requested("ai", () => Boolean(state.showAiForecast)),
       refresh: (_messageElement, refreshOptions = {}) => context.refreshAi?.({
         forceNetwork: refreshOptions.forceNetwork === true,
       }),
     },
     {
       name: "eps",
-      enabled: () => Boolean(state.showEps),
+      enabled: requested("eps", () => Boolean(state.showEps)),
       refresh: (_messageElement, refreshOptions = {}) => context.refreshEps?.({
-        forceNetwork: refreshOptions.forceNetwork === true && !state.showAiForecast,
+        forceNetwork: refreshOptions.forceNetwork === true
+          && !isRequested("ai", () => Boolean(state.showAiForecast)),
         render: true,
       }),
     },

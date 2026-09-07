@@ -2,7 +2,7 @@
 
   const normalizeTicker = (value) => String(value || "").trim().toUpperCase();
   const TIMING_CACHE_SCHEMA = 1;
-  const TIMING_CACHE_REVISION = "market-timing-cache-v11";
+  const TIMING_CACHE_REVISION = "market-timing-cache-v12";
 
   function normalizeTargets(targets) {
     return [...new Set((targets || []).map(normalizeTicker).filter(Boolean))].sort();
@@ -38,6 +38,9 @@
   function sharedTimingFingerprint(sources = {}) {
     const state = hashTimingValue([
       TIMING_CACHE_REVISION,
+      sources.dates || [],
+      sources.pricesByTicker?.["^KS11"] || [],
+      sources.pricesByTicker?.["^KQ11"] || [],
       sources.volatilityRows || sources.adrRows || [],
       sources.macroRows || [],
       sources.creditRows || [],
@@ -48,38 +51,21 @@
 
   function timingInputFingerprint(sources = {}, rawTicker, sharedFingerprint = "") {
     const ticker = normalizeTicker(rawTicker);
-    const benchmark = ticker === "^KQ11" || ticker.endsWith(".KQ") ? "^KQ11" : "^KS11";
     const dates = Array.isArray(sources.dates) ? sources.dates : [];
     const prices = Array.isArray(sources.pricesByTicker?.[ticker])
       ? sources.pricesByTicker[ticker]
       : [];
-    const benchmarks = Array.isArray(sources.pricesByTicker?.[benchmark])
-      ? sources.pricesByTicker[benchmark]
-      : [];
-    const marketPrices = ["^KS11", "^KQ11"].map((marketTicker) => (
-      Array.isArray(sources.pricesByTicker?.[marketTicker])
-        ? sources.pricesByTicker[marketTicker]
-        : []
-    ));
-    const volumeByDate = new Map(Array.isArray(sources.volumesByTicker?.[ticker])
+    const volumeByDate = new Map((Array.isArray(sources.volumesByTicker?.[ticker])
       ? sources.volumesByTicker[ticker]
-      : []);
-    const aligned = dates.flatMap((date, index) => {
-      const price = Number(prices[index]);
-      if (!Number.isFinite(price) || price <= 0) return [];
-      return [[
-        String(date || "").slice(0, 10),
-        price,
-        benchmarks[index] ?? null,
-        marketPrices[0][index] ?? null,
-        marketPrices[1][index] ?? null,
-        volumeByDate.get(date) ?? null,
-      ]];
-    });
+      : []).map(([date, volume]) => [String(date || "").slice(0, 10), volume]));
+    const alignedVolumes = dates.map((date) => (
+      volumeByDate.get(String(date || "").slice(0, 10)) ?? null
+    ));
     const state = hashTimingValue([
       sharedFingerprint || sharedTimingFingerprint(sources),
       ticker,
-      aligned,
+      prices,
+      alignedVolumes,
     ]);
     return `${TIMING_CACHE_REVISION}:${state.toString(36)}`;
   }
@@ -248,7 +234,10 @@
     let workerSourceSignature = "";
     let currentSignature = "";
     let currentSources = null;
-    let pendingPreparation = null;
+    const pendingTargetPreparations = new Map();
+    const activePreparationsBySignature = new Map();
+    const preparationIdleWaiters = new Set();
+    let serviceGeneration = 0;
     let requestSequence = 0;
     let currentSharedFingerprint = "";
     const workerLifecycle = typeof options.createIdleResourceLifecycle === "function"
@@ -267,7 +256,35 @@
       persistentCacheWrites: 0,
       deferredCacheWrites: 0,
       inputFingerprintCalculations: 0,
+      coalescedTargets: 0,
     };
+
+    function activePreparationCount() {
+      return [...activePreparationsBySignature.values()]
+        .reduce((total, count) => total + count, 0);
+    }
+
+    function waitForPreparationIdle() {
+      if (!activePreparationCount()) return Promise.resolve();
+      return new Promise((resolve) => preparationIdleWaiters.add(resolve));
+    }
+
+    function enterPreparation(signature) {
+      activePreparationsBySignature.set(
+        signature,
+        (activePreparationsBySignature.get(signature) || 0) + 1,
+      );
+    }
+
+    function leavePreparation(signature) {
+      const next = (activePreparationsBySignature.get(signature) || 1) - 1;
+      if (next > 0) activePreparationsBySignature.set(signature, next);
+      else activePreparationsBySignature.delete(signature);
+      if (activePreparationCount()) return;
+      const waiters = [...preparationIdleWaiters];
+      preparationIdleWaiters.clear();
+      waiters.forEach((resolve) => resolve());
+    }
 
     function fingerprintFor(tickerValue) {
       const ticker = normalizeTicker(tickerValue);
@@ -443,15 +460,17 @@
       return null;
     }
 
-    async function calculateMissing(signature, targets) {
+    async function calculateMissing(signature, targets, generation) {
       counters.modelCalculations += targets.length;
       let calculated;
       try {
         calculated = await requestWorker(signature, targets);
       } catch (_) {
+        if (generation !== serviceGeneration || signature !== currentSignature) return;
         counters.workerFallbacks += 1;
         calculated = calculateFallback(targets);
       }
+      if (generation !== serviceGeneration || signature !== currentSignature) return;
       Object.entries(calculated || {}).forEach(([ticker, model]) => {
         const key = normalizeTicker(ticker);
         models.set(key, model ?? null);
@@ -474,7 +493,9 @@
       const signature = String(input.signature || "");
       const targets = normalizeTargets(input.targets);
       if (!signature || !targets.length) return models;
-      if (pendingPreparation) await pendingPreparation.catch(() => {});
+      while (signature !== currentSignature && activePreparationCount()) {
+        await waitForPreparationIdle();
+      }
       if (signature !== currentSignature) {
         const nextSources = input.sources || currentSources;
         if (!nextSources) throw new Error("market timing sources are unavailable");
@@ -494,31 +515,58 @@
       }
       if (!currentSources) throw new Error("market timing sources are unavailable");
       if (!currentSharedFingerprint) currentSharedFingerprint = sharedTimingFingerprint(currentSources);
-
-      let missing = targets.filter((ticker) => !models.has(ticker));
-      await hydrateMissing(missing);
-      missing = targets.filter((ticker) => !models.has(ticker));
-      if (!missing.length) {
-        counters.targetCacheHits += targets.length;
-        return models;
-      }
-      counters.targetCacheHits += targets.length - missing.length;
       const activeSignature = currentSignature;
-      pendingPreparation = calculateMissing(activeSignature, missing)
-        .finally(() => { pendingPreparation = null; });
-      await pendingPreparation;
-      if (activeSignature !== currentSignature) return prepare(input);
-      return models;
+      const generation = serviceGeneration;
+      enterPreparation(activeSignature);
+      try {
+        const existingTargets = targets.filter((ticker) => models.has(ticker));
+        counters.targetCacheHits += existingTargets.length;
+        const initiallyMissing = targets.filter((ticker) => (
+          !models.has(ticker) && !pendingTargetPreparations.has(ticker)
+        ));
+        await hydrateMissing(initiallyMissing);
+
+        const waiting = targets.flatMap((ticker) => {
+          const pending = pendingTargetPreparations.get(ticker);
+          return pending ? [pending] : [];
+        });
+        counters.coalescedTargets += waiting.length;
+        const missing = targets.filter((ticker) => (
+          !models.has(ticker) && !pendingTargetPreparations.has(ticker)
+        ));
+        let calculation = null;
+        if (missing.length) {
+          calculation = calculateMissing(activeSignature, missing, generation)
+            .finally(() => {
+              missing.forEach((ticker) => {
+                if (pendingTargetPreparations.get(ticker) === calculation) {
+                  pendingTargetPreparations.delete(ticker);
+                }
+              });
+            });
+          missing.forEach((ticker) => pendingTargetPreparations.set(ticker, calculation));
+        }
+        await Promise.all([...new Set([
+          ...waiting,
+          ...(calculation ? [calculation] : []),
+        ])]);
+        if (activeSignature !== currentSignature) return prepare(input);
+        return models;
+      } finally {
+        leavePreparation(activeSignature);
+      }
     }
 
     function clear() {
+      serviceGeneration += 1;
       currentSignature = "";
       currentSources = null;
       currentSharedFingerprint = "";
       models.clear();
       modelFingerprints.clear();
       inputFingerprints.clear();
-      discardWorker();
+      pendingTargetPreparations.clear();
+      discardWorker(new Error("market timing service cleared"));
     }
 
     function invalidate(tickerValue) {
@@ -546,6 +594,7 @@
         signature: currentSignature,
         modelCount: models.size,
         fingerprintCount: modelFingerprints.size,
+        pendingTargets: pendingTargetPreparations.size,
         workerSourceSignature,
         workerLifecycle: workerLifecycle?.stats?.() || null,
         quality: typeof dependencies.summarizeMarketTimingQuality === "function"

@@ -100,10 +100,12 @@ test("removes cached Korean equity values on non-trading dates without deleting 
       { date: "2017-05-01", "207940.KS": 286371, leading_cycle: 100.2 },
       { date: "2017-05-02", "^KS11": 2219, "207940.KS": 272328 },
       { date: "2017-06-01", "^KS11": 2344, "207940.KS": 348397 },
+      { date: "2017-06-02", "207940.KS": 350000, leading_cycle: 100.4 },
     ],
     series: ["^KS11", "207940.KS", "leading_cycle"],
   }, {
     isTradingDate: (date) => date !== "2017-05-01",
+    maximumDate: "2017-06-01",
   });
 
   assert.deepEqual(payload.records, [
@@ -111,6 +113,7 @@ test("removes cached Korean equity values on non-trading dates without deleting 
     { date: "2017-05-01", leading_cycle: 100.2 },
     { date: "2017-05-02", "^KS11": 2219, "207940.KS": 272328 },
     { date: "2017-06-01", "^KS11": 2344, "207940.KS": 348397 },
+    { date: "2017-06-02", leading_cycle: 100.4 },
   ]);
 });
 

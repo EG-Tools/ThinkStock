@@ -8,14 +8,31 @@ const APP_DATA_KEYS = Object.freeze([
   "insiderTradeRows",
 ]);
 
-const APP_DATA_COMPONENT_BY_KEY = Object.freeze({
-  pricePayload: "price",
-  macroRows: "macro",
-  creditRows: "credit",
-  crisisRows: "crisis",
-  adrRows: "adr",
-  disclosureRows: "disclosure",
+const APP_DATA_COMPONENT_DEFINITIONS = Object.freeze({
+  price: Object.freeze({ dataKey: "pricePayload", snapshotKey: "pricePayload" }),
+  macro: Object.freeze({ dataKey: "macroRows", snapshotKey: "macroRows" }),
+  credit: Object.freeze({ dataKey: "creditRows", snapshotKey: "creditRows" }),
+  crisis: Object.freeze({ dataKey: "crisisRows", snapshotKey: "crisisRows" }),
+  adr: Object.freeze({ dataKey: "adrRows", snapshotKey: "adrRows" }),
+  disclosure: Object.freeze({ dataKey: "disclosureRows", snapshotKey: "disclosureRows" }),
 });
+
+const APP_DATA_COMPONENT_GROUPS = Object.freeze({
+  analysis: Object.freeze(["price", "macro", "credit", "crisis", "adr"]),
+  mainChart: Object.freeze(["price", "macro", "credit", "crisis"]),
+  auxiliary: Object.freeze(["adr"]),
+  disclosure: Object.freeze(["disclosure"]),
+});
+
+const APP_DATA_COMPONENT_BY_KEY = Object.freeze(Object.fromEntries(
+  Object.entries(APP_DATA_COMPONENT_DEFINITIONS)
+    .map(([component, definition]) => [definition.dataKey, component]),
+));
+
+const APP_DATA_SNAPSHOT_COMPONENT_KEYS = Object.freeze(Object.fromEntries(
+  Object.keys(APP_DATA_COMPONENT_DEFINITIONS)
+    .map((component) => [component, `component:${component}`]),
+));
 
 /** @typedef {typeof APP_DATA_KEYS[number]} AppDataKey */
 /**
@@ -198,7 +215,10 @@ function createAppDataRevisionBridge(store, options = {}) {
 
 export {
   APP_DATA_COMPONENT_BY_KEY,
+  APP_DATA_COMPONENT_DEFINITIONS,
+  APP_DATA_COMPONENT_GROUPS,
   APP_DATA_KEYS,
+  APP_DATA_SNAPSHOT_COMPONENT_KEYS,
   createAppDataRevisionBridge,
   createAppDataStore,
 };

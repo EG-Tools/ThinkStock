@@ -271,3 +271,68 @@ test("normalizes current and restored snapshot components through one contract",
   });
   assert.equal(contract.prepareRestore({ pricePayload: { records: [] } }).ok, false);
 });
+
+test("runtime snapshot data manager owns incremental build and atomic restore order", async () => {
+  const source = {
+    pricePayload: { records: [{ date: "2026-09-04", close: 10 }] },
+    macroRows: [{ date: "2026-09-01", leading_cycle: 100 }],
+  };
+  const events = [];
+  let historical = false;
+  let persisted = { price: 0, macro: 1 };
+  const tracker = module.createRevisionTracker(["price", "macro"]);
+  tracker.markChanged(["price", "macro"]);
+  const manager = module.createRuntimeSnapshotDataManager({
+    componentKeys: { price: "component:price", macro: "component:macro" },
+    revisionTracker: tracker,
+    componentDefinitions: {
+      price: { dataKey: "pricePayload", snapshotKey: "pricePayload", required: true },
+      macro: { dataKey: "macroRows", snapshotKey: "macroRows", isIncluded: Array.isArray },
+    },
+    getSource: () => source,
+    hasData: () => true,
+    getHistoricalDataLoaded: () => historical,
+    getPersistedRevisions: () => persisted,
+    manifestMetadata: { version: 3, format: "component-v1" },
+    fallbackMetadata: { version: 3, format: "compact-v1" },
+    maxRows: 10,
+    maxDisclosures: 2,
+    now: () => new Date("2026-09-07T00:00:00.000Z"),
+    isUsable: (snapshot) => snapshot?.version === 3,
+    beforeApply: () => events.push("before"),
+    applyPatch: (patch) => {
+      events.push("patch");
+      Object.assign(source, patch);
+    },
+    afterApply: () => {
+      events.push("after");
+      historical = true;
+    },
+    onRestored: (signature, revisions) => {
+      events.push(["restored", signature, revisions]);
+    },
+  });
+
+  const built = await manager.buildSnapshot();
+  assert.deepEqual(Object.keys(built.components), ["price"]);
+  assert.equal(built.manifest.saved_at, "2026-09-07T00:00:00.000Z");
+  assert.equal(built.manifest.historical_data_loaded, false);
+
+  persisted = built.manifest.revisions;
+  const restored = manager.applySnapshot({
+    version: 3,
+    pricePayload: { records: [{ date: "2026-09-05", close: 11 }] },
+    macroRows: [{ date: "2026-09-02", leading_cycle: 101 }],
+    revisions: { price: 4, macro: 5 },
+    _persistedRevisions: { price: 4, macro: 5 },
+  });
+  assert.equal(restored, true);
+  assert.deepEqual(events.slice(0, 3), ["before", "patch", "after"]);
+  assert.deepEqual(events[3], [
+    "restored",
+    "history::price:4::macro:5",
+    { price: 4, macro: 5 },
+  ]);
+  assert.equal(source.pricePayload.records[0].close, 11);
+  assert.equal(manager.getRevisions().macro, 5);
+});

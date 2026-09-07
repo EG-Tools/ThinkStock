@@ -1,14 +1,17 @@
 import { mapWithConcurrency } from "./shared-request-registry.mjs";
+import { isRuntimeSourceKey } from "../../shared/runtime-source-contract.mjs";
+import { APP_DATA_COMPONENT_GROUPS } from "./app-data-store.mjs";
 
 "use strict";
 
   function planRuntimeRefreshRendering(before = {}, after = {}) {
     const changed = (name) => Number(after?.[name]) !== Number(before?.[name]);
+    const changedIn = (group) => (group || []).some(changed);
     const priceDataChanged = changed("price");
-    const derivedInputChanged = ["price", "macro", "credit", "crisis", "adr"].some(changed);
-    const mainDataChanged = priceDataChanged || ["macro", "credit", "crisis"].some(changed);
-    const adrDataChanged = changed("adr");
-    const disclosureDataChanged = changed("disclosure");
+    const derivedInputChanged = changedIn(APP_DATA_COMPONENT_GROUPS.analysis);
+    const mainDataChanged = changedIn(APP_DATA_COMPONENT_GROUPS.mainChart);
+    const adrDataChanged = changedIn(APP_DATA_COMPONENT_GROUPS.auxiliary);
+    const disclosureDataChanged = changedIn(APP_DATA_COMPONENT_GROUPS.disclosure);
     return Object.freeze({
       mainDataChanged,
       priceDataChanged,
@@ -68,6 +71,57 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
     });
   }
 
+  function normalizeRuntimeRefreshSourceResult(source, result = {}) {
+    const value = result && typeof result === "object" ? result : {};
+    return Object.freeze({
+      ...value,
+      source: String(source || value.source || ""),
+      info: Object.freeze(Array.isArray(value.info) ? [...value.info] : []),
+      warnings: Object.freeze(Array.isArray(value.warnings) ? [...value.warnings] : []),
+    });
+  }
+
+  /** One execution contract for every supplemental runtime data source. */
+  function createRuntimeRefreshSourceAdapter(definition = {}) {
+    const source = String(definition.source || "").trim();
+    if (!source || !isRuntimeSourceKey(source) || typeof definition.load !== "function") {
+      throw new Error("runtime refresh source adapter is incomplete");
+    }
+
+    async function run(context = {}) {
+      if (typeof definition.enabled === "function" && definition.enabled(context) !== true) {
+        return normalizeRuntimeRefreshSourceResult(source, definition.disabledResult);
+      }
+      try {
+        const load = () => definition.load(context);
+        const execute = definition.retry !== false
+          && typeof context.refreshSourceWithRetry === "function"
+          ? () => context.refreshSourceWithRetry(source, load, context.signal)
+          : load;
+        const rawResult = typeof context.trackSource === "function"
+          ? await context.trackSource(source, execute, definition.skippedResult || {})
+          : await execute();
+        const mapped = typeof definition.mapResult === "function"
+          ? definition.mapResult(rawResult || {}, context)
+          : rawResult;
+        return normalizeRuntimeRefreshSourceResult(source, mapped);
+      } catch (error) {
+        if (context.isAbortError?.(error) || error?.name === "AbortError" || context.signal?.aborted) {
+          throw error;
+        }
+        const failure = typeof definition.onError === "function"
+          ? definition.onError(error, context)
+          : context.sourceFailure?.(error, definition.errorLabel || `${source} 오류`) || {
+            info: [],
+            warnings: [`${definition.errorLabel || `${source} 오류`}: ${error?.message || error}`],
+          };
+        return normalizeRuntimeRefreshSourceResult(source, failure);
+      }
+    }
+
+    return Object.freeze({ source, run });
+  }
+
   function createRuntimeRefreshPolicy(options = {}) {
     const normalizeSeries = (values) => [...new Set((Array.isArray(values) ? values : [])
       .map((value) => String(value || "").trim())
@@ -77,8 +131,20 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
     )];
     const visibleSeries = () => normalizeSeries(options.getVisibleSeries?.());
     const session = () => options.getSession?.() || {};
+    const featureRequested = (feature, state = session()) => {
+      if (typeof options.isFeatureRequested === "function") {
+        return options.isFeatureRequested(state, feature) === true;
+      }
+      if (feature === "signal") return state.showRecessionSignals === true;
+      if (feature === "ai") return state.showAiForecast === true;
+      if (feature === "co-movement") return state.showCoMovement === true;
+      if (feature === "dart") {
+        return state.showDisclosures === true || state.showInsiderTrades === true
+          || state.showAiForecast === true;
+      }
+      return false;
+    };
     const marketIndexSeries = normalizeSeries(options.marketIndexSeries);
-    const analysisInputSources = new Set(["adr", "crisis", "credit", "fearGreed", "macro"]);
     const macroSourceSeries = normalizeSeries(options.macroSourceSeries || ["leading_cycle"]);
     const crisisSourceSeries = normalizeSeries(options.crisisSourceSeries || [
       "t10y1y",
@@ -137,7 +203,7 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
     function needsAnalysisInputs(series = visibleSeries()) {
       const chartState = session();
       return forecastTargets(series).length > 0
-        && (chartState.showRecessionSignals || chartState.showAiForecast);
+        && (featureRequested("signal", chartState) || featureRequested("ai", chartState));
     }
 
     function hasVisibleSeries(keys, hiddenSeries) {
@@ -149,9 +215,9 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
       const visibleStocks = visible.filter((key) => options.isStockSeries?.(key) === true);
       const chartState = session();
       const analysisNeedsBenchmarks = forecastTargets(visible).length > 0 && (
-        chartState.showRecessionSignals
-        || chartState.showAiForecast
-        || chartState.showCoMovement
+        featureRequested("signal", chartState)
+        || featureRequested("ai", chartState)
+        || featureRequested("co-movement", chartState)
       );
       const indexTickers = analysisNeedsBenchmarks
         ? marketIndexSeries
@@ -190,7 +256,7 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
           || hasVisibleSeries(crisisSourceSeries, hiddenSeries);
       }
       if (key === "disclosure") {
-        return chartState.showDisclosures || chartState.showInsiderTrades;
+        return featureRequested("dart", chartState);
       }
       if (key === "fearGreed") return analysisActive || !hiddenPanels?.has?.("fearGreed");
       if (key === "adr") return analysisActive || !hiddenPanels?.has?.("adr");
@@ -209,9 +275,6 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
       if (requestOptions.forceNetwork === true) return true;
       const key = String(source || "");
       if (["indices", "prices", "prices-visible"].includes(key)) return true;
-      // A ready record from a previous session only describes its old check.
-      // Active signal/AI inputs must each be confirmed once in this refresh.
-      if (needsAnalysisInputs() && analysisInputSources.has(key)) return true;
       const sourceState = options.getSourceStates?.()?.[key] || null;
       if (
         !sourceState
@@ -259,7 +322,10 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
         || requestOptions.forceDerivedFinalize === true
       );
       let updateClass = "";
-      if (shouldFinalizeDerived && options.isTimingVisible?.()) updateClass = "timing";
+      if (shouldFinalizeDerived && options.isTimingVisible?.()) {
+        await options.prepareTiming?.({ changes, requestOptions, revisionsAfter });
+        updateClass = "timing";
+      }
       else if (mainDataChanged) {
         updateClass = requestOptions.phase === "critical" && priceDataChanged ? "price" : "data";
       }
@@ -322,6 +388,77 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
     if (!state || !chartSession || !runtimeDataApp) {
       throw new Error("runtime refresh orchestrator dependencies are incomplete");
     }
+
+    const supplementalSourceAdapters = Object.freeze([
+      createRuntimeRefreshSourceAdapter({
+        source: "crisis",
+        errorLabel: "침체 위기신호 불러오기 오류",
+        skippedResult: { applied: [], warnings: [] },
+        load: ({ signal, forceNetwork }) => refreshCrisisSignalFromGateway(signal, forceNetwork),
+        mapResult: (result) => ({ info: result.applied || [], warnings: result.warnings || [] }),
+      }),
+      createRuntimeRefreshSourceAdapter({
+        source: "fearGreed",
+        errorLabel: "공포탐욕 불러오기 오류",
+        skippedResult: { added: 0, latestDate: "" },
+        load: ({ signal, forceNetwork }) => refreshFearGreedFromWeb(signal, forceNetwork),
+        mapResult: ({ added, latestDate }) => ({
+          info: added > 0 ? [`공포탐욕 최신값 반영(~ ${latestDate})`] : [],
+          warnings: [],
+        }),
+      }),
+      createRuntimeRefreshSourceAdapter({
+        source: "disclosure",
+        retry: false,
+        enabled: ({ forceNetwork }) => forceNetwork && canUseDartGateway(),
+        disabledResult: { refreshed: false },
+        skippedResult: { fetched: 0, failed: [] },
+        errorLabel: "DART 공시 오류",
+        load: ({ forceNetwork, signal }) => refreshDartDisclosuresForVisibleTickersFromApi({
+          forceNetwork,
+          signal,
+        }),
+        mapResult: (result) => ({
+          info: result.fetched > 0 ? [`DART 공시 ${result.fetched}건 확인`] : [],
+          warnings: result.failed || [],
+          refreshed: result.fetched > 0,
+        }),
+        onError: (error, context) => context.sourceFailure(error, "DART 공시 오류", {
+          refreshed: false,
+        }),
+      }),
+      createRuntimeRefreshSourceAdapter({
+        source: "adr",
+        retry: false,
+        skippedResult: { changed: 0, latestDate: "" },
+        load: ({ signal, forceNetwork }) => refreshAdrFromWebWithRetry(signal, forceNetwork),
+        mapResult: ({ changed, latestDate }) => ({
+          info: changed > 0 ? [`ADR ${changed}건 최신값 반영(~ ${latestDate})`] : [],
+          warnings: [],
+        }),
+        onError: (error, context) => {
+          if (isRetryableAdrRefreshError(error)) {
+            scheduleAdrFinalRetry(context.forceNetwork);
+            return { info: ["ADR 백그라운드 재확인 예약"], warnings: [] };
+          }
+          return context.sourceFailure(error, "ADR 불러오기 오류");
+        },
+      }),
+      createRuntimeRefreshSourceAdapter({
+        source: "macro",
+        errorLabel: "ECOS 지표 불러오기 오류",
+        skippedResult: { applied: [], warnings: [] },
+        load: ({ signal, forceNetwork }) => refreshEcosMacroFromGateway(signal, forceNetwork),
+        mapResult: (result) => ({ info: result.applied || [], warnings: result.warnings || [] }),
+      }),
+      createRuntimeRefreshSourceAdapter({
+        source: "credit",
+        errorLabel: "신용·예탁금 불러오기 오류",
+        skippedResult: { applied: [], warnings: [] },
+        load: ({ signal, forceNetwork }) => refreshCreditFromGateway(signal, forceNetwork),
+        mapResult: (result) => ({ info: result.applied || [], warnings: result.warnings || [] }),
+      }),
+    ]);
 
     async function run(msgEl, options = {}) {
       cancelAdrFinalRetry();
@@ -538,75 +675,6 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
         }
       };
 
-      const adrTask = () => trackSource(
-        "adr",
-        () => refreshAdrFromWebWithRetry(signal, forceNetwork),
-        { changed: 0, latestDate: "" },
-      )
-        .then(({ changed, latestDate }) => ({
-          info: changed > 0 ? [`ADR ${changed}건 최신값 반영(~ ${latestDate})`] : [],
-          warnings: [],
-        }))
-        .catch((adrErr) => {
-          if (isAbortError(adrErr) || signal?.aborted) throw adrErr;
-          if (isRetryableAdrRefreshError(adrErr)) {
-            scheduleAdrFinalRetry(forceNetwork);
-            return { info: ["ADR 백그라운드 재확인 예약"], warnings: [] };
-          }
-          return { info: [], warnings: [`ADR 불러오기 오류: ${adrErr.message}`] };
-        });
-    
-      const fearGreedTask = () => trackSource("fearGreed", () => refreshSourceWithRetry(
-        "fearGreed",
-        () => refreshFearGreedFromWeb(signal, forceNetwork),
-        signal,
-      ), { added: 0, latestDate: "" })
-        .then(({ added, latestDate }) => ({
-          info: added > 0 ? [`공포탐욕 최신값 반영(~ ${latestDate})`] : [],
-          warnings: [],
-        }))
-        .catch((error) => sourceFailure(error, "공포탐욕 불러오기 오류"));
-    
-      const ecosTask = () => trackSource("macro", () => refreshSourceWithRetry(
-        "macro",
-        () => refreshEcosMacroFromGateway(signal, forceNetwork),
-        signal,
-      ), { applied: [], warnings: [] })
-        .then((result) => ({ info: result.applied || [], warnings: result.warnings || [] }))
-        .catch((error) => sourceFailure(error, "ECOS 지표 불러오기 오류"));
-    
-      const creditTask = () => {
-        return trackSource("credit", () => refreshSourceWithRetry(
-          "credit",
-          () => refreshCreditFromGateway(signal, forceNetwork),
-          signal,
-        ), { applied: [], warnings: [] })
-          .then((result) => ({ info: result.applied || [], warnings: result.warnings || [] }))
-          .catch((error) => sourceFailure(error, "신용·예탁금 불러오기 오류"));
-      };
-    
-      const crisisTask = () => trackSource("crisis", () => refreshSourceWithRetry(
-        "crisis",
-        () => refreshCrisisSignalFromGateway(signal, forceNetwork),
-        signal,
-      ), { applied: [], warnings: [] })
-        .then((result) => ({ info: result.applied || [], warnings: result.warnings || [] }))
-        .catch((error) => sourceFailure(error, "침체 위기신호 불러오기 오류"));
-    
-      const dartTask = () => {
-        if (!forceNetwork || !canUseDartGateway()) {
-          return Promise.resolve({ info: [], warnings: [], refreshed: false });
-        }
-        return trackSource("disclosure", () => refreshDartDisclosuresForVisibleTickersFromApi({
-          forceNetwork,
-          signal,
-        }), { fetched: 0, failed: [] }).then((result) => ({
-          info: result.fetched > 0 ? [`DART 공시 ${result.fetched}건 확인`] : [],
-          warnings: result.failed || [],
-          refreshed: result.fetched > 0,
-        })).catch((error) => sourceFailure(error, "DART 공시 오류", { refreshed: false }));
-      };
-    
       const collectResults = (results) => results.forEach((result) => {
         infoLines.push(...(result.info || []));
         warnLines.push(...(result.warnings || []));
@@ -636,16 +704,17 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
         return changes;
       };
 
-      const sourceTasks = [
-        ["crisis", crisisTask],
-        ["fearGreed", fearGreedTask],
-        ["disclosure", dartTask],
-        ["adr", adrTask],
-        ["macro", ecosTask],
-        ["credit", creditTask],
-      ].map(([source, task]) => ({
-        source,
-        task: async () => ({ ...(await task()), source }),
+      const sourceContext = Object.freeze({
+        forceNetwork,
+        isAbortError,
+        refreshSourceWithRetry,
+        signal,
+        sourceFailure,
+        trackSource,
+      });
+      const sourceTasks = supplementalSourceAdapters.map((adapter) => ({
+        source: adapter.source,
+        task: () => adapter.run(sourceContext),
       }));
       const refreshDeferredSources = options?.refreshDeferredSources === true || forceNetwork;
       const sourcePlan = planRuntimeRefreshSources(sourceTasks, {
@@ -901,6 +970,7 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
 
 export {
   createRuntimeRefreshChangeApplier,
+  createRuntimeRefreshSourceAdapter,
   createRuntimeRefreshPolicy,
   createRuntimeRefreshOrchestrator,
   isRetryableRuntimeError,

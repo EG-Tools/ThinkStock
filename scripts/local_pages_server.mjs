@@ -14,6 +14,7 @@ import {
   expectedLatestKoreanTradingDate,
   inspectDailyPriceHistoryDensity,
   isKoreanCurrentPriceWindow,
+  isKoreanMarketPricePoint,
   isKoreanTradingDate,
   koreanDateText,
   resolveKoreanResearchUniversePhase,
@@ -1488,14 +1489,20 @@ export async function createThinkStockServer(options = {}) {
       );
       const totalLimit = normalizeResearchUniverseSize(requestUrl.searchParams.get("limit"));
       const previousUniverse = researchUniverseCache;
+      const now = new Date();
+      const phase = resolveKoreanResearchUniversePhase(now);
+      const { targetDate, today } = phase;
       try {
-        const now = new Date();
-        const phase = resolveKoreanResearchUniversePhase(now);
-        const { targetDate, today } = phase;
         const cacheMatchesSize = researchUniverseCache?.records?.length === totalLimit;
         const targetPriceMode = phase.priceMode;
+        const cacheDateAllowed = isKoreanMarketPricePoint(
+          researchUniverseCache?.baseDate,
+          null,
+          { maximumDate: targetDate },
+        );
         const cacheIsFresh = cacheMatchesSize
-          && researchUniverseCache.baseDate >= targetDate
+          && cacheDateAllowed
+          && researchUniverseCache.baseDate === targetDate
           && String(researchUniverseCache.priceMode || "settled") === targetPriceMode;
         const settledCloseCache = cacheIsFresh
           && targetPriceMode === "settled"
@@ -1508,6 +1515,7 @@ export async function createThinkStockServer(options = {}) {
             { totalLimit },
           );
           researchUniverseCache = cacheMatchesSize
+            && cacheDateAllowed
             && researchUniverseCache.baseDate > fetched.baseDate
             && String(researchUniverseCache.priceMode || "settled") === String(fetched.priceMode || "settled")
             ? researchUniverseCache
@@ -1515,7 +1523,10 @@ export async function createThinkStockServer(options = {}) {
         }
         sendJson(request, response, 200, { ...researchUniverseCache, cached: !refresh });
       } catch (error) {
-        if (previousUniverse?.records?.length === totalLimit) {
+        if (previousUniverse?.records?.length === totalLimit
+          && isKoreanMarketPricePoint(previousUniverse.baseDate, null, {
+            maximumDate: targetDate,
+          })) {
           researchUniverseCache = previousUniverse;
           sendJson(request, response, 200, {
             ...previousUniverse,

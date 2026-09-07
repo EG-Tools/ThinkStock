@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  APP_FEATURE_POLICIES,
   APP_RUNTIME_KEYS,
   ADR_SERIES,
   BASE_DISPLAY_NAMES,
@@ -21,12 +22,15 @@ import {
   OPTIMIZED_VISIBLE_MAIN_SERIES,
   STOCK_TICKER_PATTERN,
   createChartApplicationControlConfig,
+  isApplicationFeatureRequested,
   isForecastSeries,
   isMarketPriceSeries,
   mainSeriesActivationProfile,
   normalizeChartRightPaddingDays,
   resolveMainChartDisplayPointBudget,
   resolveAppBuildVersion,
+  resolveSeriesFeatureActivationPlan,
+  resolveTickerDartPreloadPlan,
   seriesSupportsFeature,
 } from "../../docs/modules/app-control-config.mjs";
 
@@ -251,6 +255,112 @@ test("main-series activation profiles skip volume for value-only macro series", 
   assert.equal(mainSeriesActivationProfile("leading_cycle").kind, "macro");
   assert.equal(mainSeriesActivationProfile("leading_cycle").key, "leading_cycle");
   assert.equal(mainSeriesActivationProfile("us_credit_spread").backgroundHistory, false);
+});
+
+test("one feature policy owns series support and application activation", () => {
+  assert.equal(Object.isFrozen(APP_FEATURE_POLICIES), true);
+  assert.equal(APP_FEATURE_POLICIES.signal.seriesKinds.includes("stock"), true);
+  assert.equal(APP_FEATURE_POLICIES.signal.seriesKinds.includes("macro"), false);
+  assert.equal(isApplicationFeatureRequested({ showRecessionSignals: true }, "signal"), true);
+  assert.equal(isApplicationFeatureRequested({ showAiForecast: true }, "dart"), true);
+  assert.equal(isApplicationFeatureRequested({ showEps: false }, "eps"), false);
+  assert.equal(isApplicationFeatureRequested({}, "unknown"), false);
+});
+
+test("DART preload planning derives from the shared feature policy", () => {
+  assert.deepEqual(resolveTickerDartPreloadPlan({}), {
+    disclosures: false,
+    insiders: false,
+    required: false,
+  });
+  assert.deepEqual(resolveTickerDartPreloadPlan({ showAiForecast: true }), {
+    disclosures: true,
+    insiders: false,
+    required: true,
+  });
+  assert.deepEqual(resolveTickerDartPreloadPlan({ showInsiderTrades: true }), {
+    disclosures: false,
+    insiders: true,
+    required: true,
+  });
+  assert.deepEqual(resolveTickerDartPreloadPlan({ showDisclosures: true }), {
+    disclosures: true,
+    insiders: false,
+    required: true,
+  });
+});
+
+test("series activation plans only prepare features that are currently on", () => {
+  assert.deepEqual(resolveSeriesFeatureActivationPlan("005930.KS", {}), {
+    signal: false,
+    disclosure: false,
+    disclosureData: false,
+    insider: false,
+    eps: false,
+    ai: false,
+    dart: false,
+    supplemental: false,
+    requested: false,
+  });
+  assert.deepEqual(resolveSeriesFeatureActivationPlan("005930.KS", {
+    showRecessionSignals: true,
+  }), {
+    signal: true,
+    disclosure: false,
+    disclosureData: false,
+    insider: false,
+    eps: false,
+    ai: false,
+    dart: false,
+    supplemental: false,
+    requested: true,
+  });
+  assert.deepEqual(resolveSeriesFeatureActivationPlan("005930.KS", {
+    showDisclosures: true,
+    showInsiderTrades: true,
+  }), {
+    signal: false,
+    disclosure: true,
+    disclosureData: true,
+    insider: true,
+    eps: false,
+    ai: false,
+    dart: true,
+    supplemental: true,
+    requested: true,
+  });
+});
+
+test("series activation plans reject company-only work for indices and macro series", () => {
+  const allEnabled = {
+    showRecessionSignals: true,
+    showDisclosures: true,
+    showInsiderTrades: true,
+    showEps: true,
+    showAiForecast: true,
+  };
+  assert.deepEqual(resolveSeriesFeatureActivationPlan("^KS11", allEnabled), {
+    signal: true,
+    disclosure: false,
+    disclosureData: false,
+    insider: false,
+    eps: false,
+    ai: true,
+    dart: false,
+    supplemental: true,
+    requested: true,
+  });
+  assert.deepEqual(resolveSeriesFeatureActivationPlan("leading_cycle", allEnabled), {
+    signal: false,
+    disclosure: false,
+    disclosureData: false,
+    insider: false,
+    eps: false,
+    ai: false,
+    dart: false,
+    supplemental: false,
+    requested: false,
+  });
 });
 
 test("resolves the stamped build version outside the application composition root", () => {

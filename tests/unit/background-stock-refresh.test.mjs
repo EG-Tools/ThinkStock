@@ -616,9 +616,13 @@ test("visible supplemental hydration owns disclosure, EPS, and AI task cleanup",
     scheduler,
     isSupported: (ticker) => ticker.endsWith(".KS"),
     isActive: () => true,
-    isDartEnabled: () => true,
-    isEpsEnabled: () => true,
-    isAiEnabled: () => true,
+    resolveFeaturePlan: () => ({
+      ai: true,
+      dart: true,
+      disclosureData: true,
+      eps: true,
+      insider: true,
+    }),
     prepareDisclosure: (ticker) => calls.push(`disclosure:${ticker}`),
     prepareEps: (ticker) => calls.push(`eps:${ticker}`),
     prepareAi: (ticker) => calls.push(`ai:${ticker}`),
@@ -643,6 +647,36 @@ test("visible supplemental hydration owns disclosure, EPS, and AI task cleanup",
   assert.equal(calls.at(-1), "cancel:visible-series-supplemental:005930.KS");
 });
 
+test("visible supplemental hydration preserves the shared DART subfeature plan", async () => {
+  let receivedPlan = null;
+  const hydration = createVisibleSeriesSupplementalHydrator({
+    scheduler: {
+      enqueue: (_key, task) => Promise.resolve(task({ checkpoint: async () => false })),
+      cancel() {},
+    },
+    isSupported: () => true,
+    resolveFeaturePlan: () => ({
+      ai: false,
+      dart: true,
+      disclosureData: false,
+      eps: false,
+      insider: true,
+    }),
+    prepareDisclosure: (_ticker, context) => {
+      receivedPlan = context.featurePlan;
+    },
+  });
+
+  assert.equal(await hydration.schedule("005930.KS"), true);
+  assert.deepEqual(receivedPlan, {
+    ai: false,
+    dart: true,
+    disclosureData: false,
+    eps: false,
+    insider: true,
+  });
+});
+
 test("visible supplemental hydration skips the scheduler when every optional layer is off", async () => {
   let enqueueCount = 0;
   const hydration = createVisibleSeriesSupplementalHydrator({
@@ -654,9 +688,13 @@ test("visible supplemental hydration skips the scheduler when every optional lay
       cancel() {},
     },
     isSupported: () => true,
-    isDartEnabled: () => false,
-    isEpsEnabled: () => false,
-    isAiEnabled: () => false,
+    resolveFeaturePlan: () => ({
+      ai: false,
+      dart: false,
+      disclosureData: false,
+      eps: false,
+      insider: false,
+    }),
   });
 
   assert.equal(await hydration.schedule("005930.KS"), false);

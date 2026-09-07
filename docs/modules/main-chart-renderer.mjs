@@ -1476,12 +1476,9 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
       || emptyEpsTraceModel;
     let forecastResult = options.prebuiltAiForecastTraces || [];
     if (!deferOverlays) {
-      [forecastResult] = await Promise.all([
-        options.prebuiltAiForecastTraces
-          || options.buildAiForecastTraces?.(rows, seriesModels)
-          || [],
-        options.prepareEventModels?.(selected, seriesModels),
-      ]);
+      forecastResult = await (options.prebuiltAiForecastTraces
+        || options.buildAiForecastTraces?.(rows, seriesModels)
+        || []);
     }
     if (options.shouldAbort?.()) return null;
 

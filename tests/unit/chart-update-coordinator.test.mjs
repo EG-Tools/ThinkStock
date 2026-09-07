@@ -23,8 +23,10 @@ import {
   hydrateMainChartSession,
   normalizeChartInvalidation,
   prepareViewportTraceFrame,
+  reconcileBaseValuesBySeries,
   shouldHydrateChartData,
   shouldUpdateAuxiliary,
+  settleChartWorkTransaction,
   settleViewportRenderTransaction,
 } from "../../docs/modules/chart-update-coordinator.mjs";
 
@@ -314,6 +316,27 @@ test("builds one linked viewport plan with live vertical fitting", () => {
   });
 });
 
+test("refits the companion that originated a viewport interaction in the same frame", () => {
+  const mainElement = {
+    data: [{ x: ["2026-01-01"], y: [100] }],
+    _fullLayout: { xaxis: { range: ["2026-01-01", "2026-06-30"] } },
+  };
+  const companion = {
+    data: [{ x: ["2026-01-01"], y: [1] }],
+    _fullLayout: { xaxis: { range: ["2026-01-01", "2026-06-30"] } },
+  };
+  const plan = buildLinkedViewportRangePlan({
+    mainElement,
+    companionElements: [companion],
+    xRange: ["2026-01-01", "2026-06-30"],
+    xRangeMatches: () => true,
+    forceCompanionUpdate: (element) => element === companion,
+  });
+
+  assert.deepEqual(plan.companionUpdates, [true]);
+  assert.equal(plan.any, true);
+});
+
 test("fits transformed prices and anchored markers in one viewport update", () => {
   const mainElement = {
     data: [
@@ -393,6 +416,68 @@ test("prepares a composed frame with transformed series before reanchoring reuse
   assert.deepEqual(traces[1].y, [108]);
 });
 
+test("one chart work transaction owns the complete settlement order", async () => {
+  const calls = [];
+  const result = await settleChartWorkTransaction({
+    navigation: { whenRangeSettled: async () => calls.push("navigation") },
+    rangeController: {
+      flush: async () => calls.push("range"),
+      isBusy: () => false,
+    },
+    mainScheduler: {
+      whenSettled: async () => calls.push("main"),
+      isRendering: () => false,
+    },
+    auxiliaryQueue: {
+      whenSettled: async () => calls.push("auxiliary"),
+      isBusy: () => false,
+    },
+    afterSettled: async () => calls.push("after"),
+  });
+
+  assert.deepEqual(calls, ["navigation", "range", "main", "auxiliary", "range", "after"]);
+  assert.deepEqual(result, { settled: true });
+  assert.equal(Object.isFrozen(result), true);
+});
+
+test("chart settlement drains work queued by its final linked-range frame", async () => {
+  const calls = [];
+  let rangePass = 0;
+  let mainBusy = false;
+  const result = await settleChartWorkTransaction({
+    rangeController: {
+      flush: async () => {
+        rangePass += 1;
+        calls.push(`range-${rangePass}`);
+        if (rangePass === 2) mainBusy = true;
+      },
+      isBusy: () => false,
+    },
+    mainScheduler: {
+      whenSettled: async () => {
+        calls.push("main");
+        mainBusy = false;
+      },
+      isRendering: () => mainBusy,
+    },
+    auxiliaryQueue: {
+      whenSettled: async () => calls.push("auxiliary"),
+      isBusy: () => false,
+    },
+  });
+
+  assert.deepEqual(calls, [
+    "range-1",
+    "main",
+    "auxiliary",
+    "range-2",
+    "main",
+    "auxiliary",
+    "range-3",
+  ]);
+  assert.equal(result.settled, true);
+});
+
 test("settles an in-buffer viewport without a duplicate render", async () => {
   const calls = [];
   const result = await settleViewportRenderTransaction({
@@ -449,6 +534,41 @@ test("settlement commits one final live fit for an in-buffer viewport", async ()
     "flush",
     "co-movement",
   ]);
+});
+
+test("settlement does not repeat a live fit already committed for the same interaction", async () => {
+  const calls = [];
+  const result = await settleViewportRenderTransaction({
+    requestedRange: [100, 500],
+    interactionRevision: 4,
+    getInteractionRevision: () => 4,
+    rangeController: {
+      flush: async () => calls.push("flush"),
+      lastCompletion: () => ({
+        request: {
+          startMs: 100,
+          endMs: 500,
+          meta: { interactionRevision: 4 },
+        },
+        result: {
+          applied: true,
+          plan: { liveFit: { fittedYRange: [80, 120] } },
+        },
+      }),
+      schedule: () => calls.push("duplicate-fit"),
+    },
+    viewportWindowController: { needsRefresh: () => false },
+    mainElement: { data: [{ x: ["1970-01-01T00:00:00.100Z"], y: [1] }] },
+    rangeBearingTraces: (traces) => traces,
+    setPinnedRange: (range) => calls.push(["pin", range]),
+    whenRenderSettled: async () => calls.push("settled"),
+    getCurrentRange: () => [100, 500],
+    liveFit: true,
+    flushCoMovement: () => calls.push("co-movement"),
+  });
+
+  assert.deepEqual(result, { rendered: false, corrected: false, stale: false });
+  assert.deepEqual(calls, ["flush", ["pin", [100, 500]], "settled", "co-movement"]);
 });
 
 test("checks companion trace coverage even when the main window already refreshed", async () => {
@@ -543,6 +663,7 @@ test("normalizes every chart layer decision once per render transaction", () => 
   assert.deepEqual(invalidation.updateClasses, ["viewport", "markers"]);
   assert.deepEqual(invalidation.plan, {
     normalized: true,
+    auxiliaryTargets: [],
     updateAuxiliary: false,
     hydrateData: false,
     reuseFutureOverlays: false,
@@ -683,6 +804,28 @@ test("skips auxiliary rendering for main-only marker, transform, forecast, and v
   assert.equal(shouldUpdateAuxiliary({}), true);
 });
 
+test("routes price and composition updates only to the stock-derived auxiliary chart", () => {
+  assert.deepEqual(
+    normalizeChartInvalidation({ updateClasses: ["price"] }).plan.auxiliaryTargets,
+    ["macd"],
+  );
+  assert.deepEqual(
+    normalizeChartInvalidation({ updateClasses: ["composition"] }).plan.auxiliaryTargets,
+    ["macd"],
+  );
+});
+
+test("routes data and viewport-window updates to every auxiliary chart family", () => {
+  assert.deepEqual(
+    normalizeChartInvalidation({ updateClasses: ["data"] }).plan.auxiliaryTargets,
+    ["macd", "auxiliary"],
+  );
+  assert.deepEqual(
+    normalizeChartInvalidation({ updateClasses: ["viewport-range"] }).plan.auxiliaryTargets,
+    ["macd", "auxiliary"],
+  );
+});
+
 test("hydrates external chart data only for data and composition updates", () => {
   assert.equal(shouldHydrateChartData({ updateClasses: ["data"] }), true);
   assert.equal(shouldHydrateChartData({ updateClasses: ["composition"] }), true);
@@ -710,6 +853,7 @@ test("reuses event markers only while the visible date window moves", () => {
   assert.equal(canReuseEventMarkerTraces({ updateClasses: ["viewport-range"] }), true);
   assert.equal(canReuseEventMarkerTraces({ updateClasses: ["viewport", "viewport-range"] }), true);
   assert.equal(canReuseEventMarkerTraces({ updateClasses: ["price"] }), true);
+  assert.equal(canReuseEventMarkerTraces({ updateClasses: ["overlays"] }), true);
   assert.equal(canReuseEventMarkerTraces({ updateClasses: ["timing"] }), false);
   assert.equal(canReuseEventMarkerTraces({ updateClasses: ["transform"] }), false);
   assert.equal(canReuseEventMarkerTraces({ updateClasses: ["markers"] }), false);
@@ -817,6 +961,30 @@ test("reuses EPS, AI, and event traces through one composition plan", () => {
     baseValuesBySeries: { "eps:A": [1, 2] },
   });
   assert.deepEqual(plan.eventTraces, [event]);
+});
+
+test("preserves EPS transform bases while their traces remain in a partial frame", () => {
+  const baseValues = {
+    A: [10],
+    "eps:A": [1, 2],
+    "eps:B": [3, 4],
+  };
+  const epsA = { meta: { seriesKey: "eps:A" } };
+
+  reconcileBaseValuesBySeries(baseValues, {
+    baseValuesBySeries: { A: [11] },
+    epsTraces: [epsA],
+  });
+  assert.deepEqual(baseValues, {
+    A: [11],
+    "eps:A": [1, 2],
+  });
+
+  reconcileBaseValuesBySeries(baseValues, {
+    baseValuesBySeries: { A: [12] },
+    epsTraces: [],
+  });
+  assert.deepEqual(baseValues, { A: [12] });
 });
 
 test("price-first composition ignores grouped hover reuse while keeping passive overlays", () => {
@@ -938,6 +1106,7 @@ test("builds composition, viewport, and layout through one render frame boundary
   assert.deepEqual(fittedRanges, [["2026-01-01", "2026-01-31"]]);
   assert.deepEqual(viewportCalls[0].nextVisibleDataRange, [1, 2]);
   assert.equal(frame.received.eventRevisionKey, "disclosure,1|timing,2");
+  assert.equal(frame.forceTraceRefresh, false);
 });
 
 test("commits viewport and delayed overlay state through one render boundary", () => {

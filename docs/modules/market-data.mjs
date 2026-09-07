@@ -86,6 +86,9 @@ import sharedDataPayload from "./data-payload.mjs";
     const isTradingDate = typeof options.isTradingDate === "function"
       ? options.isTradingDate
       : () => true;
+    const maximumDate = /^\d{4}-\d{2}-\d{2}$/.test(String(options.maximumDate || "").slice(0, 10))
+      ? String(options.maximumDate).slice(0, 10)
+      : "";
     const equitySeries = [...new Set([
       ...(payload.series || []),
       ...getSeriesColumns(payload.records),
@@ -94,7 +97,7 @@ import sharedDataPayload from "./data-payload.mjs";
 
     const records = payload.records.map((row) => {
       const date = String(row?.date || "").slice(0, 10);
-      if (isTradingDate(date)) return row;
+      if ((!maximumDate || date <= maximumDate) && isTradingDate(date)) return row;
       const next = { ...row };
       equitySeries.forEach((key) => { delete next[key]; });
       return next;

@@ -4,21 +4,6 @@ import { failureBackoffMs } from "../../shared/runtime-freshness-policy.mjs";
 
   const STORAGE_KEY = "thinkstock-runtime-source-health-v1";
   const MAX_BLOCK_AGE_MS = 24 * 60 * 60 * 1000;
-  const DEFAULT_BACKOFF_MS = Object.freeze([30_000, 120_000, 300_000]);
-  const SOURCE_NAMES = Object.freeze([
-    "indices", "prices", "prices-hidden", "adr", "fearGreed", "credit",
-    "macro", "macro:leading", "macro:news", "macro:policyRate",
-    "macro:trade", "macro:trade:export", "macro:trade:import",
-    "volatility", "volatility:vkospi", "volatility:vix", "crisis",
-    "disclosure", "insider", "brokerResearch",
-  ]);
-  const SOURCE_BACKOFF_MS = Object.freeze(Object.fromEntries(SOURCE_NAMES.map((source) => [
-    source,
-    Object.freeze([1, 2, 3].map((failureCount) => (
-      Number(failureBackoffMs(source, failureCount))
-      || DEFAULT_BACKOFF_MS[failureCount - 1]
-    ))),
-  ])));
 
   function sourceKey(value) {
     return String(value || "").trim().slice(0, 40);
@@ -130,11 +115,7 @@ import { failureBackoffMs } from "../../shared/runtime-freshness-policy.mjs";
   }
 
   function backoffFor(source, failureCount) {
-    const shared = Number(failureBackoffMs(source, failureCount));
-    if (Number.isFinite(shared) && shared >= 0) return shared;
-    const values = SOURCE_BACKOFF_MS[source] || DEFAULT_BACKOFF_MS;
-    const index = Math.max(0, Math.min(values.length - 1, (Number(failureCount) || 1) - 1));
-    return values[index];
+    return failureBackoffMs(source, failureCount);
   }
 
   function createRuntimeSourceHealth(scope = globalThis, options = {}) {
@@ -301,7 +282,6 @@ import { failureBackoffMs } from "../../shared/runtime-freshness-policy.mjs";
 
 export {
   MAX_BLOCK_AGE_MS,
-  SOURCE_BACKOFF_MS,
   STORAGE_KEY,
   createRuntimeSourceHealth,
   summarizeSourceStates,

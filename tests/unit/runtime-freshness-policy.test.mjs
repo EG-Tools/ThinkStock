@@ -8,7 +8,13 @@ import {
   failureBackoffMs,
   retryDelaysMs,
   shouldConfirmRuntimeSource,
+  sourcePolicy,
 } from "../../shared/runtime-freshness-policy.mjs";
+import {
+  RUNTIME_SOURCE_KEYS,
+  isRuntimeSourceKey,
+  runtimeSourcePolicyFamily,
+} from "../../shared/runtime-source-contract.mjs";
 
 test("keeps current-day market caches short and historical caches stable", () => {
   const now = new Date("2026-08-10T00:30:00Z");
@@ -25,6 +31,18 @@ test("provides one retry policy for browser and Worker callers", () => {
   assert.deepEqual(retryDelaysMs("disclosure"), [400, 800]);
   assert.equal(failureBackoffMs("prices", 1), 15_000);
   assert.equal(failureBackoffMs("credit", 20), 900_000);
+});
+
+test("component sources inherit their parent freshness policy from one registry", () => {
+  assert.equal(new Set(RUNTIME_SOURCE_KEYS).size, RUNTIME_SOURCE_KEYS.length);
+  assert.equal(isRuntimeSourceKey("prices-visible"), true);
+  assert.equal(isRuntimeSourceKey("macro:termSpread"), true);
+  assert.equal(isRuntimeSourceKey("macro:creditSpread"), true);
+  assert.equal(runtimeSourcePolicyFamily("macro:trade:export"), "macro");
+  assert.equal(runtimeSourcePolicyFamily("volatility:vkospi"), "crisis");
+  assert.equal(runtimeSourcePolicyFamily("prices-hidden"), "price");
+  assert.equal(sourcePolicy("macro:news"), sourcePolicy("macro"));
+  assert.equal(sourcePolicy("volatility:vix"), sourcePolicy("crisis"));
 });
 
 test("distinguishes ready, empty, and failed cache refresh decisions", () => {

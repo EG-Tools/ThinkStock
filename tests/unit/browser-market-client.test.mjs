@@ -65,6 +65,28 @@ test("normalizes Yahoo history responses into sorted daily points", async () => 
   ]);
 });
 
+test("drops Korean equity rows newer than the currently allowed market date", async () => {
+  const client = createClient(async () => ({
+    chart: {
+      result: [{
+        timestamp: [
+          Date.parse("2026-09-04T06:00:00Z") / 1000,
+          Date.parse("2026-09-07T06:00:00Z") / 1000,
+        ],
+        meta: { gmtoffset: 0 },
+        indicators: { quote: [{ close: [100, 110], volume: [10, 20] }] },
+      }],
+    },
+  }), {
+    latestAllowedPriceDate: () => "2026-09-04",
+    isValidPricePoint: ({ date, maximumDate }) => !maximumDate || date <= maximumDate,
+  });
+
+  assert.deepEqual(await client.fetchYahooHistorySeries("005380.KS"), [
+    { date: "2026-09-04", close: 100, volume: 10 },
+  ]);
+});
+
 test("rejects non-trading placeholders without removing real Korean trading dates", async () => {
   const client = createClient(async () => ({
     chart: {

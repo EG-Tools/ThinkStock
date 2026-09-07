@@ -89,6 +89,8 @@ function createAppFeatureRuntime(options = {}) {
   const getAiApp = () => registry.peek(keys.aiForecastApp);
   const getBrokerResearch = () => registry.peek(keys.brokerResearchFeature);
   const getDart = () => registry.peek(keys.dartFeature);
+  const getEps = () => registry.peek(keys.epsFeature);
+  const getCompanyAnalysis = () => getAi()?.analysis || getEps()?.analysis || null;
   const dartTickerPattern = options.dartTickerPattern instanceof RegExp
     ? options.dartTickerPattern
     : /^\d{6}\.(KS|KQ)$/;
@@ -143,8 +145,7 @@ function createAppFeatureRuntime(options = {}) {
 
   async function ensureEps() {
     return registry.getAsync(keys.epsFeature, async () => {
-      const [, , eps] = await Promise.all([
-        ensureAi(),
+      const [, eps] = await Promise.all([
         ensureDart(),
         optional.ensureEps(),
       ]);
@@ -165,8 +166,10 @@ function createAppFeatureRuntime(options = {}) {
     getAi,
     getAiApp,
     getBrokerResearch,
+    getCompanyAnalysis,
     getDart,
     getDartRequests,
+    getEps,
     fetchProgressiveRecords: (...args) => callDartRequestRuntime("fetchProgressiveRecords", args),
     mergeInsiderRowsWithChange: (existing, incoming) => (
       requireFeature(getDart(), "DART").insiderTrades.mergeRowsWithChange(existing, incoming)
@@ -174,20 +177,11 @@ function createAppFeatureRuntime(options = {}) {
     normalizeDartTicker,
     requireAi: () => requireFeature(getAi(), "AI"),
     requireBrokerResearch: () => requireFeature(getBrokerResearch(), "Broker research"),
+    requireCompanyAnalysis: () => requireFeature(getCompanyAnalysis(), "Company analysis"),
     requireDart: () => requireFeature(getDart(), "DART"),
     resolveDartCompanyContext: (...args) => callDartRequestRuntime("resolveDartCompanyContext", args),
     sanitizeInsiderRows: (rows) => requireFeature(getDart(), "DART").insiderTrades.sanitizeRows(rows),
     toDartGatewayError: (error) => getDart()?.requestRuntime?.toDartGatewayError?.(error) || error,
-  });
-}
-
-function resolveTickerDartPreloadPlan(state = {}) {
-  const disclosures = state.showDisclosures === true || state.showAiForecast === true;
-  const insiders = state.showInsiderTrades === true;
-  return Object.freeze({
-    disclosures,
-    insiders,
-    required: disclosures || insiders,
   });
 }
 
@@ -268,7 +262,7 @@ function createOptionalFeatureRuntime(scope = globalThis, options = {}) {
       eps = await loader.loadModuleFeature(
         "eps-chart",
         "./assets/eps-feature.bundle.min.js",
-        (module) => module.epsChart || module.default,
+        (module) => module.epsFeature || module.default || module.epsChart,
       );
       return eps;
     }
@@ -460,5 +454,4 @@ export {
   createDeferredDiagnosticsFacade,
   createOptionalFeatureLoader,
   createOptionalFeatureRuntime,
-  resolveTickerDartPreloadPlan,
 };

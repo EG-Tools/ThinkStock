@@ -570,26 +570,6 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       });
     }
     const boundAuxiliaryInteractions = new WeakSet();
-    let pendingMacdViewportFit = null;
-    let macdViewportFitFrame = 0;
-
-    function scheduleMacdViewportFit(element, xRange) {
-      pendingMacdViewportFit = { element, xRange: [...xRange] };
-      if (macdViewportFitFrame) return;
-      macdViewportFitFrame = scope.requestAnimationFrame(() => {
-        macdViewportFitFrame = 0;
-        const request = pendingMacdViewportFit;
-        pendingMacdViewportFit = null;
-        if (!request?.element?.data) return;
-        const relayout = macdViewportRelayout(
-          buildMacdViewportYRanges(request.element, request.xRange),
-        );
-        if (!relayout) return;
-        void runPlotlyUpdate("macd-viewport-auto-fit", request.element, () => (
-          scope.Plotly.relayout(request.element, relayout)
-        ));
-      });
-    }
 
     function bindAuxiliaryInteractions(element, source, targetIds) {
       if (!element?.on || boundAuxiliaryInteractions.has(element)) return false;
@@ -598,9 +578,9 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
         const viewport = resolveRelayoutViewport(eventData, element);
         if (syncState.cursorSyncing && !viewport.range && !viewport.autorange) return;
         if (!viewport.range) return;
-        if (element.id === "chart-macd") scheduleMacdViewportFit(element, viewport.range);
         commitViewportRange(viewport.range, {
           source,
+          forceCompanionElementId: element.id,
           liveFit: chartSession.autoChartReset,
         });
       });
@@ -698,9 +678,14 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       persist: persistState,
       onChange: (change) => {
         const mainRange = document.getElementById("chart")?._fullLayout?.xaxis?.range?.slice() || null;
-        const render = Object.values(MACD_LINE_KEYS).includes(change?.key)
-          ? renderMacdChart
-          : renderAdrChart;
+        const target = Object.values(MACD_LINE_KEYS).includes(change?.key)
+          ? "macd"
+          : "auxiliary";
+        if (typeof options.requestRender === "function") {
+          options.requestRender({ targets: [target], xRange: mainRange });
+          return;
+        }
+        const render = target === "macd" ? renderMacdChart : renderAdrChart;
         Promise.resolve(render(mainRange)).catch((error) => {
           scope.console?.error?.("auxiliary chart visibility update failed", error);
         });
@@ -2001,27 +1986,30 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       lastMacdViewportWindows = [];
     }
 
-    function refreshMacd() {
-      invalidateMacd();
-      const range = scope.document.getElementById("chart")?._fullLayout?.xaxis?.range;
-      return renderMacdChart(Array.isArray(range) && range.length === 2
-        ? range.slice(0, 2)
-        : null);
+    function viewportRefreshTargets(xRange) {
+      const targets = [];
+      if (viewportWindowsNeedRefresh(lastMacdViewportWindows, xRange)) targets.push("macd");
+      if (viewportWindowsNeedRefresh(lastAdrViewportWindows, xRange)) targets.push("auxiliary");
+      return targets;
     }
 
-    function needsViewportRefresh(xRange) {
-      return viewportWindowsNeedRefresh(lastMacdViewportWindows, xRange)
-        || viewportWindowsNeedRefresh(lastAdrViewportWindows, xRange);
-    }
-
-    async function renderAll(xRange) {
+    async function renderAll(xRange, options = {}) {
       const range = Array.isArray(xRange) && xRange.length === 2
         ? xRange.slice(0, 2)
         : null;
-      return settleAuxiliaryRenderTasks([
-        renderMacdChart(range ? [...range] : null),
-        renderAdrChart(range ? [...range] : null),
-      ]);
+      const requestedTargets = new Set(
+        Array.isArray(options.targets) && options.targets.length
+          ? options.targets.map(String)
+          : ["macd", "auxiliary"],
+      );
+      const tasks = [];
+      if (requestedTargets.has("macd")) {
+        tasks.push(renderMacdChart(range ? [...range] : null));
+      }
+      if (requestedTargets.has("auxiliary")) {
+        tasks.push(renderAdrChart(range ? [...range] : null));
+      }
+      return settleAuxiliaryRenderTasks(tasks);
     }
 
     return Object.freeze({
@@ -2029,11 +2017,10 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       invalidateMacd,
       addViewportYRangeToRelayout,
       cachedModel: () => auxiliaryModelResolver?.cachedModel?.() || null,
-      needsViewportRefresh,
+      viewportRefreshTargets,
       renderAll,
       renderAdrChart,
       renderMacdChart,
-      refreshMacd,
       stats: () => ({
         adrRenderKey: lastAdrRenderKey,
         adrRenderQueued: Boolean(pendingAdrRenderRequest),

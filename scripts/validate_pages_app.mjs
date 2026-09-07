@@ -94,10 +94,6 @@ const tickerCacheInvalidation = await readFile(
   path.join(root, "docs", "modules", "ticker-cache-invalidation.mjs"),
   "utf8",
 );
-const taskProgressRuntime = await readFile(
-  path.join(root, "docs", "modules", "task-progress-runtime.mjs"),
-  "utf8",
-);
 const mainSeriesActivation = await readFile(
   path.join(root, "docs", "modules", "main-series-activation.mjs"),
   "utf8",
@@ -195,6 +191,14 @@ const appBundleGzipBytes = gzipSync(
 // fail later only because the two release gates use different byte limits.
 const APP_SOURCE_MAX_LINES = 8_200;
 const precacheAssetsSource = sw.match(/const PRECACHE_ASSETS = \[([\s\S]*?)\];/)?.[1] || "";
+const appFeatureEnsureEpsStart = optionalFeatureRuntime.indexOf("  async function ensureEps() {");
+const appFeatureEnsureEpsEnd = optionalFeatureRuntime.indexOf(
+  "  async function ensureMarketTiming()",
+  appFeatureEnsureEpsStart,
+);
+const appFeatureEnsureEpsSource = appFeatureEnsureEpsStart >= 0 && appFeatureEnsureEpsEnd > appFeatureEnsureEpsStart
+  ? optionalFeatureRuntime.slice(appFeatureEnsureEpsStart, appFeatureEnsureEpsEnd)
+  : "";
 
 const appVersion = app.match(/const APP_VERSION = "([0-9]+\.[0-9]+)";/)?.[1];
 const htmlVersion = html.match(/id="appVersionText">([0-9]+\.[0-9]+)</)?.[1];
@@ -237,8 +241,11 @@ assert.ok(
     && !app.includes("queueInsiderTradeRefresh")
     && app.includes("restoreDart: restoreVisibleDartLayers")
     && app.includes("if (shouldHydrateChartData) scheduleVisibleEpsData()")
-    && app.includes("prepareEventModels: shouldHydrateChartData ? prepareMarketTimingModels : null"),
-  "viewport-only chart updates must not restart DART or EPS data hydration",
+    && !app.includes("prepareEventModels:")
+    && app.includes("featurePlan: (key) => resolveSeriesFeatureActivationPlan(key, chartSession)")
+    && mainSeriesActivation.includes('if (profile.kind === "stock" && featurePlan.supplemental)')
+    && mainSeriesActivation.includes("if (featurePlan.signal)"),
+  "viewport rendering must not own optional data hydration, and activation must honor enabled features",
 );
 assert.ok(
   appControlConfig.includes("export const MAX_VISIBLE_MAIN_SERIES = 10;")
@@ -318,11 +325,10 @@ assert.ok(html.includes("chart-progress disclosure-progress")
   && styles.includes(".ui-progress-fill")
   && styles.includes("--chart-ui-progress-fill"),
 "AI and DART progress components do not share one visual system");
-assert.ok(app.includes('from "./modules/task-progress-runtime.mjs"')
-  && app.includes("createTaskProgress")
-  && taskProgressRuntime.includes('from "./control-state-view.mjs"')
-  && taskProgressRuntime.includes("createProgressView")
-  && taskProgressRuntime.includes("createDisclosureProgress")
+assert.ok(app.includes("controlStateView.createApplicationProgressRuntime")
+  && progressView.includes("createApplicationProgressRuntime")
+  && progressView.includes("createTaskProgress")
+  && progressView.includes("createDisclosureProgress")
   && aiForecastApp.includes("options.createProgressView")
   && progressView.includes("createProgressView"),
 "AI and DART progress behavior does not share one DOM view");
@@ -616,11 +622,15 @@ assert.ok(!pagesEntry.includes('import "../docs/modules/eps-chart.mjs"')
   && optionalFeatureRuntime.includes('"eps-chart"')
   && optionalFeatureRuntime.includes('"./assets/eps-feature.bundle.min.js"')
   && epsFeatureEntry.includes('import { epsChart } from "../../docs/modules/eps-chart.mjs"')
-  && epsFeatureEntry.includes("export { epsChart }")
+  && epsFeatureEntry.includes('import aiAnalysisCache from "../../docs/modules/ai-analysis-cache.mjs"')
+  && epsFeatureEntry.includes("export { epsChart, epsFeature }")
   && !epsFeatureEntry.includes("ThinkStockEpsChart")
   && app.includes("createAppFeatureRuntime({")
   && optionalFeatureRuntime.includes("optional.ensureEps()")
-  && optionalFeatureRuntime.includes("Promise.all([")
+  && appFeatureEnsureEpsSource.includes("Promise.all([")
+  && appFeatureEnsureEpsSource.includes("ensureDart()")
+  && appFeatureEnsureEpsSource.includes("optional.ensureEps()")
+  && !appFeatureEnsureEpsSource.includes("ensureAi()")
   && sw.includes('"/assets/eps-feature.bundle.min.js"')
   && !precacheAssetsSource.includes("eps-feature.bundle.min.js"),
 "EPS must load only when its default-off chart is enabled");
@@ -631,7 +641,9 @@ assert.ok(!app.includes('from "./modules/auxiliary-chart-runtime.mjs"')
   && auxiliaryChartFeatureEntry.includes('from "../../docs/modules/auxiliary-chart-runtime.mjs"')
   && auxiliaryChartFeatureEntry.includes('from "../../docs/modules/macd-oscillator.mjs"')
   && auxiliaryChartFeatureEntry.includes("export { auxiliaryChartFeature, auxiliaryChartModel, auxiliaryChartRuntime, macd }")
-  && app.includes("return getAuxiliaryChartRuntime().then((runtime) => runtime.renderAdrChart(xRange))")
+  && app.includes("scheduleAuxiliaryChartRender(mainRangeForAdr")
+  && app.includes("chartUpdateCoordinatorModule.createLatestKeyedFrameQueue")
+  && app.includes("await runtime.renderAll(xRange, { targets })")
   && sw.includes('"/assets/auxiliary-chart-feature.bundle.min.js"')
   && !precacheAssetsSource.includes("auxiliary-chart-feature.bundle.min.js"),
 "auxiliary chart rendering must load after the first main chart frame");
@@ -1009,7 +1021,11 @@ assert.ok(mainChartRenderer.includes("function buildCursorHoverMode")
   && mainChartRenderer.includes("if (!hoverShowPopup) return false;")
   && mainChartRenderer.includes("hovermode: buildCursorHoverMode(hoverShowPopup, cursorLineMode)"),
 "disabled hover still runs Plotly hit testing");
-assert.ok(app.includes("function getRuntimeDataSignature()"), "runtime snapshot deduplication is missing");
+assert.ok(app.includes("const getRuntimeDataSignature = runtimeSnapshotDataManager.signature;")
+  && runtimeSnapshotPolicy.includes("function createRuntimeSnapshotDataManager(options = {})")
+  && runtimeSnapshotPolicy.includes("function signature()")
+  && runtimeSnapshotPolicy.includes("function buildSignature("),
+"runtime snapshot deduplication is missing");
 assert.ok(app.includes('const RUNTIME_SNAPSHOT_FORMAT = "component-v1";'), "component snapshot format is missing");
 assert.ok(appStorage.includes('const transaction = db.transaction(storeName, "readwrite");')
   && appStorage.includes("deleteKeys.forEach((key) => store.delete(key))"), "single-transaction IndexedDB cleanup is missing");

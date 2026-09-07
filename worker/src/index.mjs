@@ -1,8 +1,10 @@
 import {
   expectedLatestKoreanTradingDate,
   isKoreanCurrentPriceWindow,
+  isKoreanMarketPricePoint,
   isKoreanTradingDate,
   koreanDateText,
+  latestAllowedKoreanPriceDate,
   resolveKoreanResearchUniversePhase,
 } from "../../shared/market-calendar.mjs";
 import {
@@ -1503,7 +1505,11 @@ async function researchUniverseResponse(env, origin, forceRefresh = false, reque
       liveWarning = `장 마감 가격 확인 실패: ${error?.message || error}`;
     }
   }
-  if (latest?.records?.length === totalLimit && latest.baseDate > expectedDate) {
+  if ((phase.realtime || phase.captureClose)
+    && latest?.records?.length === totalLimit
+    && latest.baseDate === phase.targetDate
+    && String(latest.priceMode || "settled") === phase.priceMode
+    && isKoreanMarketPricePoint(latest.baseDate, null, { maximumDate: phase.targetDate })) {
     return jsonResponse({ ...latest, ok: true, cached: true }, 200, origin);
   }
   let refreshFallback = null;
@@ -1561,7 +1567,8 @@ async function researchUniverseResponse(env, origin, forceRefresh = false, reque
   const stale = latest || (env.DISCLOSURE_CACHE
     ? await readCacheBestEffort("research-universe-latest", () => env.DISCLOSURE_CACHE.get(latestKey, "json"))
     : null);
-  if (stale?.records?.length === totalLimit) {
+  if (stale?.records?.length === totalLimit
+    && isKoreanMarketPricePoint(stale.baseDate, null, { maximumDate: phase.targetDate })) {
     return jsonResponse({
       ...stale,
       ok: true,
@@ -1604,6 +1611,7 @@ async function buildKrxPricePayload(env, ticker, now = new Date(), options = {})
   if (!env.KRX_API_KEY) throw new Error("Cloudflare에 KRX 키가 설정되지 않았습니다.");
   const today = koreanDateText(now);
   const expectedDate = expectedLatestKoreanTradingDate(now);
+  const maximumDate = latestAllowedKoreanPriceDate(now);
   const currentPriceWindow = isKoreanCurrentPriceWindow(now);
   let point = null;
   let source = "KRX";
@@ -1621,6 +1629,7 @@ async function buildKrxPricePayload(env, ticker, now = new Date(), options = {})
       forceDate: expectedDate,
     });
     point = krxResult?.point || null;
+    if (point && !isKoreanMarketPricePoint(point.date, point.volume, { maximumDate })) point = null;
   } catch (error) {
     krxError = error;
   }
@@ -1631,7 +1640,10 @@ async function buildKrxPricePayload(env, ticker, now = new Date(), options = {})
     || point.date < krxResult.marketDate;
   if (shouldCheckNaver) {
     try {
-      const naverPoints = await fetchLatestNaverStockPoints(ticker, today);
+      const naverPoints = (await fetchLatestNaverStockPoints(ticker, today))
+        .filter((candidate) => isKoreanMarketPricePoint(candidate.date, candidate.volume, {
+          maximumDate,
+        }));
       const evaluation = evaluateNaverPriceFallback(point, naverPoints, {
         allowSameDate: currentPriceWindow,
       });

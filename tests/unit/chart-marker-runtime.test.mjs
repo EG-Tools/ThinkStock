@@ -562,6 +562,82 @@ test("timing preparation excludes inactive custom stocks and reuses relevant fin
   assert.equal(progressEvents[0][2], "삼성전자 신호 로딩중");
 });
 
+test("timing preparation adopts visible progress and ignores duplicate starts at completion", async () => {
+  const progressEvents = [];
+  let runtime;
+  const signalProgress = {
+    begin: (key) => {
+      progressEvents.push(["begin", key]);
+      return true;
+    },
+    update: (key, value) => {
+      progressEvents.push(["update", key, value]);
+      if (value === 0.92) runtime.beginMarketTimingProgress(["005930.KS"]);
+    },
+    complete: (key) => progressEvents.push(["complete", key]),
+    cancel: (key) => progressEvents.push(["cancel", key]),
+  };
+  ({ runtime } = createRuntime({
+    getMarketTimingService: () => ({
+      has: () => false,
+      stats: () => ({ signature: "", modelCount: 0 }),
+      prepare: async () => {},
+    }),
+    getPricePayload: () => ({
+      records: [
+        { date: "2026-08-11", "^KS11": 3200, "^KQ11": 800, "005930.KS": 70000 },
+        { date: "2026-08-12", "^KS11": 3210, "^KQ11": 805, "005930.KS": 71000 },
+      ],
+    }),
+    signalProgress,
+  }));
+
+  runtime.beginMarketTimingProgress(["005930.KS"]);
+  await runtime.prepareMarketTimingModels(
+    ["005930.KS"],
+    [{ series: "005930.KS" }],
+  );
+
+  assert.equal(progressEvents.filter(([type]) => type === "begin").length, 1);
+  assert.equal(progressEvents.filter(([type]) => type === "complete").length, 1);
+  assert.equal(progressEvents.at(-1)[0], "complete");
+});
+
+test("single-target timing calculation keeps every visible series in the shared input bundle", async () => {
+  let prepared = null;
+  const { runtime } = createRuntime({
+    getMarketTimingService: () => ({
+      has: () => false,
+      stats: () => ({ signature: "", modelCount: 0 }),
+      prepare: async (payload) => { prepared = payload; },
+    }),
+    getPricePayload: () => ({
+      records: [
+        {
+          date: "2026-08-11", "^KS11": 3200, "^KQ11": 800,
+          "005930.KS": 70000, "000660.KS": 200000,
+        },
+        {
+          date: "2026-08-12", "^KS11": 3210, "^KQ11": 805,
+          "005930.KS": 71000, "000660.KS": 201000,
+        },
+      ],
+    }),
+    isForecastSeries: (ticker) => ticker.startsWith("^") || ticker.endsWith(".KS"),
+  });
+
+  await runtime.prepareMarketTimingModels(
+    ["000660.KS"],
+    [{ series: "005930.KS" }, { series: "000660.KS" }],
+    { sourceSeries: ["005930.KS", "000660.KS"] },
+  );
+
+  assert.deepEqual(prepared.targets, ["000660.KS"]);
+  assert.deepEqual(Object.keys(prepared.sources.pricesByTicker).sort(), [
+    "000660.KS", "005930.KS", "^KQ11", "^KS11",
+  ]);
+});
+
 test("turning off a series cancels signal progress and stale work cannot finish a new session", async () => {
   let releaseFirst;
   let prepareCount = 0;
@@ -606,6 +682,61 @@ test("turning off a series cancels signal progress and stale work cannot finish 
   assert.equal(progressEvents.filter(([type]) => type === "cancel").length, 1);
   assert.equal(progressEvents.filter(([type]) => type === "complete").length, 1);
   assert.equal(progressEvents.at(-1)[0], "complete");
+});
+
+test("cancelling one timing target does not invalidate another target in flight", async () => {
+  const releases = new Map();
+  const progressEvents = [];
+  const service = {
+    has: () => false,
+    stats: () => ({ signature: "", modelCount: 0 }),
+    prepare: ({ targets }) => new Promise((resolve) => {
+      releases.set(targets[0], resolve);
+    }),
+  };
+  const { runtime } = createRuntime({
+    getMarketTimingService: () => service,
+    getPricePayload: () => ({
+      records: [
+        {
+          date: "2026-08-11", "^KS11": 3200, "^KQ11": 800,
+          "005930.KS": 70000, "000660.KS": 200000,
+        },
+        {
+          date: "2026-08-12", "^KS11": 3210, "^KQ11": 805,
+          "005930.KS": 71000, "000660.KS": 201000,
+        },
+      ],
+    }),
+    isForecastSeries: (ticker) => ticker.startsWith("^") || ticker.endsWith(".KS"),
+    signalProgress: {
+      begin: (key) => { progressEvents.push(["begin", key]); return true; },
+      update: () => {},
+      complete: (key) => progressEvents.push(["complete", key]),
+      cancel: (key) => progressEvents.push(["cancel", key]),
+    },
+  });
+  const seriesModels = [{ series: "005930.KS" }, { series: "000660.KS" }];
+  const preparationOptions = { sourceSeries: ["005930.KS", "000660.KS"] };
+  const samsung = runtime.prepareMarketTimingModels(
+    ["005930.KS"], seriesModels, preparationOptions,
+  );
+  const hynix = runtime.prepareMarketTimingModels(
+    ["000660.KS"], seriesModels, preparationOptions,
+  );
+  await Promise.resolve();
+
+  assert.equal(runtime.cancelMarketTimingPreparation("005930.KS"), true);
+  releases.get("005930.KS")?.();
+  releases.get("000660.KS")?.();
+  await Promise.all([samsung, hynix]);
+
+  assert.equal(progressEvents.some(([type, key]) => (
+    type === "cancel" && key === "signal:005930.KS"
+  )), true);
+  assert.equal(progressEvents.some(([type, key]) => (
+    type === "complete" && key === "signal:000660.KS"
+  )), true);
 });
 
 test("skips repeated timing preparation until a data revision changes", async () => {
@@ -693,12 +824,11 @@ test("reprepares timing when hydrated volume history changes without a price rev
   assert.equal(prepareCount, 2);
 });
 
-test("prepares complete stock inputs before building a timing model", async () => {
+test("prepares complete stock inputs and timing without a follow-up render", async () => {
   let prepareCount = 0;
   let progressBeginCount = 0;
   let progressActive = false;
   let inputPreparationCount = 0;
-  let inputRenderCount = 0;
   let inputsReady = false;
   const volumesByTicker = new Map();
   const { runtime } = createRuntime({
@@ -713,7 +843,6 @@ test("prepares complete stock inputs before building a timing model", async () =
       inputsReady = true;
       return true;
     },
-    onMarketTimingInputsPrepared: () => { inputRenderCount += 1; },
     getMarketTimingService: () => ({
       has: () => false,
       stats: () => ({ signature: "", modelCount: 0 }),
@@ -743,15 +872,9 @@ test("prepares complete stock inputs before building a timing model", async () =
     ["005930.KS"],
     [{ series: "005930.KS" }],
   );
-  assert.equal(prepareCount, 0);
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await runtime.prepareMarketTimingModels(
-    ["005930.KS"],
-    [{ series: "005930.KS" }],
-  );
-
+  assert.equal(prepareCount, 1);
+  assert.equal(progressActive, false);
   assert.equal(inputPreparationCount, 1);
-  assert.equal(inputRenderCount, 1);
   assert.equal(prepareCount, 1);
   assert.equal(progressBeginCount, 1);
 });

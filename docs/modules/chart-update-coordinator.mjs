@@ -1,16 +1,11 @@
 "use strict";
 
-  const MAIN_ONLY_UPDATE_CLASSES = Object.freeze(new Set([
-    "markers",
-    "timing",
-    "transform",
-    "forecast",
-    "viewport",
-  ]));
   const DATA_HYDRATION_UPDATE_CLASSES = Object.freeze(new Set(["data", "composition", "timing"]));
+  const MACD_UPDATE_CLASSES = Object.freeze(new Set(["price", "composition"]));
+  const ALL_AUXILIARY_UPDATE_CLASSES = Object.freeze(new Set(["data", "viewport-range"]));
 
   /**
-   * @typedef {"markers"|"price"|"timing"|"transform"|"forecast"|"viewport"|"viewport-range"|"composition"|"data"} ChartUpdateClass
+   * @typedef {"markers"|"overlays"|"price"|"timing"|"transform"|"forecast"|"viewport"|"viewport-range"|"composition"|"data"} ChartUpdateClass
    * @typedef {{updateClasses?: ChartUpdateClass[], progressiveComposition?: boolean}} ChartInvalidation
    */
 
@@ -25,10 +20,20 @@
     if (invalidation?.plan?.normalized === true) return invalidation;
     const updateClasses = Object.freeze(normalizedUpdateClasses(invalidation));
     const fullUpdate = updateClasses.length === 0;
+    const auxiliaryTargets = fullUpdate
+      ? ["macd", "auxiliary"]
+      : [
+          ...(updateClasses.some((updateClass) => (
+            MACD_UPDATE_CLASSES.has(updateClass) || ALL_AUXILIARY_UPDATE_CLASSES.has(updateClass)
+          )) ? ["macd"] : []),
+          ...(updateClasses.some((updateClass) => (
+            ALL_AUXILIARY_UPDATE_CLASSES.has(updateClass)
+          )) ? ["auxiliary"] : []),
+        ];
     const plan = Object.freeze({
       normalized: true,
-      updateAuxiliary: fullUpdate
-        || updateClasses.some((updateClass) => !MAIN_ONLY_UPDATE_CLASSES.has(updateClass)),
+      auxiliaryTargets: Object.freeze(auxiliaryTargets),
+      updateAuxiliary: auxiliaryTargets.length > 0,
       hydrateData: fullUpdate
         || updateClasses.some((updateClass) => DATA_HYDRATION_UPDATE_CLASSES.has(updateClass)),
       reuseFutureOverlays: !fullUpdate && updateClasses.every((updateClass) => (
@@ -42,6 +47,7 @@
         updateClass === "viewport"
         || updateClass === "viewport-range"
         || updateClass === "price"
+        || updateClass === "overlays"
       )),
     });
     return Object.freeze({ ...invalidation, updateClasses, plan });
@@ -179,6 +185,15 @@
     });
   }
 
+  function traceYValuesMatch(left, right) {
+    if (left === right) return true;
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+    for (let index = 0; index < left.length; index += 1) {
+      if (!Object.is(left[index], right[index])) return false;
+    }
+    return true;
+  }
+
   /** Builds one linked-chart relayout plan without coupling it to application state. */
   function buildLinkedViewportRangePlan(options = {}) {
     const mainElement = options.mainElement;
@@ -232,7 +247,10 @@
     }
     const companionVisibility = options.isCompanionVisible || isVisibleRangeCompanion;
     const companionUpdates = companionElements.map((element) => Boolean(
-      companionVisibility(element) && rangeChanged(element)
+      companionVisibility(element) && (
+        rangeChanged(element)
+        || options.forceCompanionUpdate?.(element) === true
+      )
     ));
     const needsMainDataRefresh = Boolean(
       mainElement?.data
@@ -353,6 +371,9 @@
         traceYUpdates,
         collectAnchoredYUpdates: options.collectAnchoredYUpdates,
         isCompanionVisible: options.isCompanionVisible,
+        forceCompanionUpdate: (element) => (
+          options.forceCompanionUpdate?.(element, meta) === true
+        ),
       });
       if (!plan.any) {
         stats.skipped += 1;
@@ -447,6 +468,27 @@
     if (!isCurrent()) return { rendered, corrected, stale: true };
     await options.rangeController?.flush?.();
     if (!isCurrent()) return { rendered, corrected, stale: true };
+    const completion = options.rangeController?.lastCompletion?.() || null;
+    const completedRequest = completion?.request;
+    const completedResult = completion?.result;
+    const completionTolerance = hasRange
+      ? Math.max(1000, (requestedRange[1] - requestedRange[0]) * 0.00001)
+      : 1000;
+    const completionMatchesRange = hasRange
+      && Number.isFinite(Number(completedRequest?.startMs))
+      && Number.isFinite(Number(completedRequest?.endMs))
+      && Math.abs(Number(completedRequest.startMs) - requestedRange[0]) <= completionTolerance
+      && Math.abs(Number(completedRequest.endMs) - requestedRange[1]) <= completionTolerance;
+    const completionMatchesRevision = !Number.isInteger(ownerRevision)
+      || !Number.isInteger(completedRequest?.meta?.interactionRevision)
+      || completedRequest.meta.interactionRevision === ownerRevision;
+    const liveFitAlreadyCommitted = Boolean(
+      completionMatchesRange
+      && completionMatchesRevision
+      && completedResult?.reason !== "stale-request"
+      && completedResult?.mainDataRefresh !== true
+      && Array.isArray(completedResult?.plan?.liveFit?.fittedYRange),
+    );
     if (hasRange) options.setPinnedRange?.(requestedRange);
     const needsRender = Boolean(
       hasRange
@@ -478,7 +520,10 @@
     const mismatch = hasRange && !currentRange?.every((value, index) => (
       Math.abs(Number(value) - requestedRange[index]) <= tolerance
     ));
-    const needsFinalLiveFit = hasRange && options.liveFit === true;
+    const needsFinalLiveFit = hasRange
+      && options.liveFit === true
+      && !rendered
+      && !liveFitAlreadyCommitted;
     if (mismatch || needsFinalLiveFit) {
       options.rangeController?.schedule?.(requestedRange[0], requestedRange[1], {
         source: `${options.reason || "viewport-settle"}-${mismatch ? "correction" : "fit"}`,
@@ -498,6 +543,37 @@
     if (options.refreshCompanions === true) await options.refreshCompanionsNow?.();
     else options.flushCoMovement?.();
     return { rendered, corrected, stale: false };
+  }
+
+  /** Drains every owner that can extend one committed chart frame. */
+  async function settleChartWorkTransaction(options = {}) {
+    const navigation = options.navigation;
+    const rangeController = options.rangeController;
+    const mainScheduler = options.mainScheduler;
+    const auxiliaryQueue = options.auxiliaryQueue;
+
+    await navigation?.whenRangeSettled?.();
+    await rangeController?.flush?.();
+    await mainScheduler?.whenSettled?.();
+    await auxiliaryQueue?.whenSettled?.();
+
+    // Main and companion rendering can enqueue one final linked-range frame.
+    // Drain that frame here so callers never repeat this ordering themselves.
+    await rangeController?.flush?.();
+    if (mainScheduler?.isRendering?.() || auxiliaryQueue?.isBusy?.()) {
+      await mainScheduler?.whenSettled?.();
+      await auxiliaryQueue?.whenSettled?.();
+      await rangeController?.flush?.();
+    }
+    await options.afterSettled?.();
+
+    return Object.freeze({
+      settled: !(
+        rangeController?.isBusy?.()
+        || mainScheduler?.isRendering?.()
+        || auxiliaryQueue?.isBusy?.()
+      ),
+    });
   }
 
   function createMainChartRenderGuard(options = {}) {
@@ -630,6 +706,18 @@
     });
   }
 
+  function reconcileBaseValuesBySeries(baseValuesBySeries = {}, composition = {}) {
+    const nextValues = composition.baseValuesBySeries || {};
+    const retainedEpsKeys = new Set((composition.epsTraces || [])
+      .map((trace) => String(trace?.meta?.seriesKey || ""))
+      .filter((seriesKey) => seriesKey.startsWith("eps:")));
+    Object.keys(baseValuesBySeries)
+      .filter((seriesKey) => seriesKey.startsWith("eps:") && !retainedEpsKeys.has(seriesKey))
+      .forEach((seriesKey) => { delete baseValuesBySeries[seriesKey]; });
+    Object.assign(baseValuesBySeries, nextValues);
+    return baseValuesBySeries;
+  }
+
   function hydrateMainChartSession(session, model, options = {}) {
     if (!session || !model) throw new Error("main chart session hydration requires state and model");
     const rows = Array.isArray(model.rows) ? model.rows : [];
@@ -690,7 +778,6 @@
       deferOverlays: compositionOptions.deferOverlays,
       buildEpsTraceModel: compositionOptions.buildEpsTraceModel,
       buildAiForecastTraces: compositionOptions.buildAiForecastTraces,
-      prepareEventModels: compositionOptions.prepareEventModels,
       buildEventArguments: compositionOptions.buildEventArguments,
       buildEventTraces: compositionOptions.buildEventTraces,
       eventRevisionKey: Object.entries(compositionOptions.eventRevisions || {})
@@ -700,11 +787,7 @@
     });
     if (!composition) return null;
 
-    const baseValuesBySeries = options.baseValuesBySeries || {};
-    Object.keys(baseValuesBySeries)
-      .filter((seriesKey) => seriesKey.startsWith("eps:"))
-      .forEach((seriesKey) => { delete baseValuesBySeries[seriesKey]; });
-    Object.assign(baseValuesBySeries, composition.baseValuesBySeries);
+    reconcileBaseValuesBySeries(options.baseValuesBySeries || {}, composition);
 
     const nextVisibleDataRange = options.visibleLineDataRangeMs?.(composition.traces) || null;
     const viewportPlan = viewport.controller.buildRenderViewportPlan({
@@ -741,8 +824,11 @@
           fitRangeForTraces: viewport.fitRangeForTraces,
           fitOptions: { paddingRatio: 0.08, minimumPadding: 0.6 },
         })
-      : { fittedYRange: null, traces: composition.traces };
+      : { fittedYRange: null, traces: composition.traces, traceIndexes: [] };
     const frameTraces = preparedViewportFrame.traces;
+    const forceTraceRefresh = preparedViewportFrame.traceIndexes.some((traceIndex) => (
+      !traceYValuesMatch(options.element?.data?.[traceIndex]?.y, frameTraces[traceIndex]?.y)
+    ));
     const remapPreparedTraceGroup = (group) => {
       const requested = new Set(Array.isArray(group) ? group : []);
       return composition.traces.flatMap((trace, index) => (
@@ -779,6 +865,7 @@
       ...composition,
       aiForecastTraces: remapPreparedTraceGroup(composition.aiForecastTraces),
       epsTraces: remapPreparedTraceGroup(composition.epsTraces),
+      forceTraceRefresh,
       traces: frameTraces,
       layout,
       nextVisibleDataRange,
@@ -1242,6 +1329,7 @@
       return requestComposition({
         preserveFutureOverlayViewport: true,
         reason: "future-overlay-composition",
+        updateClass: "overlays",
       });
     }
 
@@ -2009,11 +2097,13 @@ export {
   createLinkedViewportFrameRuntime,
   hasVisibleDatedDataInRange,
   isVisibleRangeCompanion,
+  settleChartWorkTransaction,
   settleViewportRenderTransaction,
   compactTraceYUpdates,
   createMainChartRenderGuard,
   createMainChartRenderRuntime,
   createReusableMainChartTracePlan,
+  reconcileBaseValuesBySeries,
   createChartRenderScheduler,
   createChartRenderFacade,
   createChartUpdateCoordinator,

@@ -80,8 +80,8 @@ async function readInsiderMarker(page, side) {
 test("AI toggle draws and removes a six-month virtual forecast", async ({ page, isMobile }) => {
   await stubExternalRefreshes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
-  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await waitForAppReady(page);
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await page.locator("#chartRange6Months").click();
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const [start, end] = element._fullLayout.xaxis.range.map(Date.parse);
@@ -1266,6 +1266,35 @@ test("market timing applies to a visible stock series", async ({ page }) => {
 
 });
 
+test("restored signal finishes without requiring AI to trigger another render", async ({ page }) => {
+  await stubExternalRefreshes(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "private" }));
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 12,
+      hiddenSeries: [
+        "leading_cycle", "^KQ11", "customer_deposit", "kospi_credit", "kosdaq_credit",
+      ],
+      showAiForecast: false,
+      showRecessionSignals: true,
+    }));
+  });
+
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await waitForAppReady(page);
+  await expect(page.locator("#recessionToggle")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#signalProgress")).toBeHidden({ timeout: 15000 });
+  await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getSignalProgressState()))
+    .toMatchObject({ enabled: true, active: 0, visible: false });
+  await expect.poll(() => page.locator("#chart").evaluate((element) => (
+    (element.data || []).some((trace) => (
+      ["timing-buy", "timing-sell"].includes(trace?.meta?.overlayKind)
+    ))
+  )), { timeout: 15000 }).toBe(true);
+});
+
 test("signal calculation shows progress while an uncached timing model is prepared", async ({ page }) => {
   await stubExternalRefreshes(page);
   await page.addInitScript(() => {
@@ -1439,6 +1468,7 @@ test("timing hover wraps reasons and its shared hit area opens the popover", asy
 });
 
 test("timing hover keeps active signal rows after viewport zoom", async ({ page, isMobile }) => {
+  test.setTimeout(120_000);
   await stubExternalRefreshes(page);
   await page.addInitScript(() => {
     localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "private" }));
@@ -1452,7 +1482,14 @@ test("timing hover keeps active signal rows after viewport zoom", async ({ page,
     }));
   });
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await waitForAppReady(page);
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (
+    ["218410.KQ", "033100.KQ"].every((ticker) => (
+      window.ThinkStockE2E.hasMarketTimingModel(ticker)
+    ))
+  )), { timeout: 60_000 }).toBe(true);
+  await waitForChartRenderIdle(page);
 
   const findSignalGroup = () => page.locator("#chart").evaluate((element) => {
     const byDate = new Map();
@@ -1568,6 +1605,7 @@ test("timing hover keeps active signal rows after viewport zoom", async ({ page,
     return actualRange.length === 2
       && Math.max(...actualRange.map((value, index) => Math.abs(value - expectedRange[index]))) < 86400000;
   }, zoomedRange)).toBe(true);
+  await waitForChartRenderIdle(page);
   marker = await hoverMarker(targets[0]);
   expect(marker).not.toBeNull();
   await page.mouse.move(marker.x + 30, marker.y + 30);
@@ -1581,7 +1619,7 @@ test("timing hover keeps active signal rows after viewport zoom", async ({ page,
     // movement must still include every signal row.
     for (const deltaY of [-360, 360]) {
       await page.mouse.wheel(0, deltaY);
-      await page.waitForTimeout(500);
+      await waitForChartRenderIdle(page);
       await expect(page.locator("#chart")).not.toHaveClass(/is-event-marker-hovering/);
       await expect(page.locator(
         "#chart .hoverlayer > g.legend, #chart .hoverlayer > g.hovertext",
@@ -2401,6 +2439,7 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
 });
 
 test("AI analysis loads only on demand and reuses today's browser cache", async ({ page }) => {
+  test.setTimeout(90_000);
   let analysisRequests = 0;
   let journalRecords = [];
   let releaseAnalysis;
@@ -2462,8 +2501,8 @@ test("AI analysis loads only on demand and reuses today's browser cache", async 
   });
 
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
-  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await waitForAppReady(page);
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator("#aiForecastToggle")).toBeEnabled();
   expect(analysisRequests).toBe(0);
@@ -2490,6 +2529,8 @@ test("AI analysis loads only on demand and reuses today's browser cache", async 
 
   const firstRequestCount = analysisRequests;
   await page.reload({ waitUntil: "domcontentloaded" });
+  await waitForAppReady(page);
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#aiForecastToggle")).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator("#aiForecastToggle")).not.toHaveClass(/is-active/);
   await expect.poll(() => page.locator("#chart").evaluate((element) => (

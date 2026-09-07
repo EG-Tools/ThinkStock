@@ -125,6 +125,70 @@ export const CUSTOM_COLOR_PALETTE = Object.freeze([
 ]);
 const marketIndexSeries = new Set(MARKET_INDEX_SERIES);
 const mainMacroSeries = new Set(MAIN_MACRO_SERIES);
+const SERIES_KIND_POLICIES = Object.freeze({
+  stock: Object.freeze({
+    requiresPrice: true,
+    requiresVolume: true,
+    backgroundHistory: true,
+  }),
+  "market-index": Object.freeze({
+    requiresPrice: true,
+    requiresVolume: true,
+    backgroundHistory: false,
+  }),
+  macro: Object.freeze({
+    requiresPrice: true,
+    requiresVolume: false,
+    backgroundHistory: false,
+  }),
+  unknown: Object.freeze({
+    requiresPrice: false,
+    requiresVolume: false,
+    backgroundHistory: false,
+  }),
+});
+
+/**
+ * One policy owns both series eligibility and application-state activation.
+ * Runtime-only entries such as `dart` do not render a trace themselves but
+ * share the same state contract as the features that consume their data.
+ */
+export const APP_FEATURE_POLICIES = Object.freeze({
+  scale: Object.freeze({ seriesKinds: Object.freeze(["stock", "market-index", "macro", "unknown"]) }),
+  disclosure: Object.freeze({
+    seriesKinds: Object.freeze(["stock"]),
+    stateAny: Object.freeze(["showDisclosures"]),
+  }),
+  "disclosure-data": Object.freeze({
+    seriesKinds: Object.freeze(["stock"]),
+    stateAny: Object.freeze(["showDisclosures", "showAiForecast"]),
+  }),
+  insider: Object.freeze({
+    seriesKinds: Object.freeze(["stock"]),
+    stateAny: Object.freeze(["showInsiderTrades"]),
+  }),
+  eps: Object.freeze({
+    seriesKinds: Object.freeze(["stock"]),
+    stateAny: Object.freeze(["showEps"]),
+  }),
+  "company-analysis": Object.freeze({ seriesKinds: Object.freeze(["stock"]) }),
+  "co-movement": Object.freeze({
+    seriesKinds: Object.freeze(["stock", "market-index"]),
+    stateAny: Object.freeze(["showCoMovement"]),
+  }),
+  signal: Object.freeze({
+    seriesKinds: Object.freeze(["stock", "market-index"]),
+    stateAny: Object.freeze(["showRecessionSignals"]),
+  }),
+  ai: Object.freeze({
+    seriesKinds: Object.freeze(["stock", "market-index"]),
+    stateAny: Object.freeze(["showAiForecast"]),
+  }),
+  dart: Object.freeze({
+    seriesKinds: Object.freeze(["stock"]),
+    stateAny: Object.freeze(["showDisclosures", "showInsiderTrades", "showAiForecast"]),
+  }),
+});
 export const ADR_SERIES = Object.freeze(["adr_kospi", "adr_kosdaq"]);
 export const FEAR_GREED_SERIES = Object.freeze(["fear_greed"]);
 export const NEWS_SENTIMENT_SERIES = Object.freeze(["news_sentiment"]);
@@ -236,39 +300,80 @@ export function isMarketPriceSeries(value) {
   return marketIndexSeries.has(ticker) || STOCK_TICKER_PATTERN.test(ticker);
 }
 
-/** Data prerequisites shared by every main-chart activation path. */
-export function mainSeriesActivationProfile(value) {
+function classifyMainSeries(value) {
   const rawKey = String(value || "").trim();
   const tickerKey = rawKey.toUpperCase();
   const macroKey = rawKey.toLowerCase();
   const stock = STOCK_TICKER_PATTERN.test(tickerKey);
   const marketIndex = marketIndexSeries.has(tickerKey);
   const macro = mainMacroSeries.has(macroKey);
-  const key = macro ? macroKey : tickerKey;
+  return stock ? "stock" : (marketIndex ? "market-index" : (macro ? "macro" : "unknown"));
+}
+
+/** Data prerequisites shared by every main-chart activation path. */
+export function mainSeriesActivationProfile(value) {
+  const rawKey = String(value || "").trim();
+  const kind = classifyMainSeries(rawKey);
+  const policy = SERIES_KIND_POLICIES[kind];
   return Object.freeze({
-    key,
-    kind: stock ? "stock" : (marketIndex ? "market-index" : (macro ? "macro" : "unknown")),
-    requiresPrice: stock || marketIndex || macro,
-    requiresVolume: stock || marketIndex,
-    backgroundHistory: stock,
-    supportsCompanyMarkers: stock,
-    supportsTiming: stock || marketIndex,
+    key: kind === "macro" ? rawKey.toLowerCase() : rawKey.toUpperCase(),
+    kind,
+    requiresPrice: policy.requiresPrice,
+    requiresVolume: policy.requiresVolume,
+    backgroundHistory: policy.backgroundHistory,
+    supportsCompanyMarkers: APP_FEATURE_POLICIES.disclosure.seriesKinds.includes(kind),
+    supportsTiming: APP_FEATURE_POLICIES.signal.seriesKinds.includes(kind),
   });
 }
 
 /** One target policy for features drawn over the main chart. */
 export function seriesSupportsFeature(value, feature) {
-  const ticker = String(value || "").trim().toUpperCase();
-  if (!ticker) return false;
-  if (String(feature || "") === "scale") return true;
-  if (mainMacroSeries.has(ticker)) return false;
-  if (["disclosure", "insider", "eps", "company-analysis"].includes(String(feature || ""))) {
-    return STOCK_TICKER_PATTERN.test(ticker);
-  }
-  if (["co-movement", "signal", "ai"].includes(String(feature || ""))) {
-    return isMarketPriceSeries(ticker);
-  }
-  return false;
+  const rawValue = String(value || "").trim();
+  const policy = APP_FEATURE_POLICIES[String(feature || "")];
+  if (!rawValue || !policy) return false;
+  return policy.seriesKinds.includes(classifyMainSeries(rawValue));
+}
+
+export function isApplicationFeatureRequested(state = {}, feature) {
+  const policy = APP_FEATURE_POLICIES[String(feature || "")];
+  const stateKeys = policy?.stateAny || [];
+  return stateKeys.length > 0 && stateKeys.some((key) => state?.[key] === true);
+}
+
+export function resolveTickerDartPreloadPlan(state = {}) {
+  const disclosures = isApplicationFeatureRequested(state, "disclosure-data");
+  const insiders = isApplicationFeatureRequested(state, "insider");
+  return Object.freeze({
+    disclosures,
+    insiders,
+    required: isApplicationFeatureRequested(state, "dart"),
+  });
+}
+
+/** Resolves only the feature work that is both supported and currently enabled. */
+export function resolveSeriesFeatureActivationPlan(value, state = {}) {
+  const enabled = (feature) => (
+    seriesSupportsFeature(value, feature)
+    && isApplicationFeatureRequested(state, feature)
+  );
+  const signal = enabled("signal");
+  const disclosure = enabled("disclosure");
+  const disclosureData = enabled("disclosure-data");
+  const insider = enabled("insider");
+  const eps = enabled("eps");
+  const ai = enabled("ai");
+  const dart = enabled("dart");
+  return Object.freeze({
+    signal,
+    disclosure,
+    disclosureData,
+    insider,
+    eps,
+    ai,
+    dart,
+    supplemental: dart || eps || ai,
+    requested: signal || dart || eps || ai,
+  });
 }
 
 export function isForecastSeries(value) {
@@ -337,7 +442,9 @@ export function createChartApplicationControlConfig(context) {
         c.cancelSignalProgress?.();
         c.setMessage(`타이밍 준비 오류: ${error.message}`, true);
       },
-      onEnabled: () => c.refreshRuntimeData({ requireDerivedInputs: true }),
+      onEnabled: async () => {
+        await c.refreshRuntimeData({ requireDerivedInputs: true });
+      },
       onDisabled: c.cancelSignalProgress,
       onChanged: c.requestChartCompositionUpdate,
     },

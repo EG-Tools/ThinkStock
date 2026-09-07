@@ -3,6 +3,25 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.36",
+      date: "2026.09.07",
+      items: Object.freeze([
+        "신호 준비 중복 요청 통합과 종목별 동시 처리",
+        "파생 캐시 갱신 의존성의 단일 정책 적용",
+        "공시·EPS·신호 진행률 생명주기 공통화",
+        "보조차트 범위 갱신의 미사용 경로 정리",
+      ]),
+    }),
+    Object.freeze({
+      version: "3.35",
+      date: "2026.09.06",
+      items: Object.freeze([
+        "차트·보조차트 확정 대기 순서 단일화",
+        "기능별 대상과 활성 조건의 공통 정책 적용",
+        "보조 데이터 갱신·재시도·오류 처리 계약 통합",
+      ]),
+    }),
+    Object.freeze({
       version: "3.34",
       date: "2026.09.06",
       items: Object.freeze([

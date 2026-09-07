@@ -175,6 +175,12 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
       chartInteractionsBound = false;
     }
 
+    function invalidate(element = null) {
+      activeHoverIdleController?.cancel();
+      pointerMoveController?.cancel();
+      pointerMoveController?.invalidate(element);
+    }
+
     function bind() {
       const mainEl = document.getElementById("chart");
       const macdEl = document.getElementById("chart-macd");
@@ -1064,6 +1070,7 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
     return Object.freeze({
       bind,
       destroy,
+      invalidate,
       isBound: () => cursorMoveBound && chartInteractionsBound,
     });
   }

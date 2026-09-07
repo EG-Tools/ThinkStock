@@ -713,6 +713,9 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
     if (typeof scheduler?.enqueue !== "function") {
       throw new Error("visible series supplemental scheduler is required");
     }
+    if (typeof options.resolveFeaturePlan !== "function") {
+      throw new Error("visible series supplemental feature plan is required");
+    }
     const normalizeTicker = typeof options.normalizeTicker === "function"
       ? options.normalizeTicker
       : (value) => String(value || "").trim().toUpperCase();
@@ -722,15 +725,16 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
     const isActive = typeof options.isActive === "function"
       ? options.isActive
       : () => true;
-    const isEpsEnabled = typeof options.isEpsEnabled === "function"
-      ? options.isEpsEnabled
-      : () => false;
-    const isAiEnabled = typeof options.isAiEnabled === "function"
-      ? options.isAiEnabled
-      : () => false;
-    const isDartEnabled = typeof options.isDartEnabled === "function"
-      ? options.isDartEnabled
-      : () => false;
+    const resolveFeaturePlan = (ticker) => {
+      const resolved = options.resolveFeaturePlan(ticker) || {};
+      return Object.freeze({
+        ai: resolved.ai === true,
+        dart: resolved.dart === true,
+        disclosureData: resolved.disclosureData === true,
+        eps: resolved.eps === true,
+        insider: resolved.insider === true,
+      });
+    };
     const delayMs = Math.max(0, Number(options.delayMs) || 32);
     const priority = Number(options.priority) || 80;
     const group = String(options.group || "visible-series-supplemental");
@@ -739,9 +743,15 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
     function schedule(tickerValue, context = {}) {
       const ticker = normalizeTicker(tickerValue);
       if (!isSupported(ticker)) return Promise.resolve(false);
-      const hasEnabledWork = () => isDartEnabled() || isEpsEnabled() || isAiEnabled();
-      if (!hasEnabledWork()) return Promise.resolve(false);
-      const trackAiProgress = context.trackAiProgress === true && isAiEnabled();
+      const hasEnabledWork = () => {
+        const plan = resolveFeaturePlan(ticker);
+        return plan.dart || plan.eps || plan.ai;
+      };
+      const initialFeaturePlan = resolveFeaturePlan(ticker);
+      if (!initialFeaturePlan.dart && !initialFeaturePlan.eps && !initialFeaturePlan.ai) {
+        return Promise.resolve(false);
+      }
+      const trackAiProgress = context.trackAiProgress === true && initialFeaturePlan.ai;
       if (trackAiProgress) options.onAiQueued?.(ticker, context);
 
       const cleanupSkipped = () => options.onSkipped?.(ticker, {
@@ -750,17 +760,19 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
       });
       return scheduler.enqueue(taskKey(ticker), async (taskContext) => {
         await taskContext.checkpoint?.();
+        const featurePlan = resolveFeaturePlan(ticker);
+        const runContext = { ...context, featurePlan };
         const tasks = [];
-        if (isDartEnabled()) {
-          tasks.push(Promise.resolve(options.prepareDisclosure?.(ticker, context)));
+        if (featurePlan.dart) {
+          tasks.push(Promise.resolve(options.prepareDisclosure?.(ticker, runContext)));
         }
-        const hydrateAi = isAiEnabled();
-        if (isEpsEnabled()) {
-          tasks.push(Promise.resolve(options.prepareEps?.(ticker, context)));
+        const hydrateAi = featurePlan.ai;
+        if (featurePlan.eps) {
+          tasks.push(Promise.resolve(options.prepareEps?.(ticker, runContext)));
         }
         if (hydrateAi) {
-          options.onAiPreparing?.(ticker, context);
-          tasks.push(Promise.resolve(options.prepareAi?.(ticker, context)));
+          options.onAiPreparing?.(ticker, runContext);
+          tasks.push(Promise.resolve(options.prepareAi?.(ticker, runContext)));
         } else {
           cleanupSkipped();
         }
@@ -771,9 +783,9 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
         await taskContext.checkpoint?.();
         if (hydrateAi) {
           try {
-            if (isAiEnabled()) options.onAiReady?.(ticker, context);
+            if (resolveFeaturePlan(ticker).ai) options.onAiReady?.(ticker, runContext);
           } finally {
-            options.onAiCompleted?.(ticker, context);
+            options.onAiCompleted?.(ticker, runContext);
           }
         }
         return true;

@@ -2,10 +2,37 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  APP_DATA_COMPONENT_BY_KEY,
+  APP_DATA_COMPONENT_DEFINITIONS,
+  APP_DATA_COMPONENT_GROUPS,
   APP_DATA_KEYS,
+  APP_DATA_SNAPSHOT_COMPONENT_KEYS,
   createAppDataRevisionBridge,
   createAppDataStore,
 } from "../../docs/modules/app-data-store.mjs";
+
+test("data component groups keep analysis and render invalidation on one contract", () => {
+  assert.deepEqual(APP_DATA_COMPONENT_GROUPS.analysis, [
+    "price", "macro", "credit", "crisis", "adr",
+  ]);
+  assert.deepEqual(APP_DATA_COMPONENT_GROUPS.mainChart, [
+    "price", "macro", "credit", "crisis",
+  ]);
+  assert.equal(Object.isFrozen(APP_DATA_COMPONENT_GROUPS.analysis), true);
+});
+
+test("derives app data and snapshot component keys from one registry", () => {
+  assert.deepEqual(APP_DATA_COMPONENT_DEFINITIONS.price, {
+    dataKey: "pricePayload",
+    snapshotKey: "pricePayload",
+  });
+  assert.equal(APP_DATA_COMPONENT_BY_KEY.pricePayload, "price");
+  assert.equal(APP_DATA_SNAPSHOT_COMPONENT_KEYS.price, "component:price");
+  assert.deepEqual(
+    Object.keys(APP_DATA_SNAPSHOT_COMPONENT_KEYS),
+    Object.keys(APP_DATA_COMPONENT_DEFINITIONS),
+  );
+});
 
 test("app data store owns core datasets and versions only real replacements", () => {
   const pricePayload = { records: [{ date: "2026-08-26" }] };

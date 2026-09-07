@@ -35,6 +35,47 @@ const SERVER_ONLY_PATTERNS = [
 
 const EXPLICIT_UNIT_TESTS = Object.freeze([
   Object.freeze({
+    pattern: /^scripts\/feature-entries\/eps-feature\.mjs$/,
+    tests: [
+      "tests/unit/ai-analysis-cache.test.mjs",
+      "tests/unit/app-feature-runtime.test.mjs",
+      "tests/unit/eps-chart.test.mjs",
+      "tests/unit/optional-feature-runtime.test.mjs",
+    ],
+  }),
+  Object.freeze({
+    pattern: /^scripts\/feature-entries\/auxiliary-chart-feature\.mjs$/,
+    tests: [
+      "tests/unit/auxiliary-chart-model.test.mjs",
+      "tests/unit/chart-core-modules.test.mjs",
+      "tests/unit/optional-feature-runtime.test.mjs",
+    ],
+  }),
+  Object.freeze({
+    pattern: /^scripts\/feature-entries\/data-freshness-feature\.mjs$/,
+    tests: [
+      "tests/unit/data-freshness-controller.test.mjs",
+      "tests/unit/data-freshness-view.test.mjs",
+      "tests/unit/optional-feature-runtime.test.mjs",
+    ],
+  }),
+  Object.freeze({
+    pattern: /^scripts\/feature-entries\/broker-research-feature\.mjs$/,
+    tests: [
+      "tests/unit/broker-research-cache.test.mjs",
+      "tests/unit/broker-research-runtime.test.mjs",
+      "tests/unit/optional-feature-runtime.test.mjs",
+    ],
+  }),
+  Object.freeze({
+    pattern: /^scripts\/feature-entries\/stock-research-feature\.mjs$/,
+    tests: [
+      "tests/unit/optional-feature-runtime.test.mjs",
+      "tests/unit/stock-research-controller.test.mjs",
+      "tests/unit/stock-research-worker-runtime.test.mjs",
+    ],
+  }),
+  Object.freeze({
     pattern: /^docs\/modules\/runtime-market-refresh\.mjs$/,
     tests: [
       "tests/unit/runtime-bootstrap.test.mjs",

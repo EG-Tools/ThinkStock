@@ -8,6 +8,7 @@ import {
   isKoreanMarketPricePoint,
   isKoreanTradingDate,
   koreanDateText,
+  latestAllowedKoreanPriceDate,
   latestKoreanTradingDateOnOrBefore,
   latestWeekdayOnOrBefore,
   millisecondsUntilKoreanMarketClose,
@@ -57,6 +58,24 @@ test("rejects zero-volume holiday placeholders but keeps real trading rows", () 
   assert.equal(isKoreanMarketPricePoint("2017-05-01", 0), false);
   assert.equal(isKoreanMarketPricePoint("2017-06-01", 306967), true);
   assert.equal(isKoreanMarketPricePoint("2017-06-01", null), true);
+  assert.equal(isKoreanMarketPricePoint("2026-09-07", 100, {
+    maximumDate: "2026-09-04",
+  }), false);
+});
+
+test("allows today's stock price only after the Korean market opens", () => {
+  assert.equal(
+    latestAllowedKoreanPriceDate(new Date("2026-09-06T15:30:00Z")),
+    "2026-09-04",
+  );
+  assert.equal(
+    latestAllowedKoreanPriceDate(new Date("2026-09-07T01:00:00Z")),
+    "2026-09-07",
+  );
+  assert.equal(
+    latestAllowedKoreanPriceDate(new Date("2026-09-06T03:00:00Z")),
+    "2026-09-04",
+  );
 });
 
 test("distinguishes daily history from a monthly full-history fallback", () => {
@@ -128,6 +147,14 @@ test("schedules one Korean market-close settlement without polling", () => {
 });
 
 test("shares one deterministic research-universe phase across live and deployed runtimes", () => {
+  assert.deepEqual(resolveKoreanResearchUniversePhase(new Date("2026-08-09T15:30:00Z")), {
+    today: "2026-08-10",
+    expectedDate: "2026-08-07",
+    targetDate: "2026-08-07",
+    priceMode: "settled",
+    realtime: false,
+    captureClose: false,
+  });
   assert.deepEqual(resolveKoreanResearchUniversePhase(new Date("2026-08-10T03:00:00Z")), {
     today: "2026-08-10",
     expectedDate: "2026-08-07",

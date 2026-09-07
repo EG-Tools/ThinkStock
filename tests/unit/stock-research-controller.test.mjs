@@ -1,9 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as cacheLifecycle from "../../docs/modules/cache-lifecycle-policy.mjs";
+import * as marketCalendar from "../../shared/market-calendar.mjs";
 
 const { default: controller } = await import("../../docs/modules/stock-research-controller.js");
+const { default: historyCache } = await import("../../docs/modules/stock-research-history-cache.js");
 controller.configureCacheLifecycle(cacheLifecycle);
+
+test("stock research discards cached rows beyond the currently allowed market date", () => {
+  historyCache.configureMarketCalendar({
+    ...marketCalendar,
+    latestAllowedKoreanPriceDate: () => "2026-09-04",
+  });
+  try {
+    assert.deepEqual(historyCache.normalizeResearchHistoryRows([
+      { date: "2026-09-04", close: 100, volume: 10 },
+      { date: "2026-09-07", close: 110, volume: 20 },
+    ]), [
+      { date: "2026-09-04", close: 100, volume: 10 },
+    ]);
+  } finally {
+    historyCache.configureMarketCalendar(null);
+  }
+});
 
 test("stock research retries a transient first-page profile failure", async () => {
   let attempts = 0;

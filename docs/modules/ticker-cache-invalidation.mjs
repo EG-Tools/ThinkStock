@@ -1,18 +1,55 @@
-  const DERIVED_STORES = Object.freeze([
-    "tickerResearchHistory",
-    "tickerTimingModels",
-    "tickerAiForecast",
-  ]);
-  const PRICE_STORE = "tickerPrices";
-  const DEPENDENT_STORES_BY_SOURCE = Object.freeze({
-    price: DERIVED_STORES,
-    analysis: Object.freeze(["tickerAiForecast"]),
-    disclosure: Object.freeze(["tickerAiForecast"]),
-    eps: Object.freeze(["tickerAiForecast"]),
-    report: Object.freeze(["tickerAiForecast"]),
-    volume: Object.freeze(["tickerTimingModels", "tickerAiForecast"]),
-    macro: Object.freeze(["tickerTimingModels", "tickerAiForecast"]),
+import { RUNTIME_STORAGE_CONTRACT } from "../../shared/runtime-foundation.mjs";
+
+  const stores = RUNTIME_STORAGE_CONTRACT.stores;
+  const PRICE_STORE = stores.tickerPrices;
+  const TICKER_DERIVED_CACHE_POLICIES = Object.freeze({
+    "research-history": Object.freeze({
+      sources: Object.freeze(["price"]),
+      stores: Object.freeze([stores.tickerResearchHistory]),
+    }),
+    "market-timing": Object.freeze({
+      sources: Object.freeze(["price", "volume", "macro", "credit", "crisis", "adr"]),
+      stores: Object.freeze([stores.tickerTimingModels]),
+    }),
+    "ai-forecast": Object.freeze({
+      sources: Object.freeze([
+        "price", "analysis", "disclosure", "eps", "report", "volume",
+        "macro", "credit", "crisis", "adr",
+      ]),
+      stores: Object.freeze([stores.tickerAiForecast]),
+    }),
+    "ai-analysis": Object.freeze({
+      sources: Object.freeze([]),
+      stores: Object.freeze([stores.tickerAiAnalysis]),
+    }),
+    "ai-quality": Object.freeze({
+      sources: Object.freeze(["price"]),
+      stores: Object.freeze([]),
+    }),
+    macd: Object.freeze({
+      sources: Object.freeze(["price"]),
+      stores: Object.freeze([]),
+    }),
   });
+  const DERIVED_STORES = Object.freeze([
+    stores.tickerResearchHistory,
+    stores.tickerTimingModels,
+    stores.tickerAiForecast,
+  ]);
+  const DEPENDENT_STORES_BY_SOURCE = Object.freeze(Object.fromEntries(
+    [...new Set(Object.values(TICKER_DERIVED_CACHE_POLICIES)
+      .flatMap((policy) => policy.sources))]
+      .map((source) => [source, Object.freeze([
+        ...new Set(Object.values(TICKER_DERIVED_CACHE_POLICIES)
+          .filter((policy) => policy.sources.includes(source))
+          .flatMap((policy) => policy.stores)),
+      ])]),
+  ));
+
+  function dependenciesFor(name) {
+    const policy = TICKER_DERIVED_CACHE_POLICIES[String(name || "").trim()];
+    return policy || Object.freeze({ sources: Object.freeze([]), stores: Object.freeze([]) });
+  }
 
   /**
    * @typedef {Object} PriceUpdateAssessment
@@ -152,10 +189,12 @@ function createTickerCacheInvalidationContract(lifecycle) {
     DERIVED_STORES,
     DEPENDENT_STORES_BY_SOURCE,
     PRICE_STORE,
+    TICKER_DERIVED_CACHE_POLICIES,
     assessPriceUpdate: (existingPoints, incomingPoints, options = {}) => (
       assessPriceUpdate(existingPoints, incomingPoints, options, lifecycle)
     ),
     createTickerCacheInvalidator,
+    dependenciesFor,
     findHistoricalRevision,
     storesForSources,
   });
@@ -165,7 +204,7 @@ export {
   DERIVED_STORES,
   DEPENDENT_STORES_BY_SOURCE,
   PRICE_STORE,
+  TICKER_DERIVED_CACHE_POLICIES,
   createTickerCacheInvalidationContract,
 };
-
 

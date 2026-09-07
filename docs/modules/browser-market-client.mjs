@@ -28,6 +28,9 @@
     const isValidPricePoint = typeof options.isValidPricePoint === "function"
       ? options.isValidPricePoint
       : () => true;
+    const latestAllowedPriceDate = typeof options.latestAllowedPriceDate === "function"
+      ? options.latestAllowedPriceDate
+      : () => "";
     const baseInfoEndpoints = options.baseInfoEndpoints || {};
     const indexEndpoints = options.indexEndpoints || {};
     if (typeof fetchJson !== "function") throw new TypeError("fetchJson is required");
@@ -123,6 +126,7 @@
         ? result.indicators.quote[0].volume
         : [];
       const offsetSeconds = Number(result?.meta?.gmtoffset || 0);
+      const maximumDate = String(latestAllowedPriceDate(new Date()) || "").slice(0, 10);
       const byDate = new Map();
       timestamps.forEach((rawTimestamp, index) => {
         const timestamp = Number(rawTimestamp);
@@ -130,7 +134,7 @@
         const volume = toNumber(volumes[index]);
         if (!Number.isFinite(timestamp) || close === null) return;
         const date = new Date((timestamp + offsetSeconds) * 1000).toISOString().slice(0, 10);
-        if (!isValidPricePoint({ ticker, date, close, volume })) return;
+        if (!isValidPricePoint({ ticker, date, close, volume, maximumDate })) return;
         byDate.set(date, { close, volume: volume !== null && volume >= 0 ? volume : null });
       });
       return [...byDate.entries()]
@@ -194,7 +198,9 @@
         ? requestOptions.latestPoints
         : (results[1]?.status === "fulfilled" ? results[1].value : []);
       const latestPoints = filterLatestTailPoints(historyPoints, rawLatestPoints);
-      const merged = mergePriceSeries(historyPoints, latestPoints);
+      const maximumDate = String(latestAllowedPriceDate(new Date()) || "").slice(0, 10);
+      const merged = mergePriceSeries(historyPoints, latestPoints)
+        .filter((point) => isValidPricePoint({ ticker, ...point, maximumDate }));
       if (inspectHistoryIntegrity && merged.length) {
         const mergedIntegrity = inspectHistoryIntegrity(merged);
         if (mergedIntegrity?.anomalyCount > 0) {

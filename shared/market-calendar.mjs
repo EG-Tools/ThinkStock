@@ -113,7 +113,10 @@ export function isKoreanTradingDate(dateText, options = {}) {
 }
 
 export function isKoreanMarketPricePoint(dateText, volume, options = {}) {
-  if (!isKoreanTradingDate(dateText, options)) return false;
+  const date = normalizeIsoDate(dateText);
+  const maximumDate = normalizeIsoDate(options.maximumDate);
+  if (!date || (maximumDate && date > maximumDate)) return false;
+  if (!isKoreanTradingDate(date, options)) return false;
   if (volume == null || String(volume).trim() === "") return true;
   const numericVolume = Number(volume);
   return !Number.isFinite(numericVolume) || numericVolume > 0;
@@ -223,6 +226,14 @@ export function millisecondsUntilKoreanMarketClose(date = new Date(), options = 
 export function resolveKoreanResearchUniversePhase(date = new Date(), options = {}) {
   const now = date instanceof Date ? date : new Date(date || Date.now());
   const settlementHour = Math.max(0, Math.min(23, Number(options.settlementHour) || 18));
+  const marketCloseHour = Math.max(
+    0,
+    Math.min(23, Number(options.marketWindow?.closeHour) || 16),
+  );
+  const marketCloseMinute = Math.max(
+    0,
+    Math.min(59, Number(options.marketWindow?.closeMinute) || 0),
+  );
   const today = koreanDateText(now);
   const expectedDate = expectedLatestKoreanTradingDate(now, {
     closeHour: settlementHour,
@@ -237,8 +248,13 @@ export function resolveKoreanResearchUniversePhase(date = new Date(), options = 
     ...(options.marketWindow || {}),
   });
   const captureClose = !realtime
-    && isKoreanTradingDate(today, options.calendar || {})
-    && today > expectedDate;
+    && isKoreanCurrentPriceWindow(now, {
+      openHour: marketCloseHour,
+      openMinute: marketCloseMinute,
+      closeHour: settlementHour,
+      closeMinute: 0,
+      ...(options.calendar || {}),
+    });
   return Object.freeze({
     today,
     expectedDate,
@@ -247,6 +263,10 @@ export function resolveKoreanResearchUniversePhase(date = new Date(), options = 
     realtime,
     captureClose,
   });
+}
+
+export function latestAllowedKoreanPriceDate(date = new Date(), options = {}) {
+  return resolveKoreanResearchUniversePhase(date, options).targetDate;
 }
 
 export const KOREAN_SIGNAL_PRICE_MODES = Object.freeze({

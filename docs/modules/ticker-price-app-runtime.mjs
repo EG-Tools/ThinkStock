@@ -130,7 +130,16 @@ export function createTickerPriceAppRuntime(options = {}) {
     const key = tickerKey(ticker);
     const normalized = options.normalizePricePoints(points);
     if (!/^\d{6}\.(KS|KQ)$/.test(key)) return normalized;
-    return normalized.filter((point) => options.isMarketPricePoint(point.date, point.volume));
+    const maximumDate = isoDate(
+      options.latestAllowedPriceDate?.(new Date())
+      || options.expectedLatestTradingDate?.(new Date()),
+    );
+    return normalized.filter((point) => {
+      const date = isoDate(point?.date);
+      return date
+        && (!maximumDate || date <= maximumDate)
+        && options.isMarketPricePoint(date, point.volume, { maximumDate });
+    });
   }
 
   function hasSeries(ticker) {

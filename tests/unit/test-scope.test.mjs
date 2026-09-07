@@ -49,6 +49,19 @@ test("feature entries rebuild the browser and retain WebKit coverage", () => {
   assert.equal(scope.runFullUnit, true);
 });
 
+test("isolated EPS feature entry changes select its complete focused contract", () => {
+  const scope = classifyChangedFiles(["scripts/feature-entries/eps-feature.mjs"]);
+  assert.equal(scope.runWebBuild, true);
+  assert.equal(scope.runWebkitSmoke, true);
+  assert.equal(scope.runFullUnit, false);
+  assert.deepEqual(scope.unitTests, [
+    "tests/unit/ai-analysis-cache.test.mjs",
+    "tests/unit/app-feature-runtime.test.mjs",
+    "tests/unit/eps-chart.test.mjs",
+    "tests/unit/optional-feature-runtime.test.mjs",
+  ]);
+});
+
 test("feature bundle output is ignored when its source entry is present", () => {
   const scope = classifyChangedFiles([
     "scripts/feature-entries/ai-feature.mjs",

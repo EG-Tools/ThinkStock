@@ -5,7 +5,6 @@ import {
   createAppFeatureRuntime,
   createDeferredChartRenderTelemetryFacade,
   createDeferredDiagnosticsFacade,
-  resolveTickerDartPreloadPlan,
 } from "../../docs/modules/optional-feature-runtime.mjs";
 
 function createRegistry() {
@@ -26,7 +25,10 @@ function createRegistry() {
 test("loads each optional app feature behind one explicit registry boundary", async () => {
   const calls = [];
   const dartRequests = { run() {} };
-  const aiFeature = { forecast: { buildForecast() {} } };
+  const aiFeature = {
+    analysis: { normalizeAnalysisRecord() {} },
+    forecast: { buildForecast() {} },
+  };
   const brokerResearchFeature = { runtime: { createBrokerResearchRuntime() {} } };
   const dartFeature = {
     insiderTrades: {
@@ -77,9 +79,12 @@ test("loads each optional app feature behind one explicit registry boundary", as
   assert.equal(await runtime.ensureAi(), aiFeature.forecast);
   assert.equal(await runtime.ensureAi(), aiFeature.forecast);
   assert.equal(runtime.requireAi(), aiFeature);
+  assert.equal(runtime.getCompanyAnalysis(), aiFeature.analysis);
+  assert.equal(runtime.requireCompanyAnalysis(), aiFeature.analysis);
   assert.equal(await runtime.ensureBrokerResearch(), brokerResearchFeature);
   assert.equal(runtime.requireBrokerResearch(), brokerResearchFeature);
   assert.deepEqual(await runtime.ensureEps(), { chart: true });
+  assert.deepEqual(runtime.getEps(), { chart: true });
   assert.equal(runtime.getDartRequests(), dartRequests);
   assert.equal(runtime.getDartRequests(), dartRequests);
   assert.equal(runtime.normalizeDartTicker(" 005930.ks "), "005930.KS");
@@ -91,6 +96,33 @@ test("loads each optional app feature behind one explicit registry boundary", as
   assert.deepEqual(runtime.mergeInsiderRowsWithChange([1], [2]), { rows: [1, 2], changed: true });
   assert.deepEqual(await runtime.ensureMarketTiming(), { timing: true });
   assert.deepEqual(calls, ["ai", "broker", "dart", "eps", ["dart-requests", requestRegistry], "timing"]);
+});
+
+test("loading EPS does not initialize the forecast engine", async () => {
+  const calls = [];
+  const epsFeature = { chart: true, analysis: {} };
+  const runtime = createAppFeatureRuntime({
+    registry: createRegistry(),
+    keys: {
+      aiFeature: "ai",
+      aiForecastApp: "ai-app",
+      dartFeature: "dart",
+      epsFeature: "eps",
+    },
+    optional: {
+      ensureAi: async () => { calls.push("ai"); return { forecast: {} }; },
+      ensureBrokerResearch: async () => ({}),
+      ensureDart: async () => { calls.push("dart"); return {}; },
+      ensureEps: async () => { calls.push("eps"); return epsFeature; },
+      ensureMarketTiming: async () => ({}),
+    },
+  });
+
+  assert.equal(await runtime.ensureEps(), epsFeature);
+  assert.equal(runtime.getEps(), epsFeature);
+  assert.equal(runtime.getCompanyAnalysis(), epsFeature.analysis);
+  assert.equal(runtime.requireCompanyAnalysis(), epsFeature.analysis);
+  assert.deepEqual(calls, ["dart", "eps"]);
 });
 
 test("rejects access before a required feature has loaded", () => {
@@ -108,29 +140,6 @@ test("rejects access before a required feature has loaded", () => {
   assert.throws(() => runtime.requireAi(), /AI feature is not loaded/);
   assert.throws(() => runtime.requireBrokerResearch(), /Broker research feature is not loaded/);
   assert.throws(() => runtime.requireDart(), /DART feature is not loaded/);
-});
-
-test("loads ticker DART data only for visible DART or AI features", () => {
-  assert.deepEqual(resolveTickerDartPreloadPlan({}), {
-    disclosures: false,
-    insiders: false,
-    required: false,
-  });
-  assert.deepEqual(resolveTickerDartPreloadPlan({ showAiForecast: true }), {
-    disclosures: true,
-    insiders: false,
-    required: true,
-  });
-  assert.deepEqual(resolveTickerDartPreloadPlan({ showInsiderTrades: true }), {
-    disclosures: false,
-    insiders: true,
-    required: true,
-  });
-  assert.deepEqual(resolveTickerDartPreloadPlan({ showDisclosures: true }), {
-    disclosures: true,
-    insiders: false,
-    required: true,
-  });
 });
 
 test("owns deferred diagnostics loading and scheduling behind one facade", async () => {

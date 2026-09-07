@@ -610,6 +610,34 @@ test("range sync keeps one active request and only the newest pending range", as
   await controller.flush();
 });
 
+test("range sync keeps a rapid interaction burst within one applied frame", async () => {
+  let frame = null;
+  const applied = [];
+  const controller = viewport.createRangeSyncController({}, {
+    requestFrame: (callback) => {
+      frame = callback;
+      return 1;
+    },
+    cancelFrame: () => {},
+    applyRange: async (range) => { applied.push(range); },
+  });
+
+  for (let index = 0; index < 120; index += 1) {
+    controller.schedule(index, index + 100, { interactionRevision: index });
+  }
+  const queued = controller.stats();
+  assert.equal(queued.scheduled, 120);
+  assert.equal(queued.coalesced, 119);
+  assert.equal(queued.applied, 0);
+
+  frame();
+  await controller.flush();
+  assert.equal(applied.length, 1);
+  assert.equal(applied[0].startMs, 119);
+  assert.equal(applied[0].meta.interactionRevision, 119);
+  assert.equal(controller.stats().applied, 1);
+});
+
 test("relayout viewport resolves explicit and autoranged ranges through one contract", () => {
   assert.deepEqual(viewport.resolveRelayoutViewport({
     "xaxis.range[0]": "2026-01-01",

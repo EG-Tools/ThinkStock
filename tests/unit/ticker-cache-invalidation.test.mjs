@@ -89,4 +89,23 @@ test("maps source revisions to deterministic dependent cache stores", () => {
     "tickerTimingModels",
     "tickerAiForecast",
   ]);
+  assert.deepEqual(cache.storesForSources(["adr", "crisis", "credit"]), [
+    "tickerTimingModels",
+    "tickerAiForecast",
+  ]);
+});
+
+test("one cache policy drives persistent and in-memory invalidation dependencies", () => {
+  assert.deepEqual(cache.dependenciesFor("market-timing"), {
+    sources: ["price", "volume", "macro", "credit", "crisis", "adr"],
+    stores: ["tickerTimingModels"],
+  });
+  assert.deepEqual(cache.dependenciesFor("macd"), {
+    sources: ["price"],
+    stores: [],
+  });
+  assert.deepEqual(cache.dependenciesFor("ai-analysis"), {
+    sources: [],
+    stores: ["tickerAiAnalysis"],
+  });
 });

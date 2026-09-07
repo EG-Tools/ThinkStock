@@ -409,6 +409,10 @@ async function installDataRoutes(page, options = {}) {
 
   await page.route("**/data/*.json*", async (route) => {
     const name = new URL(route.request().url()).pathname.split("/").pop();
+    if (name === "ai_market_model.json") {
+      await route.fallback();
+      return;
+    }
     if (name === "disclosures.json") {
       await route.fulfill({ json: {
         generated_at: "2026-07-15T00:00:00Z",

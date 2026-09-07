@@ -10,6 +10,7 @@ import {
   createStartupCompletionGate,
   createStartupTaskRuntime,
 } from "../../docs/modules/app-bootstrap-orchestrator.mjs";
+import { isApplicationFeatureRequested } from "../../docs/modules/app-control-config.mjs";
 
 test("one feature registry owns refresh and restored activation predicates", () => {
   const enabled = () => true;
@@ -31,6 +32,7 @@ test("one feature registry owns refresh and restored activation predicates", () 
 
 test("application feature lifecycle centralizes restored toggle predicates", () => {
   const calls = [];
+  const requestedFeatures = [];
   const state = {
     showRecessionSignals: true,
     showDisclosures: false,
@@ -40,6 +42,11 @@ test("application feature lifecycle centralizes restored toggle predicates", () 
   };
   const lifecycle = createApplicationFeatureLifecycleDescriptors({
     state,
+    isFeatureRequested: (currentState, feature) => {
+      requestedFeatures.push(feature);
+      assert.equal(currentState, state);
+      return true;
+    },
     canUseInsider: () => true,
     restoreTiming: () => calls.push("timing"),
     restoreDart: () => calls.push("dart"),
@@ -55,6 +62,40 @@ test("application feature lifecycle centralizes restored toggle predicates", () 
   assert.deepEqual(lifecycle.restoredActivations.map((entry) => entry.name), ["timing", "dart"]);
   assert.deepEqual(lifecycle.optionalRefreshes.map((entry) => entry.name), ["insider", "ai", "eps"]);
   assert.deepEqual(calls, ["timing", "dart", "insider", "refresh-ai", "eps"]);
+  assert.deepEqual(requestedFeatures, ["signal", "dart", "insider", "ai", "eps"]);
+});
+
+test("boot activation follows the restored signal, disclosure, and insider switches independently", () => {
+  const activeNames = (state) => {
+    const lifecycle = createApplicationFeatureLifecycleDescriptors({
+      state,
+      isFeatureRequested: isApplicationFeatureRequested,
+      canUseInsider: () => true,
+      restoreTiming: () => {},
+      restoreDart: () => {},
+      refreshInsider: () => {},
+      refreshAi: () => {},
+      refreshEps: () => {},
+    });
+    return {
+      refresh: lifecycle.optionalRefreshes.filter((entry) => entry.enabled()).map((entry) => entry.name),
+      restore: lifecycle.restoredActivations.filter((entry) => entry.enabled()).map((entry) => entry.name),
+    };
+  };
+
+  assert.deepEqual(activeNames({ showRecessionSignals: true }), {
+    refresh: [],
+    restore: ["timing"],
+  });
+  assert.deepEqual(activeNames({ showDisclosures: true }), {
+    refresh: [],
+    restore: ["dart"],
+  });
+  assert.deepEqual(activeNames({ showInsiderTrades: true }), {
+    refresh: ["insider"],
+    restore: ["dart"],
+  });
+  assert.deepEqual(activeNames({}), { refresh: [], restore: [] });
 });
 
 test("runs application startup phases in one deterministic order", async () => {

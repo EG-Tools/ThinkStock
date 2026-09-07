@@ -5,6 +5,7 @@ const {
   createRuntimeRefreshChangeApplier,
   createRuntimeRefreshPolicy,
   createRuntimeRefreshOrchestrator,
+  createRuntimeRefreshSourceAdapter,
   planRuntimeRefreshSources,
   partitionRuntimeRefreshSources,
   planRuntimeRefreshRendering,
@@ -12,16 +13,78 @@ const {
   shouldScheduleHiddenStockRefresh,
 } = await import("../../docs/modules/runtime-refresh-orchestrator.mjs");
 
+test("supplemental sources share retry, request tracking, and result normalization", async () => {
+  const calls = [];
+  const signal = {};
+  const adapter = createRuntimeRefreshSourceAdapter({
+    source: "macro",
+    skippedResult: { applied: [] },
+    load: ({ forceNetwork }) => {
+      calls.push(["load", forceNetwork]);
+      return { applied: ["latest"] };
+    },
+    mapResult: (result) => ({ info: result.applied, warnings: [] }),
+  });
+  const result = await adapter.run({
+    forceNetwork: true,
+    signal,
+    refreshSourceWithRetry: async (source, task, currentSignal) => {
+      calls.push(["retry", source, currentSignal]);
+      return task();
+    },
+    trackSource: async (source, task, skippedResult) => {
+      calls.push(["track", source, skippedResult]);
+      return task();
+    },
+  });
+
+  assert.deepEqual(calls, [
+    ["track", "macro", { applied: [] }],
+    ["retry", "macro", signal],
+    ["load", true],
+  ]);
+  assert.deepEqual(result, {
+    source: "macro",
+    info: ["latest"],
+    warnings: [],
+  });
+  assert.equal(Object.isFrozen(result), true);
+  assert.equal(Object.isFrozen(result.info), true);
+});
+
+test("disabled supplemental sources skip loading through the same contract", async () => {
+  let loads = 0;
+  const adapter = createRuntimeRefreshSourceAdapter({
+    source: "disclosure",
+    enabled: () => false,
+    disabledResult: { refreshed: false },
+    load: () => { loads += 1; },
+  });
+
+  assert.deepEqual(await adapter.run(), {
+    source: "disclosure",
+    info: [],
+    warnings: [],
+    refreshed: false,
+  });
+  assert.equal(loads, 0);
+});
+
 test("one change applier renders price first and finalizes timing once", async () => {
   let revisions = { price: 2, macro: 1, credit: 1, crisis: 1, adr: 1, disclosure: 1 };
   const renders = [];
+  const events = [];
   let waits = 0;
   const applyChanges = createRuntimeRefreshChangeApplier({
     getDataRevisions: () => revisions,
     isAutoScale: () => true,
     isTimingVisible: () => true,
     markPendingAutoFit: () => {},
-    requestMainRender: (request) => renders.push(request),
+    prepareTiming: async () => { events.push("prepare-timing"); },
+    requestMainRender: (request) => {
+      renders.push(request);
+      events.push(`render-${request.updateClass}`);
+    },
     waitForMainRender: async () => { waits += 1; },
   });
 
@@ -38,6 +101,7 @@ test("one change applier renders price first and finalizes timing once", async (
     { phase: "supplemental", finalizeDerived: true, pendingDerivedInputChanged: true },
   );
   assert.equal(renders[1].updateClass, "timing");
+  assert.deepEqual(events, ["render-price", "prepare-timing", "render-timing"]);
   assert.equal(waits, 1);
 });
 
@@ -99,6 +163,7 @@ function createRefreshPolicy(overrides = {}) {
       getSourceStates: () => state.sourceStates,
       getVisibleSeries: () => state.visible,
       hasVolumeHistory: (ticker) => state.hasVolumeHistory?.(ticker) ?? true,
+      isFeatureRequested: state.isFeatureRequested,
       isForecastSeries: (series) => series === "^KS11" || /\.K[QS]$/.test(series),
       isStockSeries: (series) => /\.K[QS]$/.test(series),
       latestDatesByTicker: () => ({}),
@@ -120,6 +185,24 @@ test("one refresh policy owns visible targets and benchmark dependencies", () =>
   const plan = policy.planCriticalRefresh();
   assert.deepEqual(plan.prices.requiredTickers, ["005930.KS"]);
   assert.deepEqual(plan.indices.requiredTickers, ["^KS11", "^KQ11"]);
+});
+
+test("runtime refresh decisions consume the shared application feature policy", () => {
+  const requests = [];
+  const { policy } = createRefreshPolicy({
+    visible: ["005930.KS"],
+    isFeatureRequested: (_state, feature) => {
+      requests.push(feature);
+      return feature === "co-movement";
+    },
+  });
+
+  assert.deepEqual(policy.planCriticalRefresh().indices.requiredTickers, ["^KS11", "^KQ11"]);
+  assert.equal(policy.isSourceForeground("disclosure"), false);
+  assert.equal(requests.includes("signal"), true);
+  assert.equal(requests.includes("ai"), true);
+  assert.equal(requests.includes("co-movement"), true);
+  assert.equal(requests.includes("dart"), true);
 });
 
 test("critical startup adds missing index and visible-stock volume inputs", () => {
@@ -185,7 +268,7 @@ test("shared source freshness skips ready data unless refresh is forced", () => 
   assert.equal(policy.shouldRefreshSource("macro"), true);
 });
 
-test("active timing confirms every analysis input once even when prior state is fresh", () => {
+test("active timing reuses analysis inputs confirmed inside their source interval", () => {
   const fresh = { state: "ready", qualityState: "ready", lastSuccessAt: Date.now() };
   const { policy } = createRefreshPolicy({
     visible: ["005930.KS"],
@@ -195,7 +278,7 @@ test("active timing confirms every analysis input once even when prior state is 
   });
 
   ["adr", "crisis", "credit", "fearGreed", "macro"].forEach((source) => {
-    assert.equal(policy.shouldRefreshSource(source), true, source);
+    assert.equal(policy.shouldRefreshSource(source), false, source);
   });
 });
 
@@ -384,6 +467,7 @@ test("startup confirms visible prices before final signal inputs and timing", as
     isAutoScale: () => true,
     isTimingVisible: () => true,
     markPendingAutoFit: () => {},
+    prepareTiming: async () => events.push("prepare:timing"),
     requestMainRender: ({ updateClass }) => events.push(`render:${updateClass}`),
     waitForMainRender: async () => {},
   });
@@ -438,6 +522,7 @@ test("startup confirms visible prices before final signal inputs and timing", as
     "history:005930.KS",
     "fetch:macro",
     "phase:supplementalReady",
+    "prepare:timing",
     "render:timing",
   ]);
   assert.equal(preloadOptions[0].visibleSinceDate, "2026-01-01");
