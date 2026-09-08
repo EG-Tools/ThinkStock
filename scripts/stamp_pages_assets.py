@@ -8,6 +8,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 INDEX_HTML = ROOT / "docs" / "index.html"
 SW_JS = ROOT / "docs" / "sw.js"
+
+
 def resolve_build_version() -> str:
     explicit = os.environ.get("PAGES_BUILD_VERSION", "").strip()
     if explicit:
@@ -42,6 +44,21 @@ def replace_once(text: str, pattern: str, replacement: str, label: str) -> str:
     return next_text
 
 
+def replace_exact_count(
+    text: str,
+    pattern: str,
+    replacement: str,
+    expected_count: int,
+    label: str,
+) -> str:
+    next_text, count = re.subn(pattern, replacement, text)
+    if count != expected_count:
+        raise RuntimeError(
+            f"Could not stamp {label}: expected {expected_count}, found {count}"
+        )
+    return next_text
+
+
 def versioned(path: str, version: str) -> str:
     return f"{path}?v={version}"
 
@@ -50,6 +67,7 @@ def main() -> int:
     version = resolve_build_version()
     bundle_src = versioned("./assets/app.bundle.min.js", version)
     cache_policy_src = versioned("./modules/cache-refresh-policy.js", version)
+    runtime_asset_manifest_src = versioned("./assets/runtime-asset-paths.js", version)
     market_data_src = versioned("./modules/market-data.mjs", version)
     chart_adjustments_src = versioned("./modules/chart-adjustments.mjs", version)
     auxiliary_contract_src = versioned("./modules/auxiliary-chart-contract.mjs", version)
@@ -68,12 +86,20 @@ def main() -> int:
     INDEX_HTML.write_text(index, encoding="utf-8", newline="\n")
 
     sw = SW_JS.read_text(encoding="utf-8")
+    for asset, label in (
+        (cache_policy_src, "cache policy"),
+        (runtime_asset_manifest_src, "runtime asset manifest"),
+    ):
+        base = asset.split("?v=", 1)[0]
+        sw = replace_exact_count(
+            sw,
+            rf'"{re.escape(base)}(?:\?v=[^"]*)?"',
+            f'"{asset}"',
+            2,
+            f"service worker {label}",
+        )
+
     replacements = [
-        (
-            r'importScripts\("\./modules/cache-refresh-policy\.js(?:\?v=[^"]*)?"\);',
-            f'importScripts("{cache_policy_src}");',
-            "service worker policy import",
-        ),
         (
             r'const CACHE_NAME = "thinkstock-[^"]+";',
             f'const CACHE_NAME = "thinkstock-{version}";',
@@ -82,7 +108,6 @@ def main() -> int:
     ]
     for asset, label in (
         (bundle_src, "app bundle"),
-        (cache_policy_src, "cache policy"),
         (market_data_src, "market data"),
         (chart_adjustments_src, "chart adjustments"),
         (auxiliary_contract_src, "auxiliary contract"),
