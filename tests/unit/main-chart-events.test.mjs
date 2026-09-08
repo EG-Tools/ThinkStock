@@ -3,7 +3,13 @@ import test from "node:test";
 
 import { createMainChartEvents } from "../../docs/modules/main-chart-events.mjs";
 
-function createHarness({ chartSyncing = false, currentRange = true } = {}) {
+function createHarness({
+  chartSyncing = false,
+  clearHoverOnChart = () => {},
+  currentRange = true,
+  elements = {},
+  syncHoverToChart = () => {},
+} = {}) {
   const handlers = new Map();
   const calls = {
     coMovement: 0,
@@ -28,7 +34,7 @@ function createHarness({ chartSyncing = false, currentRange = true } = {}) {
     suppressPlotlyClickUntil: 0,
   };
   const scope = {
-    document: { getElementById: () => null },
+    document: { getElementById: (id) => elements[id] || null },
     requestAnimationFrame: (callback) => { callback(); return 1; },
   };
   const events = createMainChartEvents(scope, {
@@ -37,7 +43,7 @@ function createHarness({ chartSyncing = false, currentRange = true } = {}) {
     chartSession,
     changeSeriesVisibility: (...args) => { calls.visibility.push(args); },
     clearAutoResetSeriesTransforms: () => {},
-    clearHoverOnChart: () => {},
+    clearHoverOnChart,
     commitViewportRange: (range, meta) => {
       chartSession.pinnedXRange = [...range];
       calls.viewport.push({ range: [...range], source: meta?.source });
@@ -58,7 +64,7 @@ function createHarness({ chartSyncing = false, currentRange = true } = {}) {
     setAiForecastTargetVisibility: () => {},
     setMainChartSeriesVisible: () => true,
     showChartNavigationMessage: () => {},
-    syncHoverToChart: () => {},
+    syncHoverToChart,
   });
   events.bind({
     classList: { contains: () => false },
@@ -146,4 +152,22 @@ test("legend reset requests one price-first composition", () => {
     progressiveComposition: true,
     reason: "series-visibility-reset",
   }]);
+});
+
+test("main hover forwards the same date to every visible linked chart", () => {
+  const macd = { hidden: false };
+  const adr = { hidden: false };
+  const synced = [];
+  const harness = createHarness({
+    elements: { "chart-macd": macd, "chart-adr": adr },
+    syncHoverToChart: (chart, date) => synced.push({ chart, date }),
+  });
+  harness.chartSession.hoverShowPopup = true;
+
+  harness.handlers.get("plotly_hover")({ points: [{ x: "2026-09-08" }] });
+
+  assert.deepEqual(synced, [
+    { chart: macd, date: "2026-09-08" },
+    { chart: adr, date: "2026-09-08" },
+  ]);
 });

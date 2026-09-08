@@ -3,6 +3,48 @@ import test from "node:test";
 
 import * as hoverModule from "../../docs/modules/chart-hover-runtime.mjs";
 
+test("chart hover keeps the latest request for each linked chart", () => {
+  const frames = [];
+  const hoverCalls = [];
+  const scope = {
+    Plotly: {
+      Fx: {
+        hover: (chart, points) => hoverCalls.push({ chart: chart.id, points }),
+        unhover: () => {},
+      },
+    },
+    requestAnimationFrame: (callback) => {
+      frames.push(callback);
+      return frames.length;
+    },
+    cancelAnimationFrame: () => {},
+  };
+  const runtime = hoverModule.createChartHoverRuntime(scope, {
+    findNearestHoverPoint: () => null,
+    getTraceTimeMsArray: () => [],
+    toMsSafe: () => NaN,
+  });
+  const macd = { id: "chart-macd", data: [], querySelector: () => null };
+  const adr = { id: "chart-adr", data: [], querySelector: () => null };
+
+  runtime.syncHoverToChart(macd, "2026-09-01");
+  runtime.syncHoverToChart(adr, "2026-09-01");
+  runtime.syncHoverToChart(macd, "2026-09-02");
+
+  assert.equal(frames.length, 2);
+  frames.shift()();
+  frames.shift()();
+  assert.deepEqual(hoverCalls, [
+    { chart: "chart-macd", points: [{ xval: "2026-09-02" }] },
+    { chart: "chart-adr", points: [{ xval: "2026-09-01" }] },
+  ]);
+  assert.equal(runtime.isSyncing(), true);
+  frames.shift()();
+  assert.equal(runtime.isSyncing(), true);
+  frames.shift()();
+  assert.equal(runtime.isSyncing(), false);
+});
+
 test("chart hover cannot reappear from a stale correction after leaving the chart", () => {
   const frames = [];
   const hoverCalls = [];

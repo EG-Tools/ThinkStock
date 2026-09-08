@@ -109,7 +109,7 @@ import { resolveRelayoutViewport } from "./chart-viewport-controller.mjs";
         const macdElement = document.getElementById("chart-macd");
         const adrElement = document.getElementById("chart-adr");
         if (!macdElement?.hidden) syncHoverToChart(macdElement, xValue);
-        syncHoverToChart(adrElement, xValue);
+        if (!adrElement?.hidden) syncHoverToChart(adrElement, xValue);
       });
       element.on("plotly_unhover", () => {
         if (!chartSession.hoverShowPopup || interactionState.hoverSyncing) return;

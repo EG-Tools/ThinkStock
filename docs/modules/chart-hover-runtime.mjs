@@ -162,17 +162,35 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
       || scope.clearTimeout?.bind(scope)
       || (() => {});
     let hoverSyncing = false;
-    let hoverSyncFrame = 0;
-    let hoverCorrectionFrame = 0;
-    let hoverGeneration = 0;
-    let pendingHoverSync = null;
-    let lastHoverSyncKey = "";
+    const hoverStates = new Map();
     const hoverPopupStamps = new WeakMap();
     const hoverPopupAnchors = new WeakMap();
 
-    function setSyncing(value) {
-      hoverSyncing = Boolean(value);
-      options.onSyncingChange?.(hoverSyncing);
+    function hoverStateFor(targetEl) {
+      if (!hoverStates.has(targetEl)) {
+        hoverStates.set(targetEl, {
+          correctionFrame: 0,
+          generation: 0,
+          lastKey: "",
+          pending: null,
+          syncFrame: 0,
+          syncing: false,
+        });
+      }
+      return hoverStates.get(targetEl);
+    }
+
+    function refreshSyncing() {
+      const next = [...hoverStates.values()].some((state) => state.syncing);
+      if (next === hoverSyncing) return;
+      hoverSyncing = next;
+      options.onSyncingChange?.(next);
+    }
+
+    function setTargetSyncing(state, value) {
+      if (!state || state.syncing === Boolean(value)) return;
+      state.syncing = Boolean(value);
+      refreshSyncing();
     }
 
     function normalizeHoverPopupIndent(targetEl) {
@@ -320,22 +338,24 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
         && stamp.content === hoverPopupContent(popup);
     }
 
-    function scheduleHoverCorrection(callback, generation) {
-      if (hoverCorrectionFrame) cancelFrame(hoverCorrectionFrame);
-      hoverCorrectionFrame = requestFrame(() => {
-        hoverCorrectionFrame = 0;
-        if (generation !== hoverGeneration) return;
+    function scheduleHoverCorrection(state, callback, generation) {
+      if (state.correctionFrame) cancelFrame(state.correctionFrame);
+      state.correctionFrame = requestFrame(() => {
+        state.correctionFrame = 0;
+        if (generation !== state.generation) return;
         callback();
       });
     }
 
-    function cancelScheduledHoverWork() {
-      hoverGeneration += 1;
-      if (hoverSyncFrame) cancelFrame(hoverSyncFrame);
-      if (hoverCorrectionFrame) cancelFrame(hoverCorrectionFrame);
-      hoverSyncFrame = 0;
-      hoverCorrectionFrame = 0;
-      pendingHoverSync = null;
+    function cancelScheduledHoverWork(state) {
+      if (!state) return;
+      state.generation += 1;
+      if (state.syncFrame) cancelFrame(state.syncFrame);
+      if (state.correctionFrame) cancelFrame(state.correctionFrame);
+      state.syncFrame = 0;
+      state.correctionFrame = 0;
+      state.pending = null;
+      setTargetSyncing(state, false);
     }
 
     function syncHoverToChartNow(
@@ -343,11 +363,12 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
       xValue,
       syncKey,
       preferredTraceIndex = null,
-      generation = hoverGeneration,
+      state,
+      generation = state.generation,
     ) {
       const plotly = scope.Plotly;
       if (!targetEl || !plotly?.Fx?.hover || xValue == null) return;
-      setSyncing(true);
+      setTargetSyncing(state, true);
       const nearestPoint = findNearestHoverPoint(targetEl, xValue, preferredTraceIndex);
       const preferredTrace = Number.isInteger(preferredTraceIndex)
         ? targetEl.data?.[preferredTraceIndex]
@@ -376,12 +397,12 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
         stampHoverPopup(targetEl, syncKey, expectsDetailPoint);
       } catch (_) {
         if (!nearestPoint) {
-          scheduleHoverCorrection(() => setSyncing(false), generation);
+          scheduleHoverCorrection(state, () => setTargetSyncing(state, false), generation);
           return;
         }
         usedPointFallback = showPointFallback(plotly, targetEl, nearestPoint);
       }
-      scheduleHoverCorrection(() => {
+      scheduleHoverCorrection(state, () => {
         const pointPopupReady = expectsDetailPoint
           && hoverPopupMatches(targetEl, syncKey, true);
         if (expectsDetailPoint && directPoint && !pointPopupReady) {
@@ -398,17 +419,18 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
         }
         normalizeHoverPopupIndent(targetEl);
         stampHoverPopup(targetEl, syncKey, expectsDetailPoint);
-        setSyncing(false);
+        setTargetSyncing(state, false);
       }, generation);
     }
 
     function syncHoverToChart(targetEl, xValue, preferredTraceIndex = null) {
       if (!targetEl || xValue == null) return;
-      hoverGeneration += 1;
-      if (hoverCorrectionFrame) {
-        cancelFrame(hoverCorrectionFrame);
-        hoverCorrectionFrame = 0;
-        setSyncing(false);
+      const state = hoverStateFor(targetEl);
+      state.generation += 1;
+      if (state.correctionFrame) {
+        cancelFrame(state.correctionFrame);
+        state.correctionFrame = 0;
+        setTargetSyncing(state, false);
       }
       const key = [
         targetEl.id || "chart",
@@ -416,26 +438,27 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
         Number.isInteger(preferredTraceIndex) ? preferredTraceIndex : "unified",
         groupedHoverRevision(targetEl),
       ].join("|");
-      pendingHoverSync = { targetEl, xValue, key, preferredTraceIndex };
-      if (hoverSyncFrame) return;
-      hoverSyncFrame = requestFrame(() => {
-        const pending = pendingHoverSync;
-        pendingHoverSync = null;
-        hoverSyncFrame = 0;
+      state.pending = { targetEl, xValue, key, preferredTraceIndex };
+      if (state.syncFrame) return;
+      state.syncFrame = requestFrame(() => {
+        const pending = state.pending;
+        state.pending = null;
+        state.syncFrame = 0;
         if (!pending) return;
         const expectsDetailPoint = Boolean(
           Number.isInteger(pending.preferredTraceIndex)
           || groupedDetailPointAtX(pending.targetEl, pending.xValue),
         );
-        if (pending.key === lastHoverSyncKey
+        if (pending.key === state.lastKey
           && hoverPopupMatches(pending.targetEl, pending.key, expectsDetailPoint)) return;
-        lastHoverSyncKey = pending.key;
+        state.lastKey = pending.key;
         syncHoverToChartNow(
           pending.targetEl,
           pending.xValue,
           pending.key,
           pending.preferredTraceIndex,
-          hoverGeneration,
+          state,
+          state.generation,
         );
       });
     }
@@ -506,26 +529,26 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
     function clearHoverOnChart(targetEl) {
       const plotly = scope.Plotly;
       hoverPopupAnchors.delete(targetEl);
-      cancelScheduledHoverWork();
-      lastHoverSyncKey = "";
+      const state = targetEl ? hoverStateFor(targetEl) : null;
+      cancelScheduledHoverWork(state);
+      if (state) state.lastKey = "";
       if (!targetEl || !plotly?.Fx?.unhover) {
-        setSyncing(false);
         return;
       }
-      setSyncing(true);
+      setTargetSyncing(state, true);
       try {
         plotly.Fx.unhover(targetEl);
       } catch (_) {
         // The chart may be detached during a responsive relayout.
       } finally {
-        setSyncing(false);
+        setTargetSyncing(state, false);
       }
     }
 
     function destroy() {
-      cancelScheduledHoverWork();
-      lastHoverSyncKey = "";
-      setSyncing(false);
+      hoverStates.forEach((state) => cancelScheduledHoverWork(state));
+      hoverStates.clear();
+      refreshSyncing();
     }
 
     return Object.freeze({

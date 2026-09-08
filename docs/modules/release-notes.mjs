@@ -3,6 +3,14 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.44",
+      date: "2026.09.09",
+      items: Object.freeze([
+        "AI 예측 공통 의존성까지 승인 해시 검증 범위 자동 확장",
+        "MACD·ADR 동시 표시 시 차트별 툴팁 요청과 보정 독립 처리",
+      ]),
+    }),
+    Object.freeze({
       version: "3.43",
       date: "2026.09.09",
       items: Object.freeze([
