@@ -26,6 +26,7 @@
 - A periodic deep optimization pass complements this closeout step but never replaces it.
 
 ## Independent Analysis Engines
+- Read `B_C_ENGINE_EXPERIMENT_SUMMARY.md` before proposing or training a successor to the production signal engine. Treat it as experiment history and negative evidence, never as a source of training labels or signal decisions.
 - Reuse factual inputs, date alignment, generic indicator math, cache transport, evaluation utilities, and rendering contracts where their semantics are identical.
 - An engine requested as independent MUST NOT import, invoke, clone, post-process, or use as a fallback another engine's decisions, scores, thresholds, policies, signal families, or emitted markers.
 - Keep champion/challenger comparison outside both engines. Tests must prove the candidate output is unchanged when champion output is injected, removed, or altered.

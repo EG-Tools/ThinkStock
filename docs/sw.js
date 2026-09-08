@@ -3,7 +3,7 @@ importScripts(
   "./assets/runtime-asset-paths.js?v=dev",
 );
 
-const CACHE_NAME = "thinkstock-dev-3.40";
+const CACHE_NAME = "thinkstock-dev-3.42";
 const NETWORK_FIRST_TIMEOUT_MS = 3500;
 const DATA_REFRESH_CONCURRENCY = 3;
 const DATA_REFRESH_TIMEOUT_MS = 25000;

@@ -836,6 +836,7 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
     startPreserved: true,
     futureVisible: true,
   });
+  await expectMainAuxiliaryRangesLinked(page);
   await page.locator("#epsToggle").click();
   await expect(page.locator("#epsToggle")).not.toHaveClass(/is-active/);
   await expect.poll(() => page.locator("#chart").evaluate((element, expected) => {
@@ -870,6 +871,7 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
   await expect.poll(async () => (await futureOverlayState()).aiCount, { timeout: 30000 }).toBeGreaterThan(0);
   const aiOnly = await futureOverlayState();
   expect(preservesHistoryAndFuture(aiOnly, quickPresetExpectation.start, aiOnly.aiEnd)).toBe(true);
+  await expectMainAuxiliaryRangesLinked(page);
 
   await page.locator("#epsToggle").click();
   await expect(page.locator("#epsToggle")).toHaveClass(/is-active/);
@@ -877,6 +879,7 @@ test("RFHIC EPS prioritizes quarterly values and rises through annual estimates"
   const aiWithEps = await futureOverlayState();
   expect(aiWithEps.aiCount).toBeGreaterThan(0);
   expect(preservesHistoryAndFuture(aiWithEps, aiOnly.range[0], aiWithEps.epsEnd)).toBe(true);
+  await expectMainAuxiliaryRangesLinked(page);
 
   await page.locator("#epsToggle").click();
   await expect(page.locator("#epsToggle")).not.toHaveClass(/is-active/);
@@ -1905,7 +1908,9 @@ test("the first series enabled after an all-off state restores its price and vie
     localStorage.setItem("thinkstock-v5", JSON.stringify({
       activeMonths: 6,
       autoChartReset: true,
-      customStocks: [],
+      customStocks: [
+        { ticker: "005930.KS", code: "005930", name: "삼성전자", market: "KOSPI" },
+      ],
       hiddenSeries: [
         "leading_cycle",
         "t10y1y",
@@ -1913,6 +1918,7 @@ test("the first series enabled after an all-off state restores its price and vie
         "customer_deposit",
         "kospi_credit",
         "kosdaq_credit",
+        "005930.KS",
       ],
       showDisclosures: false,
       showInsiderTrades: false,
@@ -1944,11 +1950,11 @@ test("the first series enabled after an all-off state restores its price and vie
     });
   });
 
-  await page.locator('.series-toggle-btn[data-series="^KS11"]').click();
+  await page.locator('.series-toggle-btn[data-series="005930.KS"]').click();
   await expect.poll(async () => {
     const state = await page.locator("#chart").evaluate((element) => {
       const trace = (element.data || []).find((item) => (
-        item?.meta?.overlayKind === "price" && item.meta.seriesKey === "^KS11"
+        item?.meta?.overlayKind === "price" && item.meta.seriesKey === "005930.KS"
       ));
       const range = element?._fullLayout?.xaxis?.range?.map(Date.parse) || [];
       const yRange = element?._fullLayout?.yaxis?.range?.map(Number) || [];

@@ -355,7 +355,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = tickerPriceRuntimeModule.CORPORATE_ACTION_RATIO_THRESHOLD;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = tickerPriceRuntimeModule.CORPORATE_ACTION_MAX_BOUNDARY_DAYS;
-const APP_VERSION = "3.41";
+const APP_VERSION = "3.42";
 const APP_BUILD_VERSION = resolveAppBuildVersion(globalThis);
 const appCacheRuntime = createAppCacheRuntime(globalThis, {
   scheduler: backgroundTaskScheduler,
@@ -2259,6 +2259,19 @@ function cancelLatestViewportAnimation() {
   return getChartNavigationController().cancelLatestAnimation();
 }
 
+function resetEmptyMainChartViewport() {
+  chartViewportInteractionRevision += 1;
+  appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartNavigation)?.cancelLatestAnimation?.();
+  appRuntimeRegistry.peek(APP_RUNTIME_KEYS.chartRangeSync)?.cancel?.();
+  appRuntimeRegistry.peek(APP_RUNTIME_KEYS.mainViewportWindow)?.cancelScheduled?.();
+  getChartSessionController().clearViewport({ activeMonths: getDefaultActiveMonths() });
+
+  const futureOverlays = getFutureOverlayController();
+  futureOverlays.reset({ trim: false });
+  if (chartSession.showAiForecast) futureOverlays.requestReveal("ai");
+  if (chartSession.showEps) futureOverlays.requestReveal("eps");
+}
+
 function showLatestChartPeriod(months, source = "range-preset") {
   return getChartNavigationController().showLatestPeriod(months, source);
 }
@@ -2411,6 +2424,18 @@ function applySyncedXRangeMs(startMs, endMs, meta = {}) {
   };
   scheduleViewportWindowRender(startMs, endMs);
   return getChartRangeSyncController().schedule(startMs, endMs, requestMeta);
+}
+
+function scheduleCommittedCompanionViewport(range) {
+  const values = Array.isArray(range) ? range.slice(0, 2).map(toMsSafe) : [];
+  if (values.length !== 2 || !values.every(Number.isFinite) || values[1] <= values[0]) return false;
+  return getChartRangeSyncController().schedule(values[0], values[1], {
+    source: "main-frame-commit",
+    fit: false,
+    liveFit: false,
+    userInitiated: false,
+    interactionRevision: chartViewportInteractionRevision,
+  });
 }
 
 async function performSettledViewportRender({
@@ -2734,7 +2759,7 @@ function changeMainSeriesVisibility(seriesKey, visible) {
   if (!setMainChartSeriesVisible(key, visible)) return false;
   const revivesEmptyChart = visible && !hadVisibleSeries;
   if (revivesEmptyChart) {
-    getChartSessionController().clearViewport({ activeMonths: getDefaultActiveMonths() });
+    resetEmptyMainChartViewport();
   }
   if (visible) clearAutoResetSeriesTransforms(key);
   else if (STOCK_TICKER_PATTERN.test(key.toUpperCase())) cancelVisibleStockHistoryRefresh(key);
@@ -6599,6 +6624,7 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
       yRange: el?._fullLayout?.yaxis?.range,
     },
   );
+  scheduleCommittedCompanionViewport(finalizedFrame.mainRange);
   if (progressiveComposition) {
     getMainChartEvents().bind(el);
     bindCursorMoveSync();
@@ -6815,10 +6841,11 @@ function scheduleAuxiliaryChartRender(xRange = null, options = {}) {
 async function refreshLoadedAuxiliaryViewport() {
   const runtime = appRuntimeRegistry.peek(APP_RUNTIME_KEYS.auxiliaryChart);
   const mainElement = document.getElementById("chart");
-  const xRange = Array.isArray(chartSession.pinnedXRange)
-    ? chartSession.pinnedXRange.slice(0, 2)
-    : mainElement?._fullLayout?.xaxis?.range?.slice(0, 2);
+  const xRange = getCurrentXRangeMs(mainElement);
   if (!runtime || xRange?.length !== 2) return;
+  if (scheduleCommittedCompanionViewport(xRange)) {
+    await getChartRangeSyncController().flush();
+  }
   const targets = runtime.viewportRefreshTargets?.(xRange) || [];
   if (!targets.length) return;
   scheduleAuxiliaryChartRender(xRange, { targets, refreshOnly: true });

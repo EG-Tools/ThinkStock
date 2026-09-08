@@ -19,6 +19,15 @@ const runtimeFiles = [
   "docs/modules/ai-scenario-paths.js",
 ];
 
+async function readJsonIfPresent(filePath) {
+  try {
+    return JSON.parse(await readFile(filePath, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
 function changedRuntimeFiles() {
   const result = spawnSync("git", ["diff", "--name-only", "HEAD", "--", ...runtimeFiles], {
     cwd: root,
@@ -30,13 +39,26 @@ function changedRuntimeFiles() {
 
 const [runtimeSource, summary, comparison] = await Promise.all([
   readFile(path.join(root, "docs", "modules", "ai-forecast.js"), "utf8"),
-  readFile(path.join(root, ".thinkstock-cache", "ai-backtest", "walkforward-validation-summary.json"), "utf8")
-    .then(JSON.parse),
-  readFile(path.join(root, ".thinkstock-cache", "ai-backtest", "walkforward-comparison.json"), "utf8")
-    .then(JSON.parse),
+  readJsonIfPresent(path.join(root, ".thinkstock-cache", "ai-backtest", "walkforward-validation-summary.json")),
+  readJsonIfPresent(path.join(root, ".thinkstock-cache", "ai-backtest", "walkforward-comparison.json")),
 ]);
 const runtimePathVersion = runtimeSource.match(/const FORECAST_PATH_VERSION = "([^"]+)";/)?.[1] || "";
 const changed = changedRuntimeFiles();
+
+if (!summary || !comparison) {
+  const approvedIncumbentUnchanged = changed.length === 0
+    && (runtimePathVersion === APPROVED_OPERATIONAL_INCUMBENT
+      || runtimePathVersion.endsWith(`|${APPROVED_OPERATIONAL_INCUMBENT}`));
+  if (!approvedIncumbentUnchanged) {
+    console.error("AI release gate failed: validation-artifacts-missing");
+    if (changed.length) console.error(`Changed AI runtime files: ${changed.join(", ")}`);
+    process.exit(1);
+  }
+  console.log(`AI release gate passed: ${runtimePathVersion} (unchanged approved incumbent)`);
+  console.warn("AI validation notice: reproducible backtest artifacts are not retained locally");
+  process.exit(0);
+}
+
 const gate = evaluateAiReleaseGate({
   runtimePathVersion,
   summary,

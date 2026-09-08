@@ -36,9 +36,9 @@ await Promise.all([
     `const APP_VERSION = "${normalizedVersion}";`,
   ), "utf8"),
   writeFile(files.html, html
-    .replace(`build=${appVersion}`, `build=${normalizedVersion}`)
+    .replaceAll(`build=${appVersion}`, `build=${normalizedVersion}`)
     .replace(`id="appVersionText">${appVersion}<`, `id="appVersionText">${normalizedVersion}<`)
-    .replace(`data-app-version-copy>${appVersion}<`, `data-app-version-copy>${normalizedVersion}<`), "utf8"),
+    .replaceAll(`data-app-version-copy>${appVersion}<`, `data-app-version-copy>${normalizedVersion}<`), "utf8"),
   writeFile(files.worker, worker.replace(
     `const CACHE_NAME = "thinkstock-dev-${appVersion}";`,
     `const CACHE_NAME = "thinkstock-dev-${normalizedVersion}";`,

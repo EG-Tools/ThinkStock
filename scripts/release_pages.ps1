@@ -29,6 +29,7 @@ $ReleasePaths = @(
   ".github",
   ".gitignore",
   "README.md",
+  "B_C_ENGINE_EXPERIMENT_SUMMARY.md",
   "THINKSTOCK_BOOT_PIPELINE_SPEC.md",
   "deploy_pages.bat",
   "docs",

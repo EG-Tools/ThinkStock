@@ -3,6 +3,15 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.42",
+      date: "2026.09.09",
+      items: Object.freeze([
+        "AI·EPS 미래 구간과 모든 보조차트의 기간 동기화",
+        "전체 차트 OFF 이후 첫 종목 기본 기간 복구 안정화",
+        "앱·화면·서비스워커 버전 갱신 경로 통일",
+      ]),
+    }),
+    Object.freeze({
       version: "3.41",
       date: "2026.09.08",
       items: Object.freeze([

@@ -26,7 +26,16 @@ test("release script includes shared rules and reproducible local launch helpers
 test("release script includes reproducibility documentation and Qlib requirements", async () => {
   const source = await readFile(new URL("../../scripts/release_pages.ps1", import.meta.url), "utf8");
   assert.match(source, /"README\.md"/);
+  assert.match(source, /"B_C_ENGINE_EXPERIMENT_SUMMARY\.md"/);
   assert.match(source, /"requirements-qlib\.txt"/);
+});
+
+test("AI release gate permits deleted research caches only for an unchanged approved runtime", async () => {
+  const source = await readFile(new URL("../../scripts/check_ai_validation_status.mjs", import.meta.url), "utf8");
+  assert.match(source, /approvedIncumbentUnchanged/);
+  assert.match(source, /changed\.length === 0/);
+  assert.match(source, /validation-artifacts-missing/);
+  assert.match(source, /reproducible backtest artifacts are not retained locally/);
 });
 
 test("release script can skip only the duplicate local verification", async () => {
