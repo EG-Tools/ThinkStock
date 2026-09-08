@@ -1115,7 +1115,11 @@
         };
         persistCache();
         render();
-        completeProgress("업종 확인 완료", `${candidates.length}종목`);
+        completeProgress(
+          String(cached?.completionText || "마지막 탐구 결과"),
+          String(cached?.completionDetails || ""),
+          universeAnalysisFailures(cached?.universeState),
+        );
       } finally {
         enrichingCachedProfiles = false;
       }
@@ -1167,6 +1171,8 @@
         candidateOrder,
         candidatePageIndex: 0,
         candidates: selectCandidatePage(candidatePool, candidateOrder, 0),
+        completionText: String(payload.completionText || "마지막 탐구 결과"),
+        completionDetails: String(payload.completionDetails || ""),
       };
     }
 
@@ -1205,6 +1211,8 @@
           universeSize,
           candidatePool: payload.candidatePool,
           candidateOrder: payload.candidateOrder,
+          completionText: payload.completionText,
+          completionDetails: payload.completionDetails,
         }),
       }).then((result) => result?.ok === true).catch(() => false);
     }
@@ -1214,6 +1222,7 @@
       hideFailureItems();
       hideBlockedItems();
       const forceIndividual = searchOptions.forceIndividual === true;
+      const retryFailures = searchOptions.retryFailures === true;
       const targetUniverseSize = normalizeUniverseSize(universeSize);
       const perMarketLimit = targetUniverseSize / 2;
       running = true;
@@ -1302,6 +1311,7 @@
           directlyChangedTickers,
           sharedMarketsChanged,
           previousState: cached?.universeState,
+          retryFailures,
           now: Date.now(),
         });
         const nextUniverseState = universeChanges.state;
@@ -1469,6 +1479,19 @@
         const candidateOrder = normalizeCandidateOrder(candidatePool, [], random);
         const firstPage = selectCandidatePage(candidatePool, candidateOrder, 0);
         const enrichedCandidates = await enrichCandidateProfiles(firstPage);
+        const reusedCount = Math.max(0, records.length - scanRecords.length);
+        const completionText = interrupted
+          ? "검색 정지 · 현재 결과 표시"
+          : (canIncrement && !scanRecords.length ? "저장 결과 재사용 완료" : (canIncrement ? "탐구 구성 갱신 완료" : "최초 탐구 완료"));
+        const completionDetails = interrupted
+          ? `${processed} / ${records.length}`
+          : [
+              canIncrement ? `재사용 ${reusedCount}` : `${records.length}종목`,
+              scanRecords.length ? `재계산 ${processed}` : "",
+              signalChanges ? `신호변경 ${signalChanges}` : "",
+              insufficientHistory ? `이력부족 ${insufficientHistory}` : "",
+              removedCount ? `탈락 ${removedCount}` : "",
+            ].filter(Boolean).join(" · ");
         cached = {
           schema: CACHE_SCHEMA,
           formatSchema: CACHE_SCHEMA,
@@ -1499,25 +1522,14 @@
           candidateOrder,
           candidatePageIndex: 0,
           candidates: enrichedCandidates,
+          completionText,
+          completionDetails,
         };
         if (!interrupted) markSummaryAvailable();
         persistCache();
         if (!interrupted && researchSummaryIsPublishable(cached)) saveSummary(cached);
         try { Promise.resolve(historyCache?.prune?.()).catch(() => {}); } catch (_) {}
         render();
-        const reusedCount = Math.max(0, records.length - scanRecords.length);
-        const completionText = interrupted
-          ? "검색 정지 · 현재 결과 표시"
-          : (canIncrement && !scanRecords.length ? "저장 결과 재사용 완료" : (canIncrement ? "탐구 구성 갱신 완료" : "최초 탐구 완료"));
-        const completionDetails = interrupted
-          ? `${processed} / ${records.length}`
-          : [
-              canIncrement ? `재사용 ${reusedCount}` : `${records.length}종목`,
-              scanRecords.length ? `재계산 ${processed}` : "",
-              signalChanges ? `신호변경 ${signalChanges}` : "",
-              insufficientHistory ? `이력부족 ${insufficientHistory}` : "",
-              removedCount ? `탈락 ${removedCount}` : "",
-            ].filter(Boolean).join(" · ");
         completeProgress(completionText, completionDetails, failureItems);
         if (!interrupted) scheduleSignalSettlement();
       } catch (error) {
@@ -1544,7 +1556,11 @@
       hideBlockedItems();
       elements.modal.hidden = false;
       const failures = universeAnalysisFailures(cached?.universeState);
-      if (failures.length) completeProgress("마지막 탐구 결과", "", failures);
+      if (cached) completeProgress(
+        String(cached.completionText || "마지막 탐구 결과"),
+        String(cached.completionDetails || ""),
+        failures,
+      );
       else setFailureButton([]);
       if (needsSignalSettlement()) await runSearch({ settlement: true });
       else if (cached) enrichExistingCandidateProfiles();
@@ -1599,7 +1615,7 @@
         signalSettlement.clear();
       });
       elements.failed.addEventListener("click", showFailedItems);
-      elements.refresh.addEventListener("click", () => runSearch());
+      elements.refresh.addEventListener("click", () => runSearch({ retryFailures: true }));
       elements.stop.addEventListener("click", () => {
         if (!running || stopRequested) return;
         stopRequested = true;

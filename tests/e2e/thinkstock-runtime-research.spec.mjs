@@ -270,6 +270,8 @@ test("stock research popup preserves results while adding multiple candidates", 
       historyQualityVersion: researchContract.HISTORY_QUALITY_VERSION,
       baseDate: "2026-08-07",
       generatedAt: "2026-08-07T10:00:00Z",
+      completionText: "탐구 구성 갱신 완료",
+      completionDetails: "재사용 4 · 재계산 2",
       minimumBuySignals: 1,
       candidates: candidates.slice(0, 5),
       candidatePool: candidates,
@@ -333,6 +335,8 @@ test("stock research popup preserves results while adding multiple candidates", 
   }));
   await page.locator("#stockResearchBtn").click();
   await expect(page.locator("#stockResearchModal")).toBeVisible();
+  await expect(page.locator("#stockResearchProgress")).toContainText("탐구 구성 갱신 완료");
+  await expect(page.locator("#stockResearchProgressCount")).toHaveText("재사용 4 · 재계산 2");
   await expect(page.locator("#stockResearchFailedBtn")).toHaveText("추출 실패 2개");
   await expect(page.locator("#stockResearchFailedBtn")).toBeVisible();
   await page.locator("#stockResearchFailedBtn").click();
@@ -546,6 +550,8 @@ test("stock research popup preserves results while adding multiple candidates", 
   await page.locator("#apiSettingsCloseBtn").click();
   await page.locator("#stockResearchBtn").click();
   await expect(page.locator('[data-research-ticker="218410.KQ"]')).toBeVisible();
+  await expect(page.locator("#stockResearchProgress")).toContainText("탐구 구성 갱신 완료");
+  await expect(page.locator("#stockResearchProgressCount")).toHaveText("재사용 4 · 재계산 2");
   await expect(page.locator("#stockResearchAsOf")).toContainText("검출종목 6개 · 탐구기준");
   await page.locator("#stockResearchSellFilter").click();
   await page.locator("#stockResearchTodayFilter").click();

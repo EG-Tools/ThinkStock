@@ -38,6 +38,12 @@ test("incremental research skips successful unchanged stocks and backs off failu
   assert.deepEqual(navigation.selectIncrementalScanRecords(records, {
     canIncrement: true,
     previousState: state,
+    retryFailures: true,
+    now: now + 1000,
+  }), [records[1]]);
+  assert.deepEqual(navigation.selectIncrementalScanRecords(records, {
+    canIncrement: true,
+    previousState: state,
     now: now + navigation.FAILURE_RETRY_DELAYS_MS[0],
   }), [records[1]]);
 });

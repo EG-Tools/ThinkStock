@@ -261,10 +261,14 @@ const stockResearchContract = require("./stock-research-contract.js");
       const market = String(item?.market || "").trim().toUpperCase()
         || (ticker.endsWith(".KQ") ? "KOSDAQ" : "KOSPI");
       const previous = previousState[ticker];
+      const retryFailedNow = options.retryFailures === true
+        && previous?.analysisStatus === "failed";
       if (["failed", "insufficient-history"].includes(previous?.analysisStatus)
+        && !retryFailedNow
         && !universeFailureRetryDue(previous, now)) return false;
       return changed.has(ticker)
         || changedMarkets.has(market)
+        || retryFailedNow
         || universeFailureRetryDue(previous, now);
     });
   }

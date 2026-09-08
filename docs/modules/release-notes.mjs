@@ -3,6 +3,14 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.39",
+      date: "2026.09.08",
+      items: Object.freeze([
+        "종목탐구 완료 도움말과 세부 결과 재진입 복원",
+        "재검색 시 기존 추출 실패 종목 즉시 재검사",
+      ]),
+    }),
+    Object.freeze({
       version: "3.38",
       date: "2026.09.08",
       items: Object.freeze([
