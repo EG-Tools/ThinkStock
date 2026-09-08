@@ -179,7 +179,7 @@ test("allows atomic data refresh enough time to validate and swap all segments",
   };
 
   assert.deepEqual(await createServiceWorkerClient(scope).requestDataRefresh(), { ok: true });
-  assert.equal(timeoutDelay, 15000);
+  assert.equal(timeoutDelay, 30000);
 });
 
 

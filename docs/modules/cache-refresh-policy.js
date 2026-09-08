@@ -65,7 +65,8 @@
 
   function isPersistentDataCacheName(name, prefix = "thinkstock-data-v1-") {
     const cacheName = String(name || "");
-    return cacheName.startsWith(prefix) && !cacheName.endsWith("-staging");
+    return cacheName.startsWith(prefix)
+      && !cacheName.slice(prefix.length).includes("-staging");
   }
 
   function planActivationCacheCleanup(cacheNames, shellCacheName, dataPrefix) {
@@ -98,17 +99,38 @@
     return results;
   }
 
-  function createSharedTask(runTask) {
+  function createSharedTask(runTask, options = {}) {
     if (typeof runTask !== "function") throw new TypeError("shared task runner is required");
+    const timeoutMs = Math.max(0, Number(options.timeoutMs) || 0);
     let activeTask = null;
+    let nextGeneration = 0;
     return function runSharedTask() {
       if (activeTask) return activeTask;
-      activeTask = Promise.resolve()
-        .then(() => runTask())
+      const controller = typeof globalScope.AbortController === "function"
+        ? new globalScope.AbortController()
+        : null;
+      let timedOut = false;
+      let timeoutId = null;
+      const context = Object.freeze({
+        signal: controller?.signal || null,
+        generation: ++nextGeneration,
+        didTimeout: () => timedOut,
+      });
+      let task;
+      task = Promise.resolve()
+        .then(() => runTask(context))
         .finally(() => {
-          activeTask = null;
+          if (timeoutId !== null) globalScope.clearTimeout(timeoutId);
+          if (activeTask === task) activeTask = null;
         });
-      return activeTask;
+      activeTask = task;
+      if (controller && timeoutMs > 0) {
+        timeoutId = globalScope.setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, timeoutMs);
+      }
+      return task;
     };
   }
 

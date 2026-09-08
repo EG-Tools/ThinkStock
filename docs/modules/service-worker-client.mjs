@@ -41,7 +41,7 @@ function createServiceWorkerClient(scope = globalThis) {
       return { skipped: false, registrations: registrations.length, caches: deletedCacheCount };
     }
 
-    function requestDataRefresh(timeoutMs = 15000) {
+    function requestDataRefresh(timeoutMs = 30000) {
       return new Promise((resolve) => {
         try {
           const controller = scope.navigator?.serviceWorker?.controller;
@@ -57,6 +57,7 @@ function createServiceWorkerClient(scope = globalThis) {
             if (settled) return;
             settled = true;
             scope.clearTimeout(timer);
+            channel.port1.close?.();
             resolve(result && typeof result === "object"
               ? result
               : { ok: Boolean(result), refreshed: 0, reused: 0, failed: 0 });

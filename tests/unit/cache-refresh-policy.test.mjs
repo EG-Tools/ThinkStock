@@ -72,6 +72,29 @@ test("shares one active refresh and starts a new task only after completion", as
   assert.deepEqual(await third, { revision: "second" });
 });
 
+test("aborts an expired shared refresh and lets the next attempt start cleanly", async () => {
+  let calls = 0;
+  const runRefresh = policy.createSharedTask(({ signal, didTimeout }) => {
+    calls += 1;
+    if (calls > 1) return { ok: true, generation: calls };
+    return new Promise((resolve) => {
+      signal.addEventListener("abort", () => resolve({
+        ok: false,
+        aborted: true,
+        timeout: didTimeout(),
+      }), { once: true });
+    });
+  }, { timeoutMs: 5 });
+
+  const first = runRefresh();
+  assert.equal(runRefresh(), first);
+  assert.deepEqual(await first, { ok: false, aborted: true, timeout: true });
+  assert.equal(calls, 1);
+
+  assert.deepEqual(await runRefresh(), { ok: true, generation: 2 });
+  assert.equal(calls, 2);
+});
+
 
 test("builds hashed refresh entries from a segmented manifest", () => {
   const digest = "a".repeat(64);
@@ -127,15 +150,18 @@ test("keeps completed data revisions while replacing shell and staging caches", 
   const prefix = "thinkstock-data-v1-";
   assert.equal(policy.isPersistentDataCacheName(`${prefix}abc123`, prefix), true);
   assert.equal(policy.isPersistentDataCacheName(`${prefix}abc123-staging`, prefix), false);
+  assert.equal(policy.isPersistentDataCacheName(`${prefix}abc123-staging-7`, prefix), false);
   assert.deepEqual(policy.planActivationCacheCleanup([
     "thinkstock-old-shell",
     "thinkstock-new-shell",
     `${prefix}abc123`,
     `${prefix}def456-staging`,
+    `${prefix}def456-staging-7`,
     "unrelated-cache",
   ], "thinkstock-new-shell", prefix), [
     "thinkstock-old-shell",
     `${prefix}def456-staging`,
+    `${prefix}def456-staging-7`,
     "unrelated-cache",
   ]);
 });

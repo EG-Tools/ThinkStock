@@ -3,6 +3,14 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.40",
+      date: "2026.09.08",
+      items: Object.freeze([
+        "멈춘 서비스워커 데이터 갱신 자동 취소와 재시도 복구",
+        "시간 초과 시 임시 데이터 캐시 정리와 기존 정상 캐시 보호",
+      ]),
+    }),
+    Object.freeze({
       version: "3.39",
       date: "2026.09.08",
       items: Object.freeze([

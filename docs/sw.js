@@ -3,9 +3,10 @@ importScripts(
   "./assets/runtime-asset-paths.js?v=dev",
 );
 
-const CACHE_NAME = "thinkstock-dev-3.39";
+const CACHE_NAME = "thinkstock-dev-3.40";
 const NETWORK_FIRST_TIMEOUT_MS = 3500;
 const DATA_REFRESH_CONCURRENCY = 3;
+const DATA_REFRESH_TIMEOUT_MS = 25000;
 const DATA_MANIFEST_PATH = "./data/data_manifest.json";
 const DATA_CACHE_PREFIX = "thinkstock-data-v1-";
 const cacheRefreshPolicy = self.ThinkStockCacheRefreshPolicy;
@@ -279,121 +280,177 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(isCoreAssetUrl(url) ? networkFirst(event.request) : staleWhileRevalidate(event.request));
 });
 
-async function refreshCachedDataAtomically() {
-  const shellCache = await caches.open(CACHE_NAME);
-  const active = await activeDataCacheInfo(shellCache);
-  const manifestUrl = new URL(DATA_MANIFEST_PATH, self.registration.scope).toString();
-  const manifestResponse = await fetch(manifestUrl, { cache: "no-store" });
-  if (!manifestResponse.ok) throw new Error(`Manifest HTTP ${manifestResponse.status}`);
-  const manifest = await manifestResponse.clone().json();
-  const revision = cacheRefreshPolicy.normalizeManifestRevision(manifest?.revision);
-  if (!revision) throw new Error("Invalid data manifest revision");
-  const targetName = `${DATA_CACHE_PREFIX}${revision}`;
-  const stagingName = `${targetName}-staging`;
-  await caches.delete(stagingName);
-  const stagingCache = await caches.open(stagingName);
-  const activeCache = active.name === CACHE_NAME ? shellCache : await caches.open(active.name);
-  const dataBaseUrl = new URL("./data/", self.registration.scope).toString();
-  const manifestEntries = cacheRefreshPolicy.planManifestRefreshEntries(
-    active.manifest,
-    manifest,
-    dataBaseUrl,
-  );
-  const reusableKeys = new Set(
-    manifestEntries.filter((entry) => entry.reuse).map((entry) => entry.cacheKey),
-  );
-
-  const requests = [
-    ...await shellCache.keys(),
-    ...(active.name !== CACHE_NAME ? await (await caches.open(active.name)).keys() : []),
-  ];
-  const byCacheKey = new Map();
-  requests.forEach((request) => {
-    try {
-      const url = new URL(request.url);
-      if (isDataUrl(url)) byCacheKey.set(String(cacheKeyForRequest(request)), request);
-    } catch (_) {
-      // Ignore malformed cache entries.
-    }
-  });
-  manifestEntries.forEach((entry) => {
-    byCacheKey.set(entry.cacheKey, {
-      request: new Request(entry.request.url),
-      sha256: entry.sha256,
-    });
-  });
-
-  const planned = cacheRefreshPolicy.planDataRefreshRequests(
-    [...byCacheKey.entries()]
-      .filter(([cacheKey]) => cacheKey !== manifestUrl)
-      .map(([cacheKey, value]) => ({
-        cacheKey,
-        request: value.request || value,
-        sha256: value.sha256 || "",
-      })),
-  );
-  const results = await cacheRefreshPolicy.runWithConcurrency(planned, async ({ cacheKey, request, sha256 }) => {
-    if (reusableKeys.has(cacheKey)) {
-      const cached = (await activeCache.match(cacheKey, { ignoreSearch: true }))
-        || (activeCache !== shellCache
-          ? await shellCache.match(cacheKey, { ignoreSearch: true })
-          : null);
-      if (cached) {
-        if (sha256 && active.name === CACHE_NAME) {
-          const cachedDigestBuffer = await self.crypto.subtle.digest(
-            "SHA-256",
-            await cached.clone().arrayBuffer(),
-          );
-          const cachedDigest = [...new Uint8Array(cachedDigestBuffer)]
-            .map((value) => value.toString(16).padStart(2, "0"))
-            .join("");
-          if (cachedDigest !== sha256) throw new Error(`Cached digest mismatch for ${cacheKey}`);
-        }
-        await putIfOk(stagingCache, cacheKey, cached);
-        return { cacheKey, reused: true };
-      }
-    }
-    const response = await fetch(request, { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    if (sha256) {
-      const digestBuffer = await self.crypto.subtle.digest("SHA-256", await response.clone().arrayBuffer());
-      const digest = [...new Uint8Array(digestBuffer)]
-        .map((value) => value.toString(16).padStart(2, "0"))
-        .join("");
-      if (digest !== sha256) throw new Error(`Digest mismatch for ${cacheKey}`);
-    }
-    await putIfOk(stagingCache, cacheKey, response);
-    return { cacheKey, reused: false };
-  }, DATA_REFRESH_CONCURRENCY);
-  const succeeded = results.filter((result) => result.status === "fulfilled");
-  const reused = succeeded.filter((result) => result.value?.reused).length;
-  const refreshed = succeeded.length - reused;
-  const failed = results.length - succeeded.length;
-  if (failed > 0) {
-    await caches.delete(stagingName);
-    return { ok: false, refreshed, reused, failed, revision: active.revision || "" };
-  }
-
-  if (targetName !== active.name) await caches.delete(targetName);
-  const readyTargetCache = await caches.open(targetName);
-  const stagedRequests = await stagingCache.keys();
-  for (const request of stagedRequests) {
-    const response = await stagingCache.match(request);
-    if (response) await readyTargetCache.put(request, response);
-  }
-  await readyTargetCache.put(manifestUrl, manifestResponse.clone());
-  await shellCache.put(manifestUrl, manifestResponse.clone());
-  await caches.delete(stagingName);
-  const cacheNames = await caches.keys();
-  await Promise.all(
-    cacheNames
-      .filter((name) => name.startsWith(DATA_CACHE_PREFIX) && name !== targetName)
-      .map((name) => caches.delete(name)),
-  );
-  return { ok: true, refreshed, reused, failed: 0, revision };
+function throwIfRefreshAborted(signal) {
+  if (!signal?.aborted) return;
+  if (typeof signal.throwIfAborted === "function") signal.throwIfAborted();
+  const error = new Error("Data refresh aborted");
+  error.name = "AbortError";
+  throw error;
 }
 
-const runSharedDataRefresh = cacheRefreshPolicy.createSharedTask(refreshCachedDataAtomically);
+async function refreshCachedDataAtomically(context = {}) {
+  const signal = context.signal || null;
+  const generation = Math.max(1, Number(context.generation) || 1);
+  let stagingName = "";
+  let targetName = "";
+  let activeName = "";
+  let previousRevision = "";
+  let targetPrepared = false;
+  let promoted = false;
+  let refreshed = 0;
+  let reused = 0;
+  let failed = 0;
+
+  try {
+    throwIfRefreshAborted(signal);
+    const shellCache = await caches.open(CACHE_NAME);
+    const active = await activeDataCacheInfo(shellCache);
+    activeName = active.name;
+    previousRevision = active.revision || "";
+    const manifestUrl = new URL(DATA_MANIFEST_PATH, self.registration.scope).toString();
+    const manifestResponse = await fetch(manifestUrl, { cache: "no-store", signal });
+    if (!manifestResponse.ok) throw new Error(`Manifest HTTP ${manifestResponse.status}`);
+    const manifest = await manifestResponse.clone().json();
+    const revision = cacheRefreshPolicy.normalizeManifestRevision(manifest?.revision);
+    if (!revision) throw new Error("Invalid data manifest revision");
+    targetName = `${DATA_CACHE_PREFIX}${revision}`;
+    stagingName = `${targetName}-staging-${generation}`;
+    await caches.delete(stagingName);
+    throwIfRefreshAborted(signal);
+    const stagingCache = await caches.open(stagingName);
+    const activeCache = active.name === CACHE_NAME ? shellCache : await caches.open(active.name);
+    const dataBaseUrl = new URL("./data/", self.registration.scope).toString();
+    const manifestEntries = cacheRefreshPolicy.planManifestRefreshEntries(
+      active.manifest,
+      manifest,
+      dataBaseUrl,
+    );
+    const reusableKeys = new Set(
+      manifestEntries.filter((entry) => entry.reuse).map((entry) => entry.cacheKey),
+    );
+
+    const requests = [
+      ...await shellCache.keys(),
+      ...(active.name !== CACHE_NAME ? await (await caches.open(active.name)).keys() : []),
+    ];
+    const byCacheKey = new Map();
+    requests.forEach((request) => {
+      try {
+        const url = new URL(request.url);
+        if (isDataUrl(url)) byCacheKey.set(String(cacheKeyForRequest(request)), request);
+      } catch (_) {
+        // Ignore malformed cache entries.
+      }
+    });
+    manifestEntries.forEach((entry) => {
+      byCacheKey.set(entry.cacheKey, {
+        request: new Request(entry.request.url),
+        sha256: entry.sha256,
+      });
+    });
+
+    const planned = cacheRefreshPolicy.planDataRefreshRequests(
+      [...byCacheKey.entries()]
+        .filter(([cacheKey]) => cacheKey !== manifestUrl)
+        .map(([cacheKey, value]) => ({
+          cacheKey,
+          request: value.request || value,
+          sha256: value.sha256 || "",
+        })),
+    );
+    const results = await cacheRefreshPolicy.runWithConcurrency(planned, async ({ cacheKey, request, sha256 }) => {
+      throwIfRefreshAborted(signal);
+      if (reusableKeys.has(cacheKey)) {
+        const cached = (await activeCache.match(cacheKey, { ignoreSearch: true }))
+          || (activeCache !== shellCache
+            ? await shellCache.match(cacheKey, { ignoreSearch: true })
+            : null);
+        if (cached) {
+          if (sha256 && active.name === CACHE_NAME) {
+            const cachedDigestBuffer = await self.crypto.subtle.digest(
+              "SHA-256",
+              await cached.clone().arrayBuffer(),
+            );
+            const cachedDigest = [...new Uint8Array(cachedDigestBuffer)]
+              .map((value) => value.toString(16).padStart(2, "0"))
+              .join("");
+            if (cachedDigest !== sha256) throw new Error(`Cached digest mismatch for ${cacheKey}`);
+          }
+          throwIfRefreshAborted(signal);
+          await putIfOk(stagingCache, cacheKey, cached);
+          return { cacheKey, reused: true };
+        }
+      }
+      const response = await fetch(request, { cache: "no-store", signal });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (sha256) {
+        const digestBuffer = await self.crypto.subtle.digest("SHA-256", await response.clone().arrayBuffer());
+        const digest = [...new Uint8Array(digestBuffer)]
+          .map((value) => value.toString(16).padStart(2, "0"))
+          .join("");
+        if (digest !== sha256) throw new Error(`Digest mismatch for ${cacheKey}`);
+      }
+      throwIfRefreshAborted(signal);
+      await putIfOk(stagingCache, cacheKey, response);
+      return { cacheKey, reused: false };
+    }, DATA_REFRESH_CONCURRENCY);
+    const succeeded = results.filter((result) => result.status === "fulfilled");
+    reused = succeeded.filter((result) => result.value?.reused).length;
+    refreshed = succeeded.length - reused;
+    failed = results.length - succeeded.length;
+    throwIfRefreshAborted(signal);
+    if (failed > 0) {
+      return { ok: false, refreshed, reused, failed, revision: previousRevision };
+    }
+
+    if (targetName !== active.name) {
+      await caches.delete(targetName);
+      targetPrepared = true;
+    }
+    throwIfRefreshAborted(signal);
+    const readyTargetCache = await caches.open(targetName);
+    const stagedRequests = await stagingCache.keys();
+    for (const request of stagedRequests) {
+      throwIfRefreshAborted(signal);
+      const response = await stagingCache.match(request);
+      if (response) await readyTargetCache.put(request, response);
+    }
+    throwIfRefreshAborted(signal);
+    await readyTargetCache.put(manifestUrl, manifestResponse.clone());
+    throwIfRefreshAborted(signal);
+    await shellCache.put(manifestUrl, manifestResponse.clone());
+    promoted = true;
+    const cacheNames = await caches.keys();
+    await Promise.allSettled(
+      cacheNames
+        .filter((name) => name.startsWith(DATA_CACHE_PREFIX) && name !== targetName)
+        .map((name) => caches.delete(name)),
+    );
+    return { ok: true, refreshed, reused, failed: 0, revision };
+  } catch (error) {
+    if (signal?.aborted) {
+      return {
+        ok: false,
+        refreshed,
+        reused,
+        failed: Math.max(1, failed),
+        revision: previousRevision,
+        aborted: true,
+        timeout: context.didTimeout?.() === true,
+      };
+    }
+    throw error;
+  } finally {
+    if (stagingName) await caches.delete(stagingName).catch(() => false);
+    if (targetPrepared && !promoted && targetName && targetName !== activeName) {
+      await caches.delete(targetName).catch(() => false);
+    }
+  }
+}
+
+const runSharedDataRefresh = cacheRefreshPolicy.createSharedTask(refreshCachedDataAtomically, {
+  timeoutMs: DATA_REFRESH_TIMEOUT_MS,
+});
 
 self.addEventListener("message", (event) => {
   if (event.data === "REFRESH_DATA") {
