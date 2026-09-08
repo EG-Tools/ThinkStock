@@ -98,8 +98,23 @@
     return results;
   }
 
+  function createSharedTask(runTask) {
+    if (typeof runTask !== "function") throw new TypeError("shared task runner is required");
+    let activeTask = null;
+    return function runSharedTask() {
+      if (activeTask) return activeTask;
+      activeTask = Promise.resolve()
+        .then(() => runTask())
+        .finally(() => {
+          activeTask = null;
+        });
+      return activeTask;
+    };
+  }
+
   globalScope.ThinkStockCacheRefreshPolicy = Object.freeze({
     DEFAULT_CONCURRENCY,
+    createSharedTask,
     manifestDataEntries,
     normalizeManifestRevision,
     isPersistentDataCacheName,

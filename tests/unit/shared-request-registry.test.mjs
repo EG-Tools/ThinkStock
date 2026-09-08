@@ -24,6 +24,40 @@ test("shares one producer across simultaneous consumers", async () => {
   assert.equal(registry.stats().sharedHits, 1);
 });
 
+test("starts a fresh producer when the same key is requested immediately after completion", async () => {
+  const registry = module.createSharedRequestRegistry();
+  let calls = 0;
+  const factory = async () => {
+    calls += 1;
+    return calls;
+  };
+
+  assert.equal(await registry.run("price:005930", factory), 1);
+  assert.equal(await registry.run("price:005930", factory), 2);
+  assert.equal(calls, 2);
+  assert.equal(registry.stats().inFlight, 0);
+});
+
+test("an old producer cleanup cannot delete a new request for the same key", async () => {
+  const registry = module.createSharedRequestRegistry();
+  let releaseSecond;
+  let calls = 0;
+  const factory = () => {
+    calls += 1;
+    if (calls === 1) return Promise.resolve("first");
+    return new Promise((resolve) => { releaseSecond = resolve; });
+  };
+
+  assert.equal(await registry.run("macro", factory), "first");
+  const second = registry.run("macro", factory);
+  await Promise.resolve();
+  assert.equal(registry.has("macro"), true);
+  await Promise.resolve();
+  assert.equal(registry.has("macro"), true);
+  releaseSecond("second");
+  assert.equal(await second, "second");
+});
+
 
 test("one cancelled consumer does not abort another consumer", async () => {
   const registry = module.createSharedRequestRegistry();

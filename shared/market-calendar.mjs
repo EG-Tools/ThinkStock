@@ -37,6 +37,8 @@ const FIXED_KRX_CLOSED_MONTH_DAYS = Object.freeze([
   "10-09",
   "12-25",
 ]);
+const KNOWN_KRX_CLOSED_DATE_SET = new Set(KNOWN_KRX_CLOSED_DATES);
+const FIXED_KRX_CLOSED_MONTH_DAY_SET = new Set(FIXED_KRX_CLOSED_MONTH_DAYS);
 
 function normalizeIsoDate(value) {
   const text = String(value || "").slice(0, 10);
@@ -88,35 +90,41 @@ export function shiftIsoDate(dateText, days) {
   return new Date(timestamp + ((Number(days) || 0) * DAY_MS)).toISOString().slice(0, 10);
 }
 
-export function isKoreanTradingDate(dateText, options = {}) {
-  const value = normalizeIsoDate(dateText);
-  if (!value) return false;
+function isNormalizedKoreanTradingDate(value, options = {}) {
   const weekday = new Date(`${value}T00:00:00Z`).getUTCDay();
   if (weekday === 0 || weekday === 6) return false;
 
-  const openDates = normalizedDateSet(options.openDates);
-  if (openDates.has(value)) return true;
+  const openDates = Array.isArray(options.openDates) && options.openDates.length
+    ? normalizedDateSet(options.openDates)
+    : null;
+  if (openDates?.has(value)) return true;
 
-  const referenceDates = [...normalizedDateSet(options.referenceDates)].sort();
+  const referenceDates = Array.isArray(options.referenceDates) && options.referenceDates.length
+    ? [...normalizedDateSet(options.referenceDates)].sort()
+    : [];
   if (referenceDates.length && value >= referenceDates[0] && value <= referenceDates.at(-1)) {
     return referenceDates.includes(value);
   }
 
-  const closedDates = normalizedDateSet([
-    ...KNOWN_KRX_CLOSED_DATES,
-    ...(Array.isArray(options.closedDates) ? options.closedDates : []),
-  ]);
-  if (closedDates.has(value)) return false;
-  if (FIXED_KRX_CLOSED_MONTH_DAYS.includes(value.slice(5))) return false;
+  const extraClosedDates = Array.isArray(options.closedDates) && options.closedDates.length
+    ? normalizedDateSet(options.closedDates)
+    : null;
+  if (KNOWN_KRX_CLOSED_DATE_SET.has(value) || extraClosedDates?.has(value)) return false;
+  if (FIXED_KRX_CLOSED_MONTH_DAY_SET.has(value.slice(5))) return false;
   if (value === lastWeekdayOfYear(value.slice(0, 4))) return false;
   return true;
+}
+
+export function isKoreanTradingDate(dateText, options = {}) {
+  const value = normalizeIsoDate(dateText);
+  return Boolean(value && isNormalizedKoreanTradingDate(value, options));
 }
 
 export function isKoreanMarketPricePoint(dateText, volume, options = {}) {
   const date = normalizeIsoDate(dateText);
   const maximumDate = normalizeIsoDate(options.maximumDate);
   if (!date || (maximumDate && date > maximumDate)) return false;
-  if (!isKoreanTradingDate(date, options)) return false;
+  if (!isNormalizedKoreanTradingDate(date, options)) return false;
   if (volume == null || String(volume).trim() === "") return true;
   const numericVolume = Number(volume);
   return !Number.isFinite(numericVolume) || numericVolume > 0;

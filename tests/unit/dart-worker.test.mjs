@@ -268,59 +268,68 @@ test("uses Browser Run when Cloudflare receives a Stockplus VKOSPI 403", async (
 });
 
 test("returns authenticated ADR data and reuses the short Worker cache", async () => {
-  const originalFetch = globalThis.fetch;
   const cache = memoryKv();
   const timestamp = Date.parse("2026-08-06T00:00:00+09:00");
-  let calls = 0;
-  globalThis.fetch = async () => {
-    calls += 1;
-    return new Response(
-      `<script>const kospi_adr=[[${timestamp},91.2]];const kosdaq_adr=[[${timestamp},87.4]];</script>`,
-      { status: 200, headers: { "Content-Type": "text/html" } },
-    );
+  let browserCalls = 0;
+  const env = {
+    THINKSTOCK_ACCESS_TOKEN: "private",
+    DISCLOSURE_CACHE: cache,
+    BROWSER_QUICK_ACTION_INTERVAL_MS: "0",
+    BROWSER: {
+      quickAction: async (action, options) => {
+        browserCalls += 1;
+        assert.equal(action, "content");
+        assert.match(options.url, /^http:\/\/www\.adrinfo\.kr\/chart\?_=/);
+        return Response.json({
+          success: true,
+          result: `<script>const kospi_adr=[[${timestamp},91.2]];const kosdaq_adr=[[${timestamp},87.4]];</script>`,
+        });
+      },
+    },
   };
-  try {
-    const env = { THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: cache };
-    const refreshed = await handleRequest(request("/api/adr?refresh=1", { token: "private" }), env);
-    const payload = await refreshed.json();
-    assert.equal(refreshed.status, 200);
-    assert.equal(payload.cached, false);
-    assert.deepEqual(payload.rows.at(-1), {
-      date: "2026-08-06",
-      adr_kospi: 91.2,
-      adr_kosdaq: 87.4,
-    });
+  const refreshed = await handleRequest(request("/api/adr?refresh=1", { token: "private" }), env);
+  const payload = await refreshed.json();
+  assert.equal(refreshed.status, 200);
+  assert.equal(payload.cached, false);
+  assert.equal(payload.source, "adrinfo-browser");
+  assert.deepEqual(payload.rows.at(-1), {
+    date: "2026-08-06",
+    adr_kospi: 91.2,
+    adr_kosdaq: 87.4,
+  });
 
-    const cached = await handleRequest(request("/api/adr", { token: "private" }), env);
-    assert.equal((await cached.json()).cached, true);
-    assert.equal(calls, 1);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  const cached = await handleRequest(request("/api/adr", { token: "private" }), env);
+  assert.equal((await cached.json()).cached, true);
+  assert.equal(browserCalls, 1);
 });
 
 test("returns the last validated ADR cache when every upstream path fails", async () => {
-  const originalFetch = globalThis.fetch;
   const cache = memoryKv();
   const timestamp = Date.parse("2026-08-06T00:00:00+09:00");
-  globalThis.fetch = async () => new Response(
-    `<script>const kospi_adr=[[${timestamp},91.2]];const kosdaq_adr=[[${timestamp},87.4]];</script>`,
-    { status: 200 },
-  );
-  try {
-    const env = { THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: cache };
-    await handleRequest(request("/api/adr?refresh=1", { token: "private" }), env);
-    globalThis.fetch = async () => new Response("blocked", { status: 503 });
-    const response = await handleRequest(request("/api/adr?refresh=1", { token: "private" }), env);
-    const payload = await response.json();
-    assert.equal(response.status, 200);
-    assert.equal(payload.cached, true);
-    assert.equal(payload.stale, true);
-    assert.equal(payload.latestDate, "2026-08-06");
-    assert.equal(payload.rows.at(-1).adr_kospi, 91.2);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  let unavailable = false;
+  const env = {
+    THINKSTOCK_ACCESS_TOKEN: "private",
+    DISCLOSURE_CACHE: cache,
+    BROWSER_QUICK_ACTION_INTERVAL_MS: "0",
+    BROWSER: {
+      quickAction: async () => {
+        if (unavailable) throw new Error("Browser Run unavailable");
+        return Response.json({
+          success: true,
+          result: `<script>const kospi_adr=[[${timestamp},91.2]];const kosdaq_adr=[[${timestamp},87.4]];</script>`,
+        });
+      },
+    },
+  };
+  await handleRequest(request("/api/adr?refresh=1", { token: "private" }), env);
+  unavailable = true;
+  const response = await handleRequest(request("/api/adr?refresh=1", { token: "private" }), env);
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(payload.cached, true);
+  assert.equal(payload.stale, true);
+  assert.equal(payload.latestDate, "2026-08-06");
+  assert.equal(payload.rows.at(-1).adr_kospi, 91.2);
 });
 
 test("returns authenticated ECOS macro updates and reuses the Worker cache", async () => {

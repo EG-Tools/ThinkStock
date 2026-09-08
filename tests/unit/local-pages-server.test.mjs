@@ -21,10 +21,10 @@ import {
   parseLocalResearchHistory,
   projectLocalResearchHistory,
   localKrxIndexPointFromRows,
-  parseAdrChartRows,
   parseEnvText,
   syncPagesDataMirror,
 } from "../../scripts/local_pages_server.mjs";
+import { parseAdrChartRows } from "../../shared/adr-data.mjs";
 import {
   appendableResearchUniversePoint,
   RESEARCH_HISTORY_CACHE_SCHEMA,
@@ -225,6 +225,37 @@ test("parses ADR chart arrays into one row per date", () => {
     `<script>const kospi_adr=[[${timestamp},91.2],[${timestamp + 86400000},0]];const kosdaq_adr=[[${timestamp},87.4],[${timestamp + 86400000},0]];</script>`,
   );
   assert.deepEqual(rows, [{ date: "2026-08-06", adr_kospi: 91.2, adr_kosdaq: 87.4 }]);
+});
+
+test("local ADR route uses only the shared Cloudflare Worker source", async () => {
+  let forwarded = null;
+  const payload = {
+    ok: true,
+    cached: false,
+    stale: false,
+    latestDate: "2026-09-07",
+    source: "adrinfo-browser",
+    rows: [{ date: "2026-09-07", adr_kospi: 82.1, adr_kosdaq: 79.4 }],
+  };
+  const server = await createThinkStockServer({
+    syncPagesData: false,
+    workerAccessToken: "local-worker-token",
+    fetchImpl: async (url, options = {}) => {
+      forwarded = { url: String(url), options };
+      return Response.json(payload);
+    },
+    gateway: { apiKey: "", initialize: async () => {} },
+  });
+  try {
+    const port = await listenTestServer(server);
+    const response = await fetch(`http://127.0.0.1:${port}/api/adr?refresh=1&latest=1`).then((value) => value.json());
+    assert.deepEqual(response, payload);
+    assert.equal(forwarded.url, "https://thinkstock-api.keg0320.workers.dev/api/adr?refresh=1&latest=1");
+    assert.equal(forwarded.options.headers.Authorization, "Bearer local-worker-token");
+  } finally {
+    server.close();
+    await once(server, "close");
+  }
 });
 
 test("local fear-greed route returns the same full history used by the deployed app", async () => {

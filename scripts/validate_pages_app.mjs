@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
@@ -8,6 +8,10 @@ import { runtimeBundleFingerprint } from "./runtime-bundle-fingerprint.mjs";
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const runtimeAssetManifest = await readFile(
+  path.join(root, "docs", "assets", "runtime-asset-paths.js"),
+  "utf8",
+);
 const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractionMath, chartInteractionController, cacheRefreshPolicy, browserMarketClient, auxiliaryChartModel, mainChartRenderer, performanceMonitor, performanceDiagnostics, appUiBindings, runtimeSnapshotPolicy, appStorage, dataWorker, chartModelWorker, chartModelWorkerRuntime, chartLoader, disclosurePolicy, disclosurePopover, serviceWorkerClient, runtimeRefresh, dataSeedLoader, deployWorkflow, plotlyBuilder, buildPagesData, dataBuildSupport, providerClients, providerContracts, providerSources, creditProcessing, disclosureProcessing, payloadOutput, sourcePipeline, buildReporting, plotlyBundle, appBundle] = await Promise.all([
   readFile(path.join(root, "docs", "app.js"), "utf8"),
   readFile(path.join(root, "docs", "index.html"), "utf8"),
@@ -191,6 +195,13 @@ const appBundleGzipBytes = gzipSync(
 // fail later only because the two release gates use different byte limits.
 const APP_SOURCE_MAX_LINES = 8_200;
 const precacheAssetsSource = sw.match(/const PRECACHE_ASSETS = \[([\s\S]*?)\];/)?.[1] || "";
+const declaredRuntimeAssets = [...runtimeAssetManifest.matchAll(/"(\/assets\/[^"\n]+\.bundle\.min\.js)"/g)]
+  .map((match) => match[1])
+  .sort((left, right) => left.localeCompare(right));
+const builtRuntimeAssets = (await readdir(path.join(root, "docs", "assets")))
+  .filter((name) => name.endsWith(".bundle.min.js"))
+  .map((name) => `/assets/${name}`)
+  .sort((left, right) => left.localeCompare(right));
 const appFeatureEnsureEpsStart = optionalFeatureRuntime.indexOf("  async function ensureEps() {");
 const appFeatureEnsureEpsEnd = optionalFeatureRuntime.indexOf(
   "  async function ensureMarketTiming()",
@@ -484,7 +495,7 @@ optionalFeatureAssets.forEach((asset) => {
   "./assets/ai-forecast-worker.bundle.min.js",
 ].forEach((asset) => {
   assert.ok(!precacheAssetsSource.includes(`"${asset}?v=dev"`), `optional worker must load on demand: ${asset}`);
-  assert.ok(sw.includes(`"${asset.slice(1)}"`), `optional worker is not version-cacheable: ${asset}`);
+  assert.ok(declaredRuntimeAssets.includes(asset.slice(1)), `optional worker is not version-cacheable: ${asset}`);
 });
 assert.ok(!precacheAssetsSource.includes('"./data/ai_market_model.json"'),
   "AI market model must load on demand");
@@ -571,7 +582,7 @@ assert.ok(!pagesEntry.includes('import "../docs/modules/market-timing-service.mj
   && optionalFeatureRuntime.includes('loader.loadModuleFeature(')
   && optionalFeatureRuntime.includes('"analytics-core"')
   && optionalFeatureRuntime.includes('"./assets/analytics-core-feature.bundle.min.js"')
-  && sw.includes('"/assets/analytics-core-feature.bundle.min.js"')
+  && declaredRuntimeAssets.includes("/assets/analytics-core-feature.bundle.min.js")
   && !precacheAssetsSource.includes("analytics-core-feature.bundle.min.js")
   && optionalFeatureRuntime.includes('loader.loadModuleFeature(')
   && optionalFeatureRuntime.includes('"market-timing"')
@@ -635,7 +646,7 @@ assert.ok(!pagesEntry.includes('import "../docs/modules/eps-chart.mjs"')
   && appFeatureEnsureEpsSource.includes("ensureDart()")
   && appFeatureEnsureEpsSource.includes("optional.ensureEps()")
   && !appFeatureEnsureEpsSource.includes("ensureAi()")
-  && sw.includes('"/assets/eps-feature.bundle.min.js"')
+  && declaredRuntimeAssets.includes("/assets/eps-feature.bundle.min.js")
   && !precacheAssetsSource.includes("eps-feature.bundle.min.js"),
 "EPS must load only when its default-off chart is enabled");
 assert.ok(!app.includes('from "./modules/auxiliary-chart-runtime.mjs"')
@@ -648,7 +659,7 @@ assert.ok(!app.includes('from "./modules/auxiliary-chart-runtime.mjs"')
   && app.includes("scheduleAuxiliaryChartRender(mainRangeForAdr")
   && app.includes("chartUpdateCoordinatorModule.createLatestKeyedFrameQueue")
   && app.includes("await runtime.renderAll(xRange, { targets })")
-  && sw.includes('"/assets/auxiliary-chart-feature.bundle.min.js"')
+  && declaredRuntimeAssets.includes("/assets/auxiliary-chart-feature.bundle.min.js")
   && !precacheAssetsSource.includes("auxiliary-chart-feature.bundle.min.js"),
 "auxiliary chart rendering must load after the first main chart frame");
 assert.ok(!pagesEntry.includes('import "../docs/modules/ai-forecast-app.mjs"')
@@ -663,7 +674,7 @@ assert.ok(!pagesEntry.includes('import "../docs/modules/ai-forecast-app.mjs"')
   && optionalFeatureRuntime.includes("module.aiFeature")
   && optionalFeatureRuntime.includes("module.brokerResearchFeature")
   && optionalFeatureRuntime.includes('"./assets/broker-research-feature.bundle.min.js"')
-  && sw.includes('"/assets/broker-research-feature.bundle.min.js"')
+  && declaredRuntimeAssets.includes("/assets/broker-research-feature.bundle.min.js")
   && !precacheAssetsSource.includes("broker-research-feature.bundle.min.js")
   && aiForecastApp.includes("cancelCalculations")
   && aiForecastApp.includes("progressActive")
@@ -686,7 +697,7 @@ assert.ok(dataWorker.includes('from "./data-payload.mjs?v=dev"')
   && dataPayload.includes("function attachDataWorker("),
 "module data worker does not reuse the shared payload parser");
 assert.ok(app.includes("./assets/data-worker.bundle.min.js")
-  && sw.includes('"/assets/data-worker.bundle.min.js"')
+  && declaredRuntimeAssets.includes("/assets/data-worker.bundle.min.js")
   && buildPagesBundle.includes('output: "data-worker.bundle.min.js"')
   && buildPagesBundle.includes('entry: path.join(root, "docs", "modules", "data-worker.mjs")'),
 "data worker must deploy as one self-contained module bundle");
@@ -714,7 +725,7 @@ assert.ok(mainChartModel.includes("function buildMainChartRenderInputs(")
 "main chart render inputs and cache identity are not centralized");
 assert.ok(chartModelWorker.includes('import auxiliaryChartModel from "./auxiliary-chart-model.mjs?v=dev"'), "chart worker does not reuse the auxiliary chart model module");
 assert.ok(app.includes("./assets/chart-model-worker.bundle.min.js")
-  && sw.includes('"/assets/chart-model-worker.bundle.min.js"')
+  && declaredRuntimeAssets.includes("/assets/chart-model-worker.bundle.min.js")
   && buildPagesBundle.includes('output: "chart-model-worker.bundle.min.js"')
   && buildPagesBundle.includes('format: "esm"'),
 "chart model worker must deploy as one self-contained module bundle");
@@ -977,7 +988,7 @@ assert.ok(app.includes('from "./modules/optional-feature-runtime.mjs"')
   && !pagesEntry.includes('import "../docs/modules/stock-research-controller.js"'),
 "optional features are still part of the initial bundle");
 assert.ok(app.includes("./assets/stock-research-worker.bundle.min.js")
-  && sw.includes('"/assets/stock-research-worker.bundle.min.js"')
+  && declaredRuntimeAssets.includes("/assets/stock-research-worker.bundle.min.js")
   && buildPagesBundle.includes('entry: "stock-research-worker.mjs"')
   && buildPagesBundle.includes('output: "stock-research-worker.bundle.min.js"')
   && stockResearchWorkerEntry.includes("bindStockResearchWorker(globalThis, runtime)")
@@ -1059,7 +1070,7 @@ assert.ok(!app.includes('from "./modules/deferred-diagnostics.mjs"')
   && !performanceDiagnostics.includes("ThinkStockPerformanceDiagnostics")
   && performanceDiagnostics.includes("createPerformanceDiagnostics")
   && performanceDiagnostics.includes("readStorageState")
-  && sw.includes('"/assets/diagnostics-runtime-feature.bundle.min.js"'),
+  && declaredRuntimeAssets.includes("/assets/diagnostics-runtime-feature.bundle.min.js"),
   "persistent performance diagnostics are incomplete");
 assert.ok(performanceDiagnostics.includes("startAutomaticCapture")
   && performanceDiagnostics.includes("scheduleAutomaticCapture")
@@ -1079,7 +1090,7 @@ assert.ok(!app.includes('from "./modules/data-health.mjs"')
   && dataFreshnessFeatureEntry.includes('from "../../docs/modules/data-freshness-controller.mjs"')
   && dataFreshnessFeatureEntry.includes("export { dataFreshnessFeature }")
   && app.includes("getDataFreshnessController()")
-  && sw.includes('"/assets/data-freshness-feature.bundle.min.js"')
+  && declaredRuntimeAssets.includes("/assets/data-freshness-feature.bundle.min.js")
   && !precacheAssetsSource.includes("data-freshness-feature.bundle.min.js")
   && dataHealth.includes("buildFreshnessItems")
   && dataHealth.includes("detectRecentChanges"),
@@ -1264,6 +1275,14 @@ assert.ok(/scheduleServiceWorker:\s*\(\)\s*=>\s*runAfterStartupVisualReady\(\s*s
 "service worker registration is not deferred until visual startup completes");
 assert.ok(!app.includes("function requestServiceWorkerDataRefresh("), "service worker messaging still lives in app.js");
 assert.ok(sw.includes("function cacheFirst("), "service worker cache-first strategy is missing");
+assert.deepEqual(
+  declaredRuntimeAssets,
+  builtRuntimeAssets,
+  "service worker runtime asset manifest is out of sync with built bundles",
+);
+assert.ok(sw.includes('"./assets/runtime-asset-paths.js?v=dev"')
+  && sw.includes("...runtimeAssetPaths"),
+"service worker does not consume the generated runtime asset manifest");
 assert.ok(sw.includes("isVersionedAssetUrl(url)"), "versioned assets are not using immutable caching");
 assert.ok(sw.includes("NETWORK_FIRST_TIMEOUT_MS = 3500"), "service worker network fallback deadline is missing");
 assert.ok(sw.includes("Promise.allSettled(PRECACHE_ASSETS"), "service worker precache is not failure-isolated");

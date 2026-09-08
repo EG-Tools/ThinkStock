@@ -3,6 +3,19 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.38",
+      date: "2026.09.08",
+      items: Object.freeze([
+        "완료 직후 같은 데이터 요청이 멈추는 현상 제거",
+        "응답 본문까지 네트워크 제한시간 적용",
+        "데이터 Worker 시작 실패 시 자동 복구",
+        "여러 창의 중복 새로고침과 캐시 충돌 방지",
+        "실제 빌드 기준으로 실행 자산 목록 자동 동기화",
+        "종목탐구 완료 도움말 유지와 재검색 상태 갱신",
+        "로컬·배포 ADR 수집을 Cloudflare 브라우저 경로로 통일",
+      ]),
+    }),
+    Object.freeze({
       version: "3.37",
       date: "2026.09.08",
       items: Object.freeze([

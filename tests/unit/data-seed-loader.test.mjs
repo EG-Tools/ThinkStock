@@ -156,6 +156,24 @@ test("falls back to synchronous parsing when a worker response fails", async () 
   parser.dispose();
 });
 
+test("falls back to synchronous parsing when worker construction fails", async () => {
+  let fallbackCalls = 0;
+  const parser = loaderModule.createSeedBundleParser({}, {
+    createWorker: () => {
+      throw new Error("worker construction failed");
+    },
+    parseSync: (texts) => {
+      fallbackCalls += 1;
+      return { recovered: texts.value };
+    },
+  });
+
+  assert.deepEqual(await parser.parse({ value: 11 }), { recovered: 11 });
+  assert.equal(fallbackCalls, 1);
+  assert.deepEqual(parser.stats(), { active: false, pending: 0 });
+  parser.dispose();
+});
+
 
 test("bundle loader fetches one coherent segment and parses it once", async () => {
   const calls = [];

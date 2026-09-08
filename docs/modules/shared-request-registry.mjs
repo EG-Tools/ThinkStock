@@ -78,16 +78,18 @@
           .then((value) => {
             entry.settled = true;
             counters.completed += 1;
+            if (entries.get(key) === entry) entries.delete(key);
             [...entry.subscribers].forEach((subscriber) => subscriber.resolve(value));
             return value;
           }, (error) => {
             entry.settled = true;
             counters.failed += 1;
+            if (entries.get(key) === entry) entries.delete(key);
             [...entry.subscribers].forEach((subscriber) => subscriber.reject(error));
             return undefined;
           })
           .finally(() => {
-            entries.delete(key);
+            if (entries.get(key) === entry) entries.delete(key);
             entry.subscribers.clear();
             notify();
           });

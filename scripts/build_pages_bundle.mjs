@@ -17,6 +17,8 @@ const stylesheetFile = path.join(root, "docs", "styles.css");
 const temporaryStylesheetFile = path.join(root, "docs", "styles.next.css");
 const outputFile = path.join(outputDir, "app.bundle.min.js");
 const temporaryOutputFile = path.join(outputDir, "app.bundle.next.js");
+const runtimeAssetManifestFile = path.join(outputDir, "runtime-asset-paths.js");
+const temporaryRuntimeAssetManifestFile = `${runtimeAssetManifestFile}.next`;
 const releaseNotesSourceFile = path.join(root, "docs", "modules", "release-notes.mjs");
 const appSourceFile = path.join(root, "docs", "app.js");
 const e2eOutputDir = path.join(root, ".thinkstock-cache", "e2e");
@@ -234,6 +236,24 @@ async function buildFeatureBundle(definition) {
   }
 }
 
+async function buildRuntimeAssetManifest() {
+  const paths = ["app.bundle.min.js", ...featureBundles.map(({ output }) => output)]
+    .map((name) => `/assets/${name}`)
+    .sort((left, right) => left.localeCompare(right));
+  const serializedPaths = JSON.stringify(paths, null, 2)
+    .split("\n")
+    .map((line) => `  ${line}`)
+    .join("\n")
+    .trimStart();
+  const source = `(function initRuntimeAssetPaths(globalScope) {\n`
+    + `  "use strict";\n\n`
+    + `  globalScope.ThinkStockRuntimeAssetPaths = Object.freeze(${serializedPaths});\n`
+    + `}(typeof self !== "undefined" ? self : globalThis));\n`;
+  await writeFile(temporaryRuntimeAssetManifestFile, source, "utf8");
+  await replaceBuiltFile(temporaryRuntimeAssetManifestFile, runtimeAssetManifestFile);
+  console.log(`Built ${path.relative(root, runtimeAssetManifestFile)} (${Buffer.byteLength(source)} bytes)`);
+}
+
 async function stampLocalBundleFingerprint() {
   const fingerprint = await runtimeBundleFingerprint(outputDir);
   const html = await readFile(indexFile, "utf8");
@@ -274,6 +294,7 @@ try {
   const featureReports = await Promise.all(
     featureBundles.map((definition) => buildFeatureBundle(definition)),
   );
+  await buildRuntimeAssetManifest();
   const localFingerprint = await stampLocalBundleFingerprint();
   console.log(`Stamped local runtime fingerprint ${localFingerprint}`);
   const report = createBundleReport({
@@ -296,4 +317,5 @@ try {
   await rm(temporaryOutputFile, { force: true });
   await rm(e2eTemporaryOutputFile, { force: true });
   await rm(temporaryStylesheetFile, { force: true });
+  await rm(temporaryRuntimeAssetManifestFile, { force: true });
 }

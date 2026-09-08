@@ -61,3 +61,47 @@ test("reports a timed out request with the existing Korean message", async () =>
 
   await assert.rejects(request("/slow"), /요청 시간 초과\(0초\)/);
 });
+
+test("keeps the timeout active until the response body is consumed", async () => {
+  const request = createFetchWithTimeout({
+    defaultTimeoutMs: 5,
+    fetch: async (_resource, init) => ({
+      ok: true,
+      body: {},
+      text: async () => await new Promise((resolve, reject) => {
+        init.signal.addEventListener("abort", () => {
+          const error = new Error("body aborted");
+          error.name = "AbortError";
+          reject(error);
+        }, { once: true });
+      }),
+    }),
+  });
+
+  const response = await request("/headers-only");
+  await assert.rejects(response.text(), /요청 시간 초과\(0초\)/);
+});
+
+test("clears the timeout after successful body consumption", async () => {
+  const timers = new Map();
+  let sequence = 0;
+  const request = createFetchWithTimeout({
+    defaultTimeoutMs: 1000,
+    setTimeout: (callback) => {
+      const id = ++sequence;
+      timers.set(id, callback);
+      return id;
+    },
+    clearTimeout: (id) => timers.delete(id),
+    fetch: async () => ({
+      ok: true,
+      body: {},
+      text: async () => "ready",
+    }),
+  });
+
+  const response = await request("/ready");
+  assert.equal(timers.size, 1);
+  assert.equal(await response.text(), "ready");
+  assert.equal(timers.size, 0);
+});

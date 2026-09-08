@@ -31,7 +31,7 @@ import {
   priceRatio,
   validateNaverPriceTail,
 } from "../../shared/naver-market-price.mjs";
-import { mergeAdrRows, parseAdrChartRows } from "../../shared/adr-data.mjs";
+import { mergeAdrRows, parseAdrBrowserContent } from "../../shared/adr-data.mjs";
 import {
   fetchKrxVkospiPoint,
   fetchStockplusVkospiRows,
@@ -196,8 +196,7 @@ const CRISIS_CACHE_SCHEMA = 10;
 const CRISIS_CACHE_KEY = `fred-crisis-signal:${CRISIS_CACHE_SCHEMA}`;
 const VKOSPI_LIVE_FRESH_MS = sourcePolicy("indices").liveConfirmMs;
 const VKOSPI_SETTLEMENT_RECHECK_MS = 15 * 60 * 1000;
-const ADR_SOURCE_URL = "https://www.adrinfo.kr/chart";
-const ADR_LEGACY_SOURCE_URL = "http://www.adrinfo.kr/chart";
+const ADR_SOURCE_URL = "http://www.adrinfo.kr/chart";
 
 let browserQuickActionQueue = Promise.resolve();
 let browserQuickActionStartedAt = 0;
@@ -229,38 +228,25 @@ function queuedBrowserQuickAction(env, action, options) {
   return pending;
 }
 
-function adrSourceCandidates() {
-  const stamp = Date.now();
-  const httpsUrl = `${ADR_SOURCE_URL}?_=${stamp}`;
-  const legacyUrl = `${ADR_LEGACY_SOURCE_URL}?_=${stamp}`;
-  return [
-    { source: "adrinfo-https", url: httpsUrl },
-    { source: "adrinfo-http", url: legacyUrl },
-    { source: "corsproxy", url: `https://corsproxy.io/?url=${encodeURIComponent(legacyUrl)}` },
-  ];
-}
-
-export async function fetchAdrSourceRows(fetchImpl = fetch) {
-  let lastError = null;
-  for (const candidate of adrSourceCandidates()) {
-    try {
-      const response = await fetchImpl(candidate.url, {
-        headers: {
-          Accept: "text/html,application/xhtml+xml",
-          "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.7",
-        },
-        redirect: "follow",
-        signal: AbortSignal.timeout(12000),
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const rows = parseAdrChartRows(await readBoundedResponseText(response, ADR_RESPONSE_MAX_BYTES, "ADR upstream"));
-      if (!rows.length) throw new Error("ADR response contained no rows");
-      return { rows, source: candidate.source };
-    } catch (error) {
-      lastError = error;
-    }
+export async function fetchAdrSourceRows(env) {
+  if (!env?.BROWSER?.quickAction) throw new Error("ADR Browser Run is unavailable");
+  const response = await queuedBrowserQuickAction(env, "content", {
+    url: `${ADR_SOURCE_URL}?_=${Date.now()}`,
+    cacheTTL: 60,
+    gotoOptions: { waitUntil: "domcontentloaded", timeout: 20000 },
+    rejectResourceTypes: ["image", "media", "font", "stylesheet"],
+  });
+  const body = await readBoundedResponseText(
+    response,
+    ADR_RESPONSE_MAX_BYTES,
+    "ADR Browser Run",
+  );
+  if (!response.ok) {
+    throw createProviderHttpError("ADR Browser Run", response, body.slice(0, 160));
   }
-  throw new Error(`ADR upstream failed: ${lastError?.message || lastError || "unknown error"}`);
+  const rows = parseAdrBrowserContent(body);
+  if (!rows.length) throw new Error("ADR Browser Run returned no rows");
+  return { rows, source: "adrinfo-browser" };
 }
 
 function normalizeAdrCache(value) {
@@ -299,7 +285,7 @@ async function adrMarketResponse(env, origin, forceRefresh = false, latestOnly =
   }
 
   try {
-    const incoming = await fetchAdrSourceRows();
+    const incoming = await fetchAdrSourceRows(env);
     const rows = mergeAdrRows(cached?.rows, incoming.rows, ADR_CACHE_ROW_LIMIT);
     const latestDate = rows.at(-1)?.date || "";
     const expectedDate = expectedLatestKoreanTradingDate();

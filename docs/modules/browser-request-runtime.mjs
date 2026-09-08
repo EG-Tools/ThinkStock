@@ -31,6 +31,7 @@ export function createFetchWithTimeout(options = {}) {
   const AbortControllerImpl = options.AbortController || globalThis.AbortController;
   const setTimer = options.setTimeout || globalThis.setTimeout.bind(globalThis);
   const clearTimer = options.clearTimeout || globalThis.clearTimeout.bind(globalThis);
+  const bodyReaders = new Set(["arrayBuffer", "blob", "bytes", "formData", "json", "text"]);
 
   return async function fetchWithTimeout(resource, init = {}, timeoutMs = defaultTimeoutMs) {
     const requestTimeoutMs = Number.isFinite(Number(timeoutMs))
@@ -39,22 +40,52 @@ export function createFetchWithTimeout(options = {}) {
     const controller = new AbortControllerImpl();
     const externalSignal = init?.signal;
     let timedOut = false;
+    let finished = false;
+    let timer = 0;
+    const timeoutError = () => new Error(`요청 시간 초과(${Math.round(requestTimeoutMs / 1000)}초)`);
+    const cleanup = () => {
+      if (finished) return;
+      finished = true;
+      clearTimer(timer);
+      externalSignal?.removeEventListener?.("abort", abortFromExternal);
+    };
     const abortFromExternal = () => controller.abort(externalSignal?.reason);
     if (externalSignal?.aborted) abortFromExternal();
     else externalSignal?.addEventListener?.("abort", abortFromExternal, { once: true });
-    const timer = setTimer(() => {
+    timer = setTimer(() => {
       timedOut = true;
       controller.abort();
+      cleanup();
     }, requestTimeoutMs);
 
     try {
-      return await fetchImpl(resource, { ...init, signal: controller.signal });
+      const response = await fetchImpl(resource, { ...init, signal: controller.signal });
+      if (!response || typeof response !== "object" || response.body === null) {
+        cleanup();
+        return response;
+      }
+      return new Proxy(response, {
+        get(target, property) {
+          const value = Reflect.get(target, property, target);
+          if (bodyReaders.has(property) && typeof value === "function") {
+            return async (...args) => {
+              try {
+                return await Reflect.apply(value, target, args);
+              } catch (error) {
+                if (timedOut) throw timeoutError();
+                throw error;
+              } finally {
+                cleanup();
+              }
+            };
+          }
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
     } catch (error) {
-      if (timedOut) throw new Error(`요청 시간 초과(${Math.round(requestTimeoutMs / 1000)}초)`);
+      cleanup();
+      if (timedOut) throw timeoutError();
       throw error;
-    } finally {
-      clearTimer(timer);
-      externalSignal?.removeEventListener?.("abort", abortFromExternal);
     }
   };
 }

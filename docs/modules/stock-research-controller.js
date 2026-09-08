@@ -597,11 +597,6 @@
       setProgressTrackVisible(false);
     }
 
-    function hideProgress() {
-      if (progressView) progressView.setVisible(false);
-      else if (elements.progress) elements.progress.hidden = true;
-    }
-
     function persistBlocked() {
       saveBlocked(storage, [...blocked.values()]);
       try { onBlockedStateChanged(blocked.size); } catch (_) {}
@@ -1123,11 +1118,6 @@
         completeProgress("업종 확인 완료", `${candidates.length}종목`);
       } finally {
         enrichingCachedProfiles = false;
-        scope.setTimeout(() => {
-          if (!running
-            && !enrichingCachedProfiles
-            && universeAnalysisFailures(cached?.universeState).length === 0) hideProgress();
-        }, 900);
       }
     }
 
@@ -1530,7 +1520,6 @@
             ].filter(Boolean).join(" · ");
         completeProgress(completionText, completionDetails, failureItems);
         if (!interrupted) scheduleSignalSettlement();
-        if (!failed) scope.setTimeout(() => { if (!running) hideProgress(); }, 900);
       } catch (error) {
         cached = previous;
         render();

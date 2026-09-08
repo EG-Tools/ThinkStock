@@ -1,3 +1,5 @@
+import { unwrapBrowserQuickActionContent } from "./runtime-provider-resilience.mjs";
+
 const ADR_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const ADR_SERIES = Object.freeze([
   ["kospi_adr", "adr_kospi"],
@@ -104,9 +106,14 @@ export function parseAdrChartRows(html) {
   return normalizeAdrRows([...rowsByDate.values()]);
 }
 
+export function parseAdrBrowserContent(body) {
+  return parseAdrChartRows(unwrapBrowserQuickActionContent(body));
+}
+
 const api = Object.freeze({
   mergeAdrLiveRows,
   mergeAdrRows,
   normalizeAdrRows,
+  parseAdrBrowserContent,
   parseAdrChartRows,
 });

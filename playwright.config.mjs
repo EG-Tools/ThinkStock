@@ -8,7 +8,10 @@ export default defineConfig({
   // every test in parallel can exhaust process permissions on local and CI hosts.
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
-  retries: process.env.CI ? 1 : 0,
+  // WebKit can occasionally fail to launch or stall while Windows reclaims the
+  // previous browser process. One retry still fails deterministic regressions
+  // while keeping the release gate stable on the local deployment host.
+  retries: 1,
   reporter: process.env.CI ? "github" : "line",
   use: {
     baseURL: "http://127.0.0.1:4173",

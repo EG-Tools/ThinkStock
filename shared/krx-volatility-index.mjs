@@ -1,3 +1,5 @@
+import { unwrapBrowserQuickActionContent } from "./runtime-provider-resilience.mjs";
+
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const API_DATE_PATTERN = /^\d{8}$/;
 
@@ -110,27 +112,8 @@ export function vkospiPointFromStockplusPayload(payload, options = {}) {
   return expectedDate && point?.date !== expectedDate ? null : point;
 }
 
-function decodeHtmlText(text) {
-  return String(text || "")
-    .replace(/&quot;/gi, "\"")
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&amp;/gi, "&");
-}
-
 export function vkospiRowsFromStockplusBrowserContent(body, options = {}) {
-  let content = String(body || "").trim();
-  try {
-    const wrapper = JSON.parse(content);
-    if (wrapper?.success === true && typeof wrapper.result === "string") {
-      content = wrapper.result.trim();
-    } else {
-      return vkospiRowsFromStockplusPayload(wrapper, options);
-    }
-  } catch (_) {}
-  const preMatch = content.match(/<pre\b[^>]*>([\s\S]*?)<\/pre>/i);
-  if (preMatch) content = decodeHtmlText(preMatch[1]).trim();
+  const content = unwrapBrowserQuickActionContent(body);
   try {
     return vkospiRowsFromStockplusPayload(JSON.parse(content), options);
   } catch (_) {

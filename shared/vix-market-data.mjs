@@ -1,4 +1,7 @@
-import { createProviderHttpError } from "./runtime-provider-resilience.mjs";
+import {
+  createProviderHttpError,
+  unwrapBrowserQuickActionContent,
+} from "./runtime-provider-resilience.mjs";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const DEFAULT_VIX_URL = "https://query2.finance.yahoo.com/v8/finance/chart/%5EVIX";
@@ -63,27 +66,8 @@ export function normalizeYahooVixChart(payload) {
   return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
 }
 
-function decodeHtmlText(text) {
-  return String(text || "")
-    .replace(/&quot;/gi, "\"")
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&amp;/gi, "&");
-}
-
 export function normalizeBrowserVixContent(body) {
-  let content = String(body || "").trim();
-  try {
-    const wrapper = JSON.parse(content);
-    if (wrapper?.success === true && typeof wrapper.result === "string") {
-      content = wrapper.result.trim();
-    } else {
-      return normalizeYahooVixChart(wrapper);
-    }
-  } catch (_) {}
-  const preMatch = content.match(/<pre\b[^>]*>([\s\S]*?)<\/pre>/i);
-  if (preMatch) content = decodeHtmlText(preMatch[1]).trim();
+  const content = unwrapBrowserQuickActionContent(body);
   try {
     return normalizeYahooVixChart(JSON.parse(content));
   } catch (_) {

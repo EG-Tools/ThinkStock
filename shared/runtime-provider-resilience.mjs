@@ -1,5 +1,14 @@
 const RETRYABLE_HTTP_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 
+function decodeHtmlText(text) {
+  return String(text || "")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&amp;/gi, "&");
+}
+
 function statusFromMessage(message) {
   const match = String(message || "").match(/\bHTTP\s+(\d{3})\b/i);
   return match ? Number(match[1]) : 0;
@@ -57,9 +66,22 @@ export function providerRetryDelayMs(error, fallbackMs = 0, options = {}) {
   return Math.min(maximumMs, requested);
 }
 
+export function unwrapBrowserQuickActionContent(body) {
+  let content = String(body || "").trim();
+  try {
+    const wrapper = JSON.parse(content);
+    if (wrapper?.success === true && typeof wrapper.result === "string") {
+      content = wrapper.result.trim();
+    }
+  } catch (_) {}
+  const preMatch = content.match(/<pre\b[^>]*>([\s\S]*?)<\/pre>/i);
+  return (preMatch ? decodeHtmlText(preMatch[1]) : content).trim();
+}
+
 export const RUNTIME_PROVIDER_RESILIENCE = Object.freeze({
   classifyProviderError,
   createProviderHttpError,
   providerRetryDelayMs,
   retryAfterMs,
+  unwrapBrowserQuickActionContent,
 });

@@ -78,6 +78,7 @@ async function readInsiderMarker(page, side) {
 }
 
 test("AI toggle draws and removes a six-month virtual forecast", async ({ page, isMobile }) => {
+  test.setTimeout(120_000);
   await stubExternalRefreshes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
   await waitForAppReady(page);

@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   mergeAdrLiveRows,
   mergeAdrRows,
+  parseAdrBrowserContent,
   parseAdrChartRows,
 } from "../../shared/adr-data.mjs";
 
@@ -15,6 +16,16 @@ test("parses both ADR markets and rejects unpublished zero values", () => {
       + `const kosdaq_adr=[[${timestamp},87.4],[${timestamp + 86400000},0]];</script>`,
   );
   assert.deepEqual(rows, [{ date: "2026-08-06", adr_kospi: 91.2, adr_kosdaq: 87.4 }]);
+});
+
+test("parses ADR rows from the shared Browser Run response envelope", () => {
+  const timestamp = Date.parse("2026-09-07T00:00:00+09:00");
+  const html = `<script>const kospi_adr=[[${timestamp},82.1]];const kosdaq_adr=[[${timestamp},79.4]];</script>`;
+  assert.deepEqual(parseAdrBrowserContent(JSON.stringify({ success: true, result: html })), [{
+    date: "2026-09-07",
+    adr_kospi: 82.1,
+    adr_kosdaq: 79.4,
+  }]);
 });
 
 test("same-day ADR updates replace the earlier value without losing other indicators", () => {

@@ -140,6 +140,22 @@ export function mergeResearchHistoryRows(existingRows, incomingRows, cutoffDate 
   ]).filter((row) => !cutoff || row.date >= cutoff);
 }
 
+function mergeNormalizedResearchHistoryRows(existingRows, incomingRows, cutoffDate = "") {
+  const cutoff = validDate(cutoffDate) ? cutoffDate : "";
+  const existing = Array.isArray(existingRows) ? existingRows : [];
+  const incoming = Array.isArray(incomingRows) ? incomingRows : [];
+  if (!existing.length) return incoming.filter((row) => !cutoff || row.date >= cutoff);
+  if (!incoming.length) return existing.filter((row) => !cutoff || row.date >= cutoff);
+  const byDate = new Map();
+  existing.forEach((row) => {
+    if (!cutoff || row.date >= cutoff) byDate.set(row.date, row);
+  });
+  incoming.forEach((row) => {
+    if (!cutoff || row.date >= cutoff) byDate.set(row.date, row);
+  });
+  return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
+}
+
 export function researchHistoryPointFromUniverse(existingRows, universeItem, targetDate, threshold = 1.8) {
   const rows = normalizeResearchHistoryRows(existingRows);
   const latest = rows.at(-1);
@@ -190,7 +206,9 @@ export function appendableResearchUniversePoint(existingRows, universeItem, targ
 }
 
 export function researchHistoryCacheIsCurrent(cached, targetDate, options = {}) {
-  const rows = normalizeResearchHistoryRows(cached?.rows);
+  const rows = Array.isArray(options.normalizedRows)
+    ? options.normalizedRows
+    : normalizeResearchHistoryRows(cached?.rows);
   const fullHistory = options.fullHistory === true;
   return cached?.schema === RESEARCH_HISTORY_CACHE_SCHEMA
     && Number(cached?.historyQualityVersion) === RESEARCH_HISTORY_QUALITY_VERSION
@@ -269,19 +287,23 @@ export async function researchHistoryResponse(env, ticker, origin, options = {})
   const cached = env.DISCLOSURE_CACHE
     ? await readCacheBestEffort("research-history", () => env.DISCLOSURE_CACHE.get(cacheKey, "json"))
     : null;
+  const cachedRows = normalizeResearchHistoryRows(cached?.rows);
   const requiresFullBackfill = forceFull && (
     String(cached?.historyCoverage || "").trim().toLowerCase() !== "full"
     || Number(cached?.historyCoverageVersion) !== RESEARCH_HISTORY_COVERAGE_VERSION
   );
-  if (researchHistoryCacheIsCurrent(cached, today, { fullHistory: forceFull })) {
+  if (researchHistoryCacheIsCurrent(cached, today, {
+    fullHistory: forceFull,
+    normalizedRows: cachedRows,
+  })) {
     return jsonResponse(projectResearchHistoryPayload(
-      { ...cached, rows: normalizeResearchHistoryRows(cached.rows), ok: true, cached: true },
+      { ...cached, rows: cachedRows, ok: true, cached: true },
       sinceDate,
       forceFull,
     ), 200, origin);
   }
   try {
-    const existingRows = normalizeResearchHistoryRows(cached?.rows);
+    const existingRows = cachedRows;
     const latestDate = existingRows.at(-1)?.date || "";
     const startDate = requiresFullBackfill
       ? yearsBefore(today, historyYears)
@@ -296,7 +318,7 @@ export async function researchHistoryResponse(env, ticker, origin, options = {})
       mergeBase = [];
       rebased = true;
     }
-    const rows = mergeResearchHistoryRows(
+    const rows = mergeNormalizedResearchHistoryRows(
       mergeBase,
       incoming,
       yearsBefore(today, historyYears),

@@ -48,6 +48,30 @@ test("limits background refresh concurrency without losing result order", async 
   assert.deepEqual(results.map((result) => result.value), [0, 2, 4, 6, 8]);
 });
 
+test("shares one active refresh and starts a new task only after completion", async () => {
+  let calls = 0;
+  let release;
+  const runRefresh = policy.createSharedTask(() => {
+    calls += 1;
+    return new Promise((resolve) => { release = resolve; });
+  });
+
+  const first = runRefresh();
+  const second = runRefresh();
+  assert.equal(first, second);
+  await Promise.resolve();
+  assert.equal(calls, 1);
+  release({ revision: "first" });
+  assert.deepEqual(await first, { revision: "first" });
+  assert.deepEqual(await second, { revision: "first" });
+
+  const third = runRefresh();
+  await Promise.resolve();
+  assert.equal(calls, 2);
+  release({ revision: "second" });
+  assert.deepEqual(await third, { revision: "second" });
+});
+
 
 test("builds hashed refresh entries from a segmented manifest", () => {
   const digest = "a".repeat(64);

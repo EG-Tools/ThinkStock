@@ -568,6 +568,9 @@ test("stock research popup preserves results while adding multiple candidates", 
   await expect(page.locator("#stockResearchRefreshBtn")).toBeEnabled();
   await expect(page.locator("#stockResearchRefreshBtn")).toHaveText("재검색");
   await expect(page.locator("#stockResearchProgress .stock-research-progress-track")).toBeHidden();
+  await page.waitForTimeout(1_100);
+  await expect(page.locator("#stockResearchProgress")).toBeVisible();
+  await expect(page.locator("#stockResearchProgress")).toContainText(/완료|실패|재사용/);
   await page.locator("#stockResearchCloseBtn").click();
   await page.locator("#apiOptionsBtn").click();
   await expect(page.locator("#appCacheBtn")).toBeEnabled();

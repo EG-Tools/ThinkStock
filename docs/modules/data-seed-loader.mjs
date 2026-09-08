@@ -149,7 +149,13 @@ import {
     }
 
     async function parse(texts) {
-      const activeWorker = ensureWorker();
+      let activeWorker = null;
+      try {
+        activeWorker = ensureWorker();
+      } catch (error) {
+        discardWorker();
+        return parseFallback(texts, error);
+      }
       if (!activeWorker) return parseFallback(texts, new Error("seed parse worker is unavailable"));
       const id = `${Date.now()}-${++sequence}`;
       try {

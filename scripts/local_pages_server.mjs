@@ -36,7 +36,6 @@ import {
   parseNaverPriceSeries,
   validateNaverPriceTail,
 } from "../shared/naver-market-price.mjs";
-import { parseAdrChartRows } from "../shared/adr-data.mjs";
 import {
   fetchStockplusVkospiRows,
   mergeVkospiFallbackRows,
@@ -133,7 +132,6 @@ const {
 const CORP_CODE_DIR = path.join(DOCS_DIR, "data", "dart_corp_codes");
 const PAGES_DATA_BASE_URL = "https://eg-tools.github.io/ThinkStock/data/";
 const THINKSTOCK_WORKER_URL = "https://thinkstock-api.keg0320.workers.dev";
-const ADR_SOURCE_URL = "http://www.adrinfo.kr/chart";
 const FEAR_GREED_SOURCE_URL = "https://kospi.feargreedchart.com/api/?action=kospi-history";
 const FEAR_GREED_LATEST_SOURCE_URL = "https://kospi.feargreedchart.com/api/?action=kospi";
 const DART_DISCLOSURE_URL = "https://opendart.fss.or.kr/api/list.json";
@@ -735,8 +733,6 @@ async function writeTextAtomic(filePath, text) {
   await rename(temporary, filePath);
 }
 
-export { parseAdrChartRows };
-
 function pagesManifestEntries(manifest) {
   const entries = new Map();
   Object.values(manifest?.datasets || {}).forEach((dataset) => {
@@ -1301,47 +1297,24 @@ export async function createThinkStockServer(options = {}) {
       return;
     }
     if (requestUrl.pathname === "/api/adr") {
-      let workerFallback = null;
       const latestOnly = ["1", "true", "yes"].includes(String(requestUrl.searchParams.get("latest") || "").toLowerCase());
-      if (workerAccessToken) {
-        try {
-          const refresh = ["1", "true", "yes"].includes(String(requestUrl.searchParams.get("refresh") || "").toLowerCase());
-          const query = new URLSearchParams();
-          if (refresh) query.set("refresh", "1");
-          if (latestOnly) query.set("latest", "1");
-          const upstream = await fetchImpl(`${THINKSTOCK_WORKER_URL}/api/adr${query.size ? `?${query}` : ""}`, {
-            headers: { Authorization: `Bearer ${workerAccessToken}` },
-            signal: AbortSignal.timeout(45000),
-          });
-          const payload = await upstream.json();
-          if (upstream.ok && payload?.ok === true && Array.isArray(payload.rows)) {
-            if (payload.stale !== true) {
-              sendJson(request, response, 200, payload);
-              return;
-            }
-            workerFallback = payload;
-          }
-        } catch (_) {
-          // A direct ADR request below remains available when the Worker path is interrupted.
-        }
-      }
       try {
-        const upstream = await fetchImpl(`${ADR_SOURCE_URL}?_=${Date.now()}`, {
-          headers: { "User-Agent": "ThinkStock-Local/1.0" },
-          signal: AbortSignal.timeout(30000),
+        if (!workerAccessToken) throw new Error("ThinkStock Worker access token is missing");
+        const refresh = ["1", "true", "yes"].includes(String(requestUrl.searchParams.get("refresh") || "").toLowerCase());
+        const query = new URLSearchParams();
+        if (refresh) query.set("refresh", "1");
+        if (latestOnly) query.set("latest", "1");
+        const upstream = await fetchImpl(`${THINKSTOCK_WORKER_URL}/api/adr${query.size ? `?${query}` : ""}`, {
+          headers: { Authorization: `Bearer ${workerAccessToken}` },
+          signal: AbortSignal.timeout(45000),
         });
-        if (!upstream.ok) throw new Error(`adrinfo.kr HTTP ${upstream.status}`);
-        const rows = parseAdrChartRows(await upstream.text());
-        if (!rows.length) throw new Error("ADR response contained no rows");
-        const responseRows = latestOnly ? rows.slice(-1) : rows;
-        sendJson(request, response, 200, {
-          ok: true,
-          latestDate: rows.at(-1)?.date || "",
-          rows: responseRows,
-        });
+        const payload = await upstream.json();
+        if (!upstream.ok || payload?.ok !== true || !Array.isArray(payload.rows)) {
+          throw new Error(payload?.error || `ThinkStock Worker ADR HTTP ${upstream.status}`);
+        }
+        sendJson(request, response, 200, payload);
       } catch (error) {
-        if (workerFallback) sendJson(request, response, 200, workerFallback);
-        else sendJson(request, response, 503, { ok: false, error: error?.message || String(error) });
+        sendJson(request, response, 503, { ok: false, error: error?.message || String(error) });
       }
       return;
     }

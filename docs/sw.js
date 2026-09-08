@@ -1,12 +1,17 @@
-importScripts("./modules/cache-refresh-policy.js?v=dev");
+importScripts(
+  "./modules/cache-refresh-policy.js?v=dev",
+  "./assets/runtime-asset-paths.js?v=dev",
+);
 
-const CACHE_NAME = "thinkstock-dev-3.37";
+const CACHE_NAME = "thinkstock-dev-3.38";
 const NETWORK_FIRST_TIMEOUT_MS = 3500;
 const DATA_REFRESH_CONCURRENCY = 3;
 const DATA_MANIFEST_PATH = "./data/data_manifest.json";
 const DATA_CACHE_PREFIX = "thinkstock-data-v1-";
 const cacheRefreshPolicy = self.ThinkStockCacheRefreshPolicy;
 if (!cacheRefreshPolicy) throw new Error("Cache refresh policy failed to load");
+const runtimeAssetPaths = self.ThinkStockRuntimeAssetPaths;
+if (!Array.isArray(runtimeAssetPaths)) throw new Error("Runtime asset paths failed to load");
 const PRECACHE_ASSETS = [
   "./",
   "./index.html",
@@ -17,6 +22,7 @@ const PRECACHE_ASSETS = [
   "./modules/auxiliary-chart-contract.mjs?v=dev",
   "./modules/chart-display-sampler.mjs?v=dev",
   "./modules/cache-refresh-policy.js?v=dev",
+  "./assets/runtime-asset-paths.js?v=dev",
   "./assets/data-worker.bundle.min.js?v=dev",
   "./assets/chart-model-worker.bundle.min.js?v=dev",
   "./vendor/plotly-thinkstock-2.35.2.min.js?v=dev",
@@ -54,7 +60,6 @@ const CORE_ASSET_PATHS = [
   "/",
   "/index.html",
   "/styles.css",
-  "/assets/app.bundle.min.js",
   "/manifest.webmanifest",
   "/icon.svg",
   "/modules/market-data.mjs",
@@ -62,22 +67,9 @@ const CORE_ASSET_PATHS = [
   "/modules/auxiliary-chart-contract.mjs",
   "/modules/chart-display-sampler.mjs",
   "/modules/cache-refresh-policy.js",
-  "/assets/data-worker.bundle.min.js",
-  "/assets/chart-model-worker.bundle.min.js",
-  "/assets/stock-research-worker.bundle.min.js",
-  "/assets/market-timing-worker.bundle.min.js",
+  "/assets/runtime-asset-paths.js",
   "/modules/broker-report-worker.mjs",
-  "/assets/ai-forecast-worker.bundle.min.js",
-  "/assets/analytics-core-feature.bundle.min.js",
-  "/assets/auxiliary-chart-feature.bundle.min.js",
-  "/assets/ai-feature.bundle.min.js",
-  "/assets/broker-research-feature.bundle.min.js",
-  "/assets/market-timing-feature.bundle.min.js",
-  "/assets/stock-research-feature.bundle.min.js",
-  "/assets/settings-feature.bundle.min.js",
-  "/assets/eps-feature.bundle.min.js",
-  "/assets/diagnostics-runtime-feature.bundle.min.js",
-  "/assets/data-freshness-feature.bundle.min.js",
+  ...runtimeAssetPaths,
   "/vendor/plotly-thinkstock-2.35.2.min.js",
   "/vendor/pdf.min.mjs",
   "/vendor/pdf.worker.min.mjs",
@@ -401,10 +393,12 @@ async function refreshCachedDataAtomically() {
   return { ok: true, refreshed, reused, failed: 0, revision };
 }
 
+const runSharedDataRefresh = cacheRefreshPolicy.createSharedTask(refreshCachedDataAtomically);
+
 self.addEventListener("message", (event) => {
   if (event.data === "REFRESH_DATA") {
     const replyPort = event.ports && event.ports[0];
-    const refreshTask = refreshCachedDataAtomically().then((result) => {
+    const refreshTask = runSharedDataRefresh().then((result) => {
       if (replyPort) replyPort.postMessage(result);
       return result;
     }).catch(() => {
