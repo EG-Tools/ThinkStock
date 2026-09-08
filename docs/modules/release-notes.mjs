@@ -3,6 +3,15 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.43",
+      date: "2026.09.09",
+      items: Object.freeze([
+        "차트 엔진 다운로드 실패의 시간제한·새 요청 재시도 복구",
+        "차트 이탈 시 예약 툴팁 보정 작업까지 즉시 취소",
+        "AI 승인 런타임 파일 해시 검증과 해시 청크 캐시 우선 처리",
+      ]),
+    }),
+    Object.freeze({
       version: "3.42",
       date: "2026.09.09",
       items: Object.freeze([

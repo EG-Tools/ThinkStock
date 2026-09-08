@@ -1314,6 +1314,7 @@ assert.ok(sw.includes('"./assets/runtime-asset-paths.js?v=dev"')
   && sw.includes("...runtimeAssetPaths"),
 "service worker does not consume the generated runtime asset manifest");
 assert.ok(sw.includes("isVersionedAssetUrl(url)"), "versioned assets are not using immutable caching");
+assert.ok(sw.includes("isContentHashedChunk"), "content-hashed chunks are not cache-first");
 assert.ok(sw.includes("NETWORK_FIRST_TIMEOUT_MS = 3500"), "service worker network fallback deadline is missing");
 assert.ok(sw.includes("Promise.allSettled(PRECACHE_ASSETS"), "service worker precache is not failure-isolated");
 assert.ok(sw.includes("refreshCachedDataAtomically"), "service worker data refresh is not atomic");

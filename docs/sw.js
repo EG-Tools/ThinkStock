@@ -3,7 +3,7 @@ importScripts(
   "./assets/runtime-asset-paths.js?v=dev",
 );
 
-const CACHE_NAME = "thinkstock-dev-3.42";
+const CACHE_NAME = "thinkstock-dev-3.43";
 const NETWORK_FIRST_TIMEOUT_MS = 3500;
 const DATA_REFRESH_CONCURRENCY = 3;
 const DATA_REFRESH_TIMEOUT_MS = 25000;
@@ -97,7 +97,8 @@ function isCoreAssetUrl(url) {
 }
 
 function isVersionedAssetUrl(url) {
-  return url.searchParams.has("v") && isCoreAssetUrl(url);
+  const isContentHashedChunk = /\/assets\/chunks\/[^/]+-[a-z0-9]{8}\.js$/i.test(url.pathname);
+  return (url.searchParams.has("v") && isCoreAssetUrl(url)) || isContentHashedChunk;
 }
 
 async function putIfOk(cache, request, response) {

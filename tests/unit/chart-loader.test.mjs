@@ -51,3 +51,81 @@ test("chart loader returns an already initialized Plotly instance", async () => 
     delete globalThis.Plotly;
   }
 });
+
+test("chart loader removes a failed script and retries with a fresh request", async () => {
+  const previousTestDocument = globalThis.document;
+  const previousTestLocation = globalThis.location;
+  const previousSetTimeout = globalThis.setTimeout;
+  const previousClearTimeout = globalThis.clearTimeout;
+  const scripts = [];
+  const timers = new Map();
+  let nextTimerId = 1;
+  const createScript = () => {
+    const listeners = new Map();
+    const script = {
+      dataset: {},
+      isConnected: false,
+      addEventListener: (type, listener) => listeners.set(type, listener),
+      removeEventListener: (type, listener) => {
+        if (listeners.get(type) === listener) listeners.delete(type);
+      },
+      dispatch: (type) => listeners.get(type)?.(),
+      remove: () => {
+        script.isConnected = false;
+        const index = scripts.indexOf(script);
+        if (index >= 0) scripts.splice(index, 1);
+      },
+    };
+    return script;
+  };
+  const document = {
+    currentScript: null,
+    querySelector: (selector) => (
+      selector.startsWith("link") ? null : scripts.find((script) => script.isConnected) || null
+    ),
+    createElement: () => createScript(),
+    head: {
+      appendChild: (script) => {
+        script.isConnected = true;
+        scripts.push(script);
+      },
+    },
+  };
+
+  globalThis.document = document;
+  globalThis.location = { href: "http://localhost/" };
+  globalThis.setTimeout = (callback) => {
+    const timerId = nextTimerId;
+    nextTimerId += 1;
+    timers.set(timerId, callback);
+    return timerId;
+  };
+  globalThis.clearTimeout = (timerId) => timers.delete(timerId);
+  try {
+    const firstAttempt = loader.ensurePlotlyLoaded();
+    const failedScript = scripts[0];
+    failedScript.dispatch("error");
+    await assert.rejects(firstAttempt, /Plotly failed to load/);
+    assert.equal(scripts.length, 0);
+
+    const timedOutAttempt = loader.ensurePlotlyLoaded();
+    const timedOutScript = scripts[0];
+    [...timers.values()][0]();
+    await assert.rejects(timedOutAttempt, /Plotly failed to load/);
+    assert.equal(scripts.length, 0);
+
+    const finalAttempt = loader.ensurePlotlyLoaded();
+    const replacementScript = scripts[0];
+    assert.notEqual(replacementScript, failedScript);
+    assert.notEqual(replacementScript, timedOutScript);
+    globalThis.Plotly = { version: "test" };
+    replacementScript.dispatch("load");
+    assert.equal(await finalAttempt, globalThis.Plotly);
+  } finally {
+    delete globalThis.Plotly;
+    globalThis.document = previousTestDocument;
+    globalThis.location = previousTestLocation;
+    globalThis.setTimeout = previousSetTimeout;
+    globalThis.clearTimeout = previousClearTimeout;
+  }
+});

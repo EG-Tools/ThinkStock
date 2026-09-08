@@ -34,6 +34,9 @@ test("AI release gate permits deleted research caches only for an unchanged appr
   const source = await readFile(new URL("../../scripts/check_ai_validation_status.mjs", import.meta.url), "utf8");
   assert.match(source, /approvedIncumbentUnchanged/);
   assert.match(source, /changed\.length === 0/);
+  assert.match(source, /APPROVED_RUNTIME_SHA256/);
+  assert.match(source, /createHash\("sha256"\)/);
+  assert.doesNotMatch(source, /git[\s\S]*diff[\s\S]*HEAD/);
   assert.match(source, /validation-artifacts-missing/);
   assert.match(source, /reproducible backtest artifacts are not retained locally/);
 });

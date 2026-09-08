@@ -163,6 +163,8 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
       || (() => {});
     let hoverSyncing = false;
     let hoverSyncFrame = 0;
+    let hoverCorrectionFrame = 0;
+    let hoverGeneration = 0;
     let pendingHoverSync = null;
     let lastHoverSyncKey = "";
     const hoverPopupStamps = new WeakMap();
@@ -318,7 +320,31 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
         && stamp.content === hoverPopupContent(popup);
     }
 
-    function syncHoverToChartNow(targetEl, xValue, syncKey, preferredTraceIndex = null) {
+    function scheduleHoverCorrection(callback, generation) {
+      if (hoverCorrectionFrame) cancelFrame(hoverCorrectionFrame);
+      hoverCorrectionFrame = requestFrame(() => {
+        hoverCorrectionFrame = 0;
+        if (generation !== hoverGeneration) return;
+        callback();
+      });
+    }
+
+    function cancelScheduledHoverWork() {
+      hoverGeneration += 1;
+      if (hoverSyncFrame) cancelFrame(hoverSyncFrame);
+      if (hoverCorrectionFrame) cancelFrame(hoverCorrectionFrame);
+      hoverSyncFrame = 0;
+      hoverCorrectionFrame = 0;
+      pendingHoverSync = null;
+    }
+
+    function syncHoverToChartNow(
+      targetEl,
+      xValue,
+      syncKey,
+      preferredTraceIndex = null,
+      generation = hoverGeneration,
+    ) {
       const plotly = scope.Plotly;
       if (!targetEl || !plotly?.Fx?.hover || xValue == null) return;
       setSyncing(true);
@@ -350,12 +376,12 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
         stampHoverPopup(targetEl, syncKey, expectsDetailPoint);
       } catch (_) {
         if (!nearestPoint) {
-          requestFrame(() => setSyncing(false));
+          scheduleHoverCorrection(() => setSyncing(false), generation);
           return;
         }
         usedPointFallback = showPointFallback(plotly, targetEl, nearestPoint);
       }
-      requestFrame(() => {
+      scheduleHoverCorrection(() => {
         const pointPopupReady = expectsDetailPoint
           && hoverPopupMatches(targetEl, syncKey, true);
         if (expectsDetailPoint && directPoint && !pointPopupReady) {
@@ -373,11 +399,17 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
         normalizeHoverPopupIndent(targetEl);
         stampHoverPopup(targetEl, syncKey, expectsDetailPoint);
         setSyncing(false);
-      });
+      }, generation);
     }
 
     function syncHoverToChart(targetEl, xValue, preferredTraceIndex = null) {
       if (!targetEl || xValue == null) return;
+      hoverGeneration += 1;
+      if (hoverCorrectionFrame) {
+        cancelFrame(hoverCorrectionFrame);
+        hoverCorrectionFrame = 0;
+        setSyncing(false);
+      }
       const key = [
         targetEl.id || "chart",
         String(xValue),
@@ -403,6 +435,7 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
           pending.xValue,
           pending.key,
           pending.preferredTraceIndex,
+          hoverGeneration,
         );
       });
     }
@@ -473,26 +506,24 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
     function clearHoverOnChart(targetEl) {
       const plotly = scope.Plotly;
       hoverPopupAnchors.delete(targetEl);
-      if (!targetEl || !plotly?.Fx?.unhover) return;
-      if (hoverSyncFrame) {
-        cancelFrame(hoverSyncFrame);
-        hoverSyncFrame = 0;
-      }
-      pendingHoverSync = null;
+      cancelScheduledHoverWork();
       lastHoverSyncKey = "";
+      if (!targetEl || !plotly?.Fx?.unhover) {
+        setSyncing(false);
+        return;
+      }
       setSyncing(true);
       try {
         plotly.Fx.unhover(targetEl);
       } catch (_) {
         // The chart may be detached during a responsive relayout.
+      } finally {
+        setSyncing(false);
       }
-      requestFrame(() => setSyncing(false));
     }
 
     function destroy() {
-      if (hoverSyncFrame) cancelFrame(hoverSyncFrame);
-      hoverSyncFrame = 0;
-      pendingHoverSync = null;
+      cancelScheduledHoverWork();
       lastHoverSyncKey = "";
       setSyncing(false);
     }

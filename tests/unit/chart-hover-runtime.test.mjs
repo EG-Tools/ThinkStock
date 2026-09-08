@@ -3,6 +3,53 @@ import test from "node:test";
 
 import * as hoverModule from "../../docs/modules/chart-hover-runtime.mjs";
 
+test("chart hover cannot reappear from a stale correction after leaving the chart", () => {
+  const frames = [];
+  const hoverCalls = [];
+  const scope = {
+    Plotly: {
+      Fx: {
+        hover: (...args) => hoverCalls.push(args),
+        unhover: () => {},
+      },
+    },
+    requestAnimationFrame: (callback) => {
+      frames.push(callback);
+      return frames.length;
+    },
+    // Keep the callback in the queue to prove generation invalidation is sufficient.
+    cancelAnimationFrame: () => {},
+  };
+  const groupedTrace = {
+    x: ["2026-06-30"],
+    meta: {
+      hoverGroupHasDetails: [true],
+      isGroupedHoverOwnerTrace: true,
+      overlayKind: "grouped-hover",
+    },
+  };
+  const chart = {
+    id: "chart",
+    data: [groupedTrace],
+    _fullData: [groupedTrace],
+    querySelector: () => null,
+  };
+  const runtime = hoverModule.createChartHoverRuntime(scope, {
+    findNearestHoverPoint: () => ({ curveNumber: 0, pointNumber: 0 }),
+    getTraceTimeMsArray: () => [Date.parse("2026-06-30T00:00:00Z")],
+    toMsSafe: () => Date.parse("2026-06-30T00:00:00Z"),
+  });
+
+  runtime.syncHoverToChart(chart, "2026-06-30");
+  frames.shift()();
+  assert.equal(hoverCalls.length, 1);
+
+  runtime.clearHoverOnChart(chart);
+  frames.shift()();
+  assert.equal(hoverCalls.length, 1);
+  assert.equal(runtime.isSyncing(), false);
+});
+
 test("chart hover requests the complete unified popup at the selected x value", () => {
   const frames = [];
   const hoverCalls = [];

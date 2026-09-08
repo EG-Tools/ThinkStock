@@ -30,8 +30,19 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
     }
   })();
   const PLOTLY_SCRIPT_URL = `./vendor/plotly-thinkstock-2.35.2.min.js${cacheBuster}`;
+  const PLOTLY_LOAD_TIMEOUT_MS = 12000;
   let plotlyLoadPromise = null;
   let visualThemeCache = null;
+
+  function removePlotlyScript(script) {
+    if (!script) return;
+    try {
+      if (typeof script.remove === "function") script.remove();
+      else script.parentNode?.removeChild?.(script);
+    } catch (_) {
+      script.parentNode?.removeChild?.(script);
+    }
+  }
 
   function ensurePlotlyLoaded() {
     if (globalScope.Plotly) return Promise.resolve(globalScope.Plotly);
@@ -43,32 +54,52 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
         reject(new Error("Plotly document is unavailable"));
         return;
       }
-      const existingScript = document.querySelector(
+      let script = document.querySelector(
         'script[data-thinkstock-plotly="true"], script[src*="plotly-thinkstock-2.35.2.min.js"]'
       );
+      if (script?.dataset?.thinkstockPlotlyState === "failed") {
+        removePlotlyScript(script);
+        script = null;
+      }
+      if (!script) {
+        script = document.createElement("script");
+        script.src = document.querySelector("link[data-thinkstock-plotly-preload]")?.href
+          || PLOTLY_SCRIPT_URL;
+        script.async = true;
+        script.defer = true;
+        script.dataset.thinkstockPlotly = "true";
+      }
+      let settled = false;
+      let timeoutId = 0;
+      const cleanup = () => {
+        script.removeEventListener?.("load", complete);
+        script.removeEventListener?.("error", fail);
+        if (timeoutId) globalScope.clearTimeout?.(timeoutId);
+        timeoutId = 0;
+      };
+      const fail = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        script.dataset.thinkstockPlotlyState = "failed";
+        removePlotlyScript(script);
+        reject(new Error("Plotly failed to load"));
+      };
       const complete = () => {
+        if (settled) return;
         if (globalScope.Plotly) {
+          settled = true;
+          cleanup();
+          script.dataset.thinkstockPlotlyState = "loaded";
           resolve(globalScope.Plotly);
         } else {
-          reject(new Error("Plotly initialized without exposing Plotly"));
+          fail();
         }
       };
-
-      if (existingScript) {
-        existingScript.addEventListener("load", complete, { once: true });
-        existingScript.addEventListener("error", () => reject(new Error("Plotly failed to load")), { once: true });
-        return;
-      }
-
-      const script = document.createElement("script");
-      script.src = document.querySelector("link[data-thinkstock-plotly-preload]")?.href
-        || PLOTLY_SCRIPT_URL;
-      script.async = true;
-      script.defer = true;
-      script.dataset.thinkstockPlotly = "true";
       script.addEventListener("load", complete, { once: true });
-      script.addEventListener("error", () => reject(new Error("Plotly failed to load")), { once: true });
-      document.head.appendChild(script);
+      script.addEventListener("error", fail, { once: true });
+      timeoutId = globalScope.setTimeout?.(fail, PLOTLY_LOAD_TIMEOUT_MS) || 0;
+      if (!script.isConnected) document.head.appendChild(script);
     }).catch((error) => {
       plotlyLoadPromise = null;
       throw error;

@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,6 +18,15 @@ const runtimeFiles = [
   "docs/modules/ai-forecast.js",
   "docs/modules/ai-scenario-paths.js",
 ];
+const APPROVED_RUNTIME_SHA256 = Object.freeze({
+  "docs/modules/ai-context-profile.js": "139772a548dd5ef0bc5104ab1bea2ac6a9ecd6ebb5be1ee69bf7a4840fb1f25d",
+  "docs/modules/ai-forecast-calibration.mjs": "46cc200439b03f33766b8cb6d55e142b7ccb71691cbaafe95f9028503834dd5c",
+  "docs/modules/ai-forecast-math.js": "1d891c0a210dc99de0dc73b03721e31ab76d34f09f7e53ed201d0bd452dcff8a",
+  "docs/modules/ai-forecast-model.js": "774abcf64c28303384b083628a83ddbee520f88cf90b74fc3e97b045041cc1af",
+  "docs/modules/ai-forecast-scenarios.js": "ce9bcb8325bbdc01b97189fa8513ca1cb912d66dae8dbcaae6ddbb13bb3ef78f",
+  "docs/modules/ai-forecast.js": "55eb58cde7f15782aefd38a4303a4510bde132952a1a60a766a73b4b471d11cf",
+  "docs/modules/ai-scenario-paths.js": "0db9e99ae98384500a5a6e941f6831212f8c093066af50248581d520c12768f6",
+});
 
 async function readJsonIfPresent(filePath) {
   try {
@@ -28,22 +37,22 @@ async function readJsonIfPresent(filePath) {
   }
 }
 
-function changedRuntimeFiles() {
-  const result = spawnSync("git", ["diff", "--name-only", "HEAD", "--", ...runtimeFiles], {
-    cwd: root,
-    encoding: "utf8",
-  });
-  if (result.status !== 0) return [];
-  return String(result.stdout || "").split(/\r?\n/).filter(Boolean);
+async function changedRuntimeFiles() {
+  const checks = await Promise.all(runtimeFiles.map(async (file) => {
+    const source = (await readFile(path.join(root, file), "utf8")).replace(/\r\n/g, "\n");
+    const hash = createHash("sha256").update(source).digest("hex");
+    return hash === APPROVED_RUNTIME_SHA256[file] ? "" : file;
+  }));
+  return checks.filter(Boolean);
 }
 
-const [runtimeSource, summary, comparison] = await Promise.all([
+const [runtimeSource, summary, comparison, changed] = await Promise.all([
   readFile(path.join(root, "docs", "modules", "ai-forecast.js"), "utf8"),
   readJsonIfPresent(path.join(root, ".thinkstock-cache", "ai-backtest", "walkforward-validation-summary.json")),
   readJsonIfPresent(path.join(root, ".thinkstock-cache", "ai-backtest", "walkforward-comparison.json")),
+  changedRuntimeFiles(),
 ]);
 const runtimePathVersion = runtimeSource.match(/const FORECAST_PATH_VERSION = "([^"]+)";/)?.[1] || "";
-const changed = changedRuntimeFiles();
 
 if (!summary || !comparison) {
   const approvedIncumbentUnchanged = changed.length === 0
