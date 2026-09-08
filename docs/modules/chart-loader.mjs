@@ -61,7 +61,8 @@ const globalScope = typeof self !== "undefined" ? self : globalThis;
       }
 
       const script = document.createElement("script");
-      script.src = PLOTLY_SCRIPT_URL;
+      script.src = document.querySelector("link[data-thinkstock-plotly-preload]")?.href
+        || PLOTLY_SCRIPT_URL;
       script.async = true;
       script.defer = true;
       script.dataset.thinkstockPlotly = "true";

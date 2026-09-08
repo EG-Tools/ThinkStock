@@ -83,6 +83,12 @@ def main() -> int:
         f'<script defer src="{bundle_src}"></script>',
         "index app bundle",
     )
+    index = replace_once(
+        index,
+        r'<link rel="preload" as="script" data-thinkstock-plotly-preload href="\./vendor/plotly-thinkstock-2\.35\.2\.min\.js(?:\?v=[^"]*)?">',
+        f'<link rel="preload" as="script" data-thinkstock-plotly-preload href="{plotly_src}">',
+        "index Plotly preload",
+    )
     INDEX_HTML.write_text(index, encoding="utf-8", newline="\n")
 
     sw = SW_JS.read_text(encoding="utf-8")

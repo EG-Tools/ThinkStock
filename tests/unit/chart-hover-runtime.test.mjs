@@ -651,6 +651,73 @@ test("chart hover rebuilds signal details when Plotly reuses the point popup for
   assert.equal(hoverCalls.length, 2);
 });
 
+test("chart hover keeps marker details when a late unified popup wins after zoom", () => {
+  const frames = [];
+  const hoverCalls = [];
+  let popupKind = "none";
+  const pointText = {
+    getAttribute: (name) => (name === "data-unformatted" ? "가격\n매수 신호\n근거: 반전" : null),
+    textContent: "",
+  };
+  const pointPopup = {
+    querySelector: (selector) => (selector === "text.nums" ? pointText : null),
+    querySelectorAll: () => [],
+  };
+  const inputTrace = {
+    x: ["2026-06-30"],
+    hovertemplate: "%{text}<extra></extra>",
+    meta: {
+      hoverGroupHasDetails: [true],
+      isGroupedHoverOwnerTrace: true,
+      overlayKind: "grouped-hover",
+      pointHoverTemplate: "%{x}<br>%{customdata}<extra></extra>",
+    },
+  };
+  const scope = {
+    Plotly: {
+      Fx: {
+        hover: (_chart, points) => {
+          hoverCalls.push(points);
+          popupKind = Object.hasOwn(points[0] || {}, "curveNumber") ? "point" : "unified";
+        },
+        unhover: () => { popupKind = "none"; },
+      },
+    },
+    requestAnimationFrame: (callback) => {
+      frames.push(callback);
+      return frames.length;
+    },
+    cancelAnimationFrame: () => {},
+  };
+  const runtime = hoverModule.createChartHoverRuntime(scope, {
+    findNearestHoverPoint: () => ({ curveNumber: 0, pointNumber: 0 }),
+    getTraceTimeMsArray: () => [Date.parse("2026-06-30T00:00:00Z")],
+    toMsSafe: () => Date.parse("2026-06-30T00:00:00Z"),
+  });
+  const chart = {
+    id: "chart",
+    data: [inputTrace],
+    _fullData: [{ ...inputTrace, meta: { ...inputTrace.meta } }],
+    querySelector: (selector) => {
+      if (selector === ".hoverlayer > g.hovertext" && popupKind === "point") return pointPopup;
+      if (selector === ".hoverlayer > g.legend" && popupKind === "unified") return {};
+      return null;
+    },
+  };
+
+  runtime.syncHoverToChart(chart, "2026-06-30");
+  frames.shift()();
+  assert.equal(popupKind, "point");
+
+  // The browser's native unified hover can arrive after our exact marker hover.
+  popupKind = "unified";
+  frames.shift()();
+
+  assert.equal(popupKind, "point");
+  assert.equal(hoverCalls.length, 2);
+  assert.deepEqual(hoverCalls.at(-1), [{ curveNumber: 0, pointIndex: 0, pointNumber: 0 }]);
+});
+
 test("chart hover exposes event markers only on the exact selected date", () => {
   const runtime = hoverModule.createChartHoverRuntime({
     requestAnimationFrame: () => 1,

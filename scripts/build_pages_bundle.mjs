@@ -25,6 +25,7 @@ const e2eOutputDir = path.join(root, ".thinkstock-cache", "e2e");
 const e2eOutputFile = path.join(e2eOutputDir, "app.bundle.min.js");
 const e2eTemporaryOutputFile = path.join(e2eOutputDir, "app.bundle.next.js");
 const bundleReportFile = path.join(root, ".thinkstock-cache", "build", "pages-bundles.json");
+const sharedFeatureTemporaryDir = path.join(root, ".thinkstock-cache", "build", "shared-features-next");
 const maxBundleBytes = Number(packageJson.thinkstockBuild?.appBundleMaxBytes);
 const maxE2eBundleBytes = Number(packageJson.thinkstockBuild?.e2eBundleMaxBytes);
 const maxBundleGzipBytes = Number(packageJson.thinkstockBuild?.appBundleGzipMaxBytes);
@@ -84,6 +85,7 @@ const featureBundles = Object.freeze([
     output: "auxiliary-chart-feature.bundle.min.js",
     maxBytes: 80_000,
     format: "esm",
+    shared: true,
   }),
   Object.freeze({
     entry: "ai-feature.mjs",
@@ -96,18 +98,21 @@ const featureBundles = Object.freeze([
     output: "broker-research-feature.bundle.min.js",
     maxBytes: 80_000,
     format: "esm",
+    shared: true,
   }),
   Object.freeze({
     entry: "market-timing-feature.mjs",
     output: "market-timing-feature.bundle.min.js",
     maxBytes: 180_000,
     format: "esm",
+    shared: true,
   }),
   Object.freeze({
     entry: "stock-research-feature.mjs",
     output: "stock-research-feature.bundle.min.js",
     maxBytes: 180_000,
     format: "esm",
+    shared: true,
   }),
   Object.freeze({
     entry: "stock-research-worker.mjs",
@@ -129,30 +134,35 @@ const featureBundles = Object.freeze([
     output: "settings-feature.bundle.min.js",
     maxBytes: 100_000,
     format: "esm",
+    shared: true,
   }),
   Object.freeze({
     entry: "eps-feature.mjs",
     output: "eps-feature.bundle.min.js",
     maxBytes: 50_000,
     format: "esm",
+    shared: true,
   }),
   Object.freeze({
     entry: "dart-feature.mjs",
     output: "dart-feature.bundle.min.js",
     maxBytes: 60_000,
     format: "esm",
+    shared: true,
   }),
   Object.freeze({
     entry: "diagnostics-runtime-feature.mjs",
     output: "diagnostics-runtime-feature.bundle.min.js",
     maxBytes: 24_000,
     format: "esm",
+    shared: true,
   }),
   Object.freeze({
     entry: "data-freshness-feature.mjs",
     output: "data-freshness-feature.bundle.min.js",
     maxBytes: 32_000,
     format: "esm",
+    shared: true,
   }),
 ]);
 
@@ -223,21 +233,90 @@ async function buildFeatureBundle(definition) {
     const gzipBytes = gzipSync(await readFile(temporaryFile), { level: 9 }).byteLength;
     await replaceBuiltFile(temporaryFile, outputFilePath);
     console.log(`Built ${path.relative(root, outputFilePath)} (${outputStats.size} bytes, ${gzipBytes} gzip)`);
-    return summarizeBundle({
-      root,
-      name: definition.output.replace(/\.bundle\.min\.js$/, ""),
-      file: outputFilePath,
-      bytes: outputStats.size,
-      gzipBytes,
-      metafile: result.metafile,
+    return Object.freeze({
+      assets: Object.freeze([definition.output]),
+      reports: Object.freeze([summarizeBundle({
+        root,
+        name: definition.output.replace(/\.bundle\.min\.js$/, ""),
+        file: outputFilePath,
+        bytes: outputStats.size,
+        gzipBytes,
+        metafile: result.metafile,
+      })]),
     });
   } finally {
     await rm(temporaryFile, { force: true });
   }
 }
 
-async function buildRuntimeAssetManifest() {
-  const paths = ["app.bundle.min.js", ...featureBundles.map(({ output }) => output)]
+function sharedEntryName(definition) {
+  return definition.output.replace(/\.bundle\.min\.js$/, "");
+}
+
+async function buildSharedFeatureBundles(definitions) {
+  if (!definitions.length) {
+    return Object.freeze({ assets: Object.freeze([]), reports: Object.freeze([]) });
+  }
+  await rm(sharedFeatureTemporaryDir, { force: true, recursive: true });
+  await mkdir(sharedFeatureTemporaryDir, { recursive: true });
+  const entryPoints = Object.fromEntries(definitions.map((definition) => [
+    sharedEntryName(definition),
+    path.join(root, "scripts", "feature-entries", definition.entry),
+  ]));
+  const result = await build({
+    entryPoints,
+    outdir: sharedFeatureTemporaryDir,
+    entryNames: "[name].bundle.min",
+    chunkNames: "chunks/[name]-[hash]",
+    bundle: true,
+    splitting: true,
+    minify: true,
+    format: "esm",
+    platform: "browser",
+    target: ["safari15"],
+    legalComments: "none",
+    charset: "utf8",
+    treeShaking: true,
+    metafile: true,
+    define: {
+      __THINKSTOCK_RELEASE_NOTES_BYTES__: String(releaseNotesSourceBytes),
+    },
+  });
+  const outputEntries = Object.keys(result.metafile.outputs || {}).map((file) => path.resolve(root, file));
+  await rm(path.join(outputDir, "chunks"), { force: true, recursive: true });
+
+  const reports = [];
+  const assets = [];
+  for (const sourceFile of outputEntries) {
+    const relativeFile = path.relative(sharedFeatureTemporaryDir, sourceFile);
+    const targetFile = path.join(outputDir, relativeFile);
+    const definition = definitions.find((candidate) => candidate.output === relativeFile);
+    const outputStats = await stat(sourceFile);
+    if (definition && outputStats.size > definition.maxBytes) {
+      throw new Error(`${definition.output} exceeds ${definition.maxBytes} bytes: ${outputStats.size}`);
+    }
+    const gzipBytes = gzipSync(await readFile(sourceFile), { level: 9 }).byteLength;
+    await mkdir(path.dirname(targetFile), { recursive: true });
+    await replaceBuiltFile(sourceFile, targetFile);
+    const portableFile = relativeFile.replaceAll("\\", "/");
+    assets.push(portableFile);
+    reports.push(summarizeBundle({
+      root,
+      name: definition ? sharedEntryName(definition) : `shared:${portableFile}`,
+      file: targetFile,
+      bytes: outputStats.size,
+      gzipBytes,
+      metafile: result.metafile,
+      metafileOutput: sourceFile,
+    }));
+    console.log(`Built ${path.relative(root, targetFile)} (${outputStats.size} bytes, ${gzipBytes} gzip)`);
+  }
+  await rm(sharedFeatureTemporaryDir, { force: true, recursive: true });
+  return Object.freeze({ assets: Object.freeze(assets), reports: Object.freeze(reports) });
+}
+
+async function buildRuntimeAssetManifest(featureAssetNames) {
+  const paths = ["app.bundle.min.js", ...(featureAssetNames || [])]
     .map((name) => `/assets/${name}`)
     .sort((left, right) => left.localeCompare(right));
   const serializedPaths = JSON.stringify(paths, null, 2)
@@ -257,8 +336,12 @@ async function buildRuntimeAssetManifest() {
 async function stampLocalBundleFingerprint() {
   const fingerprint = await runtimeBundleFingerprint(outputDir);
   const html = await readFile(indexFile, "utf8");
-  const nextHtml = html.replace(
+  const nextAppHtml = html.replace(
     /(<script defer src="\.\/assets\/app\.bundle\.min\.js\?v=dev(?:&amp;build=[^"&]+)?)(?:&amp;asset=[^"]+)?("><\/script>)/,
+    `$1&amp;asset=${fingerprint}$2`,
+  );
+  const nextHtml = nextAppHtml.replace(
+    /(<link rel="preload" as="script" data-thinkstock-plotly-preload href="\.\/vendor\/plotly-thinkstock-2\.35\.2\.min\.js\?v=dev(?:&amp;build=[^"&]+)?)(?:&amp;asset=[^"]+)?(">)/,
     `$1&amp;asset=${fingerprint}$2`,
   );
   if (nextHtml === html && !html.includes(`asset=${fingerprint}`)) {
@@ -291,10 +374,16 @@ try {
   }
   await replaceBuiltFile(e2eTemporaryOutputFile, e2eOutputFile);
   console.log(`Built ${path.relative(root, e2eOutputFile)} (${e2eOutputStats.size} bytes, test only)`);
-  const featureReports = await Promise.all(
-    featureBundles.map((definition) => buildFeatureBundle(definition)),
-  );
-  await buildRuntimeAssetManifest();
+  const sharedDefinitions = featureBundles.filter((definition) => definition.shared === true);
+  const standaloneDefinitions = featureBundles.filter((definition) => definition.shared !== true);
+  const [sharedFeatureResult, standaloneFeatureResults] = await Promise.all([
+    buildSharedFeatureBundles(sharedDefinitions),
+    Promise.all(standaloneDefinitions.map((definition) => buildFeatureBundle(definition))),
+  ]);
+  const featureResults = [sharedFeatureResult, ...standaloneFeatureResults];
+  const featureReports = featureResults.flatMap((result) => result.reports);
+  const featureAssetNames = featureResults.flatMap((result) => result.assets);
+  await buildRuntimeAssetManifest(featureAssetNames);
   const localFingerprint = await stampLocalBundleFingerprint();
   console.log(`Stamped local runtime fingerprint ${localFingerprint}`);
   const report = createBundleReport({
@@ -318,4 +407,5 @@ try {
   await rm(e2eTemporaryOutputFile, { force: true });
   await rm(temporaryStylesheetFile, { force: true });
   await rm(temporaryRuntimeAssetManifestFile, { force: true });
+  await rm(sharedFeatureTemporaryDir, { force: true, recursive: true });
 }

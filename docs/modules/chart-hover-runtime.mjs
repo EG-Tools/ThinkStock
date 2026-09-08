@@ -331,6 +331,7 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
         : null;
       const groupedDetailPoint = groupedDetailPointAtX(targetEl, xValue);
       const expectsDetailPoint = Boolean(preferredScenarioPoint || groupedDetailPoint);
+      const directPoint = preferredScenarioPoint || groupedDetailPoint;
       let usedPointFallback = false;
       try {
         // A native hit on a large EPS point can leave Plotly in single-point hover
@@ -341,7 +342,6 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
         // Exact marker dates already exist in the grouped owner. Addressing that
         // point directly avoids Plotly snapping EPS or event details to a nearby
         // daily price while preserving unified-x hover for ordinary prices.
-        const directPoint = preferredScenarioPoint || groupedDetailPoint;
         usedPointFallback = directPoint
           ? showPointFallback(plotly, targetEl, directPoint)
           : false;
@@ -356,13 +356,18 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
         usedPointFallback = showPointFallback(plotly, targetEl, nearestPoint);
       }
       requestFrame(() => {
-        const unifiedPopupVisible = Boolean(
-          targetEl.querySelector?.(".hoverlayer > g.legend"),
-        );
-        const pointPopupVisible = Boolean(
-          targetEl.querySelector?.(".hoverlayer > g.hovertext"),
-        );
-        if (!unifiedPopupVisible && !pointPopupVisible && !usedPointFallback && nearestPoint) {
+        const pointPopupReady = expectsDetailPoint
+          && hoverPopupMatches(targetEl, syncKey, true);
+        if (expectsDetailPoint && directPoint && !pointPopupReady) {
+          // Plotly can paint a later unified-price popup from the same pointer
+          // event after the exact marker popup. Reassert the selected detail
+          // once on the settled frame so price hover cannot hide signal rows.
+          showPointFallback(plotly, targetEl, directPoint);
+        } else if (!expectsDetailPoint
+          && !targetEl.querySelector?.(".hoverlayer > g.legend")
+          && !targetEl.querySelector?.(".hoverlayer > g.hovertext")
+          && !usedPointFallback
+          && nearestPoint) {
           showPointFallback(plotly, targetEl, nearestPoint);
         }
         normalizeHoverPopupIndent(targetEl);

@@ -104,8 +104,29 @@ function createJsonStore(scope = globalThis, options = {}) {
     const dbVersion = Math.max(1, Number(options.dbVersion) || Number(storageContract.dbVersion) || 0);
     if (!dbName) throw new Error("IndexedDB storage contract is required");
     const storeNames = [...new Set((options.storeNames || []).map(String).filter(Boolean))];
+    const indexedStoreNames = new Set(
+      (options.indexedStoreNames || []).map(String).filter((name) => storeNames.includes(name)),
+    );
+    const retentionIndexName = String(
+      options.retentionIndexName || storageContract.retentionIndexName || "retentionAt",
+    );
     let database = null;
     let databasePromise = null;
+
+    function retentionTimestamp(value, fallback = Date.now()) {
+      const supplied = Number(value?.lastAccessed || value?.savedAt || value?.[retentionIndexName]);
+      return Number.isFinite(supplied) && supplied >= 0 ? supplied : fallback;
+    }
+
+    function withRetentionIndex(storeName, value, fallback = Date.now()) {
+      if (!indexedStoreNames.has(storeName) || !value || typeof value !== "object" || Array.isArray(value)) {
+        return value;
+      }
+      const timestamp = retentionTimestamp(value, fallback);
+      return Number(value[retentionIndexName]) === timestamp
+        ? value
+        : { ...value, [retentionIndexName]: timestamp };
+    }
 
     function close() {
       const current = database;
@@ -127,7 +148,21 @@ function createJsonStore(scope = globalThis, options = {}) {
         request.onupgradeneeded = () => {
           const db = request.result;
           storeNames.forEach((storeName) => {
-            if (!db.objectStoreNames.contains(storeName)) db.createObjectStore(storeName);
+            const store = db.objectStoreNames.contains(storeName)
+              ? request.transaction?.objectStore(storeName)
+              : db.createObjectStore(storeName);
+            if (!store || !indexedStoreNames.has(storeName)) return;
+            if (!store.indexNames?.contains?.(retentionIndexName)) {
+              store.createIndex(retentionIndexName, retentionIndexName, { unique: false });
+            }
+            const cursorRequest = store.openCursor();
+            cursorRequest.onsuccess = () => {
+              const cursor = cursorRequest.result;
+              if (!cursor) return;
+              const value = withRetentionIndex(storeName, cursor.value, 0);
+              if (value !== cursor.value) cursor.update(value);
+              cursor.continue();
+            };
           });
         };
         request.onsuccess = () => {
@@ -253,7 +288,7 @@ function createJsonStore(scope = globalThis, options = {}) {
     async function writeRecord(storeName, key, value) {
       return withDatabase(async (db) => {
         const transaction = db.transaction(storeName, "readwrite");
-        transaction.objectStore(storeName).put(value, key);
+        transaction.objectStore(storeName).put(withRetentionIndex(storeName, value), key);
         await transactionDone(transaction, {
           error: "IndexedDB record write failed",
           abort: "IndexedDB record write aborted",
@@ -270,7 +305,9 @@ function createJsonStore(scope = globalThis, options = {}) {
       return withDatabase(async (db) => {
         const transaction = db.transaction(storeName, "readwrite");
         const store = transaction.objectStore(storeName);
-        normalizedEntries.forEach(([key, value]) => store.put(value, key));
+        normalizedEntries.forEach(([key, value]) => (
+          store.put(withRetentionIndex(storeName, value), key)
+        ));
         await transactionDone(transaction, {
           error: "IndexedDB records write failed",
           abort: "IndexedDB records write aborted",
@@ -360,6 +397,88 @@ function createJsonStore(scope = globalThis, options = {}) {
       return withDatabase(async (db) => {
         const transaction = db.transaction(storeName, "readwrite");
         const store = transaction.objectStore(storeName);
+        const retentionIndex = indexedStoreNames.has(storeName)
+          && store.indexNames?.contains?.(retentionIndexName)
+          ? store.index(retentionIndexName)
+          : null;
+        const keyRange = scope.IDBKeyRange || globalThis.IDBKeyRange;
+        if (retentionIndex && keyRange) {
+          const now = Number.isFinite(pruneOptions.now) ? pruneOptions.now : Date.now();
+          const maxIdleMs = Math.max(0, Number(pruneOptions.maxIdleMs) || 0);
+          const maxRecords = Math.max(0, Number(pruneOptions.maxRecords) || 0);
+          const deleteKeys = new Set();
+          const activeKeys = [];
+          const expiresBefore = now - maxIdleMs;
+          const done = transactionDone(transaction, {
+            error: "IndexedDB cache cleanup failed",
+            abort: "IndexedDB cache cleanup aborted",
+          });
+          const totalRequest = store.count();
+          const indexedRequest = retentionIndex.count();
+          await new Promise((resolve, reject) => {
+            let totalCount = null;
+            let indexedCount = null;
+            const fail = (request, message) => {
+              try { transaction.abort(); } catch (_) {}
+              reject(request.error || new Error(message));
+            };
+            const scanIndex = () => {
+              const scanRequest = retentionIndex.openKeyCursor(null, "next");
+              scanRequest.onsuccess = () => {
+                const cursor = scanRequest.result;
+                if (cursor) {
+                  if (Number(cursor.key) < expiresBefore) deleteKeys.add(cursor.primaryKey);
+                  else activeKeys.push(cursor.primaryKey);
+                  cursor.continue();
+                  return;
+                }
+                const overflow = Math.max(0, activeKeys.length - maxRecords);
+                activeKeys.slice(0, overflow).forEach((key) => deleteKeys.add(key));
+                deleteKeys.forEach((key) => store.delete(key));
+                resolve();
+              };
+              scanRequest.onerror = () => fail(
+                scanRequest,
+                "IndexedDB cache retention scan failed",
+              );
+            };
+            const backfillOrScan = () => {
+              if (totalCount === null || indexedCount === null) return;
+              if (indexedCount >= totalCount) {
+                scanIndex();
+                return;
+              }
+              const backfillRequest = store.openCursor();
+              backfillRequest.onsuccess = () => {
+                const cursor = backfillRequest.result;
+                if (cursor) {
+                  const value = withRetentionIndex(storeName, cursor.value, 0);
+                  if (value !== cursor.value) cursor.update(value);
+                  cursor.continue();
+                  return;
+                }
+                scanIndex();
+              };
+              backfillRequest.onerror = () => fail(
+                backfillRequest,
+                "IndexedDB cache index backfill failed",
+              );
+            };
+            totalRequest.onsuccess = () => {
+              totalCount = Math.max(0, Number(totalRequest.result) || 0);
+              backfillOrScan();
+            };
+            totalRequest.onerror = () => fail(totalRequest, "IndexedDB cache count failed");
+            indexedRequest.onsuccess = () => {
+              indexedCount = Math.max(0, Number(indexedRequest.result) || 0);
+              backfillOrScan();
+            };
+            indexedRequest.onerror = () => fail(indexedRequest, "IndexedDB cache index count failed");
+          });
+          await done;
+          return deleteKeys.size;
+        }
+
         let deleteKeys = [];
         const metadata = [];
         const request = store.openCursor();

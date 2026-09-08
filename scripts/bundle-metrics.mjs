@@ -14,9 +14,17 @@ function summarizeBundle(options = {}) {
   const metafile = options.metafile && typeof options.metafile === "object"
     ? options.metafile
     : {};
-  const output = Object.values(metafile.outputs || {}).find((candidate) => (
-    candidate && typeof candidate === "object" && candidate.inputs
-  )) || {};
+  const requestedOutput = options.metafileOutput
+    ? path.resolve(root, String(options.metafileOutput))
+    : "";
+  const outputEntries = Object.entries(metafile.outputs || {});
+  const output = (requestedOutput
+    ? outputEntries.find(([file]) => path.resolve(root, file) === requestedOutput)?.[1]
+    : null)
+    || outputEntries.find(([, candidate]) => (
+      candidate && typeof candidate === "object" && candidate.inputs
+    ))?.[1]
+    || {};
   const contributors = Object.entries(output.inputs || {}).map(([input, value]) => ({
     input: sourcePath(root, input),
     bytes: Math.max(0, Number(value?.bytesInOutput) || 0),

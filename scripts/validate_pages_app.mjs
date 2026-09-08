@@ -185,6 +185,10 @@ const [appBootstrapOrchestrator, appControlConfig, buildPagesBundle, ...styleshe
     readFile(path.join(root, "docs", "styles-src", name), "utf8")
   )),
 ]);
+const appCacheRuntime = await readFile(
+  path.join(root, "docs", "modules", "app-cache-runtime.mjs"),
+  "utf8",
+);
 const packageJson = JSON.parse(packageJsonSource);
 const vkospiData = JSON.parse(vkospiDataSource);
 const appBundleGzipBytes = gzipSync(
@@ -201,6 +205,13 @@ const declaredRuntimeAssets = [...runtimeAssetManifest.matchAll(/"(\/assets\/[^"
 const builtRuntimeAssets = (await readdir(path.join(root, "docs", "assets")))
   .filter((name) => name.endsWith(".bundle.min.js"))
   .map((name) => `/assets/${name}`)
+  .sort((left, right) => left.localeCompare(right));
+const declaredRuntimeChunks = [...runtimeAssetManifest.matchAll(/"(\/assets\/chunks\/[^"\n]+\.js)"/g)]
+  .map((match) => match[1])
+  .sort((left, right) => left.localeCompare(right));
+const builtRuntimeChunks = (await readdir(path.join(root, "docs", "assets", "chunks")))
+  .filter((name) => name.endsWith(".js"))
+  .map((name) => `/assets/chunks/${name}`)
   .sort((left, right) => left.localeCompare(right));
 const appFeatureEnsureEpsStart = optionalFeatureRuntime.indexOf("  async function ensureEps() {");
 const appFeatureEnsureEpsEnd = optionalFeatureRuntime.indexOf(
@@ -849,8 +860,8 @@ assert.ok(deployWorkflow.includes("KRX_API_KEY: ${{ secrets.KRX_API_KEY }}")
   && app.includes("./data/krx_universe.json"),
   "KRX server-side universe is incomplete");
 assert.ok(buildPagesData.includes("def fetch_dart_market_disclosures(")
-  && app.includes("storage?.removeItem(API_SETTINGS_KEY)")
-  && app.includes("sessionStorage?.removeItem(API_SETTINGS_SESSION_KEY)")
+  && appCacheRuntime.includes("storage?.removeItem(API_SETTINGS_KEY)")
+  && appCacheRuntime.includes("sessionStorage?.removeItem(API_SETTINGS_SESSION_KEY)")
   && !app.includes("clearLegacyBrowserApiSettings")
   && !app.includes("opendart.fss.or.kr/api/"),
   "DART browser secret removal or market seed is incomplete");
@@ -878,7 +889,8 @@ assert.ok(app.includes('from "./modules/app-state-controller.mjs"')
 assert.ok(app.includes('from "./modules/control-state-view.mjs"')
   && controlStateView.includes("function syncControl("),
   "common toggle and loading state view is not wired");
-assert.ok(app.includes('from "./modules/cache-maintenance-runtime.mjs"')
+assert.ok(appCacheRuntime.includes('from "./cache-maintenance-runtime.mjs"')
+  && app.includes('from "./modules/app-cache-runtime.mjs"')
   && !pagesEntry.includes("cache-maintenance-runtime")
   && cacheMaintenanceRuntime.includes("function createCacheMaintenanceRuntime(")
   && cacheMaintenanceRuntime.includes("function createCacheMigrator(")
@@ -904,6 +916,13 @@ assert.ok(app.includes('from "./modules/chart-model-cache.mjs"')
   && chartModelCache.includes('status: "coalesced"'),
   "recent chart compositions are not cached across visibility toggles");
 assert.ok(chartLoader.includes("plotly-thinkstock-2.35.2.min.js"), "ThinkStock Plotly bundle is not configured");
+assert.ok(chartLoader.includes('link[data-thinkstock-plotly-preload]')
+  && html.includes('rel="preload" as="script" data-thinkstock-plotly-preload'),
+"Plotly vendor preload is not reused by the lazy chart loader");
+const appRuntimeFingerprint = html.match(/app\.bundle\.min\.js\?v=dev&amp;build=\d+\.\d+&amp;asset=([a-f0-9]{12})/)?.[1] || "";
+const plotlyRuntimeFingerprint = html.match(/plotly-thinkstock-2\.35\.2\.min\.js\?v=dev&amp;build=\d+\.\d+&amp;asset=([a-f0-9]{12})/)?.[1] || "";
+assert.ok(appRuntimeFingerprint && appRuntimeFingerprint === plotlyRuntimeFingerprint,
+  "Plotly preload and lazy runtime do not share one cache identity");
 assert.ok(plotlyBundle.size < 950_000, `ThinkStock Plotly bundle is too large: ${plotlyBundle.size} bytes`);
 assert.ok(plotlyBuilder.includes("stats.hasErrors()") && plotlyBuilder.includes("process.exitCode = 1"),
   "Plotly vendor build does not fail closed");
@@ -1049,9 +1068,11 @@ assert.ok(app.includes("const getRuntimeDataSignature = runtimeSnapshotDataManag
   && runtimeSnapshotPolicy.includes("function signature()")
   && runtimeSnapshotPolicy.includes("function buildSignature("),
 "runtime snapshot deduplication is missing");
-assert.ok(app.includes('const RUNTIME_SNAPSHOT_FORMAT = "component-v1";'), "component snapshot format is missing");
+assert.ok(appCacheRuntime.includes('format: "component-v1"'), "component snapshot format is missing");
 assert.ok(appStorage.includes('const transaction = db.transaction(storeName, "readwrite");')
-  && appStorage.includes("deleteKeys.forEach((key) => store.delete(key))"), "single-transaction IndexedDB cleanup is missing");
+  && appStorage.includes("deleteKeys.forEach((key) => store.delete(key))")
+  && appStorage.includes("retentionIndex.openKeyCursor"),
+"indexed single-transaction IndexedDB cleanup is missing");
 assert.ok(!app.includes("function rowsSignature("), "sampled row signatures can leave stale chart data");
 assert.ok(app.includes("function dataRevisionSignature("), "explicit data revisions are missing");
 assert.ok(app.includes("function getTraceLinePaths("), "DOM-only line highlighting is missing");
@@ -1136,19 +1157,21 @@ assert.ok(performanceMonitor.includes("attachBrowserMetricsProvider")
   && !performanceMonitor.includes("requestAnimationFrame"),
 "continuous browser observers still live in the main performance bundle");
 assert.ok(!app.includes("let perfSamples") && !app.includes("function startPerfFrameMonitor("), "performance diagnostics still live in app.js");
-assert.ok(app.includes('from "./modules/app-storage.mjs"'), "app storage module is not wired into the app");
+assert.ok(app.includes('from "./modules/app-cache-runtime.mjs"')
+  && appCacheRuntime.includes('from "./app-storage.mjs"'),
+"app storage module is not wired into the cache composition root");
 assert.ok(appStorage.includes("createApiSettingsStore")
   && appStorage.includes("createIndexedCacheStore")
   && appStorage.includes("createJsonStore"), "app storage module is incomplete");
 assert.ok(!app.includes("function openRuntimeCacheDb(") && !app.includes("function sanitizeApiSettings("), "storage implementation still lives in app.js");
-assert.ok(app.includes('from "./modules/cache-maintenance-runtime.mjs"')
+assert.ok(appCacheRuntime.includes('from "./cache-maintenance-runtime.mjs"')
   && cacheMaintenanceRuntime.includes("copyFirstAvailable")
   && app.includes("cacheMigrator.run()"),
 "cache migration flow is incomplete");
 assert.ok(app.includes('from "./modules/admin-feature-access.mjs"')
   && app.includes('from "./modules/background-stock-refresh.mjs"')
   && app.includes('from "./modules/runtime-market-refresh.mjs"')
-  && app.includes('from "./modules/series-cache-retention.mjs"'),
+  && appCacheRuntime.includes('from "./series-cache-retention.mjs"'),
 "small app services still rely on legacy globals");
 assert.ok(app.includes("createStartupLoader")
   && appBootstrapOrchestrator.includes("requestAnimationFrame"),
@@ -1279,6 +1302,13 @@ assert.deepEqual(
   declaredRuntimeAssets,
   builtRuntimeAssets,
   "service worker runtime asset manifest is out of sync with built bundles",
+);
+assert.ok(buildPagesBundle.includes("splitting: true") && buildPagesBundle.includes('chunkNames: "chunks/[name]-[hash]"'),
+  "safe feature bundles are not emitting shared chunks");
+assert.deepEqual(
+  declaredRuntimeChunks,
+  builtRuntimeChunks,
+  "service worker runtime asset manifest is out of sync with shared chunks",
 );
 assert.ok(sw.includes('"./assets/runtime-asset-paths.js?v=dev"')
   && sw.includes("...runtimeAssetPaths"),

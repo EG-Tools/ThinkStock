@@ -3,6 +3,16 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.41",
+      date: "2026.09.08",
+      items: Object.freeze([
+        "Plotly 차트 엔진 선행 다운로드로 첫 차트 준비 단축",
+        "기능 번들의 안전한 공통 청크 공유와 실행 자산 자동 추적",
+        "IndexedDB 시간 인덱스 기반 캐시 정리로 전체 레코드 순회 축소",
+        "앱 저장소와 실행 환경 구성을 전용 모듈로 분리",
+      ]),
+    }),
+    Object.freeze({
       version: "3.40",
       date: "2026.09.08",
       items: Object.freeze([

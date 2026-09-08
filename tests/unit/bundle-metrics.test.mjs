@@ -55,3 +55,22 @@ test("bundle metrics reports compact contributors and cross-bundle overlap", () 
   }]);
   assert.equal(report.bundles[0].contributors[0].input, "docs/app.js");
 });
+
+test("bundle metrics selects the requested output from a shared build", () => {
+  const root = process.cwd();
+  const sharedMetafile = {
+    outputs: {
+      "build/first.js": { inputs: { "docs/first.mjs": { bytesInOutput: 20 } } },
+      "build/second.js": { inputs: { "docs/second.mjs": { bytesInOutput: 30 } } },
+    },
+  };
+  const summary = summarizeBundle({
+    root,
+    name: "second",
+    file: `${root}/build/second.js`,
+    metafile: sharedMetafile,
+    metafileOutput: `${root}/build/second.js`,
+  });
+
+  assert.deepEqual(summary.contributors, [{ input: "docs/second.mjs", bytes: 30 }]);
+});

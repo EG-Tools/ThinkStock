@@ -54,7 +54,8 @@ const RUNTIME_STORAGE_STORES = Object.freeze({
 
 export const RUNTIME_STORAGE_CONTRACT = Object.freeze({
   dbName: "thinkstock-runtime-cache-v1",
-  dbVersion: 9,
+  dbVersion: 10,
+  retentionIndexName: "retentionAt",
   localSnapshotKey: "thinkstock-runtime-cache-v1",
   snapshotRecordKey: "latest",
   stores: RUNTIME_STORAGE_STORES,

@@ -60,15 +60,15 @@ import {
   seriesSupportsFeature,
 } from "./modules/app-control-config.mjs";
 import * as appStateControllerModule from "./modules/app-state-controller.mjs";
+import { createAppCacheRuntime } from "./modules/app-cache-runtime.mjs";
+import { createAppRuntimeEnvironment } from "./modules/app-runtime-environment.mjs";
 import {
   APP_DATA_COMPONENT_DEFINITIONS,
   APP_DATA_SNAPSHOT_COMPONENT_KEYS,
   createAppDataRevisionBridge,
   createAppDataStore,
 } from "./modules/app-data-store.mjs";
-import * as appStorageModule from "./modules/app-storage.mjs";
 import * as appUiBindingsModule from "./modules/app-ui-bindings.mjs";
-import * as cacheMaintenanceRuntimeModule from "./modules/cache-maintenance-runtime.mjs";
 import * as cacheLifecyclePolicyModule from "./modules/cache-lifecycle-policy.mjs";
 import * as chartCursorSyncModule from "./modules/chart-cursor-sync.mjs";
 import * as chartEventLayerModule from "./modules/chart-event-layer.mjs";
@@ -170,7 +170,6 @@ import {
   createRuntimeSourceHealth,
   summarizeSourceStates,
 } from "./modules/runtime-source-health.mjs";
-import * as seriesCacheRetentionModule from "./modules/series-cache-retention.mjs";
 import { createServiceWorkerClient } from "./modules/service-worker-client.mjs";
 import { createScheduledSettlementRuntime } from "./modules/scheduled-settlement-runtime.mjs";
 import {
@@ -194,7 +193,7 @@ import * as adrDataModule from "../shared/adr-data.mjs";
 import * as marketCalendarModule from "../shared/market-calendar.mjs";
 import * as runtimeApiContractModule from "../shared/runtime-api-contract.mjs";
 import * as runtimeDataContract from "../shared/runtime-data-contract.mjs";
-import { RUNTIME_STORAGE_CONTRACT, escapeHtml } from "../shared/runtime-foundation.mjs";
+import { escapeHtml } from "../shared/runtime-foundation.mjs";
 import * as runtimeFreshnessPolicyModule from "../shared/runtime-freshness-policy.mjs";
 import * as seriesIntegrityModule from "../shared/series-integrity.mjs";
 import * as seriesTimelinePolicyModule from "../shared/series-timeline-policy.mjs";
@@ -333,11 +332,6 @@ const startupLoader = createStartupLoader(globalThis, {
 const DISPLAY_NAMES = { ...BASE_DISPLAY_NAMES };
 const HOVER_NAMES = { ...BASE_HOVER_NAMES };
 const MAX_VISIBLE_MAIN_SERIES_MESSAGE = `최대 ${MAX_VISIBLE_MAIN_SERIES}개 까지만 추가됩니다.`;
-const STATE_KEY = "thinkstock-v5";
-const API_SETTINGS_KEY = "thinkstock-api-v1";
-const API_SETTINGS_SESSION_KEY = "thinkstock-api-session-v1";
-const DART_GATEWAY_SETTINGS_KEY = "thinkstock-dart-gateway-v1";
-const DART_GATEWAY_SETTINGS_SESSION_KEY = "thinkstock-dart-gateway-session-v1";
 const ADMIN_SESSION_STORAGE_KEY = "thinkstock-admin-session-v1";
 const ADMIN_DEVICE_STORAGE_KEY = "thinkstock-device-id-v1";
 const ADMIN_ACCESS_MASK = "0".repeat(10);
@@ -350,82 +344,58 @@ const ADMIN_FEATURE_BUTTON_IDS = Object.freeze([
   "coMovementToggle",
   "stockResearchBtn",
 ]);
-const runtimeStorageContract = RUNTIME_STORAGE_CONTRACT;
-if (!runtimeStorageContract) throw new Error("runtime storage contract failed to load");
-const DATA_CACHE_DB_NAME = runtimeStorageContract.dbName;
-const DATA_CACHE_DB_VERSION = runtimeStorageContract.dbVersion;
-const DATA_CACHE_STORE_NAME = runtimeStorageContract.stores.snapshots;
-const DATA_CACHE_RECORD_KEY = runtimeStorageContract.snapshotRecordKey;
-const DATA_CACHE_LOCAL_KEY = runtimeStorageContract.localSnapshotKey;
 const DATA_CACHE_SCHEMA_VERSION = 13;
 const DATA_CACHE_MAX_AGE_DAYS = 7;
-const RUNTIME_SNAPSHOT_FORMAT = "component-v1";
 const RUNTIME_SNAPSHOT_COMPONENT_KEYS = APP_DATA_SNAPSHOT_COMPONENT_KEYS;
 const LOCAL_SNAPSHOT_MAX_ROWS = 900;
 const LOCAL_SNAPSHOT_MAX_DISCLOSURES = 80;
-const TICKER_PRICE_CACHE_STORE_NAME = runtimeStorageContract.stores.tickerPrices;
-const TICKER_DISCLOSURE_CACHE_STORE_NAME = runtimeStorageContract.stores.tickerDisclosures;
-const TICKER_AI_ANALYSIS_CACHE_STORE_NAME = runtimeStorageContract.stores.tickerAiAnalysis;
-const TICKER_AI_FORECAST_CACHE_STORE_NAME = runtimeStorageContract.stores.tickerAiForecast;
-const TICKER_AI_FORECAST_JOURNAL_STORE_NAME = runtimeStorageContract.stores.tickerAiForecastJournal;
-const TICKER_RESEARCH_HISTORY_STORE_NAME = runtimeStorageContract.stores.tickerResearchHistory;
-const STOCK_RESEARCH_RESULTS_STORE_NAME = runtimeStorageContract.stores.stockResearchResults;
-const TICKER_BROKER_RESEARCH_STORE_NAME = runtimeStorageContract.stores.tickerBrokerResearch;
-const TICKER_TIMING_MODEL_STORE_NAME = runtimeStorageContract.stores.tickerTimingModels;
 const GRANULAR_CACHE_SCHEMA_VERSION = 6;
 const TICKER_DISCLOSURE_CACHE_SCHEMA_VERSION = 2;
-const GRANULAR_CACHE_PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
-const GRANULAR_CACHE_MAINTENANCE_KEY = "thinkstock-cache-maintenance-v1";
 const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = tickerPriceRuntimeModule.CORPORATE_ACTION_RATIO_THRESHOLD;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = tickerPriceRuntimeModule.CORPORATE_ACTION_MAX_BOUNDARY_DAYS;
-const APP_VERSION = "3.40";
+const APP_VERSION = "3.41";
 const APP_BUILD_VERSION = resolveAppBuildVersion(globalThis);
-const cacheMigrator = cacheMaintenanceRuntimeModule.createCacheMigrator(globalThis, {
-  markerKey: "thinkstock-cache-migrations-v1",
-  currentVersion: 4,
-  migrations: [
-    {
-      version: 1,
-      migrate: ({ copyFirstAvailable }) => {
-        copyFirstAvailable(STATE_KEY, ["thinkstock-v4", "thinkstock-v3", "thinkstock-v2", "thinkstock-v1"]);
-      },
-    },
-    {
-      version: 2,
-      migrate: ({ updateJson }) => {
-        updateJson(stockResearchContract.CACHE_KEY, (payload) => {
-          const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
-          return {
-            ...payload,
-            candidatePool: Array.isArray(payload.candidatePool) ? payload.candidatePool : candidates,
-            candidateOrder: Array.isArray(payload.candidateOrder)
-              ? payload.candidateOrder
-              : candidates.map((candidate) => candidate?.ticker).filter(Boolean),
-            candidatePageIndex: Math.max(0, Math.round(Number(payload.candidatePageIndex) || 0)),
-            refreshCursor: Math.max(0, Math.round(Number(payload.refreshCursor) || 0)),
-            incrementalDate: String(payload.incrementalDate || ""),
-          };
-        });
-      },
-    },
-    {
-      version: 3,
-      migrate: ({ storage }) => {
-        storage?.removeItem(API_SETTINGS_KEY);
-        try { globalThis.sessionStorage?.removeItem(API_SETTINGS_SESSION_KEY); } catch (_) {}
-      },
-    },
-    {
-      version: 4,
-      migrate: ({ storage }) => {
-        ["thinkstock-v1", "thinkstock-v2", "thinkstock-v3", "thinkstock-v4"]
-          .forEach((key) => storage?.removeItem(key));
-      },
-    },
-  ],
+const appCacheRuntime = createAppCacheRuntime(globalThis, {
+  scheduler: backgroundTaskScheduler,
+  stockResearchContract,
+  tickerPriceRuntime: tickerPriceRuntimeModule,
+  snapshotComponentKeys: RUNTIME_SNAPSHOT_COMPONENT_KEYS,
+  granularCacheSchemaVersion: GRANULAR_CACHE_SCHEMA_VERSION,
 });
+const {
+  cacheMigrator,
+  dartGatewaySettingsStore,
+  disclosureRefreshStore,
+  granularCacheMaintenance,
+  indexedCacheStore,
+  runtimeSnapshotCacheConfig,
+  runtimeSnapshotLocalStore,
+  stateStore: appStateStore,
+  storageContract: runtimeStorageContract,
+  storageKeys: {
+    appCacheIndexedStoreNames: APP_CACHE_INDEXED_STORE_NAMES,
+    appCacheLocalStorageKeys: APP_CACHE_LOCAL_STORAGE_KEYS,
+    appStateResetStorageKeys: APP_STATE_RESET_STORAGE_KEYS,
+    dartDisclosureCacheKey: DART_DISCLOSURE_CACHE_KEY,
+  },
+  storeNames: {
+    snapshots: DATA_CACHE_STORE_NAME,
+    tickerPrices: TICKER_PRICE_CACHE_STORE_NAME,
+    tickerDisclosures: TICKER_DISCLOSURE_CACHE_STORE_NAME,
+    tickerAiAnalysis: TICKER_AI_ANALYSIS_CACHE_STORE_NAME,
+    tickerAiForecast: TICKER_AI_FORECAST_CACHE_STORE_NAME,
+    tickerAiForecastJournal: TICKER_AI_FORECAST_JOURNAL_STORE_NAME,
+    tickerResearchHistory: TICKER_RESEARCH_HISTORY_STORE_NAME,
+    stockResearchResults: STOCK_RESEARCH_RESULTS_STORE_NAME,
+    tickerBrokerResearch: TICKER_BROKER_RESEARCH_STORE_NAME,
+    tickerTimingModels: TICKER_TIMING_MODEL_STORE_NAME,
+  },
+  tickerSeriesCacheRetention,
+} = appCacheRuntime;
+const DATA_CACHE_LOCAL_KEY = runtimeStorageContract.localSnapshotKey;
+const RUNTIME_SNAPSHOT_FORMAT = runtimeSnapshotCacheConfig.format;
 const optionalFeatureLoader = createOptionalFeatureLoader(globalThis, {
   version: APP_BUILD_VERSION,
 });
@@ -462,14 +432,6 @@ const runtimeDataApp = createRuntimeDataApp(globalThis, {
     persistDelayMs: 350,
   }),
 });
-const indexedCacheStore = appStorageModule.createIndexedCacheStore(globalThis, {
-  dbName: DATA_CACHE_DB_NAME,
-  dbVersion: DATA_CACHE_DB_VERSION,
-  storeNames: runtimeStorageContract.storeNames,
-});
-const tickerSeriesCacheRetention = seriesCacheRetentionModule.createSeriesCacheRetention({
-  capacity: cacheLifecyclePolicyModule.USER_TICKER_CACHE_LIMIT,
-});
 let tickerSeriesCacheRetentionInitPromise = null;
 let tickerPriceCacheMutationQueue = Promise.resolve();
 function scheduleDeferredServiceWorkerRegistration() {
@@ -489,44 +451,6 @@ const deferredPerformanceDiagnostics = __THINKSTOCK_E2E_DIAGNOSTICS__
     onFeatureLoaded: (feature) => chartRenderTelemetry.attach(feature, globalThis),
   })
   : null;
-const granularCacheMaintenance = cacheMaintenanceRuntimeModule.createCacheMaintenanceRuntime(globalThis, {
-  store: indexedCacheStore,
-  lifecyclePolicy: cacheLifecyclePolicyModule,
-  pruneIntervalMs: GRANULAR_CACHE_PRUNE_INTERVAL_MS,
-  scheduler: backgroundTaskScheduler,
-  stateStore: appStorageModule.createJsonStore(globalThis, {
-    key: GRANULAR_CACHE_MAINTENANCE_KEY,
-  }),
-  repairVersions: {
-    [TICKER_PRICE_CACHE_STORE_NAME]: `price-${GRANULAR_CACHE_SCHEMA_VERSION}`,
-    [TICKER_TIMING_MODEL_STORE_NAME]: "timing-3",
-  },
-  validators: {
-    [TICKER_PRICE_CACHE_STORE_NAME]: (record, key) => (
-      Number(record?.schema) === GRANULAR_CACHE_SCHEMA_VERSION
-      && String(record?.ticker || "").toUpperCase() === String(key || "").toUpperCase()
-      && tickerPriceRuntimeModule.inspectPriceHistoryIntegrity(record?.points).clean
-    ),
-    [TICKER_TIMING_MODEL_STORE_NAME]: (record, key) => (
-      Number(record?.schema) === 1
-      && String(record?.ticker || "").toUpperCase() === String(key || "").toUpperCase()
-      && record?.model && typeof record.model === "object"
-      && typeof record?.fingerprint === "string"
-    ),
-  },
-  storeNames: runtimeStorageContract.storeNames.filter((name) => name !== DATA_CACHE_STORE_NAME),
-});
-const dartGatewaySettingsStore = appStorageModule.createApiSettingsStore(globalThis, {
-  defaults: { accessToken: "" },
-  localKey: DART_GATEWAY_SETTINGS_KEY,
-  sessionKey: DART_GATEWAY_SETTINGS_SESSION_KEY,
-});
-const runtimeSnapshotCacheConfig = Object.freeze({
-  storeName: DATA_CACHE_STORE_NAME,
-  manifestKey: DATA_CACHE_RECORD_KEY,
-  format: RUNTIME_SNAPSHOT_FORMAT,
-  componentKeys: RUNTIME_SNAPSHOT_COMPONENT_KEYS,
-});
 const runtimeSnapshotRevisionTracker = createRevisionTracker(
   Object.keys(RUNTIME_SNAPSHOT_COMPONENT_KEYS),
 );
@@ -543,66 +467,38 @@ const AUXILIARY_DATA_FIELDS_BY_KEY = Object.freeze({
 const auxiliaryDataRevisionTracker = createRevisionTracker(
   Object.values(AUXILIARY_DATA_FIELDS_BY_KEY).flat(),
 );
-const FEAR_GREED_HISTORY_URL = "https://kospi.feargreedchart.com/api/?action=kospi-history";
-const FEAR_GREED_LATEST_URL = "https://kospi.feargreedchart.com/api/?action=kospi";
-const IS_E2E_RUNTIME = typeof window !== "undefined"
-  && new URLSearchParams(window.location.search).has("e2e");
-const IS_LOCAL_RUNTIME = typeof window !== "undefined"
-  && !IS_E2E_RUNTIME
-  && window.location.protocol === "http:"
-  && (/^(localhost|127\.0\.0\.1)$/.test(window.location.hostname)
-    || /^10\./.test(window.location.hostname)
-    || /^192\.168\./.test(window.location.hostname)
-    || /^172\.(1[6-9]|2\d|3[01])\./.test(window.location.hostname));
-const DART_DISCLOSURE_CACHE_KEY = "thinkstock-dart-disclosure-cache-v1";
+const runtimeEnvironment = createAppRuntimeEnvironment(globalThis);
+const {
+  gatewayUrl: DART_GATEWAY_URL,
+  isE2eRuntime: IS_E2E_RUNTIME,
+  isLocalRuntime: IS_LOCAL_RUNTIME,
+  endpoints: {
+    adr: ADR_GATEWAY_ENDPOINT,
+    adminSession: ADMIN_SESSION_ENDPOINT,
+    aiAnalysis: AI_ANALYSIS_ENDPOINT,
+    aiForecastJournal: AI_FORECAST_JOURNAL_ENDPOINT,
+    brokerReportList: BROKER_REPORT_LIST_ENDPOINT,
+    brokerReportPdf: BROKER_REPORT_PDF_ENDPOINT,
+    credit: CREDIT_GATEWAY_ENDPOINT,
+    crisisSignal: CRISIS_SIGNAL_GATEWAY_ENDPOINT,
+    dartAuthCheck: DART_GATEWAY_AUTH_CHECK_ENDPOINT,
+    dartDisclosure: DART_GATEWAY_DISCLOSURE_ENDPOINT,
+    dartEps: DART_GATEWAY_EPS_ENDPOINT,
+    dartInsider: DART_GATEWAY_INSIDER_ENDPOINT,
+    ecosMacro: ECOS_GATEWAY_MACRO_ENDPOINT,
+    krxIndex: KRX_GATEWAY_INDEX_ENDPOINT,
+    krxPrice: KRX_GATEWAY_PRICE_ENDPOINT,
+    krxPriceBatch: KRX_GATEWAY_PRICE_BATCH_ENDPOINT,
+    runtimeBootstrap: RUNTIME_GATEWAY_BOOTSTRAP_ENDPOINT,
+    tickerHistory: TICKER_HISTORY_ENDPOINT,
+  },
+  sources: {
+    aiMarketModel: AI_MARKET_MODEL_URL,
+    fearGreedHistory: FEAR_GREED_HISTORY_URL,
+    fearGreedLatest: FEAR_GREED_LATEST_URL,
+  },
+} = runtimeEnvironment;
 const DART_DISCLOSURE_CACHE_TTL_DAYS = 1;
-const APP_CACHE_INDEXED_STORE_NAMES = runtimeStorageContract.storeNames;
-const APP_CACHE_LOCAL_STORAGE_KEYS = Object.freeze([
-  DATA_CACHE_LOCAL_KEY,
-  DART_DISCLOSURE_CACHE_KEY,
-  GRANULAR_CACHE_MAINTENANCE_KEY,
-  stockResearchContract.CACHE_KEY,
-  stockResearchContract.CACHE_VARIANTS_KEY,
-  stockResearchContract.CACHE_BYPASS_KEY,
-]);
-const APP_STATE_RESET_STORAGE_KEYS = Object.freeze([
-  STATE_KEY,
-  stockResearchContract.BLOCKED_KEY,
-  stockResearchContract.MINIMUM_KEY,
-  stockResearchContract.UNIVERSE_SIZE_KEY,
-  "thinkstock-perf-debug",
-]);
-const appStateStore = appStorageModule.createJsonStore(globalThis, { key: STATE_KEY });
-const runtimeSnapshotLocalStore = appStorageModule.createJsonStore(globalThis, { key: DATA_CACHE_LOCAL_KEY });
-const disclosureRefreshStore = appStorageModule.createJsonStore(globalThis, { key: DART_DISCLOSURE_CACHE_KEY });
-const DART_GATEWAY_URL = "https://thinkstock-api.keg0320.workers.dev";
-const DART_GATEWAY_AUTH_CHECK_ENDPOINT = `${DART_GATEWAY_URL}/api/auth/check`;
-const ADMIN_SESSION_ENDPOINT = IS_LOCAL_RUNTIME
-  ? "/api/admin/session"
-  : `${DART_GATEWAY_URL}/api/admin/session`;
-const DART_GATEWAY_DISCLOSURE_ENDPOINT = `${DART_GATEWAY_URL}/api/dart/disclosures`;
-const DART_GATEWAY_EPS_ENDPOINT = `${DART_GATEWAY_URL}/api/dart/eps-history`;
-const DART_GATEWAY_INSIDER_ENDPOINT = `${DART_GATEWAY_URL}/api/dart/insider-trades`;
-const KRX_GATEWAY_PRICE_ENDPOINT = `${DART_GATEWAY_URL}/api/prices`;
-const KRX_GATEWAY_PRICE_BATCH_ENDPOINT = `${DART_GATEWAY_URL}/api/prices/batch`;
-const TICKER_HISTORY_ENDPOINT = IS_LOCAL_RUNTIME
-  ? "./api/research/history"
-  : `${DART_GATEWAY_URL}/api/research/history`;
-const RUNTIME_GATEWAY_BOOTSTRAP_ENDPOINT = `${DART_GATEWAY_URL}/api/bootstrap`;
-const KRX_GATEWAY_INDEX_ENDPOINT = `${DART_GATEWAY_URL}/api/indices`;
-const ECOS_GATEWAY_MACRO_ENDPOINT = `${DART_GATEWAY_URL}/api/macro`;
-const CREDIT_GATEWAY_ENDPOINT = `${DART_GATEWAY_URL}/api/credit`;
-const ADR_GATEWAY_ENDPOINT = `${DART_GATEWAY_URL}/api/adr`;
-const CRISIS_SIGNAL_GATEWAY_ENDPOINT = `${DART_GATEWAY_URL}/api/crisis-signal`;
-const AI_ANALYSIS_ENDPOINT = IS_LOCAL_RUNTIME ? "./api/analysis" : `${DART_GATEWAY_URL}/api/analysis`;
-const BROKER_REPORT_LIST_ENDPOINT = IS_LOCAL_RUNTIME
-  ? "./api/broker-reports"
-  : `${DART_GATEWAY_URL}/api/broker-reports`;
-const BROKER_REPORT_PDF_ENDPOINT = IS_LOCAL_RUNTIME
-  ? "./api/broker-report-pdf"
-  : `${DART_GATEWAY_URL}/api/broker-report-pdf`;
-const AI_FORECAST_JOURNAL_ENDPOINT = `${DART_GATEWAY_URL}/api/forecast-journal`;
-const AI_MARKET_MODEL_URL = "./data/ai_market_model.json";
 const AI_ROTATION_LEADER_TICKERS = Object.freeze(["005930.KS", "000660.KS"]);
 const DART_VISIBLE_REFRESH_CONCURRENCY = 2;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -1205,7 +1101,7 @@ const initE2eDebugAccess = __THINKSTOCK_E2E_DIAGNOSTICS__
         };
       },
       getRuntimeStorageContract() {
-        return RUNTIME_STORAGE_CONTRACT;
+        return runtimeStorageContract;
       },
       getRuntimeDiagnosticState() {
         return buildRuntimeDiagnosticAppState();
