@@ -97,7 +97,7 @@ test("timing signal popovers reuse the compact marker payload", () => {
       "삼성전자", "신용 과열<br>· MACD 반전", "8.2", "-1.3", "-", "강", "slowdown", 5,
       "trend-exhaustion", "추세형", "매도 하락 확인",
       "실제 신뢰 · 참고 가능", "동일 유형 9회 · 20일 적중 66.7%",
-      "20일 평균 성과 +3.2% · 최대 역행 상승 -4.1%",
+      "20일 평균 성과 +3.2% · 최대 역행 상승 +4.1%",
     ],
     data: { name: "타이밍 매도신호", meta: { overlayKind: "timing-sell" } },
   });
@@ -107,7 +107,7 @@ test("timing signal popovers reuse the compact marker payload", () => {
     "매도 하락 확인 · 근거 강",
     "실제 신뢰 · 참고 가능",
     "동일 유형 9회 · 20일 적중 66.7%",
-    "20일 평균 성과 +3.2% · 최대 역행 상승 -4.1%",
+    "20일 평균 성과 +3.2% · 최대 역행 상승 +4.1%",
     "근거: 신용 과열",
     "· MACD 반전",
     "신용20일 8.2% · 고점대비 -1.3%",

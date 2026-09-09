@@ -141,6 +141,29 @@ test("deduplicates identical remote forecast journal synchronization", async () 
   assert.equal(runtime.stats().syncCoalesced, 1);
 });
 
+test("retries a transient remote journal write and records the recovery", async () => {
+  const feature = createFeature();
+  let remoteWrites = 0;
+  const runtime = module.createAiForecastQualityRuntime(globalThis, {
+    getFeature: () => feature,
+    readTicker: async () => ({ records: [] }),
+    writeTicker: async () => true,
+    isRemoteEnabled: () => true,
+    readRemote: async () => [],
+    writeRemote: async () => {
+      remoteWrites += 1;
+      return remoteWrites > 1;
+    },
+    remoteRetryDelayMs: 0,
+  });
+
+  await runtime.sync("005930.KS", { asOf: "2026-08-13" }, []);
+
+  assert.equal(remoteWrites, 2);
+  assert.equal(runtime.stats().remoteRetries, 1);
+  assert.equal(runtime.stats().remoteFailures, 0);
+});
+
 test("bounds diagnostics and invalidates one ticker without touching others", async () => {
   const feature = createFeature();
   const runtime = module.createAiForecastQualityRuntime(globalThis, {

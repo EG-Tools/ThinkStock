@@ -356,7 +356,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = tickerPriceRuntimeModule.CORPORATE_ACTION_RATIO_THRESHOLD;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = tickerPriceRuntimeModule.CORPORATE_ACTION_MAX_BOUNDARY_DAYS;
-const APP_VERSION = "3.45";
+const APP_VERSION = "3.46";
 const APP_BUILD_VERSION = resolveAppBuildVersion(globalThis);
 const appCacheRuntime = createAppCacheRuntime(globalThis, {
   scheduler: backgroundTaskScheduler,
@@ -5469,7 +5469,12 @@ function getAiForecastQualityRuntime() {
         15000,
       );
       const payload = await response.json().catch(() => null);
-      return response.ok ? payload : [];
+      if (!response.ok || payload?.ok === false) {
+        const error = new Error(payload?.error || `AI 예측 기록 조회 오류 (${response.status})`);
+        error.status = response.status;
+        throw error;
+      }
+      return payload;
     },
     writeRemote: async (ticker, records) => {
       const response = await fetchWithTimeout(AI_FORECAST_JOURNAL_ENDPOINT, {
@@ -5481,9 +5486,19 @@ function getAiForecastQualityRuntime() {
         },
         body: JSON.stringify({ ticker, records }),
       }, 15000);
-      return response.ok;
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || payload?.ok === false) {
+        const error = new Error(payload?.error || `AI 예측 기록 저장 오류 (${response.status})`);
+        error.status = response.status;
+        throw error;
+      }
+      return true;
     },
-      maxQueued: AI_FORECAST_JOURNAL_QUEUE_MAX,
+    onRemoteError: (error, details) => recordRuntimeError(
+      `ai-forecast-journal-${details?.phase || "sync"}`,
+      error,
+    ),
+    maxQueued: AI_FORECAST_JOURNAL_QUEUE_MAX,
     })
   ));
 }

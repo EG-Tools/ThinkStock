@@ -2400,6 +2400,42 @@ test("preserves bounded forecast audit features and numeric attribution", async 
   assert.equal(payload.records[0].horizons[10].attribution.components.marketRegime, 0.0107717);
 });
 
+test("accepts the production model version and preserves every shared attribution component", async () => {
+  const record = forecastRecord({
+    id: "218410.KQ:2026-07-23:local_path-v20",
+    modelVersion: "local|path-v20",
+    horizons: {
+      20: {
+        targetDate: "2026-08-20",
+        predictedPrice: 35000,
+        lowerPrice: 29000,
+        upperPrice: 41000,
+        attribution: {
+          days: 20,
+          expectedLogReturn: 0.04,
+          components: { brokerResearch: 0.015, journalCalibration: 0.025 },
+        },
+      },
+    },
+  });
+  const response = await handleRequest(
+    request("/api/forecast-journal?ticker=218410.KQ", {
+      method: "POST",
+      token: "private",
+      body: { records: [record] },
+    }),
+    { THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: memoryKv() },
+  );
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.records[0].modelVersion, "local|path-v20");
+  assert.deepEqual(payload.records[0].horizons[20].attribution.components, {
+    brokerResearch: 0.015,
+    journalCalibration: 0.025,
+  });
+});
+
 test("rejects malformed, excessive, and oversized forecast journal input", async () => {
   const env = { THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: memoryKv() };
   const mismatch = await handleRequest(

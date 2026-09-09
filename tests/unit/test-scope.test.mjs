@@ -17,6 +17,19 @@ test("WebKit smoke scopes retain target-specific runnable tests", () => {
   assert.ok(desktopSmoke.every((title) => desktopFull.test(title)));
 });
 
+test("desktop full scope retains non-mobile chart regression coverage", () => {
+  const desktopFull = new RegExp(WEBKIT_DESKTOP_PATTERN);
+  const desktopOnlyRegressions = [
+    "main information popup follows the closest price line without reordering rows",
+    "auto scale keeps its live macro fit after historical panning ends",
+    "repeated historical panning never leaves the visible main window without line data",
+    "historical panning refits series whose volatility regimes reverse",
+    "auto scale reset clears live transforms while preserving the historical viewport",
+  ];
+
+  assert.ok(desktopOnlyRegressions.every((title) => desktopFull.test(title)));
+});
+
 test("affected test scope ignores local-only iPhone preview files", () => {
   assert.deepEqual(normalizeChangedFiles([
     "run_local_iphone13promax.bat",

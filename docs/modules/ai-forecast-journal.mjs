@@ -1,3 +1,8 @@
+import {
+  FORECAST_ATTRIBUTION_COMPONENT_KEYS,
+  normalizeForecastModelVersion,
+} from "../../shared/forecast-journal-contract.mjs";
+
 "use strict";
 
   const SCHEMA_VERSION = 2;
@@ -9,25 +14,7 @@
   const TICKER_PATTERN = /^\d{6}\.(KS|KQ)$/;
   const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
   const AUDIT_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
-  const ATTRIBUTION_COMPONENTS = new Set([
-    "localModel",
-    "top400Blend",
-    "empiricalGuardrail",
-    "corporateRiskGate",
-    "criticalNewsGate",
-    "consensus",
-    "fundamentals",
-    "internetNews",
-    "brokerResearch",
-    "marketRegime",
-    "corporateRisk",
-    "rotation",
-    "rangeMeanReversion",
-    "terminalRisk",
-    "finalClamp",
-    "analogPath",
-    "journalCalibration",
-  ]);
+  const ATTRIBUTION_COMPONENTS = new Set(FORECAST_ATTRIBUTION_COMPONENT_KEYS);
 
   function finitePositive(value) {
     const number = Number(value);
@@ -46,11 +33,6 @@
   function normalizeTicker(value) {
     const ticker = String(value || "").trim().toUpperCase();
     return TICKER_PATTERN.test(ticker) ? ticker : "";
-  }
-
-  function normalizeModelVersion(value) {
-    const version = String(value || "").trim().slice(0, 80);
-    return version && !/[\u0000-\u001f\u007f]/.test(version) ? version : "";
   }
 
   function timestampOr(value, fallback) {
@@ -123,7 +105,7 @@
   function forecastRecordId(ticker, asOf, modelVersion) {
     const normalizedTicker = normalizeTicker(ticker);
     const normalizedAsOf = normalizeDate(asOf);
-    const normalizedVersion = normalizeModelVersion(modelVersion);
+    const normalizedVersion = normalizeForecastModelVersion(modelVersion);
     if (!normalizedTicker || !normalizedAsOf || !normalizedVersion) return "";
     const idVersion = normalizedVersion.replace(/[^A-Za-z0-9._:-]/g, "_");
     return `${normalizedTicker}:${normalizedAsOf}:${idVersion}`;
@@ -250,7 +232,7 @@
 
   function buildForecastRecord(options = {}) {
     const ticker = normalizeTicker(options.ticker);
-    const modelVersion = normalizeModelVersion(
+    const modelVersion = normalizeForecastModelVersion(
       options.modelVersion ?? options.forecast?.modelVersion ?? options.forecast?.model?.version,
     );
     const forecast = normalizeForecastResult({
@@ -278,7 +260,7 @@
     if (!value || typeof value !== "object") return null;
     const ticker = normalizeTicker(value.ticker);
     const asOf = normalizeDate(value.asOf);
-    const modelVersion = normalizeModelVersion(value.modelVersion);
+    const modelVersion = normalizeForecastModelVersion(value.modelVersion);
     const basePrice = finitePositive(value.basePrice);
     const expectedId = forecastRecordId(ticker, asOf, modelVersion);
     if (!expectedId || basePrice === null) return null;

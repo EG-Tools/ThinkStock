@@ -3,6 +3,16 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.46",
+      date: "2026.09.09",
+      items: Object.freeze([
+        "AI 예측 기록의 브라우저·서버 저장 계약 통일과 실패 재시도",
+        "전회 대비 전망과 요인 기여도의 실제 수익률 기준 %p 계산",
+        "증권사 리포트·사후 검증 설명 근거의 서버 저장 보존",
+        "매도 신호 최대 역행 상승 표시와 데스크톱 차트 회귀 검사 복구",
+      ]),
+    }),
+    Object.freeze({
       version: "3.45",
       date: "2026.09.09",
       items: Object.freeze([

@@ -62,6 +62,25 @@
     return `${points > 0 ? "+" : ""}${points.toFixed(1)}%p`;
   }
 
+  function simpleReturnFromLog(value) {
+    const number = decisionFinite(value);
+    return number === null ? null : Math.expm1(number);
+  }
+
+  function simpleReturnDifference(currentLogReturn, previousLogReturn) {
+    const current = simpleReturnFromLog(currentLogReturn);
+    const previous = simpleReturnFromLog(previousLogReturn);
+    return current === null || previous === null ? null : current - previous;
+  }
+
+  function componentReturnContribution(expectedLogReturn, componentLogReturn) {
+    const expected = decisionFinite(expectedLogReturn);
+    const component = decisionFinite(componentLogReturn);
+    return expected === null || component === null
+      ? null
+      : Math.expm1(expected) - Math.expm1(expected - component);
+  }
+
   function horizonValue(source, horizon) {
     return source?.[horizon] || source?.[String(horizon)] || null;
   }
@@ -169,10 +188,15 @@
       .sort((left, right) => Math.abs(right.current) - Math.abs(left.current));
     const currentExpected = decisionFinite(currentAttribution?.expectedLogReturn) || 0;
     const previousExpected = decisionFinite(previousAttribution?.expectedLogReturn);
-    const change = previousExpected === null ? null : currentExpected - previousExpected;
+    const change = previousExpected === null
+      ? null
+      : simpleReturnDifference(currentExpected, previousExpected);
     const factorRows = (previous ? rankedChanges : rankedCurrent)
       .slice(0, 2)
-      .map((row) => `${row.label} ${signedPercentPoints(previous ? row.delta : row.current)}`);
+      .map((row) => `${row.label} ${signedPercentPoints(componentReturnContribution(
+        currentExpected,
+        previous ? row.delta : row.current,
+      ))}`);
     const changeLine = previous
       ? `전회 대비 126일 전망 ${signedPercentPoints(change)}${factorRows.length ? ` · ${factorRows.join(" · ")}` : ""}`
       : `현재 126일 주요 영향${factorRows.length ? ` · ${factorRows.join(" · ")}` : " · 기록 축적 중"}`;
@@ -237,8 +261,22 @@
     const isRemoteEnabled = options.isRemoteEnabled || (() => false);
     const readRemote = options.readRemote || (async () => []);
     const writeRemote = options.writeRemote || (async () => false);
+    const onRemoteError = options.onRemoteError || (() => undefined);
+    const isRemoteRetryable = options.isRemoteRetryable || ((error) => {
+      const status = Number(error?.status);
+      return !Number.isFinite(status) || status === 408 || status === 429 || status >= 500;
+    });
     const now = options.now || Date.now;
     const setTimer = options.setTimer || scope.setTimeout?.bind(scope) || setTimeout;
+    const remoteRetryAttempts = Math.max(1, Math.min(
+      3,
+      Math.trunc(Number(options.remoteRetryAttempts) || 2),
+    ));
+    const requestedRemoteRetryDelay = Number(options.remoteRetryDelayMs);
+    const remoteRetryDelayMs = Math.max(
+      0,
+      Number.isFinite(requestedRemoteRetryDelay) ? requestedRemoteRetryDelay : 500,
+    );
     const poolTtlMs = Math.max(0, Number(options.poolTtlMs) || 30000);
     const maxDiagnostics = Math.max(1, Math.trunc(Number(options.maxDiagnostics) || 24));
     const maxQueued = Math.max(1, Math.trunc(Number(options.maxQueued) || 120));
@@ -263,6 +301,10 @@
       poolReadCoalesced: 0,
       syncs: 0,
       syncCoalesced: 0,
+      remoteReads: 0,
+      remoteWrites: 0,
+      remoteRetries: 0,
+      remoteFailures: 0,
       calibrationRuns: 0,
       calibrationApplied: 0,
       calibrationPending: 0,
@@ -273,6 +315,31 @@
 
     function feature() {
       return typeof getFeature === "function" ? getFeature() : null;
+    }
+
+    async function runRemote(operation, phase) {
+      let lastError = null;
+      for (let attempt = 1; attempt <= remoteRetryAttempts; attempt += 1) {
+        try {
+          const result = await operation();
+          if (result === false) {
+            const error = new Error(`AI forecast journal ${phase} failed`);
+            error.status = 503;
+            throw error;
+          }
+          return result;
+        } catch (error) {
+          lastError = error;
+          if (attempt >= remoteRetryAttempts || !isRemoteRetryable(error)) break;
+          counters.remoteRetries += 1;
+          if (remoteRetryDelayMs > 0) {
+            await new Promise((resolve) => setTimer(resolve, remoteRetryDelayMs));
+          }
+        }
+      }
+      counters.remoteFailures += 1;
+      try { onRemoteError(lastError, { phase }); } catch (_) {}
+      throw lastError || new Error(`AI forecast journal ${phase} failed`);
     }
 
     function normalizeRecords(values) {
@@ -473,8 +540,12 @@
       const task = (async () => {
         let records = await readTickerRecords(key);
         if (isRemoteEnabled()) {
+          counters.remoteReads += 1;
           try {
-            records = currentFeature.journal.mergeForecastRecords(records, remoteRecords(await readRemote(key)));
+            records = currentFeature.journal.mergeForecastRecords(
+              records,
+              remoteRecords(await runRemote(() => readRemote(key), "read")),
+            );
           } catch (_) {}
         }
         const priceHistory = (Array.isArray(historyRows) ? historyRows : []).map((row) => ({
@@ -486,7 +557,8 @@
           .filter(Boolean);
         records = await writeTickerRecords(key, records);
         if (isRemoteEnabled()) {
-          try { await writeRemote(key, records); } catch (_) {}
+          counters.remoteWrites += 1;
+          try { await runRemote(() => writeRemote(key, records), "write"); } catch (_) {}
         }
         return records;
       })().finally(() => syncPromises.delete(record.id));

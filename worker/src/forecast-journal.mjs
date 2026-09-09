@@ -1,27 +1,14 @@
 import { jsonResponse } from "./http-runtime.mjs";
+import {
+  FORECAST_ATTRIBUTION_COMPONENT_KEYS,
+  normalizeForecastModelVersion,
+} from "../../shared/forecast-journal-contract.mjs";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const FORECAST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,120}$/;
-const FORECAST_MODEL_PATTERN = /^[A-Za-z0-9._:+/-]{1,80}$/;
 const FORECAST_HORIZON_PATTERN = /^[1-9]\d{0,3}$/;
 const FORECAST_AUDIT_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
-const FORECAST_ATTRIBUTION_COMPONENTS = new Set([
-  "localModel",
-  "top400Blend",
-  "empiricalGuardrail",
-  "corporateRiskGate",
-  "criticalNewsGate",
-  "consensus",
-  "fundamentals",
-  "internetNews",
-  "marketRegime",
-  "corporateRisk",
-  "rotation",
-  "rangeMeanReversion",
-  "terminalRisk",
-  "finalClamp",
-  "analogPath",
-]);
+const FORECAST_ATTRIBUTION_COMPONENTS = new Set(FORECAST_ATTRIBUTION_COMPONENT_KEYS);
 
 export const FORECAST_JOURNAL_LIMIT = 60;
 export const FORECAST_JOURNAL_INPUT_LIMIT = 120;
@@ -240,13 +227,13 @@ function normalizeForecastRecord(value, ticker, { strict = false } = {}) {
   const recordTicker = String(value.ticker || "").trim().toUpperCase();
   const asOf = String(value.asOf || "").slice(0, 10);
   const basePrice = finiteNumber(value.basePrice, { min: Number.MIN_VALUE, max: 1e15 });
-  const modelVersion = String(value.modelVersion || "").trim();
+  const modelVersion = normalizeForecastModelVersion(value.modelVersion);
   const createdAt = timestamp(value.createdAt);
   const updatedAt = timestamp(value.updatedAt) || createdAt;
   if (!FORECAST_ID_PATTERN.test(id)) return fail("Invalid forecast id");
   if (recordTicker !== ticker) return fail("Forecast ticker does not match the request");
   if (!isValidIsoDate(asOf) || !basePrice) return fail("Invalid forecast base values");
-  if (!FORECAST_MODEL_PATTERN.test(modelVersion) || !createdAt || !updatedAt || updatedAt < createdAt) {
+  if (!modelVersion || !createdAt || !updatedAt || updatedAt < createdAt) {
     return fail("Invalid forecast metadata");
   }
   if (!value.horizons || typeof value.horizons !== "object" || Array.isArray(value.horizons)) {

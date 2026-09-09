@@ -53,8 +53,9 @@ export function buildMarketTimingReliability(signal, quality, side) {
     ? `동일 유형 ${samples}회 · ${TIMING_RELIABILITY_HORIZON}일 적중 ${timingReliabilityPercent(hitRate, { absolute: true })}`
     : "동일 유형의 완료된 검증 표본 없음";
   const riskLabel = normalizedSide === "sell" ? "최대 역행 상승" : "최대 하락";
+  const displayedWorstAdverse = normalizedSide === "sell" ? -worstAdverse : worstAdverse;
   const outcomeLine = samples
-    ? `${TIMING_RELIABILITY_HORIZON}일 평균 성과 ${timingReliabilityPercent(meanReturn, { signed: true })} · ${riskLabel} ${timingReliabilityPercent(worstAdverse)}`
+    ? `${TIMING_RELIABILITY_HORIZON}일 평균 성과 ${timingReliabilityPercent(meanReturn, { signed: true })} · ${riskLabel} ${timingReliabilityPercent(displayedWorstAdverse)}`
     : "새 결과가 쌓이면 실제 성과를 표시합니다";
   return Object.freeze({
     status,

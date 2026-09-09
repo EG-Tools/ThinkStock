@@ -86,8 +86,41 @@ test("explains changes, new evidence, opposing factors, and recheck conditions",
   });
 
   assert.match(result.hoverLines[0], /20일 참고.*63일 참고.*126일 참고/);
-  assert.match(result.hoverLines[1], /전회 대비 126일 전망 \+5\.0%p/);
+  assert.match(result.hoverLines[1], /전회 대비 126일 전망 \+5\.3%p/);
   assert.ok(result.hoverLines.some((line) => /새 근거 가격·실적/.test(line)));
   assert.ok(result.hoverLines.some((line) => /반대 근거 시장 국면/.test(line)));
   assert.match(result.hoverLines.at(-1), /^재검토/);
+});
+
+test("converts log-return changes to simple-return percentage points", () => {
+  const previous = {
+    asOf: "2026-08-31",
+    modelVersion: "path-v20",
+    horizons: {
+      126: {
+        attribution: {
+          expectedLogReturn: Math.log1p(0.2),
+          components: { fundamentals: 0.01 },
+        },
+      },
+    },
+  };
+  const current = forecast({
+    attribution: {
+      horizons: {
+        126: {
+          expectedLogReturn: Math.log1p(0.5),
+          components: { fundamentals: 0.02 },
+        },
+      },
+    },
+  });
+
+  const result = buildForecastDecisionSupport({
+    forecast: current,
+    profile: profile(),
+    records: [previous],
+  });
+
+  assert.match(result.hoverLines[1], /전회 대비 126일 전망 \+30\.0%p/);
 });
