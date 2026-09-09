@@ -133,6 +133,12 @@ export const WEBKIT_DESKTOP_PATTERN = [
   "restored chart pans immediately without a toggle or zoom warm-up",
 ].join("|");
 
+export const WEBKIT_DESKTOP_SMOKE_PATTERN = [
+  "AI hover selects the nearest forecast scenario",
+  "desktop main-chart drag commits the same range to auxiliary charts",
+  "wheel zoom followed by panning keeps every visible auxiliary panel populated",
+].join("|");
+
 export function normalizeChangedFiles(files) {
   return [...new Set((Array.isArray(files) ? files : [])
     .map((file) => String(file || "").trim().replaceAll("\\", "/"))

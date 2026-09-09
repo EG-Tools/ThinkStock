@@ -1,27 +1,45 @@
 import { spawnSync } from "node:child_process";
-import { WEBKIT_SMOKE_PATTERN } from "./test_scope.mjs";
+import {
+  WEBKIT_DESKTOP_SMOKE_PATTERN,
+  WEBKIT_SMOKE_PATTERN,
+} from "./test_scope.mjs";
 
 const mode = String(process.argv[2] || "smoke");
 const requestedScope = String(process.argv[3] || "smoke");
 const playwrightCli = "node_modules/@playwright/test/cli.js";
 const ciTarget = ["mobile", "desktop", "sw", "release"].includes(mode);
 const workers = process.env.CI && ciTarget && mode !== "sw" && requestedScope === "full" ? "2" : "1";
-const args = [playwrightCli, "test", `--workers=${workers}`];
+const baseArgs = [playwrightCli, "test", `--workers=${workers}`];
+const invocations = [];
 
 if (mode === "release") {
-  args.push("--project=webkit", "--project=webkit-desktop", "--project=webkit-sw");
-  if (requestedScope === "smoke") args.push("--grep", WEBKIT_SMOKE_PATTERN);
+  if (requestedScope === "smoke") {
+    invocations.push(["--project=webkit", "--grep", WEBKIT_SMOKE_PATTERN]);
+    invocations.push(["--project=webkit-desktop", "--grep", WEBKIT_DESKTOP_SMOKE_PATTERN]);
+    invocations.push(["--project=webkit-sw"]);
+  } else {
+    invocations.push(["--project=webkit", "--project=webkit-desktop", "--project=webkit-sw"]);
+  }
 } else if (mode === "service-worker" || mode === "sw") {
-  args.push("--project=webkit-sw");
+  invocations.push(["--project=webkit-sw"]);
 } else if (mode === "desktop") {
-  args.push("--project=webkit-desktop");
-  if (requestedScope === "smoke") args.push("--grep", WEBKIT_SMOKE_PATTERN);
+  invocations.push([
+    "--project=webkit-desktop",
+    ...(requestedScope === "smoke" ? ["--grep", WEBKIT_DESKTOP_SMOKE_PATTERN] : []),
+  ]);
 } else if (mode === "mobile") {
-  args.push("--project=webkit");
-  if (requestedScope === "smoke") args.push("--grep", WEBKIT_SMOKE_PATTERN);
+  invocations.push([
+    "--project=webkit",
+    ...(requestedScope === "smoke" ? ["--grep", WEBKIT_SMOKE_PATTERN] : []),
+  ]);
 } else {
-  args.push("--project=webkit", "--grep", WEBKIT_SMOKE_PATTERN);
+  invocations.push(["--project=webkit", "--grep", WEBKIT_SMOKE_PATTERN]);
 }
 
-const result = spawnSync(process.execPath, args, { cwd: process.cwd(), stdio: "inherit" });
-process.exit(result.status ?? 1);
+for (const invocation of invocations) {
+  const result = spawnSync(process.execPath, [...baseArgs, ...invocation], {
+    cwd: process.cwd(),
+    stdio: "inherit",
+  });
+  if (result.status !== 0) process.exit(result.status ?? 1);
+}

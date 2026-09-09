@@ -1,6 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyChangedFiles, normalizeChangedFiles } from "../../scripts/test_scope.mjs";
+import {
+  WEBKIT_DESKTOP_PATTERN,
+  WEBKIT_DESKTOP_SMOKE_PATTERN,
+  WEBKIT_SMOKE_PATTERN,
+  classifyChangedFiles,
+  normalizeChangedFiles,
+} from "../../scripts/test_scope.mjs";
+
+test("WebKit smoke scopes retain target-specific runnable tests", () => {
+  const desktopFull = new RegExp(WEBKIT_DESKTOP_PATTERN);
+  const desktopSmoke = WEBKIT_DESKTOP_SMOKE_PATTERN.split("|");
+
+  assert.ok(WEBKIT_SMOKE_PATTERN.length > 0);
+  assert.ok(desktopSmoke.length > 0);
+  assert.ok(desktopSmoke.every((title) => desktopFull.test(title)));
+});
 
 test("affected test scope ignores local-only iPhone preview files", () => {
   assert.deepEqual(normalizeChangedFiles([

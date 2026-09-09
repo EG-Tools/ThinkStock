@@ -1345,10 +1345,10 @@ assert.ok(playwrightConfig.includes('name: "webkit"')
   && deployWorkflow.includes("target: [mobile, desktop, sw]")
   && deployWorkflow.includes("run_webkit_scope.mjs ${{ matrix.target }} ${{ inputs.verification_scope }}")
   && webkitScopeRunner.includes('mode === "release"')
-  && webkitScopeRunner.includes('args.push("--project=webkit", "--project=webkit-desktop", "--project=webkit-sw")')
+  && webkitScopeRunner.includes('invocations.push(["--project=webkit", "--project=webkit-desktop", "--project=webkit-sw"])')
   && webkitScopeRunner.includes('mode === "desktop"')
-  && webkitScopeRunner.includes('args.push("--project=webkit-desktop")')
-  && webkitScopeRunner.includes('args.push("--project=webkit")'),
+  && webkitScopeRunner.includes('"--project=webkit-desktop"')
+  && webkitScopeRunner.includes('invocations.push(["--project=webkit"'),
   "iPhone WebKit is not covered by deployment validation");
 assert.ok(deployWorkflow.indexOf("npm ci") < deployWorkflow.indexOf("npm run test:unit:built"),
   "Node dependencies must be installed before web validation");
