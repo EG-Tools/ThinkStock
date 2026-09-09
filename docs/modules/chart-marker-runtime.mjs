@@ -19,7 +19,48 @@ const TIMING_PAYLOAD = Object.freeze({
   FAMILY: 8,
   BEHAVIOR: 9,
   STAGE: 10,
+  RELIABILITY_STATUS: 11,
+  RELIABILITY_SAMPLE: 12,
+  RELIABILITY_OUTCOME: 13,
 });
+const TIMING_RELIABILITY_HORIZON = 20;
+
+function timingReliabilityPercent(value, options = {}) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "-";
+  const scaled = (options.absolute ? Math.abs(number) : number) * 100;
+  return `${options.signed && scaled > 0 ? "+" : ""}${scaled.toFixed(1)}%`;
+}
+
+export function buildMarketTimingReliability(signal, quality, side) {
+  const normalizedSide = side === "sell" ? "sell" : "buy";
+  const mode = String(signal?.entryMode || "standard").trim() || "standard";
+  const row = quality?.validation?.holdoutByEntryMode?.[normalizedSide]?.[mode]
+    ?.horizons?.[TIMING_RELIABILITY_HORIZON] || null;
+  const samples = Math.max(0, Number(row?.samples) || 0);
+  const hitRate = Number(row?.hitRate);
+  const lowerBound = Number(row?.hitRateLowerBound);
+  const meanReturn = Number(row?.meanDirectionalReturn);
+  const worstAdverse = Number(row?.worstMaxAdverseReturn);
+  let status = "검증 대기";
+  if (samples > 0 && samples < 5) status = "표본 부족";
+  else if (samples >= 8
+    && Number.isFinite(lowerBound) && lowerBound >= 0.35
+    && Number.isFinite(meanReturn) && meanReturn > 0) status = "참고 가능";
+  else if (samples >= 5 && Number.isFinite(meanReturn) && meanReturn > 0) status = "제한적 참고";
+  else if (samples >= 5) status = "검증 약함";
+  const sampleLine = samples
+    ? `동일 유형 ${samples}회 · ${TIMING_RELIABILITY_HORIZON}일 적중 ${timingReliabilityPercent(hitRate, { absolute: true })}`
+    : "동일 유형의 완료된 검증 표본 없음";
+  const riskLabel = normalizedSide === "sell" ? "최대 역행 상승" : "최대 하락";
+  const outcomeLine = samples
+    ? `${TIMING_RELIABILITY_HORIZON}일 평균 성과 ${timingReliabilityPercent(meanReturn, { signed: true })} · ${riskLabel} ${timingReliabilityPercent(worstAdverse)}`
+    : "새 결과가 쌓이면 실제 성과를 표시합니다";
+  return Object.freeze({
+    status,
+    lines: Object.freeze([`실제 신뢰 · ${status}`, sampleLine, outcomeLine]),
+  });
+}
 
 export function createMarketTimingInputGate(options = {}) {
   const coreTickers = Array.isArray(options.coreTickers) ? options.coreTickers : ["^KS11", "^KQ11"];
@@ -358,16 +399,22 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
     const values = Array.isArray(point?.customdata) ? point.customdata : [];
     const date = String(point?.x || "").slice(0, 10);
     const kind = eventMarkerKind(point?.data);
+    const reliabilityEvents = [
+      values[TIMING_PAYLOAD.RELIABILITY_STATUS],
+      values[TIMING_PAYLOAD.RELIABILITY_SAMPLE],
+      values[TIMING_PAYLOAD.RELIABILITY_OUTCOME],
+    ].filter(Boolean).map((title) => ({ title }));
     if (kind === "timing-buy") {
       const title = values[TIMING_PAYLOAD.STAGE] || "매수 신호";
       return {
         name: values[TIMING_PAYLOAD.NAME] || point.data.name || "타이밍",
         plotDate: date,
         events: [
-          { title: `${title} · ${timingGradeLabel(
+          { title: `${title} · 근거 ${timingGradeLabel(
             values[TIMING_PAYLOAD.GRADE],
             values[TIMING_PAYLOAD.EVIDENCE],
           )}` },
+          ...reliabilityEvents,
           ...timingReasonEvents(values[TIMING_PAYLOAD.REASONS], "과매도·반전"),
           { title: `ADR ${values[TIMING_PAYLOAD.METRIC_A] ?? "-"} · 공포 ${values[TIMING_PAYLOAD.METRIC_B] ?? "-"} · MACD ${values[TIMING_PAYLOAD.METRIC_C] ?? "-"}` },
           { title: `시장 ${timingRegimeLabel(values[TIMING_PAYLOAD.REGIME])} · 근거 ${values[TIMING_PAYLOAD.EVIDENCE] ?? "-"}개` },
@@ -381,10 +428,11 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
         name: values[TIMING_PAYLOAD.NAME] || point.data.name || "타이밍",
         plotDate: date,
         events: [
-          { title: `${title} · ${timingGradeLabel(
+          { title: `${title} · 근거 ${timingGradeLabel(
             values[TIMING_PAYLOAD.GRADE],
             values[TIMING_PAYLOAD.EVIDENCE],
           )}` },
+          ...reliabilityEvents,
           ...timingReasonEvents(values[TIMING_PAYLOAD.REASONS], "과열·추세 둔화"),
           { title: `신용20일 ${values[TIMING_PAYLOAD.METRIC_A] ?? "-"}% · 고점대비 ${values[TIMING_PAYLOAD.METRIC_B] ?? "-"}%` },
           { title: `시장 ${timingRegimeLabel(values[TIMING_PAYLOAD.REGIME])} · 근거 ${values[TIMING_PAYLOAD.EVIDENCE] ?? "-"}개` },
@@ -763,6 +811,7 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
           const point = findPointOnOrAfterDate(signal.date, ticker, frame.pointIndex, 4);
           if (!point || point.date < frame.start || point.date > frame.end) return;
           points.push({
+            reliability: buildMarketTimingReliability(signal, model?.quality, side),
             signal,
             signalLifecycle: getSignalLifecycle?.({
               ticker,
@@ -784,7 +833,7 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
         Number.isFinite(toNum(value)) ? `${toNum(value).toFixed(digits)}${suffix}` : "-"
       );
       const customdata = sell
-        ? points.map(({ signal, signalLifecycle, ticker }) => [
+        ? points.map(({ reliability, signal, signalLifecycle, ticker }) => [
           labelName(ticker),
           compactTimingReasons([
             signal.sellSetupReasons,
@@ -800,8 +849,9 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
           signal.signalFamily || "overheat-rollover",
           signal.behaviorProfile?.label || "혼합형",
           timingSignalStage(signal, "sell", signalLifecycle),
+          ...reliability.lines,
         ])
-        : points.map(({ signal, signalLifecycle, ticker }) => [
+        : points.map(({ reliability, signal, signalLifecycle, ticker }) => [
           labelName(ticker),
           compactTimingReasons([
             signal.setupReasons,
@@ -818,18 +868,21 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
           signal.signalFamily || "correction-reversal",
           signal.behaviorProfile?.label || "혼합형",
           timingSignalStage(signal, "buy", signalLifecycle),
+          ...reliability.lines,
         ]);
       const hoverHeadlineTemplates = customdata.map(() => (
-        "<b>%{customdata[10]} · %{customdata[5]}</b>"
+        "<b>%{customdata[10]} · 근거 %{customdata[5]}</b>"
       ));
       const hoverDetailTemplates = customdata.map((values) => {
         const reasons = String(escapeHtml?.(values[TIMING_PAYLOAD.REASONS])
           ?? values[TIMING_PAYLOAD.REASONS]).replace(" · ", "<br>· ");
         return sell
           ? `근거: ${reasons}`
-            + "<br>신용20일 %{customdata[2]}% · 고점대비 %{customdata[3]}%<extra></extra>"
+            + "<br>신용20일 %{customdata[2]}% · 고점대비 %{customdata[3]}%"
+            + "<br>%{customdata[11]}<br>%{customdata[12]}<br>%{customdata[13]}<extra></extra>"
           : `근거: ${reasons}`
-            + "<br>ADR %{customdata[2]} · 공포 %{customdata[3]} · MACD %{customdata[4]}<extra></extra>";
+            + "<br>ADR %{customdata[2]} · 공포 %{customdata[3]} · MACD %{customdata[4]}"
+            + "<br>%{customdata[11]}<br>%{customdata[12]}<br>%{customdata[13]}<extra></extra>";
       });
       const hovertemplate = customdata.map((_values, pointIndex) => {
         return `${hoverHeadlineTemplates[pointIndex]}<br><b>%{customdata[0]}</b><br>${hoverDetailTemplates[pointIndex]}`;

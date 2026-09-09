@@ -18,6 +18,7 @@
     "consensus",
     "fundamentals",
     "internetNews",
+    "brokerResearch",
     "marketRegime",
     "corporateRisk",
     "rotation",

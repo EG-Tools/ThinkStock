@@ -410,7 +410,9 @@ test("groups price, EPS, disclosures, and signals by series in one hover entry",
     "근거 · %{customdata[1]}<extra></extra>",
   ]);
   assert.deepEqual(disclosure.meta.hoverDetailTemplates, ["<b>공시</b><br>분기보고서<extra></extra>"]);
-  assert.equal(grouped.every((item) => item.type === "scattergl"), true);
+  assert.equal(grouped.every((item) => item.type === "scatter"), true);
+  assert.equal(grouped.every((item) => item.mode === "lines"), true);
+  assert.equal(grouped.every((item) => item.line?.width === 0), true);
   const epsHoverIndex = grouped[0].x.indexOf("2024-03-31");
   assert.ok(epsHoverIndex >= 0);
   assert.match(grouped[0].text[0], /RFHIC<\/b> · 가격 32,000/);

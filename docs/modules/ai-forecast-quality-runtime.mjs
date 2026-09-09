@@ -10,6 +10,200 @@
     byShock: Object.freeze({}),
     series: Object.freeze({}),
   });
+  const DECISION_HORIZONS = Object.freeze([20, 63, 126]);
+  const DECISION_COMPONENT_LABELS = Object.freeze({
+    localModel: "가격 흐름",
+    top400Blend: "유사 종목",
+    empiricalGuardrail: "경험 보정",
+    corporateRiskGate: "기업위험 제한",
+    criticalNewsGate: "중대 뉴스",
+    consensus: "컨센서스",
+    fundamentals: "실적",
+    internetNews: "뉴스",
+    brokerResearch: "증권사 리포트",
+    marketRegime: "시장 국면",
+    corporateRisk: "공시 위험",
+    rotation: "수급 순환",
+    rangeMeanReversion: "평균회귀",
+    terminalRisk: "장기 위험",
+    finalClamp: "안전 제한",
+    analogPath: "유사 경로",
+    journalCalibration: "사후 검증",
+  });
+  const DECISION_SOURCE_LABELS = Object.freeze({
+    price: "가격",
+    market: "시장",
+    rotation: "수급",
+    macro: "거시지표",
+    auxiliary: "보조지표",
+    vkospi: "VKOSPI",
+    credit: "신용",
+    crisis: "위기지표",
+    disclosure: "공시",
+    internetNews: "뉴스",
+    consensus: "컨센서스",
+    financials: "실적",
+    brokerResearch: "증권사 리포트",
+  });
+
+  function decisionFinite(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function decisionClamp(value, minimum, maximum) {
+    return Math.max(minimum, Math.min(maximum, Number(value) || 0));
+  }
+
+  function signedPercentPoints(value) {
+    const number = decisionFinite(value);
+    if (number === null) return "-";
+    const points = number * 100;
+    return `${points > 0 ? "+" : ""}${points.toFixed(1)}%p`;
+  }
+
+  function horizonValue(source, horizon) {
+    return source?.[horizon] || source?.[String(horizon)] || null;
+  }
+
+  function horizonDecision(forecast, profile, horizon) {
+    const local = (forecast?.model?.horizons || []).find((row) => Number(row?.days) === horizon) || {};
+    const journal = horizonValue(profile?.horizons, horizon) || {};
+    const localSamples = Math.max(0, Number(local.validationSamples) || 0);
+    const journalSamples = Math.max(0, Number(journal.effectiveSamples ?? journal.samples) || 0);
+    const directionAccuracy = decisionFinite(journal.directionAccuracy)
+      ?? decisionFinite(local.directionAccuracy);
+    const localReliability = decisionFinite(local.reliability);
+    const confidenceScale = Math.min(
+      decisionClamp(profile?.qualityConfidenceScale ?? 1, 0, 1),
+      decisionClamp(profile?.inputReliability?.confidenceScale ?? 1, 0, 1),
+      decisionClamp(journal.confidenceScale ?? 1, 0, 1),
+      decisionClamp(journal.probability?.confidenceScale ?? 1, 0, 1),
+    );
+    const holdReasons = [];
+    if (profile?.inputReliability?.status === "weak") holdReasons.push("입력 신뢰 약함");
+    if (localSamples < 12) holdReasons.push("검증 표본 부족");
+    if (directionAccuracy !== null && directionAccuracy < 0.45) holdReasons.push("방향 검증 약함");
+    if (localReliability !== null && localReliability < 0.25) holdReasons.push("모델 신뢰 약함");
+    if (journal.walkForward?.applied === true && journal.walkForward.passed === false) {
+      holdReasons.push("순차 검증 실패");
+    }
+    const skillVsNoChange = decisionFinite(journal.skillVsNoChange);
+    if (journalSamples >= 8 && skillVsNoChange !== null && skillVsNoChange < 0) {
+      holdReasons.push("무변화 기준 미달");
+    }
+    let status = "usable";
+    if (holdReasons.length) status = "hold";
+    else if (journalSamples < 8
+      || confidenceScale < 0.82
+      || (directionAccuracy !== null && directionAccuracy < 0.52)
+      || (localReliability !== null && localReliability < 0.45)) status = "limited";
+    return Object.freeze({
+      horizon,
+      status,
+      label: status === "hold" ? "보류" : (status === "limited" ? "제한" : "참고"),
+      localSamples,
+      journalSamples,
+      directionAccuracy,
+      confidenceScale,
+      reasons: Object.freeze(holdReasons),
+    });
+  }
+
+  function previousForecastRecord(records, forecast) {
+    const asOf = String(forecast?.dates?.[0] || forecast?.asOf || "").slice(0, 10);
+    const modelVersion = String(forecast?.model?.version || "");
+    const eligible = (Array.isArray(records) ? records : []).filter((record) => (
+      String(record?.asOf || "").slice(0, 10) < asOf
+    ));
+    const sameModel = eligible.filter((record) => String(record?.modelVersion || "") === modelVersion);
+    return (sameModel.length ? sameModel : eligible)
+      .sort((left, right) => String(right?.asOf || "").localeCompare(String(left?.asOf || "")))[0]
+      || null;
+  }
+
+  function attributionAt(source, horizon) {
+    return horizonValue(source?.attribution?.horizons, horizon)
+      || horizonValue(source?.horizons, horizon)?.attribution
+      || null;
+  }
+
+  function rankedComponents(currentAttribution, previousAttribution = null) {
+    const current = currentAttribution?.components || {};
+    const previous = previousAttribution?.components || {};
+    const keys = new Set([...Object.keys(current), ...Object.keys(previous)]);
+    return [...keys].map((key) => ({
+      label: DECISION_COMPONENT_LABELS[key] || key,
+      current: decisionFinite(current[key]) || 0,
+      delta: previousAttribution
+        ? (decisionFinite(current[key]) || 0) - (decisionFinite(previous[key]) || 0)
+        : null,
+    }));
+  }
+
+  function changedSourceLabels(currentAudit, previousAudit) {
+    if (!previousAudit) return [];
+    const current = currentAudit?.sourceDates || {};
+    const previous = previousAudit?.sourceDates || {};
+    return Object.keys(DECISION_SOURCE_LABELS).filter((key) => (
+      String(current[key] || "") > String(previous[key] || "")
+    )).map((key) => DECISION_SOURCE_LABELS[key]);
+  }
+
+  function buildForecastDecisionSupport(options = {}) {
+    const forecast = options.forecast || null;
+    const profile = options.profile || null;
+    if (!forecast) return null;
+    const horizons = (options.horizons || DECISION_HORIZONS)
+      .map((horizon) => horizonDecision(forecast, profile, Number(horizon)));
+    const horizonLine = `기간별 신뢰 · ${horizons.map((row) => `${row.horizon}일 ${row.label}`).join(" / ")}`;
+    const previous = previousForecastRecord(options.records, forecast);
+    const currentAttribution = attributionAt(forecast, 126);
+    const previousAttribution = attributionAt(previous, 126);
+    const components = rankedComponents(currentAttribution, previousAttribution);
+    const rankedChanges = components
+      .filter((row) => row.delta !== null && Math.abs(row.delta) >= 0.001)
+      .sort((left, right) => Math.abs(right.delta) - Math.abs(left.delta));
+    const rankedCurrent = components
+      .filter((row) => Math.abs(row.current) >= 0.001)
+      .sort((left, right) => Math.abs(right.current) - Math.abs(left.current));
+    const currentExpected = decisionFinite(currentAttribution?.expectedLogReturn) || 0;
+    const previousExpected = decisionFinite(previousAttribution?.expectedLogReturn);
+    const change = previousExpected === null ? null : currentExpected - previousExpected;
+    const factorRows = (previous ? rankedChanges : rankedCurrent)
+      .slice(0, 2)
+      .map((row) => `${row.label} ${signedPercentPoints(previous ? row.delta : row.current)}`);
+    const changeLine = previous
+      ? `전회 대비 126일 전망 ${signedPercentPoints(change)}${factorRows.length ? ` · ${factorRows.join(" · ")}` : ""}`
+      : `현재 126일 주요 영향${factorRows.length ? ` · ${factorRows.join(" · ")}` : " · 기록 축적 중"}`;
+    const freshSources = changedSourceLabels(forecast.audit, previous?.audit);
+    const opposing = rankedCurrent.filter((row) => (
+      currentExpected >= 0 ? row.current < -0.001 : row.current > 0.001
+    )).slice(0, 2).map((row) => row.label);
+    const evidenceParts = [];
+    if (freshSources.length) evidenceParts.push(`새 근거 ${freshSources.slice(0, 3).join("·")}`);
+    if (opposing.length) evidenceParts.push(`반대 근거 ${opposing.join("·")}`);
+    const staleSources = (profile?.inputReliability?.staleSources || [])
+      .map((key) => DECISION_SOURCE_LABELS[key] || key)
+      .slice(0, 3);
+    const recheckSubjects = staleSources.length
+      ? staleSources
+      : [...new Set([...opposing, "가격", "공시·실적"])].slice(0, 3);
+    return Object.freeze({
+      format: "ai-decision-support-v1",
+      horizons: Object.freeze(horizons),
+      previousAsOf: String(previous?.asOf || ""),
+      change,
+      freshSources: Object.freeze(freshSources),
+      opposingFactors: Object.freeze(opposing),
+      hoverLines: Object.freeze([
+        horizonLine,
+        changeLine,
+        evidenceParts.join(" · "),
+        `재검토 · ${recheckSubjects.join("·")} 최신값 또는 방향 변경 시`,
+      ].filter(Boolean)),
+    });
+  }
 
   function normalizeTicker(value) {
     const ticker = String(value || "").trim().toUpperCase();
@@ -247,7 +441,14 @@
         { asOf: quality?.asOf || forecast?.dates?.[0] || forecast?.asOf },
       ));
       const calibrated = currentFeature.calibration.applyForecastCalibration(forecast, profile);
-      return currentFeature.forecast.applyChartTransform(calibrated, forecastOptions);
+      const transformed = currentFeature.forecast.applyChartTransform(calibrated, forecastOptions);
+      const decisionSupport = buildForecastDecisionSupport({
+        forecast: transformed,
+        profile,
+        records: ownRecords,
+        ticker: key,
+      }) || null;
+      return decisionSupport ? { ...transformed, decisionSupport } : transformed;
     }
 
     function remoteRecords(payload) {
@@ -349,13 +550,17 @@
   }
 
   const aiForecastQualityRuntime = Object.freeze({
+    buildForecastDecisionSupport,
     createAiForecastQualityRuntime,
+    horizonDecision,
     normalizeTicker,
     replaceTickerRecords,
   });
 
 export {
+  buildForecastDecisionSupport,
   createAiForecastQualityRuntime,
+  horizonDecision,
   normalizeTicker,
   replaceTickerRecords,
 };

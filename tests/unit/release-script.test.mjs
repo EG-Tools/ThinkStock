@@ -122,6 +122,7 @@ test("WebKit plan keeps full iPhone coverage without duplicating non-visual desk
   const packageJson = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
 
   assert.match(config, /name: "webkit",[\s\S]*testMatch: \/thinkstock-\.\*\\\.spec\\\.mjs\//);
-  assert.match(config, /name: "webkit-desktop",[\s\S]*testMatch: \/thinkstock-\(\?:viewport\|ai-desktop\)\\\.spec\\\.mjs\//);
-  assert.match(packageJson.scripts["test:webkit:built"], /--workers=1/);
+  assert.match(config, /name: "webkit",[\s\S]*testIgnore: \/thinkstock-ai-desktop\\\.spec\\\.mjs\//);
+  assert.match(config, /name: "webkit-desktop",[\s\S]*testMatch: \/thinkstock-\(\?:viewport\|ai-desktop\)\\\.spec\\\.mjs\/[\s\S]*grep: new RegExp\(WEBKIT_DESKTOP_PATTERN\)/);
+  assert.equal(packageJson.scripts["test:webkit:built"], "node scripts/run_webkit_scope.mjs release full");
 });

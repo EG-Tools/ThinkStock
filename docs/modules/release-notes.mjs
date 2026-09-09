@@ -3,6 +3,19 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.45",
+      date: "2026.09.09",
+      items: Object.freeze([
+        "실기기 성능 보고서에 기기·네트워크·내비게이션 측정 문맥 추가",
+        "보조차트 생성·예약·뷰포트 갱신 조정을 전용 모듈로 분리",
+        "신호 정보창에 과거 유사 신호의 성과·표본·최대 하락 신뢰도 추가",
+        "AI 기간별 판단 보류와 이전 전망 대비 변경 근거 표시",
+        "정보창용 비가시 포인트의 대량 SVG 생성 제거",
+        "보조차트 제목·구분선 배치의 강제 레이아웃 계산 제거",
+        "iPhone 전체 검증을 유지하며 Desktop Safari 중복 시나리오 축소",
+      ]),
+    }),
+    Object.freeze({
       version: "3.44",
       date: "2026.09.09",
       items: Object.freeze([

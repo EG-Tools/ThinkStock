@@ -381,6 +381,9 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
         });
         const referenceReports = latestReportsFromBrokerResearch(options.brokerResearch);
         const representativeReport = referenceReports[0] || null;
+        const decisionSupportHtml = (forecast.decisionSupport?.hoverLines || [])
+          .map((line) => escapeHtml(line).replaceAll("%", "&#37;"))
+          .join("<br>");
         const highestScenarioWeight = Math.max(...Object.values(scenarioPresentation.weights));
         SCENARIO_KEYS.forEach((scenarioKey) => {
           const scenario = forecast.scenarios?.[scenarioKey];
@@ -422,7 +425,9 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
             hoverinfo: chartSession.hoverShowPopup ? undefined : "skip",
             hovertemplate: chartSession.hoverShowPopup
               ? `<b>${escapeHtml(scenarioLabel)} 가중치 ${scenarioWeight}%</b> · %{hovertext}`
-                + `<br>${escapeHtml(scenario.reason)} · 실제 확률 아님${reportLink}<extra></extra>`
+                + `<br>${escapeHtml(scenario.reason)} · 실제 확률 아님`
+                + `${decisionSupportHtml ? `<br>${decisionSupportHtml}` : ""}`
+                + `${reportLink}<extra></extra>`
               : undefined,
             textposition: scenarioTextPositions[scenarioKey],
             textfont: { color: traceStyle.color, size: isEmphasizedScenario ? 12 : 11 },
@@ -461,6 +466,7 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
               forecastMode: String(forecast.signals?.forecastMode || "stock"),
               consensusUsed,
               fundamentalsUsed,
+              decisionSupport: forecast.decisionSupport || null,
             },
           });
         });

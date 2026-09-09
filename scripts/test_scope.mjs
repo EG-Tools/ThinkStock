@@ -117,6 +117,22 @@ export const WEBKIT_SMOKE_PATTERN = [
   "service worker registers and precaches the offline shell",
 ].join("|");
 
+export const WEBKIT_DESKTOP_PATTERN = [
+  "AI hover selects the nearest forecast scenario",
+  "AI toggle restores an unchanged wheel-zoomed viewport",
+  "full reset restores the device default chart period",
+  "chart dates stay synchronized while desktop drag and iPhone pinch zoom",
+  "restored chart handles adjust position and scale and can be hidden",
+  "desktop wheel anchors the latest edge and keeps pointer anchoring in history",
+  "one wheel input schedules one linked viewport target",
+  "the first desktop zoom-out uses the loaded recent window before history finishes",
+  "rapid wheel zoom-in keeps accumulating while chart updates are still pending",
+  "desktop main-chart drag commits the same range to auxiliary charts",
+  "auxiliary drag and wheel control the shared viewport owner",
+  "wheel zoom followed by panning keeps every visible auxiliary panel populated",
+  "restored chart pans immediately without a toggle or zoom warm-up",
+].join("|");
+
 export function normalizeChangedFiles(files) {
   return [...new Set((Array.isArray(files) ? files : [])
     .map((file) => String(file || "").trim().replaceAll("\\", "/"))

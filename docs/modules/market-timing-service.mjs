@@ -2,7 +2,7 @@
 
   const normalizeTicker = (value) => String(value || "").trim().toUpperCase();
   const TIMING_CACHE_SCHEMA = 1;
-  const TIMING_CACHE_REVISION = "market-timing-cache-v12";
+  const TIMING_CACHE_REVISION = "market-timing-cache-v13";
 
   function normalizeTargets(targets) {
     return [...new Set((targets || []).map(normalizeTicker).filter(Boolean))].sort();

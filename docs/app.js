@@ -69,6 +69,7 @@ import {
   createAppDataStore,
 } from "./modules/app-data-store.mjs";
 import * as appUiBindingsModule from "./modules/app-ui-bindings.mjs";
+import { createAuxiliaryChartApp } from "./modules/auxiliary-chart-app.mjs";
 import * as cacheLifecyclePolicyModule from "./modules/cache-lifecycle-policy.mjs";
 import * as chartCursorSyncModule from "./modules/chart-cursor-sync.mjs";
 import * as chartEventLayerModule from "./modules/chart-event-layer.mjs";
@@ -355,7 +356,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = tickerPriceRuntimeModule.CORPORATE_ACTION_RATIO_THRESHOLD;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = tickerPriceRuntimeModule.CORPORATE_ACTION_MAX_BOUNDARY_DAYS;
-const APP_VERSION = "3.44";
+const APP_VERSION = "3.45";
 const APP_BUILD_VERSION = resolveAppBuildVersion(globalThis);
 const appCacheRuntime = createAppCacheRuntime(globalThis, {
   scheduler: backgroundTaskScheduler,
@@ -889,6 +890,98 @@ const mainChartControlView = appUiBindingsModule.createMainChartControlView(glob
 let hoverSyncing = false;
 let cursorSyncing = false;
 let handleUpdateTimer = 0;
+const auxiliaryChartApp = createAuxiliaryChartApp(globalThis, {
+  registry: appRuntimeRegistry,
+  runtimeKey: APP_RUNTIME_KEYS.auxiliaryChart,
+  renderQueueKey: APP_RUNTIME_KEYS.auxiliaryChartRender,
+  loadFeature: () => optionalFeatureRuntime.ensureAuxiliaryChart(),
+  createLatestFrameQueue: chartUpdateCoordinatorModule.createLatestKeyedFrameQueue,
+  onError: (error) => recordRuntimeError("auxiliary-chart-render", error),
+  macdModelCache,
+  fingerprintDatedSeries: seriesIntegrityModule.fingerprintDatedSeries,
+  getPriceRows: () => (
+    Array.isArray(appData.pricePayload?.records) ? appData.pricePayload.records : []
+  ),
+  getDisparityDays: () => chartSession.macdDisparityDays,
+  supportsTechnicalSeries: (series) => seriesSupportsFeature(series, "technical"),
+  createRuntimeOptions: ({ modelModule, macdModule, getMacdModelForSeries, scheduleRender }) => {
+    const dataState = {
+      get pricePayload() { return appData.pricePayload; },
+      get adrRows() { return appData.adrRows; },
+      get macroRows() { return appData.macroRows; },
+    };
+    const syncState = {
+      get chartSyncing() { return chartSyncing; },
+      get hoverSyncing() { return hoverSyncing; },
+      get cursorSyncing() { return cursorSyncing; },
+    };
+    return {
+      ADR_HIGH_THRESH,
+      ADR_LOW_THRESH,
+      ADR_BAND_COLOR,
+      ADR_ZONE_HIGH_COLOR,
+      ADR_ZONE_LOW_COLOR,
+      AUXILIARY_ZONE_HIGH_FILL_COLOR,
+      AUXILIARY_ZONE_LOW_FILL_COLOR,
+      AUXILIARY_PANEL_KEYS,
+      AUXILIARY_SERIES_KEYS,
+      FEAR_GREED_HIGH_THRESH,
+      FEAR_GREED_LOW_THRESH,
+      NEWS_SENTIMENT_HIGH_THRESH,
+      NEWS_SENTIMENT_LOW_THRESH,
+      SERIES_COLORS,
+      auxiliaryChartHorizontalMargin,
+      buildCursorHoverMode,
+      buildCursorLineAxisLayout,
+      buildThresholdEnvelopeSeries: modelModule.buildThresholdEnvelopeSeries,
+      buildThresholdFillPolygons: modelModule.buildThresholdFillPolygons,
+      buildAuxiliaryPanelLayout: modelModule.buildAuxiliaryPanelLayout,
+      buildAuxiliaryViewportRanges: modelModule.buildAuxiliaryViewportRanges,
+      chartDisplaySampler: chartDisplaySamplerModule,
+      chartSession,
+      clearHoverOnChart,
+      commitViewportRange,
+      auxiliaryDataRevisionSignature,
+      dataRevisionSignature,
+      dataState,
+      requestAuxiliaryChartModel: (payload) => getChartModelWorkerClient().request(
+        payload,
+        "buildAuxiliaryChartModel",
+      ),
+      requestRender: ({ targets, xRange }) => scheduleRender(xRange, { targets }),
+      buildAuxiliaryChartModel: modelModule.buildAuxiliaryChartModel,
+      normalizeAuxiliaryChartModel: chartRenderContractModule.normalizeAuxiliaryChartModel,
+      getMacdModelForSeries,
+      getPreferredTechnicalSeries: resolveMacdTarget,
+      supportsTechnicalSeries: (series) => seriesSupportsFeature(series, "technical"),
+      fitRangeForTraces,
+      isTouchDevice,
+      labelName,
+      persistState: saveState,
+      recordPerfSample,
+      runPlotlyUpdate: plotlyUpdateRuntime.runElement,
+      seriesColor,
+      startPerfSample,
+      syncHoverToChart,
+      syncState,
+      thinMacdPoints: macdModule.thinMacdPoints,
+    };
+  },
+  getMainRange: () => getCurrentXRangeMs(document.getElementById("chart")),
+  scheduleCommittedViewport: (range) => scheduleCommittedCompanionViewport(range),
+  flushCommittedViewport: () => getChartRangeSyncController().flush(),
+  isCoMovementVisible: () => chartSession.showCoMovement,
+  getCoMovementRuntime: () => appRuntimeRegistry.peek(APP_RUNTIME_KEYS.coMovementPanel),
+});
+const {
+  flushCoMovement: flushLoadedCoMovementPanel,
+  getRenderQueue: getAuxiliaryChartRenderQueue,
+  getRuntime: getAuxiliaryChartRuntime,
+  invalidate: invalidateAdrChartRender,
+  refreshCompanions: refreshLoadedChartCompanions,
+  refreshViewport: refreshLoadedAuxiliaryViewport,
+  scheduleRender: scheduleAuxiliaryChartRender,
+} = auxiliaryChartApp;
 
 function getChartTargetRuntime() {
   return appRuntimeRegistry.get(APP_RUNTIME_KEYS.chartTarget, () => createChartTargetRuntime({
@@ -6238,7 +6331,7 @@ function getAiForecastTracesRuntime() {
       escapeHtml,
       formatActualValue,
       getAiForecastCacheService,
-      getMacdModelForSeries: (series) => getMacdModelForSeries(
+      getMacdModelForSeries: (series) => auxiliaryChartApp.getMacdModelForSeries(
         series,
         feature.macd?.buildMacdOscillator,
       ),
@@ -6694,173 +6787,8 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
   if (chartSession.showAiForecast && aiInputsReady) finishAiForecastProgress();
 }
 
-function getMacdModelForSeries(series, buildMacdOscillator) {
-  const ticker = String(series || "").toUpperCase();
-  if (!seriesSupportsFeature(ticker, "technical")
-    || typeof buildMacdOscillator !== "function") return null;
-  const records = Array.isArray(appData.pricePayload?.records) ? appData.pricePayload.records : [];
-  const sourceFingerprint = seriesIntegrityModule.fingerprintDatedSeries(
-      records,
-      [ticker],
-      {
-        tail: 520,
-        logicVersion: `macd-v3-disparity-${chartSession.macdDisparityDays}`,
-      },
-    );
-  return macdModelCache.resolve(ticker, sourceFingerprint, () => buildMacdOscillator({
-    dates: records.map((row) => row?.date),
-    prices: records.map((row) => row?.[ticker]),
-    disparityPeriod: chartSession.macdDisparityDays,
-  }));
-}
-
-async function getAuxiliaryChartRuntime() {
-  return appRuntimeRegistry.getAsync(APP_RUNTIME_KEYS.auxiliaryChart, async () => {
-    const auxiliaryChartFeature = await optionalFeatureRuntime.ensureAuxiliaryChart();
-    const auxiliaryChartRuntimeModule = auxiliaryChartFeature.runtime;
-    const auxiliaryChartModelModule = auxiliaryChartFeature.model;
-    const macdModule = auxiliaryChartFeature.macd;
-    if (!auxiliaryChartRuntimeModule?.createAuxiliaryChartRuntime
-      || !auxiliaryChartModelModule
-      || typeof macdModule?.buildMacdOscillator !== "function") {
-      throw new Error("보조차트 기능 모듈을 불러오지 못했습니다.");
-    }
-    const dataState = {
-      get pricePayload() { return appData.pricePayload; },
-      get adrRows() { return appData.adrRows; },
-      get macroRows() { return appData.macroRows; },
-    };
-    const syncState = {
-      get chartSyncing() { return chartSyncing; },
-      get hoverSyncing() { return hoverSyncing; },
-      get cursorSyncing() { return cursorSyncing; },
-    };
-    return auxiliaryChartRuntimeModule.createAuxiliaryChartRuntime(globalThis, {
-      ADR_HIGH_THRESH,
-      ADR_LOW_THRESH,
-      ADR_BAND_COLOR,
-      ADR_ZONE_HIGH_COLOR,
-      ADR_ZONE_LOW_COLOR,
-      AUXILIARY_ZONE_HIGH_FILL_COLOR,
-      AUXILIARY_ZONE_LOW_FILL_COLOR,
-      AUXILIARY_PANEL_KEYS,
-      AUXILIARY_SERIES_KEYS,
-      FEAR_GREED_HIGH_THRESH,
-      FEAR_GREED_LOW_THRESH,
-      NEWS_SENTIMENT_HIGH_THRESH,
-      NEWS_SENTIMENT_LOW_THRESH,
-      SERIES_COLORS,
-      auxiliaryChartHorizontalMargin,
-      buildCursorHoverMode,
-      buildCursorLineAxisLayout,
-      buildThresholdEnvelopeSeries: auxiliaryChartModelModule.buildThresholdEnvelopeSeries,
-      buildThresholdFillPolygons: auxiliaryChartModelModule.buildThresholdFillPolygons,
-      buildAuxiliaryPanelLayout: auxiliaryChartModelModule.buildAuxiliaryPanelLayout,
-      buildAuxiliaryViewportRanges: auxiliaryChartModelModule.buildAuxiliaryViewportRanges,
-      chartDisplaySampler: chartDisplaySamplerModule,
-      chartSession,
-      clearHoverOnChart,
-      commitViewportRange,
-      auxiliaryDataRevisionSignature,
-      dataRevisionSignature,
-      dataState,
-      requestAuxiliaryChartModel: (payload) => getChartModelWorkerClient().request(
-        payload,
-        "buildAuxiliaryChartModel",
-      ),
-      requestRender: ({ targets, xRange }) => scheduleAuxiliaryChartRender(xRange, { targets }),
-      buildAuxiliaryChartModel: auxiliaryChartModelModule.buildAuxiliaryChartModel,
-      normalizeAuxiliaryChartModel: chartRenderContractModule.normalizeAuxiliaryChartModel,
-      getMacdModelForSeries: (series) => getMacdModelForSeries(
-        series,
-        macdModule.buildMacdOscillator,
-      ),
-      getPreferredTechnicalSeries: resolveMacdTarget,
-      supportsTechnicalSeries: (series) => seriesSupportsFeature(series, "technical"),
-      fitRangeForTraces,
-      isTouchDevice,
-      labelName,
-      persistState: saveState,
-      recordPerfSample,
-      runPlotlyUpdate: plotlyUpdateRuntime.runElement,
-      seriesColor,
-      startPerfSample,
-      syncHoverToChart,
-      syncState,
-      thinMacdPoints: macdModule.thinMacdPoints,
-    });
-  });
-}
-
-function invalidateAdrChartRender() {
-  appRuntimeRegistry.peek(APP_RUNTIME_KEYS.auxiliaryChart)?.invalidateAdr();
-}
-
 const ADR_SOURCE_URL = "http://www.adrinfo.kr/chart";
 const CORS_PROXY     = "https://corsproxy.io/?url=";
-
-function getAuxiliaryChartRenderQueue() {
-  return appRuntimeRegistry.get(APP_RUNTIME_KEYS.auxiliaryChartRender, () => (
-    chartUpdateCoordinatorModule.createLatestKeyedFrameQueue(globalThis, {
-      apply: async (requests) => {
-        const latest = requests.reduce((selected, request) => (
-          !selected || Number(request?.revision) > Number(selected?.revision) ? request : selected
-        ), null);
-        const xRange = Array.isArray(latest?.xRange) ? latest.xRange.slice(0, 2) : null;
-        const runtime = await getAuxiliaryChartRuntime();
-        let targets = [...new Set(requests.map((request) => String(request?.target || ""))
-          .filter(Boolean))];
-        if (requests.every((request) => request?.refreshOnly === true)) {
-          const refreshTargets = new Set(runtime.viewportRefreshTargets?.(xRange) || []);
-          targets = targets.filter((target) => refreshTargets.has(target));
-        }
-        if (targets.length) await runtime.renderAll(xRange, { targets });
-      },
-      onError: (error) => recordRuntimeError("auxiliary-chart-render", error),
-    })
-  ));
-}
-
-let auxiliaryChartRenderRevision = 0;
-
-function scheduleAuxiliaryChartRender(xRange = null, options = {}) {
-  const targets = Array.isArray(options.targets) && options.targets.length
-    ? [...new Set(options.targets.map(String).filter(Boolean))]
-    : ["macd", "auxiliary"];
-  const revision = auxiliaryChartRenderRevision += 1;
-  const range = Array.isArray(xRange) ? xRange.slice(0, 2) : null;
-  targets.forEach((target) => getAuxiliaryChartRenderQueue().schedule(target, {
-    refreshOnly: options.refreshOnly === true,
-    revision,
-    target,
-    xRange: range,
-  }));
-  return targets.length > 0;
-}
-
-async function refreshLoadedAuxiliaryViewport() {
-  const runtime = appRuntimeRegistry.peek(APP_RUNTIME_KEYS.auxiliaryChart);
-  const mainElement = document.getElementById("chart");
-  const xRange = getCurrentXRangeMs(mainElement);
-  if (!runtime || xRange?.length !== 2) return;
-  if (scheduleCommittedCompanionViewport(xRange)) {
-    await getChartRangeSyncController().flush();
-  }
-  const targets = runtime.viewportRefreshTargets?.(xRange) || [];
-  if (!targets.length) return;
-  scheduleAuxiliaryChartRender(xRange, { targets, refreshOnly: true });
-  await getAuxiliaryChartRenderQueue().whenSettled();
-}
-
-async function refreshLoadedChartCompanions() {
-  await refreshLoadedAuxiliaryViewport();
-  await flushLoadedCoMovementPanel();
-}
-
-function flushLoadedCoMovementPanel() {
-  if (!chartSession.showCoMovement) return null;
-  return appRuntimeRegistry.peek(APP_RUNTIME_KEYS.coMovementPanel)?.flush?.() || null;
-}
 
 async function fetchJsonWithProxyFallback(url, init = null, options = {}) {
   const allowProxy = options?.allowProxy !== false;

@@ -186,6 +186,9 @@
           meanDirectionalReturn: rounded(mean(rows.map((row) => row.directionalReturn))),
           medianDirectionalReturn: rounded(median(rows.map((row) => row.directionalReturn))),
           meanMaxAdverseReturn: rounded(mean(rows.map((row) => row.maxAdverseReturn))),
+          worstMaxAdverseReturn: rounded(rows.length
+            ? Math.min(...rows.map((row) => row.maxAdverseReturn))
+            : null),
           medianMaxAdverseReturn: rounded(median(rows.map((row) => row.maxAdverseReturn))),
           meanMaxFavorableReturn: rounded(mean(rows.map((row) => row.maxFavorableReturn))),
         })];

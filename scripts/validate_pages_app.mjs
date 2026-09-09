@@ -54,7 +54,7 @@ const [app, html, sw, playwrightConfig, dataPayload, marketData, chartInteractio
   stat(path.join(root, "docs", "vendor", "plotly-thinkstock-2.35.2.min.js")),
   stat(path.join(root, "docs", "assets", "app.bundle.min.js")),
 ]);
-const [dataHealth, pagesEntry, styles, insiderTrades, workerIndex, workerRouter, workerDartHandler, kofiaClient, marketTimingService, marketTimingWorker, aiScenarioPaths, aiForecastWorker, optionalFeatureRuntime, stockResearchApp, aiForecastCache, aiForecastQualityRuntime, chartModelCache, chartPointerRuntime, chartHoverRuntime, chartMarkerRuntime, auxiliaryChartRuntime, mainChartEvents, apiPeriods, settingsPanelRuntime, aiForecastTraces, runtimeRefreshOrchestrator, progressView, mainChartModel, chartEventLayer] = await Promise.all([
+const [dataHealth, pagesEntry, styles, insiderTrades, workerIndex, workerRouter, workerDartHandler, kofiaClient, marketTimingService, marketTimingWorker, aiScenarioPaths, aiForecastWorker, optionalFeatureRuntime, stockResearchApp, aiForecastCache, aiForecastQualityRuntime, chartModelCache, chartPointerRuntime, chartHoverRuntime, chartMarkerRuntime, auxiliaryChartRuntime, auxiliaryChartApp, mainChartEvents, apiPeriods, settingsPanelRuntime, aiForecastTraces, runtimeRefreshOrchestrator, progressView, mainChartModel, chartEventLayer] = await Promise.all([
   readFile(path.join(root, "docs", "modules", "data-health.mjs"), "utf8"),
   readFile(path.join(root, "scripts", "pages-entry.mjs"), "utf8"),
   readFile(path.join(root, "docs", "styles.css"), "utf8"),
@@ -76,6 +76,7 @@ const [dataHealth, pagesEntry, styles, insiderTrades, workerIndex, workerRouter,
   readFile(path.join(root, "docs", "modules", "chart-hover-runtime.mjs"), "utf8"),
   readFile(path.join(root, "docs", "modules", "chart-marker-runtime.mjs"), "utf8"),
   readFile(path.join(root, "docs", "modules", "auxiliary-chart-runtime.mjs"), "utf8"),
+  readFile(path.join(root, "docs", "modules", "auxiliary-chart-app.mjs"), "utf8"),
   readFile(path.join(root, "docs", "modules", "main-chart-events.mjs"), "utf8"),
   readFile(path.join(root, "docs", "modules", "api-periods.mjs"), "utf8"),
   readFile(path.join(root, "docs", "modules", "settings-panel-runtime.mjs"), "utf8"),
@@ -662,14 +663,20 @@ assert.ok(!pagesEntry.includes('import "../docs/modules/eps-chart.mjs"')
 "EPS must load only when its default-off chart is enabled");
 assert.ok(!app.includes('from "./modules/auxiliary-chart-runtime.mjs"')
   && !app.includes('from "./modules/macd-oscillator.mjs"')
+  && app.includes('from "./modules/auxiliary-chart-app.mjs"')
+  && app.includes("createAuxiliaryChartApp(globalThis")
   && optionalFeatureRuntime.includes('"auxiliary-chart"')
   && optionalFeatureRuntime.includes('"./assets/auxiliary-chart-feature.bundle.min.js"')
   && auxiliaryChartFeatureEntry.includes('from "../../docs/modules/auxiliary-chart-runtime.mjs"')
   && auxiliaryChartFeatureEntry.includes('from "../../docs/modules/macd-oscillator.mjs"')
   && auxiliaryChartFeatureEntry.includes("export { auxiliaryChartFeature, auxiliaryChartModel, auxiliaryChartRuntime, macd }")
   && app.includes("scheduleAuxiliaryChartRender(mainRangeForAdr")
-  && app.includes("chartUpdateCoordinatorModule.createLatestKeyedFrameQueue")
-  && app.includes("await runtime.renderAll(xRange, { targets })")
+  && auxiliaryChartApp.includes("options.createLatestFrameQueue(scope")
+  && auxiliaryChartApp.includes("await runtime.renderAll(xRange, { targets })")
+  && auxiliaryChartApp.includes("scheduleCommittedViewport")
+  && auxiliaryChartApp.includes("getMacdModelForSeries,")
+  && app.includes("auxiliaryChartApp.getMacdModelForSeries(")
+  && !app.includes("getMacdModelForSeries: (series) => getMacdModelForSeries(")
   && declaredRuntimeAssets.includes("/assets/auxiliary-chart-feature.bundle.min.js")
   && !precacheAssetsSource.includes("auxiliary-chart-feature.bundle.min.js"),
 "auxiliary chart rendering must load after the first main chart frame");

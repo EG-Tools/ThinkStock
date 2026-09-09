@@ -96,13 +96,18 @@ test("timing signal popovers reuse the compact marker payload", () => {
     customdata: [
       "삼성전자", "신용 과열<br>· MACD 반전", "8.2", "-1.3", "-", "강", "slowdown", 5,
       "trend-exhaustion", "추세형", "매도 하락 확인",
+      "실제 신뢰 · 참고 가능", "동일 유형 9회 · 20일 적중 66.7%",
+      "20일 평균 성과 +3.2% · 최대 역행 상승 -4.1%",
     ],
     data: { name: "타이밍 매도신호", meta: { overlayKind: "timing-sell" } },
   });
   assert.equal(group.name, "삼성전자");
   assert.equal(group.plotDate, "2026-08-21");
   assert.deepEqual(group.events.map((event) => event.title), [
-    "매도 하락 확인 · 강",
+    "매도 하락 확인 · 근거 강",
+    "실제 신뢰 · 참고 가능",
+    "동일 유형 9회 · 20일 적중 66.7%",
+    "20일 평균 성과 +3.2% · 최대 역행 상승 -4.1%",
     "근거: 신용 과열",
     "· MACD 반전",
     "신용20일 8.2% · 고점대비 -1.3%",
@@ -120,7 +125,7 @@ test("exceptional timing moves are labeled as warnings instead of predictions", 
     ],
     data: { meta: { overlayKind: "timing-buy" } },
   });
-  assert.equal(buy.events[0].title, "과매도 경고 · 강");
+  assert.equal(buy.events[0].title, "과매도 경고 · 근거 강");
 });
 
 function createRuntime(overrides = {}) {
@@ -267,7 +272,7 @@ test("one marker frame shares its date index and spacing across every marker lay
   assert.equal(buy.trace.text[0], "▲");
   assert.match(
     buy.trace.hovertemplate[0],
-    /^<b>%\{customdata\[10\]\} · %\{customdata\[5\]\}<\/b>/,
+    /^<b>%\{customdata\[10\]\} · 근거 %\{customdata\[5\]\}<\/b>/,
   );
   assert.equal(sell.trace.mode, "text");
   assert.equal(sell.trace.text[0], "▼");

@@ -632,10 +632,11 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
         // Unified and point-fallback popups share one content source. Horizontal
         // alignment is normalized in chart-hover-runtime after Plotly renders it.
         customdata: hoverText,
-        // Invisible hover targets can contain decades of daily points. WebGL keeps
-        // multi-series viewport movement from repeatedly laying out SVG markers.
-        type: "scattergl",
-        mode: "markers",
+        // Keep every hover point in Plotly's calculation data without creating one
+        // invisible SVG marker node per date. The lightweight Plotly bundle only
+        // ships scatter, so a transparent line is cheaper than a scattergl fallback.
+        type: "scatter",
+        mode: "lines",
         name: "",
         showlegend: false,
         cliponaxis: true,
@@ -656,6 +657,7 @@ import { orderItemsByActivation } from "./chart-session-controller.mjs";
           line: { width: 0 },
           opacity: 0,
         },
+        line: { color: "rgba(0,0,0,0)", width: 0 },
       }];
     });
     if (groupedTraces.length) {

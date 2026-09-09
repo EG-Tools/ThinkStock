@@ -533,6 +533,7 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
     }
 
     const document = scope.document;
+    const auxiliarySeparatorFrames = new WeakMap();
     const plotlyHoverLabel = (fontSize) => chartLoader.hoverLabel(
       chartSession.hoverShowPopup,
       fontSize,
@@ -830,46 +831,20 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       ];
     }
 
-    function syncAuxiliarySeparators(
-      el,
-      separatorPaperPositions = null,
-      panelTitles = null,
-      representativeControls = null,
-    ) {
-      if (!el) return;
-      const panelTitlesProvided = Array.isArray(panelTitles);
-      const nextPanelTitlesSignature = panelTitlesProvided
-        ? panelTitlesSignature(panelTitles)
-        : "";
-      const existingHeadingCount = el.querySelectorAll(":scope > .auxiliary-panel-heading").length;
-      const rebuildHeadings = panelTitlesProvided && (
-        nextPanelTitlesSignature !== String(el.auxiliaryPanelTitlesSignature || "")
-        || existingHeadingCount !== panelTitles.length
-      );
-      if (Array.isArray(separatorPaperPositions)) {
-        el.auxiliarySeparatorPaperPositions = [...separatorPaperPositions];
-      }
-      if (Array.isArray(panelTitles)) {
-        if (rebuildHeadings) {
-          el.auxiliaryPanelTitles = panelTitles.map((panel) => ({ ...panel }));
-          el.auxiliaryPanelTitlesSignature = nextPanelTitlesSignature;
-        }
-      }
-      let layer = el.querySelector(":scope > .auxiliary-separator-layer");
-      if (!layer) {
-        layer = document.createElement("div");
-        layer.className = "auxiliary-separator-layer";
-        el.append(layer);
-      }
-      const representativeRow = syncAuxiliaryRepresentativeToggles(el, representativeControls);
+    function renderAuxiliarySeparators(el, rebuildHeadings) {
+      const layer = el?.querySelector(":scope > .auxiliary-separator-layer");
+      if (!el || !layer) return;
+      const representativeRow = el.querySelector(":scope > .auxiliary-representative-toggles");
       const plotSize = el._fullLayout?._size;
       const top = Number(plotSize?.t) || 14;
-      const plotHeight = Number(plotSize?.h)
-        || Math.max(1, el.clientHeight - top - 36);
-      const containerRect = el.getBoundingClientRect();
-      const representativeRect = representativeRow?.getBoundingClientRect();
-      const representativeBottom = representativeRect?.height
-        ? representativeRect.bottom - containerRect.top + 5
+      const bottom = Number(plotSize?.b) || AUXILIARY_LAYOUT_METRICS.bottomMargin;
+      const plotHeight = Number(plotSize?.h) || Math.max(
+        1,
+        AUXILIARY_LAYOUT_METRICS.controlsOnlyHeight - top - bottom,
+      );
+      const chartHeight = top + plotHeight + bottom;
+      const representativeBottom = representativeRow
+        ? AUXILIARY_LAYOUT_METRICS.controlsOnlyHeight - 2
         : Math.max(0, top - 8);
       const paperPositions = Array.isArray(el.auxiliarySeparatorPaperPositions)
         ? el.auxiliarySeparatorPaperPositions
@@ -891,7 +866,7 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
         el.querySelectorAll(":scope > .auxiliary-panel-heading").forEach((heading) => heading.remove());
       }
       separators.forEach((separator, index) => {
-        const lineTop = Math.max(0, Math.min(el.clientHeight - 1, separator.top));
+        const lineTop = Math.max(0, Math.min(chartHeight - 1, separator.top));
         const line = document.createElement("i");
         line.className = "auxiliary-section-separator";
         line.setAttribute("aria-hidden", "true");
@@ -940,9 +915,62 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       });
       layer.replaceChildren(separatorFragment);
       if (headingFragment) el.append(headingFragment);
+    }
+
+    function scheduleAuxiliarySeparatorLayout(el, rebuildHeadings = false) {
+      const pending = auxiliarySeparatorFrames.get(el);
+      if (pending) {
+        pending.rebuildHeadings ||= rebuildHeadings;
+        return;
+      }
+      const frame = { rebuildHeadings, requestId: 0 };
+      auxiliarySeparatorFrames.set(el, frame);
+      const apply = () => {
+        if (auxiliarySeparatorFrames.get(el) !== frame) return;
+        auxiliarySeparatorFrames.delete(el);
+        renderAuxiliarySeparators(el, frame.rebuildHeadings);
+      };
+      if (typeof scope.requestAnimationFrame === "function") {
+        frame.requestId = scope.requestAnimationFrame(apply);
+      } else {
+        apply();
+      }
+    }
+
+    function syncAuxiliarySeparators(
+      el,
+      separatorPaperPositions = null,
+      panelTitles = null,
+      representativeControls = null,
+    ) {
+      if (!el) return;
+      const panelTitlesProvided = Array.isArray(panelTitles);
+      const nextPanelTitlesSignature = panelTitlesProvided
+        ? panelTitlesSignature(panelTitles)
+        : "";
+      const existingHeadingCount = el.querySelectorAll(":scope > .auxiliary-panel-heading").length;
+      const rebuildHeadings = panelTitlesProvided && (
+        nextPanelTitlesSignature !== String(el.auxiliaryPanelTitlesSignature || "")
+        || existingHeadingCount !== panelTitles.length
+      );
+      if (Array.isArray(separatorPaperPositions)) {
+        el.auxiliarySeparatorPaperPositions = [...separatorPaperPositions];
+      }
+      if (Array.isArray(panelTitles) && rebuildHeadings) {
+        el.auxiliaryPanelTitles = panelTitles.map((panel) => ({ ...panel }));
+        el.auxiliaryPanelTitlesSignature = nextPanelTitlesSignature;
+      }
+      let layer = el.querySelector(":scope > .auxiliary-separator-layer");
+      if (!layer) {
+        layer = document.createElement("div");
+        layer.className = "auxiliary-separator-layer";
+        el.append(layer);
+      }
+      syncAuxiliaryRepresentativeToggles(el, representativeControls);
+      scheduleAuxiliarySeparatorLayout(el, rebuildHeadings);
       if (!el.auxiliarySeparatorResizeObserver && typeof scope.ResizeObserver === "function") {
         el.auxiliarySeparatorResizeObserver = new scope.ResizeObserver(() => {
-          scope.requestAnimationFrame?.(() => syncAuxiliarySeparators(el));
+          syncAuxiliarySeparators(el);
         });
         el.auxiliarySeparatorResizeObserver.observe(el);
       }

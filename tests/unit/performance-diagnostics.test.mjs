@@ -5,6 +5,59 @@ import test from "node:test";
 import * as diagnosticsModule from "../../docs/modules/performance-diagnostics.mjs";
 
 
+test("captures comparable device, network, and navigation context", async () => {
+  const scope = {
+    innerWidth: 390,
+    innerHeight: 844,
+    devicePixelRatio: 3,
+    screen: { width: 390, height: 844 },
+    location: { search: "?perf=1&perfRun=iphone-01&perfScenario=cold-5-stocks" },
+    navigator: {
+      userAgent: "Mozilla/5.0 (iPhone) Version/18.0 Mobile Safari/604.1",
+      platform: "iPhone",
+      maxTouchPoints: 5,
+      hardwareConcurrency: 6,
+      connection: { effectiveType: "4g", downlink: 8.25, rtt: 42, saveData: false },
+      storage: {},
+    },
+    performance: {
+      getEntriesByType: (type) => type === "navigation" ? [{
+        type: "navigate",
+        startTime: 0,
+        responseStart: 125.04,
+        domContentLoadedEventEnd: 840.06,
+        loadEventEnd: 1020.09,
+        transferSize: 12345,
+        encodedBodySize: 12000,
+        decodedBodySize: 48000,
+        nextHopProtocol: "h2",
+      }] : [],
+    },
+  };
+  const diagnostics = diagnosticsModule.createPerformanceDiagnostics(scope, {
+    performanceApi: {
+      summary: () => ({}),
+      getLatestOperations: () => ({}),
+      getSlowOperations: () => [],
+      getRecentErrors: () => [],
+    },
+  });
+
+  const report = await diagnostics.capture({ appVersion: "3.45" });
+
+  assert.deepEqual(report.measurement.run, {
+    label: "iphone-01",
+    scenario: "cold-5-stocks",
+  });
+  assert.equal(report.measurement.device.class, "phone");
+  assert.equal(report.measurement.device.browser, "Safari");
+  assert.equal(report.measurement.network.effectiveType, "4g");
+  assert.equal(report.measurement.navigation.ttfbMs, 125);
+  assert.equal(report.measurement.navigation.loadMs, 1020.1);
+  assert.match(diagnostics.reportLines(report).join("\n"), /phone · Safari · navigate/);
+});
+
+
 test("captures bounded version diagnostics with storage state", async () => {
   const stored = new Map();
   const scope = {
@@ -232,6 +285,47 @@ test("keeps separate sessions and compares version percentiles", async () => {
   });
   assert.equal(comparison.previous.appVersion, "0.96");
   assert.match(currentA.reportLines(report, comparison).join("\n"), /이전 0.96/);
+});
+
+
+test("compares only matching device and measurement scenarios", async () => {
+  const stored = new Map();
+  const makeDiagnostics = (sessionId, search, width, startupDuration) => (
+    diagnosticsModule.createPerformanceDiagnostics({
+      innerWidth: width,
+      innerHeight: 800,
+      screen: { width, height: 800 },
+      location: { search },
+      navigator: {
+        userAgent: "Mozilla/5.0 Chrome/126.0 Safari/537.36",
+        connection: { effectiveType: "4g" },
+      },
+      localStorage: {
+        getItem: (key) => stored.get(key) || null,
+        setItem: (key, value) => stored.set(key, String(value)),
+      },
+    }, {
+      sessionId,
+      performanceApi: {
+        summary: () => ({}),
+        getLatestOperations: () => ({ appStartup: { duration: startupDuration } }),
+        getSlowOperations: () => [],
+      },
+    })
+  );
+
+  await makeDiagnostics("desktop", "?perfScenario=cold", 1440, 900)
+    .capture({ appVersion: "3.45" });
+  const phoneDiagnostics = makeDiagnostics("phone", "?perfScenario=warm", 390, 250);
+  const phoneReport = await phoneDiagnostics.capture({ appVersion: "3.45" });
+  await makeDiagnostics("phone-old", "?perfScenario=warm", 390, 300)
+    .capture({ appVersion: "3.44" });
+
+  const comparison = phoneDiagnostics.comparisonFor(phoneReport);
+  assert.equal(comparison.current.sessions, 1);
+  assert.equal(comparison.current.startupP95, 250);
+  assert.equal(comparison.previous.sessions, 1);
+  assert.equal(comparison.previous.startupP95, 300);
 });
 
 

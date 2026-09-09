@@ -17,6 +17,7 @@
 - Keep local and deployed behavior identical by changing the shared `docs/` source only.
 - Keep `main` as the only long-lived deployment branch.
 - Run unit validation and Safari/iPhone WebKit coverage before release.
+- Run Chrome DevTools MCP audits in one separate isolated browser window or context. Never navigate, refresh, close, or otherwise reuse the browser window the user is currently viewing. When an audit needs multiple pages, open and manage them as tabs in that single test window/context instead of creating additional windows.
 - Before implementing any behavior, identify existing contracts, reusable modules, and every related UI, data, input, cache, local/deployed, and desktop/mobile path that can share it. If the commonization boundary changes behavior or performance, stop and confirm that boundary with the user before editing.
 
 ## Change Completion

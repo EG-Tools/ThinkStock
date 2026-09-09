@@ -31,6 +31,94 @@
     )));
   }
 
+  function roundMetric(value) {
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0
+      ? Math.round(number * 10) / 10
+      : 0;
+  }
+
+  function classifyDevice(scope, navigator) {
+    const width = Number(scope.innerWidth) || Number(scope.screen?.width) || 0;
+    const height = Number(scope.innerHeight) || Number(scope.screen?.height) || 0;
+    const shortestEdge = Math.min(
+      Number(scope.screen?.width) || Number.POSITIVE_INFINITY,
+      Number(scope.screen?.height) || Number.POSITIVE_INFINITY,
+    );
+    const touch = Number(navigator.maxTouchPoints) > 0 || "ontouchstart" in scope;
+    if (touch && shortestEdge <= 600) return "phone";
+    if (touch && shortestEdge <= 1100) return "tablet";
+    return width > 0 || height > 0 ? "desktop" : "unknown";
+  }
+
+  function browserFamily(userAgent) {
+    const value = String(userAgent || "");
+    if (/Edg\//.test(value)) return "Edge";
+    if (/CriOS\//.test(value)) return "Chrome iOS";
+    if (/FxiOS\//.test(value)) return "Firefox iOS";
+    if (/Chrome\//.test(value)) return "Chrome";
+    if (/Firefox\//.test(value)) return "Firefox";
+    if (/Safari\//.test(value) && /Version\//.test(value)) return "Safari";
+    return "unknown";
+  }
+
+  function readRuntimeMeasurementContext(scope = globalThis) {
+    const navigator = scope.navigator || {};
+    const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    const navigation = scope.performance?.getEntriesByType?.("navigation")?.[0] || null;
+    const params = new URLSearchParams(scope.location?.search || "");
+    const navigationStart = Number(navigation?.startTime) || 0;
+    const elapsed = (value) => Math.max(0, roundMetric((Number(value) || 0) - navigationStart));
+    return Object.freeze({
+      run: Object.freeze({
+        label: String(params.get("perfRun") || "").slice(0, 80),
+        scenario: String(params.get("perfScenario") || "normal").slice(0, 80),
+      }),
+      device: Object.freeze({
+        class: classifyDevice(scope, navigator),
+        browser: browserFamily(navigator.userAgent),
+        platform: String(navigator.userAgentData?.platform || navigator.platform || ""),
+        viewportWidth: Math.max(0, Math.round(Number(scope.innerWidth) || 0)),
+        viewportHeight: Math.max(0, Math.round(Number(scope.innerHeight) || 0)),
+        screenWidth: Math.max(0, Math.round(Number(scope.screen?.width) || 0)),
+        screenHeight: Math.max(0, Math.round(Number(scope.screen?.height) || 0)),
+        pixelRatio: roundMetric(scope.devicePixelRatio),
+        touchPoints: Math.max(0, Math.round(Number(navigator.maxTouchPoints) || 0)),
+        hardwareConcurrency: Math.max(0, Math.round(Number(navigator.hardwareConcurrency) || 0)),
+        deviceMemoryGb: roundMetric(navigator.deviceMemory),
+      }),
+      network: Object.freeze({
+        effectiveType: String(connection?.effectiveType || "unknown"),
+        downlinkMbps: roundMetric(connection?.downlink),
+        rttMs: roundMetric(connection?.rtt),
+        saveData: connection?.saveData === true,
+      }),
+      navigation: Object.freeze({
+        type: String(navigation?.type || "unknown"),
+        protocol: String(navigation?.nextHopProtocol || ""),
+        ttfbMs: navigation ? elapsed(navigation.responseStart) : 0,
+        domContentLoadedMs: navigation ? elapsed(navigation.domContentLoadedEventEnd) : 0,
+        loadMs: navigation ? elapsed(navigation.loadEventEnd) : 0,
+        transferBytes: Math.max(0, Math.round(Number(navigation?.transferSize) || 0)),
+        encodedBytes: Math.max(0, Math.round(Number(navigation?.encodedBodySize) || 0)),
+        decodedBytes: Math.max(0, Math.round(Number(navigation?.decodedBodySize) || 0)),
+      }),
+    });
+  }
+
+  function measurementCohortKey(report) {
+    const measurement = report?.measurement || {};
+    const device = measurement.device || {};
+    const network = measurement.network || {};
+    return [
+      String(measurement.run?.scenario || "normal"),
+      String(device.class || "unknown"),
+      String(device.browser || "unknown"),
+      `${Math.max(0, Number(device.viewportWidth) || 0)}x${Math.max(0, Number(device.viewportHeight) || 0)}`,
+      String(network.effectiveType || "unknown"),
+    ].join("|");
+  }
+
   // Continuous browser observers stay in the delayed diagnostics bundle so normal use only
   // pays for explicit operation timings recorded by the lightweight performance core.
   function createBrowserPerformanceMonitor(scope = globalThis, options = {}) {
@@ -248,6 +336,7 @@
         slowOperations: (performanceApi?.getSlowOperations?.() || []).slice(-5),
         recentErrors: (performanceApi?.getRecentErrors?.() || []).slice(-5),
         storage: await readStorageState(),
+        measurement: readRuntimeMeasurementContext(scope),
         appState,
       };
       const nextHistory = history.filter((item) => item?.id !== report.id);
@@ -306,8 +395,11 @@
       ])));
     }
 
-    function summarizeVersion(history, appVersion) {
-      const reports = history.filter((item) => item?.appVersion === appVersion);
+    function summarizeVersion(history, appVersion, cohortKey = "") {
+      const reports = history.filter((item) => (
+        item?.appVersion === appVersion
+        && (!cohortKey || measurementCohortKey(item) === cohortKey)
+      ));
       const operationDurations = (name) => reports.map(
         (item) => item?.latestOperations?.[name]?.duration,
       );
@@ -349,12 +441,18 @@
 
     function comparisonFor(report) {
       const history = readHistory();
+      const cohortKey = measurementCohortKey(report);
       const previousVersion = history.find(
-        (item) => item?.appVersion && item.appVersion !== report?.appVersion,
+        (item) => item?.appVersion
+          && item.appVersion !== report?.appVersion
+          && measurementCohortKey(item) === cohortKey,
       )?.appVersion || "";
       return {
-        current: summarizeVersion(history, report?.appVersion || ""),
-        previous: previousVersion ? summarizeVersion(history, previousVersion) : null,
+        cohortKey,
+        current: summarizeVersion(history, report?.appVersion || "", cohortKey),
+        previous: previousVersion
+          ? summarizeVersion(history, previousVersion, cohortKey)
+          : null,
       };
     }
 
@@ -451,8 +549,10 @@
       const latest = report.latestOperations || {};
       const perf = report.performance || {};
       const storage = report.storage || {};
+      const measurement = report.measurement || {};
       const current = comparison?.current;
       const lines = [
+        `${measurement.device?.class || "unknown"} · ${measurement.device?.browser || "unknown"} · ${measurement.navigation?.type || "unknown"}`,
         current?.sessions
           ? `현재 ${report.appVersion || "-"} · ${current.sessions}회 · 부팅 중앙 ${formatMilliseconds(current.startupP50)} / 느린 ${formatMilliseconds(current.startupP95)}`
           : `현재 ${report.appVersion || "-"} · 부팅 ${formatMilliseconds(latest.appStartup?.duration)}`,
@@ -580,6 +680,7 @@ const performanceDiagnostics = Object.freeze({
     createPerformanceDiagnostics,
     formatMegabytes,
     formatMilliseconds,
+    readRuntimeMeasurementContext,
     sanitizeForExport,
 });
 
@@ -589,6 +690,7 @@ export {
   createPerformanceDiagnostics,
   formatMegabytes,
   formatMilliseconds,
+  readRuntimeMeasurementContext,
   sanitizeForExport,
 };
 export default performanceDiagnostics;

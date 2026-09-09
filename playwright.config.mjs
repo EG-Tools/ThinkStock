@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { WEBKIT_DESKTOP_PATTERN } from "./scripts/test_scope.mjs";
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -22,11 +23,13 @@ export default defineConfig({
     {
       name: "webkit",
       testMatch: /thinkstock-.*\.spec\.mjs/,
+      testIgnore: /thinkstock-ai-desktop\.spec\.mjs/,
       use: { ...devices["iPhone 13"] },
     },
     {
       name: "webkit-desktop",
       testMatch: /thinkstock-(?:viewport|ai-desktop)\.spec\.mjs/,
+      grep: new RegExp(WEBKIT_DESKTOP_PATTERN),
       use: { ...devices["Desktop Safari"] },
     },
     {
