@@ -25,8 +25,17 @@ function normalizeForecastModelVersion(value) {
   return FORECAST_MODEL_VERSION_PATTERN.test(version) ? version : "";
 }
 
+function buildForecastJournalRequestUrl(endpoint, ticker) {
+  const base = String(endpoint || "").trim();
+  const normalizedTicker = String(ticker || "").trim().toUpperCase();
+  if (!base || !normalizedTicker) return "";
+  const separator = base.includes("?") ? "&" : "?";
+  return `${base}${separator}ticker=${encodeURIComponent(normalizedTicker)}`;
+}
+
 export {
   FORECAST_ATTRIBUTION_COMPONENT_KEYS,
   FORECAST_MODEL_VERSION_PATTERN,
+  buildForecastJournalRequestUrl,
   normalizeForecastModelVersion,
 };

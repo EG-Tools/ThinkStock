@@ -47,6 +47,7 @@
   });
 
   function decisionFinite(value) {
+    if (value === null || value === undefined || value === "") return null;
     const number = Number(value);
     return Number.isFinite(number) ? number : null;
   }
@@ -191,13 +192,16 @@
     const change = previousExpected === null
       ? null
       : simpleReturnDifference(currentExpected, previousExpected);
-    const factorRows = (previous ? rankedChanges : rankedCurrent)
+    const hasPreviousComparison = Boolean(previous) && previousExpected !== null;
+    const factorRows = (hasPreviousComparison ? rankedChanges : (!previous ? rankedCurrent : []))
       .slice(0, 2)
       .map((row) => `${row.label} ${signedPercentPoints(componentReturnContribution(
         currentExpected,
         previous ? row.delta : row.current,
       ))}`);
-    const changeLine = previous
+    const changeLine = previous && !hasPreviousComparison
+      ? "전회 대비 126일 전망 · 비교 근거 부족"
+      : previous
       ? `전회 대비 126일 전망 ${signedPercentPoints(change)}${factorRows.length ? ` · ${factorRows.join(" · ")}` : ""}`
       : `현재 126일 주요 영향${factorRows.length ? ` · ${factorRows.join(" · ")}` : " · 기록 축적 중"}`;
     const freshSources = changedSourceLabels(forecast.audit, previous?.audit);
@@ -523,7 +527,7 @@
       return payload?.records || payload?.journal?.records || [];
     }
 
-    async function sync(ticker, forecast, historyRows) {
+    async function syncForecastRecord(ticker, forecast, historyRows) {
       const key = normalizeTicker(ticker);
       const currentFeature = feature();
       const record = currentFeature?.journal?.buildForecastRecord?.({
@@ -538,8 +542,10 @@
       }
       counters.syncs += 1;
       const task = (async () => {
+        const remoteEnabled = isRemoteEnabled();
+        let remoteSaved = !remoteEnabled;
         let records = await readTickerRecords(key);
-        if (isRemoteEnabled()) {
+        if (remoteEnabled) {
           counters.remoteReads += 1;
           try {
             records = currentFeature.journal.mergeForecastRecords(
@@ -556,14 +562,22 @@
           .scoreForecastRecords(currentFeature.journal.mergeForecastRecords(records, [record]), priceHistory)
           .filter(Boolean);
         records = await writeTickerRecords(key, records);
-        if (isRemoteEnabled()) {
+        if (remoteEnabled) {
           counters.remoteWrites += 1;
-          try { await runRemote(() => writeRemote(key, records), "write"); } catch (_) {}
+          try {
+            await runRemote(() => writeRemote(key, records), "write");
+            remoteSaved = true;
+          } catch (_) {}
         }
-        return records;
+        return { records, remoteSaved };
       })().finally(() => syncPromises.delete(record.id));
       syncPromises.set(record.id, task);
       return task;
+    }
+
+    async function sync(ticker, forecast, historyRows) {
+      const result = await syncForecastRecord(ticker, forecast, historyRows);
+      return result?.records || null;
     }
 
     function queue(ticker, forecast, historyRows) {
@@ -572,9 +586,13 @@
       if (!key || queued.has(queueKey)) return false;
       queued.add(queueKey);
       while (queued.size > maxQueued) queued.delete(queued.values().next().value);
-      setTimer(() => {
-        sync(key, forecast, historyRows).catch(() => queued.delete(queueKey));
-      }, 0);
+      setTimer(() => (
+        syncForecastRecord(key, forecast, historyRows)
+          .then((result) => {
+            if (result?.remoteSaved === false) queued.delete(queueKey);
+          })
+          .catch(() => queued.delete(queueKey))
+      ), 0);
       return true;
     }
 

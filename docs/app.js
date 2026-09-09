@@ -191,6 +191,7 @@ import {
   openPriorityChartTarget,
 } from "./modules/chart-target-activation.mjs";
 import * as adrDataModule from "../shared/adr-data.mjs";
+import { buildForecastJournalRequestUrl } from "../shared/forecast-journal-contract.mjs";
 import * as marketCalendarModule from "../shared/market-calendar.mjs";
 import * as runtimeApiContractModule from "../shared/runtime-api-contract.mjs";
 import * as runtimeDataContract from "../shared/runtime-data-contract.mjs";
@@ -356,7 +357,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = tickerPriceRuntimeModule.CORPORATE_ACTION_RATIO_THRESHOLD;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = tickerPriceRuntimeModule.CORPORATE_ACTION_MAX_BOUNDARY_DAYS;
-const APP_VERSION = "3.46";
+const APP_VERSION = "3.47";
 const APP_BUILD_VERSION = resolveAppBuildVersion(globalThis);
 const appCacheRuntime = createAppCacheRuntime(globalThis, {
   scheduler: backgroundTaskScheduler,
@@ -5461,7 +5462,7 @@ function getAiForecastQualityRuntime() {
     isRemoteEnabled: canUseDartGateway,
     readRemote: async (ticker) => {
       const response = await fetchWithTimeout(
-        `${AI_FORECAST_JOURNAL_ENDPOINT}?ticker=${encodeURIComponent(ticker)}`,
+        buildForecastJournalRequestUrl(AI_FORECAST_JOURNAL_ENDPOINT, ticker),
         {
           cache: "no-store",
           headers: { Authorization: `Bearer ${getDartGatewayAccessToken()}` },
@@ -5477,15 +5478,19 @@ function getAiForecastQualityRuntime() {
       return payload;
     },
     writeRemote: async (ticker, records) => {
-      const response = await fetchWithTimeout(AI_FORECAST_JOURNAL_ENDPOINT, {
-        method: "POST",
-        cache: "no-store",
-        headers: {
-          Authorization: `Bearer ${getDartGatewayAccessToken()}`,
-          "Content-Type": "application/json",
+      const response = await fetchWithTimeout(
+        buildForecastJournalRequestUrl(AI_FORECAST_JOURNAL_ENDPOINT, ticker),
+        {
+          method: "POST",
+          cache: "no-store",
+          headers: {
+            Authorization: `Bearer ${getDartGatewayAccessToken()}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ ticker, records }),
         },
-        body: JSON.stringify({ ticker, records }),
-      }, 15000);
+        15000,
+      );
       const payload = await response.json().catch(() => null);
       if (!response.ok || payload?.ok === false) {
         const error = new Error(payload?.error || `AI 예측 기록 저장 오류 (${response.status})`);

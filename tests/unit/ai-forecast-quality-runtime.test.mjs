@@ -164,6 +164,35 @@ test("retries a transient remote journal write and records the recovery", async 
   assert.equal(runtime.stats().remoteFailures, 0);
 });
 
+test("allows a queued forecast to retry after every remote write attempt fails", async () => {
+  const feature = createFeature();
+  const timers = [];
+  let remoteWrites = 0;
+  const runtime = module.createAiForecastQualityRuntime(globalThis, {
+    getFeature: () => feature,
+    readTicker: async () => ({ records: [] }),
+    writeTicker: async () => true,
+    isRemoteEnabled: () => true,
+    readRemote: async () => [],
+    writeRemote: async () => {
+      remoteWrites += 1;
+      return false;
+    },
+    setTimer: (callback) => {
+      timers.push(callback);
+      return timers.length;
+    },
+    remoteRetryDelayMs: 0,
+  });
+  const forecast = { asOf: "2026-08-13" };
+
+  assert.equal(runtime.queue("005930.KS", forecast, []), true);
+  await timers.shift()();
+  assert.equal(remoteWrites, 2);
+  assert.equal(runtime.stats().queued, 0);
+  assert.equal(runtime.queue("005930.KS", forecast, []), true);
+});
+
 test("bounds diagnostics and invalidates one ticker without touching others", async () => {
   const feature = createFeature();
   const runtime = module.createAiForecastQualityRuntime(globalThis, {

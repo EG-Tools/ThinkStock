@@ -124,3 +124,19 @@ test("converts log-return changes to simple-return percentage points", () => {
 
   assert.match(result.hoverLines[1], /전회 대비 126일 전망 \+30\.0%p/);
 });
+
+test("reports insufficient comparison evidence instead of a zero change", () => {
+  const previous = {
+    asOf: "2026-08-31",
+    modelVersion: "path-v20",
+    horizons: { 126: { predictedPrice: 100 } },
+  };
+  const result = buildForecastDecisionSupport({
+    forecast: forecast(),
+    profile: profile(),
+    records: [previous],
+  });
+
+  assert.match(result.hoverLines[1], /비교 근거 부족/);
+  assert.doesNotMatch(result.hoverLines[1], /0\.0%p/);
+});
