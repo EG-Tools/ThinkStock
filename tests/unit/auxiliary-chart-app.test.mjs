@@ -111,6 +111,10 @@ test("auxiliary chart app shares its cached MACD model with feature consumers", 
   ];
   const builds = [];
   const resolutions = [];
+  const volumes = new Map([
+    ["2026-07-13", 1000],
+    ["2026-07-14", 1200],
+  ]);
   const app = createAuxiliaryChartApp({}, {
     registry: createRegistry(),
     macdModelCache: {
@@ -120,12 +124,16 @@ test("auxiliary chart app shares its cached MACD model with feature consumers", 
       },
     },
     fingerprintDatedSeries: (rows, keys, options) => {
-      assert.equal(rows, records);
-      assert.deepEqual(keys, ["^KS11"]);
-      assert.equal(options.logicVersion, "macd-v3-disparity-60");
-      return "price-fingerprint";
+      assert.deepEqual(rows, [
+        { date: "2026-07-13", "^KS11": 3200, volume: 1000 },
+        { date: "2026-07-14", "^KS11": 3220, volume: 1200 },
+      ]);
+      assert.deepEqual(keys, ["^KS11", "volume"]);
+      assert.equal(options.logicVersion, "technical-v4-obv-disparity-60");
+      return "technical-fingerprint";
     },
     getPriceRows: () => records,
+    getVolumeSeries: () => volumes,
     getDisparityDays: () => 60,
     supportsTechnicalSeries: () => true,
   });
@@ -136,10 +144,11 @@ test("auxiliary chart app shares its cached MACD model with feature consumers", 
   });
 
   assert.deepEqual(model, { signal: 0.5 });
-  assert.deepEqual(resolutions, [{ key: "^KS11", fingerprint: "price-fingerprint" }]);
+  assert.deepEqual(resolutions, [{ key: "^KS11", fingerprint: "technical-fingerprint" }]);
   assert.deepEqual(builds, [{
     dates: ["2026-07-13", "2026-07-14"],
     prices: [3200, 3220],
+    volumes: [1000, 1200],
     disparityPeriod: 60,
   }]);
 });

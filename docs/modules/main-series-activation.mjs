@@ -2,6 +2,7 @@ import {
   MARKET_INDEX_SERIES,
   STOCK_TICKER_PATTERN,
   mainSeriesActivationProfile,
+  resolveReadySeriesFeatureActivationPlan,
   resolveSeriesFeatureActivationPlan,
 } from "./app-control-config.mjs";
 import tickerPriceRuntime from "./ticker-price-runtime.mjs";
@@ -75,9 +76,25 @@ export function createMainSeriesActivationCoordinator(options = {}) {
         });
       }
       if (!isStillActive(key, generation)) return false;
+      const inputsReady = options.inputsReady?.(key, profile, {
+        ...context,
+        completionResult,
+        visibleResult,
+      }) !== false;
+      let inputResult = null;
+      if (requiresCompletion && completionResult !== false && inputsReady) {
+        inputResult = await options.onInputsReady?.(key, profile, {
+          ...context,
+          completionResult,
+          visibleResult,
+        });
+      }
+      if (!isStillActive(key, generation)) return false;
       const featureResult = await options.prepareFeatures?.(key, profile, {
         ...context,
         completionResult,
+        inputsReady,
+        inputResult,
         visibleResult,
       });
       if (!isStillActive(key, generation)) return false;
@@ -85,9 +102,10 @@ export function createMainSeriesActivationCoordinator(options = {}) {
         ...context,
         completionResult,
         featureResult,
+        inputResult,
         visibleResult,
       });
-      return true;
+      return completionResult !== false;
     }).catch((error) => {
       if (isCurrent(key, generation)) options.onBackgroundError?.(key, error, context);
       return false;
@@ -172,6 +190,14 @@ export function createMainSeriesActivationApp(options = {}) {
     return tickerPriceRuntime.hasHistoryCoverageFromDate(points, context.visibleSinceDate);
   }
 
+  function volumeReady(key, profile, context = {}) {
+    if (!profile.requiresVolume) return true;
+    if (typeof prices.hasVolumeCoverage === "function") {
+      return prices.hasVolumeCoverage(key, context.visibleSinceDate) === true;
+    }
+    return prices.hasVolume?.(key) === true;
+  }
+
   const coordinator = createMainSeriesActivationCoordinator({
     profileFor: mainSeriesActivationProfile,
     hasVisiblePrice,
@@ -195,36 +221,49 @@ export function createMainSeriesActivationApp(options = {}) {
       }
       throw new Error(`${key} visible data is unavailable`);
     },
+    inputsReady: (key, profile, context) => volumeReady(key, profile, context),
     reveal: (key) => effects.reveal?.(key) !== false,
     needsCompletion: (key, profile, visibleResult, context) => {
       if (profile.kind === "stock") {
         return prices.fullHistoryReady?.(key) !== true
+          || !volumeReady(key, profile, context)
           || visibleResult?.deferredRefresh === true
           || context.pricePlan?.shouldRefresh === true;
       }
       return profile.kind === "market-index"
-        && profile.requiresVolume
-        && prices.hasVolume?.(key) !== true;
+        && !volumeReady(key, profile, context);
     },
     prepareCompletion: (key, profile, context) => {
       if (profile.kind === "stock") {
         return effects.scheduleHistory?.(key, context.displayName, {
           forceRefresh: context.forceRefresh === true,
           latestOnly: prices.fullHistoryReady?.(key) === true
+            && volumeReady(key, profile, context)
             && context.pricePlan?.shouldRefresh === true,
+          notifyUpdated: false,
         });
       }
-      return profile.kind === "market-index"
-        ? prices.refreshIndex?.({
-            forceNetwork: context.forceRefresh === true,
-            requireVolumeHistory: true,
-            tickers: [key],
-          })
-        : null;
+      if (profile.kind !== "market-index") return null;
+      if (typeof prices.ensureVolumeCoverage === "function") {
+        return prices.ensureVolumeCoverage([key], context.visibleSinceDate, {
+          forceRefresh: context.forceRefresh === true,
+          notifyReady: false,
+          reason: "series-index-activation",
+        });
+      }
+      return prices.refreshIndex?.({
+        forceNetwork: context.forceRefresh === true,
+        requireVolumeHistory: true,
+        tickers: [key],
+        visibleSinceDate: context.visibleSinceDate,
+      });
     },
     prepareFeatures: async (key, profile, context) => {
-      const featurePlan = state.featurePlan?.(key, profile)
+      const requestedPlan = state.featurePlan?.(key, profile)
         || resolveSeriesFeatureActivationPlan(key, state.featureState?.() || {});
+      const featurePlan = resolveReadySeriesFeatureActivationPlan(requestedPlan, {
+        volumeReady: context.inputsReady,
+      });
       const tasks = [];
       if (profile.kind === "stock" && featurePlan.supplemental) {
         tasks.push(Promise.resolve(effects.scheduleFeatures?.(key, context.msgEl, {
@@ -241,6 +280,10 @@ export function createMainSeriesActivationApp(options = {}) {
         if (result.status === "rejected") effects.recordError?.(key, result.reason);
       });
       return Object.freeze({ featurePlan, requested: featurePlan.requested, results });
+    },
+    onInputsReady: (key, profile, context) => {
+      if (!profile.supportsTechnical || !volumeReady(key, profile, context)) return null;
+      return effects.refreshInputConsumers?.(key, profile, context);
     },
     onCompleted: (_key, profile, context) => {
       if (!context.completionResult && context.featureResult?.requested !== true) return;

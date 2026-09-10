@@ -6,6 +6,7 @@ export function buildTimingSignalOutcome({
   series,
   ticker,
   startDate = "2011-01-01",
+  transactionCostRate = 0.003,
 }) {
   const actionDate = String(signal?.confirmationDate || signal?.date || "").slice(0, 10);
   const markerDate = String(signal?.date || "").slice(0, 10);
@@ -28,6 +29,11 @@ export function buildTimingSignalOutcome({
   const end20 = number(series.prices[actionIndex + 20]);
   const end63 = number(series.prices[actionIndex + 63]);
   if (!(end5 > 0 && end10 > 0 && end20 > 0 && end63 > 0)) return null;
+  const future126 = series.prices
+    .slice(actionIndex + 1, actionIndex + 127)
+    .filter((value) => number(value) > 0);
+  const end126 = number(series.prices[actionIndex + 126]);
+  const has126 = end126 > 0 && future126.length >= 90;
   const local = series.prices
     .slice(Math.max(0, markerIndex - 4), Math.min(series.prices.length, markerIndex + 5))
     .filter((value) => number(value) > 0);
@@ -38,12 +44,18 @@ export function buildTimingSignalOutcome({
   const return10 = (end10 / actionPrice) - 1;
   const return20 = (end20 / actionPrice) - 1;
   const return63 = (end63 / actionPrice) - 1;
+  const return126 = has126 ? (end126 / actionPrice) - 1 : null;
   const future10 = future20.slice(0, 10);
   const maximum10 = (Math.max(...future10) / actionPrice) - 1;
   const minimum10 = (Math.min(...future10) / actionPrice) - 1;
   const maximum20 = (Math.max(...future20) / actionPrice) - 1;
   const minimum20 = (Math.min(...future20) / actionPrice) - 1;
+  const maximum63 = (Math.max(...future63) / actionPrice) - 1;
+  const minimum63 = (Math.min(...future63) / actionPrice) - 1;
+  const maximum126 = has126 ? (Math.max(...future126) / actionPrice) - 1 : null;
+  const minimum126 = has126 ? (Math.min(...future126) / actionPrice) - 1 : null;
   const directionSign = type === "buy" ? 1 : -1;
+  const normalizedCostRate = Math.max(0, number(transactionCostRate) ?? 0);
   const turningDistance = type === "buy"
     ? (markerPrice / Math.min(...local)) - 1
     : 1 - (markerPrice / Math.max(...local));
@@ -51,6 +63,10 @@ export function buildTimingSignalOutcome({
   const direction10 = type === "buy" ? return10 > 0 : return10 < 0;
   const direction20 = type === "buy" ? return20 > 0 : return20 < 0;
   const direction63 = type === "buy" ? return63 > 0 : return63 < 0;
+  const direction126 = return126 === null
+    ? null
+    : (type === "buy" ? return126 > 0 : return126 < 0);
+  const directional126 = return126 === null ? null : return126 * directionSign;
   const excursion10Hit = type === "buy"
     ? maximum10 >= excursionThreshold - excursionTolerance
     : minimum10 <= -excursionThreshold + excursionTolerance;
@@ -73,12 +89,26 @@ export function buildTimingSignalOutcome({
     return10,
     return20,
     return63,
+    return126,
     directional5: return5 * directionSign,
     directional10: return10 * directionSign,
     directional20: return20 * directionSign,
     directional63: return63 * directionSign,
+    directional126,
+    transactionCostRate: normalizedCostRate,
+    netDirectional20: (return20 * directionSign) - normalizedCostRate,
+    netDirectional63: (return63 * directionSign) - normalizedCostRate,
+    netDirectional126: directional126 === null ? null : directional126 - normalizedCostRate,
     adverse20: type === "buy" ? Math.min(0, minimum20) : Math.min(0, -maximum20),
     favorable20: type === "buy" ? Math.max(0, maximum20) : Math.max(0, -minimum20),
+    adverse63: type === "buy" ? Math.min(0, minimum63) : Math.min(0, -maximum63),
+    favorable63: type === "buy" ? Math.max(0, maximum63) : Math.max(0, -minimum63),
+    adverse126: maximum126 === null || minimum126 === null
+      ? null
+      : (type === "buy" ? Math.min(0, minimum126) : Math.min(0, -maximum126)),
+    favorable126: maximum126 === null || minimum126 === null
+      ? null
+      : (type === "buy" ? Math.max(0, maximum126) : Math.max(0, -minimum126)),
     maximum10,
     minimum10,
     maximum20,
@@ -88,6 +118,7 @@ export function buildTimingSignalOutcome({
     direction10,
     direction20,
     direction63,
+    direction126,
     persistentDirection: direction20 && direction63,
     excursion10Hit,
     excursionHit,
@@ -117,6 +148,9 @@ export function buildTimingSignalOutcome({
     signalGrade: String(signal?.signalGrade || ""),
     setupReasons: Array.isArray(signal?.setupReasons) ? signal.setupReasons : [],
     triggerReasons: Array.isArray(signal?.triggerReasons) ? signal.triggerReasons : [],
+    deteriorationReasons: Array.isArray(signal?.sellDeteriorationReasons)
+      ? signal.sellDeteriorationReasons
+      : (Array.isArray(signal?.deteriorationReasons) ? signal.deteriorationReasons : []),
     price20d: number(signal?.price20d),
     price60d: number(signal?.price60d),
     price120d: number(signal?.price120d),

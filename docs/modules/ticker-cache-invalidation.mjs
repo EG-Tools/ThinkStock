@@ -27,7 +27,7 @@ import { RUNTIME_STORAGE_CONTRACT } from "../../shared/runtime-foundation.mjs";
       stores: Object.freeze([]),
     }),
     macd: Object.freeze({
-      sources: Object.freeze(["price"]),
+      sources: Object.freeze(["price", "volume"]),
       stores: Object.freeze([]),
     }),
   });
@@ -207,4 +207,3 @@ export {
   TICKER_DERIVED_CACHE_POLICIES,
   createTickerCacheInvalidationContract,
 };
-

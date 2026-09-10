@@ -15,6 +15,7 @@ import {
   const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
   const STOCK_TICKER_PATTERN = /^\d{6}\.(KS|KQ)$/;
   const INDEX_VOLUME_HISTORY_DAYS = 120;
+  const MINIMUM_VOLUME_HISTORY_POINTS = 20;
 
   function dateDaysBefore(value, days) {
     const date = value instanceof Date ? value : new Date(value || Date.now());
@@ -76,10 +77,115 @@ import {
     return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
   }
 
+  function payloadHasVolumeHistory(payload, tickers, toNumber = Number, sinceDate = "") {
+    const records = Array.isArray(payload?.records) ? payload.records : [];
+    return tickers.every((ticker) => {
+      const points = normalizeTickerPoints(records, ticker, toNumber)
+        .filter((point) => Number.isFinite(point.volume) && point.volume > 0);
+      if (points.length < MINIMUM_VOLUME_HISTORY_POINTS) return false;
+      if (!DATE_PATTERN.test(sinceDate)) return true;
+      const earliestDate = points[0]?.date || "";
+      return Boolean(earliestDate
+        && Date.parse(earliestDate) <= Date.parse(sinceDate) + (7 * 86400000));
+    });
+  }
+
   function normalizeStockTickers(values) {
     return [...new Set((Array.isArray(values) ? values : [])
       .map((ticker) => String(ticker || "").trim().toUpperCase())
       .filter((ticker) => STOCK_TICKER_PATTERN.test(ticker)))];
+  }
+
+  function normalizeVolumeSeriesKey(value) {
+    const key = String(value || "").trim();
+    return /^\^|^\d{6}\.(KS|KQ)$/i.test(key) ? key.toUpperCase() : key;
+  }
+
+  function createSeriesVolumeCoverageRuntime(options = {}) {
+    if (typeof options.profileFor !== "function"
+      || typeof options.hasCoverage !== "function"
+      || typeof options.loadIndex !== "function"
+      || typeof options.loadStock !== "function") {
+      throw new Error("series volume coverage dependencies are incomplete");
+    }
+
+    const pending = new Map();
+
+    function queue(key, tag, task) {
+      const current = pending.get(key);
+      if (current?.tag === tag) return current.promise;
+      const entry = { tag, promise: null };
+      const previous = current?.promise?.catch(() => undefined) || Promise.resolve();
+      entry.promise = previous
+        .then(task)
+        .finally(() => {
+          if (pending.get(key) === entry) pending.delete(key);
+        });
+      pending.set(key, entry);
+      return entry.promise;
+    }
+
+    async function ensure(seriesKeys, sinceDate, requestOptions = {}) {
+      const since = String(sinceDate || "").slice(0, 10);
+      const requestedKeys = [...new Set((Array.isArray(seriesKeys) ? seriesKeys : [seriesKeys])
+        .map(normalizeVolumeSeriesKey)
+        .filter(Boolean))];
+      if (!DATE_PATTERN.test(since) || !requestedKeys.length) {
+        return Object.freeze({ ready: true, readyKeys: Object.freeze([]), updatedKeys: Object.freeze([]) });
+      }
+
+      const eligibleKeys = requestedKeys.filter((key) => {
+        const profile = options.profileFor(key);
+        return profile?.requiresVolume === true && options.isActive?.(key) !== false;
+      });
+      const missingKeys = eligibleKeys.filter((key) => options.hasCoverage(key, since) !== true);
+      if (!missingKeys.length) {
+        return Object.freeze({
+          ready: true,
+          readyKeys: Object.freeze(eligibleKeys),
+          updatedKeys: Object.freeze([]),
+        });
+      }
+
+      const forceRefresh = requestOptions.forceRefresh === true;
+      const indexKeys = missingKeys.filter((key) => options.profileFor(key)?.kind === "market-index");
+      const stockKeys = missingKeys.filter((key) => options.profileFor(key)?.kind === "stock");
+      const tasks = [];
+      if (indexKeys.length) {
+        const tag = `${since}:${Number(forceRefresh)}`;
+        tasks.push(queue("market-index", tag, () => options.loadIndex(indexKeys, {
+          forceRefresh,
+          sinceDate: since,
+        })));
+      }
+      stockKeys.forEach((key) => {
+        const tag = `${since}:${Number(forceRefresh)}`;
+        tasks.push(queue(`stock:${key}`, tag, () => options.loadStock(key, {
+          forceRefresh,
+          sinceDate: since,
+        })));
+      });
+      await Promise.allSettled(tasks);
+
+      const readyKeys = eligibleKeys.filter((key) => options.hasCoverage(key, since) === true);
+      const updatedKeys = missingKeys.filter((key) => readyKeys.includes(key));
+      if (requestOptions.notifyReady !== false && updatedKeys.length) {
+        await options.onReady?.(updatedKeys, {
+          reason: requestOptions.reason || "series-volume-coverage",
+          sinceDate: since,
+        });
+      }
+      return Object.freeze({
+        ready: readyKeys.length === eligibleKeys.length,
+        readyKeys: Object.freeze(readyKeys),
+        updatedKeys: Object.freeze(updatedKeys),
+      });
+    }
+
+    return Object.freeze({
+      ensure,
+      pendingKeys: () => Object.freeze([...pending.keys()]),
+    });
   }
 
   /**
@@ -135,8 +241,11 @@ import {
         options.toNumber,
       ) || {};
       const latestSince = Object.values(latestIndices).filter(Boolean).sort()[0] || "";
+      const visibleSinceDate = DATE_PATTERN.test(
+        String(requestOptions.visibleSinceDate || "").slice(0, 10),
+      ) ? String(requestOptions.visibleSinceDate).slice(0, 10) : "";
       const since = requestOptions.requireIndexVolumeHistory === true
-        ? [latestSince, dateDaysBefore(requestOptions.now, INDEX_VOLUME_HISTORY_DAYS)]
+        ? [latestSince, visibleSinceDate, dateDaysBefore(requestOptions.now, INDEX_VOLUME_HISTORY_DAYS)]
           .filter(Boolean)
           .sort()[0]
         : latestSince;
@@ -259,11 +368,18 @@ import {
       if (!tickers.length) return { applied, warnings };
       if (!options.isLocalRuntime && !options.canUseGateway?.()) return { applied, warnings };
       const beforeLatest = latestDatesByTicker(options.getPricePayload(), tickers, options.toNumber);
+      const visibleSinceDate = DATE_PATTERN.test(
+        String(requestOptions.visibleSinceDate || "").slice(0, 10),
+      ) ? String(requestOptions.visibleSinceDate).slice(0, 10) : "";
+      const volumeCoverageMissing = Boolean(visibleSinceDate && tickers.some((ticker) => (
+        options.hasVolumeCoverage?.(ticker, visibleSinceDate) === false
+      )));
       const volumeHistoryRequired = requestOptions.requireVolumeHistory === true
+        || volumeCoverageMissing
         || tickers.some((ticker) => options.hasVolumeHistory?.(ticker) === false);
       const latestSince = Object.values(beforeLatest).filter(Boolean).sort()[0] || "";
       const since = volumeHistoryRequired
-        ? [latestSince, dateDaysBefore(requestOptions.now, INDEX_VOLUME_HISTORY_DAYS)]
+        ? [latestSince, visibleSinceDate, dateDaysBefore(requestOptions.now, INDEX_VOLUME_HISTORY_DAYS)]
           .filter(Boolean)
           .sort()[0]
         : latestSince;
@@ -280,12 +396,16 @@ import {
         if (health?.restartRequired === true || versionMismatch) {
           warnings.push("로컬 서버 업데이트 감지 · ThinkStock 로컬서버를 다시 실행해 주세요.");
         }
-        const payload = requestOptions.payload || await gatewayClient.fetchIndices({
-          signal,
-          forceNetwork: requestOptions.forceNetwork,
-          since,
-          timeoutMs: options.timeoutMs,
-        });
+        let payload = requestOptions.payload || null;
+        if (!payload || (volumeHistoryRequired
+          && !payloadHasVolumeHistory(payload, tickers, options.toNumber, visibleSinceDate))) {
+          payload = await gatewayClient.fetchIndices({
+            signal,
+            forceNetwork: requestOptions.forceNetwork,
+            since,
+            timeoutMs: options.timeoutMs,
+          });
+        }
         if (payload?.ok !== true) throw new Error(payload?.error || "KRX index response is invalid");
         const records = Array.isArray(payload.records) ? payload.records : [];
         const referenceDates = [...new Set(records.flatMap((row) => (
@@ -722,6 +842,7 @@ export {
   createRuntimeBootstrapService,
   createRuntimeIndexRefreshService,
   createRuntimeMarketRefresh,
+  createSeriesVolumeCoverageRuntime,
   isRetryableAdrRefreshError,
   latestDatesByTicker,
   normalizeStockTickers,

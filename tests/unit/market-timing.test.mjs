@@ -14,11 +14,14 @@ const {
   alignAsOf,
   buildExternalVolatilityTimingRows,
   buildMarketTimingSignals,
+  buildObvTimingComparison,
+  buildTimingFlowContext,
   buildVolatilityProfile,
   calibrateTimingSignals,
   classifyBehaviorProfile,
   classifyTimingRegime,
   decorateTimingSignal,
+  integrateMarketTimingConfidence,
   pricePathEfficiency,
   timingCalibrationObjective,
 } = marketTiming;
@@ -34,6 +37,100 @@ test("runtime policy promotes the validated buy path without replacing sell sign
     buyEnabled: true,
     sellEnabled: false,
   });
+});
+
+test("OBV comparison keeps A unchanged and selects only causal price divergences", () => {
+  const dates = Array.from({ length: 100 }, (_, index) => dateAt(index));
+  const prices = Array(100).fill(100);
+  const volumes = Array(100).fill(100);
+  const obv = Array(100).fill(0);
+  prices[20] = 80;
+  obv[20] = -1000;
+  prices[45] = 76;
+  obv[45] = 0;
+  prices[58] = 75;
+  obv[58] = -2000;
+  prices[65] = 125;
+  obv[65] = 2000;
+  prices[85] = 128;
+  obv[85] = 500;
+  const baseModel = {
+    signals: [
+      {
+        id: "divergent-buy",
+        date: dates[47],
+        setupDate: dates[45],
+        adr: 76,
+        adrChange5: 3,
+        relative20d: 5,
+        macdSlope: 0.2,
+        volumeRatio: 1.3,
+      },
+      { id: "plain-buy", date: dates[60], setupDate: dates[58] },
+    ],
+    sellSignals: [
+      {
+        id: "divergent-sell",
+        date: dates[87],
+        peakDate: dates[85],
+        adr: 124,
+        adrChange5: -4,
+        price20d: 12,
+        volumeTrend: 0.7,
+      },
+    ],
+  };
+  const original = structuredClone(baseModel);
+  const options = { dates, prices, volumes, obv };
+  const comparison = buildObvTimingComparison(baseModel, options);
+
+  assert.deepEqual(baseModel, original);
+  assert.deepEqual(comparison.signals.map((signal) => signal.id), ["divergent-buy"]);
+  assert.deepEqual(comparison.sellSignals.map((signal) => signal.id), ["divergent-sell"]);
+  assert.deepEqual(comparison.sourceSignalCounts, { buy: 2, sell: 1 });
+  assert.equal(comparison.production, false);
+  assert.equal(comparison.pointInTime, true);
+  assert.match(comparison.signals[0].obvReasons[0], /상승 다이버전스/);
+  assert.match(comparison.sellSignals[0].obvReasons[0], /하락 다이버전스/);
+
+  const changedFutureObv = obv.slice();
+  changedFutureObv.fill(999999, 88);
+  const withChangedFuture = buildObvTimingComparison(baseModel, {
+    ...options,
+    obv: changedFutureObv,
+  });
+  assert.deepEqual(withChangedFuture.signals, comparison.signals);
+  assert.deepEqual(withChangedFuture.sellSignals, comparison.sellSignals);
+
+  const integrated = integrateMarketTimingConfidence(baseModel, comparison);
+  assert.deepEqual(integrated.signals.map((signal) => signal.date), baseModel.signals.map((signal) => signal.date));
+  assert.deepEqual(integrated.sellSignals.map((signal) => signal.date), baseModel.sellSignals.map((signal) => signal.date));
+  assert.equal(integrated.signals[0].obvConfirmed, true);
+  assert.equal(integrated.signals[1].obvConfirmed, false);
+  assert.match(integrated.signals[0].flowSummary, /시장 약세 속 종목 상대강세/);
+  assert.match(integrated.signals[0].flowSummary, /OBV 상승 다이버전스/);
+  assert.match(integrated.sellSignals[0].flowSummary, /OBV 하락 다이버전스/);
+  assert.equal(integrated.obvComparison.signals[0].flowContextVersion, "flow-confidence-v1");
+  assert.deepEqual(baseModel, original);
+});
+
+test("flow context summarizes only information available on the signal date", () => {
+  const context = buildTimingFlowContext({
+    adr: 125,
+    adrChange5: -5,
+    relative20d: 11,
+    price20d: 14,
+    volumeTrend: 0.72,
+    macdSlope: -0.2,
+  }, "sell", { obvReasons: ["OBV 하락 다이버전스"] });
+
+  assert.equal(context.obvConfirmed, true);
+  assert.deepEqual(context.evidence.map((item) => item.title), [
+    "시장 과열 후 확산 둔화",
+    "OBV 하락 다이버전스",
+    "상승 대비 거래량 둔화",
+  ]);
+  assert.equal(context.summary, "시장 과열 후 확산 둔화 · OBV 하락 다이버전스 · 상승 대비 거래량 둔화");
 });
 
 function timingFixture({ oversold = true } = {}) {

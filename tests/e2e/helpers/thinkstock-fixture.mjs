@@ -142,7 +142,9 @@ async function waitForAppReady(page) {
       && aiToggle?.dataset?.bound === "1";
   }), {
     message: "Think Stock did not reach its user-visible 100% ready state",
-    timeout: 30000,
+    // WebKit's first process pays the one-time Plotly/module compilation cost.
+    // Functional coverage should not confuse that cold start with a stalled boot.
+    timeout: 120000,
   }).toBe(true);
 }
 
@@ -232,12 +234,19 @@ async function stubExternalRefreshes(page, { stubFearGreed = true } = {}) {
       },
     } });
   });
-  await page.route("https://thinkstock-api.keg0320.workers.dev/api/research/history**", async (route) => {
+  await page.route("**/api/research/history**", async (route) => {
     const requestUrl = new URL(route.request().url());
     const ticker = String(requestUrl.searchParams.get("ticker") || "").trim().toUpperCase();
     const since = String(requestUrl.searchParams.get("since") || "").slice(0, 10);
     const rows = timingVolumeRows(ticker).filter((row) => !since || row.date >= since);
-    await route.fulfill({ json: { ok: true, ticker, rows } });
+    await route.fulfill({ json: {
+      ok: true,
+      ticker,
+      rows,
+      partial: false,
+      historyCoverage: since ? "incremental" : "full",
+      historyCoverageVersion: 3,
+    } });
   });
   await page.route("https://thinkstock-api.keg0320.workers.dev/api/prices/batch**", async (route) => {
     const tickers = [...new Set(String(new URL(route.request().url()).searchParams.get("tickers") || "")

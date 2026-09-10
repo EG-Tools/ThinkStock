@@ -412,6 +412,8 @@ import { APP_DATA_COMPONENT_GROUPS } from "./app-data-store.mjs";
       chartSession,
       getDataRevisions,
       getVisibleSinceDate,
+      hasVolumeCoverage,
+      hasVolumeHistory,
       isAbortError,
       isSourceForeground,
       isRetryableAdrRefreshError,
@@ -603,9 +605,16 @@ import { APP_DATA_COMPONENT_GROUPS } from "./app-data-store.mjs";
         : null;
       const refreshIndices = criticalPlan ? plannedIndexTickers.length > 0 : true;
       const refreshVisiblePrices = criticalPlan ? plannedPriceTickers.length > 0 : true;
+      const visibleSinceDate = typeof getVisibleSinceDate === "function"
+        ? String(getVisibleSinceDate() || "").slice(0, 10)
+        : "";
+      const volumeCoverageTickers = plannedIndexTickers || ["^KS11", "^KQ11"];
       const requireIndexVolumeHistory = Boolean(
         criticalPlan?.indices?.requireVolumeHistory
-        || plannedIndexTickers?.some((ticker) => options.hasVolumeHistory?.(ticker) === false),
+        || volumeCoverageTickers.some((ticker) => hasVolumeHistory?.(ticker) === false)
+        || (visibleSinceDate && volumeCoverageTickers.some((ticker) => (
+          hasVolumeCoverage?.(ticker, visibleSinceDate) === false
+        ))),
       );
       const sourceExecution = createRuntimeSourceExecution({
         forceNetwork,
@@ -674,6 +683,7 @@ import { APP_DATA_COMPONENT_GROUPS } from "./app-data-store.mjs";
               includeIndices: refreshIndices,
               now: refreshNow,
               requireIndexVolumeHistory,
+              visibleSinceDate,
               ...(plannedIndexTickers ? { indexTickers: plannedIndexTickers } : {}),
               ...(plannedPriceTickers ? { tickers: plannedPriceTickers } : {}),
             }))
@@ -698,6 +708,7 @@ import { APP_DATA_COMPONENT_GROUPS } from "./app-data-store.mjs";
               forceNetwork,
               now: refreshNow,
               requireVolumeHistory: requireIndexVolumeHistory,
+              visibleSinceDate,
               ...(plannedIndexTickers ? { tickers: plannedIndexTickers } : {}),
               ...(bootstrap?.indices?.ok === true ? { payload: bootstrap.indices } : {}),
             }),
@@ -720,9 +731,7 @@ import { APP_DATA_COMPONENT_GROUPS } from "./app-data-store.mjs";
             latestOnly: true,
             signal,
             scope: "visible",
-            ...(typeof getVisibleSinceDate === "function"
-              ? { visibleSinceDate: getVisibleSinceDate() }
-              : {}),
+            ...(visibleSinceDate ? { visibleSinceDate } : {}),
             ...(plannedPriceTickers ? { tickers: plannedPriceTickers } : {}),
             ...(bootstrap?.prices?.ok === true ? { priceBatchPayload: bootstrap.prices } : {}),
           }),

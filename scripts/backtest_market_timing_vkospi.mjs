@@ -20,8 +20,10 @@ import {
   summarizeTimingTickerChangeOutcomes as summarizeTickerChangeOutcomes,
   summarizeTimingTickerChanges as summarizeTickerSignalChanges,
   summarizeTimingTickerPerformance as summarizeTickerPerformance,
+  summarizeTimingPerformance,
   summarizeSellObjectives,
   summarizeSellObjectiveGroups,
+  summarizeSellTypePerformance,
   summarizeSellTailFailures,
   compareSellObjectives,
   timingPromotionDecision as promotionDecision,
@@ -66,6 +68,7 @@ const OUTPUT_PATH = path.join(
       : `market-timing-vkospi-candidates${EXPERIMENT_LABEL ? `-${EXPERIMENT_LABEL}` : ""}.json`)),
 );
 const START_DATE = "2011-01-01";
+const TRANSACTION_COST_RATE = 0.003;
 
 const {
   buildKoreanVolatilityTimingRows,
@@ -297,6 +300,7 @@ function calculate(policy = null, timingBuilder = buildMarketTimingSignals, prog
         series,
         ticker,
         startDate: START_DATE,
+        transactionCostRate: TRANSACTION_COST_RATE,
       });
       if (outcome) outcomes.push(outcome);
     }
@@ -307,6 +311,7 @@ function calculate(policy = null, timingBuilder = buildMarketTimingSignals, prog
         series,
         ticker,
         startDate: START_DATE,
+        transactionCostRate: TRANSACTION_COST_RATE,
       });
       if (outcome) outcomes.push(outcome);
     }
@@ -727,6 +732,8 @@ const behaviorComparison = HEAD_COMPARE_MODE || !DIAGNOSTIC_MODE ? null : {
     candidate20: summarizeSellTailFailures(adaptivePredictiveRows, tickerNames, { horizon: 20 }),
     baseline63: summarizeSellTailFailures(runtimePredictiveRows, tickerNames, { horizon: 63 }),
     candidate63: summarizeSellTailFailures(adaptivePredictiveRows, tickerNames, { horizon: 63 }),
+    baseline126: summarizeSellTailFailures(runtimePredictiveRows, tickerNames, { horizon: 126 }),
+    candidate126: summarizeSellTailFailures(adaptivePredictiveRows, tickerNames, { horizon: 126 }),
   },
   bySignalRole: Object.fromEntries([...new Set(adaptiveRows.map((row) => row.signalRole))]
     .sort()
@@ -768,6 +775,29 @@ const report = {
     baseline: summarizeSellObjectives(comparisonBaselineRows),
     selected: summarizeSellObjectives(promotedRows),
     comparison: sellObjectiveComparison,
+  },
+  performanceScorecard: {
+    transactionCostRate: TRANSACTION_COST_RATE,
+    baseline: Object.fromEntries(["buy", "sell"].map((type) => [
+      type,
+      summarizeTimingPerformance(comparisonBaselineRows, type, {
+        transactionCostRate: TRANSACTION_COST_RATE,
+      }),
+    ])),
+    selected: Object.fromEntries(["buy", "sell"].map((type) => [
+      type,
+      summarizeTimingPerformance(promotedRows, type, {
+        transactionCostRate: TRANSACTION_COST_RATE,
+      }),
+    ])),
+  },
+  sellTypePerformance: {
+    baseline: summarizeSellTypePerformance(comparisonBaselineRows, {
+      transactionCostRate: TRANSACTION_COST_RATE,
+    }),
+    selected: summarizeSellTypePerformance(promotedRows, {
+      transactionCostRate: TRANSACTION_COST_RATE,
+    }),
   },
   ...(FOCUS_TICKER ? {
     focusedOutcomes: {

@@ -294,6 +294,35 @@ test("prepared toggle coalesces clicks and commits state after preparation", asy
   ]);
 });
 
+test("prepared toggle lets disable supersede unfinished activation", async () => {
+  const button = fakeElement();
+  let enabled = false;
+  let releaseActivation;
+  const activation = new Promise((resolve) => { releaseActivation = resolve; });
+  const calls = [];
+  bindings.bindPreparedToggle({
+    button,
+    getEnabled: () => enabled,
+    setEnabled: (value) => { enabled = value; calls.push(["state", value]); },
+    syncButton: () => calls.push(["sync", enabled]),
+    onEnabled: () => activation,
+    onDisabled: () => calls.push(["disabled"]),
+    onChanged: (value) => calls.push(["changed", value]),
+  });
+
+  const enableClick = button.dispatch("click");
+  for (let index = 0; index < 4 && !enabled; index += 1) await Promise.resolve();
+  assert.equal(enabled, true);
+  assert.equal(button.getAttribute("aria-busy"), "true");
+
+  await button.dispatch("click");
+  assert.equal(enabled, false);
+  assert.equal(button.getAttribute("aria-busy"), "false");
+  releaseActivation();
+  await enableClick;
+  assert.deepEqual(calls.filter(([name]) => name === "changed"), [["changed", false]]);
+});
+
 test("prepared toggle announces work before awaiting feature preparation", async () => {
   const button = fakeElement();
   let enabled = false;

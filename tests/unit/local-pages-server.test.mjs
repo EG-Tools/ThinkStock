@@ -28,6 +28,7 @@ import { parseAdrChartRows } from "../../shared/adr-data.mjs";
 import {
   appendableResearchUniversePoint,
   RESEARCH_HISTORY_CACHE_SCHEMA,
+  RESEARCH_HISTORY_COVERAGE_VERSION,
   RESEARCH_HISTORY_QUALITY_VERSION,
 } from "../../worker/src/research-data.mjs";
 
@@ -517,7 +518,7 @@ test("full local chart history upgrades a legacy five-year cache to maximum hist
 
     assert.equal(requestedStartTime, "19960821");
     assert.equal(result.historyCoverage, "full");
-    assert.equal(result.historyCoverageVersion, 2);
+    assert.equal(result.historyCoverageVersion, RESEARCH_HISTORY_COVERAGE_VERSION);
     assert.equal(result.rows[0].date, "2016-01-04");
   } finally {
     await rm(cacheDir, { recursive: true, force: true });

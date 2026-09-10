@@ -101,7 +101,7 @@ test("one cache policy drives persistent and in-memory invalidation dependencies
     stores: ["tickerTimingModels"],
   });
   assert.deepEqual(cache.dependenciesFor("macd"), {
-    sources: ["price"],
+    sources: ["price", "volume"],
     stores: [],
   });
   assert.deepEqual(cache.dependenciesFor("ai-analysis"), {

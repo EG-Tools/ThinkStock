@@ -29,31 +29,54 @@ test("auxiliary render settlement returns values after every panel finishes", as
   assert.deepEqual(values, ["macd", "panels"]);
 });
 
-test("MACD and disparity lines share one stock contract without repeating the date", () => {
-  const pair = auxiliaryRuntime.buildMacdSeriesTracePair({
+test("MACD, disparity, and OBV lines share one stock contract without repeating the date", () => {
+  const traces = auxiliaryRuntime.buildTechnicalSeriesTraces({
     series: "218410.KQ",
     name: "RFHIC",
-    color: "#9acd32",
     dates: ["2026-08-31", "2026-09-01"],
     values: [0.2, 0.4],
-    disparityColor: "#22d3ee",
     disparityDates: ["2026-08-31", "2026-09-01"],
     disparityValues: [-1.2, 2.4],
     disparityDays: 60,
+    obvDates: ["2026-08-31", "2026-09-01"],
+    obvValues: [0, 1200000],
     signal: 0.3,
     showHover: true,
   });
+  const [lineTrace, disparityTrace, obvTrace] = traces;
 
-  assert.equal(pair.lineTrace.line.color, "#9acd32");
-  assert.equal(pair.lineTrace.yaxis, "y");
-  assert.equal(pair.lineTrace.showlegend, false);
-  assert.equal(pair.lineTrace.hovertemplate.includes("%{x"), false);
-  assert.equal(pair.disparityTrace.line.color, "#22d3ee");
-  assert.equal(pair.disparityTrace.yaxis, "y2");
-  assert.equal(pair.disparityTrace.meta.macdLineKind, "disparity");
-  assert.equal(pair.disparityTrace.meta.macdDisparityDays, 60);
-  assert.equal(pair.disparityTrace.hovertemplate.includes("이격도(60)"), true);
-  assert.deepEqual(Object.keys(pair).sort(), ["disparityTrace", "lineTrace"]);
+  assert.equal(lineTrace.line.color, "#64ada9");
+  assert.equal(lineTrace.yaxis, "y");
+  assert.equal(lineTrace.showlegend, false);
+  assert.equal(lineTrace.hovertemplate.includes("%{x"), false);
+  assert.equal(disparityTrace.line.color, "#facc15");
+  assert.equal(disparityTrace.yaxis, "y2");
+  assert.equal(disparityTrace.meta.macdLineKind, "disparity");
+  assert.equal(disparityTrace.meta.macdDisparityDays, 60);
+  assert.equal(disparityTrace.hovertemplate.includes("이격도(60)"), true);
+  assert.equal(obvTrace.line.color, "#f472b6");
+  assert.equal(obvTrace.yaxis, "y3");
+  assert.equal(obvTrace.meta.macdLineKind, "obv");
+  assert.equal(obvTrace.hovertemplate.includes("%{x"), false);
+  assert.deepEqual(traces.map((trace) => trace.meta.macdLineKind), [
+    "oscillator", "disparity", "obv",
+  ]);
+});
+
+test("technical trace topology stays fixed when only OBV is active", () => {
+  const traces = auxiliaryRuntime.buildTechnicalSeriesTraces({
+    series: "218410.KQ",
+    dates: ["2026-09-01"],
+    values: [0.4],
+    disparityDates: ["2026-09-01"],
+    disparityValues: [2.4],
+    obvDates: ["2026-09-01"],
+    obvValues: [1200000],
+    active: { oscillator: false, disparity: false, obv: true },
+  });
+
+  assert.equal(traces.length, 3);
+  assert.deepEqual(traces.map((trace) => trace.visible), [false, false, true]);
 });
 
 test("a disconnected auxiliary latest point receives one visible marker", () => {

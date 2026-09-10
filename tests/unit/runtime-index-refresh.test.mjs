@@ -63,6 +63,45 @@ test("refreshes only the index selected by the shared critical plan", async () =
   assert.deepEqual(merged, ["^KQ11"]);
 });
 
+test("replaces a latest-only bootstrap payload when index volume history is required", async () => {
+  let historyRequests = 0;
+  const merged = [];
+  const historyRecords = Array.from({ length: 24 }, (_, index) => ({
+    ticker: "^KS11",
+    date: `2026-07-${String(index + 1).padStart(2, "0")}`,
+    close: 3000 + index,
+    volume: 100000 + index,
+  }));
+  const service = module.createRuntimeIndexRefreshService({
+    isLocalRuntime: false,
+    canUseGateway: () => true,
+    gatewayClient: {
+      fetchIndices: async () => {
+        historyRequests += 1;
+        return { ok: true, records: historyRecords };
+      },
+    },
+    getPricePayload: () => ({ records: [{ date: "2026-07-24", "^KS11": 3023 }] }),
+    hasVolumeHistory: () => false,
+    mergeTickerSeries: (_ticker, points) => merged.push(...points),
+    labelName: (ticker) => ticker,
+    toNumber: Number,
+  });
+
+  await service.refresh({
+    tickers: ["^KS11"],
+    requireVolumeHistory: true,
+    payload: {
+      ok: true,
+      records: [{ ticker: "^KS11", date: "2026-07-24", close: 3023 }],
+    },
+  });
+
+  assert.equal(historyRequests, 1);
+  assert.equal(merged.length, 24);
+  assert.equal(merged.at(-1).volume, 100023);
+});
+
 test("rethrows transient failures for the shared retry layer", async () => {
   const service = module.createRuntimeIndexRefreshService({
     isLocalRuntime: false,

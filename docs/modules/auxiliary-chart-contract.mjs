@@ -7,6 +7,38 @@
   const MACD_DISPARITY_STEPS = Object.freeze([5, 10, 20, 30, 60]);
   const MACD_DISPARITY_MIN_DAYS = MACD_DISPARITY_STEPS[0];
   const MACD_DISPARITY_MAX_DAYS = MACD_DISPARITY_STEPS.at(-1);
+  const TECHNICAL_SERIES_DEFINITIONS = Object.freeze([
+    Object.freeze({
+      axis: "y",
+      color: "#64ada9",
+      key: "macd_oscillator",
+      kind: "oscillator",
+      label: "MACD",
+      minimumPadding: 0.02,
+      symmetric: true,
+    }),
+    Object.freeze({
+      axis: "y2",
+      color: "#facc15",
+      key: "macd_disparity",
+      kind: "disparity",
+      label: "이격도",
+      minimumPadding: 0.02,
+      symmetric: true,
+    }),
+    Object.freeze({
+      axis: "y3",
+      color: "#f472b6",
+      key: "macd_obv",
+      kind: "obv",
+      label: "OBV",
+      minimumPadding: 1,
+      symmetric: false,
+    }),
+  ]);
+  const TECHNICAL_SERIES_KEYS = Object.freeze(Object.fromEntries(
+    TECHNICAL_SERIES_DEFINITIONS.map((definition) => [definition.kind, definition.key]),
+  ));
   const AUXILIARY_PANEL_KEYS = Object.freeze([
     "adr",
     "vkospi",
@@ -76,6 +108,8 @@
     NEWS_MOVING_AVERAGE_DAYS,
     NEWS_MOVING_AVERAGE_MAX_DAYS,
     NEWS_MOVING_AVERAGE_MIN_DAYS,
+    TECHNICAL_SERIES_DEFINITIONS,
+    TECHNICAL_SERIES_KEYS,
     normalizeMacdDisparityDays,
     normalizeNewsMovingAverageDays,
   });
@@ -90,6 +124,8 @@ export {
   NEWS_MOVING_AVERAGE_DAYS,
   NEWS_MOVING_AVERAGE_MAX_DAYS,
   NEWS_MOVING_AVERAGE_MIN_DAYS,
+  TECHNICAL_SERIES_DEFINITIONS,
+  TECHNICAL_SERIES_KEYS,
   normalizeMacdDisparityDays,
   normalizeNewsMovingAverageDays,
 };

@@ -3,6 +3,22 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.48",
+      date: "2026.09.10",
+      items: Object.freeze([
+        "선택 종목 보조차트에 거래량 기반 OBV 추가",
+        "종목명·MACD·이격도·OBV 제목행과 토글 동작 통일",
+        "MACD·이격도·OBV의 뷰포트별 독립 자동 스케일 적용",
+        "OBV 상승·하락 다이버전스를 별도 마커 없이 기존 신호 신뢰 근거로 통합",
+        "상대강도·ADR·거래량·MACD를 신호 흐름 해석에 추가",
+        "신호 정보창을 간결한 수급·흐름 해석과 실제 검증 성과로 정리",
+        "오래된 5년 캐시가 상장 이후 전체 기간을 막는 문제 수정",
+        "코스피·코스닥 과거 구간의 거래량과 OBV 자동 보충",
+        "보이는 종목의 차트 2 순환과 OFF·ON 전환 안정화",
+        "하단 로그를 단색 라운드 창으로 정리하고 최신정보를 아래에 배치",
+      ]),
+    }),
+    Object.freeze({
       version: "3.47",
       date: "2026.09.09",
       items: Object.freeze([

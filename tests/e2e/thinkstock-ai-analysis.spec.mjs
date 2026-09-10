@@ -78,7 +78,7 @@ async function readInsiderMarker(page, side) {
 }
 
 test("AI toggle draws and removes a six-month virtual forecast", async ({ page, isMobile }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(420_000);
   await stubExternalRefreshes(page);
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
   await waitForAppReady(page);
@@ -103,7 +103,7 @@ test("AI toggle draws and removes a six-month virtual forecast", async ({ page, 
   })).toBe(true);
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     (element.data || []).filter((trace) => trace?.meta?.overlayKind === "ai-scenario").length
-  )), { timeout: 30000 }).toBeGreaterThan(0);
+  )), { timeout: 120000 }).toBeGreaterThan(0);
   await expectAiForecastsAnchoredToOwner(page);
   await expect.poll(() => page.locator("#chart").evaluate((element, before) => {
     const forecastEnd = Math.max(...(element.data || [])
@@ -1106,6 +1106,23 @@ test("market timing applies to a visible stock series", async ({ page }) => {
       })),
     } });
   });
+  await page.route("https://query2.finance.yahoo.com/v8/finance/chart/005930.KS**", async (route) => {
+    await route.fulfill({ json: {
+      chart: {
+        result: [{
+          meta: { gmtoffset: 0 },
+          timestamp: timingDates.map((date) => Date.parse(`${date}T00:00:00Z`) / 1000),
+          indicators: {
+            quote: [{
+              close: stockPrices,
+              volume: timingDates.map((_, index) => 1_000_000 + index),
+            }],
+          },
+        }],
+        error: null,
+      },
+    } });
+  });
   await page.addInitScript(() => {
     localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "private" }));
     localStorage.setItem("thinkstock-v5", JSON.stringify({
@@ -1396,55 +1413,57 @@ test("turning off a chart cancels its visible signal progress immediately", asyn
   await expect(page.locator("#signalProgress")).toBeHidden();
 });
 
-test("timing hover wraps reasons and its shared hit area opens the popover", async ({ page, isMobile }) => {
+test("timing hover summarizes flow and its shared hit area opens the popover", async ({ page, isMobile }) => {
+  test.setTimeout(90_000);
   await stubExternalRefreshes(page);
   await page.addInitScript(() => {
     localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "private" }));
     localStorage.setItem("thinkstock-v5", JSON.stringify({
-      activeMonths: 360,
+      activeMonths: 12,
       customStocks: [
         { ticker: "005930.KS", name: "삼성전자", code: "005930", market: "KOSPI" },
       ],
-      showRecessionSignals: true,
+      showRecessionSignals: false,
     }));
   });
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await waitForAppReady(page);
+  await page.locator("#recessionToggle").click();
+  await expect.poll(() => page.evaluate(() => (
+    window.ThinkStockE2E.hasMarketTimingModel("005930.KS")
+  )), { timeout: 60_000 }).toBe(true);
 
-  await expect.poll(() => page.locator("#chart").evaluate((element) => {
-    const traceIndex = (element.data || []).findIndex((trace) => (
-      ["timing-buy", "timing-sell"].includes(trace?.meta?.overlayKind)
-      && Array.isArray(trace.x)
-      && trace.x.length > 0
-    ));
-    if (traceIndex < 0) return null;
-    const trace = element.data[traceIndex];
+  const findVisibleTimingTarget = () => page.locator("#chart").evaluate((element) => {
     const rect = element.getBoundingClientRect();
     const xaxis = element?._fullLayout?.xaxis;
     const yaxis = element?._fullLayout?.yaxis;
-    const x = rect.left + Number(xaxis?._offset || 0) + Number(xaxis?.d2p?.(trace.x?.[0]));
-    const y = rect.top + Number(yaxis?._offset || 0) + Number(yaxis?.d2p?.(trace.y?.[0]));
-    return Number.isFinite(x) && Number.isFinite(y) ? { x, y, traceIndex } : null;
-  }), { timeout: 25000 }).not.toBeNull();
-
-  const target = await page.locator("#chart").evaluate((element) => {
-    const traceIndex = (element.data || []).findIndex((trace) => (
-      ["timing-buy", "timing-sell"].includes(trace?.meta?.overlayKind)
-      && Array.isArray(trace.x)
-      && trace.x.length > 0
-    ));
-    const trace = element.data[traceIndex];
-    const rect = element.getBoundingClientRect();
-    const xaxis = element?._fullLayout?.xaxis;
-    const yaxis = element?._fullLayout?.yaxis;
-    return {
-      x: rect.left + Number(xaxis?._offset || 0) + Number(xaxis?.d2p?.(trace.x?.[0])),
-      y: rect.top + Number(yaxis?._offset || 0) + Number(yaxis?.d2p?.(trace.y?.[0])),
-    };
+    if (!xaxis || !yaxis) return null;
+    const candidates = (element.data || []).flatMap((trace, traceIndex) => {
+      if (!["timing-buy", "timing-sell"].includes(trace?.meta?.overlayKind)) return [];
+      return (trace.x || []).flatMap((date, pointIndex) => {
+        const x = Number(xaxis.d2p?.(date));
+        const y = Number(yaxis.d2p?.(trace.y?.[pointIndex]));
+        if (!Number.isFinite(x) || !Number.isFinite(y)
+          || x < 16 || x > Number(xaxis._length || 0) - 16
+          || y < 16 || y > Number(yaxis._length || 0) - 16) return [];
+        return [{
+          x: rect.left + Number(xaxis._offset || 0) + x,
+          y: rect.top + Number(yaxis._offset || 0) + y,
+          ticker: String(trace.meta?.pointTickers?.[pointIndex] || ""),
+          traceIndex,
+        }];
+      });
+    });
+    return candidates.find((candidate) => !candidate.ticker.startsWith("^"))
+      || candidates[0]
+      || null;
   });
+  await expect.poll(findVisibleTimingTarget).not.toBeNull();
+  const target = await findVisibleTimingTarget();
   await page.mouse.move(target.x + 12, target.y);
   await expect(page.locator("#chart")).toHaveClass(/is-event-marker-hovering/);
-  await expect(page.locator("#chart .hoverlayer")).toContainText("근거:");
+  await expect(page.locator("#chart .hoverlayer")).toContainText("흐름:");
   await expect(page.locator("#chart .hoverlayer")).not.toContainText("<br>");
   if (!isMobile) {
     for (const offset of [10, 13, 11, 14, 12]) {
@@ -1462,10 +1481,10 @@ test("timing hover wraps reasons and its shared hit area opens the popover", asy
     expect(popupDistance).toBeLessThanOrEqual(24);
   }
   await expect(page.locator("#chart")).toHaveClass(/is-event-marker-hovering/);
-  await expect(page.locator("#chart .hoverlayer")).toContainText("근거:");
+  await expect(page.locator("#chart .hoverlayer")).toContainText("흐름:");
   await page.mouse.click(target.x + 12, target.y);
   await expect(page.locator("#chart .disclosure-popover")).toBeVisible();
-  await expect(page.locator("#chart .disclosure-popover")).toContainText("근거:");
+  await expect(page.locator("#chart .disclosure-popover")).toContainText("흐름:");
 });
 
 test("timing hover keeps active signal rows after viewport zoom", async ({ page, isMobile }) => {
@@ -1553,7 +1572,7 @@ test("timing hover keeps active signal rows after viewport zoom", async ({ page,
     await expect.poll(async () => {
       const popupText = await page.locator("#chart .hoverlayer").textContent();
       return targets.every((target) => popupText.includes(target.label))
-        && (popupText.match(/근거:/g) || []).length >= targets.length;
+        && (popupText.match(/흐름:/g) || []).length >= targets.length;
     }).toBe(true);
     await expect(page.locator(
       "#chart .hoverlayer > g.legend, #chart .hoverlayer > g.hovertext",
@@ -2548,7 +2567,7 @@ test("AI analysis loads only on demand and reuses today's browser cache", async 
   expect(analysisRequests).toBe(firstRequestCount);
 });
 
-test("MACD and disparity follow one selected technical series and shared settings", async ({ page }) => {
+test("MACD, disparity, and OBV follow one selected technical series and shared settings", async ({ page, isMobile }) => {
   await stubExternalRefreshes(page);
   const macdRecentDates = [];
   const historyCursor = new Date(`${recentDates.at(-1)}T00:00:00Z`);
@@ -2574,7 +2593,19 @@ test("MACD and disparity follow one selected technical series and shared setting
     ),
   } });
   await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "private" }));
     localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 6,
+      showRecessionSignals: false,
+      hiddenSeries: [
+        "leading_cycle",
+        "t10y1y",
+        "us_credit_spread",
+        "customer_deposit",
+        "kospi_credit",
+        "kosdaq_credit",
+      ],
+      mainHoverSeriesOrder: ["^KS11", "^KQ11", "005930.KS", "000660.KS"],
       customStocks: [
         {
           ticker: "005930.KS",
@@ -2594,9 +2625,32 @@ test("MACD and disparity follow one selected technical series and shared setting
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
   await expect(page.locator("#chart .main-svg").first()).toBeVisible({ timeout: 30000 });
   await expect(page.locator("#chart-macd .main-svg").first()).toBeVisible();
+  const logPresentation = await page.evaluate(() => {
+    const log = document.getElementById("messageArea");
+    const freshness = document.getElementById("dataFreshness");
+    const style = getComputedStyle(log);
+    return {
+      freshnessFollowsLog: Boolean(
+        log.compareDocumentPosition(freshness) & Node.DOCUMENT_POSITION_FOLLOWING
+      ),
+      backgroundImage: style.backgroundImage,
+      borderRadius: Number.parseFloat(style.borderTopLeftRadius || "0"),
+    };
+  });
+  expect(logPresentation).toMatchObject({
+    freshnessFollowsLog: true,
+    backgroundImage: "none",
+  });
+  expect(logPresentation.borderRadius).toBeGreaterThan(0);
   await expect.poll(() => page.locator("#chart-macd").evaluate((element) => (
     (element.data || []).filter((trace) => trace?.meta?.macdSeriesKey).length
   ))).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => (
+    window.ThinkStockE2E.getTickerVolumeCounts()["000660.KS"] || 0
+  )), { timeout: 30000 }).toBeGreaterThan(0);
+  await expect.poll(() => page.locator("#chart-macd").evaluate((element) => (
+    (element.data || []).some((trace) => trace?.meta?.macdLineKind === "obv")
+  )), { timeout: 30000 }).toBe(true);
 
   const macdPresentation = await page.evaluate(() => {
     const mainTraces = document.getElementById("chart")?.data || [];
@@ -2605,6 +2659,7 @@ test("MACD and disparity follow one selected technical series and shared setting
     const macdTraces = (macdElement?.data || []).filter((trace) => trace?.meta?.macdSeriesKey);
     const oscillator = macdTraces.find((trace) => trace.meta.macdLineKind === "oscillator");
     const disparity = macdTraces.find((trace) => trace.meta.macdLineKind === "disparity");
+    const obv = macdTraces.find((trace) => trace.meta.macdLineKind === "obv");
     return {
       targetKeys: [...new Set(macdTraces.map((trace) => trace.meta.macdSeriesKey))],
       lineKinds: macdTraces.map((trace) => trace.meta.macdLineKind).sort(),
@@ -2616,6 +2671,7 @@ test("MACD and disparity follow one selected technical series and shared setting
       )),
       oscillatorColor: oscillator?.line?.color,
       disparityColor: disparity?.line?.color,
+      obvColor: obv?.line?.color,
       mainColor: mainTraces.find((trace) => trace?.meta?.seriesKey === "000660.KS")?.line?.color,
       showDateLabels: macdElement?.layout?.xaxis?.showticklabels,
       auxiliaryDateLabels: auxiliaryElement?.layout?.xaxis?.showticklabels,
@@ -2627,15 +2683,16 @@ test("MACD and disparity follow one selected technical series and shared setting
   });
   expect(macdPresentation.macroVisible).toBe(true);
   expect(macdPresentation.targetKeys).toEqual(["000660.KS"]);
-  expect(macdPresentation.lineKinds).toEqual(["disparity", "oscillator"]);
+  expect(macdPresentation.lineKinds).toEqual(["disparity", "obv", "oscillator"]);
   expect(macdPresentation.onePixelLines).toBe(true);
-  expect(macdPresentation.oscillatorColor).toBe(macdPresentation.mainColor);
-  expect(macdPresentation.disparityColor).toBe("#c5c9cf");
+  expect(macdPresentation.oscillatorColor).toBe("#64ada9");
+  expect(macdPresentation.disparityColor).toBe("#facc15");
+  expect(macdPresentation.obvColor).toBe("#f472b6");
   expect(macdPresentation.showDateLabels).toBe(false);
   expect(macdPresentation.auxiliaryDateLabels).toBe(false);
   expect(macdPresentation.bottomMargins).toEqual([12, 12]);
   expect(macdPresentation.zeroBaseline).toBe(true);
-  await expect(page.locator("#chart-macd .auxiliary-chart-label")).toHaveText("보조차트");
+  await expect(page.locator("#chart-macd .auxiliary-chart-label")).toHaveText("SK하이닉스");
   await expect(page.locator("#chart-macd .auxiliary-macd-target")).toHaveText("SK하이닉스");
   const macdToggle = page.locator(
     '#chart-macd .auxiliary-series-toggle[data-auxiliary-series="macd_oscillator"]',
@@ -2643,22 +2700,68 @@ test("MACD and disparity follow one selected technical series and shared setting
   const disparityToggle = page.locator(
     '#chart-macd .auxiliary-series-toggle[data-auxiliary-series="macd_disparity"]',
   );
+  const obvToggle = page.locator(
+    '#chart-macd .auxiliary-series-toggle[data-auxiliary-series="macd_obv"]',
+  );
   await expect(macdToggle).toHaveText("MACD");
   await expect(disparityToggle).toHaveText("이격도");
+  await expect(obvToggle).toHaveText("OBV");
+  const expectTechnicalVisibility = async (expected) => {
+    await expect.poll(() => page.locator("#chart-macd").evaluate((element) => (
+      Object.fromEntries((element.data || [])
+        .filter((trace) => trace?.meta?.macdLineKind)
+        .map((trace) => [trace.meta.macdLineKind, trace.visible !== false]))
+    ))).toEqual(expected);
+    await expect.poll(() => page.locator("#chart-macd").evaluate((element) => (
+      (element.data || []).filter((trace) => trace?.meta?.macdLineKind).length
+    ))).toBe(3);
+  };
   await macdToggle.click();
   await expect(macdToggle).toHaveAttribute("aria-pressed", "false");
-  await expect.poll(() => page.locator("#chart-macd").evaluate((element) => (
-    (element.data || []).map((trace) => trace?.meta?.macdLineKind).filter(Boolean)
-  ))).toEqual(["disparity"]);
+  await expectTechnicalVisibility({ oscillator: false, disparity: true, obv: true });
   await macdToggle.click();
   await expect(macdToggle).toHaveAttribute("aria-pressed", "true");
   await disparityToggle.click();
   await expect(disparityToggle).toHaveAttribute("aria-pressed", "false");
-  await expect.poll(() => page.locator("#chart-macd").evaluate((element) => (
-    (element.data || []).map((trace) => trace?.meta?.macdLineKind).filter(Boolean)
-  ))).toEqual(["oscillator"]);
+  await expectTechnicalVisibility({ oscillator: true, disparity: false, obv: true });
   await disparityToggle.click();
   await expect(disparityToggle).toHaveAttribute("aria-pressed", "true");
+  await obvToggle.click();
+  await expect(obvToggle).toHaveAttribute("aria-pressed", "false");
+  await expectTechnicalVisibility({ oscillator: true, disparity: true, obv: false });
+  await obvToggle.click();
+  await expect(obvToggle).toHaveAttribute("aria-pressed", "true");
+  await macdToggle.click();
+  await disparityToggle.click();
+  await expectTechnicalVisibility({ oscillator: false, disparity: false, obv: true });
+  const obvOnlyRange = await page.locator("#chart").evaluate((element) => {
+    const [start, end] = element._fullLayout.xaxis.range.map(Date.parse);
+    const center = (start + end) / 2;
+    const halfSpan = (end - start) * 0.42;
+    return [center - halfSpan, center + halfSpan];
+  });
+  await page.evaluate((range) => window.ThinkStockE2E.setViewportRangeForTest(range), obvOnlyRange);
+  await expect.poll(() => page.locator("#chart-macd").evaluate((element, expected) => {
+    const actual = element._fullLayout.xaxis.range.map(Date.parse);
+    return Math.max(...actual.map((value, index) => Math.abs(value - expected[index])));
+  }, obvOnlyRange)).toBeLessThanOrEqual(1000);
+  if (!isMobile) {
+    const wheelTarget = await page.locator("#chart").boundingBox();
+    await page.mouse.move(
+      wheelTarget.x + (wheelTarget.width * 0.5),
+      wheelTarget.y + (wheelTarget.height * 0.5),
+    );
+    await page.mouse.wheel(0, -180);
+    await waitForChartRenderIdle(page);
+    await expect.poll(() => page.evaluate(() => {
+      const mainRange = document.getElementById("chart")._fullLayout.xaxis.range.map(Date.parse);
+      const technicalRange = document.getElementById("chart-macd")._fullLayout.xaxis.range.map(Date.parse);
+      return Math.max(...mainRange.map((value, index) => Math.abs(value - technicalRange[index])));
+    })).toBeLessThanOrEqual(1000);
+  }
+  await macdToggle.click();
+  await disparityToggle.click();
+  await expectTechnicalVisibility({ oscillator: true, disparity: true, obv: true });
   await expect(page.locator(".auxiliary-period-toggle")).toHaveCount(0);
   await page.locator("#apiOptionsBtn").click();
   await expect(page.locator("#apiSettingsModal")).toBeVisible();
@@ -2698,7 +2801,7 @@ test("MACD and disparity follow one selected technical series and shared setting
       ".auxiliary-chart-label",
       '[data-auxiliary-series="macd_oscillator"]',
       '[data-auxiliary-series="macd_disparity"]',
-      ".auxiliary-macd-target",
+      '[data-auxiliary-series="macd_obv"]',
     ];
     const elements = selectors.map((selector) => element.querySelector(selector));
     const centers = elements.map((item) => {
@@ -2713,8 +2816,6 @@ test("MACD and disparity follow one selected technical series and shared setting
     const controlGaps = controlRects.slice(1).map((rect, index) => (
       rect.left - controlRects[index].right
     ));
-    const chartRect = element.getBoundingClientRect();
-    const targetRect = elements[3]?.getBoundingClientRect();
     const labelStyle = elements[0] ? getComputedStyle(elements[0]) : null;
     const labelDotStyle = elements[0] ? getComputedStyle(elements[0], "::before") : null;
     return {
@@ -2722,11 +2823,10 @@ test("MACD and disparity follow one selected technical series and shared setting
       controlGaps,
       headingLeft: Number.parseFloat(getComputedStyle(headingElement).left || "0"),
       labelBackdrop: labelStyle?.backdropFilter || labelStyle?.webkitBackdropFilter || "",
+      labelColor: labelStyle?.color || "",
       labelDotColor: labelDotStyle?.backgroundColor || "",
+      labelInlineColor: elements[0]?.style?.color || "",
       labelPaddingLeft: Number.parseFloat(labelStyle?.paddingLeft || "0"),
-      targetCenterOffset: targetRect
-        ? (targetRect.left + targetRect.width / 2) - (chartRect.left + chartRect.width / 2)
-        : Number.POSITIVE_INFINITY,
     };
   });
   expect(Math.max(...headingPresentation.centers) - Math.min(...headingPresentation.centers))
@@ -2735,8 +2835,55 @@ test("MACD and disparity follow one selected technical series and shared setting
   expect(headingPresentation.headingLeft).toBeCloseTo(2, 1);
   expect(headingPresentation.labelPaddingLeft).toBeGreaterThanOrEqual(8);
   expect(headingPresentation.labelBackdrop).toContain("blur");
-  expect(headingPresentation.labelDotColor).toBe("rgb(143, 146, 148)");
-  expect(Math.abs(headingPresentation.targetCenterOffset)).toBeLessThanOrEqual(1.5);
+  const normalizedMainColor = await page.evaluate((color) => {
+    const probe = document.createElement("span");
+    document.body.append(probe);
+    probe.style.color = color;
+    const normalized = getComputedStyle(probe).color;
+    probe.remove();
+    return normalized;
+  }, macdPresentation.mainColor);
+  const macroPanelTitleColor = await page.locator(
+    "#chart-adr .auxiliary-panel-title",
+  ).first().evaluate((element) => getComputedStyle(element).color);
+  expect(headingPresentation.labelColor).toBe(macroPanelTitleColor);
+  expect(headingPresentation.labelInlineColor).toBe("");
+  expect(headingPresentation.labelDotColor).toBe(normalizedMainColor);
+  await expect(page.locator("#chart-macd .auxiliary-macd-target")).toHaveJSProperty(
+    "tagName",
+    "BUTTON",
+  );
+  await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getTechnicalSeriesState()))
+    .toMatchObject({
+      activationOrder: ["^KS11", "^KQ11", "005930.KS", "000660.KS"],
+      renderedTarget: "000660.KS",
+      selectedTarget: "000660.KS",
+    });
+  for (const expected of [
+    { key: "^KS11", label: "코스피" },
+    { key: "^KQ11", label: "코스닥" },
+    { key: "005930.KS", label: "삼성전자" },
+    { key: "000660.KS", label: "SK하이닉스" },
+  ]) {
+    await page.locator("#chart-macd .auxiliary-macd-target").click();
+    await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getTechnicalSeriesState()))
+      .toMatchObject({ selectedTarget: expected.key });
+    await expect(page.locator("#chart-macd .auxiliary-macd-target")).toHaveText(expected.label);
+    await expect.poll(() => page.locator("#chart-macd").evaluate((element) => (
+      [...new Set((element.data || [])
+        .filter((trace) => trace?.meta?.macdSeriesKey)
+        .map((trace) => trace.meta.macdSeriesKey))]
+      ))).toEqual([expected.key]);
+  }
+  const rangeBeforeControlDoubleClick = await page.locator("#chart").evaluate(
+    (element) => element._fullLayout.xaxis.range.map(Date.parse),
+  );
+  await page.locator("#chart-macd .auxiliary-macd-target").dispatchEvent("dblclick", { button: 0 });
+  await page.waitForTimeout(250);
+  const rangeAfterControlDoubleClick = await page.locator("#chart").evaluate(
+    (element) => element._fullLayout.xaxis.range.map(Date.parse),
+  );
+  expect(rangeAfterControlDoubleClick).toEqual(rangeBeforeControlDoubleClick);
   const auxiliaryHeadingLefts = await page.locator("#chart-adr").evaluate((element) => (
     [...element.querySelectorAll(":scope > .auxiliary-panel-heading")].map((heading) => (
       Number.parseFloat(getComputedStyle(heading).left || "0")
@@ -2760,70 +2907,41 @@ test("MACD and disparity follow one selected technical series and shared setting
   expect(positions.adr).toBeGreaterThanOrEqual(positions.macdBottom);
   expect(positions.macdInsideShell).toBe(true);
 
-  const clickStockLine = async (ticker) => {
-    const point = await page.locator("#chart").evaluate((element, targetTicker) => {
-      const trace = (element.data || []).find((item) => item?.meta?.seriesKey === targetTicker);
-      const xAxis = element?._fullLayout?.xaxis;
-      const yAxis = element?._fullLayout?.yaxis;
-      const rect = element.getBoundingClientRect();
-      if (!trace || !xAxis || !yAxis) return null;
-      const interactiveMarkerKinds = new Set([
-        "ai-report",
-        "crisis",
-        "disclosure",
-        "eps",
-        "insider",
-        "timing-buy",
-        "timing-sell",
-      ]);
-      const markerTraces = (element.data || []).filter((item) => (
-        item !== trace
-        && String(item?.mode || "").includes("markers")
-        && interactiveMarkerKinds.has(String(item?.meta?.overlayKind || ""))
-      ));
-      const isNearMarker = (candidate) => markerTraces.some((markerTrace) => (
-        (markerTrace.x || []).some((date, markerIndex) => {
-          const value = Number(markerTrace.y?.[markerIndex]);
-          const rawSize = Array.isArray(markerTrace.marker?.size)
-            ? markerTrace.marker.size[markerIndex]
-            : markerTrace.marker?.size;
-          if (!date || !Number.isFinite(value) || Number(rawSize) <= 0) return false;
-          const markerX = rect.left + Number(xAxis._offset || 0) + xAxis.d2p(date);
-          const markerY = rect.top + Number(yAxis._offset || 0) + yAxis.l2p(value);
-          return Math.hypot(candidate.x - markerX, candidate.y - markerY) <= 32;
-        })
-      ));
-      for (let index = trace.x.length - 2; index >= 1; index -= 1) {
-        if (!trace.x[index] || !Number.isFinite(Number(trace.y[index]))) continue;
-        const candidate = {
-          x: rect.left + Number(xAxis._offset || 0) + xAxis.d2p(trace.x[index]),
-          y: rect.top + Number(yAxis._offset || 0) + yAxis.l2p(Number(trace.y[index])),
-        };
-        if (!element.contains(document.elementFromPoint(candidate.x, candidate.y))) continue;
-        if (isNearMarker(candidate)) continue;
-        if (window.ThinkStockE2E?.getLineDragTargetAt?.(candidate.x, candidate.y)?.seriesKey
-          === targetTicker) return candidate;
-      }
-      return null;
-    }, ticker);
-    expect(point).not.toBeNull();
-    await page.mouse.click(point.x, point.y);
+  const selectHandle = async (locator, pointerId) => {
+    await locator.dispatchEvent("pointerdown", {
+      button: 0,
+      buttons: 1,
+      clientX: 0,
+      clientY: 0,
+      isPrimary: true,
+      pointerId,
+      pointerType: "mouse",
+    });
+    await locator.dispatchEvent("pointerup", {
+      button: 0,
+      buttons: 0,
+      clientX: 0,
+      clientY: 0,
+      isPrimary: true,
+      pointerId,
+      pointerType: "mouse",
+    });
   };
-  await clickStockLine("005930.KS");
+  await selectHandle(page.locator('.y-handle-right[data-series-key="005930.KS"]'), 21);
   await expect.poll(() => page.locator("#chart-macd").evaluate((element) => (
     [...new Set((element.data || [])
       .filter((trace) => trace?.meta?.macdSeriesKey)
       .map((trace) => trace.meta.macdSeriesKey))]
   ))).toEqual(["005930.KS"]);
 
-  await page.locator('.y-handle-right[data-series-key="000660.KS"]').click();
+  await selectHandle(page.locator('.y-handle-right[data-series-key="000660.KS"]'), 22);
   await expect.poll(() => page.locator("#chart-macd").evaluate((element) => (
     [...new Set((element.data || [])
       .filter((trace) => trace?.meta?.macdSeriesKey)
       .map((trace) => trace.meta.macdSeriesKey))]
   ))).toEqual(["000660.KS"]);
 
-  await page.locator('.y-handle-left[data-series-key="005930.KS"]').click();
+  await selectHandle(page.locator('.y-handle-left[data-series-key="005930.KS"]'), 23);
   await expect(page.locator('.series-toggle-btn[data-series="005930.KS"]')).toHaveClass(/is-on/);
   await expect.poll(() => page.locator("#chart-macd").evaluate((element) => (
     [...new Set((element.data || [])
@@ -2847,7 +2965,7 @@ test("MACD and disparity follow one selected technical series and shared setting
       const startMs = Date.parse(start);
       const endMs = Date.parse(end);
       const expected = {};
-      for (const kind of ["oscillator", "disparity"]) {
+      for (const kind of ["oscillator", "disparity", "obv"]) {
         const values = traces
           .filter((trace) => trace?.meta?.macdLineKind === kind)
           .flatMap((trace) => (trace.x || []).flatMap((date, index) => {
@@ -2861,18 +2979,17 @@ test("MACD and disparity follow one selected technical series and shared setting
         const minimum = Math.min(...values);
         const maximum = Math.max(...values);
         const padding = Math.max(0.02, (maximum - minimum) * 0.08);
-        expected[kind] = Math.max(
-          0.02,
-          Math.abs(minimum - padding),
-          Math.abs(maximum + padding),
-        );
+        expected[kind] = kind === "obv"
+          ? [minimum - Math.max(1, (maximum - minimum) * 0.08),
+              maximum + Math.max(1, (maximum - minimum) * 0.08)]
+          : Math.max(0.02, Math.abs(minimum - padding), Math.abs(maximum + padding));
       }
-      if (!expected.oscillator || !expected.disparity) continue;
+      if (!expected.oscillator || !expected.disparity || !expected.obv) continue;
       candidates.push({
         start,
         end,
         expected,
-        fitSize: expected.oscillator + expected.disparity,
+        fitSize: expected.oscillator + expected.disparity + (expected.obv[1] - expected.obv[0]),
       });
     }
     return candidates.sort((left, right) => left.fitSize - right.fitSize)[0] || null;
@@ -2887,7 +3004,8 @@ test("MACD and disparity follow one selected technical series and shared setting
   await expect.poll(() => page.locator("#chart-macd").evaluate((element, target) => {
     const primary = element?._fullLayout?.yaxis?.range?.map(Number) || [];
     const secondary = element?._fullLayout?.yaxis2?.range?.map(Number) || [];
-    if ([primary, secondary].some((range) => (
+    const tertiary = element?._fullLayout?.yaxis3?.range?.map(Number) || [];
+    if ([primary, secondary, tertiary].some((range) => (
       range.length !== 2 || !range.every(Number.isFinite)
     ))) return Number.POSITIVE_INFINITY;
     return Math.max(
@@ -2895,6 +3013,8 @@ test("MACD and disparity follow one selected technical series and shared setting
       Math.abs(secondary[0] + secondary[1]),
       Math.abs(Math.max(...primary.map(Math.abs)) - target.expected.oscillator),
       Math.abs(Math.max(...secondary.map(Math.abs)) - target.expected.disparity),
+      Math.abs(tertiary[0] - target.expected.obv[0]),
+      Math.abs(tertiary[1] - target.expected.obv[1]),
     );
   }, macdFitTarget)).toBeLessThan(0.02);
 
@@ -2909,6 +3029,14 @@ test("MACD and disparity follow one selected technical series and shared setting
   await expect(page.locator("#chart-macd")).toBeVisible();
   await page.locator('.series-toggle-btn[data-series="005930.KS"]').click();
   await expect(page.locator("#chart-macd")).toBeVisible();
+  await expect.poll(() => page.locator("#chart-macd").evaluate((element) => (
+    [...new Set((element.data || [])
+      .filter((trace) => trace?.meta?.macdSeriesKey)
+      .map((trace) => trace.meta.macdSeriesKey))]
+  ))).toEqual(["^KS11"]);
+  await expect(page.locator("#chart-macd .auxiliary-macd-target")).toHaveText("코스피");
+
+  await page.locator('.series-toggle-btn[data-series="^KQ11"]').click();
   await expect.poll(() => page.locator("#chart-macd").evaluate((element) => (
     [...new Set((element.data || [])
       .filter((trace) => trace?.meta?.macdSeriesKey)

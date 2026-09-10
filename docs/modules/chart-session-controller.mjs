@@ -371,10 +371,18 @@
       return candidates.includes(currentKey) ? currentKey : candidates.at(-1) || "";
     }
 
+    function nextVisibleTarget(currentKey, isEligibleSeries) {
+      const candidates = activationOrder().filter((key) => isEligibleSeries?.(key));
+      if (!candidates.length) return "";
+      const currentIndex = candidates.indexOf(currentKey);
+      return candidates[(currentIndex + 1) % candidates.length];
+    }
+
     return Object.freeze({
       activationOrder,
       enforceLimit,
       forget,
+      nextVisibleTarget,
       resolveVisibleTarget,
       setVisible,
       visibleKeys,

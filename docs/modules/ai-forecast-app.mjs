@@ -8,6 +8,9 @@ import {
   function createAiForecastApp(scope = globalThis, options = {}) {
     const workerUrl = String(options.workerUrl || "");
     const buildFallback = options.buildFallback;
+    const workerTimeoutMs = Math.max(1000, Number(options.workerTimeoutMs) || 8000);
+    const setRequestTimer = options.setRequestTimer || scope.setTimeout?.bind(scope);
+    const clearRequestTimer = options.clearRequestTimer || scope.clearTimeout?.bind(scope);
     let worker = null;
     let sequence = 0;
     let pending = new Map();
@@ -85,9 +88,35 @@ import {
       progressView.reset({ hide: true });
     }
 
+    function clearRequest(request) {
+      if (request?.timer && typeof clearRequestTimer === "function") {
+        clearRequestTimer(request.timer);
+      }
+    }
+
+    function settleWithFallback(request, error) {
+      clearRequest(request);
+      if (typeof buildFallback !== "function") {
+        request.reject(error);
+        return;
+      }
+      Promise.resolve()
+        .then(() => buildFallback(request.optionsValue) || null)
+        .then(request.resolve, request.reject);
+    }
+
+    function recoverPending(error, target = worker) {
+      const requests = [...pending.values()];
+      pending.clear();
+      terminateWorker(target);
+      requests.forEach((request) => settleWithFallback(request, error));
+    }
+
     function cancelCalculations() {
-      if (!worker) return;
-      pending.forEach(({ resolve }) => resolve(null));
+      pending.forEach((request) => {
+        clearRequest(request);
+        request.resolve(null);
+      });
       pending.clear();
       terminateWorker();
     }
@@ -129,14 +158,13 @@ import {
         const request = pending.get(Number(event.data?.id));
         if (!request) return;
         pending.delete(Number(event.data.id));
+        clearRequest(request);
         if (event.data?.error) request.reject(new Error(event.data.error));
         else request.resolve(event.data?.forecast || null);
         if (!pending.size) workerLifecycle.markIdle();
       };
       instance.onerror = () => {
-        pending.forEach(({ reject }) => reject(new Error("AI forecast worker failed")));
-        pending.clear();
-        terminateWorker(instance);
+        recoverPending(new Error("AI forecast worker failed"), instance);
       };
       worker = instance;
       return worker;
@@ -147,13 +175,21 @@ import {
       if (!activeWorker) return Promise.resolve(buildFallback?.(optionsValue) || null);
       const id = ++sequence;
       return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject });
+        const request = { resolve, reject, optionsValue, timer: 0 };
+        if (typeof setRequestTimer === "function") {
+          request.timer = setRequestTimer(() => {
+            if (!pending.has(id)) return;
+            recoverPending(new Error("AI forecast worker timeout"), activeWorker);
+          }, workerTimeoutMs);
+        }
+        pending.set(id, request);
         try {
           activeWorker.postMessage({ id, options: optionsValue });
-        } catch (_) {
+        } catch (error) {
           pending.delete(id);
+          clearRequest(request);
           if (!pending.size) workerLifecycle.markIdle();
-          resolve(buildFallback?.(optionsValue) || null);
+          settleWithFallback(request, error);
         }
       });
     }

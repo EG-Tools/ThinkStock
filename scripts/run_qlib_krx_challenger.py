@@ -19,6 +19,8 @@ import pandas as pd
 import qlib
 from qlib.data.dataset import DataHandlerLP, DatasetH
 
+from qlib_obv_features import build_obv_features
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CACHE_DIR = ROOT / ".thinkstock-cache" / "ai-backtest"
@@ -318,6 +320,7 @@ def price_feature_frame(
         returns.abs() / (prices * aligned_volume).replace(0, np.nan)
     ).rolling(20, min_periods=10).mean() * 1_000_000_000
     result["volume_coverage_63"] = aligned_volume.notna().rolling(63, min_periods=1).mean()
+    result = result.join(build_obv_features(returns, aligned_volume))
     result["daily_return"] = returns
     result["model_group_base"] = model_group_base
     if not context_features.empty:
@@ -371,7 +374,7 @@ def build_feature_frames(
     return frames
 
 
-def feature_names(frames: dict[str, pd.DataFrame]) -> list[str]:
+def feature_names(frames: dict[str, pd.DataFrame], feature_set: str = "baseline") -> list[str]:
     excluded_prefixes = (
         "label_",
         "absolute_label_",
@@ -390,6 +393,7 @@ def feature_names(frames: dict[str, pd.DataFrame]) -> list[str]:
         for frame in frames.values()
         for column in frame.columns
         if column not in excluded and not str(column).startswith(excluded_prefixes)
+        and (feature_set == "obv" or not str(column).startswith("obv_"))
     })
     return names
 
@@ -834,8 +838,8 @@ def feature_importance(model: lgb.LGBMRegressor, features: Sequence[str], limit:
     ]
 
 
-def write_predictions(records: Sequence[dict]) -> None:
-    with PREDICTION_PATH.open("w", encoding="utf-8", newline="\n") as handle:
+def write_predictions(records: Sequence[dict], prediction_path: Path = PREDICTION_PATH) -> None:
+    with prediction_path.open("w", encoding="utf-8", newline="\n") as handle:
         for record in records:
             handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
 
@@ -922,7 +926,7 @@ def evaluate_locked_cohort(
     return wins, records
 
 
-def run(args: argparse.Namespace) -> dict:
+def run(args: argparse.Namespace, model_dir: Path = MODEL_DIR) -> dict:
     manifest = read_json(MANIFEST_PATH)
     if manifest.get("format") != MANIFEST_FORMAT:
         raise ValueError("refresh the Qlib KRX manifest first")
@@ -930,13 +934,20 @@ def run(args: argparse.Namespace) -> dict:
     context_path = ROOT / manifest["source"]["context"]
     prices_payload = read_json(price_path)
     context_payload = read_json(context_path)
-    protocol_fingerprint = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    protocol_hash = hashlib.sha256()
+    for dependency in (Path(__file__), Path(__file__).with_name("qlib_obv_features.py")):
+        protocol_hash.update(dependency.name.encode("utf-8"))
+        protocol_hash.update(b"\0")
+        protocol_hash.update(dependency.read_bytes())
+        protocol_hash.update(b"\0")
+    protocol_fingerprint = protocol_hash.hexdigest()
     audit_snapshot = read_json_or_none(AUDIT_SNAPSHOT_PATH)
     confirmation_audit_snapshot = read_json_or_none(CONFIRMATION_AUDIT_SNAPSHOT_PATH)
     snapshot_identity = {
         "protocolFingerprint": protocol_fingerprint,
         "priceFingerprint": manifest["source"]["priceFingerprint"],
         "contextFingerprint": manifest["source"]["contextFingerprint"],
+        "featureSet": args.feature_set,
         "auditCohorts": manifest["validation"]["cohorts"]["audit"],
     }
     snapshot_matches = bool(audit_snapshot) and all(
@@ -946,6 +957,7 @@ def run(args: argparse.Namespace) -> dict:
         "protocolFingerprint": protocol_fingerprint,
         "priceFingerprint": manifest["source"]["priceFingerprint"],
         "contextFingerprint": manifest["source"]["contextFingerprint"],
+        "featureSet": args.feature_set,
         "auditCohorts": manifest["validation"]["cohorts"]["confirmationAudit"],
     }
     confirmation_snapshot_matches = bool(confirmation_audit_snapshot) and all(
@@ -984,7 +996,7 @@ def run(args: argparse.Namespace) -> dict:
         benchmarks,
         profiles,
     )
-    features = feature_names(frames)
+    features = feature_names(frames, args.feature_set)
     if len(features) < 25:
         raise RuntimeError(f"Qlib feature coverage is incomplete: {len(features)}")
     sample_step = 10 if args.quick else int(manifest["validation"]["sampleStepTradingDays"])
@@ -1095,7 +1107,7 @@ def run(args: argparse.Namespace) -> dict:
             raise RuntimeError(f"Qlib {horizon}-day rolling holdout is empty")
         holdout_predictions = pd.concat(holdout_parts, ignore_index=True)
         holdout_metrics = metric_summary(holdout_predictions)
-        model_path = MODEL_DIR / f"horizon-{horizon}.txt"
+        model_path = model_dir / f"horizon-{horizon}.txt"
         latest_model = fold_models[-1]["model"]
         latest_model.booster_.save_model(model_path)
         trained[horizon] = fold_models
@@ -1239,6 +1251,7 @@ def run(args: argparse.Namespace) -> dict:
             "protocolFingerprint": protocol_fingerprint,
         },
         "task": "cross-sectional-ranking",
+        "featureSet": args.feature_set,
         "market": manifest["market"],
         "manifest": {
             "format": manifest["format"],
@@ -1336,20 +1349,39 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the offline ThinkStock Qlib KRX challenger")
     parser.add_argument("--quick", action="store_true", help="use a small smoke-test cohort")
     parser.add_argument("--no-audit", action="store_true", help="keep the audit cohort untouched")
+    parser.add_argument(
+        "--feature-set",
+        choices=("baseline", "obv"),
+        default="baseline",
+        help="select the frozen feature family for an offline ablation",
+    )
+    parser.add_argument(
+        "--artifact-label",
+        default="",
+        help="write isolated report, prediction, and model artifacts",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     random.seed(RANDOM_SEED)
     np.random.seed(RANDOM_SEED)
+    args = parse_args()
+    artifact_label = "".join(
+        character for character in str(args.artifact_label) if character.isalnum() or character in "-_"
+    )
+    artifact_suffix = f"-{artifact_label}" if artifact_label else ""
+    report_path = QLIB_DIR / f"challenger-report{artifact_suffix}.json"
+    prediction_path = QLIB_DIR / f"challenger-predictions{artifact_suffix}.jsonl"
+    model_dir = QLIB_DIR / (f"models-{artifact_label}" if artifact_label else "models")
     QLIB_DIR.mkdir(parents=True, exist_ok=True)
-    MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    report, predictions = run(parse_args())
-    REPORT_PATH.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    write_predictions(predictions)
+    model_dir.mkdir(parents=True, exist_ok=True)
+    report, predictions = run(args, model_dir)
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_predictions(predictions, prediction_path)
     print(json.dumps({
-        "report": str(REPORT_PATH.relative_to(ROOT)),
-        "predictions": str(PREDICTION_PATH.relative_to(ROOT)),
+        "report": str(report_path.relative_to(ROOT)),
+        "predictions": str(prediction_path.relative_to(ROOT)),
         "holdout": report["holdout"],
         "audit": report["audit"],
         "confirmationAudit": report["confirmationAudit"],

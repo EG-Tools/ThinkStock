@@ -201,12 +201,19 @@ test("invalidates one in-memory timing model without clearing its peers", async 
 
 test("falls back to the local calculator when Worker is unavailable", async () => {
   let receivedInput = null;
+  let receivedMacdInput = null;
+  let receivedComparisonInput = null;
+  let receivedConfidenceInput = null;
   const service = createMarketTimingService({}, {
-    buildMacdOscillator: ({ dates, prices }) => ({
-      dates,
-      prices,
-      normalized: prices.map(() => 0),
-    }),
+    buildMacdOscillator: (input) => {
+      receivedMacdInput = input;
+      return {
+        dates: input.dates,
+        prices: input.prices,
+        normalized: input.prices.map(() => 0),
+        obv: input.prices.map((_, index) => index * 900),
+      };
+    },
     buildMarketTimingSignals: (input) => {
       receivedInput = input;
       return {
@@ -215,6 +222,18 @@ test("falls back to the local calculator when Worker is unavailable", async () =
         volumes: input.volumes,
         marketPricesByTicker: input.marketPricesByTicker,
       };
+    },
+    buildObvTimingComparison: (model, input) => {
+      receivedComparisonInput = { model, input };
+      return {
+        version: "obv-divergence-v1",
+        signals: [{ date: "2026-01-05" }],
+        sellSignals: [],
+      };
+    },
+    integrateMarketTimingConfidence: (model, comparison) => {
+      receivedConfidenceInput = { model, comparison };
+      return { ...model, confidenceIntegrated: true, obvComparison: comparison };
     },
   });
   const sources = {
@@ -236,6 +255,16 @@ test("falls back to the local calculator when Worker is unavailable", async () =
   });
   assert.deepEqual(receivedInput.benchmarkPrices, [100, 101]);
   assert.deepEqual(receivedInput.volumes, [null, 900]);
+  assert.deepEqual(receivedMacdInput.volumes, [null, 900]);
+  assert.deepEqual(receivedComparisonInput.input.obv, [0, 900]);
+  assert.deepEqual(receivedComparisonInput.input.volumes, [null, 900]);
+  assert.equal(receivedComparisonInput.model.indexKey, "005930.KS");
+  assert.equal(receivedConfidenceInput.model.indexKey, "005930.KS");
+  assert.equal(receivedConfidenceInput.comparison.version, "obv-divergence-v1");
+  assert.equal(service.get("005930.KS").confidenceIntegrated, true);
+  assert.deepEqual(service.get("005930.KS").obvComparison.signals, [
+    { date: "2026-01-05" },
+  ]);
   assert.equal(service.stats().workerFallbacks, 1);
 });
 

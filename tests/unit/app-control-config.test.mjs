@@ -33,6 +33,7 @@ import {
   normalizeCreditOffsetDays,
   resolveMainChartDisplayPointBudget,
   resolveAppBuildVersion,
+  resolveReadySeriesFeatureActivationPlan,
   resolveSeriesFeatureActivationPlan,
   resolveTickerDartPreloadPlan,
   seriesSupportsFeature,
@@ -265,6 +266,7 @@ test("main-series activation profiles skip volume for value-only macro series", 
     requiresVolume: true,
     backgroundHistory: true,
     supportsCompanyMarkers: true,
+    supportsTechnical: true,
     supportsTiming: true,
   });
   assert.equal(mainSeriesActivationProfile("^KS11").requiresVolume, true);
@@ -378,6 +380,31 @@ test("series activation plans reject company-only work for indices and macro ser
     dart: false,
     supplemental: false,
     requested: false,
+  });
+});
+
+test("volume readiness gates only technical analysis work", () => {
+  assert.equal(APP_FEATURE_POLICIES.technical.requiresVolume, true);
+  assert.equal(APP_FEATURE_POLICIES.signal.requiresVolume, true);
+  assert.equal(APP_FEATURE_POLICIES.ai.requiresVolume, true);
+  assert.deepEqual(resolveReadySeriesFeatureActivationPlan({
+    signal: true,
+    disclosure: true,
+    disclosureData: true,
+    insider: true,
+    eps: true,
+    ai: true,
+    dart: true,
+  }, { volumeReady: false }), {
+    signal: false,
+    disclosure: true,
+    disclosureData: true,
+    insider: true,
+    eps: true,
+    ai: false,
+    dart: true,
+    supplemental: true,
+    requested: true,
   });
 });
 

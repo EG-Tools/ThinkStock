@@ -2,16 +2,19 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  classifySellObjectiveType,
   compactTimingSignalOutcome,
   compareSellObjectives,
   newTimingSignalRows,
   stableTimingTickerBucket,
   summarizeTimingGroups,
   summarizeTimingOutcomes,
+  summarizeTimingPerformance,
   summarizeTimingSegments,
   summarizeSellObjectives,
   summarizeSellObjectiveGroups,
   summarizeSellTailFailures,
+  summarizeSellTypePerformance,
   sellObjectivePromotionDecision,
   timingRegimeStability,
   timingSidePromotionDecision,
@@ -36,13 +39,21 @@ function outcome({
     marketRegime: regime,
     directional20: hit ? 0.1 : -0.1,
     directional63: hit ? 0.1 : -0.1,
+    directional126: hit ? 0.12 : -0.12,
     return20: type === "buy" ? (hit ? 0.1 : -0.1) : (hit ? -0.1 : 0.1),
     return63: type === "buy" ? (hit ? 0.1 : -0.1) : (hit ? -0.1 : 0.1),
+    return126: type === "buy" ? (hit ? 0.12 : -0.12) : (hit ? -0.12 : 0.12),
     direction20: hit,
     direction63: hit,
+    direction126: hit,
     excursionHit: hit,
     adverse20: hit ? -0.02 : -0.1,
     favorable20: hit ? 0.15 : 0.03,
+    adverse63: hit ? -0.03 : -0.12,
+    favorable63: hit ? 0.18 : 0.04,
+    adverse126: hit ? -0.04 : -0.15,
+    favorable126: hit ? 0.22 : 0.05,
+    transactionCostRate: 0.003,
     turningDistance: hit ? 0.01 : 0.05,
     vkospiPercentile: 0.5,
     tags: [],
@@ -74,6 +85,46 @@ test("summarizes timing quality and separates stock outcomes", () => {
       .range.stock.buy.samples,
     1,
   );
+});
+
+test("performance scorecard separates gross results, costs, and mature horizons", () => {
+  const rows = [
+    outcome({ hit: true }),
+    { ...outcome({ ticker: "000002.KS", hit: false }), return126: null, directional126: null },
+  ];
+  const scorecard = summarizeTimingPerformance(rows, "buy");
+
+  assert.equal(scorecard.signals, 2);
+  assert.equal(scorecard.horizons[20].samples, 2);
+  assert.equal(scorecard.horizons[20].grossHitRate, 0.5);
+  assert.equal(scorecard.horizons[20].meanNetDirectionalReturn, -0.003);
+  assert.equal(scorecard.horizons[126].samples, 1);
+  assert.equal(scorecard.horizons[126].meanNetDirectionalReturn, 0.117);
+  assert.equal(scorecard.horizons[126].worstAdverseExcursion, -0.04);
+});
+
+test("sell diagnostics classify distinct objectives without changing signal output", () => {
+  const rows = [
+    { ...outcome({ type: "sell" }), signalFamily: "overheat-rollover" },
+    {
+      ...outcome({ ticker: "000002.KS", type: "sell" }),
+      signalFamily: "distribution-rollover",
+    },
+    {
+      ...outcome({ ticker: "000003.KS", type: "sell" }),
+      signalFamily: "fundamental-warning",
+      deteriorationReasons: ["EPS 전망 하향"],
+    },
+  ];
+
+  assert.equal(classifySellObjectiveType(rows[0]), "overheat-correction");
+  assert.equal(classifySellObjectiveType(rows[1]), "trend-breakdown");
+  assert.equal(classifySellObjectiveType(rows[2]), "earnings-deterioration");
+  const summary = summarizeSellTypePerformance(rows);
+  assert.equal(summary["overheat-correction"].signals, 1);
+  assert.equal(summary["trend-breakdown"].signals, 1);
+  assert.equal(summary["earnings-deterioration"].signals, 1);
+  assert.equal(summary.unclassified.signals, 0);
 });
 
 test("temporal stability requires improvements to recur across recent windows", () => {

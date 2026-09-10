@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  createRuntimeBootstrapService,
   createRuntimeIndexRefreshService,
   createRuntimeMarketRefresh,
   normalizeTickerPoints,
@@ -66,6 +67,33 @@ test("price refresh planning requests first use, stale tails, and explicit refre
   }).requiredTickers, tickers);
 });
 
+test("critical bootstrap requests index volume from the visible window", async () => {
+  let request = null;
+  const service = createRuntimeBootstrapService({
+    canUseGateway: () => true,
+    gatewayClient: {
+      fetchBootstrap: async (options) => {
+        request = options;
+        return { ok: true };
+      },
+    },
+    getCustomStocks: () => [],
+    getPricePayload: () => ({ records: [{ date: "2026-09-09", "^KS11": 4100 }] }),
+    isHidden: () => false,
+    latestDatesByTicker: () => ({ "^KS11": "2026-09-09" }),
+    toNumber: Number,
+  });
+
+  await service.fetchCritical({
+    indexTickers: ["^KS11"],
+    now: new Date("2026-09-10T00:00:00Z"),
+    requireIndexVolumeHistory: true,
+    visibleSinceDate: "2025-09-01",
+  });
+
+  assert.equal(request.since, "2025-09-01");
+});
+
 test("index refresh requests and preserves volume history needed by timing signals", async () => {
   const merged = new Map();
   let requestedSince = "";
@@ -105,6 +133,49 @@ test("index refresh requests and preserves volume history needed by timing signa
     close: 3000,
     volume: 100000,
   }]);
+});
+
+test("index refresh replaces recent volume when it does not cover the visible window", async () => {
+  let request = null;
+  const records = Array.from({ length: 24 }, (_, index) => ({
+    ticker: "^KS11",
+    date: new Date(Date.UTC(2025, 8, 1 + index)).toISOString().slice(0, 10),
+    close: 3000 + index,
+    volume: 100000 + index,
+  }));
+  const service = createRuntimeIndexRefreshService({
+    canUseGateway: () => true,
+    gatewayClient: {
+      fetchIndices: async (options) => {
+        request = options;
+        return { ok: true, records };
+      },
+    },
+    getPricePayload: () => ({ records: [{ date: "2026-09-09", "^KS11": 4100 }] }),
+    hasVolumeCoverage: () => false,
+    hasVolumeHistory: () => true,
+    isLocalRuntime: false,
+    labelName: (ticker) => ticker,
+    mergeTickerSeries: () => {},
+    toNumber: Number,
+  });
+
+  await service.refresh({
+    tickers: ["^KS11"],
+    visibleSinceDate: "2025-09-01",
+    now: new Date("2026-09-10T00:00:00Z"),
+    payload: {
+      ok: true,
+      records: Array.from({ length: 24 }, (_, index) => ({
+        ticker: "^KS11",
+        date: new Date(Date.UTC(2026, 7, 1 + index)).toISOString().slice(0, 10),
+        close: 4000 + index,
+        volume: 200000 + index,
+      })),
+    },
+  });
+
+  assert.equal(request.since, "2025-09-01");
 });
 
 test("macro refresh keeps healthy components when another component fails", async () => {

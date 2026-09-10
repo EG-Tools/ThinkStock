@@ -1,6 +1,10 @@
 import { chartLoader } from "./chart-loader.mjs";
 import { assertChartRenderPayload } from "./chart-render-contract.mjs";
-import { AUXILIARY_LAYOUT_METRICS } from "./auxiliary-chart-contract.mjs";
+import {
+  AUXILIARY_LAYOUT_METRICS,
+  TECHNICAL_SERIES_DEFINITIONS,
+  TECHNICAL_SERIES_KEYS,
+} from "./auxiliary-chart-contract.mjs";
 import {
   createAuxiliaryPanelControlView,
   syncControl,
@@ -17,11 +21,9 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
   }
   const PLOTLY_CONFIG = chartLoader.PLOTLY_CONFIG;
   const CHART_HOVER_DATE_FORMAT = chartLoader.PLOTLY_THEME.hoverDateFormat;
-  const MACD_DISPARITY_COLOR = "#c5c9cf";
-  const MACD_LINE_KEYS = Object.freeze({
-    disparity: "macd_disparity",
-    oscillator: "macd_oscillator",
-  });
+  const ADR_KOSPI_COLOR = "#facc15";
+  const ADR_KOSDAQ_COLOR = "#f472b6";
+  const MACD_LINE_KEYS = TECHNICAL_SERIES_KEYS;
 
   function auxiliaryTraceStructureKey(trace) {
     const meta = trace?.meta || {};
@@ -285,53 +287,49 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
     return results.map((result) => result.value);
   }
 
-function buildMacdSeriesTracePair(options = {}) {
+function buildTechnicalSeriesTraces(options = {}) {
     const series = String(options.series || "");
     const name = String(options.name || series);
-    const color = String(options.color || "#ffffff");
-    const disparityColor = String(options.disparityColor || MACD_DISPARITY_COLOR);
     const disparityDays = Math.max(1, Math.round(Number(options.disparityDays) || 60));
     const legendgroup = `macd:${series}`;
-    return Object.freeze({
-      lineTrace: {
-        x: Array.isArray(options.dates) ? options.dates : [],
-        y: Array.isArray(options.values) ? options.values : [],
+    const inputs = {
+      oscillator: { dates: options.dates, values: options.values },
+      disparity: { dates: options.disparityDates, values: options.disparityValues },
+      obv: { dates: options.obvDates, values: options.obvValues },
+    };
+    return Object.freeze(TECHNICAL_SERIES_DEFINITIONS.map((definition) => {
+      const input = inputs[definition.kind] || {};
+      const trace = {
+        x: Array.isArray(input.dates) ? input.dates : [],
+        y: Array.isArray(input.values) ? input.values : [],
         type: "scatter",
         mode: "lines",
         name,
         legendgroup,
         showlegend: false,
-        yaxis: "y",
-        line: { color, width: 1 },
+        yaxis: definition.axis,
+        line: { color: definition.color, width: 1 },
         opacity: 1,
+        visible: options.active?.[definition.kind] !== false,
         hoverinfo: options.showHover ? undefined : "skip",
-        hovertemplate: options.showHover
-          ? "오실레이터 %{y:.3f}%<extra>%{fullData.name}</extra>"
-          : undefined,
-        meta: { macdSeriesKey: series, macdLineKind: "oscillator", macdSignal: options.signal },
-      },
-      disparityTrace: {
-        x: Array.isArray(options.disparityDates) ? options.disparityDates : [],
-        y: Array.isArray(options.disparityValues) ? options.disparityValues : [],
-        type: "scatter",
-        mode: "lines",
-        name,
-        legendgroup,
-        showlegend: false,
-        yaxis: "y2",
-        line: { color: disparityColor, width: 1 },
-        opacity: 1,
-        hoverinfo: options.showHover ? undefined : "skip",
-        hovertemplate: options.showHover
-          ? `이격도(${disparityDays}) %{y:.2f}%<extra>%{fullData.name}</extra>`
-          : undefined,
         meta: {
           macdSeriesKey: series,
-          macdLineKind: "disparity",
-          macdDisparityDays: disparityDays,
+          macdLineKind: definition.kind,
+          macdSignal: definition.kind === "oscillator" ? options.signal : undefined,
+          macdDisparityDays: definition.kind === "disparity" ? disparityDays : undefined,
         },
-      },
-  });
+      };
+      if (options.showHover) {
+        if (definition.kind === "oscillator") {
+          trace.hovertemplate = "오실레이터 %{y:.3f}%<extra>%{fullData.name}</extra>";
+        } else if (definition.kind === "disparity") {
+          trace.hovertemplate = `이격도(${disparityDays}) %{y:.2f}%<extra>%{fullData.name}</extra>`;
+        } else {
+          trace.hovertemplate = "OBV %{y:,.0f}<extra>%{fullData.name}</extra>";
+        }
+      }
+      return trace;
+    }));
 }
 
 function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
@@ -447,36 +445,45 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
 
     function buildMacdViewportYRanges(element, xRange) {
       if (!element?.data || !Array.isArray(xRange)) return null;
-      const fitKind = (kind) => {
+      const ranges = {};
+      TECHNICAL_SERIES_DEFINITIONS.forEach((definition) => {
         const fitted = fitRangeForTraces(
-          element.data.filter((trace) => trace?.meta?.macdLineKind === kind),
+          element.data.filter((trace) => (
+            trace?.meta?.macdLineKind === definition.kind
+            && trace.visible !== false
+            && trace.visible !== "legendonly"
+          )),
           xRange,
-          { paddingRatio: 0.08, minimumPadding: 0.02 },
+          { paddingRatio: 0.08, minimumPadding: definition.minimumPadding },
         );
-        if (!fitted) return null;
+        if (!fitted) {
+          ranges[definition.kind] = null;
+          return;
+        }
+        if (!definition.symmetric) {
+          ranges[definition.kind] = fitted;
+          return;
+        }
         const maxAbs = Math.max(0.02, Math.abs(fitted[0]), Math.abs(fitted[1]));
-        return [-maxAbs, maxAbs];
-      };
-      const ranges = {
-        oscillator: fitKind("oscillator"),
-        disparity: fitKind("disparity"),
-      };
-      return ranges.oscillator || ranges.disparity ? ranges : null;
+        ranges[definition.kind] = [-maxAbs, maxAbs];
+      });
+      return Object.values(ranges).some(Array.isArray) ? ranges : null;
     }
 
     function macdViewportRelayout(ranges) {
       if (!ranges) return null;
-      const primary = ranges.oscillator || ranges.disparity;
-      const secondary = ranges.disparity || ranges.oscillator;
-      if (!primary || !secondary) return null;
-      return {
-        "yaxis.range[0]": primary[0],
-        "yaxis.range[1]": primary[1],
-        "yaxis.autorange": false,
-        "yaxis2.range[0]": secondary[0],
-        "yaxis2.range[1]": secondary[1],
-        "yaxis2.autorange": false,
+      const relayout = {};
+      const addRange = (axisKey, range) => {
+        if (!Array.isArray(range)) return;
+        relayout[`${axisKey}.range[0]`] = range[0];
+        relayout[`${axisKey}.range[1]`] = range[1];
+        relayout[`${axisKey}.autorange`] = false;
       };
+      TECHNICAL_SERIES_DEFINITIONS.forEach((definition) => {
+        const axisKey = definition.axis === "y" ? "yaxis" : `yaxis${definition.axis.slice(1)}`;
+        addRange(axisKey, ranges[definition.kind]);
+      });
+      return Object.keys(relayout).length ? relayout : null;
     }
 
     function buildAuxiliaryViewportRelayout(model, xRange, targetElement) {
@@ -988,32 +995,23 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       heading.style.top = `${Math.max(0, (Number(plotSize?.t) || 34) - 27)}px`;
       const controls = document.createElement("div");
       controls.className = "auxiliary-macd-controls";
-      const title = document.createElement("span");
-      title.className = "auxiliary-chart-label";
-      title.textContent = "보조차트";
+      const title = document.createElement("button");
+      title.type = "button";
+      title.className = "auxiliary-chart-label auxiliary-macd-target";
+      title.textContent = String(options.targetName || options.target || "");
+      title.style.setProperty("--auxiliary-series-color", options.targetColor || "#ffffff");
+      title.setAttribute("aria-label", `${title.textContent} · 다음 보이는 차트로 전환`);
+      title.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        options.onCycleTarget?.(options.target);
+      });
       controls.append(
         title,
-        createAuxiliarySeriesToggle({
-          active: options.oscillatorActive,
-          available: options.oscillatorAvailable,
-          color: options.targetColor,
-          key: MACD_LINE_KEYS.oscillator,
-          text: "MACD",
-        }),
-        createAuxiliarySeriesToggle({
-          active: options.disparityActive,
-          available: options.disparityAvailable,
-          color: options.disparityColor,
-          key: MACD_LINE_KEYS.disparity,
-          text: "이격도",
-        }),
+        ...(options.seriesControls || []).map(createAuxiliarySeriesToggle),
       );
-      const target = document.createElement("span");
-      target.className = "auxiliary-series-toggle auxiliary-macd-target";
-      target.style.setProperty("--auxiliary-series-color", options.targetColor || "#ffffff");
-      target.textContent = String(options.targetName || options.target || "");
       heading.dataset.macdTarget = String(options.target || "");
-      heading.replaceChildren(controls, target);
+      heading.replaceChildren(controls);
     }
 
     async function renderMacdChart(xRange) {
@@ -1043,22 +1041,33 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       const dataStart = chartSession.currentDataStart || String(dataState.pricePayload?.records?.[0]?.date || "").slice(0, 10);
       const dataEnd = chartSession.currentDataEnd || String(dataState.pricePayload?.records?.at(-1)?.date || "").slice(0, 10);
       const disparityDays = Number(chartSession.macdDisparityDays) || 60;
-      const disparityColor = MACD_DISPARITY_COLOR;
-      const oscillatorActive = !chartSession.hiddenAuxiliarySeries.has(MACD_LINE_KEYS.oscillator);
-      const disparityActive = !chartSession.hiddenAuxiliarySeries.has(MACD_LINE_KEYS.disparity);
       const targetModel = getMacdModelForSeries(targetSeries);
-      const oscillatorAvailable = Boolean(targetModel?.normalized?.some(Number.isFinite));
-      const disparityAvailable = Boolean(targetModel?.disparity?.some(Number.isFinite));
+      const modelValues = {
+        oscillator: targetModel?.normalized,
+        disparity: targetModel?.disparity,
+        obv: targetModel?.obv,
+      };
+      const activeByKind = Object.fromEntries(TECHNICAL_SERIES_DEFINITIONS.map((definition) => [
+        definition.kind,
+        !chartSession.hiddenAuxiliarySeries.has(definition.key),
+      ]));
+      const availableByKind = Object.fromEntries(TECHNICAL_SERIES_DEFINITIONS.map((definition) => [
+        definition.kind,
+        Boolean(modelValues[definition.kind]?.some(Number.isFinite)),
+      ]));
       const targetColor = seriesColor(targetSeries);
       const headingOptions = {
         target: targetSeries,
         targetName: labelName(targetSeries),
         targetColor,
-        disparityColor,
-        oscillatorActive,
-        oscillatorAvailable,
-        disparityActive,
-        disparityAvailable,
+        onCycleTarget: options.cycleTechnicalSeriesTarget,
+        seriesControls: TECHNICAL_SERIES_DEFINITIONS.map((definition) => ({
+          active: activeByKind[definition.kind],
+          available: availableByKind[definition.kind],
+          color: definition.color,
+          key: definition.key,
+          text: definition.label,
+        })),
       };
       const renderKey = [
         dataStart,
@@ -1069,9 +1078,9 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
         dataRevisionSignature("price"),
         visibleSeries.join(","),
         disparityDays,
-        disparityColor,
-        oscillatorActive ? 1 : 0,
-        disparityActive ? 1 : 0,
+        ...TECHNICAL_SERIES_DEFINITIONS.map((definition) => (
+          activeByKind[definition.kind] ? 1 : 0
+        )),
       ].join("::");
       if (lastMacdRenderKey === renderKey && el.data?.length) {
         syncMacdHeading(el, headingOptions);
@@ -1086,19 +1095,27 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       const lineTraces = [];
       const oscillatorValues = [];
       const disparityValues = [];
+      const obvValues = [];
       const viewportWindows = [];
       visibleSeries.forEach((series) => {
         const model = series === targetSeries ? targetModel : getMacdModelForSeries(series);
         if (!model) return;
-        const viewportSeries = sliceViewport(model.dates, [model.normalized, model.disparity], xRange);
+        const viewportSeries = sliceViewport(
+          model.dates,
+          [model.normalized, model.disparity, model.obv],
+          xRange,
+        );
         if (viewportSeries.window) viewportWindows.push(viewportSeries.window);
         const viewportDates = viewportSeries.dates;
         const viewportMacdValues = viewportSeries.arrays[0] || [];
         const viewportDisparityValues = viewportSeries.arrays[1] || [];
+        const viewportObvValues = viewportSeries.arrays[2] || [];
         const displayMacdDates = [];
         const displayMacdValues = [];
         const displayDisparityDates = [];
         const displayDisparityValues = [];
+        const displayObvDates = [];
+        const displayObvValues = [];
         viewportDates.forEach((date, index) => {
           if ((dataStart && date < dataStart) || (dataEnd && date > dataEnd)) return;
           const macdValue = viewportMacdValues[index];
@@ -1111,36 +1128,40 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
             displayDisparityDates.push(date);
             displayDisparityValues.push(disparityValue);
           }
+          const obvValue = viewportObvValues[index];
+          if (Number.isFinite(obvValue)) {
+            displayObvDates.push(date);
+            displayObvValues.push(obvValue);
+          }
         });
-        if (!displayMacdValues.length && !displayDisparityValues.length) return;
+        if (!displayMacdValues.length && !displayDisparityValues.length && !displayObvValues.length) return;
         const thinnedMacd = thinMacdPoints(displayMacdDates, displayMacdValues, pointBudget);
         const thinnedDisparity = thinMacdPoints(
           displayDisparityDates,
           displayDisparityValues,
           pointBudget,
         );
-        const baseColor = seriesColor(series);
-        if (oscillatorActive) oscillatorValues.push(...thinnedMacd.values.filter(Number.isFinite));
-        if (disparityActive) {
+        const thinnedObv = thinMacdPoints(displayObvDates, displayObvValues, pointBudget);
+        if (activeByKind.oscillator) oscillatorValues.push(...thinnedMacd.values.filter(Number.isFinite));
+        if (activeByKind.disparity) {
           disparityValues.push(...thinnedDisparity.values.filter(Number.isFinite));
         }
-        const tracePair = buildMacdSeriesTracePair({
+        if (activeByKind.obv) obvValues.push(...thinnedObv.values.filter(Number.isFinite));
+        const technicalTraces = buildTechnicalSeriesTraces({
           series,
           name: labelName(series),
-          color: baseColor,
           dates: thinnedMacd.dates,
           values: thinnedMacd.values,
-          disparityColor,
           disparityDates: thinnedDisparity.dates,
           disparityValues: thinnedDisparity.values,
           disparityDays,
+          obvDates: thinnedObv.dates,
+          obvValues: thinnedObv.values,
+          active: activeByKind,
           signal: model.signal,
           showHover: chartSession.hoverShowPopup,
         });
-        if (oscillatorActive && tracePair.lineTrace.y.length) lineTraces.push(tracePair.lineTrace);
-        if (disparityActive && tracePair.disparityTrace.y.length) {
-          lineTraces.push(tracePair.disparityTrace);
-        }
+        lineTraces.push(...technicalTraces);
       });
 
       const traces = lineTraces;
@@ -1151,13 +1172,20 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
           : 1;
         return [-maxAbs * 1.08, maxAbs * 1.08];
       };
+      const naturalRange = (values) => {
+        if (!values.length) return [-1, 1];
+        const minimum = Math.min(...values);
+        const maximum = Math.max(...values);
+        const padding = Math.max(1, (maximum - minimum) * 0.08, Math.abs(maximum) * 0.01);
+        return [minimum - padding, maximum + padding];
+      };
       const viewportYRanges = buildMacdViewportYRanges({ data: lineTraces }, xRange);
-      const primaryRange = viewportYRanges?.oscillator
-        || viewportYRanges?.disparity
-        || symmetricRange(oscillatorValues.length ? oscillatorValues : disparityValues);
-      const secondaryRange = viewportYRanges?.disparity
-        || viewportYRanges?.oscillator
-        || symmetricRange(disparityValues.length ? disparityValues : oscillatorValues);
+      const primaryRange = viewportYRanges?.oscillator || symmetricRange(oscillatorValues);
+      const secondaryRange = viewportYRanges?.disparity || symmetricRange(disparityValues);
+      const obvRange = viewportYRanges?.obv || naturalRange(obvValues);
+      const hasVisibleTraceData = traces.some((trace) => (
+        trace.visible !== false && trace.y?.some(Number.isFinite)
+      ));
       const layout = {
         ...chartLoader.layoutStyle(),
         margin: {
@@ -1178,11 +1206,11 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
           x0: 0, x1: 1, y0: 0.5, y1: 0.5,
           line: referenceLineStyle("rgba(255,255,255,0.42)"),
         }],
-        annotations: traces.length ? [] : [{
+        annotations: hasVisibleTraceData ? [] : [{
           xref: "paper", yref: "paper", x: 0.5, y: 0.5,
-          text: oscillatorActive || disparityActive
+          text: Object.values(activeByKind).some(Boolean)
             ? "표시 중인 종목의 보조차트 이력이 부족합니다."
-            : "MACD와 이격도가 꺼져 있습니다.",
+            : "MACD와 이격도, OBV가 꺼져 있습니다.",
           showarrow: false,
           font: { color: "rgba(255,255,255,0.55)", size: 11 },
         }],
@@ -1213,6 +1241,14 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
           fixedrange: true,
           range: secondaryRange,
         },
+        yaxis3: {
+          ...chartLoader.axisStyle({ showGrid: false, axisColor: "rgba(0,0,0,0)" }),
+          overlaying: "y",
+          side: "right",
+          visible: false,
+          fixedrange: true,
+          range: obvRange,
+        },
         hoverlabel: plotlyHoverLabel(11),
         dragmode: false,
       };
@@ -1225,6 +1261,12 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
         layout,
       );
       recordAuxiliaryRenderResult(renderResult);
+      const committedTarget = String(getPreferredTechnicalSeries?.() || "").toUpperCase();
+      if (committedTarget !== targetSeries) {
+        lastMacdRenderKey = "";
+        requestRender?.({ targets: ["macd"], xRange: Array.isArray(xRange) ? [...xRange] : null });
+        return;
+      }
       syncMacdHeading(el, headingOptions);
       lastMacdRenderKey = renderKey;
       lastMacdViewportWindows = viewportWindows;
@@ -1536,14 +1578,14 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
             text: "KOSPI",
             active: adrKospiVisible,
             available: adrKospiAvailable,
-            color: "#facc15",
+            color: ADR_KOSPI_COLOR,
           },
           {
             key: AUXILIARY_SERIES_KEYS.adrKosdaq,
             text: "KOSDAQ",
             active: adrKosdaqVisible,
             available: adrKosdaqAvailable,
-            color: "#f472b6",
+            color: ADR_KOSDAQ_COLOR,
           },
         ] : (key === "vkospi" ? [
           {
@@ -1651,7 +1693,7 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
         ...buildAdrZoneTraces(
           adrKospiDates,
           adrKospiValues,
-          "#facc15",
+          ADR_KOSPI_COLOR,
           "KOSPI",
           AUXILIARY_SERIES_KEYS.adrKospi,
           { includeFill: false },
@@ -1664,7 +1706,7 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
         ...buildAdrZoneTraces(
           adrKosdaqDates,
           adrKosdaqValues,
-          "#f472b6",
+          ADR_KOSDAQ_COLOR,
           "KOSDAQ",
           AUXILIARY_SERIES_KEYS.adrKosdaq,
           { includeFill: false },
@@ -2055,7 +2097,7 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
     auxiliaryRestylePayload,
     auxiliaryTraceFingerprint,
     auxiliaryTraceStructureKey,
-    buildMacdSeriesTracePair,
+    buildTechnicalSeriesTraces,
     canApplyAuxiliaryUpdate,
     createAuxiliaryChartModelResolver,
     createAuxiliaryChartRuntime,

@@ -308,6 +308,8 @@ function createOptionalFeatureRuntime(scope = globalThis, options = {}) {
           if (!bundle?.macd?.buildMacdOscillator
             || !bundle?.service?.createMarketTimingService
             || !bundle?.timing?.buildMarketTimingSignals
+            || !bundle?.timing?.buildObvTimingComparison
+            || !bundle?.timing?.integrateMarketTimingConfidence
             || !bundle?.evaluation?.evaluateMarketTimingModel) {
             throw new Error("market-timing 기능 초기화에 실패했습니다.");
           }
@@ -337,6 +339,8 @@ function createOptionalFeatureRuntime(scope = globalThis, options = {}) {
         workerUrl: `./assets/market-timing-worker.bundle.min.js?v=${encodeURIComponent(version)}`,
         buildMacdOscillator: bundle.macd.buildMacdOscillator,
         buildMarketTimingSignals: bundle.timing.buildMarketTimingSignals,
+        buildObvTimingComparison: bundle.timing.buildObvTimingComparison,
+        integrateMarketTimingConfidence: bundle.timing.integrateMarketTimingConfidence,
         buildKoreanVolatilityTimingRows: bundle.timing.buildKoreanVolatilityTimingRows,
         buildExternalVolatilityTimingRows: bundle.timing.buildExternalVolatilityTimingRows,
         behaviorPolicy: bundle.timing.PROMOTED_RUNTIME_BEHAVIOR_POLICY,

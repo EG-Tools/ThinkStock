@@ -138,6 +138,7 @@ import {
   createRuntimeBootstrapService,
   createRuntimeIndexRefreshService,
   createRuntimeMarketRefresh,
+  createSeriesVolumeCoverageRuntime,
   isRetryableAdrRefreshError,
   latestDatesByTicker,
   planKoreanPriceRefresh,
@@ -274,6 +275,7 @@ const {
   AUXILIARY_CHART_CONFIG,
   MACD_DISPARITY_DAYS,
   NEWS_MOVING_AVERAGE_DAYS,
+  TECHNICAL_SERIES_DEFINITIONS,
   normalizeMacdDisparityDays,
   normalizeNewsMovingAverageDays,
 } = auxiliaryChartContract;
@@ -357,7 +359,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = tickerPriceRuntimeModule.CORPORATE_ACTION_RATIO_THRESHOLD;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = tickerPriceRuntimeModule.CORPORATE_ACTION_MAX_BOUNDARY_DAYS;
-const APP_VERSION = "3.47";
+const APP_VERSION = "3.48";
 const APP_BUILD_VERSION = resolveAppBuildVersion(globalThis);
 const appCacheRuntime = createAppCacheRuntime(globalThis, {
   scheduler: backgroundTaskScheduler,
@@ -624,6 +626,7 @@ const fetchPreferredTickerHistory = createPreferredTickerHistoryFetcher({
   isLocalRuntime: IS_LOCAL_RUNTIME,
   getAccessToken: getDartGatewayAccessToken,
   normalizePoints: (rows, ticker) => normalizeTickerPricePointsForTicker(rows, ticker),
+  historyCoverageVersion: tickerPriceRuntimeModule.HISTORY_COVERAGE_VERSION,
   timeoutMs: NETWORK_REQUEST_TIMEOUT_MS,
 });
 const browserMarketClient = createBrowserMarketClient({
@@ -903,6 +906,7 @@ const auxiliaryChartApp = createAuxiliaryChartApp(globalThis, {
   getPriceRows: () => (
     Array.isArray(appData.pricePayload?.records) ? appData.pricePayload.records : []
   ),
+  getVolumeSeries: (ticker) => tickerVolumeSeriesByTicker.get(String(ticker || "").toUpperCase()),
   getDisparityDays: () => chartSession.macdDisparityDays,
   supportsTechnicalSeries: (series) => seriesSupportsFeature(series, "technical"),
   createRuntimeOptions: ({ modelModule, macdModule, getMacdModelForSeries, scheduleRender }) => {
@@ -954,6 +958,7 @@ const auxiliaryChartApp = createAuxiliaryChartApp(globalThis, {
       normalizeAuxiliaryChartModel: chartRenderContractModule.normalizeAuxiliaryChartModel,
       getMacdModelForSeries,
       getPreferredTechnicalSeries: resolveMacdTarget,
+      cycleTechnicalSeriesTarget,
       supportsTechnicalSeries: (series) => seriesSupportsFeature(series, "technical"),
       fitRangeForTraces,
       isTouchDevice,
@@ -1051,6 +1056,21 @@ const initE2eDebugAccess = __THINKSTOCK_E2E_DIAGNOSTICS__
       getAuxiliaryChartModelSource() {
         return appRuntimeRegistry.peek(APP_RUNTIME_KEYS.auxiliaryChart)
           ?.stats?.().modelSource || "none";
+      },
+      getTickerVolumeCounts() {
+        return Object.fromEntries([...tickerVolumeSeriesByTicker.entries()].map(([ticker, series]) => [
+          ticker,
+          typeof series?.size === "number" ? series.size : 0,
+        ]));
+      },
+      getTechnicalSeriesState() {
+        return {
+          activationOrder: getMainSeriesController().activationOrder()
+            .filter((series) => seriesSupportsFeature(series, "technical")),
+          renderedTarget: document.querySelector("#chart-macd .auxiliary-macd-heading")
+            ?.dataset?.macdTarget || "",
+          selectedTarget: lastTechnicalSeriesKey,
+        };
       },
       getHiddenAuxiliarySeries() {
         return [...chartSession.hiddenAuxiliarySeries].sort();
@@ -2545,7 +2565,7 @@ async function performSettledViewportRender({
   const hasRequestedRange = requestedRange?.every(Number.isFinite)
     && requestedRange[1] > requestedRange[0];
   const interactionRevision = chartViewportInteractionRevision;
-  return chartUpdateCoordinatorModule.settleViewportRenderTransaction({
+  const result = await chartUpdateCoordinatorModule.settleViewportRenderTransaction({
     requestedRange: hasRequestedRange ? requestedRange : null,
     interactionRevision,
     getInteractionRevision: () => chartViewportInteractionRevision,
@@ -2573,6 +2593,8 @@ async function performSettledViewportRender({
     refreshCompanionsNow: refreshLoadedChartCompanions,
     flushCoMovement: flushLoadedCoMovementPanel,
   });
+  queueVisibleSeriesVolumeCoverage(reason);
+  return result;
 }
 
 function requestSettledViewportRender(options = {}) {
@@ -2920,7 +2942,12 @@ function noteSeriesTargetVisibilityChange(seriesKey) {
     else if (!hidden) lastVisibleStockSeriesKey = key;
   }
   if (seriesSupportsFeature(key, "technical")) {
-    if (hidden && lastTechnicalSeriesKey === key) lastTechnicalSeriesKey = "";
+    if (hidden && lastTechnicalSeriesKey === key) {
+      lastTechnicalSeriesKey = getMainSeriesController().nextVisibleTarget(
+        key,
+        (series) => seriesSupportsFeature(series, "technical"),
+      );
+    }
     else if (!hidden) lastTechnicalSeriesKey = key;
   }
 }
@@ -2932,17 +2959,37 @@ function selectChartSeriesTarget(seriesKey) {
     && lastCoMovementSeriesKey !== key;
   const macdChanged = seriesSupportsFeature(key, "technical")
     && lastTechnicalSeriesKey !== key;
-  if (!coMovementChanged && !macdChanged) return;
+  const renderedTechnicalTarget = document.querySelector("#chart-macd .auxiliary-macd-heading")
+    ?.dataset?.macdTarget || "";
+  const technicalPresentationChanged = seriesSupportsFeature(key, "technical")
+    && renderedTechnicalTarget !== key;
+  if (!coMovementChanged && !macdChanged && !technicalPresentationChanged) return;
   if (coMovementChanged) lastCoMovementSeriesKey = key;
   if (macdChanged) lastTechnicalSeriesKey = key;
   if (coMovementChanged && chartSession.showCoMovement) renderCoMovementPanel();
-  if (macdChanged) {
+  if (macdChanged || technicalPresentationChanged) {
     const runtime = appRuntimeRegistry.peek(APP_RUNTIME_KEYS.auxiliaryChart);
-    if (!runtime) return;
-    runtime.invalidateMacd?.();
-    const xRange = document.getElementById("chart")?._fullLayout?.xaxis?.range?.slice(0, 2) || null;
-    scheduleAuxiliaryChartRender(xRange, { targets: ["macd"] });
+    if (runtime) {
+      runtime.invalidateMacd?.();
+      const xRange = document.getElementById("chart")?._fullLayout?.xaxis?.range?.slice(0, 2) || null;
+      scheduleAuxiliaryChartRender(xRange, { targets: ["macd"] });
+    }
+    const sinceDate = currentMainSeriesActivationSinceDate();
+    void ensureSeriesVolumeCoverage([key], sinceDate, {
+      reason: "technical-series-target",
+    }).catch((error) => {
+      recordRuntimeError("technical-series-target", error, { key, sinceDate });
+    });
   }
+}
+
+function cycleTechnicalSeriesTarget(currentSeries = "") {
+  const nextSeries = getMainSeriesController().nextVisibleTarget(
+    String(currentSeries || "").toUpperCase(),
+    (key) => seriesSupportsFeature(key, "technical"),
+  );
+  if (nextSeries) selectChartSeriesTarget(nextSeries);
+  return nextSeries;
 }
 
 function syncChartResetToggleButton() {
@@ -3513,6 +3560,11 @@ const runtimeIndexRefreshService = createRuntimeIndexRefreshService({
   appVersion: APP_VERSION,
   labelName,
   mergeTickerSeries: mergeTickerSeriesIntoPricePayload,
+  hasVolumeCoverage: (ticker, sinceDate) => tickerPriceAppRuntime.hasVolumeCoverageFromDate(
+    ticker,
+    sinceDate,
+    { toleranceDays: 7 },
+  ),
   hasVolumeHistory: (ticker) => tickerPriceAppRuntime.hasVolumeHistory(ticker),
   validateTickerPoints: (ticker, points, validationOptions) => (
     assertRuntimePricePoints({
@@ -3755,6 +3807,106 @@ function scheduleVisibleStockHistoryRefresh(ticker, displayName = "", options = 
   return getVisibleStockHistoryRefresh().schedule(ticker, displayName, options);
 }
 
+async function refreshTechnicalInputConsumers(seriesKey, options = {}) {
+  const key = String(seriesKey || "").trim().toUpperCase();
+  if (!seriesSupportsFeature(key, "technical") || resolveMacdTarget() !== key) return false;
+  if (!TECHNICAL_SERIES_DEFINITIONS.some((definition) => (
+    !chartSession.hiddenAuxiliarySeries.has(definition.key)
+  ))) return false;
+  if (options.invalidateModel !== false) macdModelCache.invalidate(key);
+  const runtime = await getAuxiliaryChartRuntime();
+  if (resolveMacdTarget() !== key || chartSession.hiddenSeries.has(key)) return false;
+  runtime.invalidateMacd?.();
+  const xRange = getCurrentXRangeMs(document.getElementById("chart"));
+  scheduleAuxiliaryChartRender(xRange, { targets: ["macd"] });
+  await getAuxiliaryChartRenderQueue().whenSettled();
+  return true;
+}
+
+async function finalizeSeriesVolumeCoverage(seriesKeys, context = {}) {
+  const keys = [...new Set((Array.isArray(seriesKeys) ? seriesKeys : [seriesKeys])
+    .map((key) => String(key || "").trim().toUpperCase())
+    .filter(Boolean))];
+  if (!keys.length) return false;
+
+  keys.filter((key) => seriesSupportsFeature(key, "technical"))
+    .forEach((key) => macdModelCache.invalidate(key));
+  const technicalTarget = resolveMacdTarget();
+  if (technicalTarget && keys.includes(technicalTarget)) {
+    await refreshTechnicalInputConsumers(technicalTarget, { invalidateModel: false });
+  }
+  if (chartSession.showRecessionSignals) {
+    const timingTargets = keys.some((key) => MARKET_INDEX_SERIES.includes(key))
+      ? visibleMainChartSeriesKeys().filter((key) => seriesSupportsFeature(key, "signal"))
+      : keys;
+    await prepareMarketTimingModelsForSeries(timingTargets);
+  }
+  requestSeriesCompositionUpdate(context.reason || "series-volume-coverage");
+  return true;
+}
+
+function getSeriesVolumeCoverageRuntime() {
+  return appRuntimeRegistry.get(APP_RUNTIME_KEYS.seriesVolumeCoverage, () => (
+    createSeriesVolumeCoverageRuntime({
+      profileFor: mainSeriesActivationProfile,
+      hasCoverage: (key, sinceDate) => tickerPriceAppRuntime.hasVolumeCoverageFromDate(
+        key,
+        sinceDate,
+        { toleranceDays: 7 },
+      ),
+      isActive: (key) => MARKET_INDEX_SERIES.includes(key)
+        || (getCustomStockLifecycle().has(key) && !chartSession.hiddenSeries.has(key)),
+      loadIndex: (_keys, request) => refreshCoreIndexSeries({
+        forceNetwork: request.forceRefresh,
+        requireVolumeHistory: true,
+        tickers: MARKET_INDEX_SERIES,
+        visibleSinceDate: request.sinceDate,
+      }),
+      loadStock: (key, request) => scheduleVisibleStockHistoryRefresh(
+        key,
+        DISPLAY_NAMES[key] || key,
+        {
+          forceRefresh: request.forceRefresh,
+          notifyUpdated: false,
+          visibleSinceDate: request.sinceDate,
+        },
+      ),
+      onReady: finalizeSeriesVolumeCoverage,
+    })
+  ));
+}
+
+function ensureSeriesVolumeCoverage(seriesKeys, sinceDate, options = {}) {
+  return getSeriesVolumeCoverageRuntime().ensure(seriesKeys, sinceDate, options);
+}
+
+function visibleSeriesVolumeConsumers() {
+  const visible = visibleMainChartSeriesKeys();
+  const targets = new Set();
+  const obvDefinition = TECHNICAL_SERIES_DEFINITIONS.find((definition) => definition.kind === "obv");
+  if (obvDefinition && !chartSession.hiddenAuxiliarySeries.has(obvDefinition.key)) {
+    const technicalTarget = resolveMacdTarget();
+    if (technicalTarget) targets.add(technicalTarget);
+  }
+  if (chartSession.showRecessionSignals || chartSession.showAiForecast) {
+    visible.filter((key) => (
+      seriesSupportsFeature(key, "signal") || seriesSupportsFeature(key, "ai")
+    )).forEach((key) => targets.add(key));
+    if (targets.size) MARKET_INDEX_SERIES.forEach((key) => targets.add(key));
+  }
+  return [...targets];
+}
+
+function queueVisibleSeriesVolumeCoverage(reason = "viewport-volume-coverage") {
+  const targets = visibleSeriesVolumeConsumers();
+  if (!targets.length) return false;
+  const sinceDate = currentMainSeriesActivationSinceDate();
+  void ensureSeriesVolumeCoverage(targets, sinceDate, { reason }).catch((error) => {
+    recordRuntimeError("series-volume-coverage", error, { reason, sinceDate });
+  });
+  return true;
+}
+
 function getVisibleStockHistoryRefresh() {
   return appRuntimeRegistry.get(APP_RUNTIME_KEYS.visibleStockHistoryRefresh, () => (
     backgroundStockRefreshModule.createVisibleStockHistoryRefresh({
@@ -3762,7 +3914,10 @@ function getVisibleStockHistoryRefresh() {
       preload: preloadCustomStocks,
       hasTicker: (ticker) => getCustomStockLifecycle().has(ticker),
       isVisible: (ticker) => !chartSession.hiddenSeries.has(ticker),
-      onUpdated: () => requestSeriesCompositionUpdate("series-price-refresh"),
+      onUpdated: (ticker) => finalizeSeriesVolumeCoverage(
+        [ticker],
+        { reason: "series-price-refresh" },
+      ),
       isAbortError,
       onError: (error, details) => {
         recordRuntimeError(`visible-stock-history:${details.ticker}`, error, {
@@ -3819,7 +3974,16 @@ function getMainSeriesActivationApp() {
         displayName: (key) => DISPLAY_NAMES[key] || key,
         forgetRefresh: forgetStockPriceRefresh,
         fullHistoryReady: (key) => tickerPriceAppRuntime.fullHistoryReady(key),
+        hasVolumeCoverage: (key, sinceDate) => tickerPriceAppRuntime.hasVolumeCoverageFromDate(
+          key,
+          sinceDate,
+          { toleranceDays: 7 },
+        ),
         hasVolume: (key) => tickerPriceAppRuntime.hasVolumeHistory(key),
+        ensureVolumeCoverage: async (keys, sinceDate, coverageOptions) => {
+          const result = await ensureSeriesVolumeCoverage(keys, sinceDate, coverageOptions);
+          return result.ready ? result : false;
+        },
         load: ensureCustomTickerSeriesLoaded,
         points: getTickerPricePointsFromPayload,
         refreshIndex: refreshCoreIndexSeries,
@@ -3841,6 +4005,7 @@ function getMainSeriesActivationApp() {
           recordRuntimeError(`main-series-activation:${key}`, error);
         },
         prepareTiming: (key) => prepareMarketTimingModelsForSeries([key]),
+        refreshInputConsumers: refreshTechnicalInputConsumers,
         requestComposition: requestSeriesCompositionUpdate,
         reveal: (key) => changeMainSeriesVisibility(key, true),
         scheduleFeatures: scheduleVisibleSeriesSupplementalHydration,
@@ -5417,6 +5582,9 @@ async function refreshAiAnalysisForVisibleSeries(options = {}) {
       brokerWaitTimer = setTimeout(() => resolve([]), 6000);
     }),
   ]).finally(() => clearTimeout(brokerWaitTimer));
+  // Rotation leaders are optional context. Start them with the required work,
+  // then let their completion request one enriched forecast render.
+  loadAiRotationLeaderSeries().catch(() => 0);
   try {
     await Promise.all([
       tickers.length
@@ -5425,7 +5593,6 @@ async function refreshAiAnalysisForVisibleSeries(options = {}) {
             deferForecastRender: true,
           }))
         : Promise.resolve([]),
-      loadAiRotationLeaderSeries(),
       brokerSoftWait,
     ]);
     setAiForecastProgress(35, "실적·컨센서스 준비");
@@ -6172,7 +6339,6 @@ function preloadTickerDartData(ticker, msgEl, featurePlan = null) {
 function aiForecastInputsPending() {
   return Boolean(
     historicalDataLoadPromise
-    || aiRotationSeriesPromise
     || aiContextPendingTickers.size
     || aiForecastDeferredSeries.size
     || activeAiAnalysisTickers().some((ticker) => aiAnalysisPendingTickers.has(ticker))
@@ -6185,7 +6351,6 @@ function aiForecastContextPendingForSeries(series) {
     historicalDataLoadPromise
     || !aiMarketModelLoadSettled
     || aiMarketModelPromise
-    || aiRotationSeriesPromise
     || aiContextPendingTickers.has(key)
     || (aiAnalysisPendingTickers.has(key) && !aiAnalysisByTicker.has(key))
   );
@@ -7138,6 +7303,11 @@ function getRuntimeRefreshOrchestrator() {
       chartSession,
       getDataRevisions,
       getVisibleSinceDate: currentMainSeriesActivationSinceDate,
+      hasVolumeCoverage: (ticker, sinceDate) => tickerPriceAppRuntime.hasVolumeCoverageFromDate(
+        ticker,
+        sinceDate,
+        { toleranceDays: 7 },
+      ),
       hasVolumeHistory: (ticker) => tickerPriceAppRuntime.hasVolumeHistory(ticker),
       isAbortError,
       isRetryableAdrRefreshError,

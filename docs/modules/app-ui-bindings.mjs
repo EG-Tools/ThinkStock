@@ -218,12 +218,18 @@ import { syncControl } from "./control-state-view.mjs";
     const button = options.button;
     if (!button || button.dataset?.bound === "1") return false;
     if (button.dataset) button.dataset.bound = "1";
+    let operationRevision = 0;
     options.syncButton?.();
     button.onclick = async () => {
       if (options.canToggle && !options.canToggle()) return;
-      if (button.getAttribute?.("aria-busy") === "true") return;
-      const nextEnabled = !options.getEnabled?.();
+      const currentEnabled = Boolean(options.getEnabled?.());
+      const busy = button.getAttribute?.("aria-busy") === "true";
+      // A second enable request is redundant, but disabling must always win
+      // over asynchronous activation work that is still finishing.
+      if (busy && !currentEnabled) return;
+      const nextEnabled = !currentEnabled;
       if (nextEnabled && options.canEnable && !options.canEnable()) return;
+      const revision = ++operationRevision;
       const hasAsyncWork = nextEnabled && (
         options.prepare || options.beforeEnable || options.onEnabled
       );
@@ -235,24 +241,34 @@ import { syncControl } from "./control-state-view.mjs";
           await options.beforeEnable?.();
         }
       } catch (error) {
-        if (hasAsyncWork) syncControl(button, { busy: false });
-        options.onError?.(error, "prepare");
+        if (revision === operationRevision) {
+          if (hasAsyncWork) syncControl(button, { busy: false });
+          options.onError?.(error, "prepare");
+        }
         return;
       } finally {
-        if (hasAsyncWork && !options.onEnabled) syncControl(button, { busy: false });
+        if (revision === operationRevision && hasAsyncWork && !options.onEnabled) {
+          syncControl(button, { busy: false });
+        }
       }
+      if (revision !== operationRevision) return;
 
       options.setEnabled?.(nextEnabled);
       options.syncButton?.();
       options.saveState?.();
+      if (!nextEnabled) syncControl(button, { busy: false });
       try {
         if (nextEnabled) await options.onEnabled?.();
         else await options.onDisabled?.();
       } catch (error) {
-        options.onError?.(error, nextEnabled ? "enable" : "disable");
+        if (revision === operationRevision) {
+          options.onError?.(error, nextEnabled ? "enable" : "disable");
+        }
       } finally {
-        if (hasAsyncWork) syncControl(button, { busy: false });
-        options.onChanged?.(nextEnabled);
+        if (revision === operationRevision) {
+          if (hasAsyncWork) syncControl(button, { busy: false });
+          options.onChanged?.(nextEnabled);
+        }
       }
     };
     return true;

@@ -77,6 +77,16 @@ export function createPreferredTickerHistoryFetcher(options = {}) {
     if (!response.ok || payload?.ok !== true) {
       throw new Error(payload?.error || `Price history HTTP ${response.status}`);
     }
+    if (!sinceDate) {
+      const coverage = String(payload?.historyCoverage || "").trim().toLowerCase();
+      const coverageVersion = Number(payload?.historyCoverageVersion) || 0;
+      const expectedCoverageVersion = Number(options.historyCoverageVersion) || 0;
+      if (payload?.partial === true
+        || coverage !== "full"
+        || (expectedCoverageVersion > 0 && coverageVersion !== expectedCoverageVersion)) {
+        throw new Error(`${key} full price history is incomplete`);
+      }
+    }
     return options.normalizePoints(payload.rows, key);
   };
 }
@@ -182,6 +192,14 @@ export function createTickerPriceAppRuntime(options = {}) {
 
   function hasVolumeHistory(ticker, minimumPoints = 20) {
     return getPayloadController().hasVolumeHistory(ticker, minimumPoints);
+  }
+
+  function hasVolumeCoverageFromDate(ticker, sinceDate, coverageOptions = {}) {
+    return getPayloadController().hasVolumeCoverageFromDate(
+      ticker,
+      sinceDate,
+      coverageOptions,
+    );
   }
 
   function isCacheFresh(candidateLatestDate, ticker) {
@@ -440,6 +458,7 @@ export function createTickerPriceAppRuntime(options = {}) {
     clearSeries,
     ensureVisible: (stocks, isHidden) => getHistoryCoordinator().ensureVisible(stocks, isHidden),
     fullHistoryReady: (ticker) => getHistoryCoordinator().fullHistoryReady(ticker),
+    hasVolumeCoverageFromDate,
     hasVolumeHistory,
     latestDate,
     load: (ticker, loadOptions = {}) => getHistoryCoordinator().load(ticker, loadOptions),

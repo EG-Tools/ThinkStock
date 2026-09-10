@@ -33,6 +33,108 @@ export function rounded(value, digits = 4) {
   return Number.isFinite(value) ? Number(value.toFixed(digits)) : null;
 }
 
+export const TIMING_SCORECARD_HORIZONS = Object.freeze([20, 63, 126]);
+export const SELL_OBJECTIVE_TYPES = Object.freeze([
+  "overheat-correction",
+  "trend-breakdown",
+  "earnings-deterioration",
+  "unclassified",
+]);
+
+function directionalValue(row, horizon, type) {
+  const explicit = number(row?.[`directional${horizon}`]);
+  if (explicit !== null) return explicit;
+  const rawReturn = number(row?.[`return${horizon}`]);
+  if (rawReturn === null) return null;
+  return rawReturn * (type === "buy" ? 1 : -1);
+}
+
+function scorecardDensity(rows) {
+  const dates = rows.map((row) => Date.parse(`${row.actionDate || row.date}T00:00:00Z`))
+    .filter(Number.isFinite);
+  const tickers = new Set(rows.map((row) => String(row.ticker || "")).filter(Boolean));
+  if (!dates.length || !tickers.size) return null;
+  const years = Math.max(1, (Math.max(...dates) - Math.min(...dates)) / 31557600000);
+  return rows.length / (tickers.size * years);
+}
+
+export function summarizeTimingPerformance(rows, type, options = {}) {
+  const typedRows = rows.filter((row) => row?.type === type);
+  const fallbackCostRate = Math.max(0, number(options.transactionCostRate) ?? 0.003);
+  const firstDate = typedRows.map((row) => String(row.actionDate || row.date || ""))
+    .filter(Boolean).sort()[0] || null;
+  const lastDate = typedRows.map((row) => String(row.actionDate || row.date || ""))
+    .filter(Boolean).sort().at(-1) || null;
+  return {
+    type,
+    signals: typedRows.length,
+    tickers: new Set(typedRows.map((row) => row.ticker).filter(Boolean)).size,
+    firstDate,
+    lastDate,
+    transactionCostRate: rounded(fallbackCostRate, 6),
+    signalsPerTickerYear: rounded(scorecardDensity(typedRows)),
+    horizons: Object.fromEntries(TIMING_SCORECARD_HORIZONS.map((horizon) => {
+      const eligible = typedRows.flatMap((row) => {
+        const gross = directionalValue(row, horizon, type);
+        if (gross === null) return [];
+        const rowCost = number(row.transactionCostRate);
+        const cost = rowCost === null ? fallbackCostRate : Math.max(0, rowCost);
+        return [{
+          gross,
+          net: gross - cost,
+          adverse: number(row[`adverse${horizon}`]),
+          favorable: number(row[`favorable${horizon}`]),
+        }];
+      });
+      const adverse = eligible.map((row) => row.adverse).filter(Number.isFinite);
+      const favorable = eligible.map((row) => row.favorable).filter(Number.isFinite);
+      return [horizon, {
+        samples: eligible.length,
+        grossHitRate: rounded(ratio(eligible, (row) => row.gross > 0)),
+        netHitRate: rounded(ratio(eligible, (row) => row.net > 0)),
+        meanGrossDirectionalReturn: rounded(average(eligible.map((row) => row.gross))),
+        medianGrossDirectionalReturn: rounded(quantile(eligible.map((row) => row.gross), 0.5)),
+        meanNetDirectionalReturn: rounded(average(eligible.map((row) => row.net))),
+        medianNetDirectionalReturn: rounded(quantile(eligible.map((row) => row.net), 0.5)),
+        lowerDecileNetDirectionalReturn: rounded(quantile(eligible.map((row) => row.net), 0.1)),
+        meanAdverseExcursion: rounded(average(adverse)),
+        worstAdverseExcursion: adverse.length ? rounded(Math.min(...adverse)) : null,
+        meanFavorableExcursion: rounded(average(favorable)),
+      }];
+    })),
+  };
+}
+
+export function classifySellObjectiveType(row) {
+  if (row?.type !== "sell") return null;
+  const family = String(row.signalFamily || row.family || "").toLowerCase();
+  const evidence = [
+    family,
+    row.entryMode,
+    ...(Array.isArray(row.setupReasons) ? row.setupReasons : []),
+    ...(Array.isArray(row.triggerReasons) ? row.triggerReasons : []),
+    ...(Array.isArray(row.deteriorationReasons) ? row.deteriorationReasons : []),
+  ].join(" ").toLowerCase();
+  if (/(실적|eps|영업이익|순이익|컨센서스|earnings?|fundamental)/i.test(evidence)) {
+    return "earnings-deterioration";
+  }
+  if (/(distribution|breakdown|추세 이탈|추세이탈|붕괴|분배형 고점 이탈)/i.test(evidence)) {
+    return "trend-breakdown";
+  }
+  if (/(overheat|blowoff|climax|exhaustion|crowding|range-ceiling|과열|고점|소진)/i.test(evidence)) {
+    return "overheat-correction";
+  }
+  return "unclassified";
+}
+
+export function summarizeSellTypePerformance(rows, options = {}) {
+  const sellRows = rows.filter((row) => row?.type === "sell");
+  return Object.fromEntries(SELL_OBJECTIVE_TYPES.map((objective) => {
+    const objectiveRows = sellRows.filter((row) => classifySellObjectiveType(row) === objective);
+    return [objective, summarizeTimingPerformance(objectiveRows, "sell", options)];
+  }));
+}
+
 export function summarizeTimingRows(rows, type) {
   const directionSign = type === "buy" ? 1 : -1;
   const directional5 = rows.map((row) => (
@@ -740,10 +842,16 @@ export function compactTimingSignalOutcome(row) {
     return10: rounded(row.return10),
     return20: rounded(row.return20),
     return63: rounded(row.return63),
+    return126: rounded(row.return126),
     direction5: row.direction5,
     direction10: row.direction10,
     direction20: row.direction20,
     direction63: row.direction63,
+    direction126: row.direction126,
+    transactionCostRate: rounded(row.transactionCostRate, 6),
+    netDirectional20: rounded(row.netDirectional20),
+    netDirectional63: rounded(row.netDirectional63),
+    netDirectional126: rounded(row.netDirectional126),
     persistentDirection: row.persistentDirection,
     excursion10Hit: row.excursion10Hit,
     excursionHit: row.excursionHit,
@@ -758,14 +866,18 @@ export function compactTimingSignalOutcome(row) {
     structuralAnnualReturn: rounded(row.structuralAnnualReturn),
     structuralDirectionConsistency: rounded(row.structuralDirectionConsistency),
     calibration: row.calibration,
+    sellObjectiveType: classifySellObjectiveType(row),
   };
 }
 
 export function summarizeSellTailFailures(rows, tickerNames = {}, options = {}) {
   const limit = Math.max(1, Math.min(100, Number(options.limit) || 20));
-  const horizon = Number(options.horizon) === 20 ? 20 : 63;
-  const directionalKey = horizon === 20 ? "directional20" : "directional63";
-  const returnKey = horizon === 20 ? "return20" : "return63";
+  const requestedHorizon = Number(options.horizon);
+  const horizon = TIMING_SCORECARD_HORIZONS.includes(requestedHorizon)
+    ? requestedHorizon
+    : 63;
+  const directionalKey = `directional${horizon}`;
+  const returnKey = `return${horizon}`;
   return rows
     .filter((row) => row?.kind === "stock"
       && row?.type === "sell"

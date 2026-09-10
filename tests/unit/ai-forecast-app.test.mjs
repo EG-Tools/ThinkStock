@@ -68,6 +68,33 @@ test("AI forecast app resolves pending work as cancelled when targets change", a
   assert.equal(workerInstance.terminated, true);
 });
 
+test("AI forecast app falls back when its worker stops responding", async () => {
+  let workerInstance = null;
+  let timeoutCallback = null;
+  class SilentWorker {
+    constructor() { workerInstance = this; }
+    postMessage() {}
+    terminate() { this.terminated = true; }
+  }
+  const scope = { ...createProgressScope(), Worker: SilentWorker };
+  const app = createAiForecastApp(scope, {
+    workerUrl: "forecast-worker.js",
+    buildFallback: (options) => ({ ticker: options.ticker, source: "timeout-fallback" }),
+    createProgressView,
+    setRequestTimer: (callback) => { timeoutCallback = callback; return 91; },
+    clearRequestTimer: () => {},
+  });
+
+  const request = app.run({ ticker: "005930.KS" });
+  timeoutCallback();
+
+  assert.deepEqual(await request, {
+    ticker: "005930.KS",
+    source: "timeout-fallback",
+  });
+  assert.equal(workerInstance.terminated, true);
+});
+
 test("AI forecast app coalesces render requests while inputs are prepared", async () => {
   const scope = createProgressScope();
   const app = createAiForecastApp(scope, { createProgressView });

@@ -55,10 +55,6 @@
   content: "";
 }
 
-.auxiliary-chart-label::before {
-  background: #8f9294;
-}
-
 .auxiliary-panel-heading {
   position: absolute;
   z-index: 5;
@@ -91,6 +87,7 @@
 }
 
 .auxiliary-panel-title:hover,
+.auxiliary-chart-label:hover,
 .auxiliary-representative-toggle:hover:where(:not(:disabled)) {
   border-color: rgba(255, 255, 255, 0.28);
   background: var(--chart-ui-control-hover-bg);
@@ -154,17 +151,14 @@
 }
 
 .auxiliary-chart-label {
-  cursor: default;
-  pointer-events: none;
+  appearance: none;
+  cursor: pointer;
+  pointer-events: auto;
 }
 
 .auxiliary-macd-target {
-  position: absolute;
-  left: 50%;
-  min-height: 28px;
-  transform: translateX(-50%);
-  cursor: default;
-  pointer-events: none;
+  cursor: pointer;
+  pointer-events: auto;
 }
 
 @media (max-width: 600px) {

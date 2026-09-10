@@ -97,6 +97,11 @@ test("requires every main trace to declare one known overlay kind", () => {
     meta: { overlayKind: "price", seriesKey: "005930.KS" },
   };
   assert.equal(mainChartRenderPayloadIssue([price], {}), "");
+  assert.equal(mainChartRenderPayloadIssue([price, {
+    x: ["2026-08-20"],
+    y: [95],
+    meta: { overlayKind: "timing-obv-buy", pointTickers: ["005930.KS"] },
+  }], {}), "main chart trace 1 has unknown overlay kind timing-obv-buy");
   assert.equal(
     mainChartRenderPayloadIssue([{ ...price, meta: { seriesKey: "005930.KS" } }], {}),
     "main chart trace 0 must declare meta.overlayKind",

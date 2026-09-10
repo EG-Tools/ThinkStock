@@ -591,8 +591,13 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
           taskContext,
           forceRefresh: runOptions.forceRefresh === true,
           latestOnly: runOptions.latestOnly === true,
+          ...(runOptions.visibleSinceDate
+            ? { visibleSinceDate: String(runOptions.visibleSinceDate).slice(0, 10) }
+            : {}),
         });
-        if (shouldRun(ticker)) onUpdated(ticker);
+        if (shouldRun(ticker) && runOptions.notifyUpdated !== false) {
+          await onUpdated(ticker);
+        }
         return true;
       }, {
         group: "ticker-history",

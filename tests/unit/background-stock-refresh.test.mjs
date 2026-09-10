@@ -482,11 +482,14 @@ test("visible stock history refresh shares scheduling, visibility, and cancellat
     onUpdated: (ticker) => updated.push(ticker),
   });
 
-  assert.equal(await refresh.schedule("005930.ks", "삼성전자"), true);
+  assert.equal(await refresh.schedule("005930.ks", "삼성전자", {
+    visibleSinceDate: "2025-09-01",
+  }), true);
   assert.equal(calls[0].key, "visible-stock-history:005930.KS");
   assert.equal(calls[0].options.priority, 15);
   assert.deepEqual(loaded[0].tickers, ["005930.KS"]);
   assert.equal(loaded[0].scope, "visible");
+  assert.equal(loaded[0].visibleSinceDate, "2025-09-01");
   assert.deepEqual(updated, ["005930.KS"]);
 
   visible = false;

@@ -9,17 +9,26 @@ function createAuxiliaryChartApp(scope = globalThis, options = {}) {
     if (!options.supportsTechnicalSeries?.(ticker)
       || typeof buildMacdOscillator !== "function") return null;
     const records = options.getPriceRows?.() || [];
+    const volumeSeries = options.getVolumeSeries?.(ticker);
+    const sourceRows = records.map((row) => {
+      const date = String(row?.date || "").slice(0, 10);
+      const volume = typeof volumeSeries?.get === "function"
+        ? volumeSeries.get(date)
+        : volumeSeries?.[date];
+      return { date, [ticker]: row?.[ticker], volume };
+    });
     const sourceFingerprint = options.fingerprintDatedSeries?.(
-      records,
-      [ticker],
+      sourceRows,
+      [ticker, "volume"],
       {
         tail: 520,
-        logicVersion: `macd-v3-disparity-${options.getDisparityDays?.()}`,
+        logicVersion: `technical-v4-obv-disparity-${options.getDisparityDays?.()}`,
       },
     );
     return options.macdModelCache.resolve(ticker, sourceFingerprint, () => buildMacdOscillator({
-      dates: records.map((row) => row?.date),
-      prices: records.map((row) => row?.[ticker]),
+      dates: sourceRows.map((row) => row.date),
+      prices: sourceRows.map((row) => row[ticker]),
+      volumes: sourceRows.map((row) => row.volume),
       disparityPeriod: options.getDisparityDays?.(),
     }));
   }

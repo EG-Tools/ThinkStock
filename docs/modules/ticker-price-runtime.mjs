@@ -4,7 +4,7 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
   const HISTORY_COVERAGE_FULL = "full";
   const HISTORY_COVERAGE_PARTIAL = "partial";
   const HISTORY_COVERAGE_UNKNOWN = "unknown";
-  const HISTORY_COVERAGE_VERSION = 2;
+  const HISTORY_COVERAGE_VERSION = 3;
   const DEFAULT_CACHE_TOUCH_INTERVAL_MS = 24 * 60 * 60 * 1000;
   const CORPORATE_ACTION_RATIO_THRESHOLD = 1.5;
   const CORPORATE_ACTION_MAX_BOUNDARY_DAYS = 3660;
@@ -50,6 +50,22 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
       .sort()
       .at(0) || "";
     return Boolean(earliest && earliest <= since);
+  }
+
+  function hasVolumeCoverageFromDate(points, sinceDate, options = {}) {
+    const minimumPoints = Math.max(1, Number(options.minimumPoints) || 20);
+    const volumePoints = (Array.isArray(points) ? points : []).filter((point) => (
+      Number.isFinite(Number(point?.volume)) && Number(point.volume) > 0
+    ));
+    if (volumePoints.length < minimumPoints) return false;
+    const since = String(sinceDate || "").slice(0, 10);
+    if (!ISO_DATE_PATTERN.test(since)) return true;
+    const earliestMs = Math.min(...volumePoints.map((point) => (
+      Date.parse(String(point?.date || "").slice(0, 10))
+    )).filter(Number.isFinite));
+    if (!Number.isFinite(earliestMs)) return false;
+    const toleranceDays = Math.max(0, Number(options.toleranceDays) || 0);
+    return earliestMs <= Date.parse(since) + (toleranceDays * 86400000);
   }
 
   function filterLatestTailPoints(existingPoints, latestPoints) {
@@ -744,6 +760,9 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
       hasVolumeHistory: (ticker, minimumPoints = 20) => points(ticker)
         .filter((point) => Number.isFinite(point.volume) && point.volume > 0)
         .length >= Math.max(1, Number(minimumPoints) || 20),
+      hasVolumeCoverageFromDate: (ticker, sinceDate, coverageOptions = {}) => (
+        hasVolumeCoverageFromDate(points(ticker), sinceDate, coverageOptions)
+      ),
     });
   }
 
@@ -1090,6 +1109,7 @@ const tickerPriceRuntime = /* @__PURE__ */ Object.freeze({
     inspectPricePayloadIntegrity,
     normalizeHistoryCoverage,
     hasHistoryCoverageFromDate,
+    hasVolumeCoverageFromDate,
     trustedHistoryCoverage,
     normalizeResearchHistoryCache,
     priceCacheToResearchHistory,
@@ -1119,6 +1139,7 @@ export {
   isCacheFresh,
   latestSeriesDate,
   mergeSeries,
+  hasVolumeCoverageFromDate,
   normalizeHistoryCoverage,
   hasHistoryCoverageFromDate,
   normalizeResearchHistoryCache,

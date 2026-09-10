@@ -158,6 +158,7 @@ export function buildQlibKrxManifest(prices, context, options = {}) {
       "fear-volatility",
       "rates-labor-credit-risk",
       "volume-turnover-liquidity",
+      "on-balance-volume-ablation",
       "industry-archetype-specialists",
     ]),
     limitations: Object.freeze([

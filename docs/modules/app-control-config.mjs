@@ -47,6 +47,7 @@ export const APP_RUNTIME_KEYS = Object.freeze({
   runtimeMarketRefresh: "runtime-market-refresh",
   runtimeRefresh: "runtime-refresh",
   runtimeSeries: "runtime-series",
+  seriesVolumeCoverage: "series-volume-coverage",
   seriesTransformDrag: "series-transform-drag",
   seriesTransformGesture: "series-transform-gesture",
   settingsPanel: "settings-panel",
@@ -157,7 +158,10 @@ const SERIES_KIND_POLICIES = Object.freeze({
  */
 export const APP_FEATURE_POLICIES = Object.freeze({
   scale: Object.freeze({ seriesKinds: Object.freeze(["stock", "market-index", "macro", "unknown"]) }),
-  technical: Object.freeze({ seriesKinds: Object.freeze(["stock", "market-index"]) }),
+  technical: Object.freeze({
+    seriesKinds: Object.freeze(["stock", "market-index"]),
+    requiresVolume: true,
+  }),
   disclosure: Object.freeze({
     seriesKinds: Object.freeze(["stock"]),
     stateAny: Object.freeze(["showDisclosures"]),
@@ -182,10 +186,12 @@ export const APP_FEATURE_POLICIES = Object.freeze({
   signal: Object.freeze({
     seriesKinds: Object.freeze(["stock", "market-index"]),
     stateAny: Object.freeze(["showRecessionSignals"]),
+    requiresVolume: true,
   }),
   ai: Object.freeze({
     seriesKinds: Object.freeze(["stock", "market-index"]),
     stateAny: Object.freeze(["showAiForecast"]),
+    requiresVolume: true,
   }),
   dart: Object.freeze({
     seriesKinds: Object.freeze(["stock"]),
@@ -325,6 +331,7 @@ export function mainSeriesActivationProfile(value) {
     requiresVolume: policy.requiresVolume,
     backgroundHistory: policy.backgroundHistory,
     supportsCompanyMarkers: APP_FEATURE_POLICIES.disclosure.seriesKinds.includes(kind),
+    supportsTechnical: APP_FEATURE_POLICIES.technical.seriesKinds.includes(kind),
     supportsTiming: APP_FEATURE_POLICIES.signal.seriesKinds.includes(kind),
   });
 }
@@ -366,6 +373,33 @@ export function resolveSeriesFeatureActivationPlan(value, state = {}) {
   const eps = enabled("eps");
   const ai = enabled("ai");
   const dart = enabled("dart");
+  return Object.freeze({
+    signal,
+    disclosure,
+    disclosureData,
+    insider,
+    eps,
+    ai,
+    dart,
+    supplemental: dart || eps || ai,
+    requested: signal || dart || eps || ai,
+  });
+}
+
+/** Keeps independent features moving while input-dependent work waits. */
+export function resolveReadySeriesFeatureActivationPlan(plan = {}, readiness = {}) {
+  const volumeReady = readiness.volumeReady !== false;
+  const ready = (feature) => (
+    plan?.[feature] === true
+    && (volumeReady || APP_FEATURE_POLICIES[feature]?.requiresVolume !== true)
+  );
+  const signal = ready("signal");
+  const disclosure = ready("disclosure");
+  const disclosureData = ready("disclosureData");
+  const insider = ready("insider");
+  const eps = ready("eps");
+  const ai = ready("ai");
+  const dart = ready("dart");
   return Object.freeze({
     signal,
     disclosure,

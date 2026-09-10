@@ -24,7 +24,11 @@ test("loads each optional feature only once and creates one timing service", asy
     ThinkStockAiForecastCalibration: { buildCalibrationProfile() {} },
     ThinkStockAiForecastQualityRuntime: { createAiForecastQualityRuntime() {} },
     ThinkStockMarketTimingEvaluation: { evaluateMarketTimingModel() {} },
-    ThinkStockMarketTiming: { buildMarketTimingSignals() {} },
+    ThinkStockMarketTiming: {
+      buildMarketTimingSignals() {},
+      buildObvTimingComparison() {},
+      integrateMarketTimingConfidence() {},
+    },
     ThinkStockCoMovement: { createCoMovementPanelController() {} },
     ThinkStockMarketTimingService: {
       createMarketTimingService: (_scope, options) => ({ options }),

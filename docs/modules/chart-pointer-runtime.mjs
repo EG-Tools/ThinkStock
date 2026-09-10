@@ -84,6 +84,15 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
       && y <= Number(rect.bottom);
   }
 
+  const CHART_CONTROL_SELECTOR = "button, a, input, select, textarea, [role='button']";
+
+  function eventTargetsChartControl(event, scope = globalThis) {
+    const ElementClass = scope.Element;
+    return typeof ElementClass === "function"
+      && event?.target instanceof ElementClass
+      && Boolean(event.target.closest(CHART_CONTROL_SELECTOR));
+  }
+
   function createChartPointerRuntime(scope = globalThis, options = {}) {
     const {
       CHART_GEOMETRY_CACHE_MS,
@@ -722,6 +731,7 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
             && chartEl.contains(event.target))
         ));
         if (!insideChart) return;
+        if (eventTargetsChartControl(event, scope)) return;
         if (Date.now() - lastTouchFullLifetimeToggleAt < 500) {
           event.preventDefault();
           event.stopImmediatePropagation();
@@ -736,6 +746,7 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
       };
     
       const onWheelRange = (event) => {
+        if (eventTargetsChartControl(event, scope)) return;
         if (event.ctrlKey || !Number.isFinite(event.deltaY) || event.deltaY === 0) return;
         event.preventDefault();
         if (interactionState.handleDragging) return;
@@ -819,6 +830,7 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
     
       const onPointerDown = (event) => {
         if (event.pointerType === "mouse" && event.button !== 0) return;
+        if (eventTargetsChartControl(event, scope)) return;
         if (event.target instanceof Element
           && event.target.closest(".disclosure-popover, .legend, .modebar-container")) return;
         const sourceEl = event.currentTarget;
@@ -1079,5 +1091,6 @@ export {
   createHoverIdleController,
   createChartPointerRuntime,
   dispatchNativeHoverAtPoint,
+  eventTargetsChartControl,
   pointerEventInsideElement,
 };

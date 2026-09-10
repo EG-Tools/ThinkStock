@@ -723,6 +723,8 @@ test("unavailable live index and prices keep saved data and allow supplemental r
   const preloadScopes = [];
   const preloadPayloads = [];
   const indexPayloads = [];
+  const bootstrapOptions = [];
+  const indexOptions = [];
   let bootstrapCalls = 0;
   const progress = [];
   const messages = [];
@@ -748,14 +750,18 @@ test("unavailable live index and prices keep saved data and allow supplemental r
     getDataRevisions: () => revisions,
     isAbortError: (error) => error?.name === "AbortError",
     isRetryableAdrRefreshError: () => false,
-    fetchCriticalRuntimeBootstrap: async () => {
+    fetchCriticalRuntimeBootstrap: async (options) => {
       bootstrapCalls += 1;
+      bootstrapOptions.push(options);
       return {
         indices: { ok: true, records: [] },
         prices: { ok: true, requested: 0, succeeded: 0, results: [] },
       };
     },
     forgetStockPriceRefresh: (tickers) => forgottenPriceClaims.push(...tickers),
+    getVisibleSinceDate: () => "2025-09-01",
+    hasVolumeCoverage: () => false,
+    hasVolumeHistory: () => true,
     planCriticalRefresh: () => ({
       indices: { requiredTickers: ["^KS11", "^KQ11"] },
       prices: { requiredTickers: ["005930.KS"] },
@@ -768,6 +774,7 @@ test("unavailable live index and prices keep saved data and allow supplemental r
     recordPerfSample: () => {},
     refreshAdrFromWebWithRetry: async () => ({ changed: 0, latestDate: "" }),
     refreshCoreIndexSeries: async (options) => {
+      indexOptions.push(options);
       indexPayloads.push(options.payload || null);
       throw new Error("HTTP 503");
     },
@@ -799,6 +806,9 @@ test("unavailable live index and prices keep saved data and allow supplemental r
   assert.equal(preloadPayloads[0]?.ok, true);
   assert.equal(snapshotSchedules, 0);
   assert.equal(indexPayloads[0]?.ok, true);
+  assert.equal(bootstrapOptions[0].visibleSinceDate, "2025-09-01");
+  assert.equal(bootstrapOptions[0].requireIndexVolumeHistory, true);
+  assert.equal(indexOptions[0].visibleSinceDate, "2025-09-01");
   assert.deepEqual(renderOptions, [
     {
       awaitMainRender: false,

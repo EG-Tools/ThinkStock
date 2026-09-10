@@ -46,6 +46,8 @@
     buyEnabled: true,
     sellEnabled: false,
   });
+  const OBV_TIMING_COMPARISON_VERSION = "obv-divergence-v1";
+  const TIMING_FLOW_CONFIDENCE_VERSION = "flow-confidence-v1";
 
   const toNumber = (value) => (
     value != null && Number.isFinite(Number(value)) ? Number(value) : null
@@ -1011,6 +1013,7 @@
       prices,
       oscillator,
       adr,
+      adrChange5,
       fearGreed,
       news,
       leading,
@@ -1123,6 +1126,7 @@
       macdSlope,
       priorMacdSlope,
       adr: adrNow,
+      adrChange5: toNumber(adrChange5?.[index]),
       fearGreed: fearNow,
       news: newsNow,
       leading: leadingNow,
@@ -1164,6 +1168,250 @@
       volatilityHistoryDays: toNumber(volatilityProfile?.historyDays?.[index]) ?? 0,
     };
     return { ...point, marketRegime: classifyTimingRegime(point) };
+  }
+
+  function buildObvTimingComparison(baseModel = {}, options = {}) {
+    const dates = Array.isArray(options.dates)
+      ? options.dates.map((date) => String(date || "").slice(0, 10))
+      : [];
+    const prices = Array.isArray(options.prices) ? options.prices.map(toNumber) : [];
+    const volumes = Array.isArray(options.volumes) ? options.volumes.map(toNumber) : [];
+    const obv = Array.isArray(options.obv) ? options.obv.map(toNumber) : [];
+    const count = Math.min(dates.length, prices.length, volumes.length, obv.length);
+    const sourceBuySignals = Array.isArray(baseModel?.signals) ? baseModel.signals : [];
+    const sourceSellSignals = Array.isArray(baseModel?.sellSignals) ? baseModel.sellSignals : [];
+    const emptyResult = () => ({
+      version: OBV_TIMING_COMPARISON_VERSION,
+      production: false,
+      pointInTime: true,
+      signals: [],
+      sellSignals: [],
+      sourceSignalCounts: {
+        buy: sourceBuySignals.length,
+        sell: sourceSellSignals.length,
+      },
+    });
+    if (count < 25) return emptyResult();
+
+    const lookback = Math.max(20, Math.floor(Number(options.lookback) || 63));
+    const minimumSeparation = Math.max(3, Math.floor(Number(options.minimumSeparation) || 5));
+    const priceTolerancePercent = Math.max(0, Number(options.priceTolerancePercent) || 3);
+    const minimumObvDivergence = Math.max(0, Number(options.minimumObvDivergence) || 0.03);
+    const dateIndexes = new Map(dates.slice(0, count).map((date, index) => [date, index]));
+    const volumePrefix = Array(count + 1).fill(0);
+    const volumeCountPrefix = Array(count + 1).fill(0);
+    for (let index = 0; index < count; index += 1) {
+      const volume = volumes[index];
+      const valid = Number.isFinite(volume) && volume >= 0;
+      volumePrefix[index + 1] = volumePrefix[index] + (valid ? volume : 0);
+      volumeCountPrefix[index + 1] = volumeCountPrefix[index] + (valid ? 1 : 0);
+    }
+
+    function divergenceFor(signal, side) {
+      const signalDate = String(signal?.date || "").slice(0, 10);
+      const signalIndex = dateIndexes.get(signalDate);
+      if (!Number.isInteger(signalIndex)) return null;
+      const preferredPivotDate = side === "sell" ? signal?.peakDate : signal?.setupDate;
+      const preferredPivotIndex = dateIndexes.get(String(preferredPivotDate || "").slice(0, 10));
+      const pivotIndex = Number.isInteger(preferredPivotIndex) && preferredPivotIndex <= signalIndex
+        ? preferredPivotIndex
+        : signalIndex;
+      const pivotPrice = prices[pivotIndex];
+      const pivotObv = obv[pivotIndex];
+      const priorEnd = pivotIndex - minimumSeparation;
+      const priorStart = Math.max(0, pivotIndex - lookback);
+      if (priorEnd < priorStart || !Number.isFinite(pivotPrice) || !Number.isFinite(pivotObv)) {
+        return null;
+      }
+
+      let priorIndex = -1;
+      for (let index = priorStart; index <= priorEnd; index += 1) {
+        if (!Number.isFinite(prices[index]) || !Number.isFinite(obv[index])) continue;
+        if (priorIndex < 0
+          || (side === "sell" ? prices[index] >= prices[priorIndex] : prices[index] <= prices[priorIndex])) {
+          priorIndex = index;
+        }
+      }
+      if (priorIndex < 0) return null;
+
+      const observedVolumes = volumeCountPrefix[pivotIndex + 1] - volumeCountPrefix[priorIndex + 1];
+      const intervalLength = pivotIndex - priorIndex;
+      const intervalVolume = volumePrefix[pivotIndex + 1] - volumePrefix[priorIndex + 1];
+      if (observedVolumes < Math.max(3, Math.ceil(intervalLength * 0.8)) || !(intervalVolume > 0)) {
+        return null;
+      }
+      const priceChangePercent = ((pivotPrice / prices[priorIndex]) - 1) * 100;
+      const obvDivergenceRatio = (pivotObv - obv[priorIndex]) / intervalVolume;
+      const priceAtComparableExtreme = side === "sell"
+        ? priceChangePercent >= -priceTolerancePercent
+        : priceChangePercent <= priceTolerancePercent;
+      const obvDiverged = side === "sell"
+        ? obvDivergenceRatio <= -minimumObvDivergence
+        : obvDivergenceRatio >= minimumObvDivergence;
+      if (!priceAtComparableExtreme || !obvDiverged) return null;
+
+      return {
+        side,
+        priorDate: dates[priorIndex],
+        pivotDate: dates[pivotIndex],
+        priceChangePercent,
+        obvDivergenceRatio,
+      };
+    }
+
+    function compareSignals(signals, side) {
+      return signals.flatMap((signal) => {
+        const divergence = divergenceFor(signal, side);
+        if (!divergence) return [];
+        const obvReason = side === "sell"
+          ? "OBV 하락 다이버전스"
+          : "OBV 상승 다이버전스";
+        return [{
+          ...signal,
+          obvComparisonVersion: OBV_TIMING_COMPARISON_VERSION,
+          obvDivergence: divergence,
+          obvReasons: [obvReason],
+        }];
+      });
+    }
+
+    return {
+      ...emptyResult(),
+      signals: compareSignals(sourceBuySignals, "buy"),
+      sellSignals: compareSignals(sourceSellSignals, "sell"),
+    };
+  }
+
+  function timingSignalIdentity(signal, side) {
+    const pivotDate = side === "sell" ? signal?.peakDate : signal?.setupDate;
+    return [
+      side,
+      String(signal?.date || "").slice(0, 10),
+      String(signal?.entryMode || "standard"),
+      String(pivotDate || "").slice(0, 10),
+    ].join("|");
+  }
+
+  function buildTimingFlowContext(signal = {}, side = "buy", obvSignal = null) {
+    const normalizedSide = side === "sell" ? "sell" : "buy";
+    const adr = toNumber(signal.adr);
+    const adrChange5 = toNumber(signal.adrChange5);
+    const relative20d = toNumber(signal.relative20d);
+    const price1d = toNumber(signal.price1d);
+    const price20d = toNumber(signal.price20d);
+    const volumeRatio = toNumber(signal.volumeRatio);
+    const volumeTrend = toNumber(signal.volumeTrend);
+    const macdSlope = toNumber(signal.macdSlope);
+    const evidence = [];
+    const add = (category, title) => {
+      const text = String(title || "").trim();
+      if (!text || evidence.some((item) => item.title === text)) return;
+      evidence.push({ category, title: text });
+    };
+
+    if (normalizedSide === "buy") {
+      if (adr !== null && adr <= 85 && relative20d !== null && relative20d >= 3) {
+        add("market-relative", "시장 약세 속 종목 상대강세");
+      } else if (adr !== null && adr <= 80 && adrChange5 !== null && adrChange5 > 0) {
+        add("market-breadth", "시장 과매도 후 확산 회복");
+      } else if (adr !== null && adr <= 80) {
+        add("market-breadth", "시장 전반 과매도");
+      } else if (relative20d !== null && relative20d >= 5) {
+        add("relative-strength", "시장 대비 종목 상대강세");
+      } else if (relative20d !== null && relative20d <= -8 && adr !== null && adr <= 90) {
+        add("relative-oversold", "시장 급락 동반 낙폭과대");
+      }
+      if (obvSignal) add("obv", "OBV 상승 다이버전스");
+      if (price20d !== null && price20d <= -5 && volumeTrend !== null && volumeTrend <= 0.85) {
+        add("volume-efficiency", "하락 중 매도 거래량 감소");
+      } else if (macdSlope !== null && macdSlope > 0 && volumeRatio !== null && volumeRatio >= 1.1) {
+        add("volume-macd", "거래량 동반 MACD 반전");
+      } else if (macdSlope !== null && macdSlope > 0) {
+        add("macd", "MACD 하락 에너지 둔화");
+      }
+    } else {
+      if (adr !== null && adr >= 120 && adrChange5 !== null && adrChange5 < 0) {
+        add("market-breadth", "시장 과열 후 확산 둔화");
+      } else if (adr !== null && adr >= 120) {
+        add("market-breadth", "시장 전반 과열");
+      } else if (relative20d !== null && relative20d >= 8) {
+        add("relative-strength", "시장 대비 종목 상승 과열");
+      }
+      if (obvSignal) add("obv", "OBV 하락 다이버전스");
+      if (price20d !== null && price20d >= 8 && volumeTrend !== null && volumeTrend <= 0.85) {
+        add("volume-efficiency", "상승 대비 거래량 둔화");
+      } else if (price1d !== null && price1d > 0 && volumeRatio !== null && volumeRatio >= 1.8) {
+        add("volume-climax", "고점 거래량 급증");
+      } else if (macdSlope !== null && macdSlope < 0) {
+        add("macd", "MACD 상승 에너지 둔화");
+      }
+    }
+
+    if (!evidence.length) {
+      uniqueSignalReasons(signal).slice(0, 2).forEach((title) => add("base", title));
+    }
+    const summary = evidence.slice(0, 3).map((item) => item.title).join(" · ");
+    const obvConfirmed = Boolean(obvSignal);
+    return {
+      version: TIMING_FLOW_CONFIDENCE_VERSION,
+      obvConfirmed,
+      evidence,
+      summary,
+    };
+  }
+
+  function integrateMarketTimingConfidence(baseModel = {}, obvComparison = null) {
+    const sourceBuySignals = Array.isArray(baseModel?.signals) ? baseModel.signals : [];
+    const sourceSellSignals = Array.isArray(baseModel?.sellSignals) ? baseModel.sellSignals : [];
+    const comparisonBuySignals = Array.isArray(obvComparison?.signals) ? obvComparison.signals : [];
+    const comparisonSellSignals = Array.isArray(obvComparison?.sellSignals)
+      ? obvComparison.sellSignals
+      : [];
+
+    function enrichSignals(signals, comparisonSignals, side) {
+      const comparisonByIdentity = new Map(comparisonSignals.map((signal) => [
+        timingSignalIdentity(signal, side),
+        signal,
+      ]));
+      return signals.map((signal) => {
+        const comparisonSignal = comparisonByIdentity.get(timingSignalIdentity(signal, side)) || null;
+        const flow = buildTimingFlowContext(signal, side, comparisonSignal);
+        return {
+          ...signal,
+          ...(comparisonSignal ? {
+            obvComparisonVersion: comparisonSignal.obvComparisonVersion,
+            obvDivergence: comparisonSignal.obvDivergence,
+            obvReasons: comparisonSignal.obvReasons,
+          } : {}),
+          obvConfirmed: flow.obvConfirmed,
+          flowContextVersion: flow.version,
+          flowEvidenceCount: flow.evidence.length,
+          flowReasons: flow.evidence.map((item) => item.title),
+          flowSummary: flow.summary,
+        };
+      });
+    }
+
+    const signals = enrichSignals(sourceBuySignals, comparisonBuySignals, "buy");
+    const sellSignals = enrichSignals(sourceSellSignals, comparisonSellSignals, "sell");
+    if (!obvComparison) return { ...baseModel, signals, sellSignals };
+
+    const buyByIdentity = new Map(signals.map((signal) => [timingSignalIdentity(signal, "buy"), signal]));
+    const sellByIdentity = new Map(sellSignals.map((signal) => [timingSignalIdentity(signal, "sell"), signal]));
+    return {
+      ...baseModel,
+      signals,
+      sellSignals,
+      obvComparison: {
+        ...obvComparison,
+        signals: comparisonBuySignals.map((signal) => (
+          buyByIdentity.get(timingSignalIdentity(signal, "buy")) || signal
+        )),
+        sellSignals: comparisonSellSignals.map((signal) => (
+          sellByIdentity.get(timingSignalIdentity(signal, "sell")) || signal
+        )),
+      },
+    };
   }
 
   function buildMarketTimingSignals(options = {}) {
@@ -2395,12 +2643,17 @@
     DEFAULT_EXTERNAL_VOLATILITY_POLICY,
     DEFAULT_BEHAVIOR_POLICY,
     PROMOTED_RUNTIME_BEHAVIOR_POLICY,
+    OBV_TIMING_COMPARISON_VERSION,
+    TIMING_FLOW_CONFIDENCE_VERSION,
     alignAsOf,
     buildVolatilityProfile,
     buildKoreanVolatilityTimingRows,
     buildExternalVolatilityTimingRows,
     buildRollingReturnRelationship,
     buildMarketTimingSignals,
+    buildObvTimingComparison,
+    buildTimingFlowContext,
+    integrateMarketTimingConfidence,
     classifyTimingRegime,
     classifyBehaviorProfile,
     calibrateTimingSignals,
@@ -2431,12 +2684,17 @@ export {
   DEFAULT_EXTERNAL_VOLATILITY_POLICY,
   DEFAULT_BEHAVIOR_POLICY,
   PROMOTED_RUNTIME_BEHAVIOR_POLICY,
+  OBV_TIMING_COMPARISON_VERSION,
+  TIMING_FLOW_CONFIDENCE_VERSION,
   alignAsOf,
   buildVolatilityProfile,
   buildKoreanVolatilityTimingRows,
   buildExternalVolatilityTimingRows,
   buildRollingReturnRelationship,
   buildMarketTimingSignals,
+  buildObvTimingComparison,
+  buildTimingFlowContext,
+  integrateMarketTimingConfidence,
   classifyTimingRegime,
   classifyBehaviorProfile,
   calibrateTimingSignals,

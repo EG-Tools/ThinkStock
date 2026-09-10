@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import {
   createHoverIdleController,
   dispatchNativeHoverAtPoint,
+  eventTargetsChartControl,
   pointerEventInsideElement,
 } from "../../docs/modules/chart-pointer-runtime.mjs";
 
@@ -186,4 +187,21 @@ test("full-lifetime toggle settles automatic fit and anchored markers in one vie
   assert.match(block, /source: "full-lifetime"[\s\S]*liveFit: chartSession\.autoChartReset/);
   assert.match(block, /source: "full-lifetime-restore"[\s\S]*liveFit: chartSession\.autoChartReset/);
   assert.ok(block.indexOf("getChartRangeSyncController().flush()") < block.indexOf("requestViewportRender?.()"));
+});
+
+test("chart controls own pointer, wheel, and double-click input", () => {
+  class FakeElement {
+    constructor(insideControl) {
+      this.insideControl = insideControl;
+    }
+
+    closest() {
+      return this.insideControl ? this : null;
+    }
+  }
+  const scope = { Element: FakeElement };
+
+  assert.equal(eventTargetsChartControl({ target: new FakeElement(true) }, scope), true);
+  assert.equal(eventTargetsChartControl({ target: new FakeElement(false) }, scope), false);
+  assert.equal(eventTargetsChartControl({ target: {} }, scope), false);
 });

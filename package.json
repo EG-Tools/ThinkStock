@@ -54,6 +54,8 @@
     "backtest:qlib:prepare": "node scripts/export_qlib_krx_manifest.mjs",
     "backtest:qlib:quick": "node scripts/run_qlib_krx_challenger.mjs --quick --no-audit",
     "backtest:qlib": "node scripts/run_qlib_krx_challenger.mjs",
+    "backtest:qlib:obv:quick": "node scripts/run_qlib_obv_ablation.mjs --quick",
+    "backtest:qlib:obv": "node scripts/run_qlib_obv_ablation.mjs",
     "check:ai-validation": "node scripts/check_ai_validation_status.mjs",
     "worker:deploy": "wrangler deploy --keep-vars --config worker/wrangler.jsonc",
     "worker:check": "wrangler deploy --dry-run --config worker/wrangler.jsonc",

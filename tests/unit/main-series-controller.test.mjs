@@ -29,6 +29,25 @@ test("resolves the latest eligible visible target without app-level selection lo
   assert.equal(controller.resolveVisibleTarget("", (key) => key.endsWith(".KS")), "035420.KS");
 });
 
+test("cycles eligible visible targets in activation order", () => {
+  let activationOrder = ["^KS11", "^KQ11", "005930.KS", "000660.KS"];
+  const controller = createMainSeriesController({
+    hiddenSeries: new Set(["leading_cycle"]),
+    maximumVisible: 5,
+    getSeriesKeys: () => [
+      "^KS11", "^KQ11", "leading_cycle", "005930.KS", "000660.KS",
+    ],
+    getActivationOrder: () => activationOrder,
+    setActivationOrder: (value) => { activationOrder = [...value]; },
+  });
+  const technical = (key) => key.startsWith("^") || key.endsWith(".KS");
+
+  assert.equal(controller.nextVisibleTarget("000660.KS", technical), "^KS11");
+  assert.equal(controller.nextVisibleTarget("REMOVED.KS", technical), "^KS11");
+  assert.equal(controller.nextVisibleTarget("^KS11", technical), "^KQ11");
+  assert.equal(controller.nextVisibleTarget("^KQ11", technical), "005930.KS");
+});
+
 test("stale render projections cannot rewrite the latest activation order", () => {
   const hidden = new Set(["A", "B"]);
   let activationOrder = [];

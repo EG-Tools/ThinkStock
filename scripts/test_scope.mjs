@@ -133,6 +133,7 @@ export const WEBKIT_DESKTOP_PATTERN = [
   "the first desktop zoom-out uses the loaded recent window before history finishes",
   "rapid wheel zoom-in keeps accumulating while chart updates are still pending",
   "desktop main-chart drag commits the same range to auxiliary charts",
+  "historical index OBV fills the visible range without toggling the index",
   "auxiliary drag and wheel control the shared viewport owner",
   "wheel zoom followed by panning keeps every visible auxiliary panel populated",
   "restored chart pans immediately without a toggle or zoom warm-up",

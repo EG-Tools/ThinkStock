@@ -1,15 +1,17 @@
-import { access, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
-import { spawn } from "node:child_process";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { evaluateQlibChallengerReport } from "../shared/qlib-challenger-contract.mjs";
 import {
   evaluateQlibMatchedAssist,
   matchQlibAndThinkStockAnchors,
 } from "../shared/qlib-matched-anchor.mjs";
+import {
+  QLIB_ROOT as ROOT,
+  qlibPythonExecutable,
+  runQlibCommand as run,
+} from "./qlib-process.mjs";
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const QLIB_DIR = path.join(ROOT, ".thinkstock-cache", "ai-backtest", "qlib");
 const REPORT_PATH = path.join(QLIB_DIR, "challenger-report.json");
 const GATE_PATH = path.join(QLIB_DIR, "challenger-gate.json");
@@ -27,38 +29,6 @@ const CONFIRMATION_CHAMPION_PATH = path.join(
   "ai-backtest",
   "walkforward-qlib-confirmation-champion.json",
 );
-const VENV_PYTHON = process.platform === "win32"
-  ? path.join(ROOT, ".thinkstock-cache", "qlib-venv", "Scripts", "python.exe")
-  : path.join(ROOT, ".thinkstock-cache", "qlib-venv", "bin", "python");
-
-function run(command, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: ROOT,
-      stdio: "inherit",
-      ...options,
-    });
-    child.once("error", reject);
-    child.once("exit", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`${path.basename(command)} exited with code ${code}`));
-    });
-  });
-}
-
-async function pythonExecutable() {
-  const configured = String(process.env.THINKSTOCK_QLIB_PYTHON || "").trim();
-  if (configured) return configured;
-  try {
-    await access(VENV_PYTHON);
-    return VENV_PYTHON;
-  } catch (_) {
-    throw new Error(
-      "Qlib environment is missing. Create .thinkstock-cache/qlib-venv and install requirements-qlib.txt.",
-    );
-  }
-}
-
 async function readJsonLines(file) {
   const source = await readFile(file, "utf8");
   return source.split(/\r?\n/).flatMap((line) => {
@@ -126,7 +96,7 @@ async function matchedAnchorEvaluation(report) {
 
 await mkdir(QLIB_DIR, { recursive: true });
 await run(process.execPath, [path.join(ROOT, "scripts", "export_qlib_krx_manifest.mjs")]);
-const python = await pythonExecutable();
+const python = await qlibPythonExecutable();
 await run(python, [
   path.join(ROOT, "scripts", "run_qlib_krx_challenger.py"),
   ...process.argv.slice(2),

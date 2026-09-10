@@ -34,6 +34,8 @@ globalThis.onmessage = (event) => {
       targets: event.data?.targets,
       buildMacdOscillator: macd.buildMacdOscillator,
       buildMarketTimingSignals: timing.buildMarketTimingSignals,
+      buildObvTimingComparison: timing.buildObvTimingComparison,
+      integrateMarketTimingConfidence: timing.integrateMarketTimingConfidence,
       buildKoreanVolatilityTimingRows: timing.buildKoreanVolatilityTimingRows,
       buildExternalVolatilityTimingRows: timing.buildExternalVolatilityTimingRows,
       evaluateMarketTimingModel: evaluation.evaluateMarketTimingModel,

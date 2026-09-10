@@ -404,6 +404,22 @@ test("touches ticker cache metadata at most once per interval", () => {
   assert.equal(runtime.shouldTouchCacheRecord(day * 2, day, day), true);
 });
 
+test("volume coverage must reach the requested visible window", () => {
+  const points = Array.from({ length: 24 }, (_, index) => ({
+    date: new Date(Date.UTC(2026, 4, 12 + index)).toISOString().slice(0, 10),
+    close: 3000 + index,
+    volume: 100000 + index,
+  }));
+
+  assert.equal(runtime.hasVolumeCoverageFromDate(points, "2026-05-10", {
+    toleranceDays: 7,
+  }), true);
+  assert.equal(runtime.hasVolumeCoverageFromDate(points, "2026-01-01", {
+    toleranceDays: 7,
+  }), false);
+  assert.equal(runtime.hasVolumeCoverageFromDate(points, ""), true);
+});
+
 test("payload controller owns price, volume and invalidation mutations", () => {
   let payload = { records: [{ date: "2026-08-12", "^KS11": 4200 }], series: ["^KS11"] };
   const volumes = new Map();

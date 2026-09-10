@@ -5,6 +5,7 @@ import macdOscillator from "../../docs/modules/macd-oscillator.mjs";
 const {
   buildMacdOscillator,
   buildMovingAverageDisparity,
+  buildOnBalanceVolume,
   thinMacdPoints,
 } = macdOscillator;
 
@@ -35,6 +36,25 @@ test("centers moving-average disparity on the MACD zero baseline", () => {
   });
   assert.equal(model.disparityPeriod, 20);
   assert.equal(model.disparity.findIndex(Number.isFinite), 19);
+});
+
+test("builds OBV once from the aligned price and volume series", () => {
+  assert.deepEqual(
+    buildOnBalanceVolume(
+      [100, 102, 101, 101, 105],
+      [10, 20, null, 40, 50],
+    ),
+    [0, 20, null, 20, 70],
+  );
+
+  const dates = Array.from({ length: 80 }, (_, index) => String(index));
+  const model = buildMacdOscillator({
+    dates,
+    prices: dates.map((_, index) => 100 + index),
+    volumes: dates.map((_, index) => 1000 + index),
+  });
+  assert.equal(model.obv[0], 0);
+  assert.equal(model.obv.at(-1), dates.slice(1).reduce((sum, _, index) => sum + 1001 + index, 0));
 });
 
 test("returns no oscillator when MACD warm-up history is insufficient", () => {

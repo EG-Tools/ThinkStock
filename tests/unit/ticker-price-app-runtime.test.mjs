@@ -75,14 +75,72 @@ test("rejects remote history requests without access while local requests need n
     fetchWithTimeout: async (url, init) => {
       requestedUrl = url;
       assert.deepEqual(init.headers, {});
-      return { ok: true, status: 200, json: async () => ({ ok: true, rows: [] }) };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          historyCoverage: "full",
+          historyCoverageVersion: tickerPriceRuntime.HISTORY_COVERAGE_VERSION,
+          rows: [],
+        }),
+      };
     },
     normalizePoints: (rows) => rows,
+    historyCoverageVersion: tickerPriceRuntime.HISTORY_COVERAGE_VERSION,
     isLocalRuntime: true,
   });
   assert.deepEqual(await local("005930.KS"), []);
   assert.match(requestedUrl, /full=1/);
   assert.deepEqual(await local("not-a-ticker"), []);
+});
+
+test("never promotes a stale partial response to full ticker history", async () => {
+  const fetchHistory = createPreferredTickerHistoryFetcher({
+    endpoint: "/api/ticker-history",
+    fetchWithTimeout: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        partial: false,
+        historyCoverage: "partial",
+        rows: [{ date: "2026-08-26", close: 74000 }],
+      }),
+    }),
+    normalizePoints: (rows) => rows,
+    isLocalRuntime: true,
+  });
+
+  await assert.rejects(fetchHistory("005930.KS"), /full price history is incomplete/);
+  assert.deepEqual(await fetchHistory("005930.KS", { sinceDate: "2026-08-01" }), [
+    { date: "2026-08-26", close: 74000 },
+  ]);
+});
+
+test("rejects stale full-history metadata while preserving incremental requests", async () => {
+  const fetchHistory = createPreferredTickerHistoryFetcher({
+    endpoint: "/api/ticker-history",
+    fetchWithTimeout: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        partial: false,
+        historyCoverage: "full",
+        historyCoverageVersion: tickerPriceRuntime.HISTORY_COVERAGE_VERSION - 1,
+        rows: [{ date: "2026-08-26", close: 74000 }],
+      }),
+    }),
+    normalizePoints: (rows) => rows,
+    historyCoverageVersion: tickerPriceRuntime.HISTORY_COVERAGE_VERSION,
+    isLocalRuntime: true,
+  });
+
+  await assert.rejects(fetchHistory("005930.KS"), /full price history is incomplete/);
+  assert.deepEqual(await fetchHistory("005930.KS", { sinceDate: "2026-08-01" }), [
+    { date: "2026-08-26", close: 74000 },
+  ]);
 });
 test("owns ticker payload state behind one app runtime boundary", () => {
   let payload = { series: [], labels: {}, records: [] };
@@ -124,6 +182,14 @@ test("owns ticker payload state behind one app runtime boundary", () => {
     { date: "2026-08-25", close: 73_000, volume: 10 },
     { date: "2026-08-26", close: 74_000, volume: 20 },
   ]);
+  assert.equal(runtime.hasVolumeCoverageFromDate("005930.KS", "2026-08-20", {
+    minimumPoints: 1,
+    toleranceDays: 7,
+  }), true);
+  assert.equal(runtime.hasVolumeCoverageFromDate("005930.KS", "2026-07-01", {
+    minimumPoints: 1,
+    toleranceDays: 7,
+  }), false);
   assert.equal(changed, 1);
 
   runtime.clearSeries("005930.KS");

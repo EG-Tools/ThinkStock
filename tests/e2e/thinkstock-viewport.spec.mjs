@@ -64,6 +64,15 @@ test("adding a stock while signal is enabled prepares its timing model", async (
 
   await expect(page.locator("#signalProgress")).toBeVisible();
   await expect(page.locator("#signalProgressText")).toContainText("신호 로딩중");
+  await expect.poll(() => page.locator("#chart-macd").evaluate((element) => (
+    (element.data || [])
+      .filter((trace) => (
+        trace?.meta?.macdSeriesKey === "000660.KS"
+        && trace.y?.some(Number.isFinite)
+      ))
+      .map((trace) => trace.meta.macdLineKind)
+      .sort()
+  ))).toEqual(["disparity", "obv", "oscillator"]);
   await expect(page.locator("#signalProgress")).toBeHidden({ timeout: 10000 });
   await expect.poll(() => page.evaluate(() => (
     window.ThinkStockE2E.hasMarketTimingModel("000660.KS")
@@ -3225,9 +3234,11 @@ test("desktop main-chart drag commits the same range to auxiliary charts", async
   test.skip(isMobile, "Mouse drag behavior is desktop-only.");
   await stubExternalRefreshes(page);
   await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "private" }));
     localStorage.setItem("thinkstock-v5", JSON.stringify({
       activeMonths: 12,
       customStocks: [{ ticker: "005930.KS", code: "005930", name: "삼성전자", market: "KOSPI" }],
+      showRecessionSignals: false,
       hiddenSeries: [
         "leading_cycle",
         "t10y1y",
@@ -3244,6 +3255,22 @@ test("desktop main-chart drag commits the same range to auxiliary charts", async
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-macd .main-svg").first()).toBeVisible();
   await expect(page.locator("#chart-adr .main-svg").first()).toBeVisible();
+  await expect.poll(() => page.locator("#chart-macd").evaluate((element) => (
+    (element.data || []).filter((trace) => (
+      trace?.meta?.macdLineKind === "obv" && trace.y?.some(Number.isFinite)
+    )).length
+  ))).toBe(1);
+  await page.locator(
+    '#chart-macd [data-auxiliary-series="macd_oscillator"]',
+  ).click();
+  await page.locator(
+    '#chart-macd [data-auxiliary-series="macd_disparity"]',
+  ).click();
+  await expect.poll(() => page.locator("#chart-macd").evaluate((element) => (
+    Object.fromEntries((element.data || [])
+      .filter((trace) => trace?.meta?.macdLineKind)
+      .map((trace) => [trace.meta.macdLineKind, trace.visible !== false]))
+  ))).toEqual({ oscillator: false, disparity: false, obv: true });
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     (element.data || []).filter((trace) => (
       trace?.meta?.seriesKey && trace.visible !== "legendonly" && String(trace.mode || "").includes("lines")
@@ -3287,6 +3314,111 @@ test("desktop main-chart drag commits the same range to auxiliary charts", async
     Math.abs(settledYRange[0] - releasedYRange[0]),
     Math.abs(settledYRange[1] - releasedYRange[1]),
   ) / releasedSpan).toBeLessThan(0.005);
+});
+
+test("historical index OBV fills the visible range without toggling the index", async ({ page, isMobile }) => {
+  test.skip(isMobile, "Desktop drag and wheel range coverage is exercised in the desktop project.");
+  const denseDates = [];
+  for (
+    let cursor = Date.UTC(2025, 0, 2);
+    cursor <= Date.UTC(2026, 6, 14);
+    cursor += 24 * 60 * 60 * 1000
+  ) {
+    const date = new Date(cursor);
+    if (date.getUTCDay() > 0 && date.getUTCDay() < 6) {
+      denseDates.push(date.toISOString().slice(0, 10));
+    }
+  }
+  const values = (base, slope, wave) => denseDates.map((_, index) => (
+    base + (index * slope) + (Math.sin(index / 6) * wave)
+  ));
+  await page.addInitScript(() => {
+    localStorage.setItem("thinkstock-dart-gateway-v1", JSON.stringify({ accessToken: "private" }));
+    localStorage.setItem("thinkstock-v5", JSON.stringify({
+      activeMonths: 6,
+      autoChartReset: true,
+      customStocks: [],
+      hiddenSeries: [
+        "leading_cycle",
+        "t10y1y",
+        "us_credit_spread",
+        "customer_deposit",
+        "kospi_credit",
+        "kosdaq_credit",
+      ],
+      hiddenAuxiliarySeries: ["macd_oscillator", "macd_disparity"],
+      mainHoverSeriesOrder: ["^KS11", "^KQ11"],
+      showAiForecast: false,
+      showRecessionSignals: false,
+    }));
+  });
+  await installDataRoutes(page, {
+    payloadOverrides: {
+      "prices_recent.json": columnar(
+        ["^KS11", "^KQ11"],
+        denseDates,
+        {
+          "^KS11": values(2450, 2.8, 65),
+          "^KQ11": values(690, 0.65, 24),
+        },
+      ),
+    },
+  });
+  const indexRows = ["^KS11", "^KQ11"].flatMap((ticker, tickerIndex) => (
+    denseDates.map((date, index) => ({
+      ticker,
+      date,
+      close: tickerIndex === 0
+        ? 2450 + (index * 2.8) + (Math.sin(index / 6) * 65)
+        : 690 + (index * 0.65) + (Math.sin(index / 6) * 24),
+      volume: 800_000 + (tickerIndex * 200_000) + (index * 2500),
+    }))
+  ));
+  const requestedSince = [];
+  await page.unroute("https://thinkstock-api.keg0320.workers.dev/api/indices**");
+  await page.route("https://thinkstock-api.keg0320.workers.dev/api/indices**", async (route) => {
+    const since = String(new URL(route.request().url()).searchParams.get("since") || "").slice(0, 10);
+    requestedSince.push(since);
+    const effectiveSince = since || "2026-01-01";
+    await route.fulfill({ json: {
+      ok: true,
+      records: indexRows.filter((row) => row.date >= effectiveSince),
+    } });
+  });
+
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await expect(page.locator("#chart-macd .main-svg").first()).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getTickerVolumeCounts()))
+    .toMatchObject({ "^KS11": expect.any(Number), "^KQ11": expect.any(Number) });
+  const initialCounts = await page.evaluate(() => window.ThinkStockE2E.getTickerVolumeCounts());
+  expect(initialCounts["^KS11"]).toBeGreaterThanOrEqual(20);
+  expect(initialCounts["^KQ11"]).toBeGreaterThanOrEqual(20);
+
+  const historicalRange = [Date.parse("2025-04-01"), Date.parse("2025-08-29")];
+  await page.evaluate(
+    (range) => window.ThinkStockE2E.setViewportRangeForTest(range),
+    historicalRange,
+  );
+  await expect.poll(() => requestedSince.some((since) => since && since <= "2025-03-25"))
+    .toBe(true);
+  await expect.poll(() => page.evaluate(() => window.ThinkStockE2E.getTickerVolumeCounts()))
+    .toMatchObject({
+      "^KS11": expect.any(Number),
+      "^KQ11": expect.any(Number),
+    });
+  await expect.poll(() => page.evaluate((before) => {
+    const counts = window.ThinkStockE2E.getTickerVolumeCounts();
+    return counts["^KS11"] > before["^KS11"] && counts["^KQ11"] > before["^KQ11"];
+  }, initialCounts)).toBe(true);
+  await waitForChartRenderIdle(page);
+  await expect.poll(() => page.locator("#chart-macd").evaluate((element) => {
+    const trace = (element.data || []).find((item) => (
+      item?.meta?.macdLineKind === "obv" && item.visible !== false
+    ));
+    const dates = (trace?.x || []).filter((date, index) => Number.isFinite(Number(trace.y?.[index])));
+    return Date.parse(dates.at(0) || "");
+  })).toBeLessThanOrEqual(Date.parse("2025-04-15"));
 });
 
 test("auxiliary drag and wheel control the shared viewport owner", async ({ page, isMobile }) => {

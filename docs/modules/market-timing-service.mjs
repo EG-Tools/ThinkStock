@@ -2,7 +2,7 @@
 
   const normalizeTicker = (value) => String(value || "").trim().toUpperCase();
   const TIMING_CACHE_SCHEMA = 1;
-  const TIMING_CACHE_REVISION = "market-timing-cache-v13";
+  const TIMING_CACHE_REVISION = "market-timing-cache-v15";
 
   function normalizeTargets(targets) {
     return [...new Set((targets || []).map(normalizeTicker).filter(Boolean))].sort();
@@ -109,6 +109,8 @@
     const volumesByTicker = sources.volumesByTicker || {};
     const buildMacdOscillator = options.buildMacdOscillator;
     const buildMarketTimingSignals = options.buildMarketTimingSignals;
+    const buildObvTimingComparison = options.buildObvTimingComparison;
+    const integrateMarketTimingConfidence = options.integrateMarketTimingConfidence;
     const buildKoreanVolatilityTimingRows = options.buildKoreanVolatilityTimingRows;
     const buildExternalVolatilityTimingRows = options.buildExternalVolatilityTimingRows;
     const evaluateMarketTimingModel = options.evaluateMarketTimingModel;
@@ -138,7 +140,13 @@
     const models = {};
     normalizeTargets(options.targets).forEach((ticker) => {
       const prices = Array.isArray(pricesByTicker[ticker]) ? pricesByTicker[ticker] : [];
-      const macd = buildMacdOscillator({ dates, prices });
+      const volumeByDate = new Map((Array.isArray(volumesByTicker[ticker])
+        ? volumesByTicker[ticker]
+        : []).map(([date, volume]) => [String(date || "").slice(0, 10), volume]));
+      const alignedInputVolumes = dates.map((date) => (
+        volumeByDate.get(String(date || "").slice(0, 10)) ?? null
+      ));
+      const macd = buildMacdOscillator({ dates, prices, volumes: alignedInputVolumes });
       if (!macd) {
         models[ticker] = null;
         return;
@@ -147,9 +155,6 @@
       const benchmarkPrices = Array.isArray(pricesByTicker[benchmarkKey])
         ? pricesByTicker[benchmarkKey]
         : [];
-      const volumeByDate = new Map(Array.isArray(volumesByTicker[ticker])
-        ? volumesByTicker[ticker]
-        : []);
       const contextProfile = typeof buildStructuralStockProfile === "function"
         ? buildStructuralStockProfile({
           series: ticker,
@@ -194,8 +199,39 @@
           indexKey: ticker,
         })
         : null;
+      const obvComparison = typeof buildObvTimingComparison === "function"
+        ? buildObvTimingComparison(model, {
+          dates: macd.dates,
+          prices: macd.prices,
+          volumes: timingInputs.volumes,
+          obv: macd.obv,
+          indexKey: ticker,
+        })
+        : null;
+      const obvComparisonQuality = obvComparison
+        && typeof evaluateMarketTimingModel === "function"
+        ? evaluateMarketTimingModel({
+          ...model,
+          signals: obvComparison.signals,
+          sellSignals: obvComparison.sellSignals,
+        }, {
+          dates: macd.dates,
+          prices: macd.prices,
+          indexKey: ticker,
+        })
+        : null;
+      const comparisonWithQuality = obvComparison ? {
+        ...obvComparison,
+        ...(obvComparisonQuality ? { quality: obvComparisonQuality } : {}),
+      } : null;
+      const enrichedModel = typeof integrateMarketTimingConfidence === "function"
+        ? integrateMarketTimingConfidence(model, comparisonWithQuality)
+        : {
+          ...model,
+          ...(comparisonWithQuality ? { obvComparison: comparisonWithQuality } : {}),
+        };
       models[ticker] = {
-        ...model,
+        ...enrichedModel,
         ...(quality ? { quality } : {}),
         ...(contextProfile ? {
           contextProfile: {
@@ -224,6 +260,8 @@
     const dependencies = {
       buildMacdOscillator: options.buildMacdOscillator,
       buildMarketTimingSignals: options.buildMarketTimingSignals,
+      buildObvTimingComparison: options.buildObvTimingComparison,
+      integrateMarketTimingConfidence: options.integrateMarketTimingConfidence,
       buildKoreanVolatilityTimingRows: options.buildKoreanVolatilityTimingRows,
       buildExternalVolatilityTimingRows: options.buildExternalVolatilityTimingRows,
       evaluateMarketTimingModel: options.evaluateMarketTimingModel,

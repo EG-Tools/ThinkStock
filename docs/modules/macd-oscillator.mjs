@@ -50,6 +50,31 @@ function buildMovingAverageDisparity(prices, period = 60) {
   ));
 }
 
+function buildOnBalanceVolume(prices, volumes) {
+  const pointCount = prices?.length || 0;
+  const output = Array(pointCount).fill(null);
+  let previousPrice = null;
+  let balance = 0;
+  let started = false;
+
+  for (let index = 0; index < pointCount; index += 1) {
+    const price = toNumber(prices[index]);
+    const volume = toNumber(volumes[index]);
+    if (price === null) continue;
+    if (volume !== null && volume >= 0) {
+      if (!started) {
+        started = true;
+      } else if (previousPrice !== null) {
+        if (price > previousPrice) balance += volume;
+        else if (price < previousPrice) balance -= volume;
+      }
+      output[index] = balance;
+    }
+    previousPrice = price;
+  }
+  return output;
+}
+
 function standardDeviation(values) {
   if (values.length < 2) return 0;
   const average = values.reduce((sum, value) => sum + value, 0) / values.length;
@@ -78,12 +103,16 @@ function calculateSignal(values) {
 function buildMacdOscillator(options = {}) {
   const sourceDates = Array.isArray(options.dates) ? options.dates : [];
   const sourcePrices = Array.isArray(options.prices) ? options.prices : [];
+  const sourceVolumes = Array.isArray(options.volumes) ? options.volumes : [];
   const points = [];
   const pointCount = Math.min(sourceDates.length, sourcePrices.length);
   for (let index = 0; index < pointCount; index += 1) {
     const price = toNumber(sourcePrices[index]);
+    const volume = toNumber(sourceVolumes[index]);
     const date = String(sourceDates[index] || "").slice(0, 10);
-    if (date && price !== null && price > 0) points.push({ date, price });
+    if (date && price !== null && price > 0) {
+      points.push({ date, price, volume: volume !== null && volume >= 0 ? volume : null });
+    }
   }
 
   const fastPeriod = Math.max(2, Number(options.fastPeriod) || 12);
@@ -110,6 +139,7 @@ function buildMacdOscillator(options = {}) {
   ));
   const disparityPeriod = Math.max(1, Math.floor(Number(options.disparityPeriod) || 60));
   const disparity = buildMovingAverageDisparity(prices, disparityPeriod);
+  const obv = buildOnBalanceVolume(prices, points.map((point) => point.volume));
 
   return {
     dates: points.map((point) => point.date),
@@ -120,6 +150,7 @@ function buildMacdOscillator(options = {}) {
     normalized,
     disparity,
     disparityPeriod,
+    obv,
     signal: calculateSignal(normalized),
     periods: { fast: fastPeriod, slow: slowPeriod, signal: signalPeriod },
   };
@@ -158,6 +189,7 @@ const macdOscillator = Object.freeze({
   alignedEma,
   alignedSimpleMovingAverage,
   buildMovingAverageDisparity,
+  buildOnBalanceVolume,
   buildMacdOscillator,
   thinMacdPoints,
 });
@@ -167,6 +199,7 @@ export {
   alignedSimpleMovingAverage,
   buildMacdOscillator,
   buildMovingAverageDisparity,
+  buildOnBalanceVolume,
   thinMacdPoints,
 };
 export default macdOscillator;

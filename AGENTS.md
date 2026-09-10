@@ -19,6 +19,7 @@
 - Run unit validation and Safari/iPhone WebKit coverage before release.
 - Run Chrome DevTools MCP audits in one separate isolated browser window or context. Never navigate, refresh, close, or otherwise reuse the browser window the user is currently viewing. When an audit needs multiple pages, open and manage them as tabs in that single test window/context instead of creating additional windows.
 - Before implementing any behavior, identify existing contracts, reusable modules, and every related UI, data, input, cache, local/deployed, and desktop/mobile path that can share it. If the commonization boundary changes behavior or performance, stop and confirm that boundary with the user before editing.
+- Treat that inspection as an implementation gate, not optional cleanup. Name the existing owner and extension point before editing; verify the proposed feature preserves topology across every on/off and input state; and reject any design that adds a second renderer, scheduler, synchronization path, style value, or state owner for equivalent behavior. Extend the shared registry or contract first, then add only the feature-specific calculation or exception.
 
 ## Change Completion
 - End every feature, fix, or optimization with a bounded closeout pass before reporting completion.
@@ -35,11 +36,13 @@
 - Do not promote or delete the current runtime until the independent candidate passes the predeclared quality, stability, signal-density, and point-in-time gates. A failed candidate remains research-only.
 
 ## Chart And Interaction Invariants
+- Use these stable product names in discussion and implementation: chart 1 is the main rendering pane, chart 2 is the technical auxiliary rendering pane, and chart 3 is the macro auxiliary rendering pane.
 - The main viewport is the authoritative owner of the visible time range. Linked auxiliary charts consume the same committed range and MUST NOT maintain an independent equivalent range.
 - Apply a viewport action's X range, automatic Y fit, handles, overlays, dated markers, and linked-chart ranges through one coordinated update path.
 - Dated overlays derive their position from the owning series and date. They MUST NOT persist or independently estimate coordinates already defined by that series.
 - Pointer, wheel, pinch, resize, and drag input coalesce to the latest animation frame. Perform no more than one necessary reconciliation after the interaction settles.
 - Desktop and touch adapters use the same viewport state transition whenever their semantics match.
+- Chart 2 technical indicators use one registry-backed trace, toggle, axis-fit, and viewport-sync contract. Adding an indicator MUST extend that registry rather than add another interaction or synchronization path.
 
 ## Deployment
 - `.github/workflows/deploy-pages.yml` is the only deployment workflow and is manual-only.

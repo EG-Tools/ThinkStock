@@ -94,10 +94,10 @@ test("timing signal popovers reuse the compact marker payload", () => {
   const group = markerModule.buildTimingSignalPopoverGroup({
     x: "2026-08-21",
     customdata: [
-      "삼성전자", "신용 과열<br>· MACD 반전", "8.2", "-1.3", "-", "강", "slowdown", 5,
-      "trend-exhaustion", "추세형", "매도 하락 확인",
-      "실제 신뢰 · 참고 가능", "동일 유형 9회 · 20일 적중 66.7%",
-      "20일 평균 성과 +3.2% · 최대 역행 상승 +4.1%",
+      "삼성전자", "신용 과열<br>· MACD 반전", "강", 5, "매도 하락 확인",
+      "실제 신뢰 참고 가능 · 동일 유형 9회 · 20일 적중 66.7%",
+      "20일 평균 +3.2% · 최대 역행 상승 +4.1%",
+      "시장 과열 후 확산 둔화 · OBV 하락 다이버전스 · 상승 대비 거래량 둔화",
     ],
     data: { name: "타이밍 매도신호", meta: { overlayKind: "timing-sell" } },
   });
@@ -105,14 +105,9 @@ test("timing signal popovers reuse the compact marker payload", () => {
   assert.equal(group.plotDate, "2026-08-21");
   assert.deepEqual(group.events.map((event) => event.title), [
     "매도 하락 확인 · 근거 강",
-    "실제 신뢰 · 참고 가능",
-    "동일 유형 9회 · 20일 적중 66.7%",
-    "20일 평균 성과 +3.2% · 최대 역행 상승 +4.1%",
-    "근거: 신용 과열",
-    "· MACD 반전",
-    "신용20일 8.2% · 고점대비 -1.3%",
-    "시장 둔화 · 근거 5개",
-    "추세 소진 · 추세형",
+    "흐름: 시장 과열 후 확산 둔화 · OBV 하락 다이버전스 · 상승 대비 거래량 둔화",
+    "실제 신뢰 참고 가능 · 동일 유형 9회 · 20일 적중 66.7%",
+    "20일 평균 +3.2% · 최대 역행 상승 +4.1%",
   ]);
 });
 
@@ -120,8 +115,8 @@ test("exceptional timing moves are labeled as warnings instead of predictions", 
   const buy = markerModule.buildTimingSignalPopoverGroup({
     x: "2026-08-21",
     customdata: [
-      "삼성전자", "전일대비 30% 하락", "-", "-", "-", "이례", "stress", 2,
-      "shock-reversal", "고변동·모멘텀", "과매도 경고",
+      "삼성전자", "전일대비 30% 하락", "이례", 2, "과매도 경고",
+      "", "", "전일대비 30% 하락",
     ],
     data: { meta: { overlayKind: "timing-buy" } },
   });
@@ -143,6 +138,18 @@ function createRuntime(overrides = {}) {
     ["005930.KS", {
       signals: [{ date: "2026-08-03", setupReasons: ["과매도", "전일대비 27% 하락"] }],
       sellSignals: [{ date: "2026-08-05", sellSetupReasons: ["과열", "전일대비 27% 상승"] }],
+      obvComparison: {
+        signals: [{
+          date: "2026-08-03",
+          setupReasons: ["과매도"],
+          obvReasons: ["OBV 상승 다이버전스"],
+        }],
+        sellSignals: [{
+          date: "2026-08-05",
+          sellSetupReasons: ["과열"],
+          obvReasons: ["OBV 하락 다이버전스"],
+        }],
+      },
     }],
   ]);
   const pointIndex = {
@@ -266,13 +273,17 @@ test("one marker frame shares its date index and spacing across every marker lay
   assert.equal(sell.count, 1);
   assert.equal(buy.trace.customdata[0][1], "과매도 · 전일대비 27% 하락");
   assert.equal(sell.trace.customdata[0][1], "과열 · 전일대비 27% 상승");
-  assert.match(buy.trace.hovertemplate[0], /근거: 과매도<br>· 전일대비 27% 하락/);
-  assert.match(sell.trace.hovertemplate[0], /근거: 과열<br>· 전일대비 27% 상승/);
+  assert.match(buy.trace.hovertemplate[0], /흐름: 과매도 · 전일대비 27% 하락/);
+  assert.match(sell.trace.hovertemplate[0], /흐름: 과열 · 전일대비 27% 상승/);
+  assert.equal(buy.trace.customdata[0][7], "과매도 · 전일대비 27% 하락");
+  assert.equal(sell.trace.customdata[0][7], "과열 · 전일대비 27% 상승");
+  assert.equal(buy.trace.customdata[0].length, 8);
+  assert.equal(sell.trace.customdata[0].length, 8);
   assert.equal(buy.trace.mode, "text");
   assert.equal(buy.trace.text[0], "▲");
   assert.match(
     buy.trace.hovertemplate[0],
-    /^<b>%\{customdata\[10\]\} · 근거 %\{customdata\[5\]\}<\/b>/,
+    /^<b>%\{customdata\[4\]\} · 근거 %\{customdata\[2\]\}<\/b>/,
   );
   assert.equal(sell.trace.mode, "text");
   assert.equal(sell.trace.text[0], "▼");
@@ -301,7 +312,7 @@ test("latest intraday timing markers are labeled as realtime signals", () => {
     end: "2026-08-08",
   });
   const sell = runtime.buildTimingSell(frame);
-  assert.equal(sell.trace.customdata[0][10], "실시간 매도 신호");
+  assert.equal(sell.trace.customdata[0][4], "실시간 매도 신호");
 });
 
 test("reuses marker point indexes while the chart model identity is unchanged", () => {

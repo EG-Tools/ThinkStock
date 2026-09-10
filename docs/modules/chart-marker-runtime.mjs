@@ -10,18 +10,12 @@ export const MINIMUM_TIMING_VOLUME_POINTS = 20;
 const TIMING_PAYLOAD = Object.freeze({
   NAME: 0,
   REASONS: 1,
-  METRIC_A: 2,
-  METRIC_B: 3,
-  METRIC_C: 4,
-  GRADE: 5,
-  REGIME: 6,
-  EVIDENCE: 7,
-  FAMILY: 8,
-  BEHAVIOR: 9,
-  STAGE: 10,
-  RELIABILITY_STATUS: 11,
-  RELIABILITY_SAMPLE: 12,
-  RELIABILITY_OUTCOME: 13,
+  GRADE: 2,
+  EVIDENCE: 3,
+  STAGE: 4,
+  RELIABILITY_SUMMARY: 5,
+  RELIABILITY_OUTCOME: 6,
+  FLOW_SUMMARY: 7,
 });
 const TIMING_RELIABILITY_HORIZON = 20;
 
@@ -32,11 +26,19 @@ function timingReliabilityPercent(value, options = {}) {
   return `${options.signed && scaled > 0 ? "+" : ""}${scaled.toFixed(1)}%`;
 }
 
-export function buildMarketTimingReliability(signal, quality, side) {
+function timingReliabilityRow(signal, quality, side) {
   const normalizedSide = side === "sell" ? "sell" : "buy";
   const mode = String(signal?.entryMode || "standard").trim() || "standard";
-  const row = quality?.validation?.holdoutByEntryMode?.[normalizedSide]?.[mode]
+  return quality?.validation?.holdoutByEntryMode?.[normalizedSide]?.[mode]
     ?.horizons?.[TIMING_RELIABILITY_HORIZON] || null;
+}
+
+export function buildMarketTimingReliability(signal, quality, side, options = {}) {
+  const normalizedSide = side === "sell" ? "sell" : "buy";
+  const primaryRow = timingReliabilityRow(signal, quality, normalizedSide);
+  const fallbackRow = timingReliabilityRow(signal, options.fallbackQuality, normalizedSide);
+  const primarySamples = Math.max(0, Number(primaryRow?.samples) || 0);
+  const row = primarySamples > 0 ? primaryRow : fallbackRow;
   const samples = Math.max(0, Number(row?.samples) || 0);
   const hitRate = Number(row?.hitRate);
   const lowerBound = Number(row?.hitRateLowerBound);
@@ -49,17 +51,18 @@ export function buildMarketTimingReliability(signal, quality, side) {
     && Number.isFinite(meanReturn) && meanReturn > 0) status = "참고 가능";
   else if (samples >= 5 && Number.isFinite(meanReturn) && meanReturn > 0) status = "제한적 참고";
   else if (samples >= 5) status = "검증 약함";
+  const sourceLabel = primarySamples > 0 ? String(options.sourceLabel || "").trim() : "";
   const sampleLine = samples
-    ? `동일 유형 ${samples}회 · ${TIMING_RELIABILITY_HORIZON}일 적중 ${timingReliabilityPercent(hitRate, { absolute: true })}`
-    : "동일 유형의 완료된 검증 표본 없음";
+    ? `실제 신뢰 ${status}${sourceLabel ? ` · ${sourceLabel}` : ""} · 동일 유형 ${samples}회 · ${TIMING_RELIABILITY_HORIZON}일 적중 ${timingReliabilityPercent(hitRate, { absolute: true })}`
+    : `실제 신뢰 ${status} · 완료된 검증 표본 없음`;
   const riskLabel = normalizedSide === "sell" ? "최대 역행 상승" : "최대 하락";
   const displayedWorstAdverse = normalizedSide === "sell" ? -worstAdverse : worstAdverse;
   const outcomeLine = samples
-    ? `${TIMING_RELIABILITY_HORIZON}일 평균 성과 ${timingReliabilityPercent(meanReturn, { signed: true })} · ${riskLabel} ${timingReliabilityPercent(displayedWorstAdverse)}`
+    ? `${TIMING_RELIABILITY_HORIZON}일 평균 ${timingReliabilityPercent(meanReturn, { signed: true })} · ${riskLabel} ${timingReliabilityPercent(displayedWorstAdverse)}`
     : "새 결과가 쌓이면 실제 성과를 표시합니다";
   return Object.freeze({
     status,
-    lines: Object.freeze([`실제 신뢰 · ${status}`, sampleLine, outcomeLine]),
+    lines: Object.freeze([sampleLine, outcomeLine]),
   });
 }
 
@@ -315,36 +318,6 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
     return reasons.slice(0, Math.max(1, limit)).join(separator) || fallback;
   }
 
-  function timingRegimeLabel(value) {
-    return ({
-      expansion: "상승",
-      slowdown: "둔화",
-      stress: "위험",
-      recovery: "회복",
-      overheat: "과열",
-      range: "횡보",
-    })[String(value || "")] || "혼조";
-  }
-
-  function timingFamilyLabel(value) {
-    return ({
-      "shock-reversal": "급락 과매도 경고",
-      "systemic-capitulation": "시장 투매 감속",
-      "capitulation-reversal": "투매 반전",
-      "range-floor-reversal": "박스권 하단",
-      "trend-pullback": "추세 눌림",
-      "relative-washout": "상대 과매도",
-      "correction-reversal": "조정 반전",
-      "blowoff-exhaustion": "급등 소진",
-      "blowoff-continuation": "과열 연장",
-      "range-ceiling-rollover": "박스권 상단",
-      "trend-exhaustion": "추세 소진",
-      "distribution-rollover": "분배 전환",
-      "crowding-rollover": "쏠림 전환",
-      "overheat-rollover": "과열 전환",
-    })[String(value || "")] || "복합 판정";
-  }
-
   function timingGradeLabel(value, evidenceCount = 0, warning = false) {
     const explicit = ({
       강: "강",
@@ -401,10 +374,13 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
     const date = String(point?.x || "").slice(0, 10);
     const kind = eventMarkerKind(point?.data);
     const reliabilityEvents = [
-      values[TIMING_PAYLOAD.RELIABILITY_STATUS],
-      values[TIMING_PAYLOAD.RELIABILITY_SAMPLE],
+      values[TIMING_PAYLOAD.RELIABILITY_SUMMARY],
       values[TIMING_PAYLOAD.RELIABILITY_OUTCOME],
     ].filter(Boolean).map((title) => ({ title }));
+    const flowSummary = String(values[TIMING_PAYLOAD.FLOW_SUMMARY] || "").trim();
+    const flowEvents = flowSummary
+      ? [{ title: `흐름: ${flowSummary}` }]
+      : timingReasonEvents(values[TIMING_PAYLOAD.REASONS], "복합 흐름").slice(0, 2);
     if (kind === "timing-buy") {
       const title = values[TIMING_PAYLOAD.STAGE] || "매수 신호";
       return {
@@ -415,11 +391,8 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
             values[TIMING_PAYLOAD.GRADE],
             values[TIMING_PAYLOAD.EVIDENCE],
           )}` },
+          ...flowEvents,
           ...reliabilityEvents,
-          ...timingReasonEvents(values[TIMING_PAYLOAD.REASONS], "과매도·반전"),
-          { title: `ADR ${values[TIMING_PAYLOAD.METRIC_A] ?? "-"} · 공포 ${values[TIMING_PAYLOAD.METRIC_B] ?? "-"} · MACD ${values[TIMING_PAYLOAD.METRIC_C] ?? "-"}` },
-          { title: `시장 ${timingRegimeLabel(values[TIMING_PAYLOAD.REGIME])} · 근거 ${values[TIMING_PAYLOAD.EVIDENCE] ?? "-"}개` },
-          { title: `${timingFamilyLabel(values[TIMING_PAYLOAD.FAMILY])} · ${values[TIMING_PAYLOAD.BEHAVIOR] || "혼합형"}` },
         ],
       };
     }
@@ -433,11 +406,8 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
             values[TIMING_PAYLOAD.GRADE],
             values[TIMING_PAYLOAD.EVIDENCE],
           )}` },
+          ...flowEvents,
           ...reliabilityEvents,
-          ...timingReasonEvents(values[TIMING_PAYLOAD.REASONS], "과열·추세 둔화"),
-          { title: `신용20일 ${values[TIMING_PAYLOAD.METRIC_A] ?? "-"}% · 고점대비 ${values[TIMING_PAYLOAD.METRIC_B] ?? "-"}%` },
-          { title: `시장 ${timingRegimeLabel(values[TIMING_PAYLOAD.REGIME])} · 근거 ${values[TIMING_PAYLOAD.EVIDENCE] ?? "-"}개` },
-          { title: `${timingFamilyLabel(values[TIMING_PAYLOAD.FAMILY])} · ${values[TIMING_PAYLOAD.BEHAVIOR] || "혼합형"}` },
         ],
       };
     }
@@ -812,7 +782,15 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
           const point = findPointOnOrAfterDate(signal.date, ticker, frame.pointIndex, 4);
           if (!point || point.date < frame.start || point.date > frame.end) return;
           points.push({
-            reliability: buildMarketTimingReliability(signal, model?.quality, side),
+            reliability: buildMarketTimingReliability(
+              signal,
+              signal.obvConfirmed ? model?.obvComparison?.quality : model?.quality,
+              side,
+              {
+                fallbackQuality: model?.quality,
+                sourceLabel: signal.obvConfirmed ? "OBV 확인 표본" : "",
+              },
+            ),
             signal,
             signalLifecycle: getSignalLifecycle?.({
               ticker,
@@ -830,9 +808,6 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
       points.sort((left, right) => (
         left.date.localeCompare(right.date) || left.ticker.localeCompare(right.ticker)
       ));
-      const printable = (value, digits = 1, suffix = "") => (
-        Number.isFinite(toNum(value)) ? `${toNum(value).toFixed(digits)}${suffix}` : "-"
-      );
       const customdata = sell
         ? points.map(({ reliability, signal, signalLifecycle, ticker }) => [
           labelName(ticker),
@@ -841,16 +816,16 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
             signal.sellDeteriorationReasons,
             signal.sellTriggerReasons,
           ], "과열·추세 둔화"),
-          Number.isFinite(signal.creditChange) ? signal.creditChange.toFixed(1) : "-",
-          Number.isFinite(signal.priceDrawdown60) ? signal.priceDrawdown60.toFixed(1) : "-",
-          "-",
           normalizedTimingGrade(signal),
-          signal.marketRegime || "range",
           Number.isFinite(signal.evidenceCount) ? signal.evidenceCount : "-",
-          signal.signalFamily || "overheat-rollover",
-          signal.behaviorProfile?.label || "혼합형",
           timingSignalStage(signal, "sell", signalLifecycle),
-          ...reliability.lines,
+          reliability.lines[0] || "",
+          reliability.lines[1] || "",
+          signal.flowSummary || compactTimingReasons([
+            signal.sellSetupReasons,
+            signal.sellDeteriorationReasons,
+            signal.sellTriggerReasons,
+          ], "과열·추세 둔화", 3),
         ])
         : points.map(({ reliability, signal, signalLifecycle, ticker }) => [
           labelName(ticker),
@@ -860,30 +835,26 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
             signal.stabilizationReasons,
             signal.triggerReasons,
           ], "과매도·반전"),
-          printable(signal.adrMin),
-          printable(signal.fearMin),
-          printable(signal.oscillator, 3),
           normalizedTimingGrade(signal),
-          signal.marketRegime || "range",
           Number.isFinite(signal.evidenceCount) ? signal.evidenceCount : "-",
-          signal.signalFamily || "correction-reversal",
-          signal.behaviorProfile?.label || "혼합형",
           timingSignalStage(signal, "buy", signalLifecycle),
-          ...reliability.lines,
+          reliability.lines[0] || "",
+          reliability.lines[1] || "",
+          signal.flowSummary || compactTimingReasons([
+            signal.setupReasons,
+            signal.sentimentTurnReasons,
+            signal.stabilizationReasons,
+            signal.triggerReasons,
+          ], "과매도·반전", 3),
         ]);
       const hoverHeadlineTemplates = customdata.map(() => (
-        "<b>%{customdata[10]} · 근거 %{customdata[5]}</b>"
+        "<b>%{customdata[4]} · 근거 %{customdata[2]}</b>"
       ));
       const hoverDetailTemplates = customdata.map((values) => {
-        const reasons = String(escapeHtml?.(values[TIMING_PAYLOAD.REASONS])
-          ?? values[TIMING_PAYLOAD.REASONS]).replace(" · ", "<br>· ");
-        return sell
-          ? `근거: ${reasons}`
-            + "<br>신용20일 %{customdata[2]}% · 고점대비 %{customdata[3]}%"
-            + "<br>%{customdata[11]}<br>%{customdata[12]}<br>%{customdata[13]}<extra></extra>"
-          : `근거: ${reasons}`
-            + "<br>ADR %{customdata[2]} · 공포 %{customdata[3]} · MACD %{customdata[4]}"
-            + "<br>%{customdata[11]}<br>%{customdata[12]}<br>%{customdata[13]}<extra></extra>";
+        const flow = String(escapeHtml?.(values[TIMING_PAYLOAD.FLOW_SUMMARY])
+          ?? values[TIMING_PAYLOAD.FLOW_SUMMARY] ?? "복합 흐름");
+        return `흐름: ${flow}`
+          + "<br>%{customdata[5]}<br>%{customdata[6]}<extra></extra>";
       });
       const hovertemplate = customdata.map((_values, pointIndex) => {
         return `${hoverHeadlineTemplates[pointIndex]}<br><b>%{customdata[0]}</b><br>${hoverDetailTemplates[pointIndex]}`;
@@ -892,7 +863,6 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
         x: points.map((point) => point.date),
         y: points.map((point) => point.y),
         customdata,
-        text: points.map(() => (sell ? eventMarkerDownText : eventMarkerUpText)),
         type: "scatter",
         mode: "text",
         name: `타이밍 ${sell ? "매도" : "매수"}신호`,
@@ -909,6 +879,7 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
           markerGapFactors: points.map(() => timingGapMultiplier * (sell ? 1 : -1)),
           markerAnchorValues: points.map((point) => point.anchorY),
         },
+        text: points.map(() => (sell ? eventMarkerDownText : eventMarkerUpText)),
         textposition: "middle center",
         textfont: buildEventMarkerTextFont(
           sell ? colors.timingSell : colors.timingBuy,
