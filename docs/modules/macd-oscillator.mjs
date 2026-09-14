@@ -118,7 +118,7 @@ function buildMacdOscillator(options = {}) {
   const fastPeriod = Math.max(2, Number(options.fastPeriod) || 12);
   const slowPeriod = Math.max(fastPeriod + 1, Number(options.slowPeriod) || 26);
   const signalPeriod = Math.max(2, Number(options.signalPeriod) || 9);
-  if (points.length < slowPeriod + signalPeriod - 1) return null;
+  if (!points.length) return null;
 
   const prices = points.map((point) => point.price);
   const fast = alignedEma(prices, fastPeriod);

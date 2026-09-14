@@ -41,18 +41,19 @@ import { syncControl } from "./control-state-view.mjs";
     });
   }
 
-  function bindChartToolsToggle(options = {}) {
+  function bindContainerVisibilityToggle(options = {}) {
     const button = options.button;
     const container = options.container;
+    const hiddenClass = String(options.hiddenClass || "is-hidden");
     const applyState = () => {
       const enabled = Boolean(options.getEnabled?.());
-      container?.classList.toggle("tools-hidden", !enabled);
+      container?.classList.toggle(hiddenClass, !enabled);
       syncControl(button, {
         active: enabled,
         pressed: enabled,
         title: enabled
-          ? "메인차트 도구를 숨깁니다."
-          : "메인차트 도구를 표시합니다.",
+          ? options.enabledTitle
+          : options.disabledTitle,
       });
       options.onApplied?.(enabled);
       return enabled;
@@ -64,7 +65,26 @@ import { syncControl } from "./control-state-view.mjs";
       applyState();
       options.saveState?.();
     });
+    if (button?.dataset) button.dataset.bound = "1";
     return Object.freeze({ applyState });
+  }
+
+  function bindChartToolsToggle(options = {}) {
+    return bindContainerVisibilityToggle({
+      ...options,
+      hiddenClass: "tools-hidden",
+      enabledTitle: "메인차트 도구를 숨깁니다.",
+      disabledTitle: "메인차트 도구를 표시합니다.",
+    });
+  }
+
+  function bindMacroControlsToggle(options = {}) {
+    return bindContainerVisibilityToggle({
+      ...options,
+      hiddenClass: "macro-controls-hidden",
+      enabledTitle: "거시지표 선택 UI를 숨깁니다.",
+      disabledTitle: "거시지표 선택 UI를 표시합니다.",
+    });
   }
 
   function bindMainChartToolActions(options = {}) {
@@ -320,6 +340,13 @@ import { syncControl } from "./control-state-view.mjs";
     }
     if (typeof options.cycleCursorLineMode === "function") {
       element("chartCursorModeBtn")?.addEventListener("click", options.cycleCursorLineMode);
+    }
+    if (options.macroControls) {
+      bindings.macroControls = bindMacroControlsToggle({
+        ...options.macroControls,
+        button: element("macroControlsToggle"),
+        container: element("seriesToggleBoard"),
+      });
     }
     if (options.mainTools) {
       bindMainChartToolActions({
@@ -591,6 +618,7 @@ export {
   bindChartToolsToggle,
   bindDisclosureToggle,
   bindHoverToggle,
+  bindMacroControlsToggle,
   bindMainChartToolActions,
   bindManualRefresh,
   bindPreparedToggle,

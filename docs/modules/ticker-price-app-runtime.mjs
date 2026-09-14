@@ -195,10 +195,11 @@ export function createTickerPriceAppRuntime(options = {}) {
   }
 
   function hasVolumeCoverageFromDate(ticker, sinceDate, coverageOptions = {}) {
+    const historyCoverage = getHistoryCoordinator().historyCoverage(ticker);
     return getPayloadController().hasVolumeCoverageFromDate(
       ticker,
       sinceDate,
-      coverageOptions,
+      { ...coverageOptions, historyCoverage },
     );
   }
 

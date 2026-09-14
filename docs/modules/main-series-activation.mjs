@@ -241,6 +241,7 @@ export function createMainSeriesActivationApp(options = {}) {
             && volumeReady(key, profile, context)
             && context.pricePlan?.shouldRefresh === true,
           notifyUpdated: false,
+          visibleSinceDate: context.visibleSinceDate,
         });
       }
       if (profile.kind !== "market-index") return null;

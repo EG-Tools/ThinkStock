@@ -42,6 +42,7 @@ test("repeated ranges share work and an earlier range queues once", async () => 
   let coveredSince = "9999-12-31";
   let releaseFirst;
   const loads = [];
+  const ready = [];
   const runtime = createSeriesVolumeCoverageRuntime({
     profileFor,
     hasCoverage: (_key, sinceDate) => coveredSince <= sinceDate,
@@ -52,6 +53,7 @@ test("repeated ranges share work and an earlier range queues once", async () => 
       coveredSince = request.sinceDate;
     },
     loadStock: async () => {},
+    onReady: (keys, context) => ready.push([keys, context.sinceDate]),
   });
 
   const first = runtime.ensure(["^KS11"], "2026-01-01");
@@ -62,5 +64,9 @@ test("repeated ranges share work and an earlier range queues once", async () => 
   await Promise.all([first, shared, earlier]);
 
   assert.deepEqual(loads, ["2026-01-01", "2025-01-01"]);
+  assert.deepEqual(ready, [
+    [["^KS11"], "2026-01-01"],
+    [["^KS11"], "2025-01-01"],
+  ]);
   assert.deepEqual(runtime.pendingKeys(), []);
 });

@@ -1699,6 +1699,7 @@ test("co-movement toggle shows only the last visible stock for the selected peri
     [...container.children].map((element) => element.id)
   ));
   expect(topControlOrder).toEqual([
+    "macroControlsToggle",
     "hoverToggle",
     "chartToolsToggle",
     "chartHandlesToggle",
@@ -1706,6 +1707,14 @@ test("co-movement toggle shows only the last visible stock for the selected peri
     "stockResearchBtn",
     "apiOptionsBtn",
   ]);
+
+  const kospiToggle = page.locator('.series-toggle-btn[data-series="^KS11"]');
+  const kospiWasOn = await kospiToggle.evaluate((button) => button.classList.contains("is-on"));
+  await expect(page.locator("#macroControlsToggle")).toHaveAttribute("data-bound", "1");
+  await page.locator("#macroControlsToggle").click();
+  await expect(page.locator(".series-row.base-row").first()).toBeHidden();
+  await expect(page.locator("#customStockButtons")).toBeVisible();
+  expect(await kospiToggle.evaluate((button) => button.classList.contains("is-on"))).toBe(kospiWasOn);
 
   await expect(page.locator("#coMovementToggle")).toHaveClass(/is-active/);
   await expect(page.locator("#coMovementPanel")).toBeVisible();

@@ -9,9 +9,9 @@
     <title>Think Stock</title>
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" href="./icon.svg" type="image/svg+xml">
-    <link rel="preload" as="script" data-thinkstock-plotly-preload href="./vendor/plotly-thinkstock-2.35.2.min.js?v=dev&amp;build=3.48&amp;asset=5110a1025641">
+    <link rel="preload" as="script" data-thinkstock-plotly-preload href="./vendor/plotly-thinkstock-2.35.2.min.js?v=dev&amp;build=3.49&amp;asset=10cf3664a8cb">
     <link rel="stylesheet" href="./styles.css">
-  <script defer src="./assets/app.bundle.min.js?v=dev&amp;build=3.48&amp;asset=5110a1025641"></script>
+  <script defer src="./assets/app.bundle.min.js?v=dev&amp;build=3.49&amp;asset=10cf3664a8cb"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -26,6 +26,7 @@
           </div>
         </div>
         <div class="top-controls">
+          <button id="macroControlsToggle" class="chart-toggle reset-btn top-control-toggle is-active" type="button" title="거시지표 선택 UI를 숨깁니다." aria-pressed="true" aria-controls="seriesToggleBoard">거시</button>
           <button id="hoverToggle" class="chart-toggle hover-toggle-btn top-control-toggle top-info-btn" title="정보창 ON/OFF">정보창</button>
           <button id="chartToolsToggle" class="chart-toggle reset-btn top-control-toggle top-chart-tools-btn is-active" type="button" title="메인차트 도구를 숨깁니다." aria-pressed="true">도구</button>
           <button id="chartHandlesToggle" class="chart-toggle reset-btn top-control-toggle top-chart-handles-btn is-active" type="button" title="차트 좌우 조절 핸들 ON/OFF" aria-pressed="true">핸들</button>
@@ -112,7 +113,7 @@
           This product uses the FRED&reg; API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.
         </p>
         <p id="mainAppMeta" class="app-company-line app-company-line-main">
-              <span>Version : <span data-app-version-copy>3.48</span></span>
+              <span>Version : <span data-app-version-copy>3.49</span></span>
           <span>회사 : Life User</span>
           <span>이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a></span>
         </p>
@@ -294,7 +295,7 @@
           <p id="appCacheEmpty" class="app-cache-empty" hidden>저장된 캐시가 없습니다.</p>
         </section>
         <p id="settingsAppMeta" class="app-company-line">
-        <span class="api-settings-version">Version : <span id="appVersionText">3.48</span></span>
+        <span class="api-settings-version">Version : <span id="appVersionText">3.49</span></span>
           <span>회사 : Life User</span>
           <span>이메일 : <a href="mailto:Lyrikey@Naver.com">Lyrikey@Naver.com</a></span>
         </p>

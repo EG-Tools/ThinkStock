@@ -103,6 +103,20 @@ test("performance scorecard separates gross results, costs, and mature horizons"
   assert.equal(scorecard.horizons[126].worstAdverseExcursion, -0.04);
 });
 
+test("performance density includes evaluated tickers with no signals", () => {
+  const rows = [outcome({ hit: true })];
+  const scorecard = summarizeTimingPerformance(rows, "buy", {
+    evaluationWindows: [
+      { ticker: "000001.KS", startDate: "2023-01-01", endDate: "2024-01-01" },
+      { ticker: "000002.KS", startDate: "2023-01-01", endDate: "2024-01-01" },
+    ],
+  });
+
+  assert.equal(scorecard.signals, 1);
+  assert.equal(scorecard.tickers, 1);
+  assert.equal(scorecard.signalsPerTickerYear, 0.5);
+});
+
 test("sell diagnostics classify distinct objectives without changing signal output", () => {
   const rows = [
     { ...outcome({ type: "sell" }), signalFamily: "overheat-rollover" },

@@ -3,6 +3,19 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.49",
+      date: "2026.09.14",
+      items: Object.freeze([
+        "상장 전 기간을 포함한 화면의 거래량 준비 판정 수정",
+        "가격과 거래량 범위를 독립 확인해 누락된 과거 거래량 자동 보충",
+        "OBV 활성화 즉시 거래량 준비 상태 표시와 보충 요청 연결",
+        "짧은 이력에서도 가능한 이격도·OBV를 MACD와 독립 표시",
+        "신호 변동성 계산·차트 입력 생성·거래량 완료 처리의 중복 축소",
+        "신호 성능표에 무신호 종목과 실제 평가기간 반영",
+        "거시지표 선택 UI만 숨겨 종목 영역을 넓히는 거시 버튼 추가",
+      ]),
+    }),
+    Object.freeze({
       version: "3.48",
       date: "2026.09.10",
       items: Object.freeze([

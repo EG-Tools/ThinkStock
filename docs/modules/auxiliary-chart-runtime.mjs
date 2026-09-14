@@ -602,6 +602,7 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
     let lastMacdTraceCount = 0;
     let lastMacdRenderKey = "";
     let lastMacdViewportWindows = [];
+    const technicalVolumePending = new Set();
     let lastAdrViewportWindows = [];
     let auxiliaryPartialRenderCount = 0;
     let auxiliaryFullRenderCount = 0;
@@ -688,14 +689,37 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
         const target = Object.values(MACD_LINE_KEYS).includes(change?.key)
           ? "macd"
           : "auxiliary";
-        if (typeof options.requestRender === "function") {
-          options.requestRender({ targets: [target], xRange: mainRange });
+        const requestTargetRender = () => {
+          if (typeof options.requestRender === "function") {
+            options.requestRender({ targets: [target], xRange: mainRange });
+            return;
+          }
+          const render = target === "macd" ? renderMacdChart : renderAdrChart;
+          Promise.resolve(render(mainRange)).catch((error) => {
+            scope.console?.error?.("auxiliary chart visibility update failed", error);
+          });
+        };
+        if (change?.key === MACD_LINE_KEYS.obv && change?.visible === true) {
+          const series = String(getPreferredTechnicalSeries?.() || "").toUpperCase();
+          if (!series) {
+            requestTargetRender();
+            return;
+          }
+          technicalVolumePending.add(series);
+          requestTargetRender();
+          Promise.resolve(options.ensureTechnicalVolumeCoverage?.(series, {
+            reason: "technical-obv-enabled",
+          })).then((result) => {
+            if (result?.ready === true) requestTargetRender();
+          }).catch((error) => {
+            scope.console?.error?.("OBV volume coverage update failed", error);
+          }).finally(() => {
+            technicalVolumePending.delete(series);
+            requestTargetRender();
+          });
           return;
         }
-        const render = target === "macd" ? renderMacdChart : renderAdrChart;
-        Promise.resolve(render(mainRange)).catch((error) => {
-          scope.console?.error?.("auxiliary chart visibility update failed", error);
-        });
+        requestTargetRender();
       },
     });
     const bindAuxiliaryToggle = panelControlView.bindToggle;
@@ -1063,7 +1087,7 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
         onCycleTarget: options.cycleTechnicalSeriesTarget,
         seriesControls: TECHNICAL_SERIES_DEFINITIONS.map((definition) => ({
           active: activeByKind[definition.kind],
-          available: availableByKind[definition.kind],
+          available: definition.kind === "obv" || availableByKind[definition.kind],
           color: definition.color,
           key: definition.key,
           text: definition.label,
@@ -1078,6 +1102,7 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
         dataRevisionSignature("price"),
         visibleSeries.join(","),
         disparityDays,
+        technicalVolumePending.has(targetSeries) ? 1 : 0,
         ...TECHNICAL_SERIES_DEFINITIONS.map((definition) => (
           activeByKind[definition.kind] ? 1 : 0
         )),
@@ -1184,8 +1209,18 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
       const secondaryRange = viewportYRanges?.disparity || symmetricRange(disparityValues);
       const obvRange = viewportYRanges?.obv || naturalRange(obvValues);
       const hasVisibleTraceData = traces.some((trace) => (
-        trace.visible !== false && trace.y?.some(Number.isFinite)
+        trace.visible !== false
+          && trace.visible !== "legendonly"
+          && trace.y?.some(Number.isFinite)
       ));
+      const hasActiveTechnicalSeries = Object.values(activeByKind).some(Boolean);
+      const emptyStateText = technicalVolumePending.has(targetSeries) && activeByKind.obv
+        ? "OBV 거래량 불러오는 중입니다."
+        : (activeByKind.obv && !obvValues.length
+          ? "현재 구간의 OBV 거래량 자료가 부족합니다."
+          : (hasActiveTechnicalSeries
+            ? "표시 중인 종목의 보조차트 이력이 부족합니다."
+            : "MACD와 이격도, OBV가 꺼져 있습니다."));
       const layout = {
         ...chartLoader.layoutStyle(),
         margin: {
@@ -1208,9 +1243,7 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
         }],
         annotations: hasVisibleTraceData ? [] : [{
           xref: "paper", yref: "paper", x: 0.5, y: 0.5,
-          text: Object.values(activeByKind).some(Boolean)
-            ? "표시 중인 종목의 보조차트 이력이 부족합니다."
-            : "MACD와 이격도, OBV가 꺼져 있습니다.",
+          text: emptyStateText,
           showarrow: false,
           font: { color: "rgba(255,255,255,0.55)", size: 11 },
         }],

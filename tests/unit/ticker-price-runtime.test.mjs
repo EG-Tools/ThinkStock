@@ -420,6 +420,72 @@ test("volume coverage must reach the requested visible window", () => {
   assert.equal(runtime.hasVolumeCoverageFromDate(points, ""), true);
 });
 
+test("full history volume coverage starts at the first actual listing observation", () => {
+  const points = Array.from({ length: 24 }, (_, index) => ({
+    date: new Date(Date.UTC(2025, 0, 2 + index)).toISOString().slice(0, 10),
+    close: 1000 + index,
+    volume: 100000 + index,
+  }));
+
+  assert.equal(runtime.hasVolumeCoverageFromDate(points, "2020-01-01", {
+    historyCoverage: runtime.HISTORY_COVERAGE_FULL,
+    toleranceDays: 7,
+  }), true);
+  assert.equal(runtime.hasVolumeCoverageFromDate(points, "2020-01-01", {
+    historyCoverage: runtime.HISTORY_COVERAGE_PARTIAL,
+    toleranceDays: 7,
+  }), false);
+});
+
+test("series loader backfills a missing volume range even when prices already cover it", async () => {
+  const history = Array.from({ length: 200 }, (_, index) => ({
+    date: new Date(Date.UTC(2025, 0, 2 + index)).toISOString().slice(0, 10),
+    close: 1000 + index,
+    volume: 100000 + index,
+  }));
+  let currentPoints = history.map((point, index) => ({
+    ...point,
+    volume: index >= history.length - 20 ? point.volume : undefined,
+  }));
+  const historyRequests = [];
+  const loader = runtime.createSeriesLoader({
+    applySharedCache: async () => ({
+      applied: true,
+      latestDate: history.at(-1).date,
+      historyCoverage: runtime.HISTORY_COVERAGE_FULL,
+    }),
+    assessPriceUpdate: () => ({ invalidateDerived: false, fullHistoryRequired: false }),
+    clearSeries: () => { currentPoints = []; },
+    fetchHistory: async (_ticker, options) => {
+      historyRequests.push(options.sinceDate);
+      return history;
+    },
+    fetchLatest: async () => [history.at(-1)],
+    getPoints: () => currentPoints,
+    hasSeries: () => true,
+    hasVolumeHistory: () => true,
+    invalidateCache: async () => {},
+    isCacheFresh: () => true,
+    latestDate: () => history.at(-1).date,
+    mergePoints: (_ticker, points) => {
+      const byDate = new Map(currentPoints.map((point) => [point.date, point]));
+      points.forEach((point) => byDate.set(point.date, { ...byDate.get(point.date), ...point }));
+      currentPoints = [...byDate.values()];
+      return true;
+    },
+    normalizePoints: (points) => points,
+    resolveHistorySinceDate: (date) => date,
+    setStatus: () => {},
+    writeCache: async () => {},
+  });
+
+  const result = await loader.load("005930.KS", { visibleSinceDate: history[0].date });
+
+  assert.equal(result.ready, true);
+  assert.deepEqual(historyRequests, [history[0].date]);
+  assert.equal(currentPoints.every((point) => Number.isFinite(point.volume)), true);
+});
+
 test("payload controller owns price, volume and invalidation mutations", () => {
   let payload = { records: [{ date: "2026-08-12", "^KS11": 4200 }], series: ["^KS11"] };
   const volumes = new Map();

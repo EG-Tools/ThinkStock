@@ -3,13 +3,14 @@ function createAuxiliaryChartApp(scope = globalThis, options = {}) {
   const runtimeKey = options.runtimeKey;
   const renderQueueKey = options.renderQueueKey;
   let renderRevision = 0;
+  const technicalInputsBySeries = new Map();
 
-  function getMacdModelForSeries(series, buildMacdOscillator) {
-    const ticker = String(series || "").toUpperCase();
-    if (!options.supportsTechnicalSeries?.(ticker)
-      || typeof buildMacdOscillator !== "function") return null;
+  function technicalInputs(ticker) {
     const records = options.getPriceRows?.() || [];
     const volumeSeries = options.getVolumeSeries?.(ticker);
+    const sourceRevision = String(options.getPriceSourceRevision?.() || "");
+    const cached = technicalInputsBySeries.get(ticker);
+    if (sourceRevision && cached?.sourceRevision === sourceRevision) return cached;
     const sourceRows = records.map((row) => {
       const date = String(row?.date || "").slice(0, 10);
       const volume = typeof volumeSeries?.get === "function"
@@ -17,18 +18,40 @@ function createAuxiliaryChartApp(scope = globalThis, options = {}) {
         : volumeSeries?.[date];
       return { date, [ticker]: row?.[ticker], volume };
     });
-    const sourceFingerprint = options.fingerprintDatedSeries?.(
-      sourceRows,
-      [ticker, "volume"],
-      {
-        tail: 520,
-        logicVersion: `technical-v4-obv-disparity-${options.getDisparityDays?.()}`,
-      },
-    );
-    return options.macdModelCache.resolve(ticker, sourceFingerprint, () => buildMacdOscillator({
+    const input = {
       dates: sourceRows.map((row) => row.date),
+      fingerprints: new Map(),
       prices: sourceRows.map((row) => row[ticker]),
+      sourceRevision,
+      sourceRows,
       volumes: sourceRows.map((row) => row.volume),
+    };
+    technicalInputsBySeries.delete(ticker);
+    technicalInputsBySeries.set(ticker, input);
+    while (technicalInputsBySeries.size > 40) {
+      technicalInputsBySeries.delete(technicalInputsBySeries.keys().next().value);
+    }
+    return input;
+  }
+
+  function getMacdModelForSeries(series, buildMacdOscillator) {
+    const ticker = String(series || "").toUpperCase();
+    if (!options.supportsTechnicalSeries?.(ticker)
+      || typeof buildMacdOscillator !== "function") return null;
+    const input = technicalInputs(ticker);
+    const logicVersion = `technical-v4-obv-disparity-${options.getDisparityDays?.()}`;
+    if (!input.fingerprints.has(logicVersion)) {
+      input.fingerprints.set(logicVersion, options.fingerprintDatedSeries?.(
+        input.sourceRows,
+        [ticker, "volume"],
+        { tail: 520, logicVersion },
+      ));
+    }
+    const sourceFingerprint = input.fingerprints.get(logicVersion);
+    return options.macdModelCache.resolve(ticker, sourceFingerprint, () => buildMacdOscillator({
+      dates: input.dates,
+      prices: input.prices,
+      volumes: input.volumes,
       disparityPeriod: options.getDisparityDays?.(),
     }));
   }
@@ -58,6 +81,7 @@ function createAuxiliaryChartApp(scope = globalThis, options = {}) {
   }
 
   function invalidate() {
+    technicalInputsBySeries.clear();
     registry.peek(runtimeKey)?.invalidateAdr?.();
   }
 

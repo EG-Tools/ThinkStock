@@ -720,10 +720,19 @@
       : null;
   }
 
-  function standardizedReturn(values, index, lookback, volatilityLookback = 63) {
+  function standardizedReturn(
+    values,
+    index,
+    lookback,
+    volatilityLookback = 63,
+    knownVolatility = null,
+  ) {
     const current = toNumber(values[index]);
     const previous = toNumber(values[index - lookback]);
     if (!(current > 0 && previous > 0)) return null;
+    if (Number.isFinite(knownVolatility)) {
+      return Math.log(current / previous) / (knownVolatility * Math.sqrt(lookback));
+    }
     const returns = [];
     const start = Math.max(1, index - volatilityLookback + 1);
     for (let cursor = start; cursor <= index; cursor += 1) {
@@ -737,6 +746,31 @@
       / Math.max(1, returns.length - 1);
     const volatility = Math.max(0.002, Math.sqrt(Math.max(0, variance)));
     return Math.log(current / previous) / (volatility * Math.sqrt(lookback));
+  }
+
+  function buildRollingLogVolatility(values, lookback = 63) {
+    const size = Math.max(1, Number(lookback) || 63);
+    const prefixSum = Array(values.length + 1).fill(0);
+    const prefixSquare = Array(values.length + 1).fill(0);
+    const prefixCount = Array(values.length + 1).fill(0);
+    values.forEach((rawValue, index) => {
+      const current = toNumber(rawValue);
+      const previous = toNumber(values[index - 1]);
+      const value = current > 0 && previous > 0 ? Math.log(current / previous) : null;
+      prefixSum[index + 1] = prefixSum[index] + (value ?? 0);
+      prefixSquare[index + 1] = prefixSquare[index] + (value === null ? 0 : value ** 2);
+      prefixCount[index + 1] = prefixCount[index] + (value === null ? 0 : 1);
+    });
+    return values.map((_, index) => {
+      const start = Math.max(1, index - size + 1);
+      const end = index + 1;
+      const count = prefixCount[end] - prefixCount[start];
+      if (count < Math.min(20, size)) return null;
+      const sum = prefixSum[end] - prefixSum[start];
+      const squareSum = prefixSquare[end] - prefixSquare[start];
+      const variance = (squareSum - ((sum ** 2) / count)) / Math.max(1, count - 1);
+      return Math.max(0.002, Math.sqrt(Math.max(0, variance)));
+    });
   }
 
   function buildVolatilityProfile(values, options = {}) {
@@ -1027,6 +1061,7 @@
       benchmarkPrices,
       volumes,
       volatilityProfile,
+      standardizedVolatility63,
     } = context;
     const adrWindow = recentFinite(adr, index, OVERSOLD_MEMORY_DAYS);
     const fearWindow = recentFinite(fearGreed, index, OVERSOLD_MEMORY_DAYS);
@@ -1070,9 +1105,10 @@
     const price252d = changeRate(prices, index, 252);
     const price756d = changeRate(prices, index, 756);
     const price1260d = changeRate(prices, index, 1260);
-    const price20dVolScore = standardizedReturn(prices, index, 20);
-    const price60dVolScore = standardizedReturn(prices, index, 60);
-    const price5dVolScore = standardizedReturn(prices, index, 5);
+    const currentVolatility = toNumber(standardizedVolatility63?.[index]);
+    const price20dVolScore = standardizedReturn(prices, index, 20, 63, currentVolatility);
+    const price60dVolScore = standardizedReturn(prices, index, 60, 63, currentVolatility);
+    const price5dVolScore = standardizedReturn(prices, index, 5, 63, currentVolatility);
     const benchmark20d = changeRate(benchmarkPrices, index, 20);
     const relative20d = price20d !== null && benchmark20d !== null ? price20d - benchmark20d : null;
     const marketRelationship = rollingMarketRelationship(prices, benchmarkPrices, index);
@@ -1578,6 +1614,7 @@
       benchmarkPrices: dates.map((_, index) => benchmarkPrices[index] ?? null),
       volumes: dates.map((_, index) => volumes[index] ?? null),
       spread,
+      standardizedVolatility63: buildRollingLogVolatility(prices.slice(0, count)),
       volatilityProfile: buildVolatilityProfile(prices.slice(0, count)),
     };
     const movingAverage20 = trailingAverage(aligned.prices, 20);
@@ -2647,6 +2684,7 @@
     TIMING_FLOW_CONFIDENCE_VERSION,
     alignAsOf,
     buildVolatilityProfile,
+    buildRollingLogVolatility,
     buildKoreanVolatilityTimingRows,
     buildExternalVolatilityTimingRows,
     buildRollingReturnRelationship,
@@ -2688,6 +2726,7 @@ export {
   TIMING_FLOW_CONFIDENCE_VERSION,
   alignAsOf,
   buildVolatilityProfile,
+  buildRollingLogVolatility,
   buildKoreanVolatilityTimingRows,
   buildExternalVolatilityTimingRows,
   buildRollingReturnRelationship,

@@ -49,7 +49,22 @@ function directionalValue(row, horizon, type) {
   return rawReturn * (type === "buy" ? 1 : -1);
 }
 
-function scorecardDensity(rows) {
+function scorecardDensity(rows, options = {}) {
+  const evaluationWindows = (Array.isArray(options.evaluationWindows)
+    ? options.evaluationWindows : []).flatMap((window) => {
+    const ticker = String(window?.ticker || "").trim();
+    const start = Date.parse(`${String(window?.startDate || "").slice(0, 10)}T00:00:00Z`);
+    const end = Date.parse(`${String(window?.endDate || "").slice(0, 10)}T00:00:00Z`);
+    return ticker && Number.isFinite(start) && Number.isFinite(end) && end >= start
+      ? [{ ticker, start, end }]
+      : [];
+  });
+  if (evaluationWindows.length) {
+    const exposureYears = evaluationWindows.reduce((sum, window) => (
+      sum + Math.max(1, (window.end - window.start) / 31557600000)
+    ), 0);
+    return exposureYears > 0 ? rows.length / exposureYears : null;
+  }
   const dates = rows.map((row) => Date.parse(`${row.actionDate || row.date}T00:00:00Z`))
     .filter(Number.isFinite);
   const tickers = new Set(rows.map((row) => String(row.ticker || "")).filter(Boolean));
@@ -72,7 +87,7 @@ export function summarizeTimingPerformance(rows, type, options = {}) {
     firstDate,
     lastDate,
     transactionCostRate: rounded(fallbackCostRate, 6),
-    signalsPerTickerYear: rounded(scorecardDensity(typedRows)),
+    signalsPerTickerYear: rounded(scorecardDensity(typedRows, options)),
     horizons: Object.fromEntries(TIMING_SCORECARD_HORIZONS.map((horizon) => {
       const eligible = typedRows.flatMap((row) => {
         const gross = directionalValue(row, horizon, type);

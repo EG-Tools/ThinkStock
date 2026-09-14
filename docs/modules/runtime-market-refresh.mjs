@@ -110,6 +110,7 @@ import {
     }
 
     const pending = new Map();
+    const pendingEnsures = new Map();
 
     function queue(key, tag, task) {
       const current = pending.get(key);
@@ -148,38 +149,49 @@ import {
       }
 
       const forceRefresh = requestOptions.forceRefresh === true;
-      const indexKeys = missingKeys.filter((key) => options.profileFor(key)?.kind === "market-index");
-      const stockKeys = missingKeys.filter((key) => options.profileFor(key)?.kind === "stock");
-      const tasks = [];
-      if (indexKeys.length) {
-        const tag = `${since}:${Number(forceRefresh)}`;
-        tasks.push(queue("market-index", tag, () => options.loadIndex(indexKeys, {
-          forceRefresh,
-          sinceDate: since,
-        })));
-      }
-      stockKeys.forEach((key) => {
-        const tag = `${since}:${Number(forceRefresh)}`;
-        tasks.push(queue(`stock:${key}`, tag, () => options.loadStock(key, {
-          forceRefresh,
-          sinceDate: since,
-        })));
-      });
-      await Promise.allSettled(tasks);
-
-      const readyKeys = eligibleKeys.filter((key) => options.hasCoverage(key, since) === true);
-      const updatedKeys = missingKeys.filter((key) => readyKeys.includes(key));
-      if (requestOptions.notifyReady !== false && updatedKeys.length) {
-        await options.onReady?.(updatedKeys, {
-          reason: requestOptions.reason || "series-volume-coverage",
-          sinceDate: since,
+      const ensureTag = [
+        [...eligibleKeys].sort().join(","),
+        since,
+        Number(forceRefresh),
+        requestOptions.notifyReady === false ? 0 : 1,
+      ].join("|");
+      if (pendingEnsures.has(ensureTag)) return pendingEnsures.get(ensureTag);
+      const promise = (async () => {
+        const indexKeys = missingKeys.filter((key) => options.profileFor(key)?.kind === "market-index");
+        const stockKeys = missingKeys.filter((key) => options.profileFor(key)?.kind === "stock");
+        const tasks = [];
+        if (indexKeys.length) {
+          const tag = `${since}:${Number(forceRefresh)}`;
+          tasks.push(queue("market-index", tag, () => options.loadIndex(indexKeys, {
+            forceRefresh,
+            sinceDate: since,
+          })));
+        }
+        stockKeys.forEach((key) => {
+          const tag = `${since}:${Number(forceRefresh)}`;
+          tasks.push(queue(`stock:${key}`, tag, () => options.loadStock(key, {
+            forceRefresh,
+            sinceDate: since,
+          })));
         });
-      }
-      return Object.freeze({
-        ready: readyKeys.length === eligibleKeys.length,
-        readyKeys: Object.freeze(readyKeys),
-        updatedKeys: Object.freeze(updatedKeys),
-      });
+        await Promise.allSettled(tasks);
+
+        const readyKeys = eligibleKeys.filter((key) => options.hasCoverage(key, since) === true);
+        const updatedKeys = missingKeys.filter((key) => readyKeys.includes(key));
+        if (requestOptions.notifyReady !== false && updatedKeys.length) {
+          await options.onReady?.(updatedKeys, {
+            reason: requestOptions.reason || "series-volume-coverage",
+            sinceDate: since,
+          });
+        }
+        return Object.freeze({
+          ready: readyKeys.length === eligibleKeys.length,
+          readyKeys: Object.freeze(readyKeys),
+          updatedKeys: Object.freeze(updatedKeys),
+        });
+      })().finally(() => pendingEnsures.delete(ensureTag));
+      pendingEnsures.set(ensureTag, promise);
+      return promise;
     }
 
     return Object.freeze({

@@ -57,11 +57,17 @@ test("builds OBV once from the aligned price and volume series", () => {
   assert.equal(model.obv.at(-1), dates.slice(1).reduce((sum, _, index) => sum + 1001 + index, 0));
 });
 
-test("returns no oscillator when MACD warm-up history is insufficient", () => {
-  assert.equal(buildMacdOscillator({
-    dates: Array.from({ length: 33 }, (_, index) => String(index)),
-    prices: Array.from({ length: 33 }, (_, index) => 100 + index),
-  }), null);
+test("keeps shorter technical indicators available during the MACD warm-up", () => {
+  const model = buildMacdOscillator({
+    dates: Array.from({ length: 20 }, (_, index) => String(index)),
+    prices: Array.from({ length: 20 }, (_, index) => 100 + index),
+    volumes: Array.from({ length: 20 }, (_, index) => 1000 + index),
+    disparityPeriod: 5,
+  });
+
+  assert.equal(model.normalized.some(Number.isFinite), false);
+  assert.equal(model.disparity.findIndex(Number.isFinite), 4);
+  assert.equal(model.obv.findIndex(Number.isFinite), 0);
 });
 
 test("thinning preserves first, last, and local histogram extremes", () => {

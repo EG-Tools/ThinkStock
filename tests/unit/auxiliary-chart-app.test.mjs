@@ -152,3 +152,37 @@ test("auxiliary chart app shares its cached MACD model with feature consumers", 
     disparityPeriod: 60,
   }]);
 });
+
+test("auxiliary chart app reuses normalized technical inputs until price data changes", () => {
+  const records = [
+    { date: "2026-07-13", "^KS11": 3200 },
+    { date: "2026-07-14", "^KS11": 3220 },
+  ];
+  const volumes = new Map([
+    ["2026-07-13", 1000],
+    ["2026-07-14", 1200],
+  ]);
+  let revision = "price:1";
+  let volumeReads = 0;
+  let fingerprints = 0;
+  const app = createAuxiliaryChartApp({}, {
+    registry: createRegistry(),
+    macdModelCache: { resolve: (_key, _fingerprint, build) => build() },
+    fingerprintDatedSeries: () => { fingerprints += 1; return `fingerprint:${fingerprints}`; },
+    getPriceRows: () => records,
+    getPriceSourceRevision: () => revision,
+    getVolumeSeries: () => ({ get(date) { volumeReads += 1; return volumes.get(date); } }),
+    getDisparityDays: () => 60,
+    supportsTechnicalSeries: () => true,
+  });
+
+  app.getMacdModelForSeries("^KS11", () => ({}));
+  app.getMacdModelForSeries("^KS11", () => ({}));
+  assert.equal(volumeReads, 2);
+  assert.equal(fingerprints, 1);
+
+  revision = "price:2";
+  app.getMacdModelForSeries("^KS11", () => ({}));
+  assert.equal(volumeReads, 4);
+  assert.equal(fingerprints, 2);
+});

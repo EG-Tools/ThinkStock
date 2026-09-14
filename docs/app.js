@@ -359,7 +359,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = tickerPriceRuntimeModule.CORPORATE_ACTION_RATIO_THRESHOLD;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = tickerPriceRuntimeModule.CORPORATE_ACTION_MAX_BOUNDARY_DAYS;
-const APP_VERSION = "3.48";
+const APP_VERSION = "3.49";
 const APP_BUILD_VERSION = resolveAppBuildVersion(globalThis);
 const appCacheRuntime = createAppCacheRuntime(globalThis, {
   scheduler: backgroundTaskScheduler,
@@ -865,6 +865,7 @@ const chartSession = chartSessionControllerModule.createChartSessionState({
   showEps: false,
   showInsiderTrades: false,
   showCoMovement: true,
+  showMacroControls: true,
   showChartTools: true,
   showChartHandles: true,
   showRecessionSignals: true,
@@ -907,6 +908,7 @@ const auxiliaryChartApp = createAuxiliaryChartApp(globalThis, {
     Array.isArray(appData.pricePayload?.records) ? appData.pricePayload.records : []
   ),
   getVolumeSeries: (ticker) => tickerVolumeSeriesByTicker.get(String(ticker || "").toUpperCase()),
+  getPriceSourceRevision: () => dataRevisionSignature("price"),
   getDisparityDays: () => chartSession.macdDisparityDays,
   supportsTechnicalSeries: (series) => seriesSupportsFeature(series, "technical"),
   createRuntimeOptions: ({ modelModule, macdModule, getMacdModelForSeries, scheduleRender }) => {
@@ -957,6 +959,14 @@ const auxiliaryChartApp = createAuxiliaryChartApp(globalThis, {
       buildAuxiliaryChartModel: modelModule.buildAuxiliaryChartModel,
       normalizeAuxiliaryChartModel: chartRenderContractModule.normalizeAuxiliaryChartModel,
       getMacdModelForSeries,
+      ensureTechnicalVolumeCoverage: (series, context = {}) => {
+        if (!series) return Promise.resolve({ ready: false, readyKeys: [], updatedKeys: [] });
+        return ensureSeriesVolumeCoverage(
+          [series],
+          currentMainSeriesActivationSinceDate(),
+          context,
+        );
+      },
       getPreferredTechnicalSeries: resolveMacdTarget,
       cycleTechnicalSeriesTarget,
       supportsTechnicalSeries: (series) => seriesSupportsFeature(series, "technical"),

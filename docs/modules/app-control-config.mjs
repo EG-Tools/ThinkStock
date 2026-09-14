@@ -465,6 +465,11 @@ export function createChartApplicationControlConfig(context) {
       jumpLatest: c.slideChartViewportToLatest,
     },
     cycleCursorLineMode: c.cycleCursorLineMode,
+    macroControls: {
+      getEnabled: () => session.showMacroControls,
+      setEnabled: (value) => { session.showMacroControls = value; },
+      saveState: c.saveState,
+    },
     mainTools: {
       state: session,
       canUseCoMovement: c.isAdminAccessGranted,

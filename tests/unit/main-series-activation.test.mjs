@@ -241,7 +241,12 @@ test("activation fills missing stock volume after revealing cached prices", asyn
   assert.equal(await result.completion, true);
   assert.deepEqual(calls, [
     "reveal",
-    ["history", { forceRefresh: false, latestOnly: false, notifyUpdated: false }],
+    ["history", {
+      forceRefresh: false,
+      latestOnly: false,
+      notifyUpdated: false,
+      visibleSinceDate: "2025-12-25",
+    }],
     "inputs-ready",
     ["composition", "series-features-ready"],
   ]);

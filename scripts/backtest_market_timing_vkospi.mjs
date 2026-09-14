@@ -246,6 +246,10 @@ const preparedSeries = seriesEntries.flatMap(([ticker, raw]) => {
     tags: priceUniverse.validationSampling?.profiles?.[ticker]?.tags || [],
   }]];
 });
+const performanceEvaluationWindows = preparedSeries.flatMap(([ticker, series]) => {
+  const dates = (series.dates || []).filter((date) => date >= START_DATE);
+  return dates.length ? [{ ticker, startDate: dates[0], endDate: dates.at(-1) }] : [];
+});
 
 const policies = [
   { id: "conservative", buyPercentile: 0.85, sellPercentile: 0.20, sellChange5: 8, sellRebound20: 10 },
@@ -781,12 +785,14 @@ const report = {
     baseline: Object.fromEntries(["buy", "sell"].map((type) => [
       type,
       summarizeTimingPerformance(comparisonBaselineRows, type, {
+        evaluationWindows: performanceEvaluationWindows,
         transactionCostRate: TRANSACTION_COST_RATE,
       }),
     ])),
     selected: Object.fromEntries(["buy", "sell"].map((type) => [
       type,
       summarizeTimingPerformance(promotedRows, type, {
+        evaluationWindows: performanceEvaluationWindows,
         transactionCostRate: TRANSACTION_COST_RATE,
       }),
     ])),

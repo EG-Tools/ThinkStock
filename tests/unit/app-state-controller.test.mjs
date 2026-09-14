@@ -26,6 +26,7 @@ function state() {
     showEps: true,
     showInsiderTrades: false,
     showCoMovement: false,
+    showMacroControls: true,
     showChartTools: true,
     showChartHandles: true,
     showRecessionSignals: false,
@@ -174,6 +175,7 @@ test("loads legacy auxiliary visibility and keeps AI and EPS disabled at boot", 
         macdDisparityDays: 20,
         newsSentimentMovingAverageDays: 5,
         showChartTools: false,
+        showMacroControls: false,
         showEps: true,
         customStocks: [{ ticker: "005930.KS", name: "삼성전자" }],
       }),
@@ -195,6 +197,7 @@ test("loads legacy auxiliary visibility and keeps AI and EPS disabled at boot", 
   assert.deepEqual(chartState.mainHoverSeriesOrder, ["^KS11", "leading_cycle"]);
   assert.equal(chartState.showAiForecast, false);
   assert.equal(chartState.showChartTools, false);
+  assert.equal(chartState.showMacroControls, false);
   assert.equal(chartState.showEps, false);
   assert.equal(chartState.chartRightPaddingDays, 12);
   assert.equal(chartState.macdDisparityDays, 20);
@@ -222,6 +225,7 @@ test("saves one normalized application state record", () => {
   assert.equal(saved.creditOffset, -2);
   assert.equal(saved.showAiForecast, undefined);
   assert.equal(saved.showChartTools, true);
+  assert.equal(saved.showMacroControls, true);
   assert.equal(saved.showEps, undefined);
   assert.equal(saved.chartRightPaddingDays, 0);
   assert.equal(saved.macdDisparityDays, 60);

@@ -17,6 +17,7 @@ const {
   buildObvTimingComparison,
   buildTimingFlowContext,
   buildVolatilityProfile,
+  buildRollingLogVolatility,
   calibrateTimingSignals,
   classifyBehaviorProfile,
   classifyTimingRegime,
@@ -25,6 +26,27 @@ const {
   pricePathEfficiency,
   timingCalibrationObjective,
 } = marketTiming;
+
+test("precomputed rolling volatility preserves standardized return scores", () => {
+  const prices = Array.from({ length: 140 }, (_, index) => (
+    100 * Math.exp((index * 0.002) + (Math.sin(index / 5) * 0.03))
+  ));
+  const volatility = buildRollingLogVolatility(prices, 63);
+
+  [5, 20, 60].forEach((lookback) => {
+    for (let index = 63; index < prices.length; index += 1) {
+      const direct = marketTiming.standardizedReturn(prices, index, lookback, 63);
+      const shared = marketTiming.standardizedReturn(
+        prices,
+        index,
+        lookback,
+        63,
+        volatility[index],
+      );
+      assert.ok(Math.abs(direct - shared) < 1e-12);
+    }
+  });
+});
 const { buildMacdOscillator } = macdOscillator;
 
 function dateAt(index) {

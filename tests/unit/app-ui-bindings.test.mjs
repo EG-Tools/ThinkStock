@@ -112,6 +112,27 @@ test("chart tools toggle hides controls without changing their feature states", 
   assert.equal(saved, 2);
 });
 
+test("macro controls toggle hides only the macro selector rows", () => {
+  const button = fakeElement();
+  const board = fakeElement();
+  let enabled = true;
+  bindings.bindMacroControlsToggle({
+    button,
+    container: board,
+    getEnabled: () => enabled,
+    setEnabled: (value) => { enabled = value; },
+  });
+
+  assert.equal(button.dataset.bound, "1");
+  button.dispatch("click");
+  assert.equal(enabled, false);
+  assert.equal(button["aria-pressed"], "false");
+  assert.equal(board.classList.contains("macro-controls-hidden"), true);
+  button.dispatch("click");
+  assert.equal(enabled, true);
+  assert.equal(board.classList.contains("macro-controls-hidden"), false);
+});
+
 
 test("main chart tool actions share scale, co-movement, and handle state transitions", async () => {
   const scaleButton = fakeElement();

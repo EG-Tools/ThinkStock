@@ -1510,6 +1510,10 @@ body {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.series-toggle-board.macro-controls-hidden .series-row.base-row {
+  display: none;
+}
+
 .custom-series-row {
   display: flex;
   flex-wrap: wrap;

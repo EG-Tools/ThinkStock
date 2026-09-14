@@ -54,18 +54,35 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
 
   function hasVolumeCoverageFromDate(points, sinceDate, options = {}) {
     const minimumPoints = Math.max(1, Number(options.minimumPoints) || 20);
-    const volumePoints = (Array.isArray(points) ? points : []).filter((point) => (
+    const sourcePoints = Array.isArray(points) ? points : [];
+    const volumePoints = sourcePoints.filter((point) => (
       Number.isFinite(Number(point?.volume)) && Number(point.volume) > 0
     ));
-    if (volumePoints.length < minimumPoints) return false;
     const since = String(sinceDate || "").slice(0, 10);
-    if (!ISO_DATE_PATTERN.test(since)) return true;
+    const completeHistory = normalizeHistoryCoverage(options.historyCoverage) === HISTORY_COVERAGE_FULL;
+    const priceDates = completeHistory
+      ? sourcePoints.map((point) => String(point?.date || "").slice(0, 10))
+        .filter((date) => ISO_DATE_PATTERN.test(date))
+        .sort()
+      : [];
+    const effectiveSince = ISO_DATE_PATTERN.test(since)
+      && priceDates.length
+      && since < priceDates[0]
+      ? priceDates[0]
+      : since;
+    const requiredPoints = completeHistory && priceDates.length
+      ? Math.min(minimumPoints, priceDates.filter((date) => (
+        !ISO_DATE_PATTERN.test(effectiveSince) || date >= effectiveSince
+      )).length)
+      : minimumPoints;
+    if (volumePoints.length < Math.max(1, requiredPoints)) return false;
+    if (!ISO_DATE_PATTERN.test(effectiveSince)) return true;
     const earliestMs = Math.min(...volumePoints.map((point) => (
       Date.parse(String(point?.date || "").slice(0, 10))
     )).filter(Number.isFinite));
     if (!Number.isFinite(earliestMs)) return false;
     const toleranceDays = Math.max(0, Number(options.toleranceDays) || 0);
-    return earliestMs <= Date.parse(since) + (toleranceDays * 86400000);
+    return earliestMs <= Date.parse(effectiveSince) + (toleranceDays * 86400000);
   }
 
   function filterLatestTailPoints(existingPoints, latestPoints) {
@@ -315,6 +332,10 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
         && (typeof options.hasVolumeHistory !== "function" || options.hasVolumeHistory(key));
     }
 
+    function historyCoverage(ticker) {
+      return coverageByTicker.get(normalizeTickerKey(ticker)) || HISTORY_COVERAGE_UNKNOWN;
+    }
+
     function visibleReady(items, isHidden) {
       return visibleItems(items, isHidden).every((item) => fullHistoryReady(item.ticker));
     }
@@ -361,7 +382,7 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
       ));
     }
 
-    return Object.freeze({ ensureVisible, fullHistoryReady, load, note, visibleReady });
+    return Object.freeze({ ensureVisible, fullHistoryReady, historyCoverage, load, note, visibleReady });
   }
 
   function clearSeries(payload, ticker) {
@@ -925,6 +946,11 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
         options.getPoints(key),
         visibleSinceDate,
       );
+      const visibleVolumeWindowCovered = hasVolumeCoverageFromDate(
+        options.getPoints(key),
+        visibleSinceDate,
+        { historyCoverage },
+      );
       if (hasExisting
         && visibleWindowCovered
         && loadOptions.returnAfterCache === true
@@ -970,7 +996,7 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
         if (!latestBoundaryAssessment
           && !latestTailIncomplete
           && options.isCacheFresh(latestExisting, key)
-          && options.hasVolumeHistory(key)
+          && visibleVolumeWindowCovered
           && visibleWindowCovered
           && historyCoverage === HISTORY_COVERAGE_FULL) {
           return {
@@ -991,7 +1017,8 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
           historyCoverage,
           latestDate: options.latestDate(key),
         });
-        const visibleWindowSinceDate = visibleSinceDate && !visibleWindowCovered
+        const visibleWindowSinceDate = visibleSinceDate
+          && (!visibleWindowCovered || !visibleVolumeWindowCovered)
           ? visibleSinceDate
           : "";
         const requestedSinceDate = visibleWindowSinceDate || incrementalSinceDate;
