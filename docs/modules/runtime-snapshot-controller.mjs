@@ -549,6 +549,10 @@
   function isSnapshotUsable(snapshot, options = {}) {
     if (!snapshot || typeof snapshot !== "object") return false;
     if (snapshot.version !== options.schemaVersion) return false;
+    const expectedAppVersion = String(options.expectedAppVersion || "").trim();
+    const expectedBuildVersion = String(options.expectedBuildVersion || "").trim();
+    if (expectedAppVersion && String(snapshot.app_version || "").trim() !== expectedAppVersion) return false;
+    if (expectedBuildVersion && String(snapshot.build_version || "").trim() !== expectedBuildVersion) return false;
     const savedAtMs = Date.parse(String(snapshot.saved_at || ""));
     if (!Number.isFinite(savedAtMs)) return false;
     const now = Number.isFinite(options.now) ? options.now : Date.now();

@@ -1526,6 +1526,8 @@ const runtimeSnapshotDataManager = createRuntimeSnapshotDataManager({
   maxDisclosures: LOCAL_SNAPSHOT_MAX_DISCLOSURES,
   usability: {
     schemaVersion: DATA_CACHE_SCHEMA_VERSION,
+    expectedAppVersion: APP_VERSION,
+    expectedBuildVersion: APP_BUILD_VERSION,
     futureToleranceMs: DAY_MS,
     maxAgeMs: DATA_CACHE_MAX_AGE_DAYS * DAY_MS,
   },

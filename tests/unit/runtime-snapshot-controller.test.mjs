@@ -336,3 +336,24 @@ test("runtime snapshot data manager owns incremental build and atomic restore or
   assert.equal(source.pricePayload.records[0].close, 11);
   assert.equal(manager.getRevisions().macro, 5);
 });
+
+test("runtime snapshots are only reusable by the matching app build", () => {
+  const base = {
+    version: 3,
+    app_version: "3.50",
+    build_version: "build-current",
+    saved_at: "2026-09-14T00:00:00.000Z",
+  };
+  const options = {
+    schemaVersion: 3,
+    expectedAppVersion: "3.50",
+    expectedBuildVersion: "build-current",
+    now: Date.parse("2026-09-14T01:00:00.000Z"),
+    maxAgeMs: 24 * 60 * 60 * 1000,
+  };
+
+  assert.equal(module.isSnapshotUsable(base, options), true);
+  assert.equal(module.isSnapshotUsable({ ...base, app_version: "3.49" }, options), false);
+  assert.equal(module.isSnapshotUsable({ ...base, build_version: "build-previous" }, options), false);
+  assert.equal(module.isSnapshotUsable({ ...base, build_version: "" }, options), false);
+});
