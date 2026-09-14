@@ -60,7 +60,7 @@ import { throwIfAborted } from "./browser-request-runtime.mjs";
         // Reject it here so an older response never reaches a state merger.
         throwIfAborted(signal, "The operation was aborted");
         if (!response.ok) {
-          if (response.status === 401) options.onUnauthorized?.();
+          if (response.status === 401 && authenticated) options.onUnauthorized?.();
           const error = new Error(rawPayload?.error || `${config.label || "Runtime data"} HTTP ${response.status}`);
           error.status = response.status;
           throw error;
@@ -151,6 +151,7 @@ import { throwIfAborted } from "./browser-request-runtime.mjs";
         return requestJson({
           label: "ECOS",
           contractSource: "macro-contract",
+          authenticated: false,
           localEndpoint: options.localEndpoints?.macro,
           remoteEndpoint: options.endpoints.macro,
           forceNetwork: requestOptions.forceNetwork,
@@ -176,6 +177,7 @@ import { throwIfAborted } from "./browser-request-runtime.mjs";
         return requestJson({
           label: "ADR",
           contractSource: "adr-contract",
+          authenticated: false,
           localEndpoint: options.localEndpoints?.[endpointKey],
           remoteEndpoint: options.endpoints?.[endpointKey],
           forceNetwork: requestOptions.forceNetwork,

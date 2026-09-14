@@ -86,7 +86,7 @@ test("new stock loads its own Cloudflare DART disclosures", async ({ page }) => 
   await page.locator("#resetHandles").click();
   await expect(page.locator("#resetHandles")).toHaveAttribute("aria-pressed", "false");
   const lockedViewport = await page.locator("#chart").evaluate(async (element) => {
-    const xRange = [...element._fullLayout.xaxis.range];
+    const xRange = [...element._fullLayout.xaxis.range].map((value) => String(value).slice(0, 10));
     const yRange = [0, 100];
     await window.Plotly.relayout(element, {
       "xaxis.range": xRange,
@@ -98,7 +98,7 @@ test("new stock loads its own Cloudflare DART disclosures", async ({ page }) => 
   await page.locator("#aiForecastToggle").click();
   await expect(page.locator("#aiForecastProgress")).toBeHidden({ timeout: 10000 });
   const currentViewport = () => page.locator("#chart").evaluate((element) => ({
-    xRange: [...element._fullLayout.xaxis.range],
+    xRange: [...element._fullLayout.xaxis.range].map((value) => String(value).slice(0, 10)),
     yRange: [...element._fullLayout.yaxis.range],
   }));
   await expect.poll(currentViewport, {
@@ -126,15 +126,17 @@ test("new stock loads its own Cloudflare DART disclosures", async ({ page }) => 
     aiTraceCount: (element.data || []).filter((trace) => trace?.meta?.overlayKind === "ai-scenario").length,
   }))).toEqual({ stockVisible: true, aiTraceCount: 0 });
   await expect.poll(currentViewport).toEqual(lockedViewport);
-  await expect.poll(() => newStockDisclosureRequests).toBe(1);
-  expect(forcedNewStockDisclosures).toEqual([null]);
-  expect([...new Set(requestedDisclosureTickers)]).toEqual(["000660.KS"]);
+  expect(newStockDisclosureRequests).toBe(0);
+  expect(requestedDisclosureTickers).toEqual([]);
   await expect(page.locator("#disclosureToggle")).toHaveAttribute("aria-pressed", "false");
   await expect.poll(() => page.locator("#chart").evaluate((element) => (
     (element.data || []).some((trace) => trace?.meta?.overlayKind === "disclosure")
   ))).toBe(false);
   await page.locator("#disclosureToggle").click();
   await expect(page.locator("#disclosureToggle")).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(() => newStockDisclosureRequests).toBe(1);
+  expect(forcedNewStockDisclosures).toEqual([null]);
+  expect([...new Set(requestedDisclosureTickers)]).toEqual(["000660.KS"]);
   await expect.poll(() => page.locator("#chart").evaluate((element) => {
     const trace = (element.data || []).find((candidate) => candidate?.meta?.overlayKind === "disclosure");
     return trace?.meta?.overlayKind === "disclosure"

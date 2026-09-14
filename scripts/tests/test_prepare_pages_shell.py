@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from prepare_pages_shell import prepare_pages_shell
+from prepare_pages_shell import REQUIRED_FILES, prepare_pages_shell
 
 
 class PreparePagesShellTests(unittest.TestCase):
@@ -13,11 +13,9 @@ class PreparePagesShellTests(unittest.TestCase):
             root = Path(temporary)
             source = root / "docs"
             target = root / "shell"
-            for filename in ("index.html", "styles.css", "sw.js"):
+            for filename in REQUIRED_FILES:
                 (source / filename).parent.mkdir(parents=True, exist_ok=True)
                 (source / filename).write_text(filename, encoding="utf-8")
-            (source / "assets").mkdir(parents=True)
-            (source / "assets" / "app.bundle.min.js").write_text("app", encoding="utf-8")
             (source / "modules").mkdir()
             (source / "modules" / "runtime.js").write_text("runtime", encoding="utf-8")
             (source / "data").mkdir()

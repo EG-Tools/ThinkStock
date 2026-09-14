@@ -21,6 +21,7 @@ function withTransactions(controller) {
             return controller.applyCreditLiveRows(result, keys, options.label);
           }
           if (name === "macro") return controller.commitMacroBuild(result, keys, options);
+          if (name === "adr") return controller.commitAdrBuild(result, keys, options);
           return result;
         },
         commit: () => true,
@@ -206,6 +207,49 @@ test("macro refresh keeps healthy components when another component fails", asyn
   assert.equal(result.components["macro:news"].ok, true);
   assert.equal(result.latestDate, "2026-08-19");
   assert.match(result.warnings[0], /이전 값 유지/);
+});
+
+test("public runtime refreshes chart 3 ADR and news inputs through the gateway", async () => {
+  const calls = [];
+  const controller = withTransactions({
+    buildLeadingCycleLiveRows: (rows) => rows,
+    buildNewsSentimentLiveRows: (rows) => rows,
+    buildMacroIndicatorLiveRows: (rows) => rows,
+    buildAuxiliarySeriesRows: (rows) => rows,
+    commitMacroBuild: (rows) => ({ latestDate: rows.at(-1)?.date || "", updated: rows.length }),
+    commitAdrBuild: (rows) => ({ latestDate: rows.at(-1)?.date || "", updated: rows.length }),
+  });
+  const refresh = createRuntimeMarketRefresh({
+    gateway: {
+      fetchAdr: async ({ latestOnly }) => {
+        calls.push(latestOnly ? "adr-latest" : "adr-history");
+        return {
+          latestDate: "2026-09-10",
+          rows: [{ date: "2026-09-10", adr_kospi: 91, adr_kosdaq: 88 }],
+        };
+      },
+      fetchMacro: async () => {
+        calls.push("macro");
+        return {
+          leadingRows: [],
+          newsRows: [{ date: "2026-08-30", news_sentiment: 101.2 }],
+          policyRateRows: [],
+          tradeRows: [],
+        };
+      },
+    },
+    adrKeys: ["adr_kospi", "adr_kosdaq"],
+    canUseGateway: () => false,
+    getAdrBenchmarkDate: () => "2026-09-10",
+    getAdrRows: () => [],
+    getSeriesController: () => controller,
+    isLocal: false,
+  });
+
+  const [adr, macro] = await Promise.all([refresh.refreshAdr(), refresh.refreshMacro()]);
+  assert.deepEqual(calls.sort(), ["adr-history", "adr-latest", "macro"]);
+  assert.equal(adr.latestDate, "2026-09-10");
+  assert.equal(macro.latestDate, "2026-08-30");
 });
 
 test("credit refresh isolates each balance series and reports its own date", async () => {

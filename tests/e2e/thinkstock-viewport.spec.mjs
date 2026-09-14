@@ -1891,6 +1891,9 @@ test("re-enabling a recently hidden series reuses the chart model", async ({ pag
   });
   await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (
+    window.ThinkStockE2E.getRuntimeDiagnosticState().refreshPhases.supplementalReady
+  )), { timeout: 60_000 }).toBeGreaterThan(0);
   const kosdaqToggle = page.locator('[data-series="^KQ11"]');
 
   await kosdaqToggle.click();

@@ -142,6 +142,18 @@ import { createRuntimeSourceHealth } from "./runtime-source-health.mjs";
       return task;
     }
 
+    async function waitForDerivedInputs(messageElement, refreshOptions = {}) {
+      if (derivedInputState.ready === true) return { ready: true, reused: false };
+      if (refreshPromise) {
+        const result = await refreshPromise;
+        if (derivedInputState.ready === true) return result;
+      }
+      return refresh(messageElement, {
+        ...refreshOptions,
+        requireDerivedInputs: true,
+      });
+    }
+
     async function prepareInitialData(flow = {}) {
       const restoredSnapshot = await flow.restoreSnapshot();
       if (restoredSnapshot) flow.setProgress?.(42, "Restoring last view");
@@ -174,6 +186,7 @@ import { createRuntimeSourceHealth } from "./runtime-source-health.mjs";
     }
 
     async function refreshDuringStartup(messageElement, flow = {}) {
+      const viewportSnapshot = flow.captureViewport?.() || null;
       let releaseCritical = null;
       let criticalReleased = false;
       const criticalReady = new Promise((resolve) => {
@@ -190,7 +203,10 @@ import { createRuntimeSourceHealth } from "./runtime-source-health.mjs";
         awaitSupplementalRender: false,
         deferSupplementalUntilReady: true,
         onCriticalProgress: flow.onCriticalProgress,
-        onCriticalReady: () => releaseCritical({ ok: true }),
+        onCriticalReady: async () => {
+          await flow.reconcileViewport?.(viewportSnapshot);
+          releaseCritical({ ok: true });
+        },
       }).then((result) => {
         releaseCritical({ ok: !result?.cancelled });
       }).catch((error) => {
@@ -221,6 +237,7 @@ import { createRuntimeSourceHealth } from "./runtime-source-health.mjs";
       refresh,
       refreshDuringStartup,
       setStatus,
+      waitForDerivedInputs,
       dispose: () => {
         if (refreshController) {
           const closed = new Error("Runtime data app disposed");

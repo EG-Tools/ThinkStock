@@ -247,11 +247,16 @@ test("runtime refresh runs only enabled optional features in order", async () =>
 
 test("manual runtime refresh reconciles the viewport after optional features", async () => {
   const calls = [];
+  const snapshot = { wasAtLatest: true, viewRange: [1, 2] };
   const runtime = createApplicationLifecycleRuntime({
     refresh: {
+      captureViewport: () => {
+        calls.push("capture");
+        return snapshot;
+      },
       runData: () => calls.push("data"),
       renderAfterData: false,
-      reconcileViewport: () => calls.push("reconcile"),
+      reconcileViewport: (value) => calls.push(value === snapshot ? "reconcile:snapshot" : "reconcile:missing"),
     },
     optionalRefreshes: [
       { name: "eps", enabled: () => true, run: () => calls.push("eps") },
@@ -259,7 +264,7 @@ test("manual runtime refresh reconciles the viewport after optional features", a
   });
 
   await runtime.refreshRuntime(null, { reconcileViewport: true });
-  assert.deepEqual(calls, ["data", "eps", "reconcile"]);
+  assert.deepEqual(calls, ["capture", "data", "eps", "reconcile:snapshot"]);
 });
 
 test("runtime refresh can run independent optional features through a bounded lane", async () => {

@@ -24,7 +24,8 @@ test("describes authentication and parameters for every Worker route", () => {
   assert.equal(matchRequestRoute("/api/research/history", "GET").ticker, true);
   assert.equal(matchRequestRoute("/api/research/profile", "GET").ticker, true);
   assert.equal(matchRequestRoute("/api/indices", "GET").ticker, undefined);
-  assert.equal(matchRequestRoute("/api/adr", "GET").id, "adr");
+  assert.equal(matchRequestRoute("/api/adr", "GET").authenticated, false);
+  assert.equal(matchRequestRoute("/api/macro", "GET").authenticated, false);
   assert.deepEqual(matchRequestRoute("/api/crisis-signal", "GET"), {
     id: "crisis-signal",
     path: "/api/crisis-signal",

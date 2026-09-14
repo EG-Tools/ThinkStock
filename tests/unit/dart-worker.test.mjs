@@ -267,7 +267,7 @@ test("uses Browser Run when Cloudflare receives a Stockplus VKOSPI 403", async (
   }
 });
 
-test("returns authenticated ADR data and reuses the short Worker cache", async () => {
+test("returns public ADR data and reuses the short Worker cache", async () => {
   const cache = memoryKv();
   const timestamp = Date.parse("2026-08-06T00:00:00+09:00");
   let browserCalls = 0;
@@ -287,7 +287,7 @@ test("returns authenticated ADR data and reuses the short Worker cache", async (
       },
     },
   };
-  const refreshed = await handleRequest(request("/api/adr?refresh=1", { token: "private" }), env);
+  const refreshed = await handleRequest(request("/api/adr?refresh=1"), env);
   const payload = await refreshed.json();
   assert.equal(refreshed.status, 200);
   assert.equal(payload.cached, false);
@@ -298,7 +298,7 @@ test("returns authenticated ADR data and reuses the short Worker cache", async (
     adr_kosdaq: 87.4,
   });
 
-  const cached = await handleRequest(request("/api/adr", { token: "private" }), env);
+  const cached = await handleRequest(request("/api/adr"), env);
   assert.equal((await cached.json()).cached, true);
   assert.equal(browserCalls, 1);
 });
@@ -332,7 +332,7 @@ test("returns the last validated ADR cache when every upstream path fails", asyn
   assert.equal(payload.rows.at(-1).adr_kospi, 91.2);
 });
 
-test("returns authenticated ECOS macro updates and reuses the Worker cache", async () => {
+test("returns public ECOS macro updates and reuses the Worker cache", async () => {
   const originalFetch = globalThis.fetch;
   const cache = memoryKv();
   let calls = 0;
@@ -341,7 +341,10 @@ test("returns authenticated ECOS macro updates and reuses the Worker cache", asy
     const target = String(url);
     let rows;
     if (target.includes("/901Y067/")) rows = [{ TIME: "202607", DATA_VALUE: "104.8" }];
-    else if (target.includes("/521Y001/")) rows = [{ TIME: "20260803", DATA_VALUE: "101.2" }];
+    else if (target.includes("/523Y001/")) rows = [
+      { TIME: "20260803", DATA_VALUE: "101.2" },
+      { TIME: "20260906", DATA_VALUE: "100.76" },
+    ];
     else if (target.includes("/722Y001/")) rows = [{ TIME: "202607", DATA_VALUE: "2.5" }];
     else if (target.includes("T002")) rows = [{ TIME: "202606", DATA_VALUE: "102166000" }];
     else rows = [{ TIME: "202606", DATA_VALUE: "66078000" }];
@@ -349,19 +352,19 @@ test("returns authenticated ECOS macro updates and reuses the Worker cache", asy
   };
   try {
     const env = { ECOS_API_KEY: "ecos", THINKSTOCK_ACCESS_TOKEN: "private", DISCLOSURE_CACHE: cache };
-    const refreshed = await handleRequest(request("/api/macro?refresh=1", { token: "private" }), env);
+    const refreshed = await handleRequest(request("/api/macro?refresh=1"), env);
     const payload = await refreshed.json();
     assert.equal(refreshed.status, 200);
     assert.deepEqual(payload.leadingRows.at(-1), { date: "2026-09-01", leading_cycle: 104.8 });
     assert.equal(payload.leadingDateBasis, "availability");
-    assert.deepEqual(payload.newsRows.at(-1), { date: "2026-08-03", news_sentiment: 101.2 });
+    assert.deepEqual(payload.newsRows.at(-1), { date: "2026-09-06", news_sentiment: 100.76 });
     assert.deepEqual(payload.policyRateRows.at(-1), { date: "2026-07-01", policy_rate: 2.5 });
     assert.deepEqual(payload.tradeRows.at(-1), {
       date: "2026-06-01",
       export_value: 102166000,
       import_value: 66078000,
     });
-    const cached = await handleRequest(request("/api/macro", { token: "private" }), env);
+    const cached = await handleRequest(request("/api/macro"), env);
     assert.equal((await cached.json()).cached, true);
     assert.equal(calls, 5);
   } finally {
@@ -375,7 +378,7 @@ test("keeps valid ECOS components when one macro series fails", async () => {
     const target = String(url);
     if (target.includes("/901Y067/")) return new Response("unavailable", { status: 503 });
     let rows;
-    if (target.includes("/521Y001/")) rows = [{ TIME: "20260812", DATA_VALUE: "101.2" }];
+    if (target.includes("/523Y001/")) rows = [{ TIME: "20260906", DATA_VALUE: "100.76" }];
     else if (target.includes("/722Y001/")) rows = [{ TIME: "202607", DATA_VALUE: "2.5" }];
     else if (target.includes("/T002")) rows = [{ TIME: "202607", DATA_VALUE: "102166000" }];
     else rows = [{ TIME: "202607", DATA_VALUE: "66078000" }];
@@ -390,7 +393,7 @@ test("keeps valid ECOS components when one macro series fails", async () => {
     const payload = await response.json();
     assert.equal(response.status, 200);
     assert.deepEqual(payload.leadingRows, []);
-    assert.equal(payload.newsRows.at(-1).news_sentiment, 101.2);
+    assert.equal(payload.newsRows.at(-1).news_sentiment, 100.76);
     assert.equal(payload.policyRateRows.at(-1).policy_rate, 2.5);
     assert.equal(payload.partial, true);
     assert.match(payload.warning, /901Y067|선행/);

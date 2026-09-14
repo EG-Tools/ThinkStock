@@ -105,6 +105,9 @@ export function createApplicationLifecycleRuntime(options = {}) {
   }
 
   async function refreshRuntime(messageElement, refreshOptions = {}) {
+    const viewportSnapshot = refreshOptions.reconcileViewport === true
+      ? refresh.captureViewport?.()
+      : null;
     await refresh.runData?.(messageElement, refreshOptions);
     if (refresh.renderAfterData !== false) {
       // Legacy refresh providers may not own chart rendering themselves.
@@ -125,7 +128,7 @@ export function createApplicationLifecycleRuntime(options = {}) {
       : await Promise.all(jobs.map((job) => job()));
     const failure = errors.find((error) => error instanceof Error);
     if (refreshOptions.reconcileViewport === true) {
-      await refresh.reconcileViewport?.();
+      await refresh.reconcileViewport?.(viewportSnapshot);
     }
     if (failure) {
       throw failure;

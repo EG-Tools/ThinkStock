@@ -504,7 +504,7 @@ import { APP_DATA_COMPONENT_GROUPS } from "./app-data-store.mjs";
         onError: (error, context) => {
           if (isRetryableAdrRefreshError(error) && context.allowBackgroundRetry !== false) {
             scheduleAdrFinalRetry(context.forceNetwork);
-            return { info: ["ADR 백그라운드 재확인 예약"], warnings: [] };
+            return { info: ["ADR 연결 지연 · 저장된 값 유지 · 재확인 예약"], warnings: [] };
           }
           return context.sourceFailure(error, "ADR 불러오기 오류");
         },
@@ -843,7 +843,7 @@ import { APP_DATA_COMPONENT_GROUPS } from "./app-data-store.mjs";
             setMessage(msgEl, [
               ...infoLines,
               ...warnLines,
-              "공시·보조지표를 백그라운드에서 갱신 중입니다.",
+              "공시·보조지표 백그라운드 갱신을 시작했습니다.",
             ], false);
             await options.onCriticalReady({ changes, info: [...infoLines], warnings: [...warnLines] });
           }

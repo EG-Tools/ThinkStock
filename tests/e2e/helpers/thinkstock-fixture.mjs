@@ -283,9 +283,21 @@ async function stubExternalRefreshes(page, { stubFearGreed = true } = {}) {
       },
     });
   });
-  // Keep the seeded personal token valid while startup checks recent ECOS changes.
+  // Mirror the bundled macro tail so public startup checks remain a no-op.
   await page.route("https://thinkstock-api.keg0320.workers.dev/api/macro**", async (route) => {
-    await route.fulfill({ json: { ok: true, leadingRows: [], newsRows: [] } });
+    await route.fulfill({ json: {
+      ok: true,
+      leadingRows: recentDates.map((date, index) => ({
+        date,
+        leading_cycle: [99, 99.5, 100, 100.5, 101][index],
+      })),
+      newsRows: recentDates.map((date, index) => ({
+        date,
+        news_sentiment: [92, 96, 101, 105, 108][index],
+      })),
+      policyRateRows: [],
+      tradeRows: [],
+    } });
   });
   await page.route("https://thinkstock-api.keg0320.workers.dev/api/credit**", async (route) => {
     await route.fulfill({ json: { ok: true, rows: [] } });

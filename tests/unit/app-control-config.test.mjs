@@ -145,13 +145,19 @@ test("waits for AI inputs before requesting the final composition", async () => 
   context.refreshAiAnalysisForVisibleSeries = async () => context.calls.push("ai-analysis");
   context.loadAiMarketModel = async () => context.calls.push("ai-market");
   context.showVisibleAiForecastAvailability = () => context.calls.push("ai-availability");
+  context.settleChartViewport = async () => context.calls.push("settle-chart");
+  context.waitForRuntimeDerivedInputs = async () => context.calls.push("wait-derived-inputs");
   const config = createChartApplicationControlConfig(context);
 
+  await config.ai.beforeEnable();
   config.ai.setEnabled(true);
   await config.ai.onEnabled();
 
   assert.equal(context.chartSession.showAiForecast, true);
   assert.deepEqual(context.calls, [
+    "settle-chart",
+    "wait-derived-inputs",
+    "settle-chart",
     "enable-ai",
     "ai-availability",
     "ai-hold-start",

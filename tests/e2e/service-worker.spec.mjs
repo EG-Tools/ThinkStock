@@ -1,5 +1,15 @@
 import { expect, test } from "@playwright/test";
 
+const earliestAuxiliarySeriesDate = (page, seriesKey) => page.locator("#chart-adr")
+  .evaluate((element, targetSeriesKey) => {
+    const firstDate = (element.data || [])
+      .filter((item) => item?.meta?.auxiliarySeriesKey === targetSeriesKey)
+      .flatMap((item) => item.x || [])
+      .filter(Boolean)
+      .sort()[0] || "";
+    return Number(String(firstDate).slice(0, 10).replaceAll("-", ""));
+  }, seriesKey);
+
 
 test("service worker registers and precaches the offline shell", async ({ context, page }) => {
   test.setTimeout(90_000);
@@ -29,12 +39,8 @@ test("service worker registers and precaches the offline shell", async ({ contex
   expect(bundledIndicatorHistory.fear_greed).toBeGreaterThan(250);
   expect(bundledIndicatorHistory.vix).toBeGreaterThan(250);
 
-  await expect.poll(() => page.locator("#chart-adr").evaluate((element) => {
-    const trace = (element.data || []).find((item) => (
-      item?.meta?.auxiliarySeriesKey === "news_sentiment"
-    ));
-    return Number(String(trace?.x?.find(Boolean) || "").slice(0, 10).replaceAll("-", ""));
-  })).toBeLessThan(20060101);
+  await expect.poll(() => earliestAuxiliarySeriesDate(page, "news_sentiment"))
+    .toBeLessThan(20060101);
 
   const cachedPaths = await page.evaluate(async () => {
     const keys = await caches.keys();
@@ -150,12 +156,8 @@ test("service worker registers and precaches the offline shell", async ({ contex
   await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
   await expect(page.locator("#chart .main-svg").first()).toBeVisible();
   await page.evaluate(() => window.ThinkStockE2E.setActiveMonthsForTest(360));
-  await expect.poll(() => page.locator("#chart-adr").evaluate((element) => {
-    const trace = (element.data || []).find((item) => (
-      item?.meta?.auxiliarySeriesKey === "news_sentiment"
-    ));
-    return Number(String(trace?.x?.find(Boolean) || "").slice(0, 10).replaceAll("-", ""));
-  })).toBeLessThan(20060101);
+  await expect.poll(() => earliestAuxiliarySeriesDate(page, "news_sentiment"))
+    .toBeLessThan(20060101);
 
   const upgradedCacheNames = await page.evaluate(() => caches.keys());
   expect(upgradedCacheNames).not.toContain(obsoleteShell);

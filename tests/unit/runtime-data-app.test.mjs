@@ -102,6 +102,39 @@ test("signal and AI share an in-flight derived-input refresh", async () => {
   assert.deepEqual(await aiConfirmation, { ok: true });
 });
 
+test("AI waits for the active startup refresh instead of replacing it", async () => {
+  const pending = [];
+  const app = createRuntimeDataApp(createScope(), {
+    runRefresh: (_element, options) => new Promise((resolve) => pending.push({ options, resolve })),
+  });
+
+  const startup = app.refresh(null);
+  const confirmation = app.waitForDerivedInputs(null);
+
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].options.signal.aborted, false);
+  app.notePhase("supplementalReady", pending[0].options.generation);
+  pending[0].resolve({ ok: true });
+
+  assert.deepEqual(await confirmation, { ok: true });
+  await startup;
+});
+
+test("AI starts a derived-input refresh only when no usable refresh exists", async () => {
+  const pending = [];
+  const app = createRuntimeDataApp(createScope(), {
+    runRefresh: (_element, options) => new Promise((resolve) => pending.push({ options, resolve })),
+  });
+
+  const confirmation = app.waitForDerivedInputs(null);
+
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].options.requireDerivedInputs, true);
+  app.notePhase("supplementalReady", pending[0].options.generation);
+  pending[0].resolve({ ok: true });
+  assert.deepEqual(await confirmation, { ok: true });
+});
+
 test("derived inputs become ready only after the current refresh supplemental phase", async () => {
   const pending = [];
   const app = createRuntimeDataApp(createScope(), {
@@ -170,10 +203,12 @@ test("runtime startup restores the last view before loading history and renderin
 test("runtime startup releases the loader at the critical phase", async () => {
   let refreshOptions = null;
   let mergedSeed = false;
+  const calls = [];
   const onCriticalProgress = () => {};
   const app = createRuntimeDataApp(createScope(), {
     runRefresh: async (_element, options) => {
       refreshOptions = options;
+      calls.push("critical");
       await options.onCriticalReady();
       return { ok: true };
     },
@@ -182,6 +217,13 @@ test("runtime startup releases the loader at the critical phase", async () => {
     restoredSnapshot: true,
     mergeSeed: async () => { mergedSeed = true; },
     onCriticalProgress,
+    captureViewport: () => {
+      calls.push("capture");
+      return { viewRange: [1, 2], wasAtLatest: true };
+    },
+    reconcileViewport: async (snapshot) => {
+      calls.push(["reconcile", snapshot]);
+    },
   });
 
   assert.equal(refreshOptions.awaitCriticalRender, true);
@@ -190,6 +232,11 @@ test("runtime startup releases the loader at the critical phase", async () => {
   assert.equal(Object.hasOwn(refreshOptions, "incrementalSupplementalRender"), false);
   assert.equal(refreshOptions.onCriticalProgress, onCriticalProgress);
   assert.equal(mergedSeed, false);
+  assert.deepEqual(calls, [
+    "capture",
+    "critical",
+    ["reconcile", { viewRange: [1, 2], wasAtLatest: true }],
+  ]);
 });
 
 test("runtime startup never holds completion behind a supplemental refresh", async () => {

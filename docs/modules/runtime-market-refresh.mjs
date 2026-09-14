@@ -571,33 +571,32 @@ import {
 
     async function refreshAdr(signal = null, forceNetwork = false) {
       let endpointError = null;
-      if (canFetchProtected()) {
-        try {
-          const latestPayload = await fetchAdrPayload(signal, forceNetwork, true);
-          const sourceLatestDate = latestPayload.latestDate || "";
-          const currentRows = options.getAdrRows?.() || [];
-          if (!latestPayload.stale && !isAdrDelayed(sourceLatestDate, latestPayload.delayed === true)
-            && sameLatestPoint(currentRows, latestPayload.rows, adrKeys)) {
-            return { changed: 0, updated: 0, latestDate: sourceLatestDate, sourceLatestDate, stale: false, delayed: false };
-          }
-          const payload = await fetchAdrPayload(signal, forceNetwork, false);
-          const latestDate = payload.latestDate || payload.rows.at(-1)?.date || "";
-          const result = applyAuxiliaryGroup(payload.rows, adrKeys, "ADR");
-          if (!payload.stale && !isAdrDelayed(latestDate, payload.delayed === true)) {
-            return { ...result, sourceLatestDate: latestDate, stale: false, delayed: false };
-          }
-          endpointError = new Error(payload.delayed === true
-            ? `ADR 최신 날짜 지연(${latestDate || "없음"})`
-            : "ADR Worker returned cached stale data");
-          endpointError.retryable = true;
-        } catch (error) {
-          if (options.isAbortError?.(error) || signal?.aborted) throw error;
-          endpointError = error;
+      try {
+        const latestPayload = await fetchAdrPayload(signal, forceNetwork, true);
+        const sourceLatestDate = latestPayload.latestDate || "";
+        const currentRows = options.getAdrRows?.() || [];
+        if (!latestPayload.stale && !isAdrDelayed(sourceLatestDate, latestPayload.delayed === true)
+          && sameLatestPoint(currentRows, latestPayload.rows, adrKeys)) {
+          return { changed: 0, updated: 0, latestDate: sourceLatestDate, sourceLatestDate, stale: false, delayed: false };
         }
+        const payload = await fetchAdrPayload(signal, forceNetwork, false);
+        const latestDate = payload.latestDate || payload.rows.at(-1)?.date || "";
+        const result = applyAuxiliaryGroup(payload.rows, adrKeys, "ADR");
+        if (!payload.stale && !isAdrDelayed(latestDate, payload.delayed === true)) {
+          return { ...result, sourceLatestDate: latestDate, stale: false, delayed: false };
+        }
+        endpointError = new Error(payload.delayed === true
+          ? `ADR 최신 날짜 지연(${latestDate || "없음"})`
+          : "ADR Worker returned cached stale data");
+        endpointError.retryable = true;
+      } catch (error) {
+        if (options.isAbortError?.(error) || signal?.aborted) throw error;
+        endpointError = error;
       }
 
+      if (typeof options.fetchAdrFallback !== "function") throw endpointError;
       try {
-        const payload = await options.fetchAdrFallback?.(signal);
+        const payload = await options.fetchAdrFallback(signal);
         const rows = Array.isArray(payload) ? payload : payload?.rows;
         if (!Array.isArray(rows) || !rows.length) throw new Error("ADR fallback contained no usable rows");
         throwIfRequestAborted(signal);
@@ -652,7 +651,6 @@ import {
     }
 
     async function refreshMacro(signal = null, forceNetwork = false) {
-      if (!canFetchProtected()) return { applied: [], warnings: [], components: {} };
       const payload = await gateway.fetchMacro({ signal, forceNetwork, timeoutMs });
       throwIfRequestAborted(signal);
       const controller = getSeriesController();

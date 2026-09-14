@@ -510,7 +510,13 @@ export function createChartApplicationControlConfig(context) {
         c.refreshAiForecastTargets();
       },
       prepare: c.ensureAiFeatureModules,
-      beforeEnable: c.settleChartViewport,
+      beforeEnable: async () => {
+        await c.settleChartViewport();
+        await c.waitForRuntimeDerivedInputs();
+        // A supplemental refresh may have queued its final non-AI frame.
+        // Settle it before AI becomes visible so only final inputs are calculated.
+        await c.settleChartViewport();
+      },
       syncButton: c.syncAiForecastToggleButton,
       onEnabled: async () => {
         c.enableFutureOverlay("ai");

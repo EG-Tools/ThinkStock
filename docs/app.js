@@ -359,7 +359,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = tickerPriceRuntimeModule.CORPORATE_ACTION_RATIO_THRESHOLD;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = tickerPriceRuntimeModule.CORPORATE_ACTION_MAX_BOUNDARY_DAYS;
-const APP_VERSION = "3.49";
+const APP_VERSION = "3.50";
 const APP_BUILD_VERSION = resolveAppBuildVersion(globalThis);
 const appCacheRuntime = createAppCacheRuntime(globalThis, {
   scheduler: backgroundTaskScheduler,
@@ -6982,7 +6982,6 @@ async function renderChart(preserveZoom = true, invalidation = {}) {
   if (chartSession.showAiForecast && aiInputsReady) finishAiForecastProgress();
 }
 
-const ADR_SOURCE_URL = "http://www.adrinfo.kr/chart";
 const CORS_PROXY     = "https://corsproxy.io/?url=";
 
 async function fetchJsonWithProxyFallback(url, init = null, options = {}) {
@@ -7074,7 +7073,6 @@ function getRuntimeMarketRefresh() {
         .at(-1) || "",
       getSeriesController: getRuntimeSeriesController,
       policiesFor: runtimePoliciesFor,
-      fetchAdrFallback: fetchAdrFallbackFromWeb,
       retryOnce,
       adrRetryDelayMs: ADR_RETRY_DELAY_MS,
       isAbortError,
@@ -7096,22 +7094,6 @@ function refreshSourceWithRetry(kind, task, signal = null) {
     isRetryable: isRetryableRuntimeError,
   }).then((result) => result.value);
 }
-async function fetchAdrFallbackFromWeb(signal = null) {
-  try {
-    const sourceUrl = appendCacheBust(ADR_SOURCE_URL);
-    const proxyUrl = CORS_PROXY + encodeURIComponent(sourceUrl);
-    const response = await fetchWithTimeout(proxyUrl, { cache: "no-store", signal });
-    if (!response.ok) throw new Error(`adrinfo.kr 응답 오류: ${response.status}`);
-    const rows = adrDataModule.parseAdrChartRows(await response.text());
-    if (!rows.length) throw new Error("ADR data parse failed. Source format may have changed.");
-    throwIfAborted(signal);
-    return { ok: true, rows, latestDate: rows.at(-1)?.date || "" };
-  } catch (error) {
-    if (isAbortError(error) || signal?.aborted) throw error;
-    throw error;
-  }
-}
-
 function cancelAdrFinalRetry() {
   if (!adrFinalRetryController) return;
   const reason = new Error("Superseded by a newer ADR refresh");
@@ -7300,6 +7282,38 @@ const applyRuntimeRefreshChanges = createRuntimeRefreshChangeApplier({
     waitForMainRender: () => getMainChartRenderScheduler().whenSettled(),
   });
 
+function captureRuntimeRefreshViewport() {
+  const element = document.getElementById("chart");
+  const viewRange = getCurrentXRangeMs(element);
+  return Object.freeze({
+    viewRange: viewRange ? Object.freeze([...viewRange]) : null,
+    wasAtLatest: isLatestChartViewport(),
+  });
+}
+
+async function reconcileRuntimeRefreshViewport(snapshot) {
+  await settleAllChartWork();
+  if (snapshot?.wasAtLatest && Array.isArray(snapshot.viewRange)) {
+    const element = document.getElementById("chart");
+    const dataRange = getChartNavigationDataRangeMs(element);
+    const latestRange = chartViewportControllerModule.latestRange(
+      snapshot.viewRange,
+      dataRange,
+    );
+    if (latestRange) {
+      applySyncedXRangeMs(latestRange[0], latestRange[1], {
+        fit: false,
+        liveFit: false,
+        source: "runtime-refresh-latest",
+        userInitiated: false,
+      });
+      await settleAllChartWork();
+    }
+  }
+  if (chartSession.autoChartReset) await fitCurrentChartRatio();
+  await settleAllChartWork();
+}
+
 function getRuntimeRefreshOrchestrator() {
   return appRuntimeRegistry.get(APP_RUNTIME_KEYS.runtimeRefresh, () => {
     const state = {
@@ -7389,6 +7403,7 @@ function bindApplicationControls(messageElement) {
     refreshAiForecastTargets,
     ensureAiFeatureModules,
     settleChartViewport,
+    waitForRuntimeDerivedInputs: () => runtimeDataApp.waitForDerivedInputs(messageElement),
     syncAiForecastToggleButton,
     enableFutureOverlay: (kind) => getFutureOverlayController().enable(kind),
     showVisibleAiForecastAvailability,
@@ -7507,11 +7522,8 @@ const applicationLifecycle = createApplicationLifecycleRuntime({
     runData: (messageElement, options) => runtimeDataApp.refresh(messageElement, options),
     renderAfterData: false,
     renderMain: runMainChartRender,
-    reconcileViewport: async () => {
-      await settleAllChartWork();
-      if (chartSession.autoChartReset) await fitCurrentChartRatio();
-      await settleAllChartWork();
-    },
+    captureViewport: captureRuntimeRefreshViewport,
+    reconcileViewport: reconcileRuntimeRefreshViewport,
   },
   optionalRefreshes: applicationFeatureLifecycle.optionalRefreshes,
   restoredActivations: applicationFeatureLifecycle.restoredActivations,
@@ -7579,6 +7591,8 @@ const appBootstrap = createAppBootstrapOrchestrator({
   refreshDuringStartup: ({ messageElement, restoredSnapshot }) => (
     runtimeDataApp.refreshDuringStartup(messageElement, {
       restoredSnapshot,
+      captureViewport: captureRuntimeRefreshViewport,
+      reconcileViewport: reconcileRuntimeRefreshViewport,
       onError: (error) => {
         setMessage(messageElement, `최신 데이터 갱신 오류: ${error.message}`, true);
       },

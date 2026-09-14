@@ -3,6 +3,16 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.50",
+      date: "2026.09.14",
+      items: Object.freeze([
+        "가격 갱신 전 최신 화면을 보고 있었다면 새 거래일까지 자동 이동",
+        "ADR·뉴스심리를 접속코드와 무관한 Cloudflare 공용 수집 경로로 통일",
+        "한국은행 새 뉴스심리지수 계열로 전환해 9월 6일 최신값 복구",
+        "차트 3 갱신 지연 시 저장값 유지와 재확인 상태를 명확하게 표시",
+      ]),
+    }),
+    Object.freeze({
       version: "3.49",
       date: "2026.09.14",
       items: Object.freeze([

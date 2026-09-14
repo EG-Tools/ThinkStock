@@ -144,11 +144,13 @@ test("normalizes remote price data and reports contract failures", async () => {
   }]);
 });
 
-test("adds an explicit refresh flag and clears invalid credentials", async () => {
+test("reads public macro data without exposing or clearing the personal access token", async () => {
   let unauthorized = 0;
+  let request = null;
   const client = module.createRuntimeGatewayClient({
     getAccessToken: () => "secret",
-    fetchWithTimeout: async (url) => {
+    fetchWithTimeout: async (url, init) => {
+      request = { url, init };
       assert.equal(url, "https://worker.example/api/macro?refresh=1");
       return new Response(JSON.stringify({ error: "denied" }), { status: 401 });
     },
@@ -156,6 +158,38 @@ test("adds an explicit refresh flag and clears invalid credentials", async () =>
     onUnauthorized: () => { unauthorized += 1; },
   });
   await assert.rejects(client.fetchMacro({ forceNetwork: true }), /denied/);
+  assert.equal(Object.hasOwn(request.init.headers, "Authorization"), false);
+  assert.equal(unauthorized, 0);
+});
+
+test("reads public ADR data without exposing the personal access token", async () => {
+  let request = null;
+  const client = module.createRuntimeGatewayClient({
+    getAccessToken: () => "secret",
+    fetchWithTimeout: async (url, init) => {
+      request = { url, init };
+      return new Response(JSON.stringify({ ok: true, latestDate: "2026-09-10", rows: [] }));
+    },
+    endpoints: { adrLatest: "https://worker.example/api/adr?latest=1" },
+  });
+  await client.fetchAdr({ latestOnly: true });
+  assert.equal(request.url, "https://worker.example/api/adr?latest=1");
+  assert.equal(Object.hasOwn(request.init.headers, "Authorization"), false);
+});
+
+test("clears invalid credentials for an authenticated refresh", async () => {
+  let unauthorized = 0;
+  const client = module.createRuntimeGatewayClient({
+    getAccessToken: () => "secret",
+    fetchWithTimeout: async (url, init) => {
+      assert.equal(url, "https://worker.example/api/credit?refresh=1");
+      assert.equal(init.headers.Authorization, "Bearer secret");
+      return new Response(JSON.stringify({ error: "denied" }), { status: 401 });
+    },
+    endpoints: { credit: "https://worker.example/api/credit" },
+    onUnauthorized: () => { unauthorized += 1; },
+  });
+  await assert.rejects(client.fetchCredit({ forceNetwork: true }), /denied/);
   assert.equal(unauthorized, 1);
 });
 
