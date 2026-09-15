@@ -51,6 +51,25 @@ test("price refresh planning checks live values but reuses a settled weekend tai
   assert.deepEqual(weekend.skippedTickers, tickers);
 });
 
+test("price refresh planning keeps checking through the close-capture window", () => {
+  const tickers = ["005930.KS"];
+  const captureClose = planKoreanPriceRefresh({
+    tickers,
+    latestDates: { "005930.KS": "2026-09-15" },
+    now: new Date("2026-09-15T07:30:00Z"),
+  });
+  assert.equal(captureClose.live, true);
+  assert.deepEqual(captureClose.requiredTickers, tickers);
+
+  const settled = planKoreanPriceRefresh({
+    tickers,
+    latestDates: { "005930.KS": "2026-09-15" },
+    now: new Date("2026-09-15T09:00:00Z"),
+  });
+  assert.equal(settled.live, false);
+  assert.deepEqual(settled.requiredTickers, []);
+});
+
 test("price refresh planning requests first use, stale tails, and explicit refreshes", () => {
   const tickers = ["005930.KS"];
   const now = new Date("2026-08-22T03:00:00Z");

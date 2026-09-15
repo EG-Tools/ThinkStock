@@ -3,6 +3,14 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.51",
+      date: "2026.09.15",
+      items: Object.freeze([
+        "부팅·새로고침의 장중 최신가격 확인을 종가 확정 구간까지 유지",
+        "KRX·네이버의 가격 기준이 달라도 동일 거래량으로 검증된 최신 종가 반영",
+      ]),
+    }),
+    Object.freeze({
       version: "3.50",
       date: "2026.09.14",
       items: Object.freeze([

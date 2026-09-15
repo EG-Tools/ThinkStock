@@ -211,7 +211,8 @@ import {
       .filter(Boolean))];
     const latestDates = options.latestDates || {};
     const now = options.now instanceof Date ? options.now : new Date(options.now || Date.now());
-    const live = isKoreanCurrentPriceWindow(now, { closeHour: 16 });
+    // Keep boot refresh admission aligned with the Worker's 18:00 close-capture window.
+    const live = isKoreanCurrentPriceWindow(now);
     const targetDate = live
       ? koreanDateText(now)
       : expectedLatestKoreanTradingDate(now);

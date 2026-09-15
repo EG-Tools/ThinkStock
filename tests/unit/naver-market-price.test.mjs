@@ -34,6 +34,36 @@ test("requires a matching overlap before accepting a newer point", () => {
   ).status, "mismatch");
 });
 
+test("accepts a newer point when matching volume proves the overlap is the same session", () => {
+  const evaluation = evaluateNaverPriceFallback(
+    { date: "2026-09-14", close: 49600, volume: 420104 },
+    [
+      { date: "2026-09-14", close: 48550, volume: 420104 },
+      { date: "2026-09-15", close: 49350, volume: 223177 },
+    ],
+  );
+  assert.deepEqual(evaluation, {
+    accepted: true,
+    status: "matched-newer",
+    point: { date: "2026-09-15", close: 49350, volume: 223177 },
+    overlapRatio: 49600 / 48550,
+    jumpRatio: 49350 / 48550,
+    verification: "volume",
+  });
+});
+
+test("does not bypass an overlap mismatch when volume also differs", () => {
+  const evaluation = evaluateNaverPriceFallback(
+    { date: "2026-09-14", close: 49600, volume: 420104 },
+    [
+      { date: "2026-09-14", close: 48550, volume: 420105 },
+      { date: "2026-09-15", close: 49350, volume: 223177 },
+    ],
+  );
+  assert.equal(evaluation.accepted, false);
+  assert.equal(evaluation.status, "mismatch");
+});
+
 test("returns only a validated missing daily tail", () => {
   const reference = { date: "2026-08-10", close: 6318.05 };
   const points = [
@@ -53,4 +83,18 @@ test("returns only a validated missing daily tail", () => {
     points.map((point) => point.date === reference.date ? { ...point, close: 5000 } : point),
     { since: "2026-08-07" },
   ).status, "mismatch");
+});
+
+test("accepts an adjusted-price tail when overlap volume matches exactly", () => {
+  const result = validateNaverPriceTail(
+    { date: "2026-09-14", close: 49600, volume: 420104 },
+    [
+      { date: "2026-09-14", close: 48550, volume: 420104 },
+      { date: "2026-09-15", close: 49350, volume: 223177 },
+    ],
+    { since: "2026-09-14" },
+  );
+  assert.equal(result.accepted, true);
+  assert.equal(result.verification, "volume");
+  assert.equal(result.points.at(-1).date, "2026-09-15");
 });

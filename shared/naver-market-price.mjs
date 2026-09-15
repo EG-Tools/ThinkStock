@@ -50,6 +50,14 @@ export function priceRatio(left, right) {
   return Math.max(a, b) / Math.min(a, b);
 }
 
+function hasMatchingSessionVolume(referencePoint, overlapPoint) {
+  const referenceVolume = finitePositive(referencePoint?.volume);
+  const overlapVolume = finitePositive(overlapPoint?.volume);
+  return referenceVolume !== null
+    && overlapVolume !== null
+    && referenceVolume === overlapVolume;
+}
+
 export function evaluateNaverPriceFallback(referencePoint, naverPoints, options = {}) {
   const maxOverlapRatio = Number(options.maxOverlapRatio) || 1.02;
   const points = normalizePricePoints(naverPoints);
@@ -66,7 +74,8 @@ export function evaluateNaverPriceFallback(referencePoint, naverPoints, options 
   if (!overlap || overlapRatio === null) {
     return { accepted: false, status: "no-overlap", point: latest, overlapRatio };
   }
-  if (!comparison.ok) {
+  const verifiedByVolume = !comparison.ok && hasMatchingSessionVolume(referencePoint, overlap);
+  if (!comparison.ok && !verifiedByVolume) {
     return { accepted: false, status: "mismatch", point: latest, overlapRatio };
   }
   if (latest.date < referencePoint.date) {
@@ -82,6 +91,7 @@ export function evaluateNaverPriceFallback(referencePoint, naverPoints, options 
       point: latest,
       overlapRatio,
       jumpRatio: null,
+      ...(verifiedByVolume ? { verification: "volume" } : {}),
     };
   }
   const prior = [...points].reverse().find((point) => point.date < latest.date) || overlap;
@@ -91,6 +101,7 @@ export function evaluateNaverPriceFallback(referencePoint, naverPoints, options 
     point: latest,
     overlapRatio,
     jumpRatio: priceRatio(prior?.close, latest.close),
+    ...(verifiedByVolume ? { verification: "volume" } : {}),
   };
 }
 
@@ -114,7 +125,8 @@ export function validateNaverPriceTail(referencePoint, naverPoints, options = {}
     points,
     { key: "close", relativeTolerance: maxOverlapRatio - 1 },
   );
-  if (!comparison.ok) {
+  const verifiedByVolume = !comparison.ok && hasMatchingSessionVolume(referencePoint, overlap);
+  if (!comparison.ok && !verifiedByVolume) {
     return { accepted: false, status: "mismatch", points: [], overlapRatio };
   }
   return {
@@ -122,6 +134,7 @@ export function validateNaverPriceTail(referencePoint, naverPoints, options = {}
     status: "matched",
     points: since ? points.filter((point) => point.date >= since) : points,
     overlapRatio,
+    ...(verifiedByVolume ? { verification: "volume" } : {}),
   };
 }
 
