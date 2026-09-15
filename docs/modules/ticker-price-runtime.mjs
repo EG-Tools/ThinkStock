@@ -819,6 +819,7 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
     async function load(ticker, loadOptions = {}) {
       const key = normalizeTicker(ticker);
       const forceRefresh = loadOptions.forceRefresh === true;
+      const verifyHistory = loadOptions.verifyHistory === true;
       const visibleSinceDate = ISO_DATE_PATTERN.test(String(loadOptions.visibleSinceDate || "").slice(0, 10))
         ? String(loadOptions.visibleSinceDate).slice(0, 10)
         : "";
@@ -845,13 +846,16 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
       if (loadOptions.latestOnly === true
         && options.hasSeries(key)
         && options.hasVolumeHistory(key)
-        && hasHistoryCoverageFromDate(options.getPoints(key), visibleSinceDate)) {
+        && hasHistoryCoverageFromDate(options.getPoints(key), visibleSinceDate)
+        && !forceRefresh
+        && !verifyHistory) {
         try {
+          const previousLatestDate = options.latestDate(key);
           const rawLatestPoints = hasPrefetchedLatest
             ? prefetchedLatest
             : await options.fetchLatest(key, { signal, forceNetwork: forceRefresh });
           throwIfAborted(signal);
-          const latestPoints = filterLatestTailPoints(options.getPoints(key), rawLatestPoints);
+          let latestPoints = filterLatestTailPoints(options.getPoints(key), rawLatestPoints);
           if (!latestPoints.length) {
             return {
               ready: true,
@@ -864,6 +868,36 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
             };
           }
           const existingPoints = options.getPoints(key);
+          const latestDateAdvanced = latestPoints.some((point) => (
+            String(point?.date || "").slice(0, 10) > previousLatestDate
+          ));
+          let historyVerified = false;
+          if (latestDateAdvanced) {
+            const historyBoundary = previousLatestDate || latestPoints.at(-1)?.date;
+            const sinceDate = typeof options.resolveHistorySinceDate === "function"
+              ? String(options.resolveHistorySinceDate(historyBoundary, key) || "").slice(0, 10)
+              : previousLatestDate;
+            try {
+              const verifiedPoints = await options.fetchHistory(key, {
+                forceNetwork: false,
+                sinceDate,
+                signal,
+              });
+              throwIfAborted(signal);
+              if (verifiedPoints.length) {
+                if (typeof options.inspectHistoryIntegrity === "function") {
+                  const verifiedIntegrity = options.inspectHistoryIntegrity(verifiedPoints);
+                  if (verifiedIntegrity?.anomalyCount > 0) {
+                    throw new Error(`${key} verified price tail failed integrity validation`);
+                  }
+                }
+                latestPoints = verifiedPoints;
+                historyVerified = true;
+              }
+            } catch (error) {
+              if (options.isAbortError?.(error) || signal?.aborted) throw error;
+            }
+          }
           const rebaseSignal = options.findRebaseSignal?.(existingPoints, latestPoints) || null;
           const assessment = options.assessPriceUpdate(existingPoints, latestPoints, { rebaseSignal });
           const latestTailIncomplete = options.isLatestCoverageComplete?.(
@@ -874,13 +908,21 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
           // A split/rebase or a missing trading-day boundary needs the validated
           // history path below. Normal startup stays on the cheap tail merge.
           if (!assessment.fullHistoryRequired && !latestTailIncomplete) {
-            const changed = options.mergePoints(key, latestPoints) === true;
-            if (changed && assessment.invalidateDerived) {
+            if (assessment.invalidateDerived) {
               await options.invalidateCache(key, assessment);
             }
+            const changed = options.mergePoints(key, latestPoints) === true;
             if (changed && options.hasVolumeHistory(key)) {
               await options.writeCache(key, options.getPoints(key), displayName, {
                 historyCoverage: HISTORY_COVERAGE_FULL,
+              });
+            }
+            if (latestDateAdvanced && !historyVerified) {
+              return load(key, {
+                ...loadOptions,
+                latestOnly: false,
+                returnAfterCache: false,
+                verifyHistory: true,
               });
             }
             return {
@@ -954,6 +996,7 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
       if (hasExisting
         && visibleWindowCovered
         && loadOptions.returnAfterCache === true
+        && !verifyHistory
         && !latestBoundaryAssessment) {
         return {
           ready: true,
@@ -963,7 +1006,7 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
           latestDate: latestExisting,
         };
       }
-      if (hasExisting && !forceRefresh && !latestBoundaryAssessment) {
+      if (hasExisting && !forceRefresh && !verifyHistory && !latestBoundaryAssessment) {
         try {
           const rawLatestPoints = hasPrefetchedLatest
             ? prefetchedLatest

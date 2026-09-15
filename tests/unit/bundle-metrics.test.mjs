@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createBundleReport, summarizeBundle } from "../../scripts/bundle-metrics.mjs";
+import {
+  createBundleReport,
+  normalizedSourceByteLength,
+  summarizeBundle,
+} from "../../scripts/bundle-metrics.mjs";
 
 function metafile(output, inputs) {
   return {
@@ -73,4 +77,11 @@ test("bundle metrics selects the requested output from a shared build", () => {
   });
 
   assert.deepEqual(summary.contributors, [{ input: "docs/second.mjs", bytes: 30 }]);
+});
+
+test("source byte metrics are stable across checkout line endings", () => {
+  const lf = "첫째 줄\nsecond line\n";
+  const crlf = lf.replaceAll("\n", "\r\n");
+
+  assert.equal(normalizedSourceByteLength(crlf), normalizedSourceByteLength(lf));
 });

@@ -7,7 +7,11 @@ import { stylesheetSourceNames } from "./pages-stylesheet-config.mjs";
 import { runtimeBundleFingerprint } from "./runtime-bundle-fingerprint.mjs";
 
 import { build } from "esbuild";
-import { createBundleReport, summarizeBundle } from "./bundle-metrics.mjs";
+import {
+  createBundleReport,
+  normalizedSourceByteLength,
+  summarizeBundle,
+} from "./bundle-metrics.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
@@ -29,7 +33,9 @@ const sharedFeatureTemporaryDir = path.join(root, ".thinkstock-cache", "build", 
 const maxBundleBytes = Number(packageJson.thinkstockBuild?.appBundleMaxBytes);
 const maxE2eBundleBytes = Number(packageJson.thinkstockBuild?.e2eBundleMaxBytes);
 const maxBundleGzipBytes = Number(packageJson.thinkstockBuild?.appBundleGzipMaxBytes);
-const releaseNotesSourceBytes = (await stat(releaseNotesSourceFile)).size;
+const releaseNotesSourceBytes = normalizedSourceByteLength(
+  await readFile(releaseNotesSourceFile, "utf8"),
+);
 const appVersion = (await readFile(appSourceFile, "utf8"))
   .match(/const APP_VERSION = "([^"]+)";/)?.[1] || "";
 const stylesheetSources = Object.freeze(stylesheetSourceNames.map((file) => (

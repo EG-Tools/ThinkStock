@@ -9,6 +9,10 @@ function sourcePath(root, value) {
   return portablePath(path.relative(root, absolute));
 }
 
+function normalizedSourceByteLength(value) {
+  return Buffer.byteLength(String(value || "").replace(/\r\n?/g, "\n"), "utf8");
+}
+
 function summarizeBundle(options = {}) {
   const root = path.resolve(options.root || process.cwd());
   const metafile = options.metafile && typeof options.metafile === "object"
@@ -75,4 +79,4 @@ function createBundleReport(options = {}) {
   });
 }
 
-export { createBundleReport, summarizeBundle };
+export { createBundleReport, normalizedSourceByteLength, summarizeBundle };
