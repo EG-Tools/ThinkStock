@@ -17,6 +17,7 @@ import {
   isKoreanMarketPricePoint,
   isKoreanTradingDate,
   koreanDateText,
+  latestAllowedKoreanPriceDate,
   resolveKoreanResearchUniversePhase,
 } from "../shared/market-calendar.mjs";
 import {
@@ -509,7 +510,7 @@ export async function fetchLocalResearchHistory(
   if (!match) throw new Error("종목코드 형식이 올바르지 않습니다.");
   const target = `${match[1]}.${match[2]}`;
   const fullHistory = options.fullHistory === true;
-  const asOfDate = expectedLatestKoreanTradingDate(now);
+  const asOfDate = latestAllowedKoreanPriceDate(now);
   const cachePath = path.join(cacheDir, `${target}${fullHistory ? ".full" : ""}.json`);
   let cached = JSON.parse(await readFile(cachePath, "utf8").catch(() => "null"));
   // Backtest prices can use a different adjusted-price basis. They must never

@@ -638,6 +638,57 @@ test("repairs a legacy research tail before accepting today's universe point", a
   }
 });
 
+test("local research history includes the live trading date before settlement", async () => {
+  const cacheDir = await mkdtemp(path.join(os.tmpdir(), "thinkstock-live-history-"));
+  const ticker = "218410.KQ";
+  const rows = [];
+  const cursor = new Date("2025-07-01T00:00:00Z");
+  const lastSettledDate = "2026-09-14";
+  while (cursor.toISOString().slice(0, 10) <= lastSettledDate) {
+    const weekday = cursor.getUTCDay();
+    if (weekday !== 0 && weekday !== 6) {
+      rows.push({
+        date: cursor.toISOString().slice(0, 10),
+        close: 40000 + rows.length,
+        volume: 100000 + rows.length,
+      });
+    }
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  await writeFile(path.join(cacheDir, `${ticker}.json`), JSON.stringify({
+    schema: RESEARCH_HISTORY_CACHE_SCHEMA,
+    ticker,
+    asOfDate: lastSettledDate,
+    latestDate: lastSettledDate,
+    historyValidationDate: lastSettledDate,
+    historyQualityVersion: RESEARCH_HISTORY_QUALITY_VERSION,
+    source: "NAVER_HISTORY",
+    historyCoverage: "partial",
+    historyCoverageVersion: RESEARCH_HISTORY_COVERAGE_VERSION,
+    rows,
+  }), "utf8");
+
+  try {
+    const result = await fetchLocalResearchHistory(async (url) => {
+      assert.equal(new URL(url).searchParams.get("endTime"), "20260915");
+      return new Response(
+        '<item data="20260915|49300|49300|49300|49300|223965" />',
+        { status: 200 },
+      );
+    }, ticker, new Date("2026-09-15T08:30:00Z"), cacheDir);
+
+    assert.equal(result.asOfDate, "2026-09-15");
+    assert.equal(result.historyValidationDate, "2026-09-15");
+    assert.deepEqual(result.rows.at(-1), {
+      date: "2026-09-15",
+      close: 49300,
+      volume: 223965,
+    });
+  } finally {
+    await rm(cacheDir, { recursive: true, force: true });
+  }
+});
+
 test("local research history sends only an overlapping tail unless a full reset is required", () => {
   const startTime = Date.parse("2025-01-01T00:00:00Z");
   const rows = Array.from({ length: 300 }, (_, index) => ({

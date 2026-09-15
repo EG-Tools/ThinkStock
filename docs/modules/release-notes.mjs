@@ -8,6 +8,7 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
       items: Object.freeze([
         "부팅·새로고침의 장중 최신가격 확인을 종가 확정 구간까지 유지",
         "KRX·네이버의 가격 기준이 달라도 동일 거래량으로 검증된 최신 종가 반영",
+        "로컬 종목 이력도 장중 최신 거래일 가격·거래량까지 증분 반영",
       ]),
     }),
     Object.freeze({

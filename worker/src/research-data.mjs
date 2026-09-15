@@ -1,8 +1,8 @@
 import {
-  expectedLatestKoreanTradingDate,
   inspectDailyPriceHistoryDensity,
   isKoreanMarketPricePoint,
   isKoreanTradingDate,
+  latestAllowedKoreanPriceDate,
   shiftIsoDate,
 } from "../../shared/market-calendar.mjs";
 import { parseNaverResearchProfile } from "../../shared/research-profile.mjs";
@@ -277,7 +277,7 @@ async function fetchNaverResearchHistory(ticker, startDate, endDate) {
 }
 
 export async function researchHistoryResponse(env, ticker, origin, options = {}) {
-  const today = expectedLatestKoreanTradingDate(new Date());
+  const today = latestAllowedKoreanPriceDate(new Date());
   const sinceDate = String(options.sinceDate || "").slice(0, 10);
   const forceFull = options.forceFull === true;
   const historyYears = forceFull ? FULL_RESEARCH_HISTORY_YEARS : RESEARCH_HISTORY_YEARS;
