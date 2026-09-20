@@ -5,8 +5,10 @@ import {
   buildHankyungReportListUrl,
   buildNaverReportListUrl,
   normalizeNaverReportPdfUrl,
+  normalizeNaverReportSourceUrl,
+  resolveNaverReportPdfUrl,
   parseHankyungReportListHtml,
-  parseNaverReportListHtml,
+  parseNaverReportList,
   selectLatestReportsByBroker,
 } from "../../shared/broker-report-source.mjs";
 
@@ -53,20 +55,38 @@ test("parses a ticker-specific Hankyung industry report from the general report 
 
 test("builds and parses a bounded Naver Finance company-report fallback", () => {
   const url = new URL(buildNaverReportListUrl("218410.KQ"));
-  assert.equal(url.searchParams.get("searchType"), "itemCode");
-  assert.equal(url.searchParams.get("itemCode"), "218410");
-  const pdfUrl = "https://stock.pstatic.net/stock-research/company/57/20260723_company_184323000.pdf";
-  const html = `<table><tr>
-    <td><a href="/item/main.naver?code=218410">RFHIC</a></td>
-    <td><a href="company_read.naver?nid=94372&page=1&searchType=itemCode&itemCode=218410">RFHIC report</a></td>
-    <td>Hana Securities</td><td><a href="${pdfUrl}">PDF</a></td><td>26.07.23</td><td>100</td>
-  </tr></table>`;
-  const rows = parseNaverReportListHtml(html, "218410.KQ");
+  assert.equal(url.pathname, "/api/stockSecurity/researches/v2/company");
+  assert.equal(url.searchParams.get("itemCodes"), "218410");
+  assert.equal(url.searchParams.get("size"), "40");
+  const report = { nid: "96176", itemCode: "218410", writeDate: "2026-09-16",
+    title: "RFHIC report", brokerName: "Hana Securities", readCount: "100", goalPrice: "150000" };
+  const rows = parseNaverReportList({ items: [report, report, { ...report, nid: "96177", itemCode: "005930" }] }, "218410.KQ");
   assert.equal(rows.length, 1);
-  assert.equal(rows[0].id, "naver-94372");
+  assert.equal(rows[0].id, "naver-96176");
   assert.equal(rows[0].source, "naver");
-  assert.equal(rows[0].publishedDate, "2026-07-23");
+  assert.equal(rows[0].publishedDate, "2026-09-16");
   assert.equal(rows[0].viewCount, 100);
-  assert.equal(rows[0].sourceUrl, pdfUrl);
+  assert.equal(rows[0].targetPrice, 150000);
+  assert.equal(rows[0].sourceUrl, "https://stock.naver.com/research/company/96176");
   assert.equal(normalizeNaverReportPdfUrl("https://example.com/report.pdf"), "");
+});
+
+test("does not mistake a changed Naver response for an empty report list", () => {
+  assert.deepEqual(parseNaverReportList({ items: [] }, "218410.KQ"), []);
+  assert.throws(() => parseNaverReportList("<html>new website</html>", "218410.KQ"), /format has changed/);
+  assert.throws(() => parseNaverReportList({ error: "unavailable" }, "218410.KQ"), /format has changed/);
+});
+
+test("resolves a Naver PDF only on open and retains existing PDF links", async () => {
+  const page = "https://stock.naver.com/research/company/96176";
+  const pdf = "https://stock.pstatic.net/stock-research/company/57/20260916_company_975720000.pdf";
+  const calls = [];
+  const fetchJson = async (url) => { calls.push(url); return { nid: "96176", attachUrl: pdf }; };
+  assert.equal(await resolveNaverReportPdfUrl(page, "naver-96176", fetchJson), pdf);
+  assert.equal(await resolveNaverReportPdfUrl(pdf, "naver-96176", fetchJson), pdf);
+  assert.deepEqual(calls, ["https://stock.naver.com/api/stockSecurity/researches/v2/company/96176"]);
+  assert.equal(normalizeNaverReportSourceUrl(page, "naver-96177"), "");
+  assert.equal(normalizeNaverReportSourceUrl("https://stock.naver.com.evil.test/research/company/96176"), "");
+  await assert.rejects(resolveNaverReportPdfUrl(page, "naver-96176", async () => ({ nid: "96177", attachUrl: pdf })), /does not match/);
+  await assert.rejects(resolveNaverReportPdfUrl(page, "naver-96176", async () => ({ nid: "96176", attachUrl: "https://example.com/report.pdf" })), /URL is invalid/);
 });

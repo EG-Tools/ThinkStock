@@ -5,7 +5,8 @@ const REPORT_ID_PATTERN = /^\d{1,12}$/;
 const REPORT_KEY_PATTERN = /^(?:\d{1,12}|naver-\d{1,12})$/;
 const HANKYUNG_LIST_URL = "https://consensus.hankyung.com/analysis/list";
 const HANKYUNG_PDF_URL = "https://consensus.hankyung.com/analysis/downpdf";
-const NAVER_LIST_URL = "https://finance.naver.com/research/company_list.naver";
+const NAVER_LIST_URL = "https://stock.naver.com/api/stockSecurity/researches/v2/company";
+const NAVER_REPORT_URL = "https://stock.naver.com/research/company/";
 const NAVER_PDF_HOST = "stock.pstatic.net";
 const NAVER_PDF_PATH_PATTERN = /^\/stock-research\/company\/\d{1,4}\/20\d{6}_company_\d{1,12}\.pdf$/i;
 
@@ -100,9 +101,9 @@ export function buildNaverReportListUrl(ticker, options = {}) {
   const normalizedTicker = normalizeBrokerReportTicker(ticker);
   if (!normalizedTicker) throw new Error("Broker report ticker is invalid");
   const query = new URLSearchParams({
-    searchType: "itemCode",
-    itemCode: normalizedTicker.slice(0, 6),
-    page: String(Math.max(1, Math.min(3, Math.round(Number(options.page) || 1)))),
+    itemCodes: normalizedTicker.slice(0, 6),
+    size: "40",
+    index: String(Math.max(0, Math.min(2, Math.round(Number(options.page) || 1) - 1))),
   });
   return `${NAVER_LIST_URL}?${query}`;
 }
@@ -125,16 +126,31 @@ export function buildNaverReportPdfUrl(value) {
   return url;
 }
 
-export function decodeNaverReportListBytes(value) {
-  const bytes = value instanceof Uint8Array ? value : new Uint8Array(value || 0);
-  for (const encoding of ["euc-kr", "windows-949"]) {
-    try {
-      return new TextDecoder(encoding).decode(bytes);
-    } catch (_) {
-      // Some runtimes expose only one alias for the same Korean encoding.
-    }
+export function normalizeNaverReportSourceUrl(value, reportId = "") {
+  const pdf = normalizeNaverReportPdfUrl(value);
+  if (pdf) return pdf;
+  try {
+    const url = new URL(String(value || ""));
+    const id = url.pathname.match(/^\/research\/company\/(\d{1,12})$/)?.[1];
+    if (url.origin !== "https://stock.naver.com" || url.username || url.password || !id
+      || (reportId && reportId !== `naver-${id}`)) return "";
+    return `${NAVER_REPORT_URL}${id}`;
+  } catch (_) {
+    return "";
   }
-  return new TextDecoder().decode(bytes);
+}
+
+export async function resolveNaverReportPdfUrl(sourceUrl, reportId, fetchJson) {
+  const normalized = normalizeNaverReportSourceUrl(sourceUrl, reportId);
+  if (!normalized || !/^naver-\d{1,12}$/.test(reportId)) {
+    throw new Error("Broker report id is invalid");
+  }
+  const pdf = normalizeNaverReportPdfUrl(normalized);
+  if (pdf) return pdf;
+  const id = reportId.slice(6);
+  const detail = await fetchJson(`${NAVER_LIST_URL}/${id}`);
+  if (String(detail?.nid || "") !== id) throw new Error("Naver report detail does not match");
+  return buildNaverReportPdfUrl(detail.attachUrl);
 }
 
 export function parseHankyungReportListHtml(html, expectedTicker = "", expectedName = "") {
@@ -191,33 +207,23 @@ export function parseHankyungReportListHtml(html, expectedTicker = "", expectedN
   ));
 }
 
-function naverDate(value) {
-  const match = String(value || "").trim().match(/^(\d{2})\.(\d{2})\.(\d{2})$/);
-  return match ? `20${match[1]}-${match[2]}-${match[3]}` : "";
-}
-
-export function parseNaverReportListHtml(html, expectedTicker = "") {
+export function parseNaverReportList(payload, expectedTicker = "") {
+  if (!Array.isArray(payload?.items)) throw new Error("Naver report list format has changed");
   const expected = normalizeBrokerReportTicker(expectedTicker);
   const expectedCode = expected.slice(0, 6);
   const records = [];
   const seen = new Set();
-  const rowPattern = /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi;
-  for (const rowMatch of String(html || "").matchAll(rowPattern)) {
-    const rowHtml = rowMatch[1];
-    const code = rowHtml.match(/\/item\/main\.naver\?code=(\d{6})/i)?.[1] || "";
-    if (!code || (expectedCode && code !== expectedCode)) continue;
-    const nid = normalizeBrokerReportId(rowHtml.match(/company_read\.naver\?[^"']*\bnid=(\d{1,12})/i)?.[1]);
-    const pdfUrl = normalizeNaverReportPdfUrl(rowHtml.match(/href=["'](https:\/\/stock\.pstatic\.net\/[^"']+\.pdf)["']/i)?.[1]);
+  for (const item of payload.items) {
+    const code = String(item?.itemCode || "");
+    if (!/^\d{6}$/.test(code) || (expectedCode && code !== expectedCode)) continue;
+    const nid = normalizeBrokerReportId(item.nid);
     const id = nid ? `naver-${nid}` : "";
-    if (!id || !pdfUrl || seen.has(id)) continue;
-    const cellHtml = [...rowHtml.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map((match) => match[1]);
-    const cells = cellHtml.map(textFromHtml);
-    const titleMatch = rowHtml.match(/<a\b[^>]*href=["'][^"']*company_read\.naver\?[^"']*\bnid=\d+[^"']*["'][^>]*>([\s\S]*?)<\/a>/i);
-    const publishedDate = cells.map(naverDate).find(Boolean) || "";
-    const title = textFromHtml(titleMatch?.[1] || cells[1]);
-    if (!publishedDate || !title) continue;
-    const viewCountText = cells.length >= 6 ? String(cells.at(-1) || "") : "";
-    const viewCount = Number(viewCountText.replace(/[^\d]/g, ""));
+    if (!id || seen.has(id)) continue;
+    const publishedDate = String(item.writeDate || "");
+    const title = textFromHtml(item.title);
+    if (!DATE_PATTERN.test(publishedDate) || !title) continue;
+    const viewCount = Number(item.readCount);
+    const targetPrice = Number(item.goalPrice);
     records.push(Object.freeze({
       id,
       sourceReportId: nid,
@@ -226,12 +232,12 @@ export function parseNaverReportListHtml(html, expectedTicker = "") {
       code,
       publishedDate,
       title,
-      targetPrice: null,
-      recommendation: "",
-      analyst: "",
-      broker: String(cells[2] || "").trim(),
+      targetPrice: Number.isFinite(targetPrice) && targetPrice > 0 ? targetPrice : null,
+      recommendation: String(item.opinionText || "").trim(),
+      analyst: String(item.analystName || "").trim(),
+      broker: String(item.brokerName || "").trim(),
       viewCount: Number.isSafeInteger(viewCount) && viewCount >= 0 ? viewCount : 0,
-      sourceUrl: pdfUrl,
+      sourceUrl: `${NAVER_REPORT_URL}${nid}`,
     }));
     seen.add(id);
   }

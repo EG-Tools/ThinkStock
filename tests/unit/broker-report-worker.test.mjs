@@ -109,27 +109,57 @@ test("serves a previously verified report PDF from the edge cache", async () => 
 test("uses Naver Finance as an explicit secondary report source", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
-    assert.match(String(url), /finance\.naver\.com\/research\/company_list\.naver/);
-    return new Response(`<table><tr>
-      <td><a href="/item/main.naver?code=218410">RFHIC</a></td>
-      <td><a href="company_read.naver?nid=94372&page=1">RFHIC report</a></td>
-      <td>Hana Securities</td>
-      <td><a href="https://stock.pstatic.net/stock-research/company/57/20260723_company_184323000.pdf">PDF</a></td>
-      <td>26.07.23</td><td>100</td>
-    </tr></table>`, { status: 200 });
+    assert.match(String(url), /stock\.naver\.com\/api\/stockSecurity\/researches\/v2\/company\?/);
+    assert.equal(new URL(url).searchParams.get("itemCodes"), "218410");
+    return Response.json({ items: [
+      { nid: "96176", itemCode: "218410", title: "RFHIC report", brokerName: "Hana Securities", writeDate: "2026-09-16" },
+      { nid: "94372", itemCode: "218410", title: "old report", writeDate: "2026-03-23" },
+    ] });
   };
   try {
     const response = await handleRequest(
-      workerRequest("/api/broker-reports?ticker=218410.KQ&days=90&asOf=2026-08-15&source=naver"),
+      workerRequest("/api/broker-reports?ticker=218410.KQ&days=90&asOf=2026-09-20&source=naver"),
       { THINKSTOCK_ACCESS_TOKEN: "private" },
     );
     const payload = await response.json();
     assert.equal(response.status, 200);
     assert.equal(payload.source, "Naver Finance");
-    assert.equal(payload.reports[0].id, "naver-94372");
+    assert.equal(payload.reports.length, 1);
+    assert.equal(payload.reports[0].id, "naver-96176");
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("reports a changed upstream response as failure instead of successful empty data", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("<html>redirected site</html>");
+  try {
+    const response = await handleRequest(workerRequest("/api/broker-reports?ticker=218410.KQ&source=naver"), {
+      THINKSTOCK_ACCESS_TOKEN: "private",
+    });
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).ok, false);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("opens the PDF attached to a new Naver research-page link", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  const pdf = "https://stock.pstatic.net/stock-research/company/57/20260916_company_975720000.pdf";
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+    if (String(url).endsWith("/96176")) return Response.json({ nid: "96176", attachUrl: pdf });
+    assert.equal(String(url), pdf);
+    return new Response("%PDF-latest-naver-report");
+  };
+  try {
+    const query = new URLSearchParams({ reportId: "naver-96176", source: "naver", sourceUrl: "https://stock.naver.com/research/company/96176" });
+    const response = await handleRequest(workerRequest(`/api/broker-report-pdf?${query}`), { THINKSTOCK_ACCESS_TOKEN: "private" });
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "%PDF-latest-naver-report");
+    assert.equal(calls.length, 2);
+  } finally { globalThis.fetch = originalFetch; }
 });
 
 test("proxies only an allowlisted Naver Finance report PDF URL", async () => {

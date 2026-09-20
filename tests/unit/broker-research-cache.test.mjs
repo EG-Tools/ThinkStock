@@ -276,7 +276,7 @@ test("replaces a pre-Naver empty cache with an available RFHIC reference report"
     extractReport: async (_bytes, metadata) => parsedReport(metadata),
   });
 
-  assert.equal(service.CACHE_SCHEMA, 10);
+  assert.equal(service.CACHE_SCHEMA, brokerResearchCache.CACHE_SCHEMA);
   assert.equal(service.normalizeCacheRecord(oldRecord, "218410.KQ"), null);
   const result = await service.loadTicker("218410.KQ", {
     onReferenceReport: (report) => phases.push(`reference:${report.sourceUrl}`),
@@ -455,4 +455,30 @@ test("reuses AI-downloaded PDF bytes and joins concurrent report opens", async (
   assert.deepEqual([...new Uint8Array(thirdBytes)], [37, 80, 68, 70]);
   client.clearPdfMemoryCache();
   assert.deepEqual(client.pdfMemoryCacheStats(), { bytes: 0, entries: 0, pending: 0 });
+});
+
+test("refreshes a pre-migration cache and publishes new Naver page references without PDFs", async () => {
+  const now = new Date("2026-09-20T00:00:00Z");
+  const pageUrl = "https://stock.naver.com/research/company/96176";
+  const oldReference = { reportId: "naver-94372", publishedDate: "2026-07-23", title: "Old report",
+    sourceUrl: "https://stock.pstatic.net/stock-research/company/57/20260723_company_184323000.pdf" };
+  let listCalls = 0;
+  const service = createBrokerResearchCache(globalThis, {
+    parser,
+    now: () => now,
+    read: async () => ({ schema: 10, ticker: "218410.KQ", complete: true, checkedAt: now.getTime(),
+      savedAt: now.getTime(), checkedDate: "2026-09-20", reports: [],
+      summary: { representativeReports: { reference: oldReference } } }),
+    fetchList: async (_ticker, _days, source) => {
+      listCalls += 1;
+      return source === "naver" ? [{ id: "naver-96176", publishedDate: "2026-09-16", broker: "Hana",
+        title: "Latest report", source: "naver", sourceUrl: pageUrl }] : [];
+    },
+    fetchPdf: async () => { assert.fail("Reference-list refresh must not download PDFs"); },
+  });
+  const record = await service.loadTicker("218410.KQ", { referenceOnly: true });
+  assert.equal(listCalls, 2);
+  assert.equal(record.cached, false);
+  assert.equal(record.summary.latestDate, "2026-09-16");
+  assert.equal(record.summary.representativeReports.reference.sourceUrl, pageUrl);
 });

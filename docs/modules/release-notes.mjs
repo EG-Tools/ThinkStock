@@ -3,6 +3,16 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.52",
+      date: "2026.09.20",
+      items: Object.freeze([
+        "네이버 새 리서치 API로 전환해 종목별 최신 리포트 목록 갱신 복구",
+        "이전 수집 방식의 리포트 캐시 재확인과 응답 형식 오류 감지",
+        "최신 리포트 목록은 먼저 표시하고 PDF는 열 때만 요청",
+        "로컬·배포의 리포트 수집과 PDF 링크 검증 규칙 통일",
+      ]),
+    }),
+    Object.freeze({
       version: "3.51",
       date: "2026.09.15",
       items: Object.freeze([

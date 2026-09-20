@@ -88,10 +88,9 @@ import {
   buildHankyungReportListUrl,
   buildHankyungReportPdfUrl,
   buildNaverReportListUrl,
-  buildNaverReportPdfUrl,
-  decodeNaverReportListBytes,
+  resolveNaverReportPdfUrl,
   parseHankyungReportListHtml,
-  parseNaverReportListHtml,
+  parseNaverReportList,
   reportAgeDays,
 } from "../shared/broker-report-source.mjs";
 import {
@@ -1224,23 +1223,17 @@ export async function createThinkStockServer(options = {}) {
           : buildHankyungReportListUrl(ticker, { days, asOf, name });
         const upstream = await fetchImpl(sourceUrl, {
           headers: {
-            Accept: "text/html,application/xhtml+xml",
-            ...(source === "naver" ? { Referer: "https://finance.naver.com/" } : {}),
+            Accept: source === "naver" ? "application/json" : "text/html,application/xhtml+xml",
+            ...(source === "naver" ? { Referer: "https://stock.naver.com/" } : {}),
             "User-Agent": "ThinkStock-Local/2 broker-research",
           },
           signal: AbortSignal.timeout(20000),
         });
         if (!upstream.ok) throw new Error(`${source === "naver" ? "Naver Finance" : "Hankyung Consensus"} HTTP ${upstream.status}`);
-        const html = source === "naver"
-          ? decodeNaverReportListBytes(await readBoundedResponseBytes(
-            upstream,
-            BROKER_REPORT_LIST_MAX_BYTES,
-            "Broker report list",
-          ))
-          : await readBoundedResponseText(upstream, BROKER_REPORT_LIST_MAX_BYTES, "Broker report list");
+        const body = await readBoundedResponseText(upstream, BROKER_REPORT_LIST_MAX_BYTES, "Broker report list");
         const reports = (source === "naver"
-          ? parseNaverReportListHtml(html, ticker)
-          : parseHankyungReportListHtml(html, ticker, name))
+          ? parseNaverReportList(JSON.parse(body), ticker)
+          : parseHankyungReportListHtml(body, ticker, name))
           .filter((report) => reportAgeDays(report.publishedDate, asOf) < days);
         sendJson(request, response, 200, {
           ok: true,
@@ -1265,12 +1258,16 @@ export async function createThinkStockServer(options = {}) {
           throw new Error("Broker report id is invalid");
         }
         const sourceUrl = source === "naver"
-          ? buildNaverReportPdfUrl(requestUrl.searchParams.get("sourceUrl"))
+          ? await resolveNaverReportPdfUrl(requestUrl.searchParams.get("sourceUrl"), reportId, async (detailUrl) => {
+            const detail = await fetchImpl(detailUrl, { signal: AbortSignal.timeout(20000) });
+            if (!detail.ok) throw new Error(`Naver report detail HTTP ${detail.status}`);
+            return JSON.parse(await readBoundedResponseText(detail, BROKER_REPORT_LIST_MAX_BYTES, "Broker report detail"));
+          })
           : buildHankyungReportPdfUrl(reportId);
         const upstream = await fetchImpl(sourceUrl, {
           headers: {
             Accept: "application/pdf",
-            ...(source === "naver" ? { Referer: "https://finance.naver.com/" } : {}),
+            ...(source === "naver" ? { Referer: "https://stock.naver.com/" } : {}),
             "User-Agent": "ThinkStock-Local/2 broker-research",
           },
           signal: AbortSignal.timeout(30000),

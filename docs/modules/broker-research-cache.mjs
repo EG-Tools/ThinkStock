@@ -1,6 +1,7 @@
 import { RUNTIME_VALUE_CONTRACT } from "../../shared/runtime-foundation.mjs";
 import * as brokerReportPolicy from "../../shared/broker-report-policy.mjs";
 import { cacheRefreshDecision } from "../../shared/runtime-freshness-policy.mjs";
+import { normalizeNaverReportSourceUrl } from "../../shared/broker-report-source.mjs";
 
   const valueContract = RUNTIME_VALUE_CONTRACT;
   const reportPolicy = brokerReportPolicy;
@@ -9,7 +10,7 @@ import { cacheRefreshDecision } from "../../shared/runtime-freshness-policy.mjs"
     throw new Error("broker research contracts failed to load");
   }
 
-  const CACHE_SCHEMA = 10;
+  const CACHE_SCHEMA = 11;
   const MAX_PDF_BYTES = 12 * 1024 * 1024;
   const DEFAULT_PDF_MEMORY_CACHE_BYTES = 24 * 1024 * 1024;
   const DEFAULT_PDF_MEMORY_CACHE_ENTRIES = 3;
@@ -27,13 +28,11 @@ import { cacheRefreshDecision } from "../../shared/runtime-freshness-policy.mjs"
   const normalizedDate = valueContract.normalizedIsoDate;
 
   function safeSourceUrl(value) {
+    const naverUrl = normalizeNaverReportSourceUrl(value);
+    if (naverUrl) return naverUrl;
     try {
       const url = new URL(String(value || ""));
-      const allowed = url.protocol === "https:" && (
-        url.hostname === "consensus.hankyung.com"
-        || (url.hostname === "stock.pstatic.net"
-          && /^\/stock-research\/company\/\d{1,4}\/20\d{6}_company_\d{1,12}\.pdf$/i.test(url.pathname))
-      );
+      const allowed = url.protocol === "https:" && url.hostname === "consensus.hankyung.com";
       return allowed
         ? url.toString().slice(0, 500)
         : "";
@@ -82,7 +81,7 @@ import { cacheRefreshDecision } from "../../shared/runtime-freshness-policy.mjs"
     if (!REPORT_KEY_PATTERN.test(id) || !publishedDate) return null;
     const sourceUrl = safeSourceUrl(report?.sourceUrl);
     const source = String(report?.source || "").toLowerCase() === "naver"
-      || sourceUrl.includes("stock.pstatic.net")
+      || Boolean(normalizeNaverReportSourceUrl(sourceUrl))
       ? "naver"
       : "hankyung";
     return {

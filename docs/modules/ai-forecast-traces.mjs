@@ -1,6 +1,7 @@
 "use strict";
 
 import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
+import { normalizeNaverReportSourceUrl } from "../../shared/broker-report-source.mjs";
 
   const SCENARIO_KEYS = Object.freeze(["upside", "sideways", "downside"]);
   const PRIMARY_SCENARIO_STYLE = Object.freeze({
@@ -35,16 +36,16 @@ import { chartTraceOverlayKind } from "./chart-render-contract.mjs";
     if (!report?.sourceUrl || !report?.title) return null;
     try {
       const url = new URL(String(report.sourceUrl));
+      const naverUrl = normalizeNaverReportSourceUrl(report.sourceUrl);
       const allowed = url.protocol === "https:" && (
         url.hostname === "consensus.hankyung.com"
-        || (url.hostname === "stock.pstatic.net"
-          && /^\/stock-research\/company\/\d{1,4}\/20\d{6}_company_\d{1,12}\.pdf$/i.test(url.pathname))
+        || Boolean(naverUrl)
       );
       if (!allowed) return null;
-      const source = url.hostname === "stock.pstatic.net" ? "naver" : "hankyung";
+      const source = naverUrl ? "naver" : "hankyung";
       const suppliedReportId = String(report.reportId || report.id || "").trim();
       const derivedReportId = source === "naver"
-        ? (url.pathname.match(/_company_(\d{1,12})\.pdf$/i)?.[1] || "")
+        ? (url.pathname.match(/(?:_company_(\d{1,12})\.pdf|\/company\/(\d{1,12}))$/i)?.slice(1).find(Boolean) || "")
         : String(url.searchParams.get("report_idx") || "").trim();
       return Object.freeze({
         broker: String(report.broker || ""),

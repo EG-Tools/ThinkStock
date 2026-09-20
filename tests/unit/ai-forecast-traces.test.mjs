@@ -162,6 +162,17 @@ test("extracts up to three safe latest reports from the dedicated R marker", () 
   ]);
 });
 
+test("keeps new Naver research references visible and clickable in the R marker", () => {
+  const report = { sourceUrl: "https://stock.naver.com/research/company/96176", title: "Latest RFHIC report",
+    publishedDate: "2026-09-16", broker: "Hana" };
+  const latest = latestReportsFromBrokerResearch({ representativeReports: { references: [report] } });
+  assert.equal(latest.length, 1);
+  assert.equal(latest[0].source, "naver");
+  assert.equal(latest[0].reportId, "naver-96176");
+  const selected = representativeReportFromForecastClick({ points: [{ data: { meta: { overlayKind: "ai-report", reports: latest } } }] });
+  assert.equal(selected.report.sourceUrl, report.sourceUrl);
+});
+
 test("allows every AI scenario tied for the thickest rendered line", () => {
   const trace = (width) => ({
     line: { width },

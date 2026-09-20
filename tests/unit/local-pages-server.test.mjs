@@ -56,6 +56,44 @@ test("parses the local environment without exposing values", () => {
   assert.equal(parsed.EMPTY, "");
 });
 
+test("local broker reports use the new Naver list and resolve PDFs only when opened", async () => {
+  const calls = [];
+  const pdf = "https://stock.pstatic.net/stock-research/company/57/20260916_company_975720000.pdf";
+  const server = await createThinkStockServer({
+    syncPagesData: false,
+    gateway: { apiKey: "", initialize: async () => {} },
+    fetchImpl: async (url) => {
+      calls.push(String(url));
+      const parsed = new URL(url);
+      if (parsed.pathname.endsWith("/company")) {
+        assert.equal(parsed.searchParams.get("itemCodes"), "218410");
+        return Response.json({ items: [{ nid: "96176", itemCode: "218410", title: "Latest report",
+          writeDate: "2026-09-16", brokerName: "Hana" }] });
+      }
+      if (parsed.pathname.endsWith("/96176")) return Response.json({ nid: "96176", attachUrl: pdf });
+      assert.equal(String(url), pdf);
+      return new Response("%PDF-latest-report");
+    },
+  });
+  try {
+    const port = await listenTestServer(server);
+    const base = `http://127.0.0.1:${port}`;
+    const list = await fetch(`${base}/api/broker-reports?ticker=218410.KQ&source=naver&asOf=2026-09-20&days=90`);
+    assert.equal(list.status, 200);
+    const report = (await list.json()).reports[0];
+    assert.equal(report.publishedDate, "2026-09-16");
+    assert.equal(calls.length, 1);
+    const query = new URLSearchParams({ reportId: report.id, source: report.source, sourceUrl: report.sourceUrl });
+    const response = await fetch(`${base}/api/broker-report-pdf?${query}`);
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "%PDF-latest-report");
+    assert.equal(calls.length, 3);
+  } finally {
+    server.close();
+    await once(server, "close");
+  }
+});
+
 test("reports when the running local server source has changed", async () => {
   const server = await createThinkStockServer({
     syncPagesData: false,
