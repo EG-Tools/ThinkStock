@@ -4,6 +4,7 @@ import {
   createMarketTimingService,
   createTimingCacheRecord,
   validTimingCacheRecord,
+  sharedTimingFingerprint,
 } from "../../docs/modules/market-timing-service.mjs";
 
 class FakeWorker {
@@ -26,6 +27,38 @@ class FakeWorker {
 
   terminate() {}
 }
+
+test("shared timing cache includes raw benchmark rows and historical volatility corrections", () => {
+  const sources = { kospiRows: [{ date: "2026-01-02", close: 100 }],
+    adrRows: [{ date: "2026-01-02", vix: 20 }], volatilityRows: [{ date: "2026-01-02", vkospi: 15 }] };
+  const original = sharedTimingFingerprint(sources);
+  assert.notEqual(sharedTimingFingerprint({ ...sources, kospiRows: [{ date: "2026-01-02", close: 99 }] }), original);
+  assert.notEqual(sharedTimingFingerprint({ ...sources, adrRows: [{ date: "2026-01-02", vix: 30 }] }), original);
+});
+
+test("one worker timeout releases all pending targets rather than waiting for each timeout", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let terminated = 0;
+  const worker = { postMessage() {}, terminate() { terminated += 1; } };
+  const service = createMarketTimingService({}, {
+    timeoutMs: 1000,
+    createWorker: () => worker,
+    buildMacdOscillator: ({ dates, prices }) => ({ dates, prices, normalized: prices.map(() => 0) }),
+    buildMarketTimingSignals: ({ indexKey }) => ({ indexKey }),
+  });
+  const sources = { dates: ["2026-01-02"], pricesByTicker: { "^KS11": [1], "^KQ11": [2] } };
+  const first = service.prepare({ signature: "one", sources, targets: ["^KS11"] });
+  for (let index = 0; index < 6; index += 1) await Promise.resolve();
+  t.mock.timers.tick(500);
+  const second = service.prepare({ signature: "one", sources, targets: ["^KQ11"] });
+  for (let index = 0; index < 6; index += 1) await Promise.resolve();
+  assert.equal(service.stats().workerRequests, 2);
+  t.mock.timers.tick(500);
+  await Promise.all([first, second]);
+  assert.equal(terminated, 1);
+  assert.equal(service.stats().workerFallbacks, 2);
+  service.dispose();
+});
 
 test("uses the current global scope when no explicit scope is supplied", () => {
   const service = createMarketTimingService();

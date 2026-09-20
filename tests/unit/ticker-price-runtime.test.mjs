@@ -510,8 +510,14 @@ test("payload controller owns price, volume and invalidation mutations", () => {
     { date: "2026-08-12", close: 70000, volume: 1234 },
   ]);
   assert.equal(controller.hasVolumeHistory("005930.KS", 1), true);
+  const originalVolumes = volumes.get("005930.KS");
+  assert.equal(controller.merge("005930.KS", [{ date: "2026-08-12", close: 70000, volume: 1234 }]), false);
+  assert.equal(volumes.get("005930.KS"), originalVolumes);
+  assert.equal(controller.merge("005930.KS", [{ date: "2026-08-12", close: 70000, volume: 1235 }]), true);
+  assert.notEqual(volumes.get("005930.KS"), originalVolumes);
+  assert.equal(originalVolumes.get("2026-08-12"), 1234);
   assert.equal(controller.clear("005930.KS"), true);
-  assert.deepEqual(changes, ["005930.KS", "005930.KS"]);
+  assert.deepEqual(changes, ["005930.KS", "005930.KS", "005930.KS"]);
   assert.deepEqual(cleared, ["005930.KS"]);
   assert.equal(volumes.has("005930.KS"), false);
 });

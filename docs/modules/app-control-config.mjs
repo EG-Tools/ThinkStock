@@ -240,9 +240,6 @@ export const BASE_SERIES_HELP_NAMES = Object.freeze({
   leading_cycle: "한국은행 선행지수 순환변동치\n공개일 기준",
   t10y1y: "미국채 10년/1년 금리차",
   us_credit_spread: "미국 회사채(투자등급) 1-3년/미국채 3년 금리차\n최근 일별 · 과거 월간",
-  customer_deposit: "2일 후행",
-  kospi_credit: "2일 후행",
-  kosdaq_credit: "2일 후행",
 });
 export const STACKED_HOVER_PRICE_SERIES = Object.freeze([
   "leading_cycle",

@@ -51,6 +51,7 @@ export function createAppBootstrapOrchestrator(options = {}) {
       } catch (error) {
         options.onRefreshError?.(messageElement, error);
       }
+      options.onDataReady?.();
       loader.progress?.(100, "Ready");
     } catch (error) {
       options.onError?.(messageElement, error);
@@ -347,6 +348,7 @@ export function createStartupTaskRuntime(options = {}) {
       return result;
     }, {
       group: "startup-deferred",
+      ...(taskOptions.lane ? { lane: taskOptions.lane } : {}),
       delayMs,
       ...(taskOptions.taskKey || taskOptions.taskName ? { coalesceRunning: true } : {}),
       priority: Number.isFinite(Number(taskOptions.priority))
@@ -367,6 +369,13 @@ export function createStartupTaskRuntime(options = {}) {
       scheduler.cancelGroup?.("startup-deferred");
     },
     defer: completionGate.defer,
+    restore: (task, { feature, index = 0 } = {}) => completionGate.defer(task, {
+      delayMs: 0,
+      priority: 80 - index,
+      lane: "network",
+      taskName: String(feature?.name || "restored-feature"),
+      userVisible: true,
+    }),
     isReleased: completionGate.isReleased,
     pendingCount: completionGate.pendingCount,
     release: completionGate.release,

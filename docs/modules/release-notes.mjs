@@ -3,6 +3,20 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.53",
+      date: "2026.09.20",
+      items: Object.freeze([
+        "종목탐구의 공통 자료 준비 확인, 중지 처리와 실패 원인 표시 개선",
+        "먼저 끝난 탐구 작업이 다음 종목을 처리하고 결과를 먼저 표시하도록 대기 축소",
+        "취소한 요청의 재사용 방지와 네트워크 대기·화면 작업의 실행 통로 분리",
+        "신호 입력의 거래량 정렬·공통 지문 재사용과 과거 지표 정정 감지 보강",
+        "리포트 출처별 순차 표시와 네이버 목록 중복 요청 제거",
+        "부팅 애니메이션과 기능 준비를 분리하고 보조차트 색상·옵셋 도움말 통일",
+        "저장된 최신 확인 기록과 실제 데이터 불일치로 뉴스심리 갱신이 멈추는 문제 수정",
+        "비활성 지수의 오래된 날짜로 전체 캐시가 버려지는 문제와 3번 차트 갱신 누락 수정",
+      ]),
+    }),
+    Object.freeze({
       version: "3.52",
       date: "2026.09.20",
       items: Object.freeze([

@@ -9,6 +9,7 @@ function createStockResearchWorkerRuntime(options = {}) {
   const timingService = requireDependency(options.timingService, "timing service");
   const research = requireDependency(options.research, "model");
   let shared = null;
+  let benchmarkMaps = {};
 
   function initialize(incoming) {
     shared = incoming ? {
@@ -17,6 +18,11 @@ function createStockResearchWorkerRuntime(options = {}) {
       externalVolatilityRows: timing.buildExternalVolatilityTimingRows(incoming.adrRows || []),
     } : null;
     if (shared) shared.timingFingerprint = timingService.sharedTimingFingerprint(shared);
+    benchmarkMaps = Object.fromEntries(["kospiRows", "kosdaqRows"].map((key) => [
+      key, new Map((shared?.[key] || []).map((row) => [
+        row.date, Number.isFinite(Number(row.close)) ? Number(row.close) : null,
+      ])),
+    ]));
     return Boolean(shared);
   }
 
@@ -25,8 +31,10 @@ function createStockResearchWorkerRuntime(options = {}) {
     const item = message.item || {};
     const ticker = String(item.ticker || "").trim().toUpperCase();
     const benchmarkRows = item.market === "KOSDAQ" ? shared.kosdaqRows : shared.kospiRows;
-    const benchmarkByDate = new Map((benchmarkRows || []).map((row) => [row.date, row.close]));
-    const rows = message.rows || [];
+    const benchmarkByDate = benchmarkMaps[item.market === "KOSDAQ" ? "kosdaqRows" : "kospiRows"];
+    const rows = research.prepareTickerRows
+      ? research.prepareTickerRows({ item, rows: message.rows, asOfDate: message.asOfDate })
+      : (message.rows || []);
     const dates = rows.map((row) => String(row?.date || "").slice(0, 10));
     const sources = {
       dates,
@@ -52,6 +60,8 @@ function createStockResearchWorkerRuntime(options = {}) {
     const candidate = research.assessTicker({
       item,
       rows,
+      preparedRows: rows,
+      benchmarkByDate,
       asOfDate: message.asOfDate,
       minimumSignals: message.minimumSignals,
       includeBuy: message.includeBuy !== false,

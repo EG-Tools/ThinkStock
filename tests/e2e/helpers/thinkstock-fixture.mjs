@@ -134,18 +134,32 @@ async function waitForChartRenderIdle(page) {
 }
 
 async function waitForAppReady(page) {
-  await expect.poll(() => page.evaluate(() => {
-    const title = document.querySelector(".hero h1");
-    const aiToggle = document.getElementById("aiForecastToggle");
-    return Number(title?.getAttribute("aria-valuenow")) >= 100
-      && !title?.classList.contains("is-loading")
-      && aiToggle?.dataset?.bound === "1";
-  }), {
-    message: "Think Stock did not reach its user-visible 100% ready state",
-    // WebKit's first process pays the one-time Plotly/module compilation cost.
-    // Functional coverage should not confuse that cold start with a stalled boot.
-    timeout: 120000,
-  }).toBe(true);
+  const startedAt = Date.now();
+  try {
+    await expect.poll(() => page.evaluate(() => {
+      const title = document.querySelector(".hero h1");
+      const aiToggle = document.getElementById("aiForecastToggle");
+      return Number(title?.getAttribute("aria-valuenow")) >= 100
+        && !title?.classList.contains("is-loading")
+        && aiToggle?.dataset?.bound === "1";
+    }), {
+      message: "Think Stock did not reach its user-visible 100% ready state",
+      // Keep cold compilation separate from functional failures; record its time below.
+      timeout: 120000,
+    }).toBe(true);
+  } catch (error) {
+    const state = await page.evaluate(() => ({
+      title: document.querySelector(".hero h1")?.outerHTML,
+      aiBound: document.getElementById("aiForecastToggle")?.dataset?.bound,
+      messages: document.getElementById("messageArea")?.innerText,
+      runtime: window.ThinkStockE2E?.getRuntimeDiagnosticState?.(),
+      chart: window.ThinkStockE2E?.getChartWorkerStats?.(),
+    })).catch(() => ({ pageUnavailable: true }));
+    await test.info().attach("startup-state", { body: JSON.stringify(state, null, 2), contentType: "application/json" });
+    throw error;
+  } finally {
+    test.info().annotations.push({ type: "boot-ms", description: String(Date.now() - startedAt) });
+  }
 }
 
 async function visibleTracePixelSpan(page, seriesKey) {

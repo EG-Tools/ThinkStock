@@ -1074,7 +1074,7 @@ test("main information rows follow activation order and stack long macro values"
     "미국 회사채(투자등급) 1-3년/미국채 3년 금리차\n최근 일별 · 과거 월간",
   );
   for (const series of ["customer_deposit", "kospi_credit", "kosdaq_credit"]) {
-    await expect(page.locator(`[data-series="${series}"]`)).toHaveAttribute("title", "2일 후행");
+    await expect(page.locator(`[data-series="${series}"]`)).toHaveAttribute("title", "표시 옵셋 -2일");
   }
   await expect(page.locator('[data-series="^KS11"]')).not.toHaveAttribute("title", /.+/);
   await expect(page.locator(".credit-offset-setting")).toHaveAttribute(

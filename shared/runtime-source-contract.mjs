@@ -20,6 +20,7 @@ export const RUNTIME_SOURCE_KEYS = Object.freeze([
   "volatility:vkospi",
   "volatility:vix",
   "crisis",
+  "crisis:signal",
   "disclosure",
   "insider",
   "brokerResearch",
@@ -39,8 +40,17 @@ export function runtimeSourcePolicyFamily(value) {
   return source;
 }
 
+export function runtimeSourceRefreshOwner(value) {
+  const source = String(value || "").trim();
+  // Spreads live in macro rows but are fetched with the crisis/volatility feed.
+  if (source === "macro:termSpread" || source === "macro:creditSpread"
+    || source === "volatility" || source.startsWith("volatility:")) return "crisis";
+  return source.split(":")[0];
+}
+
 export default Object.freeze({
   RUNTIME_SOURCE_KEYS,
   isRuntimeSourceKey,
   runtimeSourcePolicyFamily,
+  runtimeSourceRefreshOwner,
 });

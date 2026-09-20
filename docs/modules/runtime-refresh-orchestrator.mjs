@@ -1,5 +1,5 @@
 import { mapWithConcurrency } from "./shared-request-registry.mjs";
-import { isRuntimeSourceKey } from "../../shared/runtime-source-contract.mjs";
+import { isRuntimeSourceKey, runtimeSourceRefreshOwner } from "../../shared/runtime-source-contract.mjs";
 import { APP_DATA_COMPONENT_GROUPS } from "./app-data-store.mjs";
 
 "use strict";
@@ -332,13 +332,19 @@ import { APP_DATA_COMPONENT_GROUPS } from "./app-data-store.mjs";
       if (requestOptions.forceNetwork === true) return true;
       const key = String(source || "");
       if (["indices", "prices", "prices-visible"].includes(key)) return true;
-      const sourceState = options.getSourceStates?.()?.[key] || null;
-      if (
-        !sourceState
-        || sourceState.state !== "ready"
-        || sourceState.qualityState === "stale"
-        || sourceState.isStale === true
-      ) {
+      const sourceStates = options.getSourceStates?.() || {};
+      const sourceState = sourceStates[key] || null;
+      const needsRefresh = (entry) => !entry
+        || entry.state !== "ready"
+        || ["stale", "error"].includes(entry.qualityState)
+        || entry.isStale === true
+        || entry.isEmpty === true;
+      // Request history can outlive the data snapshot. Check the currently
+      // observed components before reusing a parent provider's success timestamp.
+      if (needsRefresh(sourceState) || Object.entries(sourceStates).some(([component, entry]) => (
+        component.includes(":") && component !== key
+          && runtimeSourceRefreshOwner(component) === key && needsRefresh(entry)
+      ))) {
         return true;
       }
       return options.shouldConfirmSource?.(key, {
@@ -380,6 +386,9 @@ import { APP_DATA_COMPONENT_GROUPS } from "./app-data-store.mjs";
       );
       let updateClass = "";
       if (shouldFinalizeDerived && options.isTimingVisible?.()) {
+        // Committed auxiliary data does not depend on signal calculation.
+        // Let the existing companion queue show it while analysis is pending.
+        if (adrDataChanged) options.requestAuxiliaryRender?.();
         await options.prepareTiming?.({ changes, requestOptions, revisionsAfter });
         updateClass = "timing";
       }
@@ -396,7 +405,7 @@ import { APP_DATA_COMPONENT_GROUPS } from "./app-data-store.mjs";
         if (requestOptions.awaitMainRender) await options.waitForMainRender?.();
       }
       if (renderAuxiliaryOnly || (adrDataChanged && updateClass === "timing")) {
-        options.requestAuxiliaryRender?.();
+        if (updateClass !== "timing") options.requestAuxiliaryRender?.();
         if (requestOptions.awaitAuxiliaryRender) await options.waitForAuxiliaryRender?.();
       }
       if (renderDisclosureOnly && !updateClass) options.renderDisclosure?.();

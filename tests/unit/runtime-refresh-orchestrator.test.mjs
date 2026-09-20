@@ -139,6 +139,24 @@ test("auxiliary refresh uses the shared render queue without delaying data readi
   assert.equal(completed, true);
 });
 
+test("committed macro auxiliary data renders before pending signal preparation", async () => {
+  let releaseTiming;
+  const events = [];
+  const revisions = { price: 1, macro: 1, credit: 1, crisis: 1, adr: 1, disclosure: 1 };
+  const applyChanges = createRuntimeRefreshChangeApplier({
+    getDataRevisions: () => ({ ...revisions, macro: 2 }),
+    isTimingVisible: () => true,
+    requestAuxiliaryRender: () => events.push("auxiliary"),
+    prepareTiming: () => new Promise((resolve) => { releaseTiming = resolve; }),
+    requestMainRender: () => events.push("main"),
+  });
+  const pending = applyChanges(revisions, { finalizeDerived: true });
+  assert.deepEqual(events, ["auxiliary"]);
+  releaseTiming();
+  await pending;
+  assert.deepEqual(events, ["auxiliary", "main"]);
+});
+
 function createRefreshPolicy(overrides = {}) {
   const state = {
     visible: [],
@@ -265,6 +283,37 @@ test("shared source freshness skips ready data unless refresh is forced", () => 
   assert.equal(policy.shouldRefreshSource("macro", { forceNetwork: true }), true);
   state.sourceStates.macro.isStale = true;
   assert.equal(policy.shouldRefreshSource("macro"), true);
+});
+
+test("a recent parent check cannot hide stale restored component data", () => {
+  const ready = { state: "ready", qualityState: "ready", lastSuccessAt: Date.now() };
+  const { policy, state } = createRefreshPolicy({
+    sourceStates: {
+      macro: { ...ready, latestDate: "2026-09-13" },
+      "macro:news": { ...ready, latestDate: "2026-09-06", qualityState: "stale", isStale: true },
+      "macro:leading": { ...ready },
+      crisis: { ...ready },
+    },
+  });
+  assert.equal(policy.shouldRefreshSource("macro"), true);
+  assert.equal(policy.shouldRefreshSource("crisis"), false);
+  state.sourceStates["macro:news"] = { ...ready, latestDate: "2026-09-13" };
+  assert.equal(policy.shouldRefreshSource("macro"), false);
+  assert.equal(policy.shouldRefreshSource("macro", { forceNetwork: true }), true);
+});
+
+test("stale components refresh their actual provider, not their storage group", () => {
+  const ready = { state: "ready", qualityState: "ready", lastSuccessAt: Date.now() };
+  const { policy, state } = createRefreshPolicy({
+    sourceStates: { macro: ready, crisis: ready, volatility: { state: "error", qualityState: "ready" } },
+  });
+  assert.equal(policy.shouldRefreshSource("crisis"), false);
+  for (const component of ["macro:termSpread", "macro:creditSpread", "volatility:vix", "crisis:signal"]) {
+    state.sourceStates[component] = { ...ready, qualityState: "error", isEmpty: true };
+    assert.equal(policy.shouldRefreshSource("crisis"), true, component);
+    assert.equal(policy.shouldRefreshSource("macro"), false, component);
+    delete state.sourceStates[component];
+  }
 });
 
 test("active timing reuses analysis inputs confirmed inside their source interval", () => {

@@ -76,12 +76,12 @@ const stockResearchContract = require("./stock-research-contract.js");
         ? ["kosdaqRows", "adrRows", "macroRows", "creditRows", "crisisRows"]
         : ["kospiRows", "kosdaqRows", "adrRows", "macroRows", "creditRows", "crisisRows"]);
     const marketKeys = marketKey === "KOSPI"
-      ? new Set(["date", "adr_kospi", "fear_greed", "customer_deposit", "kospi_credit"])
+      ? new Set(["date", "adr_kospi", "fear_greed", "vkospi", "vix", "customer_deposit", "kospi_credit"])
       : (marketKey === "KOSDAQ"
-        ? new Set(["date", "adr_kosdaq", "fear_greed", "customer_deposit", "kosdaq_credit"])
+        ? new Set(["date", "adr_kosdaq", "fear_greed", "vkospi", "vix", "customer_deposit", "kosdaq_credit"])
         : null);
     const snapshot = sourceNames.map((name) => {
-      const rows = Array.isArray(shared?.[name]) ? shared[name].slice(-8) : [];
+      const rows = Array.isArray(shared?.[name]) ? shared[name] : [];
       const normalized = rows.map((row) => Object.keys(row || {})
         .filter((key) => !marketKeys || !["adrRows", "creditRows"].includes(name) || marketKeys.has(key))
         .sort()
@@ -116,9 +116,10 @@ const stockResearchContract = require("./stock-research-contract.js");
         analysisStatus: ["failed", "success", "insufficient-history"].includes(state.analysisStatus)
           ? state.analysisStatus
           : "",
-        failureKind: ["transient", "insufficient-history"].includes(state.failureKind)
+        failureKind: ["transient", "insufficient-history", "access", "invalid-data", "worker-timeout"].includes(state.failureKind)
           ? state.failureKind
           : "",
+        failureReason: String(state.failureReason || "").slice(0, 180),
         failureCount: Math.max(0, Math.round(Number(state.failureCount) || 0)),
         lastFailureAt: String(state.lastFailureAt || "").slice(0, 32),
         retryAfter: String(state.retryAfter || "").slice(0, 32),
@@ -130,7 +131,10 @@ const stockResearchContract = require("./stock-research-contract.js");
     return Object.entries(normalizeUniverseState(value)).flatMap(([ticker, state]) => {
       if (state.analysisStatus !== "failed") return [];
       const name = String(state.metadataFingerprint || "").split("|")[1]?.trim() || ticker;
-      return [{ ticker, name }];
+      return [{ ticker, name,
+        ...(state.failureKind ? { kind: state.failureKind } : {}),
+        ...(state.failureReason ? { reason: state.failureReason } : {}),
+      }];
     });
   }
 
@@ -154,22 +158,29 @@ const stockResearchContract = require("./stock-research-contract.js");
       ...(state || {}),
       analysisStatus: "success",
       failureKind: "",
+      failureReason: "",
       failureCount: 0,
       lastFailureAt: "",
       retryAfter: "",
     };
   }
 
-  function markUniverseAnalysisFailure(state, now = Date.now()) {
+  function markUniverseAnalysisFailure(state, now = Date.now(), error = null) {
     const timestamp = Number.isFinite(Number(now)) ? Number(now) : Date.now();
     const failureCount = Math.max(0, Math.round(Number(state?.failureCount) || 0)) + 1;
+    const status = Number(error?.status);
+    const kind = [401, 403].includes(status) ? "access"
+      : (error?.code === "worker-timeout" ? "worker-timeout"
+        : ([400, 404, 422].includes(status) ? "invalid-data" : "transient"));
     return {
       ...(state || {}),
       analysisStatus: "failed",
-      failureKind: "transient",
+      failureKind: kind,
+      failureReason: String(error?.message || "").slice(0, 180),
       failureCount,
       lastFailureAt: new Date(timestamp).toISOString(),
-      retryAfter: new Date(timestamp + failureRetryDelayMs(failureCount)).toISOString(),
+      retryAfter: new Date(timestamp + (["access", "invalid-data"].includes(kind)
+        ? 24 * 60 * 60 * 1000 : failureRetryDelayMs(failureCount))).toISOString(),
     };
   }
 
@@ -179,6 +190,7 @@ const stockResearchContract = require("./stock-research-contract.js");
       ...(state || {}),
       analysisStatus: "insufficient-history",
       failureKind: "insufficient-history",
+      failureReason: "",
       failureCount: 0,
       lastFailureAt: "",
       retryAfter: new Date(timestamp + INSUFFICIENT_HISTORY_RETRY_MS).toISOString(),
@@ -231,6 +243,7 @@ const stockResearchContract = require("./stock-research-contract.js");
         signalFingerprint: prior[ticker]?.signalFingerprint || "",
         analysisStatus: prior[ticker]?.analysisStatus || "",
         failureKind: prior[ticker]?.failureKind || "",
+        failureReason: prior[ticker]?.failureReason || "",
         failureCount: prior[ticker]?.failureCount || 0,
         lastFailureAt: prior[ticker]?.lastFailureAt || "",
         retryAfter: prior[ticker]?.retryAfter || "",

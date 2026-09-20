@@ -746,7 +746,8 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
         String(row?.date || "").slice(0, 10),
         row,
       ]));
-      const volumes = new Map(volumesByTicker.get(key) || []);
+      let volumes = volumesByTicker.get(key) || new Map();
+      let volumesChanged = false;
       let changed = replacing || !(payload?.series || []).includes(key);
       sourcePoints.forEach((point) => {
         const date = String(point?.date || "").slice(0, 10);
@@ -755,10 +756,14 @@ import { inspectDailyPriceHistoryDensity } from "../../shared/market-calendar.mj
         if (ISO_DATE_PATTERN.test(date) && close !== null
           && !sameNumber(existingByDate.get(date)?.[key], close)) changed = true;
         if (ISO_DATE_PATTERN.test(date) && volume !== null && volume >= 0
-          && !sameNumber(volumes.get(date), volume)) changed = true;
-        if (ISO_DATE_PATTERN.test(date) && volume !== null && volume >= 0) volumes.set(date, volume);
+          && !sameNumber(volumes.get(date), volume)) {
+          if (!volumesChanged) volumes = new Map(volumes);
+          volumesChanged = true;
+          changed = true;
+          volumes.set(date, volume);
+        }
       });
-      if (volumes.size) volumesByTicker.set(key, volumes);
+      if (volumesChanged) volumesByTicker.set(key, volumes);
       setPayload(mergeSeries(payload, key, sourcePoints, options.displayName?.(key) || ""));
       if (changed) options.onChanged?.(key);
       return changed;

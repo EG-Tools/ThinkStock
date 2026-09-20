@@ -49,6 +49,77 @@ function fakeClock(inputPending = () => false) {
   };
 }
 
+test("a pending network task does not block serial rendering or another network lane", async () => {
+  const clock = fakeClock();
+  const scheduler = createBackgroundTaskScheduler(clock.scope, { now: clock.now, foregroundPriority: 0 });
+  const calls = [];
+  let release;
+  const slow = scheduler.enqueue("slow", () => new Promise((resolve) => { release = resolve; }), { lane: "network" });
+  clock.runNext();
+  const render = scheduler.enqueue("render", () => calls.push("render"));
+  const network = scheduler.enqueue("fast", () => calls.push("network"), { lane: "network" });
+  for (let index = 0; index < 8 && clock.pending(); index += 1) {
+    clock.runNext();
+    await Promise.resolve();
+  }
+  await Promise.all([render, network]);
+  assert.deepEqual(calls, ["render", "network"]);
+  release(true);
+  await slow;
+  scheduler.dispose();
+});
+
+test("an old caller's abort cannot cancel the replacement queued under the same key", async () => {
+  const clock = fakeClock();
+  const scheduler = createBackgroundTaskScheduler(clock.scope, { now: clock.now, foregroundPriority: 0 });
+  const caller = new AbortController();
+  let finishOld;
+  const first = scheduler.enqueue("series", () => new Promise((resolve) => { finishOld = resolve; }),
+    { signal: caller.signal });
+  clock.runNext();
+  const next = scheduler.enqueue("series", () => "current");
+  caller.abort();
+  clock.runNext();
+  assert.equal(await next, "current");
+  assert.equal(await first, false);
+  finishOld("obsolete");
+  scheduler.dispose();
+});
+
+test("OFF/ON hydration ignores the old completion and keeps the new progress owner", async () => {
+  const clock = fakeClock();
+  const scheduler = createBackgroundTaskScheduler(clock.scope, { now: clock.now, foregroundPriority: 0 });
+  const releases = [];
+  const events = [];
+  const hydrator = createVisibleSeriesSupplementalHydrator({
+    scheduler,
+    resolveFeaturePlan: () => ({ ai: true }),
+    prepareAi: () => new Promise((resolve) => releases.push(resolve)),
+    onSkipped: () => events.push("skipped"),
+    onAiReady: () => events.push("ready"),
+  });
+  const first = hydrator.schedule("005930.KS");
+  clock.runNext();
+  await Promise.resolve();
+  assert.equal(releases.length, 1);
+  hydrator.cancel("005930.KS");
+  const second = hydrator.schedule("005930.KS");
+  clock.runNext();
+  await Promise.resolve();
+  assert.equal(releases.length, 2);
+  releases[0](true);
+  await first;
+  assert.deepEqual(events, ["skipped"]);
+  releases[1](true);
+  for (let index = 0; index < 8; index += 1) {
+    await Promise.resolve();
+    if (clock.pending()) clock.runNext();
+  }
+  await second;
+  assert.deepEqual(events, ["skipped", "ready"]);
+  scheduler.dispose();
+});
+
 test("background tasks prefer higher priority work and pause while input is pending", async () => {
   const calls = [];
   let pendingInput = true;

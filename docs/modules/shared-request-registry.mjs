@@ -51,6 +51,10 @@
       if (callerSignal?.aborted) return Promise.reject(abortError(callerSignal.reason));
 
       let entry = entries.get(key);
+      if (entry?.controller.signal.aborted) {
+        entries.delete(key);
+        entry = null;
+      }
       if (entry && runOptions.afterCurrent === true
         && (!runOptions.tag || entry.tag !== String(runOptions.tag))) {
         counters.queued += 1;
@@ -125,7 +129,11 @@
         const onAbort = () => {
           counters.cancelled += 1;
           subscriber.reject(abortError(callerSignal?.reason));
-          if (!entry.settled && entry.subscribers.size === 0) entry.controller.abort(callerSignal?.reason);
+          if (!entry.settled && entry.subscribers.size === 0) {
+            if (entries.get(key) === entry) entries.delete(key);
+            entry.controller.abort(callerSignal?.reason);
+            notify();
+          }
         };
         entry.subscribers.add(subscriber);
         callerSignal?.addEventListener?.("abort", onAbort, { once: true });
@@ -133,20 +141,20 @@
     }
 
     function cancel(keyValue, reason = null) {
-      const entry = entries.get(String(keyValue || ""));
+      const key = String(keyValue || "");
+      const entry = entries.get(key);
       if (!entry || entry.settled) return false;
-      entry.controller.abort(reason || abortError());
+      entries.delete(key);
+      const error = abortError(reason);
+      entry.controller.abort(error);
+      [...entry.subscribers].forEach((subscriber) => subscriber.reject(error));
       notify();
       return true;
     }
 
     function cancelAll(reason = null) {
       let cancelled = 0;
-      entries.forEach((entry) => {
-        if (entry.settled) return;
-        entry.controller.abort(reason || abortError());
-        cancelled += 1;
-      });
+      [...entries.keys()].forEach((key) => { if (cancel(key, reason)) cancelled += 1; });
       if (cancelled) notify();
       return cancelled;
     }

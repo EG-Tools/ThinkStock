@@ -255,6 +255,20 @@ import { failureBackoffMs } from "../../shared/runtime-freshness-policy.mjs";
       return Object.freeze({ allowed: waitMs === 0, source: key, waitMs, state });
     }
 
+    function invalidateConfirmations() {
+      // A fallback seed did not restore the data confirmed by these requests.
+      // Retain failure backoff and diagnostics, but require a new confirmation.
+      for (const [key, previous] of states) {
+        states.set(key, normalizeState(key, {
+          ...previous,
+          state: "stale",
+          qualityState: "stale",
+          isStale: true,
+        }));
+      }
+      persist();
+    }
+
     function clear() {
       if (persistTimer) clearTimer?.(persistTimer);
       persistTimer = 0;
@@ -269,6 +283,7 @@ import { failureBackoffMs } from "../../shared/runtime-freshness-policy.mjs";
     return Object.freeze({
       canAttempt,
       clear,
+      invalidateConfirmations,
       failure,
       flush: persistNow,
       observe,

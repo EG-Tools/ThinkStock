@@ -117,6 +117,7 @@ function sanitizeUniverseState(value, limit = RESEARCH_SUMMARY_DEFAULT_UNIVERSE_
       ...(analysisStatus ? {
         analysisStatus,
         failureKind: text(state.failureKind, 24),
+        ...(state.failureReason ? { failureReason: text(state.failureReason, 180) } : {}),
         failureCount: Math.round(finite(state.failureCount, 0, 1000) ?? 0),
         lastFailureAt: text(state.lastFailureAt, 40),
         retryAfter: text(state.retryAfter, 40),

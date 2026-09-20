@@ -42,6 +42,26 @@ test("manual refresh bypasses source backoff and success closes the circuit", ()
   assert.equal(health.snapshot().credit.failureCount, 0);
 });
 
+test("seed fallback invalidates confirmations without deleting data history or provider backoff", () => {
+  const storage = createStorage();
+  const health = createRuntimeSourceHealth(globalThis, { now: () => 5000, storage });
+  health.recordSuccess("macro", { latestDate: "2026-09-13" });
+  health.recordSuccess("macro:news", { latestDate: "2026-09-13" });
+  health.failure("credit", new Error("offline"));
+  const waitMs = health.canAttempt("credit").waitMs;
+
+  health.invalidateConfirmations();
+  const restored = createRuntimeSourceHealth(globalThis, { now: () => 5000, storage });
+  assert.equal(restored.snapshot().macro.state, "stale");
+  assert.equal(restored.snapshot()["macro:news"].isStale, true);
+  assert.equal(restored.snapshot().macro.latestDate, "2026-09-13");
+  assert.equal(restored.snapshot().macro.lastSuccessAt, 5000);
+  assert.equal(restored.canAttempt("credit").waitMs, waitMs);
+  restored.recordSuccess("macro", { latestDate: "2026-09-13" });
+  assert.equal(restored.snapshot().macro.state, "ready");
+  assert.equal(restored.snapshot().macro.isStale, false);
+});
+
 test("records request success and observed quality in one source update", () => {
   let now = 7_000;
   const health = createRuntimeSourceHealth(globalThis, { now: () => now, storage: null });

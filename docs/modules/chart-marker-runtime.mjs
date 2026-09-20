@@ -127,26 +127,34 @@ export function createMarketTimingInputGate(options = {}) {
   return Object.freeze({ ensure, missingHistories, missingVolumes, ready });
 }
 
+const preparedVolumes = new WeakMap();
 function sortedVolumeEntries(volumeMaps, ticker) {
-  return [...(volumeMaps?.get?.(ticker)?.entries?.() || [])]
+  const volumes = volumeMaps?.get?.(ticker);
+  const prepared = volumes && preparedVolumes.get(volumes);
+  if (prepared && prepared.size === volumes.size) return prepared.entries;
+  // The price store replaces each ticker's Map when volume data changes.
+  const entries = [...(volumes?.entries?.() || [])]
     .filter(([date, volume]) => (
       /^\d{4}-\d{2}-\d{2}$/.test(String(date || "").slice(0, 10))
       && Number.isFinite(Number(volume))
       && Number(volume) >= 0
     ))
     .sort((left, right) => String(left[0]).localeCompare(String(right[0])));
+  if (volumes) preparedVolumes.set(volumes, { size: volumes.size, entries });
+  return entries;
 }
 
+const volumeRevisions = new WeakMap();
 function volumeTimelineRevision(entries) {
   if (!entries.length) return "0";
-  const first = entries[0];
-  const latest = entries.at(-1);
-  return [
-    entries.length,
-    String(first?.[0] || ""),
-    String(latest?.[0] || ""),
-    Number(latest?.[1]) || 0,
-  ].join(":");
+  if (volumeRevisions.has(entries)) return volumeRevisions.get(entries);
+  let hash = 2166136261;
+  for (const [date, volume] of entries) {
+    for (const char of `${date}:${volume};`) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+  }
+  const revision = `${entries.length}:${hash >>> 0}`;
+  volumeRevisions.set(entries, revision);
+  return revision;
 }
 
 export function marketTimingProgressDescriptor(targets, resolveLabel = (value) => value) {
@@ -1353,6 +1361,16 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
           return entries.length ? [[ticker, entries]] : [];
         }));
         sources = {
+          componentRevisions: {
+            dates: dataRevisionSignature("price"),
+            kospi: dataRevisionSignature("price"),
+            kosdaq: dataRevisionSignature("price"),
+            adr: dataRevisionSignature("adr"),
+            volatility: dataRevisionSignature("adr"),
+            macro: dataRevisionSignature("macro"),
+            credit: dataRevisionSignature("credit"),
+            crisis: dataRevisionSignature("crisis"),
+          },
           dates,
           pricesByTicker,
           volumesByTicker,

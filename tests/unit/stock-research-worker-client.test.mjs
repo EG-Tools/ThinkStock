@@ -17,6 +17,38 @@ class FakeWorker {
   terminate() { this.terminated = true; }
 }
 
+test("a worker timeout rejects every pending request and releases its lane", async () => {
+  const timers = new Map();
+  let id = 0;
+  const lanePromise = workerClient.createWorkerLane({
+    Worker: FakeWorker,
+    setTimeout: (callback) => { timers.set(++id, callback); return id; },
+    clearTimeout: (key) => timers.delete(key),
+  }, "worker.js", {});
+  const worker = FakeWorker.instances.at(-1);
+  worker.onmessage({ data: { id: worker.messages[0].id, ready: true } });
+  const lane = await lanePromise;
+  const first = lane.analyze({}, [], "2026-09-01", {});
+  const second = lane.analyze({}, [], "2026-09-01", {});
+  const checked = Promise.all([assert.rejects(first, { code: "worker-timeout" }),
+    assert.rejects(second, { code: "worker-timeout" })]);
+  [...timers.values()][0]();
+  await checked;
+  assert.equal(timers.size, 0);
+  assert.equal(lane.isTerminated(), true);
+});
+
+test("cancel stops waiting for shared preparation without cancelling its other consumers", async () => {
+  const controller = new AbortController();
+  let finish;
+  const shared = new Promise((resolve) => { finish = resolve; });
+  const waiting = workerClient.waitForTask(shared, controller.signal);
+  controller.abort();
+  await assert.rejects(waiting, { name: "AbortError" });
+  finish("ready");
+  assert.equal(await shared, "ready");
+});
+
 test("terminates a worker whose initialization fails", async () => {
   FakeWorker.instances.length = 0;
   const lanePromise = workerClient.createWorkerLane({ Worker: FakeWorker }, "worker.js", {});

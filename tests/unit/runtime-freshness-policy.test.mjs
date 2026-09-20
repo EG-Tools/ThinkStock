@@ -14,6 +14,7 @@ import {
   RUNTIME_SOURCE_KEYS,
   isRuntimeSourceKey,
   runtimeSourcePolicyFamily,
+  runtimeSourceRefreshOwner,
 } from "../../shared/runtime-source-contract.mjs";
 
 test("keeps current-day market caches short and historical caches stable", () => {
@@ -41,6 +42,13 @@ test("component sources inherit their parent freshness policy from one registry"
   assert.equal(runtimeSourcePolicyFamily("macro:trade:export"), "macro");
   assert.equal(runtimeSourcePolicyFamily("volatility:vkospi"), "crisis");
   assert.equal(runtimeSourcePolicyFamily("prices-hidden"), "price");
+  assert.equal(runtimeSourceRefreshOwner("macro:news"), "macro");
+  assert.equal(runtimeSourceRefreshOwner("macro:trade:export"), "macro");
+  assert.equal(runtimeSourceRefreshOwner("macro:termSpread"), "crisis");
+  assert.equal(runtimeSourceRefreshOwner("macro:creditSpread"), "crisis");
+  assert.equal(runtimeSourceRefreshOwner("volatility:vkospi"), "crisis");
+  assert.equal(runtimeSourceRefreshOwner("crisis:signal"), "crisis");
+  assert.equal(isRuntimeSourceKey("crisis:signal"), true);
   assert.equal(sourcePolicy("macro:news"), sourcePolicy("macro"));
   assert.equal(sourcePolicy("volatility:vix"), sourcePolicy("crisis"));
 });

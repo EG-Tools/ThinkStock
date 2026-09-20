@@ -2,7 +2,7 @@
 
   const normalizeTicker = (value) => String(value || "").trim().toUpperCase();
   const TIMING_CACHE_SCHEMA = 1;
-  const TIMING_CACHE_REVISION = "market-timing-cache-v15";
+  const TIMING_CACHE_REVISION = "market-timing-cache-v16";
 
   function normalizeTargets(targets) {
     return [...new Set((targets || []).map(normalizeTicker).filter(Boolean))].sort();
@@ -35,17 +35,26 @@
     return state >>> 0;
   }
 
-  function sharedTimingFingerprint(sources = {}) {
-    const state = hashTimingValue([
-      TIMING_CACHE_REVISION,
-      sources.dates || [],
-      sources.pricesByTicker?.["^KS11"] || [],
-      sources.pricesByTicker?.["^KQ11"] || [],
-      sources.volatilityRows || sources.adrRows || [],
-      sources.macroRows || [],
-      sources.creditRows || [],
-      sources.crisisRows || [],
-    ]);
+  function sharedTimingFingerprint(sources = {}, components = null) {
+    const inputs = {
+      dates: sources.dates || [],
+      kospi: sources.pricesByTicker?.["^KS11"] || sources.kospiRows || [],
+      kosdaq: sources.pricesByTicker?.["^KQ11"] || sources.kosdaqRows || [],
+      adr: sources.adrRows || [],
+      volatility: sources.volatilityRows || sources.adrRows || [],
+      macro: sources.macroRows || [],
+      credit: sources.creditRows || [],
+      crisis: sources.crisisRows || [],
+    };
+    const hashes = Object.entries(inputs).map(([key, rows]) => {
+      const revision = sources.componentRevisions?.[key];
+      const existing = revision != null ? components?.get(key) : null;
+      if (existing && existing.revision === revision) return existing.hash;
+      const hash = hashTimingValue(rows);
+      if (revision != null) components?.set(key, { revision, hash });
+      return hash;
+    });
+    const state = hashTimingValue([TIMING_CACHE_REVISION, ...hashes]);
     return state.toString(36);
   }
 
@@ -249,6 +258,7 @@
     const models = new Map();
     const modelFingerprints = new Map();
     const inputFingerprints = new Map();
+    const sharedComponentFingerprints = new Map();
     const pendingRequests = new Map();
     const timeoutMs = Math.max(1000, Number(options.timeoutMs) || 20000);
     const cache = options.cache || null;
@@ -350,6 +360,10 @@
       const activeWorker = worker;
       worker = null;
       workerSourceSignature = "";
+      if (activeWorker) {
+        activeWorker.onmessage = null;
+        activeWorker.onerror = null;
+      }
       try { activeWorker?.terminate(); } catch (_) {}
       if (error) rejectPending(error);
     }
@@ -387,9 +401,7 @@
       if (includeSources) workerSourceSignature = signature;
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
-          pendingRequests.delete(id);
-          discardWorker();
-          reject(new Error("market timing worker timeout"));
+          discardWorker(new Error("market timing worker timeout"));
         }, timeoutMs);
         pendingRequests.set(id, { resolve, reject, timer });
         try {
@@ -537,7 +549,7 @@
       if (signature !== currentSignature) {
         const nextSources = input.sources || currentSources;
         if (!nextSources) throw new Error("market timing sources are unavailable");
-        const nextSharedFingerprint = sharedTimingFingerprint(nextSources);
+        const nextSharedFingerprint = sharedTimingFingerprint(nextSources, sharedComponentFingerprints);
         currentSources = nextSources;
         currentSharedFingerprint = nextSharedFingerprint;
         inputFingerprints.clear();
@@ -603,6 +615,7 @@
       models.clear();
       modelFingerprints.clear();
       inputFingerprints.clear();
+      sharedComponentFingerprints.clear();
       pendingTargetPreparations.clear();
       discardWorker(new Error("market timing service cleared"));
     }

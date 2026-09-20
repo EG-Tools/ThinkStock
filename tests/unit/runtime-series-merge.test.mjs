@@ -3,6 +3,24 @@ import test from "node:test";
 
 import * as merge from "../../docs/modules/runtime-series-merge.mjs";
 
+test("snapshot accepts independently refreshed index tails but still rejects internal gaps", () => {
+  const records = [
+    { date: "2026-09-14", "^KS11": 3000, "^KQ11": 800 },
+    { date: "2026-09-15", "^KS11": 3010, "^KQ11": 805 },
+    { date: "2026-09-16", "^KS11": 3020 },
+    { date: "2026-09-17", "^KS11": 3015 },
+    { date: "2026-09-18", "^KS11": 3025 },
+  ];
+  const payload = { series: ["^KS11", "^KQ11"], records };
+  assert.equal(merge.validateSnapshotComponent("price", payload).ok, true);
+  const gap = merge.validateSnapshotComponent("price", {
+    ...payload,
+    records: records.map((row, i) => i === 4 ? { ...row, "^KQ11": 810 } : row),
+  });
+  assert.equal(gap.ok, false);
+  assert.equal(gap.reason, "^KQ11:introduced-gap");
+});
+
 test("normalizes duplicate dated values through one shared path", () => {
   assert.deepEqual(merge.normalizeDatedRows([
     { date: "2026-08-02T09:00:00Z", news_sentiment: 99 },

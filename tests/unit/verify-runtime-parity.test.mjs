@@ -9,9 +9,35 @@ import { RUNTIME_API_VERSION_HEADER } from "../../shared/runtime-api-contract.mj
 import {
   fetchRemoteCompanyAnalysis,
   verifyCompanyAnalysisRuntimeParity,
+  compareRuntimeRecords,
+  verifyMarketRuntimeParity,
 } from "../../scripts/verify_runtime_parity.mjs";
 
 const ticker = "218410.KQ";
+
+test("market parity detects stale dates and changed volume even with equal prices", () => {
+  const a = [{ date: "2026-09-14", close: 203000, volume: 100 }];
+  assert.equal(compareRuntimeRecords(a, [{ ...a[0], volume: 101 }]).equal, false);
+  assert.match(compareRuntimeRecords(a, [{ ...a[0], date: "2026-09-15" }]).differences[0], /missing/);
+  assert.equal(compareRuntimeRecords(a, [...a]).equal, true);
+});
+
+test("parity uses local and deployed routes for seeds, prices, volume and report lists", async () => {
+  const urls = [];
+  const results = await verifyMarketRuntimeParity({
+    token: "private", tickers: [ticker],
+    fetchImpl: async (url) => {
+      urls.push(url);
+      if (url.pathname.endsWith("history")) return Response.json({ ok: true,
+        rows: [{ date: "2026-09-14", close: 1, volume: 2 }] });
+      if (url.pathname.endsWith("broker-reports")) return Response.json({ ok: true, reports: [] });
+      return Response.json({ records: [{ date: "2026-09-14", value: 1 }] });
+    },
+  });
+  assert.equal(results.length, 7);
+  assert.equal(urls.filter((url) => url.hostname === "127.0.0.1").length, 7);
+  assert.equal(urls.filter((url) => url.hostname === "eg-tools.github.io").length, 4);
+});
 const payload = {
   ok: true,
   ticker,

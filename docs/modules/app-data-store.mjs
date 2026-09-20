@@ -20,7 +20,7 @@ const APP_DATA_COMPONENT_DEFINITIONS = Object.freeze({
 const APP_DATA_COMPONENT_GROUPS = Object.freeze({
   analysis: Object.freeze(["price", "macro", "credit", "crisis", "adr"]),
   mainChart: Object.freeze(["price", "macro", "credit", "crisis"]),
-  auxiliary: Object.freeze(["adr"]),
+  auxiliary: Object.freeze(["adr", "macro"]),
   disclosure: Object.freeze(["disclosure"]),
 });
 

@@ -75,6 +75,34 @@
     return Number.isFinite(latest) && Number.isFinite(asOf) && asOf - latest <= maxDays * DAY_MS;
   }
 
+  function prepareTickerRows(options = {}) {
+    const item = options.item || {};
+    const rowsByDate = new Map();
+    (options.rows || []).forEach((row) => {
+      const normalized = {
+        date: String(row?.date || "").slice(0, 10),
+        close: number(row?.close),
+        volume: number(row?.volume),
+      };
+      if (/^\d{4}-\d{2}-\d{2}$/.test(normalized.date) && normalized.close > 0) {
+        rowsByDate.set(normalized.date, normalized);
+      }
+    });
+    const currentDate = String(item.baseDate || "").slice(0, 10);
+    const analysisDate = String(options.asOfDate || "").slice(0, 10);
+    const currentClose = number(item.close);
+    const currentVolume = number(item.volume);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(currentDate) && currentClose > 0
+      && (!analysisDate || currentDate === analysisDate)) {
+      rowsByDate.set(currentDate, {
+        date: currentDate,
+        close: currentClose,
+        volume: currentVolume ?? rowsByDate.get(currentDate)?.volume ?? null,
+      });
+    }
+    return [...rowsByDate.values()].sort((left, right) => left.date.localeCompare(right.date));
+  }
+
   function assessTicker(options = {}) {
     const item = options.item || {};
     const behaviorPolicy = options.behaviorPolicy;
@@ -92,32 +120,7 @@
     const minimumSignals = collectAllSignals
       ? 1
       : Math.max(1, Math.min(10, Math.round(configuredMinimum || 5)));
-    const rowsByDate = new Map();
-    (options.rows || []).forEach((row) => {
-      const normalized = {
-        date: String(row?.date || "").slice(0, 10),
-        close: number(row?.close),
-        volume: number(row?.volume),
-      };
-      if (/^\d{4}-\d{2}-\d{2}$/.test(normalized.date) && normalized.close > 0) {
-        rowsByDate.set(normalized.date, normalized);
-      }
-    });
-    const currentDate = String(item.baseDate || "").slice(0, 10);
-    const analysisDate = String(options.asOfDate || "").slice(0, 10);
-    const currentClose = number(item.close);
-    const currentVolume = number(item.volume);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(currentDate)
-      && currentClose > 0
-      && (!analysisDate || currentDate === analysisDate)) {
-      const existing = rowsByDate.get(currentDate);
-      rowsByDate.set(currentDate, {
-        date: currentDate,
-        close: currentClose,
-        volume: currentVolume ?? existing?.volume ?? null,
-      });
-    }
-    const rows = [...rowsByDate.values()].sort((left, right) => left.date.localeCompare(right.date));
+    const rows = options.preparedRows || prepareTickerRows(options);
     if (rows.length < RECENT_SIGNAL_WINDOW * 2
       || !isRecentEnough(rows.at(-1).date, options.asOfDate || rows.at(-1).date)) return null;
     if (signalWindowActive && rows.at(-1).date !== String(options.asOfDate || "").slice(0, 10)) return null;
@@ -126,7 +129,8 @@
       prices: rows.map((row) => row.close),
     });
     if (!macd) return null;
-    const benchmark = new Map((options.benchmarkRows || []).map((row) => [row.date, number(row.close)]));
+    const benchmark = options.benchmarkByDate
+      || new Map((options.benchmarkRows || []).map((row) => [row.date, number(row.close)]));
     const timing = options.timingModel || options.buildMarketTimingSignals({
       indexKey: item.ticker,
       dates: macd.dates,
@@ -443,6 +447,7 @@
     buildSignalRuns,
     isRecentEnough,
     percentile,
+    prepareTickerRows,
     rankCandidates,
   });
 

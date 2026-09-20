@@ -21,8 +21,6 @@ const defaultScope = typeof self !== "undefined" ? self : globalThis;
   }
   const PLOTLY_CONFIG = chartLoader.PLOTLY_CONFIG;
   const CHART_HOVER_DATE_FORMAT = chartLoader.PLOTLY_THEME.hoverDateFormat;
-  const ADR_KOSPI_COLOR = "#facc15";
-  const ADR_KOSDAQ_COLOR = "#f472b6";
   const MACD_LINE_KEYS = TECHNICAL_SERIES_KEYS;
 
   function auxiliaryTraceStructureKey(trace) {
@@ -1611,14 +1609,14 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
             text: "KOSPI",
             active: adrKospiVisible,
             available: adrKospiAvailable,
-            color: ADR_KOSPI_COLOR,
+            color: SERIES_COLORS.adr_kospi,
           },
           {
             key: AUXILIARY_SERIES_KEYS.adrKosdaq,
             text: "KOSDAQ",
             active: adrKosdaqVisible,
             available: adrKosdaqAvailable,
-            color: ADR_KOSDAQ_COLOR,
+            color: SERIES_COLORS.adr_kosdaq,
           },
         ] : (key === "vkospi" ? [
           {
@@ -1726,7 +1724,7 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
         ...buildAdrZoneTraces(
           adrKospiDates,
           adrKospiValues,
-          ADR_KOSPI_COLOR,
+          SERIES_COLORS.adr_kospi,
           "KOSPI",
           AUXILIARY_SERIES_KEYS.adrKospi,
           { includeFill: false },
@@ -1739,7 +1737,7 @@ function isolatedAuxiliaryMarkerSizes(values, markerSize = 5) {
         ...buildAdrZoneTraces(
           adrKosdaqDates,
           adrKosdaqValues,
-          ADR_KOSDAQ_COLOR,
+          SERIES_COLORS.adr_kosdaq,
           "KOSDAQ",
           AUXILIARY_SERIES_KEYS.adrKosdaq,
           { includeFill: false },

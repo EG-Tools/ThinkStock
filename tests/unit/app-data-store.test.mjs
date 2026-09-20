@@ -12,6 +12,7 @@ import {
 } from "../../docs/modules/app-data-store.mjs";
 
 test("data component groups keep analysis and render invalidation on one contract", () => {
+  assert.deepEqual(APP_DATA_COMPONENT_GROUPS.auxiliary, ["adr", "macro"]);
   assert.deepEqual(APP_DATA_COMPONENT_GROUPS.analysis, [
     "price", "macro", "credit", "crisis", "adr",
   ]);

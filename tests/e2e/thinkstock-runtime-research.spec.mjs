@@ -936,6 +936,53 @@ test("falls back to seed data when a cached snapshot has no prices", async ({ pa
   expect(pageErrors).toEqual([]);
 });
 
+test("stale news seed recovers despite a cached successful check and manual refresh appends newer data", async ({ page }) => {
+  await stubExternalRefreshes(page);
+  await installDataRoutes(page);
+  await page.route("**/data/prices_recent.json*", (route) => route.fulfill({ json: columnar(
+    ["^KS11", "^KQ11", "005930.KS"],
+    [...recentDates.slice(0, -1), "2026-09-18"],
+    {
+      "^KS11": [2800, 2900, 3000, 3100, 3200],
+      "^KQ11": [780, 800, 820, 840, 860],
+      "005930.KS": [70000, 72000, 74000, 76000, 78000],
+    },
+  ) }));
+  let latestDate = "2026-09-13";
+  const requests = [];
+  await page.route("**/api/macro**", async (route) => {
+    requests.push(route.request().url());
+    await route.fulfill({ json: {
+      ok: true,
+      leadingRows: [],
+      newsRows: [{ date: latestDate, news_sentiment: 99.59 }],
+      policyRateRows: [],
+      tradeRows: [],
+    } });
+  });
+  await page.addInitScript(() => {
+    const ready = { state: "ready", qualityState: "ready", lastSuccessAt: Date.now(), latestDate: "2026-09-13" };
+    localStorage.setItem("thinkstock-runtime-source-health-v1", JSON.stringify({
+      macro: ready,
+      "macro:news": ready,
+    }));
+  });
+  const renderedNewsDate = () => page.locator("#chart-adr").evaluate((element) => (
+    (element.data || []).filter((trace) => trace.meta?.auxiliarySeriesKey === "news_sentiment")
+      .flatMap((trace) => (trace.x || []).filter((date, index) => trace.y?.[index] != null))
+      .sort().at(-1) || ""
+  ));
+  await page.goto("/?e2e=1", { waitUntil: "domcontentloaded" });
+  await expect.poll(renderedNewsDate).toBe("2026-09-13");
+  expect(requests.length).toBeGreaterThan(0);
+
+  latestDate = "2026-09-14";
+  await expect(page.locator("#refreshData")).not.toHaveClass(/spinning/);
+  await page.locator("#refreshData").click();
+  await expect.poll(renderedNewsDate).toBe("2026-09-14");
+  expect(requests.some((url) => new URL(url).searchParams.get("refresh") === "1")).toBe(true);
+});
+
 test("component snapshot restores the latest auxiliary data after reload", async ({ page }) => {
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -990,10 +1037,12 @@ test("credit offset moves dates without changing the credit curve", async ({ pag
     };
   });
   const zeroOffset = await readCurves();
+  await expect(page.locator('[data-series="kospi_credit"]')).toHaveAttribute("title", "표시 옵셋 0일");
   await page.locator("#apiOptionsBtn").click();
   await page.locator("#creditOffsetDecrease").click();
   await page.locator("#creditOffsetDecrease").click();
   await expect(page.locator("#creditOffsetValue")).toHaveText("-2");
+  await expect(page.locator('[data-series="kospi_credit"]')).toHaveAttribute("title", "표시 옵셋 -2일");
   await page.locator("#apiSettingsCloseBtn").click();
   await expect.poll(async () => (await readCurves()).creditX[0])
     .not.toBe(zeroOffset.creditX[0]);

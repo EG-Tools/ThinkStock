@@ -472,7 +472,9 @@ function createBrokerReportClient(scope = globalThis, options = {}) {
       }, Math.max(1000, Number(options.listTimeoutMs) || 25000));
       const payload = await response.json().catch(() => null);
       if (!response.ok || payload?.ok === false || !Array.isArray(payload?.reports)) {
-        throw new Error(payload?.error || `Broker report list HTTP ${response.status}`);
+        const error = new Error(payload?.error || `Broker report list HTTP ${response.status}`);
+        error.status = response.status;
+        throw error;
       }
       return payload.reports;
     }
@@ -586,18 +588,56 @@ function createBrokerResearchCache(scope = globalThis, options = {}) {
         };
 
         onProgress(5, "최근 리포트 확인");
+        let publishedReferenceKey = "";
+        const publishReferenceReport = (candidates) => {
+          const reference = [...candidates]
+            .filter((report) => report?.sourceUrl && report?.publishedDate)
+            .sort((left, right) => String(right.publishedDate).localeCompare(String(left.publishedDate))
+              || String(right.id).localeCompare(String(left.id)))[0];
+          if (!reference) return null;
+          const key = `${reference.id}|${reference.publishedDate}|${reference.sourceUrl}`;
+          if (key === publishedReferenceKey) return reference;
+          publishedReferenceKey = key;
+          onReferenceReport(Object.freeze({
+            reportId: reference.id,
+            publishedDate: reference.publishedDate,
+            availableDate: reference.availableDate,
+            broker: reference.broker,
+            title: reference.title,
+            sourceUrl: reference.sourceUrl,
+            signal: null,
+            confidence: 0,
+            quantitative: false,
+          }));
+          return reference;
+        };
+        const listRequests = new Map();
+        const terminalSourceErrors = new Map();
+        const availableReports = [];
         let windowDays = 90;
         const listSources = async (days) => Promise.all(["hankyung", "naver"].map(async (source) => {
           try {
-            const payload = await fetchList(ticker, days, source);
+            if (terminalSourceErrors.has(source)) throw terminalSourceErrors.get(source);
+            // Naver returns the same source page for both windows. Fetch it once.
+            const requestDays = source === "naver" ? 180 : days;
+            const key = `${source}:${requestDays}`;
+            if (!listRequests.has(key)) listRequests.set(key, Promise.resolve().then(
+              () => fetchList(ticker, requestDays, source),
+            ));
+            const payload = await listRequests.get(key);
+            const reports = (Array.isArray(payload) ? payload : (payload?.reports || []))
+              .filter((report) => source !== "naver" || dateAgeDays(report.publishedDate, asOfDate) < days);
+            availableReports.push(...reports.map((report) => normalizeReportMetadata(report, ticker)).filter(Boolean));
+            publishReferenceReport(availableReports);
             return {
               source,
-              reports: Array.isArray(payload)
-                ? payload
-                : (Array.isArray(payload?.reports) ? payload.reports : []),
+              reports,
               error: null,
             };
           } catch (error) {
+            if ([400, 401, 403, 404, 422].includes(Number(error?.status))) {
+              terminalSourceErrors.set(source, error);
+            }
             return { source, reports: [], error };
           }
         }));
@@ -617,31 +657,6 @@ function createBrokerResearchCache(scope = globalThis, options = {}) {
           listed.map((report) => normalizeReportMetadata(report, ticker)).filter(Boolean),
           MAX_ACTIVE_REPORTS,
         );
-        let publishedReferenceKey = "";
-        const publishReferenceReport = (candidates) => {
-          const reference = [...(Array.isArray(candidates) ? candidates : [])]
-            .filter((report) => report?.sourceUrl && report?.publishedDate)
-            .sort((left, right) => (
-              String(right.publishedDate).localeCompare(String(left.publishedDate))
-              || String(right.id).localeCompare(String(left.id))
-            ))[0];
-          if (!reference) return null;
-          const key = `${reference.id}|${reference.publishedDate}|${reference.sourceUrl}`;
-          if (key === publishedReferenceKey) return reference;
-          publishedReferenceKey = key;
-          onReferenceReport(Object.freeze({
-            reportId: reference.id,
-            publishedDate: reference.publishedDate,
-            availableDate: reference.availableDate,
-            broker: reference.broker,
-            title: reference.title,
-            sourceUrl: reference.sourceUrl,
-            signal: null,
-            confidence: 0,
-            quantitative: false,
-          }));
-          return reference;
-        };
         publishReferenceReport(selected);
         let complete = listErrors.length === 0;
         if (referenceOnly) {

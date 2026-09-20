@@ -159,6 +159,7 @@ import { createRuntimeSourceHealth } from "./runtime-source-health.mjs";
       if (restoredSnapshot) flow.setProgress?.(42, "Restoring last view");
       else {
         await flow.loadSeed();
+        sourceLedger?.invalidateConfirmations?.();
         flow.setProgress?.(45, "Loading saved data");
       }
       if (flow.needsHistorical?.()) {

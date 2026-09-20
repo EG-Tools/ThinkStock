@@ -329,7 +329,6 @@ const startupTaskRuntime = createStartupTaskRuntime({
 const runAfterStartupVisualReady = startupTaskRuntime.defer;
 const startupLoader = createStartupLoader(globalThis, {
   onComplete: ({ startedAt } = {}) => {
-    startupTaskRuntime.release();
     recordPerfSample("startup:visual", startedAt);
   },
 });
@@ -359,7 +358,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = tickerPriceRuntimeModule.CORPORATE_ACTION_RATIO_THRESHOLD;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = tickerPriceRuntimeModule.CORPORATE_ACTION_MAX_BOUNDARY_DAYS;
-const APP_VERSION = "3.52";
+const APP_VERSION = "3.53";
 const APP_BUILD_VERSION = resolveAppBuildVersion(globalThis);
 const appCacheRuntime = createAppCacheRuntime(globalThis, {
   scheduler: backgroundTaskScheduler,
@@ -3066,6 +3065,7 @@ function setCreditOffsetDays(value, options = {}) {
   const days = normalizeCreditOffsetDays(value);
   if (chartSession.creditOffsetDays === days) return days;
   chartSession.creditOffsetDays = days;
+  syncSeriesToggleBoard(getSeriesPriorityOrder());
   saveState();
   if (options.render !== false) {
     requestChartRender(true, {
@@ -3358,7 +3358,9 @@ function syncSeriesToggleBoard(allSeries) {
   document.querySelectorAll(".series-toggle-btn").forEach((btn) => {
     const key = btn.dataset.series;
     btn.style.setProperty("--series-color", seriesColor(key));
-    const helpName = BASE_SERIES_HELP_NAMES[key];
+    const helpName = CREDIT_COLS.includes(key)
+      ? `표시 옵셋 ${chartSession.creditOffsetDays}일`
+      : BASE_SERIES_HELP_NAMES[key];
     if (helpName) btn.title = helpName;
     else btn.removeAttribute("title");
     const isAvailable = available.has(key);
@@ -6331,8 +6333,10 @@ function preloadTickerDartData(ticker, msgEl, featurePlan = null) {
   // interaction-aware scheduler instead of leaving an independent timer alive.
   backgroundTaskScheduler.enqueue(`dart-insider:${target}`, async (taskContext) => {
     await taskContext.checkpoint?.();
+    if (taskContext.signal.aborted) return false;
     return requestInsiderTradesForTicker(target, { trackProgress: true });
   }, {
+    lane: "network",
     coalesceRunning: true,
     delayMs: 250,
     group: "visible-dart",
@@ -7529,16 +7533,7 @@ const applicationLifecycle = createApplicationLifecycleRuntime({
   },
   optionalRefreshes: applicationFeatureLifecycle.optionalRefreshes,
   restoredActivations: applicationFeatureLifecycle.restoredActivations,
-  scheduleRestoredActivation: (task, { feature, index } = {}) => (
-    runAfterStartupVisualReady(task, {
-      delayMs: feature?.name === "dart"
-        ? STARTUP_POST_VISUAL_QUIET_MS
-        : 1000 + ((Number(index) || 0) * 600),
-      priority: feature?.name === "dart" ? 20 : -5 - (Number(index) || 0),
-      taskName: String(feature?.name || "restored-feature"),
-      userVisible: feature?.name === "dart",
-    })
-  ),
+  scheduleRestoredActivation: startupTaskRuntime.restore,
   afterActivation: () => {
     adminFeatureControlsReady = true;
     syncAdminFeatureAccess();
@@ -7589,6 +7584,7 @@ const appBootstrap = createAppBootstrapOrchestrator({
   prepareInitialData: applicationLifecycle.prepareInitialData,
   bindControls: bindApplicationControls,
   afterControls: applicationLifecycle.activateRestoredFeatures,
+  onDataReady: startupTaskRuntime.release,
   waitForFirstPaint: () => runtimeDataApp.waitForFirstPaint(),
   refreshDuringStartup: ({ messageElement, restoredSnapshot }) => (
     runtimeDataApp.refreshDuringStartup(messageElement, {

@@ -3,6 +3,32 @@ import test from "node:test";
 
 import navigation from "../../docs/modules/stock-research-navigation.js";
 
+test("VIX, VKOSPI and older macro corrections invalidate research reuse", () => {
+  const base = { adrRows: [{ date: "2026-09-01", adr_kospi: 90, adr_kosdaq: 80, vix: 15, vkospi: 20 }],
+    macroRows: Array.from({ length: 20 }, (_, index) => ({ date: `2026-08-${String(index + 1).padStart(2, "0")}`, leading_cycle: 100 })) };
+  const original = navigation.sharedResearchFingerprints(base);
+  for (const key of ["vix", "vkospi"]) {
+    const changed = navigation.sharedResearchFingerprints({ ...base,
+      adrRows: [{ ...base.adrRows[0], [key]: 40 }] });
+    assert.notEqual(changed.KOSPI, original.KOSPI);
+    assert.notEqual(changed.KOSDAQ, original.KOSDAQ);
+  }
+  const corrected = navigation.sharedResearchFingerprints({ ...base,
+    macroRows: base.macroRows.map((row, index) => index === 0 ? { ...row, leading_cycle: 99 } : row) });
+  assert.notEqual(corrected.KOSPI, original.KOSPI);
+});
+
+test("research failure reason survives universe refresh and clears after recovery", () => {
+  const rows = [{ ticker: "005930.KS", name: "Samsung", close: 10 }];
+  const state = navigation.diffUniverseState({}, rows).state;
+  state[rows[0].ticker] = navigation.markUniverseAnalysisFailure(state[rows[0].ticker], 1000,
+    Object.assign(new Error("access denied"), { status: 403 }));
+  const refreshed = navigation.diffUniverseState(state, rows).state;
+  assert.equal(refreshed[rows[0].ticker].failureKind, "access");
+  assert.equal(refreshed[rows[0].ticker].failureReason, "access denied");
+  assert.equal(navigation.markUniverseAnalysisSuccess(refreshed[rows[0].ticker]).failureReason, "");
+});
+
 test("retains the full configurable research universe for incremental reuse", () => {
   const state = Object.fromEntries(Array.from({ length: 1000 }, (_, index) => {
     const market = index % 2 ? "KS" : "KQ";

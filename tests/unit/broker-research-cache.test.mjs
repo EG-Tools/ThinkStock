@@ -36,6 +36,44 @@ function parsedReport(metadata) {
   }], metadata);
 }
 
+test("publishes an available reference before the slower source finishes", async () => {
+  let finishSlow;
+  const references = [];
+  const service = createBrokerResearchCache(globalThis, {
+    parser,
+    fetchPdf: async () => { throw new Error("reference-only must not download PDFs"); },
+    now: () => new Date("2026-09-20T00:00:00Z"),
+    fetchList: (_ticker, _days, source) => source === "hankyung"
+      ? new Promise((resolve) => { finishSlow = resolve; })
+      : Promise.resolve([{ id: "naver-123", publishedDate: "2026-09-19", broker: "Test",
+        sourceUrl: "https://stock.pstatic.net/stock-research/company/57/20260919_company_184323000.pdf" }]),
+  });
+  const loaded = service.loadTicker("005930.KS", { referenceOnly: true,
+    onReferenceReport: (report) => references.push(report) });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(references.length, 1);
+  assert.equal(references[0].publishedDate, "2026-09-19");
+  finishSlow([]);
+  await loaded;
+  assert.equal(references.length, 1);
+});
+
+test("does not repeat permanent source errors while expanding an empty report window", async () => {
+  const calls = [];
+  const service = createBrokerResearchCache(globalThis, {
+    parser,
+    fetchPdf: async () => { throw new Error("empty list must not download PDFs"); },
+    now: () => new Date("2026-09-20T00:00:00Z"),
+    fetchList: async (_ticker, days, source) => {
+      calls.push(`${source}:${days}`);
+      if (source === "hankyung") throw Object.assign(new Error("access denied"), { status: 403 });
+      return [];
+    },
+  });
+  await service.loadTicker("005930.KS", { referenceOnly: true });
+  assert.deepEqual(calls, ["hankyung:90", "naver:180"]);
+});
+
 test("caches structured reports and does not reprocess the same PDF", async () => {
   const records = new Map();
   const listCalls = [];
@@ -67,7 +105,7 @@ test("caches structured reports and does not reprocess the same PDF", async () =
   assert.ok(Math.abs(first.reports.find((report) => report.id === "11").targetPriceChange - (1 / 6)) < 1e-12);
   assert.equal(pdfCalls, 2);
   assert.equal(parseCalls, 1);
-  assert.deepEqual(listCalls, ["hankyung:90", "naver:90"]);
+  assert.deepEqual(listCalls, ["hankyung:90", "naver:180"]);
   assert.equal("rawPdf" in first, false);
   assert.match(first.reports.find((report) => report.id === "9").parsed.sourceUrl, /report_idx=9/);
 
@@ -75,7 +113,7 @@ test("caches structured reports and does not reprocess the same PDF", async () =
   assert.equal(second.cached, true);
   assert.equal(pdfCalls, 2);
   assert.equal(parseCalls, 1);
-  assert.deepEqual(listCalls, ["hankyung:90", "naver:90"]);
+  assert.deepEqual(listCalls, ["hankyung:90", "naver:180"]);
 });
 
 test("evaluates frozen report signals against later 20, 63, and 126-day prices", async () => {
@@ -131,7 +169,7 @@ test("expands to six months only when the three-month list is empty", async () =
 
   const result = await service.loadTicker("035900.KQ");
   assert.deepEqual(calls, [
-    "hankyung:90", "naver:90", "hankyung:180", "naver:180",
+    "hankyung:90", "naver:180", "hankyung:180",
   ]);
   assert.equal(result.checkedWindowDays, 180);
   assert.equal(result.activeReportIds[0], "7");
@@ -202,7 +240,7 @@ test("compares both sources before selecting three latest brokerages", async () 
   const result = await service.loadTicker("218410.KQ");
   assert.equal(result.summary.reportCount, 3);
   assert.deepEqual(result.activeReportIds, ["naver-42", "naver-44", "41"]);
-  assert.deepEqual(listCalls, ["hankyung:90", "naver:90"]);
+  assert.deepEqual(listCalls, ["hankyung:90", "naver:180"]);
 });
 
 test("uses popularity only after date, broker, and quantitative metadata quality", () => {
@@ -284,7 +322,7 @@ test("replaces a pre-Naver empty cache with an available RFHIC reference report"
   assert.equal(result.cached, false);
   assert.equal(result.summary.reportCount, 1);
   assert.equal(result.summary.representativeReports.reference.sourceUrl, naverReport.sourceUrl);
-  assert.deepEqual(listCalls, ["hankyung:90", "naver:90"]);
+  assert.deepEqual(listCalls, ["hankyung:90", "naver:180"]);
   assert.deepEqual(phases, [`reference:${naverReport.sourceUrl}`, "pdf"]);
 });
 

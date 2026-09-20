@@ -177,6 +177,7 @@
       try {
         return await load();
       } catch (error) {
+        if (error?.name === "AbortError") throw error;
         lastError = error;
         if (attempt + 1 < attempts) await wait(attempt + 1);
       }
@@ -185,6 +186,7 @@
   }
 
   function retryableResearchHistoryError(error) {
+    if (error?.name === "AbortError") return false;
     if (String(error?.code || "") === "insufficient-history"
       || /가격 이력이 1년 미만/.test(String(error?.message || error || ""))) return false;
     const status = Math.round(Number(error?.status) || 0);
@@ -256,7 +258,7 @@
     if (typeof createSettlementRuntime !== "function") {
       throw new Error("stock research settlement runtime is required");
     }
-    const fetchJson = options.fetchJson || (async (url, init = {}) => {
+    const fetchJsonTransport = options.fetchJson || (async (url, init = {}) => {
       const accessToken = String(getAccessToken() || "").trim();
       if (!isLocalRuntime && !accessToken) {
         throw new Error("API 설정에서 Think Stock 접속 코드를 먼저 저장해 주세요.");
@@ -278,6 +280,11 @@
       }
       return payload;
     });
+    const fetchJson = (url, init = {}) => {
+      const signal = init.signal || searchController?.signal;
+      if (signal?.aborted) return Promise.reject(signal.reason);
+      return fetchJsonTransport(url, { ...init, ...(signal ? { signal } : {}) });
+    };
     const addStock = options.addStock;
     const addFailedStock = options.addFailedStock || addStock;
     const removeStock = options.removeStock || (() => {});
@@ -350,6 +357,7 @@
     const blocked = new Map(loadBlocked(storage).map((entry) => [entry.ticker, entry]));
     let running = false;
     let stopRequested = false;
+    let searchController = null;
     let enrichingCachedProfiles = false;
     let navigationSequence = 0;
     let resultCacheHydrated = !resultCache;
@@ -555,9 +563,11 @@
         events: failures.map((failure) => {
           const ticker = String(failure?.ticker || "").toUpperCase();
           const name = String(failure?.name || ticker);
+          const failureLabel = ({ access: "접근 거부", "invalid-data": "자료 오류",
+            "worker-timeout": "계산 시간 초과", transient: "일시 조회 실패" })[failure.kind] || "";
           return {
-            title: compactStockName(name),
-            fullTitle: name,
+            title: [compactStockName(name), failureLabel].filter(Boolean).join(" · "),
+            fullTitle: [name, failure.reason].filter(Boolean).join(" · "),
             actionLabel: isAdded(ticker) ? "제거" : "추가",
             onAction: async () => {
               if (isAdded(ticker)) await removeStock(ticker);
@@ -1104,8 +1114,11 @@
     async function enrichExistingCandidateProfiles() {
       if (running || enrichingCachedProfiles || !cached?.candidates?.some((candidate) => !candidate.category)) return;
       enrichingCachedProfiles = true;
+      const snapshot = cached;
+      const requestId = navigationSequence;
       try {
-        const candidates = await enrichCandidateProfiles(cached.candidates);
+        const candidates = await enrichCandidateProfiles(snapshot.candidates, { showProgress: false });
+        if (running || cached !== snapshot || requestId !== navigationSequence) return;
         cached = {
           ...cached,
           candidates,
@@ -1227,6 +1240,8 @@
       const perMarketLimit = targetUniverseSize / 2;
       running = true;
       stopRequested = false;
+      const runController = new AbortController();
+      searchController = runController;
       navigationSequence += 1;
       elements.refresh.disabled = true;
       elements.stop.disabled = false;
@@ -1239,8 +1254,11 @@
       try {
         if (prepareSharedData) {
           setProgress(3, "공통 지표 이력 확인", "");
-          await prepareSharedData().catch(() => false);
+          if (await workerClientModule.waitForTask(prepareSharedData(), runController.signal) === false) {
+            throw new Error("공통 지표 이력이 준비되지 않았습니다. 이전 결과를 유지합니다.");
+          }
         }
+        if (stopRequested) throw searchController.signal.reason;
         if (!forceIndividual && !bypassSummary && (!cached || cached.partial === true)) {
           setProgress(4, "저장된 탐구 요약 확인", "");
           const summary = await loadSummary().catch(() => null);
@@ -1381,7 +1399,7 @@
           const laneCount = researchWorkerLaneCount(scope.navigator, scanRecords.length);
           if (typeof scope.Worker !== "function") throw new Error("이 브라우저는 백그라운드 계산을 지원하지 않습니다.");
           for (let index = 0; index < laneCount; index += 1) {
-            lanes.push(await createWorkerLane(scope, workerUrl, shared));
+            lanes.push(await createWorkerLane(scope, workerUrl, shared, { signal: searchController.signal }));
           }
         }
         let failed = 0;
@@ -1394,10 +1412,21 @@
         const queues = partitionResearchScanQueues(scanRecords, lanes.length || 1, {
           marketParity: true,
         });
-        await Promise.all(queues.map(async (queue, laneIndex) => {
-          const lane = lanes[laneIndex];
-          for (const item of queue) {
-            if (stopRequested) break;
+        // Preserve market alternation, but let the next free lane take the next item.
+        const work = [];
+        for (let index = 0; index < Math.max(0, ...queues.map((queue) => queue.length)); index += 1) {
+          queues.forEach((queue) => { if (queue[index]) work.push(queue[index]); });
+        }
+        let nextItem = 0;
+        await Promise.all(lanes.map(async (initialLane, laneIndex) => {
+          let lane = initialLane;
+          while (nextItem < work.length) {
+            if (stopRequested || runController.signal.aborted) break;
+            if (lane.isTerminated?.()) {
+              lane = await createWorkerLane(scope, workerUrl, shared, { signal: searchController.signal });
+              lanes[laneIndex] = lane;
+            }
+            const item = work[nextItem++];
             const ticker = String(item?.ticker || "").trim().toUpperCase();
             try {
               const historyRows = await loadTickerHistory(
@@ -1405,6 +1434,7 @@
                 preloadedHistory.has(ticker) ? preloadedHistory.get(ticker) : undefined,
                 typeof historyCache?.writeMany === "function" ? pendingHistoryWrites : null,
               );
+              if (stopRequested || runController.signal.aborted) break;
               const tickerAnalysisDate = latestResearchDate(historyRows, universe.baseDate);
               if (tickerAnalysisDate > latestAnalyzedDate) latestAnalyzedDate = tickerAnalysisDate;
               const analysis = await lane.analyze(
@@ -1431,6 +1461,7 @@
               }
               if (candidate) candidates.push(candidate);
             } catch (error) {
+              if (stopRequested || runController.signal.aborted || error?.name === "AbortError") break;
               if (String(error?.code || "") === "insufficient-history"
                 || /가격 이력이 1년 미만/.test(String(error?.message || error || ""))) {
                 const previousCandidate = previousCandidateByTicker.get(ticker);
@@ -1442,15 +1473,15 @@
                 }
                 insufficientHistory += 1;
               } else {
-                failedRecords.push(item);
+                failedRecords.push({ ...item, failure: error });
               }
             } finally {
-              processed += 1;
+              if (!stopRequested && !runController.signal.aborted) processed += 1;
               const percent = 8 + Math.round((processed / Math.max(1, scanRecords.length)) * 86);
               setProgress(percent, canIncrement
                 ? "변경 종목만 갱신"
                 : `${signalLabel()} 탐구`, `${processed} / ${scanRecords.length}`);
-              if (pendingHistoryWrites.size >= 24) await flushPendingHistoryWrites();
+              if (pendingHistoryWrites.size >= 24) void flushPendingHistoryWrites();
             }
           }
         }));
@@ -1463,6 +1494,8 @@
             if (nextUniverseState[failedTicker]) {
               nextUniverseState[failedTicker] = markUniverseAnalysisFailure(
                 nextUniverseState[failedTicker],
+                Date.now(),
+                item.failure,
               );
             }
           });
@@ -1478,7 +1511,7 @@
           .map(({ score: _score, ...candidate }) => candidate);
         const candidateOrder = normalizeCandidateOrder(candidatePool, [], random);
         const firstPage = selectCandidatePage(candidatePool, candidateOrder, 0);
-        const enrichedCandidates = await enrichCandidateProfiles(firstPage);
+        const enrichedCandidates = firstPage;
         const reusedCount = Math.max(0, records.length - scanRecords.length);
         const completionText = interrupted
           ? "검색 정지 · 현재 결과 표시"
@@ -1533,11 +1566,13 @@
         completeProgress(completionText, completionDetails, failureItems);
         if (!interrupted) scheduleSignalSettlement();
       } catch (error) {
+        runController.abort();
         cached = previous;
         render();
-        completeProgress(`재검색 실패: ${error?.message || error}`, "이전 목록 유지");
+        completeProgress(stopRequested ? "검색 정지" : `재검색 실패: ${error?.message || error}`, "이전 목록 유지");
       } finally {
         lanes.forEach((lane) => lane.terminate());
+        searchController = null;
         running = false;
         stopRequested = false;
         elements.refresh.disabled = false;
@@ -1545,6 +1580,7 @@
         syncFilterControls();
         syncMinimumControls();
         syncNavigationControls();
+        void enrichExistingCandidateProfiles().catch(() => {});
       }
     }
 
@@ -1619,8 +1655,9 @@
       elements.stop.addEventListener("click", () => {
         if (!running || stopRequested) return;
         stopRequested = true;
+        searchController?.abort();
         elements.stop.disabled = true;
-        setProgress(99, "검색 정지 중", "진행 중인 종목 마무리");
+        setProgress(99, "검색 정지 중", "요청 취소");
       });
       elements.previous.addEventListener("click", () => navigateCandidates(-1));
       elements.next.addEventListener("click", () => navigateCandidates(1));

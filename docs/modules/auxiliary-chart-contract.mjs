@@ -1,5 +1,7 @@
 "use strict";
 
+import { SERIES_COLORS } from "./app-control-config.mjs";
+
   const NEWS_MOVING_AVERAGE_DAYS = 1;
   const NEWS_MOVING_AVERAGE_MIN_DAYS = 1;
   const NEWS_MOVING_AVERAGE_MAX_DAYS = 20;
@@ -19,7 +21,7 @@
     }),
     Object.freeze({
       axis: "y2",
-      color: "#facc15",
+      color: SERIES_COLORS.adr_kospi,
       key: "macd_disparity",
       kind: "disparity",
       label: "이격도",
@@ -28,7 +30,7 @@
     }),
     Object.freeze({
       axis: "y3",
-      color: "#f472b6",
+      color: SERIES_COLORS.adr_kosdaq,
       key: "macd_obv",
       kind: "obv",
       label: "OBV",

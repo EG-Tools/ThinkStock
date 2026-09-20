@@ -2083,6 +2083,12 @@ test("insider trade toggle draws DART buy and sell triangles for three years", a
       .map((point) => getComputedStyle(point).display)
   ))).toEqual(["block", "block"]);
 
+  // Startup now releases before supplemental data settles. Test marker input
+  // after that redraw, which deliberately invalidates the previous hover.
+  await expect.poll(() => page.evaluate(() => (
+    window.ThinkStockE2E.getRefreshPhaseStats().supplementalReady
+  ))).toBeGreaterThan(0);
+  await waitForChartRenderIdle(page);
   const insiderBuyPoint = await readInsiderMarker(page, "buy");
   expect(insiderBuyPoint).not.toBeNull();
   await page.mouse.move(insiderBuyPoint.x, insiderBuyPoint.y);

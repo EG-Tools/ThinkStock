@@ -164,11 +164,17 @@ import {
         "^KQ11",
       ].map(normalizeTicker).filter((ticker) => priceRows(payload, ticker).length))];
       for (const ticker of tickers) {
+        const points = priceRows(payload, ticker);
+        const dates = points.map((point) => point.date).sort();
         const result = validatePricePoints({
           ticker,
           currentPayload: { records: [] },
-          incomingPoints: priceRows(payload, ticker),
-          referenceDates: INDEX_POLICIES[ticker] ? indexDates : undefined,
+          incomingPoints: points,
+          // Hidden indices can legitimately have older tails. Reject holes
+          // inside their history, not dates they have not refreshed yet.
+          referenceDates: INDEX_POLICIES[ticker]
+            ? indexDates.filter((date) => date >= dates[0] && date <= dates.at(-1))
+            : undefined,
         });
         if (!result.ok) return { ...result, reason: `${ticker}:${result.reason}` };
       }

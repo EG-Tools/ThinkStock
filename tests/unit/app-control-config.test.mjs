@@ -214,13 +214,9 @@ test("owns stable runtime keys and chart control limits outside app.js", () => {
     "leading_cycle",
     "t10y1y",
     "us_credit_spread",
-    "customer_deposit",
-    "kospi_credit",
-    "kosdaq_credit",
   ]);
-  assert.equal(BASE_SERIES_HELP_NAMES.customer_deposit, "2일 후행");
-  assert.equal(BASE_SERIES_HELP_NAMES.kospi_credit, "2일 후행");
-  assert.equal(BASE_SERIES_HELP_NAMES.kosdaq_credit, "2일 후행");
+  // Credit help is derived from the current setting, not a fixed two-day offset.
+  assert.equal(BASE_SERIES_HELP_NAMES.customer_deposit, undefined);
   assert.equal(Object.isFrozen(BASE_HOVER_NAMES), true);
   assert.equal(Object.isFrozen(BASE_SERIES_HELP_NAMES), true);
   assert.deepEqual(MARKET_INDEX_SERIES, ["^KS11", "^KQ11"]);

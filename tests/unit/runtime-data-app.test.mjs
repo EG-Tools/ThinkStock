@@ -18,6 +18,22 @@ function createScope() {
   };
 }
 
+test("initial seed invalidates old confirmations before the first render, while a restored snapshot reuses them", async () => {
+  for (const restoredSnapshot of [false, true]) {
+    const calls = [];
+    const app = createRuntimeDataApp(createScope(), {
+      sourceLedger: { invalidateConfirmations: () => calls.push("invalidate") },
+    });
+    await app.prepareInitialData({
+      restoreSnapshot: async () => restoredSnapshot,
+      loadSeed: async () => calls.push("seed"),
+      renderMain: async () => calls.push("render"),
+      plotlyReady: Promise.resolve({}),
+    });
+    assert.deepEqual(calls, restoredSnapshot ? ["render"] : ["seed", "invalidate", "render"]);
+  }
+});
+
 test("completed runtime status stays solid for three seconds and fades for two", () => {
   const classes = new Set();
   const timers = [];

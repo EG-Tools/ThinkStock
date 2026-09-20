@@ -4,6 +4,21 @@ import test from "node:test";
 
 import * as module from "../../docs/modules/shared-request-registry.mjs";
 
+test("an immediate OFF/ON starts a new producer before the aborted one settles", async () => {
+  const registry = module.createSharedRequestRegistry();
+  const controller = new AbortController();
+  let finishOld;
+  const old = registry.run("ticker", () => new Promise((resolve) => { finishOld = resolve; }),
+    { signal: controller.signal });
+  const rejected = assert.rejects(old, { name: "AbortError" });
+  await Promise.resolve();
+  controller.abort();
+  assert.equal(await registry.run("ticker", async () => "fresh"), "fresh");
+  finishOld("stale");
+  await rejected;
+  assert.equal(registry.stats().inFlight, 0);
+});
+
 
 test("shares one producer across simultaneous consumers", async () => {
   const registry = module.createSharedRequestRegistry();

@@ -12,6 +12,26 @@ import {
 } from "../../docs/modules/app-bootstrap-orchestrator.mjs";
 import { isApplicationFeatureRequested } from "../../docs/modules/app-control-config.mjs";
 
+test("restored features start on data readiness without waiting for title animation", async () => {
+  const events = [];
+  const runtime = createStartupTaskRuntime({ scheduler: {
+    enqueue(_key, _task, options) {
+      events.push({ phase: "queued", ...options });
+      return Promise.resolve(true);
+    },
+  } });
+  const bootstrap = createAppBootstrapOrchestrator({
+    afterControls: () => runtime.restore(() => {}, { feature: { name: "signal" }, index: 1 }),
+    refreshDuringStartup: async () => { events.push({ phase: "data-ready" }); },
+    onDataReady: runtime.release,
+    loader: { hide: () => events.push({ phase: "animation" }) },
+  });
+  await bootstrap.boot();
+  assert.deepEqual(events.map((event) => event.phase), ["data-ready", "queued", "animation"]);
+  assert.equal(events[1].delayMs, 0);
+  assert.equal(events[1].lane, "network");
+});
+
 test("one feature registry owns refresh and restored activation predicates", () => {
   const enabled = () => true;
   const aiRefresh = () => "refresh";

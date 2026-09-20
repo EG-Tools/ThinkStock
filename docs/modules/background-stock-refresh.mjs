@@ -9,6 +9,7 @@ import { mapWithConcurrency } from "./shared-request-registry.mjs";
  * @property {() => boolean} [shouldRun]
  * @property {boolean} [coalesceRunning]
  * @property {boolean} [deferDuringInteraction]
+ * @property {"serial"|"network"} [lane]
  */
 
 /**
@@ -54,8 +55,8 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
     let sequence = 0;
     let timerHandle = 0;
     let idleHandle = 0;
-    let runningKey = "";
-    let runningEntry = null;
+    const running = new Map();
+    const networkConcurrency = Math.max(1, Number(options.networkConcurrency) || 3);
     let disposed = false;
     let lifecycleListenersAttached = false;
     let lastActivityAt = Number.NEGATIVE_INFINITY;
@@ -100,7 +101,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
     };
 
     function hasLifecycleWork() {
-      return Boolean(runningEntry || queue.size);
+      return Boolean(running.size || queue.size);
     }
 
     function syncLifecycleListeners() {
@@ -141,15 +142,22 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
       return true;
     }
 
+    function hasCapacity(entry) {
+      if (running.has(entry.key)) return false;
+      const count = [...running.values()].filter((item) => item.lane === entry.lane).length;
+      return count < (entry.lane === "network" ? networkConcurrency : 1);
+    }
+
     function orderedReady(currentTime = now()) {
       return [...queue.values()]
-        .filter((entry) => entry.notBefore <= currentTime)
+        .filter((entry) => entry.notBefore <= currentTime && hasCapacity(entry))
         .sort((left, right) => right.priority - left.priority || left.sequence - right.sequence)[0] || null;
     }
 
     function nextDelay(currentTime = now()) {
-      if (!queue.size) return null;
-      return Math.max(0, Math.min(...[...queue.values()].map((entry) => entry.notBefore - currentTime)));
+      const available = [...queue.values()].filter(hasCapacity);
+      if (!available.length) return null;
+      return Math.max(0, Math.min(...available.map((entry) => entry.notBefore - currentTime)));
     }
 
     function isForeground(entry = null) {
@@ -207,7 +215,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
     }
 
     function schedulePump(delayMs = null) {
-      if (disposed || runningKey || timerHandle || idleHandle || !queue.size) return;
+      if (disposed || timerHandle || idleHandle || !queue.size || nextDelay() == null) return;
       const delay = delayMs == null ? nextDelay() : Math.max(0, Number(delayMs) || 0);
       timerHandle = scope.setTimeout?.(() => {
         timerHandle = 0;
@@ -227,7 +235,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
     }
 
     async function pump() {
-      if (disposed || runningKey) return;
+      if (disposed) return;
       const remainingGap = lastCompletedAt + minimumTaskGapMs - now();
       if (remainingGap > 0) {
         counters.taskYields += 1;
@@ -263,9 +271,9 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
         schedulePump();
         return;
       }
-      runningKey = entry.key;
-      runningEntry = entry;
+      running.set(entry.key, entry);
       syncLifecycleListeners();
+      schedulePump();
       const taskStartedAt = now();
       const queueWaitMs = Math.max(0, taskStartedAt - entry.enqueuedAt);
       counters.totalQueueWaitMs += queueWaitMs;
@@ -285,8 +293,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
         const runMs = Math.max(0, now() - taskStartedAt);
         counters.totalRunMs += runMs;
         counters.maxRunMs = Math.max(counters.maxRunMs, runMs);
-        runningKey = "";
-        if (runningEntry === entry) runningEntry = null;
+        if (running.get(entry.key) === entry) running.delete(entry.key);
         lastCompletedAt = now();
         syncLifecycleListeners();
         schedulePump(minimumTaskGapMs);
@@ -306,7 +313,8 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
         counters.cancelled += 1;
         return Promise.resolve(false);
       }
-      if (taskOptions.coalesceRunning === true && runningEntry?.key === normalizedKey) {
+      const runningEntry = running.get(normalizedKey);
+      if (taskOptions.coalesceRunning === true && runningEntry && !runningEntry.cancelled) {
         counters.coalesced += 1;
         return runningEntry.promise || Promise.resolve(false);
       }
@@ -319,7 +327,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
         settle(previous, false);
       }
       const controller = new AbortController();
-      const forwardAbort = () => cancel(normalizedKey);
+      const forwardAbort = () => cancel(normalizedKey, controller);
       let resolve;
       let reject;
       const promise = new Promise((resolveTask, rejectTask) => {
@@ -331,6 +339,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
         key: normalizedKey,
         task,
         group: String(taskOptions.group || "").trim(),
+        lane: taskOptions.lane === "network" ? "network" : "serial",
         priority: Number(taskOptions.priority) || 0,
         notBefore: enqueuedAt + Math.max(0, Number(taskOptions.delayMs) || 0),
         enqueuedAt,
@@ -355,20 +364,25 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
       return promise;
     }
 
-    function cancel(key) {
+    function cancel(key, controller = null) {
       const normalizedKey = String(key || "").trim();
-      const entry = queue.get(normalizedKey);
-      if (!entry && runningEntry?.key !== normalizedKey) return false;
-      if (!entry) {
+      const queued = queue.get(normalizedKey);
+      const active = running.get(normalizedKey);
+      const entry = !controller || queued?.controller === controller ? queued : null;
+      const runningEntry = !controller || active?.controller === controller ? active : null;
+      if (!entry && !runningEntry) return false;
+      if (runningEntry) {
+        running.delete(normalizedKey);
         abortEntry(runningEntry);
         counters.cancelled += 1;
         settle(runningEntry, false);
-        return true;
       }
-      queue.delete(normalizedKey);
-      counters.cancelled += 1;
-      abortEntry(entry);
-      settle(entry, false);
+      if (entry) {
+        queue.delete(normalizedKey);
+        counters.cancelled += 1;
+        abortEntry(entry);
+        settle(entry, false);
+      }
       syncLifecycleListeners();
       clearWakeup();
       schedulePump();
@@ -381,18 +395,19 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
       const keys = [...queue.values()]
         .filter((entry) => entry.group === normalizedGroup)
         .map((entry) => entry.key);
-      if (runningEntry?.group === normalizedGroup) keys.push(runningEntry.key);
+      running.forEach((entry) => { if (entry.group === normalizedGroup) keys.push(entry.key); });
       return [...new Set(keys)].reduce((count, key) => count + (cancel(key) ? 1 : 0), 0);
     }
 
     function dispose() {
       disposed = true;
       clearWakeup();
-      if (runningEntry) {
-        abortEntry(runningEntry);
-        settle(runningEntry, false);
+      running.forEach((entry) => {
+        abortEntry(entry);
+        settle(entry, false);
         counters.cancelled += 1;
-      }
+      });
+      running.clear();
       [...queue.values()].forEach((entry) => {
         abortEntry(entry);
         settle(entry, false);
@@ -407,7 +422,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
       cancelGroup,
       dispose,
       enqueue,
-      isRunning: () => Boolean(runningKey),
+      isRunning: () => Boolean(running.size),
       stats: () => Object.freeze({
         ...counters,
         queued: queue.size,
@@ -416,8 +431,9 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
           groups[key] = (Number(groups[key]) || 0) + 1;
           return groups;
         }, {})),
-        runningGroup: runningEntry?.group || "",
-        runningKey,
+        runningGroup: running.values().next().value?.group || "",
+        runningKey: running.keys().next().value || "",
+        runningCount: running.size,
         lifecycleListenersAttached,
       }),
     });
@@ -595,12 +611,14 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
             ? { visibleSinceDate: String(runOptions.visibleSinceDate).slice(0, 10) }
             : {}),
         });
-        if (shouldRun(ticker) && runOptions.notifyUpdated !== false) {
+        if (!taskContext.signal?.aborted && generations.get(ticker) === generation
+          && shouldRun(ticker) && runOptions.notifyUpdated !== false) {
           await onUpdated(ticker);
         }
         return true;
       }, {
         group: "ticker-history",
+        lane: "network",
         delayMs,
         priority,
         shouldRun: () => shouldRun(ticker),
@@ -651,10 +669,12 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
     const priority = Number(options.priority) || 80;
     const group = String(options.group || "visible-series-supplemental");
     const taskKey = (ticker) => `${group}:${ticker}`;
+    const activations = new Map();
 
     function schedule(tickerValue, context = {}) {
       const ticker = normalizeTicker(tickerValue);
       if (!isSupported(ticker)) return Promise.resolve(false);
+      if (activations.has(ticker)) return activations.get(ticker).promise;
       const hasEnabledWork = () => {
         const plan = resolveFeaturePlan(ticker);
         return plan.dart || plan.eps || plan.ai;
@@ -666,14 +686,17 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
       const trackAiProgress = context.trackAiProgress === true && initialFeaturePlan.ai;
       if (trackAiProgress) options.onAiQueued?.(ticker, context);
 
-      const cleanupSkipped = () => options.onSkipped?.(ticker, {
-        ...context,
-        trackAiProgress,
-      });
-      return scheduler.enqueue(taskKey(ticker), async (taskContext) => {
+      const activation = { context: { ...context, trackAiProgress }, promise: null };
+      activations.set(ticker, activation);
+      const isCurrent = () => activations.get(ticker) === activation;
+      const cleanupSkipped = () => {
+        if (isCurrent()) options.onSkipped?.(ticker, activation.context);
+      };
+      activation.promise = scheduler.enqueue(taskKey(ticker), async (taskContext) => {
         await taskContext.checkpoint?.();
+        if (!isCurrent() || taskContext.signal?.aborted || !isActive(ticker)) return false;
         const featurePlan = resolveFeaturePlan(ticker);
-        const runContext = { ...context, featurePlan };
+        const runContext = { ...context, featurePlan, signal: taskContext.signal };
         const tasks = [];
         if (featurePlan.dart) {
           tasks.push(Promise.resolve(options.prepareDisclosure?.(ticker, runContext)));
@@ -689,10 +712,12 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
           cleanupSkipped();
         }
         const results = await Promise.allSettled(tasks);
+        if (!isCurrent() || taskContext.signal?.aborted || !isActive(ticker)) return false;
         results.forEach((result) => {
           if (result.status === "rejected") options.onTaskError?.(ticker, result.reason, context);
         });
         await taskContext.checkpoint?.();
+        if (!isCurrent() || taskContext.signal?.aborted || !isActive(ticker)) return false;
         if (hydrateAi) {
           try {
             if (resolveFeaturePlan(ticker).ai) options.onAiReady?.(ticker, runContext);
@@ -703,6 +728,7 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
         return true;
       }, {
         coalesceRunning: true,
+        lane: "network",
         delayMs,
         group,
         priority,
@@ -712,13 +738,22 @@ function createBackgroundTaskScheduler(scope = globalThis, options = {}) {
         return started;
       }).catch((error) => {
         cleanupSkipped();
-        options.onError?.(ticker, error, context);
+        if (isCurrent()) options.onError?.(ticker, error, context);
         return false;
+      }).finally(() => {
+        if (isCurrent()) activations.delete(ticker);
       });
+      return activation.promise;
     }
 
     return Object.freeze({
-      cancel: (tickerValue) => scheduler.cancel(taskKey(normalizeTicker(tickerValue))),
+      cancel: (tickerValue) => {
+        const ticker = normalizeTicker(tickerValue);
+        const activation = activations.get(ticker);
+        activations.delete(ticker);
+        if (activation) options.onSkipped?.(ticker, activation.context);
+        return scheduler.cancel(taskKey(ticker));
+      },
       schedule,
     });
   }
