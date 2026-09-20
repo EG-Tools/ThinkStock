@@ -67,6 +67,7 @@ import {
 } from "./company-analysis.mjs";
 
 import { dispatchRequestRoute, matchRequestRoute, queryFlag } from "./request-router.mjs";
+import { runScheduledRefresh } from "./scheduled-refresh.mjs";
 import { adminSessionResponse } from "./admin-session-handler.mjs";
 import { brokerReportPdfResponse, brokerReportsResponse } from "./broker-report-handler.mjs";
 import {
@@ -1931,6 +1932,15 @@ export async function handleRequest(request, env, ctx = null) {
 }
 
 export default {
+  async scheduled(controller, env) {
+    await runScheduledRefresh(controller.scheduledTime, controller.cron, {
+      indices: () => krxCoreIndexResponse(env, ""),
+      adr: () => adrMarketResponse(env, ""),
+      crisis: () => crisisSignalResponse(env, ""),
+      macro: () => ecosMacroResponse(env, "", true),
+      credit: () => creditMacroResponse(env, ""),
+    });
+  },
   async fetch(request, env, ctx) {
     try {
       return await handleRequest(request, env, ctx);

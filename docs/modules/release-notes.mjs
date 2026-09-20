@@ -3,6 +3,14 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.54",
+      date: "2026.09.20",
+      items: Object.freeze([
+        "Cloudflare에서 지수·ADR·변동성 공통 자료를 장중 미리 확인",
+        "거시·예탁금 자료를 평일에 미리 준비하고 일부 갱신 실패를 기록",
+      ]),
+    }),
+    Object.freeze({
       version: "3.53",
       date: "2026.09.20",
       items: Object.freeze([

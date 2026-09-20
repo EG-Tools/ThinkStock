@@ -5,6 +5,9 @@
   "compatibility_date": "2026-07-22",
   "workers_dev": true,
   "preview_urls": true,
+  "triggers": {
+    "crons": ["5 0-8 * * *", "10 0,8,12 * * *"]
+  },
   "browser": {
     "binding": "BROWSER"
   },
