@@ -3,6 +3,17 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.56",
+      date: "2026.09.20",
+      items: Object.freeze([
+        "오래된 차트 요청 실패 시 불필요한 메인 화면 재계산 방지",
+        "ADR 동시 갱신 합류와 갱신 전 캐시 재확인",
+        "반복 차트 계산의 데이터 복사 및 캐시 용량 중복 측정 축소",
+        "서비스워커 캐시 조회 공유, 기능별 번들 예산 및 예약 갱신 순서 개선",
+        "일반 개발 빌드에서 E2E 진단 번들 생성 선택 가능",
+      ]),
+    }),
+    Object.freeze({
       version: "3.54",
       date: "2026.09.20",
       items: Object.freeze([

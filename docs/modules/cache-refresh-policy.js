@@ -3,6 +3,42 @@
 
   const DEFAULT_CONCURRENCY = 3;
 
+  function createExpiringSharedLookup(load, options = {}) {
+    const ttlMs = Math.max(0, Number(options.ttlMs) || 0);
+    const now = typeof options.now === "function" ? options.now : Date.now;
+    let cached = null;
+    let expiresAt = 0;
+    let inFlight = null;
+    let generation = 0;
+
+    function get(...args) {
+      if (cached && now() < expiresAt) return Promise.resolve(cached);
+      if (inFlight) return inFlight;
+      const currentGeneration = generation;
+      let pending;
+      pending = Promise.resolve().then(() => load(...args)).then((value) => {
+        if (generation === currentGeneration) {
+          cached = value;
+          expiresAt = now() + ttlMs;
+        }
+        return value;
+      }).finally(() => {
+        if (inFlight === pending) inFlight = null;
+      });
+      inFlight = pending;
+      return pending;
+    }
+
+    function invalidate() {
+      generation += 1;
+      cached = null;
+      expiresAt = 0;
+      inFlight = null;
+    }
+
+    return Object.freeze({ get, invalidate });
+  }
+
   function refreshPriority(request) {
     const pathname = new URL(request.url).pathname.toLowerCase();
     if (
@@ -136,6 +172,7 @@
 
   globalScope.ThinkStockCacheRefreshPolicy = Object.freeze({
     DEFAULT_CONCURRENCY,
+    createExpiringSharedLookup,
     createSharedTask,
     manifestDataEntries,
     normalizeManifestRevision,

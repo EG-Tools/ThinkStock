@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  assertLoadGroupLimits,
   createBundleReport,
   normalizedSourceByteLength,
   summarizeBundle,
@@ -84,4 +85,39 @@ test("source byte metrics are stable across checkout line endings", () => {
   const crlf = lf.replaceAll("\n", "\r\n");
 
   assert.equal(normalizedSourceByteLength(crlf), normalizedSourceByteLength(lf));
+});
+
+test("load groups count shared chunks once and enforce total gzip and request budgets", () => {
+  const report = createBundleReport({
+    bundles: [
+      { name: "app", file: "docs/assets/app.js", bytes: 100, gzipBytes: 50, imports: [] },
+      { name: "feature", file: "docs/assets/feature.js", bytes: 80, gzipBytes: 40,
+        imports: ["docs/assets/chunks/shared.js"] },
+      { name: "other", file: "docs/assets/other.js", bytes: 70, gzipBytes: 35,
+        imports: ["docs/assets/chunks/shared.js"] },
+      { name: "shared", file: "docs/assets/chunks/shared.js", bytes: 20, gzipBytes: 10, imports: [] },
+    ],
+    loadGroups: [{ name: "coldFeature", entries: [
+      "docs/assets/app.js", "docs/assets/feature.js", "docs/assets/other.js",
+    ] }],
+  });
+  assert.deepEqual(report.loadGroups[0], {
+    name: "coldFeature",
+    requests: 4,
+    bytes: 270,
+    gzipBytes: 135,
+    assets: [
+      "docs/assets/app.js", "docs/assets/chunks/shared.js",
+      "docs/assets/feature.js", "docs/assets/other.js",
+    ],
+  });
+  assert.doesNotThrow(() => assertLoadGroupLimits(report.loadGroups, {
+    coldFeature: { maxGzipBytes: 135, maxRequests: 4 },
+  }));
+  assert.throws(() => assertLoadGroupLimits(report.loadGroups, {
+    coldFeature: { maxGzipBytes: 134, maxRequests: 4 },
+  }), /gzip bytes/);
+  assert.throws(() => assertLoadGroupLimits(report.loadGroups, {
+    coldFeature: { maxGzipBytes: 135, maxRequests: 3 },
+  }), /requests/);
 });

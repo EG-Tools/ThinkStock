@@ -6,12 +6,18 @@
   "thinkstockBuild": {
     "appBundleMaxBytes": 1048576,
     "e2eBundleMaxBytes": 1048576,
-    "appBundleGzipMaxBytes": 360000
+    "appBundleGzipMaxBytes": 360000,
+    "loadGroupLimits": {
+      "initial": { "maxGzipBytes": 650000, "maxRequests": 14 },
+      "stockResearch": { "maxGzipBytes": 740000, "maxRequests": 17 },
+      "ai": { "maxGzipBytes": 920000, "maxRequests": 24 }
+    }
   },
   "scripts": {
     "vendor:sync": "node scripts/build_plotly_bundle.cjs",
     "check:sources": "node scripts/check_javascript_sources.mjs",
     "build:web": "node scripts/sync_pdfjs_vendor.mjs && node scripts/check_javascript_sources.mjs --scope web && node scripts/build_pages_bundle.mjs",
+    "build:web:dev": "node scripts/sync_pdfjs_vendor.mjs && node scripts/check_javascript_sources.mjs --scope web && node scripts/build_pages_bundle.mjs --skip-e2e",
     "test": "npm run build:web && npm run test:unit:built",
     "test:unit:built": "node scripts/check_javascript_sources.mjs --scope runtime && node --test tests/unit/*.test.mjs && node scripts/validate_pages_data_local.mjs && node scripts/validate_pages_app.mjs",
     "test:affected": "node scripts/test_affected.mjs",

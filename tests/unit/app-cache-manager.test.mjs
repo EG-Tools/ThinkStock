@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { MessageChannel } from "node:worker_threads";
 import * as appCacheManagerModule from "../../docs/modules/app-cache-manager.mjs";
 
 function createStorage(initial = {}) {
@@ -123,4 +124,65 @@ test("cache measurement stays complete across many bounded IndexedDB records", a
   const circular = {};
   circular.self = circular;
   assert.equal(module.byteLength(scope, circular), 0);
+});
+
+test("simultaneous and repeated capacity checks reuse one bounded measurement", async () => {
+  let indexedReads = 0;
+  let bodyReads = 0;
+  const request = { url: "https://example.test/ThinkStock/app.js" };
+  const caches = createCacheStorage({
+    "thinkstock-shell": [{ request, response: {
+      clone() { return this; },
+      headers: { get: () => "2048" },
+      async arrayBuffer() { bodyReads += 1; throw new Error("body should not be read"); },
+    } }],
+  });
+  const manager = appCacheManagerModule.createAppCacheManager({ caches, TextEncoder }, {
+    indexedCacheStore: {
+      async readAllRecords() { indexedReads += 1; return [{ value: 1 }]; },
+    },
+    indexedStoreNames: ["prices"],
+  });
+  const [first, concurrent] = await Promise.all([manager.measure(), manager.measure()]);
+  assert.equal(first, concurrent);
+  assert.equal(indexedReads, 1);
+  assert.equal(bodyReads, 0);
+  assert.equal((await manager.measure()).totalBytes, first.totalBytes);
+  assert.equal(indexedReads, 1);
+  await manager.measure({ full: true });
+  assert.equal(indexedReads, 2);
+});
+
+test("clearing app caches invalidates the service worker active data cache", async () => {
+  const messages = [];
+  const scope = {
+    MessageChannel,
+    navigator: { serviceWorker: { controller: {
+      postMessage(message, ports) {
+        messages.push(message);
+        ports[0].postMessage({ ok: true });
+      },
+    } } },
+  };
+  await appCacheManagerModule.createAppCacheManager(scope).clear();
+  assert.deepEqual(messages, ["INVALIDATE_DATA_CACHE_INFO"]);
+});
+
+test("partial cache clearing still invalidates the service worker lookup", async () => {
+  const messages = [];
+  const scope = {
+    MessageChannel,
+    navigator: { serviceWorker: { controller: {
+      postMessage(message, ports) {
+        messages.push(message);
+        ports[0].postMessage({ ok: true });
+      },
+    } } },
+  };
+  const manager = appCacheManagerModule.createAppCacheManager(scope, {
+    indexedCacheStore: { async clearStore() { throw new Error("database unavailable"); } },
+    indexedStoreNames: ["prices"],
+  });
+  await assert.rejects(manager.clear(), /일부 캐시/);
+  assert.deepEqual(messages, ["INVALIDATE_DATA_CACHE_INFO"]);
 });

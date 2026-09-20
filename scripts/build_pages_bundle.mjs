@@ -8,6 +8,7 @@ import { runtimeBundleFingerprint } from "./runtime-bundle-fingerprint.mjs";
 
 import { build } from "esbuild";
 import {
+  assertLoadGroupLimits,
   createBundleReport,
   normalizedSourceByteLength,
   summarizeBundle,
@@ -33,6 +34,8 @@ const sharedFeatureTemporaryDir = path.join(root, ".thinkstock-cache", "build", 
 const maxBundleBytes = Number(packageJson.thinkstockBuild?.appBundleMaxBytes);
 const maxE2eBundleBytes = Number(packageJson.thinkstockBuild?.e2eBundleMaxBytes);
 const maxBundleGzipBytes = Number(packageJson.thinkstockBuild?.appBundleGzipMaxBytes);
+const loadGroupLimits = packageJson.thinkstockBuild?.loadGroupLimits || {};
+const buildE2eBundle = !process.argv.includes("--skip-e2e");
 const releaseNotesSourceBytes = normalizedSourceByteLength(
   await readFile(releaseNotesSourceFile, "utf8"),
 );
@@ -173,7 +176,7 @@ const featureBundles = Object.freeze([
 ]);
 
 await mkdir(outputDir, { recursive: true });
-await mkdir(e2eOutputDir, { recursive: true });
+if (buildE2eBundle) await mkdir(e2eOutputDir, { recursive: true });
 await mkdir(path.dirname(bundleReportFile), { recursive: true });
 await rm(temporaryOutputFile, { force: true });
 await rm(e2eTemporaryOutputFile, { force: true });
@@ -259,6 +262,22 @@ function sharedEntryName(definition) {
   return definition.output.replace(/\.bundle\.min\.js$/, "");
 }
 
+function sharedOutputImports(sourceFile, metafile) {
+  const output = Object.entries(metafile.outputs || {})
+    .find(([file]) => path.resolve(root, file) === sourceFile)?.[1];
+  return (output?.imports || []).filter((item) => !item.external).map((item) => {
+    const rootRelative = path.resolve(root, item.path);
+    const importedSource = Object.keys(metafile.outputs || {}).some((file) => (
+      path.resolve(root, file) === rootRelative
+    )) ? rootRelative : path.resolve(path.dirname(sourceFile), item.path);
+    const relative = path.relative(sharedFeatureTemporaryDir, importedSource);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new Error(`Shared bundle import escapes output directory: ${item.path}`);
+    }
+    return path.relative(root, path.join(outputDir, relative)).replaceAll("\\", "/");
+  });
+}
+
 async function buildSharedFeatureBundles(definitions) {
   if (!definitions.length) {
     return Object.freeze({ assets: Object.freeze([]), reports: Object.freeze([]) });
@@ -314,6 +333,7 @@ async function buildSharedFeatureBundles(definitions) {
       gzipBytes,
       metafile: result.metafile,
       metafileOutput: sourceFile,
+      imports: sharedOutputImports(sourceFile, result.metafile),
     }));
     console.log(`Built ${path.relative(root, targetFile)} (${outputStats.size} bytes, ${gzipBytes} gzip)`);
   }
@@ -357,6 +377,41 @@ async function stampLocalBundleFingerprint() {
   return fingerprint;
 }
 
+const initialLoadEntries = Object.freeze([
+  "docs/assets/app.bundle.min.js",
+  "docs/vendor/plotly-thinkstock-2.35.2.min.js",
+  "docs/assets/data-worker.bundle.min.js",
+  "docs/assets/chart-model-worker.bundle.min.js",
+  "docs/assets/auxiliary-chart-feature.bundle.min.js",
+  "docs/assets/data-freshness-feature.bundle.min.js",
+]);
+
+const loadGroups = Object.freeze([
+  { name: "initial", entries: initialLoadEntries },
+  {
+    name: "stockResearch",
+    entries: [
+      ...initialLoadEntries,
+      "docs/assets/stock-research-feature.bundle.min.js",
+      "docs/assets/stock-research-worker.bundle.min.js",
+    ],
+  },
+  {
+    name: "ai",
+    entries: [
+      ...initialLoadEntries,
+      "docs/assets/ai-feature.bundle.min.js",
+      "docs/assets/ai-forecast-worker.bundle.min.js",
+      "docs/assets/broker-research-feature.bundle.min.js",
+      "docs/assets/eps-feature.bundle.min.js",
+      "docs/assets/dart-feature.bundle.min.js",
+      "docs/assets/analytics-core-feature.bundle.min.js",
+      "docs/assets/market-timing-feature.bundle.min.js",
+      "docs/assets/market-timing-worker.bundle.min.js",
+    ],
+  },
+]);
+
 try {
   await buildStylesheet();
   const mainMetafile = await buildBundle(temporaryOutputFile, false);
@@ -373,13 +428,15 @@ try {
   // server or browser still has the previous bundle mapped for reading.
   await replaceBuiltFile(temporaryOutputFile, outputFile);
   console.log(`Built ${path.relative(root, outputFile)} (${outputStats.size} bytes, ${outputGzipBytes} gzip)`);
-  await buildBundle(e2eTemporaryOutputFile, true);
-  const e2eOutputStats = await stat(e2eTemporaryOutputFile);
-  if (e2eOutputStats.size > maxE2eBundleBytes) {
-    throw new Error(`E2E app bundle exceeds ${maxE2eBundleBytes} bytes: ${e2eOutputStats.size}`);
+  if (buildE2eBundle) {
+    await buildBundle(e2eTemporaryOutputFile, true);
+    const e2eOutputStats = await stat(e2eTemporaryOutputFile);
+    if (e2eOutputStats.size > maxE2eBundleBytes) {
+      throw new Error(`E2E app bundle exceeds ${maxE2eBundleBytes} bytes: ${e2eOutputStats.size}`);
+    }
+    await replaceBuiltFile(e2eTemporaryOutputFile, e2eOutputFile);
+    console.log(`Built ${path.relative(root, e2eOutputFile)} (${e2eOutputStats.size} bytes, test only)`);
   }
-  await replaceBuiltFile(e2eTemporaryOutputFile, e2eOutputFile);
-  console.log(`Built ${path.relative(root, e2eOutputFile)} (${e2eOutputStats.size} bytes, test only)`);
   const sharedDefinitions = featureBundles.filter((definition) => definition.shared === true);
   const standaloneDefinitions = featureBundles.filter((definition) => definition.shared !== true);
   const [sharedFeatureResult, standaloneFeatureResults] = await Promise.all([
@@ -403,9 +460,21 @@ try {
         gzipBytes: outputGzipBytes,
         metafile: mainMetafile,
       }),
+      summarizeBundle({
+        root,
+        name: "plotly",
+        file: path.join(root, "docs", "vendor", "plotly-thinkstock-2.35.2.min.js"),
+        bytes: (await stat(path.join(root, "docs", "vendor", "plotly-thinkstock-2.35.2.min.js"))).size,
+        gzipBytes: gzipSync(await readFile(path.join(root, "docs", "vendor", "plotly-thinkstock-2.35.2.min.js")), { level: 9 }).byteLength,
+      }),
       ...featureReports,
     ],
+    loadGroups,
   });
+  report.loadGroups.forEach((group) => {
+    console.log(`Load group ${group.name}: ${group.gzipBytes} gzip bytes, ${group.requests} requests`);
+  });
+  assertLoadGroupLimits(report.loadGroups, loadGroupLimits);
   await writeFile(bundleReportFile, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   console.log(`Wrote ${path.relative(root, bundleReportFile)} (${report.sharedInputs.length} shared inputs)`);
 } finally {

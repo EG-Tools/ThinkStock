@@ -333,7 +333,7 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
         };
         appCacheBtn.textContent = heading;
         appCacheBtn.disabled = false;
-        appCacheBtn.title = "캐시 종류별 용량 보기";
+        appCacheBtn.title = "캐시 내용 크기 추정치입니다. 실제 디스크 사용량과 다를 수 있습니다.";
         if (appCachePanelTotal) appCachePanelTotal.textContent = heading;
         renderCategory(appCacheBrowserSize, summary.browserCacheBytes);
         renderCategory(appCacheIndexedSize, summary.indexedBytes);

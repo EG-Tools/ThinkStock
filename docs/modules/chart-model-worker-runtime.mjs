@@ -189,9 +189,21 @@ function attachChartModelWorker(scope, options = {}) {
     throw new Error("Chart model worker scope is unavailable");
   }
   const runtime = createChartModelWorkerRuntime(options);
+  let lastMainRowsKey = "";
   const handleWorkerMessage = (event) => {
     const response = runtime.handleMessage(event?.data || {});
-    if (response) scope.postMessage(response);
+    if (!response) return;
+    const message = event?.data || {};
+    const datasetKey = String(message.payload?.datasetKey || "");
+    if (response.ok && message.type === "buildMainChartModel" && datasetKey
+      && Array.isArray(response.result?.rows)) {
+      if (datasetKey === lastMainRowsKey) {
+        scope.postMessage({ ...response, rowsRef: datasetKey, result: { ...response.result, rows: null } });
+        return;
+      }
+      lastMainRowsKey = datasetKey;
+    }
+    scope.postMessage(response);
   };
   scope.addEventListener("message", handleWorkerMessage);
   return Object.freeze({

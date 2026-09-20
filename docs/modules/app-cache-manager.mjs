@@ -29,6 +29,13 @@
     const localStorageKeys = uniqueStrings(options.localStorageKeys);
     const sessionStorageKeys = uniqueStrings(options.sessionStorageKeys);
     const cacheNamePrefix = String(options.cacheNamePrefix || "thinkstock-");
+    const measurementTtlMs = Math.max(0,
+      Number.isFinite(Number(options.measurementTtlMs))
+        ? Number(options.measurementTtlMs)
+        : 30000);
+    let measuredAt = 0;
+    let lastMeasurement = null;
+    let measurementInFlight = null;
 
     function storageBytes(storage, keys) {
       return keys.reduce((total, key) => {
@@ -73,14 +80,38 @@
       }
     }
 
+    async function invalidateServiceWorkerCacheInfo() {
+      const controller = scope.navigator?.serviceWorker?.controller;
+      const Channel = scope.MessageChannel;
+      if (!controller?.postMessage || typeof Channel !== "function") return;
+      await new Promise((resolve) => {
+        const channel = new Channel();
+        let timeout;
+        const finish = () => {
+          (scope.clearTimeout || clearTimeout)(timeout);
+          channel.port1.close?.();
+          channel.port2.close?.();
+          resolve();
+        };
+        channel.port1.onmessage = finish;
+        timeout = (scope.setTimeout || setTimeout)(finish, 500);
+        try {
+          controller.postMessage("INVALIDATE_DATA_CACHE_INFO", [channel.port2]);
+        } catch (_) {
+          finish();
+        }
+      });
+    }
+
     async function cachedResponseBytes(response) {
       if (!response) return 0;
+      const headerBytes = Number(response.headers?.get?.("content-length"));
+      if (Number.isFinite(headerBytes) && headerBytes > 0) return headerBytes;
       try {
         const body = await (response.clone?.() || response).arrayBuffer();
         if (body?.byteLength) return body.byteLength;
       } catch (_) {}
-      const headerBytes = Number(response.headers?.get?.("content-length"));
-      return Number.isFinite(headerBytes) && headerBytes > 0 ? headerBytes : 0;
+      return 0;
     }
 
     async function cacheStorageBytes() {
@@ -109,7 +140,7 @@
       return total;
     }
 
-    async function measure() {
+    async function measureNow() {
       const localBytes = storageBytes(scope.localStorage, localStorageKeys);
       const sessionBytes = storageBytes(scope.sessionStorage, sessionStorageKeys);
       const [indexedBytes, browserCacheBytes] = await Promise.all([
@@ -125,7 +156,24 @@
       });
     }
 
+    function measure(options = {}) {
+      if (measurementInFlight) return measurementInFlight;
+      if (options.full !== true && lastMeasurement
+        && Date.now() - measuredAt < measurementTtlMs) {
+        return Promise.resolve(lastMeasurement);
+      }
+      measurementInFlight = measureNow().then((summary) => {
+        lastMeasurement = summary;
+        measuredAt = Date.now();
+        return summary;
+      }).finally(() => { measurementInFlight = null; });
+      return measurementInFlight;
+    }
+
     async function clear() {
+      if (measurementInFlight) await measurementInFlight.catch(() => null);
+      lastMeasurement = null;
+      measuredAt = 0;
       localStorageKeys.forEach((key) => {
         try { scope.localStorage?.removeItem(key); } catch (_) {}
       });
@@ -138,6 +186,7 @@
       ));
       tasks.push(...(await appCacheNames()).map((cacheName) => scope.caches.delete(cacheName)));
       const results = await Promise.allSettled(tasks);
+      await invalidateServiceWorkerCacheInfo();
       if (results.some((result) => result.status === "rejected")) {
         throw new Error("일부 캐시를 초기화하지 못했습니다.");
       }

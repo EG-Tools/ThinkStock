@@ -34,6 +34,7 @@ import {
   detectResearchHistoryRebase,
   projectResearchHistoryPayload,
   evaluateNaverPriceFallback,
+  fetchAdrSourceRows,
   fetchLiveVkospiRows,
   financialSummaryRequestFromOverview,
   parseMajorHolderDocument,
@@ -301,6 +302,97 @@ test("returns public ADR data and reuses the short Worker cache", async () => {
   const cached = await handleRequest(request("/api/adr"), env);
   assert.equal((await cached.json()).cached, true);
   assert.equal(browserCalls, 1);
+});
+
+test("coalesces concurrent ADR refreshes while keeping forced refresh distinct from a fresh cache hit", async () => {
+  const cache = memoryKv();
+  const timestamp = Date.parse("2026-08-06T00:00:00+09:00");
+  let browserCalls = 0;
+  let releaseBrowser;
+  const env = {
+    DISCLOSURE_CACHE: cache,
+    BROWSER_QUICK_ACTION_INTERVAL_MS: "0",
+    BROWSER: {
+      quickAction: async () => {
+        browserCalls += 1;
+        await new Promise((resolve) => { releaseBrowser = resolve; });
+        return Response.json({
+          success: true,
+          result: `<script>const kospi_adr=[[${timestamp},91.2]];const kosdaq_adr=[[${timestamp},87.4]];</script>`,
+        });
+      },
+    },
+  };
+  const first = handleRequest(request("/api/adr?refresh=1"), env);
+  const second = handleRequest(request("/api/adr"), env);
+  const third = handleRequest(request("/api/adr?refresh=1&latest=1"), env);
+  for (let attempt = 0; attempt < 20 && !releaseBrowser; attempt += 1) await new Promise(setImmediate);
+  assert.equal(browserCalls, 1);
+  releaseBrowser();
+  const responses = await Promise.all([first, second, third]);
+  assert.deepEqual(await Promise.all(responses.map(async (response) => (await response.json()).rows.length)), [1, 1, 1]);
+  assert.equal(browserCalls, 1);
+  const cached = await handleRequest(request("/api/adr"), env);
+  assert.equal((await cached.json()).cached, true);
+  assert.equal(browserCalls, 1);
+});
+
+test("same-key ADR refreshes share work across distinct binding wrappers", async () => {
+  const shared = memoryKv();
+  const timestamp = Date.parse("2026-08-06T00:00:00+09:00");
+  let browserCalls = 0;
+  let releaseBrowser;
+  let secondReads = 0;
+  const makeEnv = (secondInstance = false) => ({
+    DISCLOSURE_CACHE: {
+      get: (...args) => {
+        if (secondInstance) secondReads += 1;
+        return shared.get(...args);
+      },
+      put: (...args) => shared.put(...args),
+    },
+    BROWSER_QUICK_ACTION_INTERVAL_MS: "0",
+    BROWSER: {
+      quickAction: async () => {
+        browserCalls += 1;
+        if (browserCalls === 1) await new Promise((resolve) => { releaseBrowser = resolve; });
+        return Response.json({
+          success: true,
+          result: `<script>const kospi_adr=[[${timestamp},91.2]];const kosdaq_adr=[[${timestamp},87.4]];</script>`,
+        });
+      },
+    },
+  });
+  const first = handleRequest(request("/api/adr?refresh=1"), makeEnv());
+  for (let attempt = 0; attempt < 20 && !releaseBrowser; attempt += 1) await new Promise(setImmediate);
+  assert.ok(releaseBrowser);
+  const second = handleRequest(request("/api/adr?refresh=1"), makeEnv(true));
+  for (let attempt = 0; attempt < 20 && !secondReads; attempt += 1) await new Promise(setImmediate);
+  assert.ok(secondReads);
+  await new Promise(setImmediate);
+  releaseBrowser();
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+  assert.equal((await firstResult.json()).cached, false);
+  assert.equal((await secondResult.json()).cached, false);
+  assert.equal(browserCalls, 1);
+});
+
+test("ADR Browser Run preflight reuses an already updated cache", async () => {
+  const timestamp = Date.parse("2026-08-06T00:00:00+09:00");
+  const rows = [{ date: "2026-08-06", adr_kospi: 91.2, adr_kosdaq: 87.4 }];
+  const cache = memoryKv({ "adr-market:1:latest": JSON.stringify({
+    schema: 1,
+    savedAt: timestamp,
+    rows,
+  }) });
+  let browserCalls = 0;
+  const result = await fetchAdrSourceRows({
+    DISCLOSURE_CACHE: cache,
+    BROWSER_QUICK_ACTION_INTERVAL_MS: "0",
+    BROWSER: { quickAction: async () => { browserCalls += 1; throw new Error("unexpected Browser Run"); } },
+  }, { cacheSavedAt: 0 });
+  assert.deepEqual(result.reusedCache.rows, rows);
+  assert.equal(browserCalls, 0);
 });
 
 test("returns the last validated ADR cache when every upstream path fails", async () => {

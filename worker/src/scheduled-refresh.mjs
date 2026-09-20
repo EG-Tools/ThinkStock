@@ -20,10 +20,13 @@ export function planScheduledRefresh(scheduledTime, cron) {
 
 export async function runScheduledRefresh(scheduledTime, cron, tasks, log = console) {
   const sources = planScheduledRefresh(scheduledTime, cron);
-  const results = [];
-  // Keep provider fan-out bounded; each source can make several upstream calls.
-  for (let offset = 0; offset < sources.length; offset += 2) {
-    const batch = await Promise.all(sources.slice(offset, offset + 2).map(async (source) => {
+  const results = new Array(sources.length);
+  let cursor = 0;
+  // Reuse a free provider slot without exceeding the two-source limit.
+  await Promise.all(Array.from({ length: Math.min(2, sources.length) }, async () => {
+    while (cursor < sources.length) {
+      const index = cursor++;
+      const source = sources[index];
       try {
         const response = await tasks[source]();
         const payload = await response.json();
@@ -32,7 +35,7 @@ export async function runScheduledRefresh(scheduledTime, cron, tasks, log = cons
         const componentWarnings = Array.isArray(payload?.componentWarnings)
           ? payload.componentWarnings.filter(Boolean)
           : [];
-        return {
+        results[index] = {
           source,
           ok: response.ok && payload?.ok === true && payload.stale !== true
             && payload.partial !== true && payload.delayed !== true
@@ -45,11 +48,10 @@ export async function runScheduledRefresh(scheduledTime, cron, tasks, log = cons
             : `HTTP ${response.status}: ${warning || "provider failed"}`,
         };
       } catch (error) {
-        return { source, ok: false, latestDate: "", error: String(error?.message || error) };
+        results[index] = { source, ok: false, latestDate: "", error: String(error?.message || error) };
       }
-    }));
-    results.push(...batch);
-  }
+    }
+  }));
   for (const result of results) {
     const event = JSON.stringify({ event: "scheduled-source-refresh", ...result });
     if (result.ok) log.info(event);

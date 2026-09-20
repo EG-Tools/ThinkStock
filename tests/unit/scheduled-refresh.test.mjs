@@ -67,3 +67,29 @@ test("one provider failure does not prevent another source from preparing", asyn
   assert.deepEqual(results.map((item) => item.ok), [false, true]);
   assert.match(results[0].error, /ECOS unavailable/);
 });
+
+test("scheduled refresh fills a freed slot without waiting for the slower source", async () => {
+  const started = [];
+  let finishIndices;
+  let finishAdr;
+  const pending = runScheduledRefresh("2026-09-21T00:05:00Z", MARKET_REFRESH_CRON, {
+    indices: () => new Promise((resolve) => {
+      started.push("indices");
+      finishIndices = () => resolve(Response.json({ ok: true, latestDate: "2026-09-18" }));
+    }),
+    adr: () => new Promise((resolve) => {
+      started.push("adr");
+      finishAdr = () => resolve(Response.json({ ok: true, latestDate: "2026-09-18" }));
+    }),
+    crisis: async () => {
+      started.push("crisis");
+      return Response.json({ ok: true, latestDate: "2026-09-18" });
+    },
+  }, { info() {}, warn() {} });
+  assert.deepEqual(started, ["indices", "adr"]);
+  finishIndices();
+  for (let attempt = 0; attempt < 20 && started.length < 3; attempt += 1) await new Promise(setImmediate);
+  assert.deepEqual(started, ["indices", "adr", "crisis"]);
+  finishAdr();
+  assert.deepEqual((await pending).map((item) => item.source), ["indices", "adr", "crisis"]);
+});

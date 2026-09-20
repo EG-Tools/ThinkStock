@@ -3,10 +3,11 @@ importScripts(
   "./assets/runtime-asset-paths.js?v=dev",
 );
 
-const CACHE_NAME = "thinkstock-dev-3.54";
+const CACHE_NAME = "thinkstock-dev-3.56";
 const NETWORK_FIRST_TIMEOUT_MS = 3500;
 const DATA_REFRESH_CONCURRENCY = 3;
 const DATA_REFRESH_TIMEOUT_MS = 25000;
+const ACTIVE_DATA_CACHE_INFO_TTL_MS = 2000;
 const DATA_MANIFEST_PATH = "./data/data_manifest.json";
 const DATA_CACHE_PREFIX = "thinkstock-data-v1-";
 const cacheRefreshPolicy = self.ThinkStockCacheRefreshPolicy;
@@ -119,7 +120,7 @@ async function cachedDataManifest(shellCache) {
   }
 }
 
-async function activeDataCacheInfo(shellCache) {
+async function resolveActiveDataCacheInfo(shellCache) {
   const shellManifest = await cachedDataManifest(shellCache);
   const shellRevision = cacheRefreshPolicy.normalizeManifestRevision(shellManifest?.revision);
   const shellTargetName = shellRevision ? `${DATA_CACHE_PREFIX}${shellRevision}` : "";
@@ -146,6 +147,12 @@ async function activeDataCacheInfo(shellCache) {
     name: CACHE_NAME,
   };
 }
+
+const activeDataCacheLookup = cacheRefreshPolicy.createExpiringSharedLookup(
+  resolveActiveDataCacheInfo,
+  { ttlMs: ACTIVE_DATA_CACHE_INFO_TTL_MS },
+);
+const activeDataCacheInfo = (shellCache) => activeDataCacheLookup.get(shellCache);
 
 async function networkFirst(request) {
   const shellCache = await caches.open(CACHE_NAME);
@@ -220,6 +227,7 @@ async function manifestCacheFirst(request) {
   try {
     const response = await fetch(request);
     await putIfOk(cache, cacheKey, response);
+    if (response?.ok) activeDataCacheLookup.invalidate();
     return response;
   } catch (_) {
     return Response.error();
@@ -250,13 +258,17 @@ self.addEventListener("install", (event) => {
 });
 
 self.addEventListener("activate", (event) => {
+  activeDataCacheLookup.invalidate();
   event.waitUntil(
     caches.keys()
       .then((keys) => Promise.all(
         cacheRefreshPolicy.planActivationCacheCleanup(keys, CACHE_NAME, DATA_CACHE_PREFIX)
           .map((key) => caches.delete(key)),
       ))
-      .then(() => self.clients.claim()),
+      .then(() => {
+        activeDataCacheLookup.invalidate();
+        return self.clients.claim();
+      }),
   );
 });
 
@@ -420,6 +432,7 @@ async function refreshCachedDataAtomically(context = {}) {
     await readyTargetCache.put(manifestUrl, manifestResponse.clone());
     throwIfRefreshAborted(signal);
     await shellCache.put(manifestUrl, manifestResponse.clone());
+    activeDataCacheLookup.invalidate();
     promoted = true;
     const cacheNames = await caches.keys();
     await Promise.allSettled(
@@ -446,6 +459,7 @@ async function refreshCachedDataAtomically(context = {}) {
     if (targetPrepared && !promoted && targetName && targetName !== activeName) {
       await caches.delete(targetName).catch(() => false);
     }
+    if (!promoted) activeDataCacheLookup.invalidate();
   }
 }
 
@@ -454,6 +468,11 @@ const runSharedDataRefresh = cacheRefreshPolicy.createSharedTask(refreshCachedDa
 });
 
 self.addEventListener("message", (event) => {
+  if (event.data === "INVALIDATE_DATA_CACHE_INFO") {
+    activeDataCacheLookup.invalidate();
+    event.ports?.[0]?.postMessage({ ok: true });
+    return;
+  }
   if (event.data === "REFRESH_DATA") {
     const replyPort = event.ports && event.ports[0];
     const refreshTask = runSharedDataRefresh().then((result) => {

@@ -5,6 +5,31 @@ import test from "node:test";
 await import("../../docs/modules/cache-refresh-policy.js");
 const policy = globalThis.ThinkStockCacheRefreshPolicy;
 
+test("active cache lookup shares reads, expires, and rejects invalidated results", async () => {
+  let time = 100;
+  let calls = 0;
+  let releaseFirst;
+  const lookup = policy.createExpiringSharedLookup(() => {
+    calls += 1;
+    return calls === 1
+      ? new Promise((resolve) => { releaseFirst = resolve; })
+      : { revision: `v${calls}` };
+  }, { ttlMs: 50, now: () => time });
+  const first = lookup.get();
+  assert.equal(first, lookup.get());
+  await Promise.resolve();
+  assert.equal(calls, 1);
+  lookup.invalidate();
+  const second = lookup.get();
+  releaseFirst({ revision: "old" });
+  assert.equal((await first).revision, "old");
+  assert.equal((await second).revision, "v2");
+  assert.equal((await lookup.get()).revision, "v2");
+  assert.equal(calls, 2);
+  time += 51;
+  assert.equal((await lookup.get()).revision, "v3");
+});
+
 
 function entry(path) {
   return {

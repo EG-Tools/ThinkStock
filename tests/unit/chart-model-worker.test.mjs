@@ -412,3 +412,25 @@ test("chart worker adapter posts runtime responses and detaches cleanly", () => 
   adapter.dispose();
   assert.equal(messageHandler, null);
 });
+
+test("chart worker adapter sends merged rows once per dataset version", () => {
+  let handleMessage;
+  const messages = [];
+  const scope = {
+    addEventListener: (_, handler) => { handleMessage = handler; },
+    postMessage: (message) => messages.push(message),
+  };
+  attachChartModelWorker(scope, {
+    mainChartModel: { buildMainChartModel: (payload) => ({ rows: payload.preparedDataset.rows }) },
+    auxiliaryChartModel: { buildAuxiliaryChartModel: () => ({}) },
+  });
+  const sources = { priceRows: [{ date: "2026-01-01", AAA: 1 }] };
+  const frame = { start: "2026-01-01", end: "2026-01-01" };
+  handleMessage({ data: { id: "a", type: "buildMainChartModel", payload: { ...frame, datasetKey: "v1", sources } } });
+  handleMessage({ data: { id: "b", type: "buildMainChartModel", payload: { ...frame, datasetKey: "v1" } } });
+  assert.equal(messages[0].result.rows.length, 1);
+  assert.equal(messages[1].result.rows, null);
+  assert.equal(messages[1].rowsRef, "v1");
+  handleMessage({ data: { id: "c", type: "buildMainChartModel", payload: { ...frame, datasetKey: "v2", sources } } });
+  assert.equal(messages[2].result.rows.length, 1);
+});

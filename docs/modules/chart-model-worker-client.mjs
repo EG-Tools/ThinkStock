@@ -33,6 +33,8 @@ import {
     let active = null;
     let queued = new Map();
     const dataKeys = new Map();
+    let mainRowsKey = "";
+    let mainRows = null;
     let disposed = false;
     const counters = {
       dispatched: 0,
@@ -64,6 +66,8 @@ import {
       workerLifecycle.cancel();
       if (target && target === worker) worker = null;
       dataKeys.clear();
+      mainRowsKey = "";
+      mainRows = null;
       try { target?.terminate(); } catch (_) {}
     }
 
@@ -80,7 +84,20 @@ import {
       const request = active;
       active = null;
       scope.clearTimeout(request.timer);
+      let rowCacheMiss = false;
 
+      if (message.ok && request.type === mainType) {
+        const datasetKey = String(request.payload?.datasetKey || "");
+        if (datasetKey && Array.isArray(message.result?.rows)) {
+          mainRowsKey = datasetKey;
+          mainRows = message.result.rows;
+        } else if (message.rowsRef && message.rowsRef === mainRowsKey && mainRows) {
+          message.result = { ...message.result, rows: mainRows };
+        } else if (message.rowsRef) {
+          message = { ...message, ok: false, error: "chart worker row cache miss" };
+          rowCacheMiss = true;
+        }
+      }
       if (request.superseded) {
         request.resolve(null);
       } else if (message.ok) {
@@ -89,8 +106,14 @@ import {
         dataKeys.delete(request.type);
         request.reject(new Error(message.error || "chart worker failed"));
       }
+      if (rowCacheMiss) resetWorker();
       dispatchNext();
       return true;
+    }
+
+    function failRequest(request, error) {
+      if (request.superseded) request.resolve(null);
+      else request.reject(error);
     }
 
     function rejectActive(error, targetWorker) {
@@ -98,7 +121,7 @@ import {
       active = null;
       if (request) {
         scope.clearTimeout(request.timer);
-        request.reject(error);
+        failRequest(request, error);
       }
       resetWorker(targetWorker);
       dispatchNext();
@@ -127,7 +150,7 @@ import {
       try {
         targetWorker = ensureWorker();
       } catch (error) {
-        request.reject(error);
+        failRequest(request, error);
         dispatchNext();
         return;
       }
@@ -150,7 +173,7 @@ import {
         if (!active || active.id !== id) return;
         const timedOut = active;
         active = null;
-        timedOut.reject(new Error("chart worker timeout"));
+        failRequest(timedOut, new Error("chart worker timeout"));
         resetWorker(targetWorker);
         dispatchNext();
       }, timeoutMs);
@@ -163,7 +186,7 @@ import {
         active = null;
         scope.clearTimeout(timer);
         dataKeys.delete(type);
-        failed.reject(error);
+        failRequest(failed, error);
         resetWorker(targetWorker);
         dispatchNext();
       }
@@ -257,18 +280,22 @@ import {
       invalidModels: 0,
     };
 
+    const latestKeyByType = new Map();
+
     function resolve(request = {}) {
       const cacheKey = String(request.cacheKey || "");
       if (!cacheKey) throw new Error("chart model resolver cache key is required");
+      const type = String(request.type || mainType);
+      latestKeyByType.set(type, cacheKey);
       const cached = cache.resolve(cacheKey, async () => {
         let normalized;
         let source;
         try {
           const workerModel = await requestWorker(
             request.workerPayload || {},
-            request.type || mainType,
+            type,
           );
-          if (!workerModel) {
+          if (!workerModel || latestKeyByType.get(type) !== cacheKey) {
             counters.superseded += 1;
             return null;
           }
@@ -280,6 +307,10 @@ import {
           counters.workerBuilds += 1;
           source = "worker";
         } catch (error) {
+          if (latestKeyByType.get(type) !== cacheKey) {
+            counters.superseded += 1;
+            return null;
+          }
           counters.syncFallbacks += 1;
           onWorkerFallback(error);
           normalized = normalize(buildSync(request.syncPayload || {}));

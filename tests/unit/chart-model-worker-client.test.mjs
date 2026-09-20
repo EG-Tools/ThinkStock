@@ -91,6 +91,72 @@ test("latest same-type request wins without restarting the worker", async () => 
   client.dispose();
 });
 
+test("a superseded timeout does not reject or trigger a synchronous fallback", async () => {
+  FakeWorker.instances = [];
+  const timers = new Map();
+  let nextTimer = 0;
+  const client = createChartModelWorkerClient({
+    Worker: FakeWorker,
+    setTimeout: (callback) => {
+      const id = ++nextTimer;
+      timers.set(id, callback);
+      return id;
+    },
+    clearTimeout: (id) => timers.delete(id),
+  }, { workerUrl: "worker.js", timeoutMs: 1000 });
+  let syncBuilds = 0;
+  const resolver = createChartModelResolver({
+    cache: createChartModelCache(),
+    requestWorker: (payload, type) => client.request(payload, type),
+    buildSync: () => { syncBuilds += 1; return { value: "sync" }; },
+    normalize: (model) => model,
+  });
+  const first = resolver.resolve({ cacheKey: "a", workerPayload: { value: "a" } });
+  await Promise.resolve();
+  const second = resolver.resolve({ cacheKey: "b", workerPayload: { value: "b" } });
+  assert.equal(timers.size, 1);
+  [...timers.values()][0]();
+  assert.equal(await first, null);
+  assert.equal(syncBuilds, 0);
+  FakeWorker.instances.at(-1).respond(0, { value: "b" });
+  assert.equal((await second).value, "b");
+  client.dispose();
+});
+
+test("a superseded worker error is discarded while the queued request continues", async () => {
+  FakeWorker.instances = [];
+  const client = createChartModelWorkerClient({ Worker: FakeWorker, setTimeout, clearTimeout }, {
+    workerUrl: "worker.js",
+  });
+  const first = client.request({ value: "a" });
+  const second = client.request({ value: "b" });
+  FakeWorker.instances[0].onerror({ message: "worker crashed" });
+  assert.equal(await first, null);
+  FakeWorker.instances[1].respond(0, { value: "b" });
+  assert.deepEqual(await second, { value: "b" });
+  client.dispose();
+});
+
+test("resolver ignores a stale worker failure after a newer revision starts", async () => {
+  let rejectFirst;
+  let syncBuilds = 0;
+  const resolver = createChartModelResolver({
+    cache: createChartModelCache(),
+    requestWorker: (payload) => payload.value === "a"
+      ? new Promise((_, reject) => { rejectFirst = reject; })
+      : Promise.resolve({ value: "b" }),
+    buildSync: () => { syncBuilds += 1; return { value: "sync" }; },
+    normalize: (model) => model,
+  });
+  const first = resolver.resolve({ cacheKey: "a", workerPayload: { value: "a" } });
+  await Promise.resolve();
+  const second = resolver.resolve({ cacheKey: "b", workerPayload: { value: "b" } });
+  rejectFirst(new Error("worker failed"));
+  assert.equal(await first, null);
+  assert.equal((await second).value, "b");
+  assert.equal(syncBuilds, 0);
+});
+
 test("main chart work is prioritized after the active request settles", async () => {
   FakeWorker.instances = [];
   const client = createChartModelWorkerClient({
@@ -110,6 +176,49 @@ test("main chart work is prioritized after the active request settles", async ()
   assert.deepEqual(await main, { value: 3 });
   worker.respond(2, { value: 2 });
   assert.deepEqual(await auxiliary, { value: 2 });
+  client.dispose();
+});
+
+test("worker client restores reference-only rows for subsequent models", async () => {
+  FakeWorker.instances = [];
+  const client = createChartModelWorkerClient({ Worker: FakeWorker, setTimeout, clearTimeout }, {
+    workerUrl: "worker.js",
+  });
+  const first = client.request({ datasetKey: "v1", sources: { priceRows: [1] } });
+  const worker = FakeWorker.instances[0];
+  const rows = [{ date: "2026-01-01", AAA: 1 }];
+  worker.respond(0, { rows });
+  assert.equal((await first).rows, rows);
+  const second = client.request({ datasetKey: "v1", sources: { priceRows: [1] } });
+  worker.onmessage({ data: {
+    id: worker.messages[1].id,
+    ok: true,
+    rowsRef: "v1",
+    result: { rows: null, value: 2 },
+  } });
+  assert.equal((await second).rows, rows);
+  client.dispose();
+});
+
+test("missing row reference restarts the worker before the next request", async () => {
+  FakeWorker.instances = [];
+  const client = createChartModelWorkerClient({ Worker: FakeWorker, setTimeout, clearTimeout }, {
+    workerUrl: "worker.js",
+  });
+  const first = client.request({ datasetKey: "v1", sources: { priceRows: [1] } });
+  const worker = FakeWorker.instances[0];
+  worker.onmessage({ data: {
+    id: worker.messages[0].id,
+    ok: true,
+    rowsRef: "v1",
+    result: { rows: null },
+  } });
+  await assert.rejects(first, /row cache miss/);
+  assert.equal(worker.terminated, true);
+  const second = client.request({ datasetKey: "v1", sources: { priceRows: [1] } });
+  assert.equal("sources" in FakeWorker.instances[1].messages[0].payload, true);
+  FakeWorker.instances[1].respond(0, { rows: [{ date: "2026-01-01" }] });
+  assert.equal((await second).rows.length, 1);
   client.dispose();
 });
 

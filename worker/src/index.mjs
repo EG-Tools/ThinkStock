@@ -201,6 +201,7 @@ const ADR_SOURCE_URL = "http://www.adrinfo.kr/chart";
 
 let browserQuickActionQueue = Promise.resolve();
 let browserQuickActionStartedAt = 0;
+const adrRefreshInFlight = new Map();
 
 function browserQuickActionInterval(env) {
   if (Object.prototype.hasOwnProperty.call(env || {}, "BROWSER_QUICK_ACTION_INTERVAL_MS")) {
@@ -209,7 +210,7 @@ function browserQuickActionInterval(env) {
   return BROWSER_QUICK_ACTION_INTERVAL_MS;
 }
 
-function queuedBrowserQuickAction(env, action, options) {
+function queuedBrowserQuickAction(env, action, options, beforeAction) {
   const run = async () => {
     const intervalMs = browserQuickActionInterval(env);
     const attempts = intervalMs > 0 ? 2 : 1;
@@ -217,6 +218,8 @@ function queuedBrowserQuickAction(env, action, options) {
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       const waitMs = Math.max(0, intervalMs - (Date.now() - browserQuickActionStartedAt));
       if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+      const preflight = await beforeAction?.();
+      if (preflight?.skip) return preflight.value;
       browserQuickActionStartedAt = Date.now();
       response = await env.BROWSER.quickAction(action, options);
       if (response?.status !== 429) return response;
@@ -229,14 +232,24 @@ function queuedBrowserQuickAction(env, action, options) {
   return pending;
 }
 
-export async function fetchAdrSourceRows(env) {
+export async function fetchAdrSourceRows(env, options = {}) {
   if (!env?.BROWSER?.quickAction) throw new Error("ADR Browser Run is unavailable");
   const response = await queuedBrowserQuickAction(env, "content", {
     url: `${ADR_SOURCE_URL}?_=${Date.now()}`,
     cacheTTL: 60,
     gotoOptions: { waitUntil: "domcontentloaded", timeout: 20000 },
     rejectResourceTypes: ["image", "media", "font", "stylesheet"],
+  }, async () => {
+    if (!env.DISCLOSURE_CACHE || !Number.isFinite(options.cacheSavedAt)) return null;
+    const latest = normalizeAdrCache(await readCacheBestEffort(
+      "adr",
+      () => env.DISCLOSURE_CACHE.get(ADR_CACHE_KEY, "json"),
+    ));
+    return latest && latest.savedAt > options.cacheSavedAt
+      ? { skip: true, value: { reusedCache: latest } }
+      : null;
   });
+  if (response?.reusedCache) return response;
   const body = await readBoundedResponseText(
     response,
     ADR_RESPONSE_MAX_BYTES,
@@ -285,32 +298,46 @@ async function adrMarketResponse(env, origin, forceRefresh = false, latestOnly =
     }, 200, origin);
   }
 
+  const refreshKey = ADR_CACHE_KEY;
+  let refresh = adrRefreshInFlight.get(refreshKey);
+  if (!refresh) {
+    refresh = (async () => {
+      const incoming = await fetchAdrSourceRows(env, { cacheSavedAt: cached?.savedAt || 0 });
+      if (incoming.reusedCache) return { payload: incoming.reusedCache, cached: true };
+      const rows = mergeAdrRows(cached?.rows, incoming.rows, ADR_CACHE_ROW_LIMIT);
+      const latestDate = rows.at(-1)?.date || "";
+      const expectedDate = expectedLatestKoreanTradingDate();
+      const payload = {
+        schema: ADR_CACHE_SCHEMA,
+        savedAt: Date.now(),
+        checkedAt: Date.now(),
+        latestDate,
+        expectedDate,
+        delayed: Boolean(latestDate && latestDate < expectedDate),
+        source: incoming.source,
+        rows,
+      };
+      if (env.DISCLOSURE_CACHE) {
+        await writeCachesBestEffort("adr", [
+          () => env.DISCLOSURE_CACHE.put(ADR_CACHE_KEY, JSON.stringify(payload)),
+        ]);
+      }
+      return { payload, cached: false };
+    })();
+    adrRefreshInFlight.set(refreshKey, refresh);
+    refresh.finally(() => {
+      if (adrRefreshInFlight.get(refreshKey) === refresh) adrRefreshInFlight.delete(refreshKey);
+    }).catch(() => {});
+  }
+
   try {
-    const incoming = await fetchAdrSourceRows(env);
-    const rows = mergeAdrRows(cached?.rows, incoming.rows, ADR_CACHE_ROW_LIMIT);
-    const latestDate = rows.at(-1)?.date || "";
-    const expectedDate = expectedLatestKoreanTradingDate();
-    const payload = {
-      schema: ADR_CACHE_SCHEMA,
-      savedAt: Date.now(),
-      checkedAt: Date.now(),
-      latestDate,
-      expectedDate,
-      delayed: Boolean(latestDate && latestDate < expectedDate),
-      source: incoming.source,
-      rows,
-    };
-    if (env.DISCLOSURE_CACHE) {
-      await writeCachesBestEffort("adr", [
-        () => env.DISCLOSURE_CACHE.put(ADR_CACHE_KEY, JSON.stringify(payload)),
-      ]);
-    }
+    const { payload, cached: reused } = await refresh;
     return jsonResponse({
       ok: true,
-      cached: false,
+      cached: reused,
       stale: false,
       ...payload,
-      rows: latestOnly ? rows.slice(-1) : rows,
+      rows: latestOnly ? payload.rows.slice(-1) : payload.rows,
     }, 200, origin);
   } catch (error) {
     if (cached) {

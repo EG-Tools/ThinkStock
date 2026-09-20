@@ -39,7 +39,46 @@ function summarizeBundle(options = {}) {
     file: sourcePath(root, String(options.file || "")),
     bytes: Math.max(0, Number(options.bytes) || 0),
     gzipBytes: Math.max(0, Number(options.gzipBytes) || 0),
+    imports: Object.freeze((Array.isArray(options.imports) ? options.imports : [])
+      .map(portablePath).filter(Boolean)),
     contributors: Object.freeze(contributors),
+  });
+}
+
+function summarizeLoadGroups(bundles, definitions = []) {
+  const byFile = new Map(bundles.map((bundle) => [portablePath(bundle.file), bundle]));
+  return definitions.map((definition) => {
+    const files = new Set();
+    function include(file) {
+      const normalized = portablePath(file);
+      if (files.has(normalized)) return;
+      const bundle = byFile.get(normalized);
+      if (!bundle) throw new Error(`Unknown load-group asset: ${normalized}`);
+      files.add(normalized);
+      bundle.imports?.forEach(include);
+    }
+    definition.entries.forEach(include);
+    const assets = [...files].sort();
+    return Object.freeze({
+      name: String(definition.name),
+      requests: assets.length,
+      bytes: assets.reduce((total, file) => total + byFile.get(file).bytes, 0),
+      gzipBytes: assets.reduce((total, file) => total + byFile.get(file).gzipBytes, 0),
+      assets: Object.freeze(assets),
+    });
+  });
+}
+
+function assertLoadGroupLimits(groups, limits = {}) {
+  groups.forEach((group) => {
+    const limit = limits[group.name];
+    if (!limit) throw new Error(`Missing load-group limit: ${group.name}`);
+    if (group.gzipBytes > limit.maxGzipBytes) {
+      throw new Error(`${group.name} load group exceeds ${limit.maxGzipBytes} gzip bytes: ${group.gzipBytes}`);
+    }
+    if (group.requests > limit.maxRequests) {
+      throw new Error(`${group.name} load group exceeds ${limit.maxRequests} requests: ${group.requests}`);
+    }
   });
 }
 
@@ -63,6 +102,7 @@ function createBundleReport(options = {}) {
       bundles: [...new Set(entry.bundles)].sort(),
     }))
     .sort((left, right) => right.bytes - left.bytes || left.input.localeCompare(right.input));
+  const loadGroups = summarizeLoadGroups(bundles, options.loadGroups || []);
   return Object.freeze({
     schema: 1,
     generatedAt: String(options.generatedAt || new Date().toISOString()),
@@ -76,7 +116,14 @@ function createBundleReport(options = {}) {
       contributors: Object.freeze(bundle.contributors.slice(0, 30)),
     }))),
     sharedInputs: Object.freeze(sharedInputs.slice(0, 40).map(Object.freeze)),
+    loadGroups: Object.freeze(loadGroups),
   });
 }
 
-export { createBundleReport, normalizedSourceByteLength, summarizeBundle };
+export {
+  assertLoadGroupLimits,
+  createBundleReport,
+  normalizedSourceByteLength,
+  summarizeBundle,
+  summarizeLoadGroups,
+};
