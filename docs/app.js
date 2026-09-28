@@ -358,7 +358,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = tickerPriceRuntimeModule.CORPORATE_ACTION_RATIO_THRESHOLD;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = tickerPriceRuntimeModule.CORPORATE_ACTION_MAX_BOUNDARY_DAYS;
-const APP_VERSION = "3.56";
+const APP_VERSION = "3.57";
 const APP_BUILD_VERSION = resolveAppBuildVersion(globalThis);
 const appCacheRuntime = createAppCacheRuntime(globalThis, {
   scheduler: backgroundTaskScheduler,
@@ -587,8 +587,9 @@ const appFeatures = createAppFeatureRuntime({
   dartTickerPattern: STOCK_TICKER_PATTERN,
   createAiApp: (feature) => feature.app.createAiForecastApp(globalThis, {
     workerUrl: `./assets/ai-forecast-worker.bundle.min.js?v=${encodeURIComponent(APP_BUILD_VERSION)}`,
-      buildFallback: (options) => feature.forecast?.buildForecast(options) || null,
-      createProgressView: controlStateView.createProgressView,
+    workerTimeoutMs: 60000,
+    buildFallback: (options) => feature.forecast?.buildForecast(options) || null,
+    createProgressView: controlStateView.createProgressView,
   }),
 });
 const ensureAiFeatureModules = appFeatures.ensureAi;

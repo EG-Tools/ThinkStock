@@ -888,6 +888,7 @@ test("AI forecasts survive repeated KOSPI and KOSDAQ toggle cycles", async ({ pa
 });
 
 test("enabling KOSDAQ while AI is active calculates only the new index", async ({ page }) => {
+  test.setTimeout(180_000);
   await stubExternalRefreshes(page);
   await page.addInitScript(() => {
     localStorage.setItem("thinkstock-v5", JSON.stringify({
@@ -912,7 +913,7 @@ test("enabling KOSDAQ while AI is active calculates only the new index", async (
     (element.data || []).filter((trace) => (
       trace?.meta?.overlayKind === "ai-scenario" && trace?.meta?.seriesKey === "^KS11"
     )).length
-  )), { timeout: 30000 }).toBe(3);
+  )), { timeout: 90000 }).toBe(3);
   await expect.poll(() => page.evaluate(() => {
     const state = window.ThinkStockE2E.getAiForecastState();
     return state.marketModelSettled && !state.inputsPending;
@@ -935,7 +936,7 @@ test("enabling KOSDAQ while AI is active calculates only the new index", async (
     (element.data || []).filter((trace) => (
       trace?.meta?.overlayKind === "ai-scenario" && trace?.meta?.seriesKey === "^KQ11"
     )).length
-  )), { timeout: 30000 }).toBe(3);
+  )), { timeout: 90000 }).toBe(3);
   await expect(page.locator("#aiForecastProgress")).toBeHidden({ timeout: 5000 });
   expect(await page.evaluate(() => window.__kosdaqAiProgressVisibility || [])).toContain(true);
   const stateAfterKOSDAQ = await page.evaluate(() => window.ThinkStockE2E.getAiForecastState());

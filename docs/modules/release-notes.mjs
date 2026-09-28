@@ -3,6 +3,15 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.57",
+      date: "2026.09.28",
+      items: Object.freeze([
+        "박스권 하단 급락 뒤 반전 확인 신호 보강",
+        "약한 반등의 거래량 소진 뒤 매도 확인 신호 보강",
+        "대표 종목의 기존 신호 시점과 밀도를 유지하는 회귀 검증 추가",
+      ]),
+    }),
+    Object.freeze({
       version: "3.56",
       date: "2026.09.20",
       items: Object.freeze([

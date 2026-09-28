@@ -1983,6 +1983,18 @@
         && result.oscillator !== null && result.oscillator < 0
         && behaviorSupportCount >= 1
         && result.marketRegime !== "stress";
+      const stockRangeFloorPullback = behaviorPolicy.buyEnabled && isIndividualStock
+        && (behaviorScores.range ?? 0) >= Math.max(0.7, behaviorPolicy.rangeScore)
+        && result.rangePosition120 !== null && result.rangePosition120 <= 0.1
+        && result.priceDrawdown60 !== null
+        && result.priceDrawdown60 <= -Math.max(7, 8 * stockVolatilityScale)
+        && (result.price5dVolScore ?? Infinity) <= -0.9
+        && result.relative20d !== null && result.relative20d <= -5
+        && (result.volumeTrend ?? -Infinity) >= 1.1
+        && result.adrMin !== null && result.adrMin <= 95
+        && result.oscillator !== null && result.oscillator < 0
+        && behaviorSupportCount >= 1
+        && result.marketRegime !== "stress";
       const broadWashoutReasons = [
         breadthWashedOut ? "시장폭 과매도" : "",
         creditReset ? "신용 정리" : "",
@@ -1992,6 +2004,7 @@
       const moderateSupportScore = moderateStressReasons.length + (koreanVolatilityStressed ? 1 : 0);
       const moderateBuyArm = shockCapitulation || stockMediumCorrection || stockRelativeWashout
         || behaviorRangeFloorBuy || behaviorTrendPullbackBuy
+        || stockRangeFloorPullback
         || (moderateCapitulation
         && moderateSupportScore >= moderateSupportCount);
       const broadBuyArm = broadCorrection && creditReset
@@ -2016,25 +2029,40 @@
           && result.oscillator > 0;
         const staleEpisode = index - buyEpisode.lowIndex > BUY_SETUP_WINDOW_DAYS
           && !moderateCapitulation;
-        if (failedBroadRebound || recoveredFromLow || staleEpisode) buyEpisode = null;
+        const completedLocalSwing = buyEpisode.signalLocked
+          && buyEpisode.localRangeFloor
+          && Number.isInteger(buyEpisode.signalConfirmedAt)
+          && index - buyEpisode.signalConfirmedAt >= 3
+          && result.price !== null && buyEpisode.lowPrice > 0
+          && result.price >= buyEpisode.lowPrice * 1.04
+          && result.oscillator !== null && result.oscillator > 0;
+        if (failedBroadRebound || recoveredFromLow || staleEpisode || completedLocalSwing) {
+          buyEpisode = null;
+        }
       }
       if (buyArm) {
         if (!buyEpisode) {
           const behaviorBuyFamily = behaviorRangeFloorBuy
             ? "range-floor-reversal"
-            : (behaviorTrendPullbackBuy ? "trend-pullback" : null);
+            : (behaviorTrendPullbackBuy
+              ? "trend-pullback"
+              : (stockRangeFloorPullback
+                ? "local-range-floor-reversal"
+                : null));
+          const buyConfirmationDays = behaviorRangeFloorBuy ? 12
+            : (stockRangeFloorPullback ? 8
+              : (behaviorTrendPullbackBuy ? 8
+                : (priceCapitulation ? 8
+                  : (strongBuyArm ? 5
+                    : ((stockMediumCorrection || stockRelativeWashout)
+                      ? (lowVolatilityStock ? 10 : 7)
+                      : 5)))));
           buyEpisode = {
             lowIndex: index,
             lowPrice: result.price,
             signalSlot: null,
             signalLocked: false,
-            confirmationDays: behaviorRangeFloorBuy ? 12
-              : (behaviorTrendPullbackBuy ? 8
-                : priceCapitulation ? 8
-              : (strongBuyArm ? 5
-                : ((stockMediumCorrection || stockRelativeWashout)
-                  ? (lowVolatilityStock ? 10 : 7)
-                  : 5))),
+            confirmationDays: buyConfirmationDays,
             signalFamily: behaviorBuyFamily || (strongBuyArm
               ? "capitulation-reversal"
               : (stockRelativeWashout ? "relative-washout" : "correction-reversal")),
@@ -2042,6 +2070,7 @@
             strong: strongBuyArm,
             shock: shockCapitulation,
             relativeWashout: stockRelativeWashout,
+            localRangeFloor: stockRangeFloorPullback,
             broad: broadBuyArm && !strongBuyArm && !moderateBuyArm,
             setupReasons: strongBuyArm
               ? [shortCapitulation ? "20일 급락" : "장기 급락", ...stressReasons]
@@ -2057,6 +2086,7 @@
           }
           if (behaviorRangeFloorBuy) buyEpisode.setupReasons.unshift("박스권 하단 반전 후보");
           if (behaviorTrendPullbackBuy) buyEpisode.setupReasons.unshift("상승추세 눌림 후보");
+          if (stockRangeFloorPullback) buyEpisode.setupReasons.unshift("박스권 하단 급락");
           if (shockCapitulation) {
             buyEpisode.setupReasons = ["5일 충격 급락", ...buyEpisode.setupReasons];
           }
@@ -2100,6 +2130,11 @@
               buyEpisode.behaviorProfile = behaviorProfile;
               buyEpisode.confirmationDays = Math.max(12, buyEpisode.confirmationDays || 0);
               buyEpisode.setupReasons.unshift("박스권 하단 반전 후보");
+            } else if (stockRangeFloorPullback) {
+              buyEpisode.signalFamily = "range-floor-reversal";
+              buyEpisode.behaviorProfile = behaviorProfile;
+              buyEpisode.confirmationDays = Math.max(8, buyEpisode.confirmationDays || 0);
+              buyEpisode.setupReasons.unshift("박스권 하단 급락");
             } else if (behaviorTrendPullbackBuy) {
               buyEpisode.signalFamily = "trend-pullback";
               buyEpisode.behaviorProfile = behaviorProfile;
@@ -2149,7 +2184,8 @@
             : buyEpisode.setupReasons.filter((reason) => reason !== "중간급 조정").slice(-2),
           triggerReasons: ["MACD 상승 다이버전스"],
         });
-        if (buyEpisode.broad || buyEpisode.shock || buyEpisode.relativeWashout) {
+        if (buyEpisode.broad || buyEpisode.shock || buyEpisode.relativeWashout
+          || buyEpisode.localRangeFloor) {
           buyEpisode.signalLocked = true;
           buyEpisode.signalConfirmedAt = index;
           buyEpisode.signalLowPrice = buyEpisode.lowPrice;
@@ -2301,6 +2337,18 @@
         && result.price20d !== null && result.price20d >= 8
         && (result.oscillator ?? -Infinity) >= 0.2
         && volumeClimax;
+      const stockReboundExhaustionArm = isIndividualStock && !nearHigh
+        && result.priceDrawdown120 !== null
+        && result.priceDrawdown120 <= -5 && result.priceDrawdown120 >= -25
+        && result.rangePosition120 !== null && result.rangePosition120 >= 0.5
+        && result.price5d !== null && result.price5d >= Math.max(1.5, 1.5 * stockVolatilityScale)
+        && result.price20d !== null && result.price20d <= 3
+        && result.relative20d !== null && result.relative20d <= -6
+        && (result.oscillator ?? -Infinity) >= 0.2
+        && (result.volumeRatio ?? -Infinity) >= 1.5
+        && (sentimentCrowded || (result.adr ?? -Infinity) >= 110)
+        && (result.marketCorrelation60 === null || result.marketCorrelation60 <= 0.4
+          || result.marketBeta60 === null || result.marketBeta60 <= 0.4);
       const riskDrivenSellArm = creditDrivenSellArm || clusteredOverheatArm;
       const extendedOverheatArm = nearHigh && priceExtended
         && (overheatSupportCount >= 2 || (priceStronglyExtended && overheatSupportCount >= 1));
@@ -2309,6 +2357,7 @@
         || behaviorRangeCeilingSell || behaviorTrendExhaustionSell
         || stockParabolicArm
         || fearRotationTopArm || breadthSentimentDivergenceTopArm
+        || stockReboundExhaustionArm
         || extendedOverheatArm;
       const longNearHigh = result.priceDrawdown120 !== null && result.priceDrawdown120 >= -1.2;
       const historicalCreditCrowded = result.creditChange !== null && result.creditPercentile !== null
@@ -2352,8 +2401,10 @@
         sellEpisode = null;
         lastSellSignalIndex = index;
       }
+      const reboundCycleReady = stockReboundExhaustionArm
+        && index - lastSellSignalIndex >= 20;
       const sellArm = !sameDayClimaxReady && (recentSellArm || historicalSellArm)
-        && index - lastSellSignalIndex >= SELL_SIGNAL_COOLDOWN_DAYS;
+        && (index - lastSellSignalIndex >= SELL_SIGNAL_COOLDOWN_DAYS || reboundCycleReady);
       const priorOscillator = result.oscillator !== null && result.macdSlope !== null
         ? result.oscillator - result.macdSlope
         : null;
@@ -2375,6 +2426,7 @@
           : 0,
       );
 
+      let resetUnconfirmedSellAfterEvaluation = false;
       if (sellEpisode) {
         const episodeDrawdown = result.price !== null && sellEpisode.peakPrice > 0
           ? ((result.price / sellEpisode.peakPrice) - 1) * 100
@@ -2384,6 +2436,8 @@
         const meaningfulCorrection = canResetOnCorrection
           && ((result.priceDrawdown60 !== null && result.priceDrawdown60 <= -12)
             || (result.price20d !== null && result.price20d <= -10 && result.oscillator < 0));
+        resetUnconfirmedSellAfterEvaluation = meaningfulCorrection
+          && !episodeWasConfirmed && sellEpisode.reboundExhaustion;
         const completedRecentCycle = !sellEpisode.historical
           && Number.isInteger(sellEpisode.signalConfirmedAt)
           && index > sellEpisode.signalConfirmedAt
@@ -2400,7 +2454,8 @@
           && index - sellEpisode.signalConfirmedAt >= 20
           && ((result.priceDrawdown60 !== null && result.priceDrawdown60 <= -5)
             || (result.price20d !== null && result.price20d <= 0));
-        if (meaningfulCorrection || completedRecentCycle || confirmedPullback || newCycleAfterPullback) {
+        if ((meaningfulCorrection && !resetUnconfirmedSellAfterEvaluation)
+          || completedRecentCycle || confirmedPullback || newCycleAfterPullback) {
           sellEpisode = null;
         }
       }
@@ -2422,7 +2477,9 @@
             ? "range-ceiling-rollover"
             : (behaviorTrendExhaustionSell
               ? "trend-exhaustion"
-              : (stockDistributionArm ? "distribution-rollover" : null)));
+              : (stockReboundExhaustionArm
+                ? "rebound-exhaustion"
+                : (stockDistributionArm ? "distribution-rollover" : null))));
         const setupReasons = [
           stockParabolicArm ? "\uB2E8\uAE30 \uD30C\uB77C\uBCFC\uB9AD \uACFC\uC5F4" : "",
           creditDrivenSellArm
@@ -2450,6 +2507,7 @@
         if (behaviorTrendExhaustionSell) setupReasons.unshift("상승추세 소진 후보");
         if (fearRotationTopArm) setupReasons.unshift(fearRotationReason);
         if (breadthSentimentDivergenceTopArm) setupReasons.unshift("시장폭·심리 괴리 단기 과열");
+        if (stockReboundExhaustionArm) setupReasons.unshift("약한 반등 거래량 소진");
         if (volumeClimax) setupReasons.push("고점 거래량 폭증");
         if (volumeDivergence) setupReasons.push("가격·거래량 둔화 괴리");
         if (!sellEpisode) {
@@ -2476,6 +2534,7 @@
             lowVolatility: stockLowVolatilityTopArm,
             rangeCeiling: behaviorRangeCeilingSell,
             trendExhaustion: behaviorTrendExhaustionSell,
+            reboundExhaustion: stockReboundExhaustionArm,
             parabolic: stockParabolicArm,
             fearRotation: fearRotationTopArm,
             reacceleration: exceptionalStockReacceleration,
@@ -2491,6 +2550,8 @@
           sellEpisode.lowVolatility = sellEpisode.lowVolatility || stockLowVolatilityTopArm;
           sellEpisode.rangeCeiling = sellEpisode.rangeCeiling || behaviorRangeCeilingSell;
           sellEpisode.trendExhaustion = sellEpisode.trendExhaustion || behaviorTrendExhaustionSell;
+          sellEpisode.reboundExhaustion = sellEpisode.reboundExhaustion
+            || stockReboundExhaustionArm;
           if (behaviorSellFamily) sellEpisode.signalFamily = behaviorSellFamily;
           if (behaviorProfile) sellEpisode.behaviorProfile = behaviorProfile;
           sellEpisode.parabolic = sellEpisode.parabolic || stockParabolicArm;
@@ -2540,7 +2601,8 @@
       const distributionRollover = isIndividualStock
         && (sellEpisode?.distribution || sellEpisode?.matureTop
           || sellEpisode?.lowVolatility || sellEpisode?.fearRotation
-          || sellEpisode?.rangeCeiling || sellEpisode?.trendExhaustion)
+          || sellEpisode?.rangeCeiling || sellEpisode?.trendExhaustion
+          || sellEpisode?.reboundExhaustion)
         && result.price !== null && sellEpisode.peakPrice > 0
         && ((result.price / sellEpisode.peakPrice) - 1) * 100
           <= (sellEpisode.fearRotation
@@ -2556,9 +2618,10 @@
         : (sellEpisode?.matureTop
           ? 20
           : (sellEpisode?.trendExhaustion ? 15
+            : (sellEpisode?.reboundExhaustion ? 8
             : (sellEpisode?.rangeCeiling || sellEpisode?.lowVolatility
               ? 12
-              : (sellEpisode?.distribution ? 8 : 3))));
+              : (sellEpisode?.distribution ? 8 : 3)))));
       if (sellEpisode && !sellEpisode.signalLocked
         && (!Number.isInteger(sellEpisode.signalConfirmedAt)
           || sellEpisode.peakIndex > sellEpisode.signalConfirmedAt)
@@ -2598,6 +2661,10 @@
         sellEpisode.signalLocked = sellEpisode.historical;
         lastSellSignalIndex = index;
         if (sellEpisode.historical) lastHistoricalSellSignalIndex = index;
+      }
+      if (resetUnconfirmedSellAfterEvaluation && sellEpisode
+        && !Number.isInteger(sellEpisode.signalConfirmedAt)) {
+        sellEpisode = null;
       }
     }
 

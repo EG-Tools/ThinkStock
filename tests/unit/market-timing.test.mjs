@@ -773,6 +773,43 @@ test("detects a low-beta stock washout relative to a rising market", () => {
   assert.deepEqual(noRelativeWashout.signals, []);
 });
 
+test("confirms a range-floor pullback only after its MACD turns upward", () => {
+  const dates = Array.from({ length: 280 }, (_, index) => dateAt(index));
+  const prices = dates.map((_, index) => {
+    if (index < 270) return 96 + (Math.sin(index / 8) * 4);
+    if (index <= 275) return 96 - ((index - 270) * 1);
+    return 91 + ((index - 275) * 0.8);
+  });
+  const benchmarkPrices = dates.map((_, index) => 100 + (index * 0.04));
+  const oscillator = dates.map((_, index) => {
+    if (index < 274) return -0.25;
+    if (index === 274) return -0.55;
+    if (index === 275) return -0.8;
+    return -0.58 + ((index - 276) * 0.14);
+  });
+  const volumes = dates.map((_, index) => (index >= 271 ? 2200 : 1000));
+  const adrRows = dates.map((date, index) => ({
+    date,
+    adr_kospi: index >= 265 ? 90 : 100,
+  }));
+  const model = buildMarketTimingSignals({
+    indexKey: "123456.KS",
+    dates,
+    prices,
+    oscillator,
+    benchmarkPrices,
+    volumes,
+    adrRows,
+    behaviorPolicy: PROMOTED_RUNTIME_BEHAVIOR_POLICY,
+  });
+
+  const signal = model.signals.find((item) => item.setupReasons.includes("박스권 하단 급락"));
+  assert.ok(signal);
+  assert.equal(signal.setupDate, dates[275]);
+  assert.ok(signal.confirmationDate > signal.setupDate);
+  assert.ok(signal.setupReasons.includes("박스권 하단 급락"));
+});
+
 test("rejects a buy signal when the index remains near its recent high", () => {
   const fixture = timingFixture();
   fixture.prices = fixture.prices.map((_, index) => 100 + (index * 0.08));
@@ -884,6 +921,49 @@ test("detects a gradual stock distribution top after a volatility-adjusted advan
   assert.ok(model.sellSignals[0].confirmationDate <= dates[278]);
   assert.ok(model.sellSignals[0].sellSetupReasons.includes("개별종목 분배형 과열"));
   assert.ok(model.sellSignals[0].sellTriggerReasons.includes("분배형 고점 이탈"));
+});
+
+test("confirms a weak rebound exhaustion before discarding its abrupt correction", () => {
+  const dates = Array.from({ length: 290 }, (_, index) => dateAt(index));
+  const prices = dates.map((_, index) => 100 + (Math.sin(index / 9) * 0.3));
+  for (let index = 220; index <= 230; index += 1) prices[index] = 100 + ((index - 220) * 2.1);
+  for (let index = 231; index <= 240; index += 1) prices[index] = 121 - ((index - 230) * 2.1);
+  for (let index = 241; index <= 254; index += 1) prices[index] = 100 + ((index - 240) * (12 / 14));
+  prices[255] = 101;
+  const benchmarkPrices = dates.map((_, index) => 100 * Math.exp(index * 0.004));
+  const oscillator = dates.map(() => 0.25);
+  oscillator[229] = 0.55;
+  oscillator[230] = 0.75;
+  oscillator[231] = 0.45;
+  oscillator[253] = 0.22;
+  oscillator[254] = 0.42;
+  oscillator[255] = 0.08;
+  const volumes = dates.map(() => 1000);
+  volumes[230] = 6000;
+  volumes[254] = 2600;
+  const adrRows = dates.map((date, index) => ({
+    date,
+    adr_kospi: index >= 245 ? 118 : 100,
+  }));
+  const model = buildMarketTimingSignals({
+    indexKey: "123456.KS",
+    dates,
+    prices,
+    oscillator,
+    benchmarkPrices,
+    volumes,
+    adrRows,
+    behaviorPolicy: PROMOTED_RUNTIME_BEHAVIOR_POLICY,
+  });
+
+  const reboundSignal = model.sellSignals.find((signal) => (
+    signal.signalFamily === "rebound-exhaustion"
+  ));
+  assert.ok(reboundSignal);
+  assert.equal(reboundSignal.peakDate, dates[254]);
+  assert.equal(reboundSignal.confirmationDate, dates[255]);
+  assert.ok(reboundSignal.sellSetupReasons.includes("약한 반등 거래량 소진"));
+  assert.ok(reboundSignal.sellTriggerReasons.includes("분배형 고점 이탈"));
 });
 
 test("confirms a mature stock top after a slower medium-term rollover", () => {

@@ -748,12 +748,13 @@ test("rejects unpublished zero credit balances from newer KOFIA rows", async () 
 
 test("accepts authenticated recent local credit rows and merges them into Worker storage", async () => {
   const cache = memoryKv();
+  const syncDate = shiftIsoDate(koreanDateText(), -1);
   const response = await handleRequest(request("/api/credit/sync", {
     method: "POST",
     token: "private",
     body: {
       rows: [{
-        date: "2026-08-13",
+        date: syncDate,
         customer_deposit: 100.0684,
         kospi_credit: 24.5349,
         kosdaq_credit: 6.3914,
@@ -766,11 +767,11 @@ test("accepts authenticated recent local credit rows and merges them into Worker
   const payload = await response.json();
 
   assert.equal(response.status, 200);
-  assert.equal(payload.latestDate, "2026-08-13");
+  assert.equal(payload.latestDate, syncDate);
   assert.equal(payload.accepted, 1);
   const stored = JSON.parse(cache.values.get("credit-macro:5"));
   assert.deepEqual(stored.rows.at(-1), {
-    date: "2026-08-13",
+    date: syncDate,
     customer_deposit: 100.0684,
     kospi_credit: 24.5349,
     kosdaq_credit: 6.3914,
