@@ -541,7 +541,11 @@
     async function prepare(input = {}) {
       counters.prepareRequests += 1;
       const signature = String(input.signature || "");
-      const targets = normalizeTargets(input.targets);
+      const requestedTargets = normalizeTargets(input.targets);
+      const targets = normalizeTargets([
+        ...requestedTargets,
+        ...(input.requiredTargets || []),
+      ]);
       if (!signature || !targets.length) return models;
       while (signature !== currentSignature && activePreparationCount()) {
         await waitForPreparationIdle();

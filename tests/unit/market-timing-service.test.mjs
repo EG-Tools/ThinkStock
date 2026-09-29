@@ -134,6 +134,89 @@ test("keeps unaffected ticker models when only one ticker input changes", async 
   assert.equal(service.stats().inputFingerprintCalculations, 4);
 });
 
+test("calculates only the new target when required visible peers are still valid", async () => {
+  const worker = new FakeWorker();
+  const service = createMarketTimingService({}, {
+    createWorker: () => worker,
+    workerUrl: "timing-worker.js",
+  });
+  const sources = {
+    dates: ["2026-01-02", "2026-01-05"],
+    pricesByTicker: {
+      "^KS11": [100, 101],
+      "^KQ11": [200, 202],
+      "005930.KS": [50, 52],
+      "000660.KS": [80, 81],
+      "207940.KS": [900, 920],
+    },
+    volumesByTicker: {},
+  };
+  await service.prepare({
+    signature: "visible-pair",
+    targets: ["005930.KS", "000660.KS"],
+    sources,
+  });
+  const samsungModel = service.get("005930.KS");
+  const hynixModel = service.get("000660.KS");
+
+  await service.prepare({
+    signature: "visible-triple",
+    targets: ["207940.KS"],
+    requiredTargets: ["005930.KS", "000660.KS", "207940.KS"],
+    sources,
+  });
+
+  assert.deepEqual(worker.messages[1].targets, ["207940.KS"]);
+  assert.equal(service.get("005930.KS"), samsungModel);
+  assert.equal(service.get("000660.KS"), hynixModel);
+  assert.equal(service.stats().modelCalculations, 3);
+});
+
+test("rebuilds every required visible target when a new ticker changes shared inputs", async () => {
+  const worker = new FakeWorker();
+  const service = createMarketTimingService({}, {
+    createWorker: () => worker,
+    workerUrl: "timing-worker.js",
+  });
+  const firstSources = {
+    dates: ["2026-01-02", "2026-01-05"],
+    pricesByTicker: {
+      "^KS11": [100, 101],
+      "^KQ11": [200, 202],
+      "005930.KS": [50, 52],
+      "000660.KS": [80, 81],
+    },
+    volumesByTicker: {},
+  };
+  await service.prepare({
+    signature: "visible-pair",
+    targets: ["005930.KS", "000660.KS"],
+    sources: firstSources,
+  });
+
+  await service.prepare({
+    signature: "visible-triple",
+    targets: ["207940.KS"],
+    requiredTargets: ["005930.KS", "000660.KS", "207940.KS"],
+    sources: {
+      dates: ["2025-12-30", ...firstSources.dates],
+      pricesByTicker: {
+        "^KS11": [99, 100, 101],
+        "^KQ11": [198, 200, 202],
+        "005930.KS": [49, 50, 52],
+        "000660.KS": [79, 80, 81],
+        "207940.KS": [900, 910, 920],
+      },
+      volumesByTicker: {},
+    },
+  });
+
+  assert.deepEqual(worker.messages[1].targets, ["000660.KS", "005930.KS", "207940.KS"]);
+  assert.equal(service.has("005930.KS"), true);
+  assert.equal(service.has("000660.KS"), true);
+  assert.equal(service.has("207940.KS"), true);
+});
+
 test("coalesces concurrent requests for the same timing target", async () => {
   let releaseWorker;
   let workerCalls = 0;

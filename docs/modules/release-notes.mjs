@@ -3,6 +3,15 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.58",
+      date: "2026.09.29",
+      items: Object.freeze([
+        "신호가 켜진 상태에서 종목을 추가해도 기존 종목의 신호 유지",
+        "여러 종목의 신호 준비 중 하나를 꺼도 남은 종목의 계산과 표시 계속",
+        "공통 신호 입력이 바뀔 때 화면에 남은 종목만 함께 검증하고 필요한 결과만 재계산",
+      ]),
+    }),
+    Object.freeze({
       version: "3.57",
       date: "2026.09.28",
       items: Object.freeze([

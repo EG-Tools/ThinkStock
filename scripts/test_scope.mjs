@@ -118,6 +118,7 @@ export const WEBKIT_SMOKE_PATTERN = [
 ].join("|");
 
 export const WEBKIT_DESKTOP_PATTERN = [
+  "adding a stock while signal is enabled prepares its timing model",
   "AI hover selects the nearest forecast scenario",
   "AI toggle restores an unchanged wheel-zoomed viewport",
   "full reset restores the device default chart period",

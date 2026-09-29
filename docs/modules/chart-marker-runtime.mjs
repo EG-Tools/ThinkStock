@@ -494,7 +494,7 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
     const eventMarkerTextSize = Number(constants.eventMarkerTextSize) || 13;
     const pointIndexCache = new WeakMap();
     let lastTimingPreparationKey = "";
-    let pendingTimingPreparation = null;
+    const pendingTimingPreparations = new Map();
     let timingPreparationGeneration = 0;
     const timingPreparationTargetGenerations = new Map();
     const timingProgressTasks = new Map();
@@ -516,9 +516,14 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
       });
     }
 
-    function isTimingPreparationGenerationCurrent(snapshot) {
-      return snapshot?.global === timingPreparationGeneration
-        && snapshot.targets.every(([target, generation]) => (
+    function isTimingPreparationGenerationCurrent(snapshot, activeTargets = null) {
+      const targetFilter = activeTargets instanceof Set ? activeTargets : null;
+      if (snapshot?.global !== timingPreparationGeneration) return false;
+      const activeEntries = targetFilter
+        ? snapshot.targets.filter(([target]) => targetFilter.has(target))
+        : snapshot.targets;
+      return activeEntries.length > 0
+        && activeEntries.every(([target, generation]) => (
           timingTargetGeneration(target) === generation
         ));
     }
@@ -535,9 +540,9 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
       const taskKeys = [...timingProgressTasks.entries()]
         .filter(([, task]) => !target || task.targets.has(target))
         .map(([taskKey]) => taskKey);
-      const pendingMatches = pendingTimingPreparation
-        && (!target || pendingTimingPreparation.targets.has(target));
-      if (!taskKeys.length && !pendingMatches) return false;
+      const pendingMatches = [...pendingTimingPreparations.entries()]
+        .filter(([, task]) => !target || task.targets.has(target));
+      if (!taskKeys.length && !pendingMatches.length) return false;
 
       if (target) {
         timingPreparationTargetGenerations.set(target, timingTargetGeneration(target) + 1);
@@ -548,7 +553,14 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
         timingProgressTasks.delete(taskKey);
         signalProgress?.cancel?.(taskKey);
       });
-      if (pendingMatches) pendingTimingPreparation = null;
+      pendingMatches.forEach(([preparationKey, task]) => {
+        if (!target) {
+          pendingTimingPreparations.delete(preparationKey);
+          return;
+        }
+        task.targets.delete(target);
+        if (!task.targets.size) pendingTimingPreparations.delete(preparationKey);
+      });
       return true;
     }
 
@@ -1193,6 +1205,14 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
       const targets = visibleTimingSeries(selected, seriesModels);
       if (!chartSession.showRecessionSignals
         || !targets.length) return;
+      const sourceSeries = visibleTimingSeries(
+        Array.isArray(preparationOptions.sourceSeries)
+          ? preparationOptions.sourceSeries
+          : selected,
+        seriesModels,
+      );
+      const requiredTargets = [...new Set([...sourceSeries, ...targets])];
+      const activeTargets = new Set(targets.map(normalizeTimingTarget));
       const preparationGeneration = captureTimingPreparationGeneration(targets);
       const preparationGenerationKey = timingPreparationGenerationKey(preparationGeneration);
       const progressDescriptor = marketTimingProgressDescriptor(targets, labelName);
@@ -1211,7 +1231,7 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
         return true;
       };
       const isCurrentPreparation = () => (
-        isTimingPreparationGenerationCurrent(preparationGeneration)
+        isTimingPreparationGenerationCurrent(preparationGeneration, activeTargets)
       );
       const beginProgress = () => {
         if (progressStarted) return;
@@ -1271,12 +1291,6 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
         return;
       }
 
-      const sourceSeries = visibleTimingSeries(
-        Array.isArray(preparationOptions.sourceSeries)
-          ? preparationOptions.sourceSeries
-          : selected,
-        seriesModels,
-      );
       const sourceTickers = [...new Set([
         "^KS11",
         "^KQ11",
@@ -1339,12 +1353,12 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
       ].join("|");
       const preparationKey = `${signature}|${targets.join(",")}`;
       if (lastTimingPreparationKey === preparationKey
-        && targets.every((ticker) => service.has?.(ticker))) {
+        && requiredTargets.every((ticker) => service.has?.(ticker))) {
         cancelProgress();
         return;
       }
-      if (pendingTimingPreparation?.key === preparationKey
-        && pendingTimingPreparation.generationKey === preparationGenerationKey) {
+      const pendingTimingPreparation = pendingTimingPreparations.get(preparationKey);
+      if (pendingTimingPreparation?.generationKey === preparationGenerationKey) {
         return pendingTimingPreparation.promise;
       }
       beginProgress();
@@ -1387,6 +1401,7 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
         await service.prepare({
           signature,
           targets,
+          requiredTargets,
           ...(sources ? { sources } : {}),
         });
         if (!isCurrentPreparation()) return false;
@@ -1398,12 +1413,13 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
         });
         return true;
       })();
-      pendingTimingPreparation = {
+      const pendingEntry = {
         generationKey: preparationGenerationKey,
         key: preparationKey,
         promise: preparation,
-        targets: new Set(targets.map(normalizeTimingTarget)),
+        targets: activeTargets,
       };
+      pendingTimingPreparations.set(preparationKey, pendingEntry);
       try {
         const completed = await preparation;
         if (!completed || !isCurrentPreparation()) {
@@ -1415,7 +1431,9 @@ export function marketTimingProgressDescriptor(targets, resolveLabel = (value) =
         cancelProgress();
         recordRuntimeError("market-timing-worker", error, { targets: targets.length });
       } finally {
-        if (pendingTimingPreparation?.promise === preparation) pendingTimingPreparation = null;
+        if (pendingTimingPreparations.get(preparationKey)?.promise === preparation) {
+          pendingTimingPreparations.delete(preparationKey);
+        }
       }
     }
 

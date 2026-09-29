@@ -700,6 +700,61 @@ test("turning off a series cancels signal progress and stale work cannot finish 
   assert.equal(progressEvents.at(-1)[0], "complete");
 });
 
+test("turning off one target keeps the remaining target current in a shared preparation", async () => {
+  let releasePreparation;
+  let completedPreparations = 0;
+  let preparedPayload = null;
+  const progressEvents = [];
+  const preparedTickers = new Set();
+  const service = {
+    has: (ticker) => preparedTickers.has(ticker),
+    stats: () => ({ signature: "", modelCount: preparedTickers.size }),
+    prepare: async (payload) => {
+      preparedPayload = payload;
+      await new Promise((resolve) => { releasePreparation = resolve; });
+      payload.requiredTargets.forEach((ticker) => preparedTickers.add(ticker));
+    },
+  };
+  const { runtime } = createRuntime({
+    getMarketTimingService: () => service,
+    getPricePayload: () => ({
+      records: [
+        {
+          date: "2026-08-11", "^KS11": 3200, "^KQ11": 800,
+          "005930.KS": 70000, "000660.KS": 200000,
+        },
+        {
+          date: "2026-08-12", "^KS11": 3210, "^KQ11": 805,
+          "005930.KS": 71000, "000660.KS": 201000,
+        },
+      ],
+    }),
+    isForecastSeries: (ticker) => ticker.startsWith("^") || ticker.endsWith(".KS"),
+    recordPerfSample: () => { completedPreparations += 1; },
+    signalProgress: {
+      begin: (key) => { progressEvents.push(["begin", key]); return true; },
+      update: () => {},
+      complete: (key) => progressEvents.push(["complete", key]),
+      cancel: (key) => progressEvents.push(["cancel", key]),
+    },
+  });
+  const selected = ["005930.KS", "000660.KS"];
+  const seriesModels = selected.map((series) => ({ series }));
+
+  const preparation = runtime.prepareMarketTimingModels(selected, seriesModels, {
+    sourceSeries: selected,
+  });
+  await Promise.resolve();
+  assert.equal(runtime.cancelMarketTimingPreparation("005930.KS"), true);
+  releasePreparation();
+  await preparation;
+
+  assert.deepEqual(preparedPayload.requiredTargets.sort(), ["000660.KS", "005930.KS"]);
+  assert.equal(completedPreparations, 1);
+  assert.equal(preparedTickers.has("000660.KS"), true);
+  assert.equal(progressEvents.some(([type]) => type === "cancel"), true);
+});
+
 test("cancelling one timing target does not invalidate another target in flight", async () => {
   const releases = new Map();
   const progressEvents = [];

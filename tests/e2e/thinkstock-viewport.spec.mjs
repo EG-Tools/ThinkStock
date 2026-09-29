@@ -80,6 +80,28 @@ test("adding a stock while signal is enabled prepares its timing model", async (
   await expect.poll(() => page.evaluate(() => (
     window.ThinkStockE2E.hasMarketTimingModel("^KS11")
   ))).toBe(true);
+
+  await waitForChartRenderIdle(page);
+  const calculationCount = await page.evaluate(() => (
+    window.ThinkStockE2E.getRuntimeDiagnosticState().marketTiming?.modelCalculations || 0
+  ));
+  const hynixToggle = page.locator('.series-toggle-btn[data-series="000660.KS"]');
+  await hynixToggle.click();
+  await expect(hynixToggle).toHaveClass(/is-off/);
+  await waitForChartRenderIdle(page);
+  await expect.poll(() => page.evaluate(() => (
+    window.ThinkStockE2E.hasMarketTimingModel("^KS11")
+  ))).toBe(true);
+  await expect.poll(() => page.evaluate(() => (
+    window.ThinkStockE2E.getRuntimeDiagnosticState().marketTiming?.modelCalculations || 0
+  ))).toBe(calculationCount);
+
+  await hynixToggle.click();
+  await expect(hynixToggle).toHaveClass(/is-on/);
+  await expect.poll(() => page.evaluate(() => ([
+    window.ThinkStockE2E.hasMarketTimingModel("^KS11"),
+    window.ThinkStockE2E.hasMarketTimingModel("000660.KS"),
+  ]))).toEqual([true, true]);
 });
 
 async function expectMainAuxiliaryRangesLinked(page, toleranceMs = 86400000) {
