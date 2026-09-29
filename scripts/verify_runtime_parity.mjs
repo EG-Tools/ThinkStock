@@ -15,6 +15,7 @@ import {
   runtimeApiCompatibility,
 } from "../shared/runtime-api-contract.mjs";
 import { fetchCompanyAnalysis } from "../worker/src/company-analysis.mjs";
+import { koreanDateText } from "../shared/market-calendar.mjs";
 import { parsePayloadText, rowsFromColumnarPayload } from "../docs/modules/data-payload.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -28,6 +29,7 @@ export function compareRuntimeRecords(left, right, options = {}) {
   ]).filter(([key]) => key));
   const local = project(left);
   const remote = project(right);
+  const ignoreFieldKeys = new Set((options.ignoreFieldKeys || []).map(String));
   const keys = [...new Set([...local.keys(), ...remote.keys()])].sort()
     .slice(-(options.limit || 60));
   const differences = [];
@@ -36,6 +38,7 @@ export function compareRuntimeRecords(left, right, options = {}) {
       differences.push(`${key}: ${local.has(key) ? "remote" : "local"} missing`);
       continue;
     }
+    if (ignoreFieldKeys.has(key)) continue;
     const fields = options.fields || [...new Set([
       ...Object.keys(local.get(key)), ...Object.keys(remote.get(key)),
     ])].filter((field) => field !== keyField).sort();
@@ -76,12 +79,16 @@ export async function verifyMarketRuntimeParity(options = {}) {
   }
   const tickers = options.tickers || DEFAULT_TICKERS;
   const asOf = String(options.asOfDate || new Date().toISOString()).slice(0, 10);
+  const provisionalKoreanDate = koreanDateText(options.now || new Date());
   for (const ticker of tickers) {
     const historyRoute = `api/research/history?ticker=${encodeURIComponent(ticker)}`;
     const [local, remote] = await Promise.all([
       get(localBase, historyRoute), get(workerBase, historyRoute, true),
     ]);
-    check(`${ticker} price/volume`, local.rows, remote.rows, { fields: ["close", "volume"] });
+    check(`${ticker} price/volume`, local.rows, remote.rows, {
+      fields: ["close", "volume"],
+      ignoreFieldKeys: [provisionalKoreanDate],
+    });
     for (const source of ["naver", "hankyung"]) {
       const route = `api/broker-reports?ticker=${encodeURIComponent(ticker)}&days=180&source=${source}&asOf=${asOf}`;
       const [a, b] = await Promise.all([get(localBase, route), get(workerBase, route, true)]);

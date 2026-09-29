@@ -22,6 +22,33 @@ test("market parity detects stale dates and changed volume even with equal price
   assert.equal(compareRuntimeRecords(a, [...a]).equal, true);
 });
 
+test("market parity keeps today's provisional row but compares every settled row", () => {
+  const local = [
+    { date: "2026-09-28", close: 100, volume: 10 },
+    { date: "2026-09-29", close: 110, volume: 20 },
+  ];
+  const remote = [
+    { date: "2026-09-28", close: 100, volume: 10 },
+    { date: "2026-09-29", close: 111, volume: 21 },
+  ];
+  assert.equal(compareRuntimeRecords(local, remote, {
+    fields: ["close", "volume"],
+    ignoreFieldKeys: ["2026-09-29"],
+  }).equal, true);
+  assert.equal(compareRuntimeRecords(local, remote, {
+    fields: ["close", "volume"],
+    ignoreFieldKeys: ["2026-09-28"],
+  }).equal, false);
+});
+
+test("market parity still rejects a missing provisional row", () => {
+  const local = [{ date: "2026-09-29", close: 110, volume: 20 }];
+  assert.equal(compareRuntimeRecords(local, [], {
+    fields: ["close", "volume"],
+    ignoreFieldKeys: ["2026-09-29"],
+  }).equal, false);
+});
+
 test("parity uses local and deployed routes for seeds, prices, volume and report lists", async () => {
   const urls = [];
   const results = await verifyMarketRuntimeParity({
