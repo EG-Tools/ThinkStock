@@ -169,7 +169,7 @@ const KRX_INDEX_CACHE_SCHEMA = 5;
 const NAVER_PRICE_LOOKBACK_DAYS = 21;
 const MAX_NAVER_PRICE_BYTES = 1024 * 1024;
 const PRICE_MOVE_WARNING_RATIO = 1.35;
-const ECOS_CACHE_SCHEMA = 3;
+const ECOS_CACHE_SCHEMA = 4;
 const ECOS_CACHE_KEY = `ecos-macro:${ECOS_CACHE_SCHEMA}`;
 const ECOS_LEADING_STAT_CODE = "901Y067";
 const ECOS_LEADING_ITEM_CODE = "I16E";
@@ -404,7 +404,6 @@ function mergePublishedEcosRows(existing, incoming, key, options = {}) {
     });
   });
 
-  const hadExistingRows = rows.size > 0;
   incomingRows.forEach((row) => {
     const referenceDate = String(row?.date || "").slice(0, 10);
     const value = finiteNumber(row?.[key]);
@@ -418,7 +417,10 @@ function mergePublishedEcosRows(existing, incoming, key, options = {}) {
       date: referenceDate,
       available_date: previous && !changed
         ? previous.available_date
-        : (hadExistingRows ? observedDate : availableOnDate(key, referenceDate)),
+        // A newly published reference month has one deterministic availability
+        // date regardless of when this Worker happens to refresh. Only a later
+        // revision of an existing value becomes available on its observed date.
+        : (previous ? observedDate : availableOnDate(key, referenceDate)),
       [key]: value,
     });
   });

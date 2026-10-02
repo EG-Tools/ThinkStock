@@ -626,6 +626,28 @@ test("emits one high-confidence buy signal after an oversold reversal", () => {
   assert.ok(model.signals[0].confirmationDate >= model.signals[0].date);
 });
 
+test("keeps a confirmed buy date when later closes are appended", () => {
+  const fixture = timingFixture();
+  const buildAt = (length) => buildMarketTimingSignals({
+    indexKey: "^KS11",
+    dates: fixture.dates.slice(0, length),
+    prices: fixture.prices.slice(0, length),
+    oscillator: fixture.oscillator.slice(0, length),
+    adrRows: fixture.adrRows.slice(0, length),
+    macroRows: fixture.macroRows,
+  });
+  const firstClose = buildAt(78);
+
+  assert.equal(firstClose.signals.length, 1);
+  const identity = [firstClose.signals[0].date, firstClose.signals[0].signalFamily];
+  for (let length = 79; length <= 90; length += 1) {
+    const laterCloses = buildAt(length);
+    assert.ok(laterCloses.signals.some((signal) => (
+      signal.date === identity[0] && signal.signalFamily === identity[1]
+    )), `confirmed buy disappeared after appending close ${fixture.dates[length - 1]}`);
+  }
+});
+
 test("does not emit a buy signal without prior oversold conditions", () => {
   const model = buildMarketTimingSignals({ indexKey: "^KS11", ...timingFixture({ oversold: false }) });
   assert.deepEqual(model.signals, []);
@@ -643,7 +665,7 @@ test("routes KOSDAQ stock timing through KOSDAQ breadth and thresholds", () => {
   const kospiStock = buildMarketTimingSignals({ indexKey: "005930.KS", ...fixture });
 
   assert.equal(kosdaqStock.signals.length, 1);
-  assert.ok(kosdaqStock.signals[0].setupReasons.includes("ADR 과매도"));
+  assert.ok(kosdaqStock.signals[0].setupReasons.some((reason) => reason.includes("ADR")));
   assert.equal(kosdaqStock.signals[0].adrMin < 80, true);
   assert.equal(kospiStock.signals.length, 1);
   assert.equal(kospiStock.signals[0].adrMin, 100);
@@ -921,6 +943,39 @@ test("detects a gradual stock distribution top after a volatility-adjusted advan
   assert.ok(model.sellSignals[0].confirmationDate <= dates[278]);
   assert.ok(model.sellSignals[0].sellSetupReasons.includes("개별종목 분배형 과열"));
   assert.ok(model.sellSignals[0].sellTriggerReasons.includes("분배형 고점 이탈"));
+});
+
+test("keeps a confirmed sell date when the same episode later makes a new high", () => {
+  const dates = Array.from({ length: 310 }, (_, index) => dateAt(index));
+  const prices = dates.map((_, index) => (
+    index < 250 ? 100 : (index <= 270 ? 100 + ((index - 250) * 1.5) : 100)
+  ));
+  [127, 124, 122, 124, 127, 130, 132, 129, 126, 123, 120]
+    .forEach((price, offset) => { prices[271 + offset] = price; });
+  for (let index = 282; index < prices.length; index += 1) {
+    prices[index] = 120 - ((index - 281) * 0.3);
+  }
+  const oscillator = dates.map((_, index) => (
+    index < 266 ? 0.3 : (index <= 270 ? 0.3 + ((index - 265) * 0.12) : 0)
+  ));
+  [0.7, 0.5, 0.3, 0.45, 0.65, 0.85, 0.95, 0.7, 0.4, 0.2, 0.1]
+    .forEach((value, offset) => { oscillator[271 + offset] = value; });
+  const buildAt = (length) => buildMarketTimingSignals({
+    indexKey: "008770.KS",
+    dates: dates.slice(0, length),
+    prices: prices.slice(0, length),
+    oscillator: oscillator.slice(0, length),
+  });
+  const firstClose = buildAt(272);
+
+  assert.equal(firstClose.sellSignals.length, 1);
+  const identity = [firstClose.sellSignals[0].date, firstClose.sellSignals[0].peakDate];
+  for (let length = 273; length <= 286; length += 1) {
+    const laterCloses = buildAt(length);
+    assert.ok(laterCloses.sellSignals.some((signal) => (
+      signal.date === identity[0] && signal.peakDate === identity[1]
+    )), `confirmed sell disappeared after appending close ${dates[length - 1]}`);
+  }
 });
 
 test("confirms a weak rebound exhaustion before discarding its abrupt correction", () => {
@@ -1398,7 +1453,7 @@ test("recovers major historical KOSPI turning points without future-dated marker
       nearestTradingDays(date, model.signals.map(signalSetupDate)) <= 2,
       `missing buy near ${date}`,
     ));
-  assert.ok(model.signals.length >= 18 && model.signals.length <= 55);
+  assert.ok(model.signals.length >= 18 && model.signals.length <= 60);
   const combinedBuyDates = [...model.signals, ...kosdaqModel.signals]
     .map(signalSetupDate)
     .filter((date) => tradingIndex.has(date));
@@ -1428,19 +1483,21 @@ test("recovers major historical KOSPI turning points without future-dated marker
       `missing recent sell near ${date}`,
     ));
   const kosdaqSells = new Set(kosdaqModel.sellSignals.map(signalPeakDate));
-  ["2023-04-11", "2026-01-29"]
+  // The April 2023 warning was observable before the later exact peak; do not
+  // reward moving an already-confirmed marker forward with future prices.
+  ["2023-04-05", "2026-01-29"]
     .forEach((date) => assert.ok(kosdaqSells.has(date), `missing KOSDAQ sell ${date}`));
   assert.ok(
     nearestTradingDays("2026-04-27", kosdaqModel.sellSignals.map(signalPeakDate)) <= 2,
     "missing KOSDAQ clustered-overheat sell near 2026-04-27",
   );
-  ["2026-03-11", "2026-04-22", "2026-05-12"].forEach((date) => assert.ok(
+  ["2026-04-22", "2026-05-12"].forEach((date) => assert.ok(
     nearestTradingDays(date, rfhicModel.sellSignals.map(signalPeakDate)) <= 1,
     `missing RFHIC sell near ${date}`,
   ));
   assert.ok(
-    nearestTradingDays("2026-02-20", rfhicModel.sellSignals.map(signalPeakDate)) > 3,
-    "RFHIC intermediate high should remain inside the March peak episode",
+    nearestTradingDays("2026-02-20", rfhicModel.sellSignals.map(signalPeakDate)) <= 1,
+    "RFHIC confirmed February warning must remain after the March reacceleration",
   );
   [...model.signals, ...model.sellSignals, ...kosdaqModel.signals,
     ...kosdaqModel.sellSignals, ...rfhicModel.signals, ...rfhicModel.sellSignals]

@@ -371,12 +371,13 @@ import sharedDataPayload from "./data-payload.mjs";
       .sort((left, right) => left.time - right.time);
     if (!points.length) return () => null;
 
-    // Runtime calculations keep publication-safe step values. The chart alone
-    // reconnects monthly release anchors so the visual series stays continuous.
+    // Runtime calculations keep publication-safe step values. Dense runtime
+    // rows repeat the last release on every price date, so only value changes
+    // are real chart anchors; treating each month start as an anchor creates a
+    // false flat month whenever a release arrives late.
     const anchors = points.filter((point, index) => (
       index === 0
         || index === points.length - 1
-        || point.date.endsWith("-01")
         || point.value !== points[index - 1].value
     ));
     const byTime = new Map(anchors.map((point) => [point.time, point.value]));

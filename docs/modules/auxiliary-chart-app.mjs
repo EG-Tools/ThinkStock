@@ -122,15 +122,21 @@ function createAuxiliaryChartApp(scope = globalThis, options = {}) {
 
   async function refreshViewport() {
     const runtime = registry.peek(runtimeKey);
+    if (!runtime) return;
+    const renderQueue = getRenderQueue();
+    // A toggle render may still carry the range captured before the latest
+    // main-viewport commit. Drain it first so it cannot overwrite the
+    // authoritative range after the linked charts have been synchronized.
+    await renderQueue.whenSettled();
     const xRange = options.getMainRange?.();
-    if (!runtime || xRange?.length !== 2) return;
+    if (xRange?.length !== 2) return;
     if (options.scheduleCommittedViewport?.(xRange)) {
       await options.flushCommittedViewport?.();
     }
     const targets = runtime.viewportRefreshTargets?.(xRange) || [];
     if (!targets.length) return;
     scheduleRender(xRange, { targets, refreshOnly: true });
-    await getRenderQueue().whenSettled();
+    await renderQueue.whenSettled();
   }
 
   function flushCoMovement() {

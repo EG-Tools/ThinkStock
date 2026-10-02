@@ -59,7 +59,7 @@ test("auxiliary chart app preserves every target while using the latest viewport
   assert.deepEqual(renders, [{ range: [3, 4], targets: ["macd", "auxiliary"] }]);
 });
 
-test("auxiliary chart app refreshes the committed viewport before repainting", async () => {
+test("auxiliary chart app drains stale renders before committing and repainting the viewport", async () => {
   const registry = createRegistry();
   const order = [];
   let queueApply = null;
@@ -99,9 +99,17 @@ test("auxiliary chart app refreshes the committed viewport before repainting", a
   });
 
   await app.getRuntime();
+  app.scheduleRender([1, 2], { targets: ["macd"] });
   await app.refreshViewport();
 
-  assert.deepEqual(order, ["commit", "flush", "render", "settled"]);
+  assert.deepEqual(order, [
+    "render",
+    "settled",
+    "commit",
+    "flush",
+    "render",
+    "settled",
+  ]);
 });
 
 test("auxiliary chart app shares its cached MACD model with feature consumers", () => {

@@ -1678,11 +1678,11 @@
         }
         return;
       }
-      if (Number.isInteger(episode.signalSlot)) list[episode.signalSlot] = decorated;
-      else {
-        episode.signalSlot = list.length;
-        list.push(decorated);
-      }
+      // Once a signal is visible, later closes must not move that confirmed
+      // signal to a newer date within the same episode.
+      if (Number.isInteger(episode.signalSlot)) return;
+      episode.signalSlot = list.length;
+      list.push(decorated);
     }
 
     for (let index = 39; index < count; index += 1) {
@@ -2017,12 +2017,15 @@
           || result.macdSlope >= Math.abs(result.priorMacdSlope) * 0.75);
 
       if (buyEpisode) {
-        const failedBroadRebound = (buyEpisode.broad || buyEpisode.shock || buyEpisode.relativeWashout)
-          && buyEpisode.signalLocked
+        const confirmedReboundAge = Number.isInteger(buyEpisode.signalConfirmedAt)
+          ? index - buyEpisode.signalConfirmedAt
+          : 0;
+        const failedReboundFloor = isMarketIndex && confirmedReboundAge >= 15 ? 0.97 : 0.96;
+        const failedConfirmedRebound = buyEpisode.signalLocked
           && Number.isInteger(buyEpisode.signalConfirmedAt)
-          && index - buyEpisode.signalConfirmedAt >= 3
+          && confirmedReboundAge >= 3
           && result.price !== null && buyEpisode.signalLowPrice > 0
-          && result.price <= buyEpisode.signalLowPrice * 0.96;
+          && result.price <= buyEpisode.signalLowPrice * failedReboundFloor;
         const recoveredFromLow = result.price !== null && buyEpisode.lowPrice > 0
           && result.price >= buyEpisode.lowPrice * 1.12
           && (result.adr === null || result.adr >= 95)
@@ -2036,7 +2039,7 @@
           && result.price !== null && buyEpisode.lowPrice > 0
           && result.price >= buyEpisode.lowPrice * 1.04
           && result.oscillator !== null && result.oscillator > 0;
-        if (failedBroadRebound || recoveredFromLow || staleEpisode || completedLocalSwing) {
+        if (failedConfirmedRebound || recoveredFromLow || staleEpisode || completedLocalSwing) {
           buyEpisode = null;
         }
       }
@@ -2184,12 +2187,9 @@
             : buyEpisode.setupReasons.filter((reason) => reason !== "중간급 조정").slice(-2),
           triggerReasons: ["MACD 상승 다이버전스"],
         });
-        if (buyEpisode.broad || buyEpisode.shock || buyEpisode.relativeWashout
-          || buyEpisode.localRangeFloor) {
-          buyEpisode.signalLocked = true;
-          buyEpisode.signalConfirmedAt = index;
-          buyEpisode.signalLowPrice = buyEpisode.lowPrice;
-        }
+        buyEpisode.signalLocked = true;
+        buyEpisode.signalConfirmedAt = index;
+        buyEpisode.signalLowPrice = buyEpisode.lowPrice;
       }
 
       const nearHigh = result.priceDrawdown60 !== null && result.priceDrawdown60 >= -2.5;
@@ -2658,7 +2658,7 @@
         });
         sellEpisode.signalConfirmedAt = index;
         sellEpisode.confirmedPeakPrice = sellEpisode.peakPrice;
-        sellEpisode.signalLocked = sellEpisode.historical;
+        sellEpisode.signalLocked = true;
         lastSellSignalIndex = index;
         if (sellEpisode.historical) lastHistoricalSellSignalIndex = index;
       }

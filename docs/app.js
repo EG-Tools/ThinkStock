@@ -358,7 +358,7 @@ const TICKER_AI_ANALYSIS_CACHE_MAX_AGE_DAYS = 2;
 const AI_FORECAST_JOURNAL_QUEUE_MAX = 120;
 const PRICE_CACHE_REBASE_RATIO_THRESHOLD = tickerPriceRuntimeModule.CORPORATE_ACTION_RATIO_THRESHOLD;
 const PRICE_CACHE_REBASE_BOUNDARY_DAYS = tickerPriceRuntimeModule.CORPORATE_ACTION_MAX_BOUNDARY_DAYS;
-const APP_VERSION = "3.58";
+const APP_VERSION = "3.59";
 const APP_BUILD_VERSION = resolveAppBuildVersion(globalThis);
 const appCacheRuntime = createAppCacheRuntime(globalThis, {
   scheduler: backgroundTaskScheduler,
@@ -2577,6 +2577,10 @@ async function performSettledViewportRender({
   const hasRequestedRange = requestedRange?.every(Number.isFinite)
     && requestedRange[1] > requestedRange[0];
   const interactionRevision = chartViewportInteractionRevision;
+  // Volume is a background dependency of OBV, signals, and AI. Start its
+  // coverage work as soon as the committed viewport is known instead of
+  // waiting for every linked Plotly render to settle first.
+  queueVisibleSeriesVolumeCoverage(reason);
   const result = await chartUpdateCoordinatorModule.settleViewportRenderTransaction({
     requestedRange: hasRequestedRange ? requestedRange : null,
     interactionRevision,
@@ -2605,7 +2609,6 @@ async function performSettledViewportRender({
     refreshCompanionsNow: refreshLoadedChartCompanions,
     flushCoMovement: flushLoadedCoMovementPanel,
   });
-  queueVisibleSeriesVolumeCoverage(reason);
   return result;
 }
 

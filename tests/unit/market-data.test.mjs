@@ -261,6 +261,37 @@ test("smooths publication-safe leading-cycle steps only in chart rows", () => {
   assert.deepEqual(macroRows.map((row) => row.leading_cycle), [99.8, 99.8, 99.8, 99.7, 99.7, 99.6]);
 });
 
+test("does not turn a carried month-start value into a leading-cycle chart plateau", () => {
+  const macroRows = [
+    { date: "2026-08-01", leading_cycle: 103.8 },
+    { date: "2026-08-15", leading_cycle: 103.8 },
+    { date: "2026-09-01", leading_cycle: 103.8 },
+    { date: "2026-09-15", leading_cycle: 103.8 },
+    { date: "2026-09-30", leading_cycle: 103.8 },
+    { date: "2026-10-01", leading_cycle: 104.2 },
+  ];
+  const result = marketData.mergeSources({
+    priceRows: macroRows.map(({ date }) => ({ date, AAA: 100 })),
+    macroRows,
+    start: "2026-08-01",
+    end: "2026-10-01",
+  });
+  const rowsByDate = new Map(result.rows.map((row) => [row.date, row]));
+
+  assert.equal(rowsByDate.get("2026-08-01").leading_cycle, 103.8);
+  assert.ok(rowsByDate.get("2026-09-01").leading_cycle > 103.8);
+  assert.ok(rowsByDate.get("2026-09-01").leading_cycle < 104.2);
+  assert.ok(
+    rowsByDate.get("2026-09-30").leading_cycle
+      > rowsByDate.get("2026-09-01").leading_cycle,
+  );
+  assert.equal(rowsByDate.get("2026-10-01").leading_cycle, 104.2);
+  assert.deepEqual(
+    macroRows.map((row) => row.leading_cycle),
+    [103.8, 103.8, 103.8, 103.8, 103.8, 104.2],
+  );
+});
+
 test("ends each macro series at its own latest observation by default", () => {
   const rows = marketData.buildDenseMacroRows([
     { date: "2026-05-01", leading_cycle: 104.8, news_sentiment: 98 },

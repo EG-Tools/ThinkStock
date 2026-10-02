@@ -464,6 +464,50 @@ test("returns public ECOS macro updates and reuses the Worker cache", async () =
   }
 });
 
+test("dates a newly discovered leading-cycle month independently of refresh time", async () => {
+  const originalFetch = globalThis.fetch;
+  const cache = memoryKv();
+  await cache.put("ecos-macro:4", JSON.stringify({
+    schema: 4,
+    lastCheckedDate: "2026-09-30",
+    leadingRows: [{
+      date: "2026-06-01",
+      available_date: "2026-08-01",
+      leading_cycle: 103.8,
+    }],
+  }));
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    let rows;
+    if (target.includes("/901Y067/")) rows = [
+      { TIME: "202606", DATA_VALUE: "103.8" },
+      { TIME: "202607", DATA_VALUE: "104.2" },
+    ];
+    else if (target.includes("/523Y001/")) rows = [{ TIME: "20260906", DATA_VALUE: "100.76" }];
+    else if (target.includes("/722Y001/")) rows = [{ TIME: "202607", DATA_VALUE: "2.5" }];
+    else if (target.includes("T002")) rows = [{ TIME: "202607", DATA_VALUE: "102166000" }];
+    else rows = [{ TIME: "202607", DATA_VALUE: "66078000" }];
+    return new Response(JSON.stringify({ StatisticSearch: { row: rows } }), { status: 200 });
+  };
+
+  try {
+    const response = await handleRequest(request("/api/macro?refresh=1", { token: "private" }), {
+      ECOS_API_KEY: "ecos",
+      THINKSTOCK_ACCESS_TOKEN: "private",
+      DISCLOSURE_CACHE: cache,
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(payload.leadingRows.slice(-2), [
+      { date: "2026-08-01", leading_cycle: 103.8 },
+      { date: "2026-09-01", leading_cycle: 104.2 },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("keeps valid ECOS components when one macro series fails", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {

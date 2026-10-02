@@ -3,6 +3,17 @@ const SOURCE_BYTES = typeof __THINKSTOCK_RELEASE_NOTES_BYTES__ !== "undefined"
     : 0;
   const RELEASES = Object.freeze([
     Object.freeze({
+      version: "3.59",
+      date: "2026.10.02",
+      items: Object.freeze([
+        "확정된 과거 신호가 다음 거래일 계산으로 이동하거나 사라지지 않도록 신호 날짜 고정",
+        "같은 추세 안에서는 기존 신호를 유지하고 더 깊은 후속 파동만 새로운 신호로 구분",
+        "선행순환변동의 신규 월 자료를 실제 발표 가능일에 배치하고 차트의 평탄 구간 표시 개선",
+        "차트 2 지표 토글 직후에도 메인 차트의 최신 뷰포트 범위를 최종 적용",
+        "과거 구간 이동 시 OBV 거래량 보충을 차트 렌더 완료 대기 없이 백그라운드에서 시작",
+      ]),
+    }),
+    Object.freeze({
       version: "3.58",
       date: "2026.09.29",
       items: Object.freeze([
