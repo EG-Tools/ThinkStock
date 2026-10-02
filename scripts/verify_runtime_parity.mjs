@@ -51,6 +51,75 @@ export function compareRuntimeRecords(left, right, options = {}) {
   return { equal: differences.length === 0, compared: keys.length, differences };
 }
 
+const FINANCIAL_IDENTITY_FIELDS = Object.freeze([
+  "ticker",
+  "period",
+  "frequency",
+  "estimate",
+  "source",
+  "epsDerived",
+  "revenue",
+  "operatingProfit",
+  "netIncome",
+  "eps",
+]);
+const FINANCIAL_ENRICHMENT_FIELDS = Object.freeze([
+  "reportDate",
+  "operatingProfitConsensus",
+  "netIncomeConsensus",
+  "operatingProfitSurprise",
+  "netIncomeSurprise",
+  "operatingProfitYoy",
+  "netIncomeYoy",
+]);
+
+function missingEnrichment(value) {
+  return value === null || value === undefined || value === "";
+}
+
+export function compareCompanyAnalysisRuntimePayloads(left, right, options = {}) {
+  const comparison = compareCompanyAnalysisPayloads(left, right, options);
+  if (comparison.equal || comparison.differences.some((difference) => difference !== "financials")) {
+    return comparison;
+  }
+  const localRows = comparison.left.financials || [];
+  const remoteRows = comparison.right.financials || [];
+  const differences = [];
+  if (localRows.length !== remoteRows.length) {
+    differences.push(`financials.length: ${localRows.length} != ${remoteRows.length}`);
+  }
+  const remoteByKey = new Map(remoteRows.map((row) => [`${row.frequency}:${row.period}`, row]));
+  localRows.forEach((localRow) => {
+    const key = `${localRow.frequency}:${localRow.period}`;
+    const remoteRow = remoteByKey.get(key);
+    if (!remoteRow) {
+      differences.push(`financials.${key}: remote missing`);
+      return;
+    }
+    FINANCIAL_IDENTITY_FIELDS.forEach((field) => {
+      if (localRow[field] !== remoteRow[field]) {
+        differences.push(`financials.${key}.${field}: ${JSON.stringify(localRow[field])} != ${JSON.stringify(remoteRow[field])}`);
+      }
+    });
+    FINANCIAL_ENRICHMENT_FIELDS.forEach((field) => {
+      if (!missingEnrichment(localRow[field]) && localRow[field] !== remoteRow[field]) {
+        differences.push(`financials.${key}.${field}: ${JSON.stringify(localRow[field])} != ${JSON.stringify(remoteRow[field])}`);
+      }
+    });
+  });
+  const localKeys = new Set(localRows.map((row) => `${row.frequency}:${row.period}`));
+  remoteRows.forEach((remoteRow) => {
+    const key = `${remoteRow.frequency}:${remoteRow.period}`;
+    if (!localKeys.has(key)) differences.push(`financials.${key}: local missing`);
+  });
+  return Object.freeze({
+    ...comparison,
+    equal: differences.length === 0,
+    differences: Object.freeze(differences),
+    enriched: differences.length === 0,
+  });
+}
+
 export async function verifyMarketRuntimeParity(options = {}) {
   const localBase = options.localUrl || "http://127.0.0.1:8787/";
   const pagesBase = options.pagesUrl || "https://eg-tools.github.io/ThinkStock/";
@@ -172,7 +241,7 @@ export async function verifyCompanyAnalysisRuntimeParity(options = {}) {
         assert.equal(localQuality.completeFinancialSummary, true, `Local ${ticker} summary is incomplete: ${localQuality.issues.join(",")}`);
         assert.equal(remoteQuality.completeFinancialSummary, true, `Worker ${ticker} summary is incomplete: ${remoteQuality.issues.join(",")}`);
         assert.ok(Number(local.financialSummaryVersion) >= FINANCIAL_SUMMARY_VERSION);
-        const comparison = compareCompanyAnalysisPayloads(local, remote, {
+        const comparison = compareCompanyAnalysisRuntimePayloads(local, remote, {
           ticker,
           annualLimit: 8,
           quarterLimit: 12,
@@ -185,7 +254,7 @@ export async function verifyCompanyAnalysisRuntimeParity(options = {}) {
         results.push(Object.freeze({
           ticker,
           attempts: attempt,
-          fingerprint: comparison.left.fingerprint,
+          fingerprint: comparison.right.fingerprint,
           quality: localQuality,
         }));
         lastError = null;

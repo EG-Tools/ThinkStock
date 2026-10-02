@@ -8,6 +8,7 @@ import {
 import { RUNTIME_API_VERSION_HEADER } from "../../shared/runtime-api-contract.mjs";
 import {
   fetchRemoteCompanyAnalysis,
+  compareCompanyAnalysisRuntimePayloads,
   verifyCompanyAnalysisRuntimeParity,
   compareRuntimeRecords,
   verifyMarketRuntimeParity,
@@ -91,6 +92,57 @@ test("verifies normalized local and Worker company-analysis values", async () =>
   });
   assert.equal(results.length, 1);
   assert.equal(results[0].ticker, ticker);
+});
+
+test("allows Worker-only historical financial enrichment without weakening core parity", () => {
+  const local = {
+    ...payload,
+    financials: payload.financials.map((record, index) => (
+      index === 1 ? { ...record, revenue: 687.94, operatingProfit: 114.86 } : record
+    )),
+  };
+  const remote = {
+    ...local,
+    financials: local.financials.map((record, index) => (
+      index === 1 ? {
+        ...record,
+        reportDate: "2026-04-27",
+        operatingProfitConsensus: 90.33,
+        operatingProfitSurprise: 27.16,
+        operatingProfitYoy: 349.86,
+      } : record
+    )),
+  };
+  const comparison = compareCompanyAnalysisRuntimePayloads(local, remote, {
+    ticker,
+    annualLimit: 8,
+    quarterLimit: 12,
+  });
+  assert.equal(comparison.equal, true);
+  assert.equal(comparison.enriched, true);
+});
+
+test("rejects changed core financial values and lost local enrichment", () => {
+  const local = {
+    ...payload,
+    financials: payload.financials.map((record, index) => (
+      index === 1 ? { ...record, revenue: 687.94, reportDate: "2026-04-27" } : record
+    )),
+  };
+  const changedValue = {
+    ...local,
+    financials: local.financials.map((record, index) => (
+      index === 1 ? { ...record, revenue: 700 } : record
+    )),
+  };
+  const lostMetadata = {
+    ...local,
+    financials: local.financials.map((record, index) => (
+      index === 1 ? { ...record, reportDate: "" } : record
+    )),
+  };
+  assert.equal(compareCompanyAnalysisRuntimePayloads(local, changedValue, { ticker }).equal, false);
+  assert.equal(compareCompanyAnalysisRuntimePayloads(local, lostMetadata, { ticker }).equal, false);
 });
 
 test("rejects a Worker that does not expose the runtime version", async () => {
