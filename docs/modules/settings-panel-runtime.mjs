@@ -629,7 +629,6 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
             disclosureRefreshStore.remove();
           } catch (_) {}
           syncApiOptionsButton();
-          close();
           setMessage(msgEl, ["Think Stock 접속 코드를 이 기기에서 지웠습니다."]);
           return;
         }
@@ -646,7 +645,6 @@ function createSettingsPanelRuntime(scope = globalThis, options = {}) {
           disclosureRefreshStore.remove();
           if (dartGatewayTokenInput) dartGatewayTokenInput.value = accessToken;
           syncApiOptionsButton();
-          close();
           setMessage(msgEl, ["확인된 Think Stock 접속 코드를 이 기기에 저장했습니다."]);
         } catch (error) {
           setAccessStatus(

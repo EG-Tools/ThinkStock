@@ -1,5 +1,11 @@
 # Repository Agent Guide
 
+## 최우선 작업 원칙: 기존 방식 확인
+
+- 사용자 요청을 구현하기 전에 기존 UI·디자인·동작·구현 방식을 먼저 확인하고 재사용한다.
+- 요청의 해석이나 제안한 구현이 기존 방식과 달라질 경우, 변경 전에 차이점과 이유를 설명하고 사용자에게 확인 질문을 한다. 답변을 받기 전에는 해당 차이를 임의로 구현하지 않는다.
+- 사용자가 이미 명확히 지정하거나 승인한 변경은 그 범위 안에서 진행하며, 추가 차이가 생길 때 다시 확인한다.
+
 ## Product
 - ThinkStock has one user-facing web app in `docs/`.
 - Local PC access uses `run_local_pages.bat` and `scripts/local_pages_server.mjs`.

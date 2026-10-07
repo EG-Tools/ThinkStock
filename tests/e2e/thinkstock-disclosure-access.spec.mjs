@@ -335,6 +335,7 @@ test("administrator code unlocks private analysis features", async ({ page }) =>
   await page.locator("#adminAccessCodeInput").fill(adminCode);
   await page.locator("#adminAccessCodeBtn").click();
 
+  await expect(page.locator("#apiSettingsModal")).toBeVisible();
   await expect(page.locator("#adminAccessStatus")).toContainText("관리자 모드");
   await expect(page.locator("#adminAccessStatus")).toHaveClass(/is-active/);
   await expect(page.locator("#adminAccessCodeInput")).toHaveValue(/^.{10}$/);
@@ -375,11 +376,18 @@ test("API settings save only a verified personal access token", async ({ page })
 
   await page.locator("#dartGatewayTokenInput").fill("verified-token");
   await page.locator("#dartGatewayTokenSaveBtn").click();
-  await expect(page.locator("#apiSettingsModal")).toBeHidden();
+  await expect(page.locator("#apiSettingsModal")).toBeVisible();
   await expect(page.locator("#messageArea")).toContainText("확인된 Think Stock 접속 코드");
   expect(await page.evaluate(() => JSON.parse(
     localStorage.getItem("thinkstock-dart-gateway-v1"),
   ).accessToken)).toBe("verified-token");
+
+  await page.locator("#dartGatewayTokenInput").fill("");
+  await page.locator("#dartGatewayTokenSaveBtn").click();
+  await expect(page.locator("#apiSettingsModal")).toBeVisible();
+  expect(await page.evaluate(() => JSON.parse(
+    localStorage.getItem("thinkstock-dart-gateway-v1") || "{}",
+  ).accessToken || "")).toBe("");
 });
 
 test("new stock loads its deployed disclosure file without a gateway token", async ({ page }) => {
